@@ -20,9 +20,13 @@ _CP_LENGTH_BUCKET = 1024
 
 class TitanTrainer(Trainer):
     @functools.cached_property
+    def _forward_parameters(self):
+        return inspect.signature(self.model_parts[0].forward).parameters
+
+    @functools.cached_property
     def _family_forward_kwargs(self) -> dict:
         kwargs = {}
-        if "special_tokens" in inspect.signature(self.model_parts[0].forward).parameters:
+        if "special_tokens" in self._forward_parameters:
             hf_config = load_hf_config(self.config.hf_assets_path)
             kwargs["special_tokens"] = {
                 "image_id": getattr(hf_config, "image_token_id", -1),
@@ -90,7 +94,12 @@ class TitanTrainer(Trainer):
         input_dicts = []
         for batch in batches:
             tokens, positions = _model_inputs(batch)
-            input_dicts.append({"input": tokens, "positions": positions, **self._family_forward_kwargs})
+            inputs = {"input": tokens, "positions": positions, **self._family_forward_kwargs}
+            if "cu_seqlens" in self._forward_parameters:
+                # Keep the batch's padding segment intact. Zero-filled position IDs
+                # cannot distinguish padding from genuine one-token documents.
+                inputs["cu_seqlens"] = batch.get("cu_seqlens")
+            input_dicts.append(inputs)
         labels = [torch.full_like(input_dicts[i]["input"], i, dtype=torch.long) for i in range(len(batches))]
         return input_dicts, labels
 

@@ -538,6 +538,9 @@ For profiling: `--use-pytorch-profiler` with `--profile-step-start` / `--profile
 
 ## torchtitan
 
+The experimental [Kimi K3 text decoder](/models/kimi/kimi-k3#6-experimental-torchtitan-text-decoder)
+is a Miles-local model package, configured from its HF checkpoint.
+
 The torchtitan backend lives at `miles/backends/torchtitan_utils/`. One idea explains the
 whole thing: **torchtitan's `Trainer` is the black box.** Miles does not assemble torchtitan
 parts — it builds one `Trainer.Config` from your flags, hands it to torchtitan, and from then

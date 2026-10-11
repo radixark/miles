@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import logging
 import os
 import tempfile
@@ -8,7 +9,7 @@ from torchtitan.components.optimizer import ParamGroupConfig
 from torchtitan.distributed.activation_checkpoint import FullAC
 from torchtitan.trainer import Trainer
 
-from miles.backends.torchtitan_utils.components import EmptyDataLoader, TiedCheckpointManager
+from miles.backends.torchtitan_utils.components import EmptyDataLoader, TiedCheckpointManager, TransformersTokenizer
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.parallel import parallel_dims_from_config
 from miles.utils.hf_utils.config import load_hf_config
@@ -38,6 +39,8 @@ def resolve_model_spec(args: Namespace):
     registry = getattr(module, "model_registry", None)
     if registry is None:
         raise ValueError(f"{module.__name__} exposes no model_registry(); cannot build a ModelSpec")
+    if "hf_config" in inspect.signature(registry).parameters:
+        return registry(args.titan_model_flavor, attn_backend="flex", hf_config=load_hf_config(args.hf_checkpoint))
     return registry(args.titan_model_flavor, attn_backend="flex")
 
 
@@ -68,6 +71,8 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
         logger.info("Checkpoint ties lm_head to the embedding; excluding lm_head.weight from the HF export")
 
     config.hf_assets_path = hf_assets_path
+    if not os.path.isfile(os.path.join(hf_assets_path, "tokenizer.json")):
+        config.tokenizer = TransformersTokenizer.Config()
     config.dump_folder = os.path.join(
         args.save or tempfile.mkdtemp(prefix="miles-torchtitan-"), "torchtitan", dump_subdir
     )

@@ -185,7 +185,52 @@ weight sync, the adapter export is leaking and the run will die later rather tha
   `miles/backends/megatron_utils/megatron_to_hf/kimi_k3.py`, and the model itself in
   `miles_plugins/models/kimi_k3/`.
 
-## 6. Pairs Well With
+## 6. Experimental TorchTitan text decoder
+
+The TorchTitan model adapter lives entirely under
+`miles/backends/torchtitan_utils/models/kimi_k3/`. It follows the Miles `ModelSpec`
+interface and reads architecture dimensions and the KDA/MLA layer lists from the HF
+`text_config`. `--titan-model-flavor hf` labels the run; it does not select hard-coded sizes.
+This is full-parameter **text-decoder** training. Image inputs, LoRA and MTP are outside
+this adapter's scope. Rollout still uses Miles' SGLang integration.
+
+Prepare a BF16 HF checkpoint with the existing commands:
+
+```bash
+python scripts/run_kimi_k3.py prepare-download --model-name Kimi-K3-4layer-64experts --task gsm8k
+python scripts/run_kimi_k3.py prepare-bf16 --model-name Kimi-K3-4layer-64experts
+```
+
+Select the model through the standard TorchTitan training arguments below, alongside
+your rollout, data and GPU-layout arguments. This is an argument fragment, not a
+standalone launch command; `run_kimi_k3.py train` remains the Megatron recipe.
+
+```bash
+--train-backend torchtitan \
+--titan-model-name kimi_k3 --titan-model-flavor hf \
+--hf-checkpoint /root/models/Kimi-K3-4layer-64experts-bf16 \
+--tensor-model-parallel-size 8 --expert-model-parallel-size 8 \
+--pipeline-model-parallel-size 1 --context-parallel-size 1 \
+--gradient-checkpointing
+```
+
+The trainer loads BF16 HF weights directly; no `torch_dist` conversion is needed. Use
+that same BF16 directory for SGLang. Raw MXFP4 checkpoints are rejected before model
+allocation. The adapter exports HF-named decoder weights through the existing Miles
+weight-sync path and leaves frozen multimodal towers to that shared path.
+
+The implementation includes FSDP, TP/sequence parallelism and EP. For TP greater than
+one, use EP=TP, with head/expert counts divisible by those degrees. CP, PP and
+`torch.compile` are rejected. The four-layer/64-expert checkpoint is the initial
+integration target; the full 93-layer model has not been validated end to end.
+
+KDA and short convolution use existing FLA operations; MLA uses PyTorch SDPA. Explicit
+packed-document boundaries reach both attention types, including single-token samples
+and the trailing padding segment. MLA currently materializes a quadratic attention mask,
+so long-context performance and memory still need work. This adapter does not include
+new GPU kernels or the separate FSDP/performance experiments.
+
+## 7. Pairs Well With
 
 - [LoRA](/advanced/lora)
 - [Backends Beyond Megatron](/advanced/architecture-support)
