@@ -37,12 +37,26 @@ def use_cake_dsa(backend: str | None) -> bool:
     return resolve_dsa_attention_backend(backend) == "cake"
 
 
-def check_cake_topk_backend(topk_backend: str | None, index_topk: int | None, *, model: str = "DSA") -> None:
+def cake_topk_key_bound(seq_length: int | None, compress_ratios=()) -> int | None:
+    """Static bound on the key-row length the indexer scores: ``ceil(seq_length / r)`` for the smallest nonzero
+    compress ratio ``r`` in ``compress_ratios`` (``seq_length`` itself without compression); ``None`` when
+    ``seq_length`` is unknown.  ``seq_length`` is the global sequence length (CP ranks all-gather the keys)."""
+    if seq_length is None:
+        return None
+    ratios = [int(ratio) for ratio in compress_ratios if ratio]
+    return -(-int(seq_length) // (min(ratios) if ratios else 1))
+
+
+def check_cake_topk_backend(
+    topk_backend: str | None, index_topk: int | None, *, model: str = "DSA", max_keys: int | None = None
+) -> None:
     """Fail at startup when ``--miles-dsa-topk-backend cake`` cannot serve ``model``; other backends pass.
 
-    The generated top-k kernel fills at most ``CAKE_TOPK_MAX`` slots per query row and runs on SM100a /
-    SM103a only.  ``index_topk`` is the model's per-query selection width (``None`` when it is not known
-    yet; the per-call check in ``cake.cake_topk`` still applies).
+    The generated top-k kernel fills at most ``CAKE_TOPK_MAX`` slots per query row, scores rows of at most
+    ``CAKE_TOPK_MAX_KEYS`` keys and runs on SM100a / SM103a only.  ``index_topk`` is the model's per-query
+    selection width and ``max_keys`` its static bound on the key-row length (:func:`cake_topk_key_bound`);
+    either is ``None`` when the path has no static value, in which case the per-call ``ValueError`` in
+    ``cake.cake_topk`` is the final guard.
     """
     if topk_backend != "cake":
         return
@@ -50,6 +64,12 @@ def check_cake_topk_backend(topk_backend: str | None, index_topk: int | None, *,
         raise ValueError(
             f"--miles-dsa-topk-backend cake supports index_topk <= {CAKE_TOPK_MAX}, but {model} selects "
             f"{int(index_topk)} keys per query; use --miles-dsa-topk-backend torch or flashinfer."
+        )
+    if max_keys is not None and int(max_keys) > CAKE_TOPK_MAX_KEYS:
+        raise ValueError(
+            f"--miles-dsa-topk-backend cake scores key rows of at most {CAKE_TOPK_MAX_KEYS} compressed keys, but "
+            f"{model} can produce rows of {int(max_keys)} keys at this --seq-length / compress ratio; shorten the "
+            "sequence or use --miles-dsa-topk-backend torch or flashinfer."
         )
     import torch
 

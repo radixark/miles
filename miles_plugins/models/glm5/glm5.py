@@ -27,7 +27,12 @@ from megatron.core.transformer.transformer_config import MLATransformerConfig
 from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, lighting_indexer, sparse_attention
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.replay_base import indexer_replay_manager
-from miles.kernels.attention.dsa.backend import check_cake_topk_backend, cake_dsa_ops, resolve_dsa_attention_backend
+from miles.kernels.attention.dsa.backend import (
+    check_cake_topk_backend,
+    cake_dsa_ops,
+    cake_topk_key_bound,
+    resolve_dsa_attention_backend,
+)
 from miles_plugins.models.normalization import rms_norm
 
 # Names of the indexer submodules. On a DSA model with *cross-layer index
@@ -778,7 +783,13 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
 def get_glm5_spec(args, config, vp_stage):
     hf_config = load_hf_config(args.hf_checkpoint)
     # Fail before the model is built: the cake top-k kernel cannot serve this family's 2048-key selection.
-    check_cake_topk_backend(args.miles_dsa_topk_backend, INDEX_TOPK, model="GLM-5 / DeepSeek-V3.2 (get_glm5_spec)")
+    # The thd indexer scores the whole (CP-gathered) packed stream, so the key-row bound is --seq-length.
+    check_cake_topk_backend(
+        args.miles_dsa_topk_backend,
+        INDEX_TOPK,
+        model="GLM-5 / DeepSeek-V3.2 (get_glm5_spec)",
+        max_keys=cake_topk_key_bound(getattr(args, "seq_length", None)),
+    )
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))

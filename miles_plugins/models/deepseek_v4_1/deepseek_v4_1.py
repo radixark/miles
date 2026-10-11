@@ -42,7 +42,12 @@ from miles_plugins.models.deepseek_v4_1.engram import DeepSeekV41Engram
 from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor
 from miles_plugins.models.deepseek_v4_1.ops.indexer import DeepSeekV41Indexer
 from miles_plugins.models.deepseek_v4_1.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
-from miles.kernels.attention.dsa.backend import check_cake_topk_backend, cake_dsa_ops, resolve_dsa_attention_backend
+from miles.kernels.attention.dsa.backend import (
+    check_cake_topk_backend,
+    cake_dsa_ops,
+    cake_topk_key_bound,
+    resolve_dsa_attention_backend,
+)
 
 HC_FUSED = os.environ.get("MILES_DSV41_HC_FUSED", "0") == "1"
 
@@ -630,8 +635,15 @@ def get_dsv41_spec(args, config, vp_stage):
     config.v41_hf_checkpoint = args.hf_checkpoint
     config.v41_runtime = V41Runtime()
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    # The indexer scores one compressed-key row of ceil(seq_length / ratio) keys per query (CP all-gathers the
+    # keys): the smallest nonzero compress ratio of the layer schedule bounds the row length.
     check_cake_topk_backend(
-        args.miles_dsa_topk_backend, getattr(config, "dsa_indexer_topk", None), model="DeepSeek-V4.1"
+        args.miles_dsa_topk_backend,
+        getattr(config, "dsa_indexer_topk", None),
+        model="DeepSeek-V4.1",
+        max_keys=cake_topk_key_bound(
+            getattr(args, "seq_length", None), getattr(config, "csa_compress_ratios", None) or ()
+        ),
     )
     config.dsa_attention_backend = resolve_dsa_attention_backend(getattr(args, "dsa_attention_backend", None))
     _install_patches(config)
