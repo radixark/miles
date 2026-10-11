@@ -76,6 +76,11 @@ def _reference_tables(lengths, offsets, rows_external):
     return starts, bos, clen, internal
 
 
+def _reference_chunk_indices(starts):
+    """fla's ``prepare_chunk_indices`` rows: (sequence, chunk index within it) per real chunk."""
+    return [[n, i] for n in range(len(starts) - 1) for i in range(starts[n + 1] - starts[n])]
+
+
 def _tables(layout):
     return [
         list(layout.seq_chunk_start_cpu),
@@ -94,6 +99,7 @@ def test_host_tables_match_the_reference_tables(name):
     cu_dev = torch.tensor(cu, dtype=torch.int32)
     det_backward._LAYOUT_CACHE.clear()
     layout = det_backward.chunk_layout(1, total, cu_dev, torch.device("cpu"), cu_seqlens_cpu=tuple(cu))
+    assert "internal_rows" not in vars(layout)  # the per-row scatter table is built on first use only
     starts, bos, clen, internal = _reference_tables(lengths, cu[:-1], total)
     got_starts, got_bos, got_clen, got_internal = _tables(layout)
     assert got_starts == starts
@@ -103,8 +109,29 @@ def test_host_tables_match_the_reference_tables(name):
     assert layout.seq_chunk_start.tolist() == starts
     assert layout.chunk_bos.dtype == layout.chunk_len.dtype == layout.seq_chunk_start.dtype == torch.int32
     assert layout.internal_rows.dtype == torch.int64
+    assert "internal_rows" in vars(layout) and layout.internal_rows is layout.internal_rows
+    assert layout.chunk_indices.dtype == torch.int32 and tuple(layout.chunk_indices.shape) == (starts[-1], 2)
+    assert layout.chunk_indices.tolist() == _reference_chunk_indices(starts)
+    assert layout.cp_cu_first.dtype == layout.cp_cu_last.dtype == torch.int32
+    assert layout.cp_cu_first.tolist() == [0, lengths[0]] and layout.cp_cu_last.tolist() == [0, lengths[-1]]
     assert layout.num_chunks == starts[-1] and layout.num_chunks_padded % 2 == 0
     assert layout.identity == (name == "aligned_identity")
+
+
+def test_internal_rows_is_built_on_first_scatter_only():
+    """The int64 per-row table is the only layout table a forward never needs: built (and uploaded) by the first
+    ``scatter``; an identity layout never builds it."""
+    det_backward._LAYOUT_CACHE.clear()
+    cu = _cu(PACKS["packed_rl3_8192"])
+    layout = det_backward.chunk_layout(1, cu[-1], torch.tensor(cu, dtype=torch.int32), "cpu", cu_seqlens_cpu=tuple(cu))
+    assert "internal_rows" not in vars(layout)
+    x = torch.arange(layout.rows, dtype=torch.float32).unsqueeze(1)
+    got = layout.scatter(x)
+    assert "internal_rows" in vars(layout)
+    assert got.squeeze(1).tolist() == [float(i) for i in _reference_tables(layout.lengths, layout.offsets, cu[-1])[3]]
+    ident = det_backward.chunk_layout(1, 384, torch.tensor([0, 128, 192, 384], dtype=torch.int32), "cpu", cu_seqlens_cpu=(0, 128, 192, 384))
+    y = x[: ident.rows]
+    assert ident.identity and ident.scatter(y) is y and "internal_rows" not in vars(ident)
 
 
 @pytest.mark.parametrize("batch, seq_len", [(1, 100), (2, 128), (3, 1000)])
@@ -495,6 +522,24 @@ def _fwd_bwd(kda_recurrence, backend, inputs, cu, host, upstream):
     return out.detach(), dict(zip(_GRADS, [g.detach() for g in grads], strict=True))
 
 
+def _fwd_only(kda_recurrence, backend, inputs, cu, host):
+    with torch.no_grad():
+        return kda_recurrence(
+            inputs["q"],
+            inputs["k"],
+            inputs["v"],
+            inputs["beta_logits"],
+            inputs["decay"],
+            inputs["A_log"],
+            inputs["dt_bias"],
+            gate_lower_bound=-5.0,
+            cu_seqlens=cu,
+            cp_context=None,
+            backend=backend,
+            cu_seqlens_cpu=host,
+        )
+
+
 def test_sync_free_after_one_warmup():
     """U0-2: after one warm-up on the pack, forward + backward of both backends run with
     ``set_sync_debug_mode("error")`` (see the module docstring for the ops it flags). The deterministic
@@ -580,3 +625,40 @@ def test_no_host_copy_fallback_matches_fla_bit_for_bit(monkeypatch):
     assert torch.equal(out_d, out_f)
     for name in _GRADS:
         assert torch.equal(grads_d[name], grads_f[name]), name
+
+
+@pytest.mark.parametrize("name", sorted(PACKS))
+def test_chunk_indices_equal_fla_prepare_chunk_indices(name):
+    """The layout's ``chunk_indices`` are fla's ``prepare_chunk_indices`` of the same packing (the fla forward of the
+    ``deterministic_fla_fwd`` mode consumes them in place of fla's own blocking upload)."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA device required")
+    prepare_chunk_indices = pytest.importorskip("fla.ops.utils.index").prepare_chunk_indices
+    cu_list = _cu(PACKS[name])
+    cu = torch.tensor(cu_list, dtype=torch.int32, device="cuda")
+    ref = prepare_chunk_indices(cu, CHUNK, cu_seqlens_cpu=torch.tensor(cu_list, dtype=torch.int64))
+    det_backward._LAYOUT_CACHE.clear()
+    layout = det_backward.chunk_layout(1, cu_list[-1], cu, cu.device, cu_seqlens_cpu=tuple(cu_list))
+    assert layout.chunk_indices.dtype == ref.dtype and layout.chunk_indices.shape == ref.shape
+    assert torch.equal(layout.chunk_indices, ref)
+
+
+@pytest.mark.parametrize("backend", ["deterministic_fla_fwd", "deterministic_cake_fwd"])
+def test_first_forward_of_a_new_pack_is_sync_free(backend):
+    """U0-1 (c): the first forward of a never-seen packing uploads the layout (one pinned, non-blocking copy) and
+    drains nothing in either mode: the fla forward takes its chunk indices from the layout instead of uploading
+    its own (see the module docstring for what the sync debug mode flags)."""
+    kda_recurrence = _kda_recurrence()
+    inputs = _inputs(8192, seed=582)
+    warm = _cu((2300, 3100, 2792))
+    _fwd_only(kda_recurrence, backend, inputs, torch.tensor(warm, dtype=torch.int32, device="cuda"), torch.tensor(warm, dtype=torch.int64))
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        for n in range(1, 4):  # never-seen packings of the same token total
+            cu_list = _cu((2300 + n, 3100 - n, 2792))
+            cu = torch.tensor(cu_list, dtype=torch.int32).to("cuda", non_blocking=True)
+            _fwd_only(kda_recurrence, backend, inputs, cu, torch.tensor(cu_list, dtype=torch.int64))
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
+    torch.cuda.synchronize()

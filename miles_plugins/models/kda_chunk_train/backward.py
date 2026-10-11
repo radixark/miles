@@ -26,6 +26,13 @@ every sequence starts on a 64-token chunk boundary, the first stage gathers
 the token rows into it and the last stages scatter the gradients back, so no
 host-side repacking or padding copies are needed.
 
+A layout uploads its device tables once, from one pinned staging buffer with one
+``non_blocking`` copy: the per-chunk and per-sequence int32 tables of the stages,
+fla's ``chunk_indices`` of the same packing (the fla forward of the
+``deterministic_fla_fwd`` mode consumes them) and the two-entry ``cu_seqlens`` of
+the first and last sequence that fla's CP pre-process kernels index. The per-row
+scatter table (``internal_rows``, int64) is built and uploaded on first use only.
+
 Context parallelism (fla ``FLACPContext`` with a process group) follows the deterministic kernels' CP host
 protocol (fla's state-exchange pre-process around the Cake stages, fed with fla's own recompute of its operands),
 mirrored here stage for stage from the Cake compiler's reference host wrapper: the forward seeds the first local
@@ -89,7 +96,12 @@ class ChunkLayout:
 
     ``chunk_bos[c]``: first input row of chunk ``c``; ``chunk_len[c]``: its valid tokens (0 for the
     trailing pad chunk); ``seq_chunk_start[n]``: first chunk of sequence ``n`` (``N + 1`` entries);
-    ``internal_rows[r]``: internal row of input row ``r``.
+    ``chunk_indices[c]``: ``(sequence, chunk index within it)`` of real chunk ``c`` -- the rows of fla's
+    ``prepare_chunk_indices`` for the same packing, handed to the fla forward of the ``deterministic_fla_fwd``
+    mode; ``cp_cu_first`` / ``cp_cu_last``: int32 ``[0, L]`` of the first / last sequence, the two-entry
+    ``cu_seqlens`` fla's CP pre-process kernels index.  All of these are int32 views of ONE device buffer
+    filled by one host-to-device copy.  ``internal_rows[r]`` (int64): internal row of input row ``r``, built
+    and uploaded the first time :meth:`scatter` needs it.
 
     Layouts are immutable and cached per packing, so the derived counts below are computed once per
     layout rather than on every access from the backward's hot path.
@@ -102,7 +114,9 @@ class ChunkLayout:
     chunk_bos: torch.Tensor
     chunk_len: torch.Tensor
     seq_chunk_start: torch.Tensor
-    internal_rows: torch.Tensor
+    chunk_indices: torch.Tensor
+    cp_cu_first: torch.Tensor
+    cp_cu_last: torch.Tensor
 
     @cached_property
     def num_sequences(self) -> int:
@@ -133,6 +147,12 @@ class ChunkLayout:
             and all(length % CHUNK == 0 for length in self.lengths)
             and all(offset == sum(self.lengths[:i]) for i, offset in enumerate(self.offsets))
         )
+
+    @cached_property
+    def internal_rows(self) -> torch.Tensor:
+        """int64 ``[rows_external]``: the internal row of every input row (:meth:`scatter`'s index). Built on first
+        use -- one pinned staging buffer, one ``non_blocking`` host-to-device copy -- and kept with the layout."""
+        return _row_table(self.lengths, self.offsets, self.rows_external, self.seq_chunk_start_cpu, self.chunk_bos.device)
 
     def scatter(self, x: torch.Tensor) -> torch.Tensor:
         """Internal ``[rows, ...]`` -> input ``[rows_external, ...]`` (pads dropped)."""
@@ -165,54 +185,68 @@ class _LRUCache:
         self._data.clear()
 
 
-_TABLE_ALIGN = 64  # int32 elements: every int32 table view starts 256-byte aligned inside the shared buffer
-_ROW_ALIGN = 32  # int64 elements: the int32 tables start 256-byte aligned behind the int64 rows
+_TABLE_ALIGN = 64  # int32 elements: every table view starts 256-byte aligned inside the shared buffer
 
 
 def _round_up(n: int, m: int) -> int:
     return -(-n // m) * m
 
 
-def _host_tables(lengths: tuple[int, ...], offsets: tuple[int, ...], rows_external: int, rows_out, bos_out, clen_out):
-    """Fill the layout tables straight into their (pinned) staging views, vectorised: ``rows_out``
-    (``rows_external`` int64, the internal row of every input row), ``bos_out`` / ``clen_out`` (``nc``
-    int32 each). Returns ``starts`` (``N + 1`` Python ints). Per-sequence scalars stay in Python (a
-    pack has a few sequences), only the per-chunk and per-row arrays go through numpy, and the per-row
-    array is written with a single ``np.add(..., out=)`` when the sequences lie back to back (packed
-    and fixed-length input: offsets = exclusive cumsum of the lengths)."""
+def _chunk_tables(lengths: tuple[int, ...], offsets: tuple[int, ...], bos_out, clen_out, ci_out):
+    """Fill the per-chunk tables straight into their (pinned) int32 staging views, vectorised: ``bos_out`` /
+    ``clen_out`` (``nc`` entries each: first input row, valid tokens) and ``ci_out`` (``[nc, 2]``: sequence
+    index, chunk index within it -- the rows of fla's ``prepare_chunk_indices``). Returns ``starts`` (``N + 1``
+    Python ints). Per-sequence scalars stay in Python (a pack has a few sequences); only the per-chunk arrays
+    go through numpy."""
     n = len(lengths)
     nch = [(length + (CHUNK - 1)) // CHUNK for length in lengths]
     starts = [0] * (n + 1)
-    excl = [0] * n
     for s in range(n):
         starts[s + 1] = starts[s] + nch[s]
-        if s:
-            excl[s] = excl[s - 1] + lengths[s - 1]
     nc = starts[-1]
-    # per chunk: index within its sequence (by repeat), first input row, valid tokens
+    # per chunk: index within its sequence (by repeat), first input row, valid tokens, owning sequence
     i = np.arange(nc, dtype=np.int64) - np.repeat(np.asarray(starts[:-1], dtype=np.int64), nch)
     bos_out[:] = np.repeat(np.asarray(offsets, dtype=np.int64), nch) + i * CHUNK
     clen_out[:] = np.minimum(CHUNK, np.repeat(np.asarray(lengths, dtype=np.int64), nch) - i * CHUNK)
-    # per input row: internal row = row + (first internal row of its sequence - its exclusive cumsum)
+    ci_out[:, 0] = np.repeat(np.arange(n, dtype=np.int64), nch)
+    ci_out[:, 1] = i
+    return starts
+
+
+def _row_table(lengths: tuple[int, ...], offsets: tuple[int, ...], rows_external: int, starts, device) -> torch.Tensor:
+    """int64 ``internal_rows`` of the packing on ``device`` (internal row = row + (first internal row of its
+    sequence - its exclusive cumsum)): written into a pinned staging buffer with a single ``np.add(..., out=)``
+    when the sequences lie back to back (packed and fixed-length input: offsets = exclusive cumsum of the
+    lengths), else with one fancy-index assignment; then one ``non_blocking`` host-to-device copy. On a CPU
+    device the buffer is pageable and the copy is a plain copy (tests)."""
+    n = len(lengths)
+    pinned = device.type == "cuda"
+    host = torch.empty(rows_external, dtype=torch.int64, pin_memory=pinned)
+    rows_out = host.numpy()
+    excl = [0] * n
+    for s in range(1, n):
+        excl[s] = excl[s - 1] + lengths[s - 1]
     shift = np.asarray([starts[s] * CHUNK - excl[s] for s in range(n)], dtype=np.int64)
     if tuple(excl) == offsets:
         np.add(np.arange(rows_external, dtype=np.int64), np.repeat(shift, lengths), out=rows_out)
     else:
         j = np.arange(rows_external, dtype=np.int64) - np.repeat(np.asarray(excl, dtype=np.int64), lengths)
         rows_out[np.repeat(np.asarray(offsets, dtype=np.int64), lengths) + j] = np.repeat(shift + np.asarray(excl, dtype=np.int64), lengths) + j
-    return starts
+    dev = torch.empty(rows_external, dtype=torch.int64, device=device)
+    dev.copy_(host, non_blocking=pinned)
+    return dev
 
 
 def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
     """Build the layout of ``lengths`` / ``offsets`` on ``device``.
 
-    Host cost is a handful of vectorised numpy ops writing straight into ONE pinned staging buffer
-    (int64: ``internal_rows`` first, then ``chunk_bos``, ``chunk_len`` and ``seq_chunk_start`` as
-    256-byte-aligned int32 views of its tail); the device side is exactly one device allocation and one
-    ``non_blocking`` host-to-device copy, so building a layout never drains the stream (the U0-1 gate
-    allows up to two such copies). The staging buffer comes from torch's caching pinned-memory
-    allocator, which hands it out again once the copy has retired. On a CPU device the buffer is
-    pageable and the copy is a plain copy (tests).
+    Host cost is a handful of vectorised numpy ops writing straight into ONE pinned int32 staging buffer
+    (``chunk_bos``, ``chunk_len``, ``seq_chunk_start``, ``chunk_indices`` and the two CP ``cu_seqlens`` pairs,
+    each a 256-byte-aligned section); the device side is exactly one device allocation and one ``non_blocking``
+    host-to-device copy, so building a layout never drains the stream (the U0-1 gate allows up to two such
+    copies per new packing; the second one is the per-row ``internal_rows`` table, built on first use). The
+    staging buffer comes from torch's caching pinned-memory allocator, which hands it out again once the copy
+    has retired. On a CPU device the buffer is pageable and the copy is a plain copy (tests).
     """
     lengths = tuple(int(x) for x in lengths)
     offsets = tuple(int(x) for x in offsets)
@@ -229,31 +263,31 @@ def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
     nc = sum((length + (CHUNK - 1)) // CHUNK for length in lengths)
     nc_pad = _round_up(nc, 2)
     table = _round_up(nc_pad, _TABLE_ALIGN)
-    start_table = _round_up(n + 1, _TABLE_ALIGN)
-    rows64 = _round_up(rows_external, _ROW_ALIGN)
-    host = torch.empty(rows64 + (2 * table + start_table) // 2, dtype=torch.int64, pin_memory=pinned)
-    # numpy views of the staging buffer (a numpy view costs well under a microsecond; a torch view op ~4 us)
-    a64 = host.numpy()
-    a32 = a64[rows64:].view(np.int32)
-    starts = _host_tables(lengths, offsets, rows_external, a64[:rows_external], a32[:nc], a32[table : table + nc])
+    o_start = 2 * table
+    o_ci = o_start + _round_up(n + 1, _TABLE_ALIGN)
+    o_cp = o_ci + _round_up(2 * nc, _TABLE_ALIGN)
+    host = torch.empty(o_cp + _TABLE_ALIGN, dtype=torch.int32, pin_memory=pinned)
+    a = host.numpy()  # numpy views of the staging buffer cost well under a microsecond; a torch view op ~4 us
+    starts = _chunk_tables(lengths, offsets, a[:nc], a[table : table + nc], a[o_ci : o_ci + 2 * nc].reshape(nc, 2))
     if nc_pad != nc:  # trailing pad chunk: no rows, zero length
-        a32[nc] = 0
-        a32[table + nc] = 0
-    a32[2 * table : 2 * table + n + 1] = starts
+        a[nc] = 0
+        a[table + nc] = 0
+    a[o_start : o_start + n + 1] = starts
+    a[o_cp : o_cp + 4] = (0, lengths[0], 0, lengths[-1])
 
-    dev = torch.empty_like(host, device=device)
+    dev = torch.empty(host.numel(), dtype=torch.int32, device=device)
     dev.copy_(host, non_blocking=pinned)
-    tables = dev.view(torch.int32)  # the int32 tables start at element 2 * rows64 (256-byte aligned)
-    t0 = 2 * rows64
     return ChunkLayout(
         lengths=lengths,
         offsets=offsets,
         rows_external=int(rows_external),
         seq_chunk_start_cpu=tuple(starts),
-        chunk_bos=tables[t0 : t0 + nc_pad],
-        chunk_len=tables[t0 + table : t0 + table + nc_pad],
-        seq_chunk_start=tables[t0 + 2 * table : t0 + 2 * table + n + 1],
-        internal_rows=dev[:rows_external],
+        chunk_bos=dev[:nc_pad],
+        chunk_len=dev[table : table + nc_pad],
+        seq_chunk_start=dev[o_start : o_start + n + 1],
+        chunk_indices=dev[o_ci : o_ci + 2 * nc].view(nc, 2),
+        cp_cu_first=dev[o_cp : o_cp + 2],
+        cp_cu_last=dev[o_cp + 2 : o_cp + 4],
     )
 
 
@@ -435,14 +469,14 @@ def _serial_walk_stage(stage, pairs, device, walk="auto"):
     return stage, pairs * 2
 
 
-_STATE_DUMMY: dict[str, torch.Tensor] = {}
+_STATE_DUMMY: dict = {}
 
 
 def state_dummy(device) -> torch.Tensor:
     """Cached one-element fp32 zero bound to a flag-off state slot of ``fwdh`` / ``dhu`` (``use_h0 = 0`` /
     ``store_ht = 0`` / ``use_dht = 0`` / ``store_dh0 = 0``): the kernels never dereference the pointer when the
     flag is off, so no per-call allocation and no extra launch."""
-    key = str(torch.device(device))
+    key = _device_key(device)
     hit = _STATE_DUMMY.get(key)
     if hit is None:
         hit = _STATE_DUMMY[key] = torch.zeros(1, dtype=torch.float32, device=device)
@@ -475,22 +509,6 @@ def _state_args(state_in, return_out, *, layout, hv, device, in_name, out_name):
 def _use_cp(cp_context) -> bool:
     """An fla CP context with a process group: the CP host protocol applies."""
     return cp_context is not None and getattr(cp_context, "group", None) is not None
-
-
-_PAIR_CU_LIMIT = 64
-_PAIR_CU: _LRUCache = _LRUCache(_PAIR_CU_LIMIT)
-
-
-def _pair_cu(length: int, device) -> torch.Tensor:
-    """int32 device ``[0, L]``: the two-entry ``cu_seqlens`` fla's CP pre-process kernels index for the single
-    boundary sequence. Cached per (device, L): one 8-byte host-to-device copy per distinct boundary length per
-    process, none afterwards."""
-    key = (_device_key(device), int(length))
-    hit = _PAIR_CU.get(key)
-    if hit is None:
-        hit = torch.tensor([0, int(length)], dtype=torch.int32, device=device)
-        _PAIR_CU.put(key, hit)
-    return hit
 
 
 def _first_slot(state_c: torch.Tensor, n: int) -> torch.Tensor:
@@ -583,14 +601,17 @@ def _roles(cp_context) -> dict:
 LAST_CP_STATES: dict = {}
 
 
-def _launch_fwdh(arch, w, kg, u, gk, *, layout, h0=None, return_ht=False, walk="auto"):
+def _launch_fwdh(arch, w, kg, u, gk, *, layout, h0=None, return_ht=False, walk="auto", zero_pad_rows=True):
     """Forward state walk. ``h0`` fp32 ``[N, HV, 128, 128]`` seeds each sequence's state (``None`` = zeros, the
-    flag-off path); with ``return_ht`` the fp32 state after each sequence's last chunk is returned third."""
+    flag-off path); with ``return_ht`` the fp32 state after each sequence's last chunk is returned third.
+    ``zero_pad_rows``: fill the trailing pad chunk's rows of ``v_new`` (never written by the walk) with zeros --
+    the backward keeps the fill for its pair-tiled consumers; the forward passes ``False`` because ``fwd_o`` walks
+    the real chunks only and never reads those rows."""
     rows, hv, _ = w.shape
     nc = layout.num_chunks
     h_out = torch.empty(nc, hv, HEAD_DIM, HEAD_DIM, dtype=torch.bfloat16, device=w.device)
     v_new = torch.empty(rows, hv, HEAD_DIM, dtype=torch.bfloat16, device=w.device)
-    if layout.has_pad_chunk:
+    if zero_pad_rows and layout.has_pad_chunk:
         v_new[nc * CHUNK :].zero_()
     pairs = layout.num_sequences * hv
     stage, grid = _serial_walk_stage("fwdh", pairs, w.device, walk)
@@ -1021,7 +1042,7 @@ def chunk_kda_backward(
         )
         dht_vf, _none = fl["bwd_dhu_pre_process"](
             q=feed["qg"], k=feed["kg"], w=feed["w"], do=pre["do"][:first][None], dv=dv1[:first][None], gk=feed["g"],
-            scale=scale, state_v_first=True, cu_seqlens=_pair_cu(first, q_norm.device), dht=None, initial_state=None,
+            scale=scale, state_v_first=True, cu_seqlens=layout.cp_cu_first, dht=None, initial_state=None,
             context=cp_context, chunk_size=CHUNK,
         )
         del feed
