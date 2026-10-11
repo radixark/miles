@@ -81,18 +81,22 @@ def load(stage, arch):
 
 
 @cache
-def prebuild(arch, max_workers=None):
-    """Build every stage for ``arch`` up front, in parallel, and return the wall time in seconds.
+def prebuild(arch, stages=None, max_workers=None):
+    """Build ``stages`` (a tuple of stage names; default: every stage) for ``arch`` up front, in parallel.
 
-    The stages build lazily on first use otherwise; with the attention and indexer variants selected
-    by head count, a new head count seen mid-training would compile a stage inside a training step
-    (about a minute per stage, serially).  Called once from the operators on their first call on a
-    device; ``MILES_DSA_TRAIN_PREBUILD=0`` disables it.
+    Returns the wall time in seconds.  The stages build lazily on first use otherwise; with the attention
+    and indexer variants selected by head count, a new head count seen mid-training would compile a stage
+    inside a training step (about a minute per stage, serially).  The operators call it once per stage
+    family on their first call on a device -- the attention / indexer entry points with the 17 attention,
+    indexer, clean and reduce stages, the top-k backend with the four ``dsa_topk_fp32_*`` capacity variants
+    -- so neither family compiles the other's kernels; ``MILES_DSA_TRAIN_PREBUILD=0`` disables it.
     """
     import time
     from concurrent.futures import ThreadPoolExecutor
 
-    stages = [stage for stage, record in MODULES.items() if arch in record["arches"]]
+    stages = [
+        stage for stage, record in MODULES.items() if arch in record["arches"] and (stages is None or stage in stages)
+    ]
     t0 = time.perf_counter()
     workers = max_workers or min(len(stages), max(1, (os.cpu_count() or 8) // 2))
     with ThreadPoolExecutor(max_workers=workers) as pool:
