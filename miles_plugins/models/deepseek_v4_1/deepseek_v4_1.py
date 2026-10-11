@@ -42,7 +42,7 @@ from miles_plugins.models.deepseek_v4_1.engram import DeepSeekV41Engram
 from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor
 from miles_plugins.models.deepseek_v4_1.ops.indexer import DeepSeekV41Indexer
 from miles_plugins.models.deepseek_v4_1.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
-from miles.kernels.attention.dsa.backend import cake_dsa_ops, resolve_dsa_attention_backend
+from miles.kernels.attention.dsa.backend import check_cake_topk_backend, cake_dsa_ops, resolve_dsa_attention_backend
 
 HC_FUSED = os.environ.get("MILES_DSV41_HC_FUSED", "0") == "1"
 
@@ -630,6 +630,9 @@ def get_dsv41_spec(args, config, vp_stage):
     config.v41_hf_checkpoint = args.hf_checkpoint
     config.v41_runtime = V41Runtime()
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    check_cake_topk_backend(
+        args.miles_dsa_topk_backend, getattr(config, "dsa_indexer_topk", None), model="DeepSeek-V4.1"
+    )
     config.dsa_attention_backend = resolve_dsa_attention_backend(getattr(args, "dsa_attention_backend", None))
     _install_patches(config)
 

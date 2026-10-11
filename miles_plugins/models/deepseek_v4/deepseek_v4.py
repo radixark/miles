@@ -48,7 +48,7 @@ from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     to_rank_major_rows,
 )
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
-from miles.kernels.attention.dsa.backend import cake_dsa_ops, resolve_dsa_attention_backend
+from miles.kernels.attention.dsa.backend import check_cake_topk_backend, cake_dsa_ops, resolve_dsa_attention_backend
 
 
 def _enable_deepseek_v4_tf32():
@@ -466,6 +466,9 @@ def get_dsv4_spec(args, config, vp_stage):
         return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
 
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    check_cake_topk_backend(
+        args.miles_dsa_topk_backend, getattr(config, "dsa_indexer_topk", None), model="DeepSeek-V4"
+    )
     config.dsa_attention_backend = resolve_dsa_attention_backend(getattr(args, "dsa_attention_backend", None))
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 

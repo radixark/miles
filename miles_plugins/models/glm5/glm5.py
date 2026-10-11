@@ -27,12 +27,16 @@ from megatron.core.transformer.transformer_config import MLATransformerConfig
 from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, lighting_indexer, sparse_attention
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.replay_base import indexer_replay_manager
-from miles.kernels.attention.dsa.backend import cake_dsa_ops, resolve_dsa_attention_backend
+from miles.kernels.attention.dsa.backend import check_cake_topk_backend, cake_dsa_ops, resolve_dsa_attention_backend
 from miles_plugins.models.normalization import rms_norm
 
 # Names of the indexer submodules. On a DSA model with *cross-layer index
 # sharing* these only exist on "computing" layers; "skip" layers drop them.
 _INDEXER_SUBMODULE_NAMES = ("wq_b", "wk", "k_norm", "weights_proj")
+
+# Keys the indexer selects per query (DeepSeek-V3.2 / GLM-5 family); above the cake top-k kernel's 512 slots.
+INDEX_TOPK = 2048
+_TOPK_BACKENDS = ("torch", "flashinfer", "cake")
 
 
 def is_skip_topk_layer(layer_number: int, skip_topk_offset: int, topk_freq: int) -> bool:
@@ -162,9 +166,11 @@ class DSAMultiLatentAttention(Attention):
             tp_group=self.pg_collection.tp,
         )
 
-        self.index_topk = 2048
-        if topk_backend not in ("torch", "flashinfer"):
+        self.index_topk = INDEX_TOPK
+        if topk_backend not in _TOPK_BACKENDS:
             raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
+        # ``cake`` fills at most 512 slots per query: rejected here (and in get_glm5_spec) for this family.
+        check_cake_topk_backend(topk_backend, self.index_topk, model="GLM-5 / DeepSeek-V3.2 (DSAMLASelfAttention)")
         self.topk_backend = topk_backend
         # ``tilelang``: the miles.kernels DSA ops; ``cake``: the generated deterministic
         # kernels in miles/kernels/attention/dsa/cake (same thd contract).
@@ -771,6 +777,8 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
 
 def get_glm5_spec(args, config, vp_stage):
     hf_config = load_hf_config(args.hf_checkpoint)
+    # Fail before the model is built: the cake top-k kernel cannot serve this family's 2048-key selection.
+    check_cake_topk_backend(args.miles_dsa_topk_backend, INDEX_TOPK, model="GLM-5 / DeepSeek-V3.2 (get_glm5_spec)")
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
