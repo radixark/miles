@@ -1471,6 +1471,226 @@
    "sm_103a"
   ]
  },
+ "dsa_topk_fp32_c4096_k512": {
+  "name": "cake_dsa_train_b32a0382146ad9e9b743",
+  "kernel_symbol": "kernel_cake_dsa_train_b32a0382146ad9e9b743",
+  "arg_plan": [
+   [
+    "buffer",
+    "logits"
+   ],
+   [
+    "buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "row_end"
+   ],
+   [
+    "parameter",
+    "n_kv"
+   ],
+   [
+    "parameter",
+    "has_row_end"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_b32a0382146ad9e9b743_kernel.cu",
+   "cake_dsa_train_b32a0382146ad9e9b743_binding.cu"
+  ],
+  "block": [
+   256,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 22656,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_topk_fp32_c8192_k512": {
+  "name": "cake_dsa_train_ef89ae1df38870d631f6",
+  "kernel_symbol": "kernel_cake_dsa_train_ef89ae1df38870d631f6",
+  "arg_plan": [
+   [
+    "buffer",
+    "logits"
+   ],
+   [
+    "buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "row_end"
+   ],
+   [
+    "parameter",
+    "n_kv"
+   ],
+   [
+    "parameter",
+    "has_row_end"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_ef89ae1df38870d631f6_kernel.cu",
+   "cake_dsa_train_ef89ae1df38870d631f6_binding.cu"
+  ],
+  "block": [
+   256,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 40064,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_topk_fp32_c16384_k512": {
+  "name": "cake_dsa_train_3a88e07387f31c3c58f5",
+  "kernel_symbol": "kernel_cake_dsa_train_3a88e07387f31c3c58f5",
+  "arg_plan": [
+   [
+    "buffer",
+    "logits"
+   ],
+   [
+    "buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "row_end"
+   ],
+   [
+    "parameter",
+    "n_kv"
+   ],
+   [
+    "parameter",
+    "has_row_end"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_3a88e07387f31c3c58f5_kernel.cu",
+   "cake_dsa_train_3a88e07387f31c3c58f5_binding.cu"
+  ],
+  "block": [
+   256,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 74880,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_topk_fp32_c32768_k512": {
+  "name": "cake_dsa_train_3a1f16c2de2cf7b3d926",
+  "kernel_symbol": "kernel_cake_dsa_train_3a1f16c2de2cf7b3d926",
+  "arg_plan": [
+   [
+    "buffer",
+    "logits"
+   ],
+   [
+    "buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "row_end"
+   ],
+   [
+    "parameter",
+    "n_kv"
+   ],
+   [
+    "parameter",
+    "has_row_end"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_3a1f16c2de2cf7b3d926_kernel.cu",
+   "cake_dsa_train_3a1f16c2de2cf7b3d926_binding.cu"
+  ],
+  "block": [
+   256,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 144512,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
  "dsa_segmented_reduce_split4": {
   "name": "cake_dsa_train_d1104bd6373a6115f000",
   "kernel_symbol": "kernel_cake_dsa_train_d1104bd6373a6115f000",
