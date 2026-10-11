@@ -40,30 +40,38 @@ ATTENTION_TC_ARCHES = ("sm_100a", "sm_103a")
 # FP32 accumulation in the tensor-core order (deterministic run to run, within the register-MMA stages' tolerances).
 ATTENTION_TC_BWD_HEADS = (64,)
 TOPK_STAGE_PREFIX = "dsa_topk_fp32_"
+INDEXER_TOPK_STAGE_PREFIX = "dsa_indexer_topk_"
 
 # (arch, family) pairs whose stages were prebuilt (or deliberately left lazy) in this process.
 _PREBUILT: set[tuple[str, str]] = set()
 
 
-def _is_topk_stage(name: str) -> bool:
-    return name.startswith(TOPK_STAGE_PREFIX)
+def _stage_family(name: str) -> str:
+    """The prebuild family of a registry stage: ``"topk"`` = the ``dsa_topk_fp32_*`` capacity variants,
+    ``"indexer_topk"`` = the two ``dsa_indexer_topk_*`` fused scoring + top-k stages, ``"attention"`` = everything
+    else (sparse attention, indexer logits / backward, clean, segmented reduce)."""
+    if name.startswith(TOPK_STAGE_PREFIX):
+        return "topk"
+    if name.startswith(INDEXER_TOPK_STAGE_PREFIX):
+        return "indexer_topk"
+    return "attention"
 
 
 def _family_stages(family: str) -> tuple[str, ...]:
-    """The registry stages one family prebuilds: ``"topk"`` = the ``dsa_topk_fp32_*`` capacity variants,
-    ``"attention"`` = everything else (sparse attention, indexer logits / backward, clean, segmented reduce)."""
-    return tuple(stage for stage in MODULES if _is_topk_stage(stage) == (family == "topk"))
+    """The registry stages one family prebuilds (see :func:`_stage_family`)."""
+    return tuple(stage for stage in MODULES if _stage_family(stage) == family)
 
 
 def _kernel(name: str, device):
     """The native kernel for stage ``name`` on ``device``'s architecture.
 
     The first use of a stage family on an architecture prebuilds that family's stages in parallel (about a
-    minute per stage), so the attention / indexer operators never compile the top-k variants and the top-k
-    backend never compiles the attention kernels; ``MILES_DSA_TRAIN_PREBUILD=0`` builds each stage lazily.
+    minute per stage; the fused indexer scan takes a few minutes), so the attention / indexer operators never
+    compile the top-k variants, the top-k backend never compiles the attention kernels and the fused indexer
+    top-k compiles only its own two stages; ``MILES_DSA_TRAIN_PREBUILD=0`` builds each stage lazily.
     """
     arch = device_arch(device)
-    family = "topk" if _is_topk_stage(name) else "attention"
+    family = _stage_family(name)
     if (arch, family) not in _PREBUILT:
         _PREBUILT.add((arch, family))
         if os.environ.get("MILES_DSA_TRAIN_PREBUILD", "1") != "0":
@@ -591,6 +599,185 @@ def dsa_topk(logits, topk: int):
     return out if topk == TOPK_K else out[:, :topk].contiguous()
 
 
+# --------------------------------------------------------------------------- #
+# fused indexer scoring + top-k
+# --------------------------------------------------------------------------- #
+
+# Two stages traced once for 32 indexer heads of dim 128 and at most 512 slots: the persistent scan (``tcgen05``
+# + TMEM + TMA) scores the keys of every packed segment in FP32 and keeps each query's exact top-k on chip, the
+# finalize rewrites each row into ascending key order with the ``-1`` / ``-inf`` tail.  ``topk``, ``ratio``,
+# ``softmax_scale`` and the segment table are launch arguments, so the pair serves every call within the bound.
+INDEXER_TOPK_HEADS = 32
+INDEXER_TOPK_K_MAX = 512
+INDEXER_TOPK_SCAN_STAGE = f"{INDEXER_TOPK_STAGE_PREFIX}scan_h{INDEXER_TOPK_HEADS}_d{INDEXER_HEAD_DIM}"
+INDEXER_TOPK_FINALIZE_STAGE = f"{INDEXER_TOPK_STAGE_PREFIX}finalize_k{INDEXER_TOPK_K_MAX}"
+# Generator constants of the exported scan.  The launch scalars derived from them size the candidate workspace and
+# pace the selection trigger; the outputs are bitwise independent of their values.
+_SCAN_BLOCK_Q = 4  # queries per scan unit
+_SCAN_TILE_KEYS = 128  # keys per MMA tile
+_SCAN_CAND_MULT = 4  # default candidate slots per top-k slot
+_SCAN_CAND_FLOOR = 8192  # candidate-capacity floor (slots)
+_SCAN_CHECK_PERIOD_MAX = 32
+_SCAN_CHECK_PERIOD_CAP_DIVISOR = 4 * _SCAN_TILE_KEYS
+_SCAN_SAMPLE_SHIFT_PERMILLE = 250
+_SCAN_SAMPLE_TILES = ((128, 8), (640, 16))  # (estimated mean unit tiles <=, sample_tiles_max); longer units: 32
+_SCAN_SAMPLE_TILES_LONG = 32
+
+_INDEXER_TOPK_NO_OFFSETS: dict = {}
+
+
+def indexer_topk_cand_cap(topk: int) -> int:
+    """Candidate slots per (warpgroup, query) of the scan: ``max(topk * mult, topk + 128)`` rounded up to a multiple
+    of 128, ``mult = max(4, ceil(8192 / topk))`` -- 8192 for every top-k that divides 8192 (64, 128, 256, 512)."""
+    topk = int(topk)
+    if topk < 1:
+        raise ValueError(f"topk must be positive, got {topk}")
+    mult = max(_SCAN_CAND_MULT, -(-_SCAN_CAND_FLOOR // topk))
+    cap = max(topk * mult, topk + _SCAN_TILE_KEYS)
+    return (cap + _SCAN_TILE_KEYS - 1) // _SCAN_TILE_KEYS * _SCAN_TILE_KEYS
+
+
+def indexer_topk_check_period(topk: int, cand_cap: int) -> int:
+    """Key tiles between two selection-trigger checks: ``max(1, min(32, (cand_cap - topk) // 128, cand_cap // 512))``
+    (16 at ``topk = 512``, ``cand_cap = 8192``)."""
+    topk, cap = int(topk), int(cand_cap)
+    return max(1, min(_SCAN_CHECK_PERIOD_MAX, (cap - topk) // _SCAN_TILE_KEYS, cap // _SCAN_CHECK_PERIOD_CAP_DIVISOR))
+
+
+def indexer_topk_sample_tiles(total_q: int, total_k: int, num_segments: int, ratio: int) -> int:
+    """Cap on the key tiles sampled for a unit's first threshold, by the call's estimated mean unit tiles
+    ``(Tkv - T / (2 ratio)) / S / 128``: 8 up to 128 tiles, 16 up to 640, 32 beyond."""
+    segments = max(1, int(num_segments))
+    r = max(1, int(ratio))
+    mean_tiles = max(0.0, (int(total_k) - int(total_q) / (2 * r)) / segments) / _SCAN_TILE_KEYS
+    for bound, tiles in _SCAN_SAMPLE_TILES:
+        if mean_tiles <= bound:
+            return tiles
+    return _SCAN_SAMPLE_TILES_LONG
+
+
+def indexer_topk_key_bits(num_kv: int) -> int:
+    """Key bits the finalize sorts: ``max(1, (num_kv - 1).bit_length())`` (every valid key id is below ``num_kv``)."""
+    return max(1, (int(num_kv) - 1).bit_length())
+
+
+def indexer_topk_workspace_elems(grid: int, cand_cap: int) -> int:
+    """int64 entries of the scan workspace: ``cand_cap`` packed candidates per (CTA, query of the 4-query unit)."""
+    return int(grid) * _SCAN_BLOCK_Q * int(cand_cap)
+
+
+def _indexer_topk_no_offsets(device):
+    """The ignored ``q_offsets`` operand of a launch with ``has_offsets == 0`` (one int64 per device, never read)."""
+    tensor = _INDEXER_TOPK_NO_OFFSETS.get(device)
+    if tensor is None:
+        tensor = _INDEXER_TOPK_NO_OFFSETS[device] = torch.zeros(1, dtype=torch.int64, device=device)
+    return tensor
+
+
+def dsa_indexer_topk(
+    index_q, index_k, weights, cu_seqlens_q, cu_seqlens_k, *, topk: int, softmax_scale: float, ratio: int = 1
+):
+    """Fused indexer scoring + exact top-k over packed segments: ``(indices int32 [T, topk], scores fp32 [T, topk])``.
+
+    ``s[t, j] = sum_h w[t, h] * relu(softmax_scale * q[t, h, :] . k[j, :])`` in FP32 (no fast-math; a row whose
+    logits are all non-positive scores ``+0.0``).  Key ``j`` of segment ``s`` (``Lq`` queries, ``Lk`` keys; key ids
+    are local to the segment) is visible to its query ``u`` iff ``j < min(Lk, floor((offset + u + 1) / ratio))``,
+    ``offset = Lk - Lq`` at ``ratio == 1`` and ``0`` otherwise.  Each row keeps the exact top ``min(topk, visible)``
+    keys by score descending, then key id ascending, emitted in ascending key-id order; the tail is ``-1`` /
+    ``-inf``.  No floating-point atomics: identical inputs give bit-identical outputs, whatever the launch scalars.
+
+    ``index_q`` BF16 contiguous ``[T, 32, 128]``, ``index_k`` BF16 ``[Tkv, 128]`` (unit inner stride, row stride a
+    multiple of 8 elements), ``weights`` FP32 contiguous ``[T, 32]``, ``cu_seqlens_q`` / ``cu_seqlens_k`` int32
+    contiguous ``[S + 1]`` on the device (``cu_seqlens_q[-1] == T``: a row outside every segment is not written),
+    ``1 <= topk <= 512``, ``softmax_scale > 0``, integer ``ratio >= 1``.  Two launches on the current stream: the
+    persistent scan (one CTA per SM) and the per-row finalize.  ``T == 0`` returns empty outputs without a launch.
+    Every limit raises ``ValueError`` before any launch; there is no fallback to another path.
+    """
+    heads, dim = INDEXER_TOPK_HEADS, INDEXER_HEAD_DIM
+    if index_q.dim() != 3 or tuple(index_q.shape[1:]) != (heads, dim) or index_q.dtype != torch.bfloat16:
+        raise ValueError(f"index_q must be bf16 [T, {heads}, {dim}], got {tuple(index_q.shape)} {index_q.dtype}")
+    if not index_q.is_contiguous():
+        raise ValueError("index_q must be contiguous")
+    if index_k.dim() != 2 or index_k.shape[1] != dim or index_k.dtype != torch.bfloat16:
+        raise ValueError(f"index_k must be bf16 [Tkv, {dim}], got {tuple(index_k.shape)} {index_k.dtype}")
+    if index_k.stride(1) != 1 or index_k.stride(0) < dim or index_k.stride(0) % 8:
+        raise ValueError(
+            f"index_k needs a unit inner stride and a row stride >= {dim} that is a multiple of 8, "
+            f"got {index_k.stride()}"
+        )
+    if index_q.data_ptr() % 16 or index_k.data_ptr() % 16:
+        raise ValueError("index_q and index_k must be 16-byte aligned (TMA sources)")
+    num_rows, num_kv = int(index_q.shape[0]), int(index_k.shape[0])
+    if tuple(weights.shape) != (num_rows, heads) or weights.dtype != torch.float32 or not weights.is_contiguous():
+        raise ValueError(f"weights must be contiguous fp32 [T, {heads}], got {tuple(weights.shape)} {weights.dtype}")
+    for name, t in (("cu_seqlens_q", cu_seqlens_q), ("cu_seqlens_k", cu_seqlens_k)):
+        if t.dim() != 1 or t.dtype != torch.int32 or not t.is_contiguous():
+            raise ValueError(f"{name} must be contiguous int32 [S + 1], got {tuple(t.shape)} {t.dtype}")
+    if cu_seqlens_q.numel() != cu_seqlens_k.numel() or cu_seqlens_q.numel() < 1:
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must both be [S + 1]")
+    if isinstance(topk, bool) or not isinstance(topk, int) or not 1 <= topk <= INDEXER_TOPK_K_MAX:
+        raise ValueError(f"the fused indexer top-k supports 1 <= topk <= {INDEXER_TOPK_K_MAX}, got topk={topk!r}")
+    if isinstance(ratio, bool) or not isinstance(ratio, int) or ratio < 1:
+        raise ValueError(f"ratio must be a positive integer, got {ratio!r}")
+    if not float(softmax_scale) > 0.0:
+        raise ValueError(f"softmax_scale must be positive, got {softmax_scale!r}")
+    device = index_q.device
+    if device.type != "cuda":
+        raise ValueError("the fused indexer top-k needs CUDA tensors")
+    for name, t in (
+        ("index_k", index_k),
+        ("weights", weights),
+        ("cu_seqlens_q", cu_seqlens_q),
+        ("cu_seqlens_k", cu_seqlens_k),
+    ):
+        if t.device != device:
+            raise ValueError(f"{name} must be on {device}, got {t.device}")
+    num_segments = int(cu_seqlens_q.numel()) - 1
+    indices = torch.empty(num_rows, topk, dtype=torch.int32, device=device)
+    scores = torch.empty(num_rows, topk, dtype=torch.float32, device=device)
+    if num_rows == 0:
+        return indices, scores
+    if num_kv < 1:
+        raise ValueError("index_k must hold at least one key row (TMA source extent)")
+    if num_segments < 1:
+        raise ValueError("at least one segment is needed for a non-empty query set (cu_seqlens_q has one entry)")
+    grid = int(torch.cuda.get_device_properties(device).multi_processor_count)
+    cap = indexer_topk_cand_cap(topk)
+    workspace = torch.empty(indexer_topk_workspace_elems(grid, cap), dtype=torch.int64, device=device)
+    _kernel(INDEXER_TOPK_SCAN_STAGE, device).launch(
+        grid=(grid, 1, 1),
+        Q=index_q.view(num_rows * heads, dim),
+        K=index_k,
+        W=weights,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
+        q_offsets=_indexer_topk_no_offsets(device),
+        Indices=indices,
+        Scores=scores,
+        Cand=workspace,
+        num_segments=num_segments,
+        top_k=topk,
+        ratio=ratio,
+        has_offsets=0,
+        cand_cap=cap,
+        first_cap=cap,
+        sample_tiles_max=indexer_topk_sample_tiles(num_rows, num_kv, num_segments, ratio),
+        sample_shift_permille=_SCAN_SAMPLE_SHIFT_PERMILLE,
+        check_period=indexer_topk_check_period(topk, cap),
+        grid_ctas=grid,
+        softmax_scale=float(softmax_scale),
+        n_split=1,
+    )
+    _kernel(INDEXER_TOPK_FINALIZE_STAGE, device).launch(
+        grid=(num_rows, 1, 1),
+        Indices=indices,
+        Scores=scores,
+        top_k=topk,
+        key_bits=indexer_topk_key_bits(num_kv),
+    )
+    return indices, scores
+
+
 __all__ = [
     "ATTENTION_D_LATENT",
     "ATTENTION_D_ROPE",
@@ -600,7 +787,11 @@ __all__ = [
     "ATTENTION_TC_HEADS",
     "INDEXER_HEADS",
     "INDEXER_HEAD_DIM",
+    "INDEXER_TOPK_FINALIZE_STAGE",
+    "INDEXER_TOPK_HEADS",
+    "INDEXER_TOPK_K_MAX",
     "REDUCE_SPLIT_MAX_DIM",
+    "INDEXER_TOPK_SCAN_STAGE",
     "MODULES",
     "TOPK_CAPACITIES",
     "TOPK_K",
@@ -615,9 +806,15 @@ __all__ = [
     "dsa_attention_forward",
     "dsa_indexer_backward_rows",
     "dsa_indexer_logits",
+    "dsa_indexer_topk",
     "dsa_segmented_reduce_launch",
     "dsa_topk",
     "indexer_key_block",
     "indexer_padded_heads",
+    "indexer_topk_cand_cap",
+    "indexer_topk_check_period",
+    "indexer_topk_key_bits",
+    "indexer_topk_sample_tiles",
+    "indexer_topk_workspace_elems",
     "topk_capacity",
 ]

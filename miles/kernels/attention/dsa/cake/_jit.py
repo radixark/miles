@@ -88,8 +88,9 @@ def prebuild(arch, stages=None, max_workers=None):
     and indexer variants selected by head count, a new head count seen mid-training would compile a stage
     inside a training step (about a minute per stage, serially).  The operators call it once per stage
     family on their first call on a device -- the attention / indexer entry points with the 17 attention,
-    indexer, clean and reduce stages, the top-k backend with the four ``dsa_topk_fp32_*`` capacity variants
-    -- so neither family compiles the other's kernels; ``MILES_DSA_TRAIN_PREBUILD=0`` disables it.
+    indexer, clean and reduce stages, the top-k backend with the four ``dsa_topk_fp32_*`` capacity variants,
+    the fused indexer scoring + top-k with its two ``dsa_indexer_topk_*`` stages -- so no family compiles
+    another's kernels; ``MILES_DSA_TRAIN_PREBUILD=0`` disables it.
     """
     import time
     from concurrent.futures import ThreadPoolExecutor
