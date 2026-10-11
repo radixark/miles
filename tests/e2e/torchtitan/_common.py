@@ -43,6 +43,8 @@ class CaseConfig:
     mem_fraction_static: float = 0.7
     transfer_mode: str | None = None
     num_rollout: int = 2
+    rollout_batch_size: int = 8
+    n_samples_per_prompt: int = 4
     extra_args: str = ""
 
     def __post_init__(self):
@@ -98,11 +100,11 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--rollout-shuffle "
         "--rm-type deepscaler "
         f"--num-rollout {3000 if U.get_env_enable_infinite_run() else case.num_rollout} "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 4 "
+        f"--rollout-batch-size {case.rollout_batch_size} "
+        f"--n-samples-per-prompt {case.n_samples_per_prompt} "
         f"--rollout-max-response-len {case.max_response_len} "
         "--rollout-temperature 1 "
-        "--global-batch-size 32 "
+        f"--global-batch-size {case.rollout_batch_size * case.n_samples_per_prompt} "
         "--balance-data "
     )
     if case.fully_async:

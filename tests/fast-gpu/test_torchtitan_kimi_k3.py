@@ -1,5 +1,7 @@
 """K3 checkpoint conversion, packed boundaries, and expert reduction precision."""
 
+import re
+
 import pytest
 import torch
 from tests.ci.ci_register import register_cuda_ci
@@ -10,7 +12,9 @@ from miles.backends.torchtitan_utils.models.kimi_k3.model import KimiK3Model
 from miles.backends.torchtitan_utils.models.kimi_k3.ops import KimiTokenDispatcher, packed_metadata
 from miles.backends.torchtitan_utils.models.kimi_k3.state_dict_adapter import KimiK3StateDictAdapter
 
-register_cuda_ci(est_time=300, suite="stage-c-4-gpu-b200", num_gpus=1, labels=["torchtitan"], hardware=["blackwell"])
+register_cuda_ci(
+    est_time=300, suite="stage-b-2-gpu-h200", num_gpus=1, labels=["torchtitan"], hardware=["hopper", "blackwell"]
+)
 
 
 def test_packed_documents_and_rows_do_not_attend_to_each_other():
@@ -121,3 +125,78 @@ def test_mla_bottleneck_norms_follow_checkpoint_epsilon():
         values = torch.full((1, width), 0.001)
         expected = values / (0.001**2 + config.norm_eps) ** 0.5
         torch.testing.assert_close(norm(values), expected)
+
+
+# Recorded from Pinaster/Kimi-K3-4layer-64experts at 9eac75a1ff2214467edd8f98fc20e656f7b474ca.
+# BF16 conversion replaces weight_packed/weight_scale with weight; E denotes any expert.
+_HF_KEY_SUFFIXES = {
+    "block": [
+        "input_layernorm.weight",
+        "mlp_res_norm.weight",
+        "mlp_res_proj.weight",
+        "post_attention_layernorm.weight",
+        "self_attention_res_norm.weight",
+        "self_attention_res_proj.weight",
+    ],
+    "kda": [
+        "self_attn.A_log",
+        "self_attn.b_proj.weight",
+        "self_attn.dt_bias",
+        "self_attn.f_a_proj.weight",
+        "self_attn.f_b_proj.weight",
+        "self_attn.g_proj.weight",
+        "self_attn.k_conv1d.weight",
+        "self_attn.k_proj.weight",
+        "self_attn.o_norm.weight",
+        "self_attn.o_proj.weight",
+        "self_attn.q_conv1d.weight",
+        "self_attn.q_proj.weight",
+        "self_attn.v_conv1d.weight",
+        "self_attn.v_proj.weight",
+    ],
+    "mla": [
+        "self_attn.g_proj.weight",
+        "self_attn.kv_a_layernorm.weight",
+        "self_attn.kv_a_proj_with_mqa.weight",
+        "self_attn.kv_b_proj.weight",
+        "self_attn.o_proj.weight",
+        "self_attn.q_a_layernorm.weight",
+        "self_attn.q_a_proj.weight",
+        "self_attn.q_b_proj.weight",
+    ],
+    "dense": ["mlp.down_proj.weight", "mlp.gate_proj.weight", "mlp.up_proj.weight"],
+    "moe": [
+        "block_sparse_moe.experts.E.w1.weight",
+        "block_sparse_moe.experts.E.w2.weight",
+        "block_sparse_moe.experts.E.w3.weight",
+        "block_sparse_moe.gate.e_score_correction_bias",
+        "block_sparse_moe.gate.weight",
+        "block_sparse_moe.routed_expert_down_proj.weight",
+        "block_sparse_moe.routed_expert_norm.weight",
+        "block_sparse_moe.routed_expert_up_proj.weight",
+        "block_sparse_moe.shared_experts.down_proj.weight",
+        "block_sparse_moe.shared_experts.gate_proj.weight",
+        "block_sparse_moe.shared_experts.up_proj.weight",
+    ],
+}
+
+
+def test_model_covers_every_text_key_in_the_real_pruned_checkpoint():
+    config = KimiK3Model.Config()
+    with torch.device("meta"):
+        model = config.build()
+    expected = {
+        "language_model.lm_head.weight",
+        "language_model.model.embed_tokens.weight",
+        "language_model.model.norm.weight",
+        "language_model.model.output_attn_res_norm.weight",
+        "language_model.model.output_attn_res_proj.weight",
+    }
+    for layer in range(4):
+        suffixes = _HF_KEY_SUFFIXES["block"] + _HF_KEY_SUFFIXES["kda" if layer < 3 else "mla"]
+        suffixes += _HF_KEY_SUFFIXES["dense" if layer == 0 else "moe"]
+        expected.update(f"language_model.model.layers.{layer}.{suffix}" for suffix in suffixes)
+    exported = KimiK3StateDictAdapter(config, None).to_hf(model.state_dict())
+    actual = {re.sub(r"\.experts\.\d+\.", ".experts.E.", name) for name in exported}
+    assert actual == expected
+    assert len(exported) == 682

@@ -219,6 +219,24 @@ that same BF16 directory for SGLang. Raw MXFP4 checkpoints are rejected before m
 allocation. The adapter exports HF-named decoder weights through the existing Miles
 weight-sync path and leaves frozen multimodal towers to that shared path.
 
+The eight-GPU smoke test downloads and converts the four-layer checkpoint, then
+runs two synchronous colocated rollouts with full-parameter updates:
+
+```bash
+python tests/e2e/torchtitan/test_kimi_k3_4layer_ep.py
+```
+
+K3 hot weight updates require SGLang to refresh the attention-residual score cache
+after loading weights. Disabling CUDA graphs alone does not fix that stale cache.
+The smoke test disables CUDA graphs; enabling them also requires preserving the
+MLA absorbed-buffer storage across reloads, addressed by
+[the SGLang MLA reload fix](https://github.com/sgl-project/sglang/pull/43675).
+These SGLang changes are prerequisites, not installed by the test.
+
+Validation covers the four-layer, 64-expert BF16 checkpoint. Full-model training,
+long-context behavior and convergence remain unvalidated. The adapter currently
+requires CP=PP=1 and rejects compilation.
+
 The implementation includes FSDP, TP/sequence parallelism and EP. For TP greater than
 one, use EP=TP, with head/expert counts divisible by those degrees. CP, PP and
 `torch.compile` are rejected. The four-layer/64-expert checkpoint is the initial
