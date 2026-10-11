@@ -58,14 +58,15 @@ __device__ __forceinline__ int make_warp_uniform(int x) {
 #define SMEM_S_DO_OFF 32768
 #define SMEM_S_DO_STAGE_BYTES 16384
 #define SMEM_S_DO_STRIDE 16384
-#define SMEM_S_ST_OFF 49152
+#define SMEM_S_ST_OFF 16384
 #define SMEM_S_ST_STAGE_BYTES 8192
 #define SMEM_S_ST_STRIDE 8192
-#define SMEM_S_G_OFF 57344
+#define SMEM_S_G_OFF 49152
 #define SMEM_S_G_STAGE_BYTES 256
 #define SMEM_S_G_STRIDE 256
-#define SMEM_TOTAL 57600
+#define SMEM_TOTAL 49408
 #define THREADS 128
+#define LAUNCH_MIN_BLOCKS 4
 
 #include <math_constants.h>
 
@@ -77,8 +78,8 @@ __device__ __forceinline__ float approx_exp2(float x) {
 
 extern "C" {
 
-__global__ __launch_bounds__(THREADS) void
-kernel_cake_gdn_chunk_train_1595bf4913297e8f0074(__nv_bfloat16* __restrict__ qn, __nv_bfloat16* __restrict__ kn, __nv_bfloat16* __restrict__ do_, float* __restrict__ g_cs, __nv_bfloat16* __restrict__ dv_local, int* __restrict__ chunk_start, int* __restrict__ chunk_len, int num_heads, int num_v_heads, float scale)
+__global__ __launch_bounds__(THREADS, LAUNCH_MIN_BLOCKS) void
+kernel_cake_gdn_chunk_train_411744eb178538a6c4e3(__nv_bfloat16* __restrict__ qn, __nv_bfloat16* __restrict__ kn, __nv_bfloat16* __restrict__ do_, float* __restrict__ g_cs, __nv_bfloat16* __restrict__ dv_local, int* __restrict__ chunk_start, int* __restrict__ chunk_len, int num_heads, int num_v_heads, float scale)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -206,6 +207,7 @@ kernel_cake_gdn_chunk_train_1595bf4913297e8f0074(__nv_bfloat16* __restrict__ qn,
                 : "r"(a_frag[0]), "r"(a_frag[1]), "r"(a_frag[2]), "r"(a_frag[3]), "r"(b_frag_k[2]), "r"(b_frag_k[(2) + 1]), "f"(((kb == 0) ? 0.0f : (acc_s + nb * 8 + 4)[0])), "f"(((kb == 0) ? 0.0f : (acc_s + nb * 8 + 4)[1])), "f"(((kb == 0) ? 0.0f : (acc_s + nb * 8 + 4)[2])), "f"(((kb == 0) ? 0.0f : (acc_s + nb * 8 + 4)[3])));
         }
     }
+    __syncthreads();
     float g_a = s_g[row_a];
     float g_b = s_g[row_b];
     #pragma unroll

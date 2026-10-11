@@ -342,6 +342,46 @@ def _scan_record(kind: str, vb: int, ks: int, arch: str) -> dict:
     return MODULES[f"{kind}_r{vb}k{ks}"][arch]
 
 
+# --------------------------------------------------------------------------- #
+# finalize kernel selection (a pure function of shape and device; mirrors loom's gdn_chunk_training.finalize_stage)
+# --------------------------------------------------------------------------- #
+FINALIZE_MLP_GROUP = 3  # value-head group the one-wave finalize is unrolled for (HV = 3 H at every Qwen3.8-27B TP degree)
+FINALIZE_MLP_MIN_BLOCKS = 4  # its launch-bound residency: __launch_bounds__(128, 4) -> 128-register cap -> four CTAs per SM
+FORCED_FINALIZE: str | None = None  # tests / experiments: "finalize" or "finalize_mlp" (also MILES_GDN_CHUNK_TRAIN_FINALIZE)
+FINALIZE_STAGES = ("finalize", "finalize_mlp")
+
+
+def finalize_stage(num_chunks: int, num_heads: int, num_v_heads: int, sm_count: int) -> str:
+    """Stage name of the finalize kernel for a layout on a device: ``finalize_mlp`` only where it cannot lose.
+
+    The one-wave kernel needs the value-head group it is unrolled for (``FINALIZE_MLP_GROUP``) and is selected only
+    while the (chunks, key heads) grid is co-resident in one wave at the residency its launch bound guarantees
+    (``FINALIZE_MLP_MIN_BLOCKS`` CTAs per SM): up to that grid both kernels run every CTA concurrently with the same
+    warps per SM, so the one-wave kernel keeps the thread-level parallelism of the shared kernel and adds the
+    memory-level parallelism of a whole row pair in flight.  Beyond it the shared 40-register kernel's higher residency
+    hides latency across more warps while the one-wave kernel would run several waves, so the shared kernel stays
+    (the TP1 / TP2 / 16k-token rows).  ``MILES_GDN_CHUNK_TRAIN_FINALIZE`` (or :data:`FORCED_FINALIZE`) pins a stage for
+    experiments and tests; a pinned ``finalize_mlp`` outside its group contract raises instead of launching the kernel.
+    """
+
+    if num_heads <= 0 or num_v_heads % num_heads != 0:
+        raise ValueError(f"num_v_heads={num_v_heads} must be a positive multiple of num_heads={num_heads}")
+    forced = FORCED_FINALIZE if FORCED_FINALIZE is not None else os.environ.get("MILES_GDN_CHUNK_TRAIN_FINALIZE")
+    group_ok = num_v_heads == FINALIZE_MLP_GROUP * num_heads
+    if forced:
+        if forced not in FINALIZE_STAGES:
+            raise ValueError(f"MILES_GDN_CHUNK_TRAIN_FINALIZE={forced!r}; expected one of {FINALIZE_STAGES}")
+        if forced == "finalize_mlp" and not group_ok:
+            raise ValueError(
+                f"finalize_mlp is unrolled for a value-head group of {FINALIZE_MLP_GROUP}; "
+                f"num_heads={num_heads}, num_v_heads={num_v_heads} is group {num_v_heads // num_heads}"
+            )
+        return forced
+    if group_ok and int(num_chunks) * int(num_heads) <= FINALIZE_MLP_MIN_BLOCKS * int(sm_count):
+        return "finalize_mlp"
+    return "finalize"
+
+
 def choose_register_scan_config(
     kind: str, num_seqs: int, num_v_heads: int, device_index: int, arch: str
 ) -> tuple[int, int]:
@@ -848,6 +888,7 @@ _FINALIZE_ARGS = ("qn", "kn", "rstd_q", "rstd_k", "dq_hv", "dk_hv", "dk2", "dg1"
 LAUNCH_ARGS = {
     "prep": _PREP_ARGS, "prep_bf16beta": _PREP_ARGS, "wy": _WY_ARGS, "fwd_o": _FWD_O_ARGS, "stitch": _STITCH_ARGS,
     "dv_local": _DV_LOCAL_ARGS, "dqkwg": _DQKWG_ARGS, "wy_bwd": _WY_BWD_ARGS, "wy_bwd_bf16": _WY_BWD_ARGS, "finalize": _FINALIZE_ARGS,
+    "finalize_mlp": _FINALIZE_ARGS,  # same plan as finalize; the host picks the stage per layout / device (finalize_stage)
     **{f"fwd_h_r{vb}k{ks}": _FWD_H_ARGS for vb, ks in REG_SCAN_CONFIGS},
     **{f"fwd_h_pre_r{vb}k{ks}": _FWD_H_PRE_ARGS for vb, ks in PRESCAN_CONFIGS},
     **{f"dhu_r{vb}k{ks}": _DHU_ARGS for vb, ks in REG_SCAN_CONFIGS},
@@ -1160,7 +1201,8 @@ def gdn_chunk_backward(
     dq = torch.empty(qn.shape, dtype=qn.dtype, device=device)  # returned, in q's own shape
     dk = torch.empty(kn.shape, dtype=kn.dtype, device=device)
     dg = torch.empty(forward.get("g_shape") or (total_tokens, num_v_heads), dtype=torch.float32, device=device)
-    launcher("finalize", arch, _FINALIZE_ARGS)(
+    sm_count, _smem_optin, _major = _device_props(device.index if device.index is not None else torch.cuda.current_device())
+    launcher(finalize_stage(meta.num_chunks, num_heads, num_v_heads, sm_count), arch, _FINALIZE_ARGS)(
         meta.num_chunks, num_heads, 1,
         qn, kn, forward["rstd_q"], forward["rstd_k"], dq_hv, dk_hv, dk2, dg1, dg2, dq, dk, dg, meta.chunk_start, meta.chunk_len,
         num_heads, num_v_heads, 1 if forward.get("normalize_qk", True) else 0,

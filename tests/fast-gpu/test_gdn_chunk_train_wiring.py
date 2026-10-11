@@ -28,6 +28,8 @@ def _no_ambient_segment_override(monkeypatch):
     # a leaked override would turn the policy arms into the serial path with every assertion still passing
     monkeypatch.delenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", raising=False)
     monkeypatch.delenv("MILES_GDN_CHUNK_TRAIN_SCAN_CFG", raising=False)
+    monkeypatch.delenv("MILES_GDN_CHUNK_TRAIN_FINALIZE", raising=False)  # R7: the finalize kernel pin
+    monkeypatch.setattr(ops, "FORCED_FINALIZE", None)
     ops._scan_plans_memo.cache_clear()  # the plan memo (R4) starts empty in every test
     ops.host_cache_clear()  # the R6-7 host caches (workspace pool, chunk-table front cache, device arch) start empty too
 
@@ -304,6 +306,84 @@ def test_planner_constants_mirror_loom_verbatim():
     # R3 (C6): per-configuration step factors and the configurations with pre-scan stages
     assert ops.SCAN_STEP_FACTOR == {(32, 2): 1.0, (32, 1): 1.18, (64, 1): 1.27}
     assert ops.PRESCAN_CONFIGS == ((32, 2), (64, 1))
+    # R7: the one-wave finalize's group and launch-bound residency (loom's FINALIZE_MLP_GROUP / FINALIZE_MLP_MIN_BLOCKS)
+    assert (ops.FINALIZE_MLP_GROUP, ops.FINALIZE_MLP_MIN_BLOCKS) == (3, 4)
+    assert ops.FINALIZE_MLP_MIN_BLOCKS * 128 * 128 <= 65536  # four 128-thread CTAs at the 128-register cap fit the register file
+
+
+# --------------------------------------------------------------------------- #
+# finalize kernel selection (round R7): the one-wave kernel for value-head group 3 on a grid co-resident at four CTAs per SM
+# --------------------------------------------------------------------------- #
+def _chunks(seq_lens):
+    return sum(-(-n // CHUNK) for n in seq_lens)
+
+
+@pytest.mark.parametrize(
+    ("seq_lens", "num_heads", "num_v_heads", "sm_count", "expected"),
+    [
+        ((8192,), 4, 12, 148, "finalize_mlp"),  # 1x8192 TP4 on a 148-SM device: 512 CTAs <= 592
+        ((8192,), 4, 12, 160, "finalize_mlp"),  # 160-SM device: 512 <= 640
+        (LAYOUT, 4, 12, 148, "finalize_mlp"),  # the real TP4 micro-batch: 123 chunks x 4 = 492
+        ((2384, 2382, 2369, 902, 155), 4, 12, 148, "finalize_mlp"),  # five-sequence 8192-token micro-batch: 528
+        ((16384,), 4, 12, 160, "finalize"),  # 1024 > 640
+        ((4096,) * 4, 4, 12, 160, "finalize"),  # 1024 > 640
+        ((8192,), 8, 24, 160, "finalize"),  # TP2: 1024 > 640
+        ((8192,), 16, 48, 160, "finalize"),  # TP1: 2048 > 640
+        (LAYOUT, 2, 4, 148, "finalize"),  # value-head group 2 never selects the unrolled kernel
+        ((64, 130, 5), 2, 4, 148, "finalize"),
+        ((96, 40), 2, 6, 148, "finalize_mlp"),  # group 3 on a 6-CTA grid
+    ],
+)
+def test_finalize_stage_mirrors_loom(seq_lens, num_heads, num_v_heads, sm_count, expected):
+    assert ops.finalize_stage(_chunks(seq_lens), num_heads, num_v_heads, sm_count) == expected
+    assert expected in ops.LAUNCH_ARGS and ops.LAUNCH_ARGS[expected] == ops._FINALIZE_ARGS
+
+
+def test_finalize_stage_flips_at_the_launch_bound_wave_and_validates_the_contract(monkeypatch):
+    for sm_count in (132, 148, 160):
+        assert ops.finalize_stage(sm_count, 4, 12, sm_count) == "finalize_mlp"
+        assert ops.finalize_stage(sm_count + 1, 4, 12, sm_count) == "finalize"
+    with pytest.raises(ValueError):
+        ops.finalize_stage(4, 3, 4, 148)
+    monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_FINALIZE", "finalize")
+    assert ops.finalize_stage(128, 4, 12, 148) == "finalize"
+    monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_FINALIZE", "finalize_mlp")
+    assert ops.finalize_stage(128, 16, 48, 160) == "finalize_mlp"  # a TP1 grid pinned to the one-wave kernel (experiments)
+    with pytest.raises(ValueError, match="group"):
+        ops.finalize_stage(3, 2, 4, 148)  # pinned outside the group contract: never launched
+    monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_FINALIZE", "mlp")
+    with pytest.raises(ValueError, match="MILES_GDN_CHUNK_TRAIN_FINALIZE"):
+        ops.finalize_stage(128, 4, 12, 148)
+
+
+def test_finalize_stages_are_exported_with_one_plan_and_the_backward_launches_the_selected_one(monkeypatch):
+    """Both finalize records exist for this architecture with the same argument plan and four-warp block; the backward of
+    the TP4 micro-batch launches ``finalize_mlp`` (492 CTAs, group 3) and a group-2 layout launches ``finalize``."""
+    _require_blackwell()
+    arch = ops.device_arch(DEVICE)
+    base, mlp = ops.MODULES["finalize"][arch], ops.MODULES["finalize_mlp"][arch]
+    assert base["schedule"] == "gdn_chunk_bwd_finalize" and mlp["schedule"] == "gdn_chunk_bwd_finalize_mlp"
+    assert base["block"] == mlp["block"] == [128, 1, 1] and base["arg_plan"] == mlp["arg_plan"]
+    assert base["kernel_symbol"] != mlp["kernel_symbol"]
+    launched = []
+    real_launcher = ops.launcher
+
+    def spy(stage, arch_, names):
+        launched.append(stage)
+        return real_launcher(stage, arch_, names)
+
+    monkeypatch.setattr(ops, "launcher", spy)
+    sm_count = ops._device_props(DEVICE.index)[0]
+    for layout, heads, v_heads in ((LAYOUT, 4, 12), (LAYOUT, 2, 4)):
+        launched.clear()
+        inputs = _inputs(layout, num_k_heads=heads, num_v_heads=v_heads, seed=5)
+        cu = torch.tensor(_cu(layout), device="cuda", dtype=torch.int32)
+        _step(inputs, cu_seqlens=cu, cu_seqlens_cpu=_cu(layout))
+        finalize_launches = [s for s in launched if s in ops.FINALIZE_STAGES]
+        expected = ops.finalize_stage(_chunks(layout), heads, v_heads, sm_count)
+        assert finalize_launches == [expected], (layout, heads, v_heads, finalize_launches)
+    assert expected == "finalize"  # the group-2 layout
+    assert ops.finalize_stage(_chunks(LAYOUT), 4, 12, sm_count) == "finalize_mlp"
 
 
 def test_warmup_threshold_env_override(monkeypatch):
@@ -529,20 +609,22 @@ def test_segment_len_override_is_validated_at_plan_time(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# per-architecture stage selection (round R6: dqkwg, wy_bwd, wy_bwd_bf16)
+# per-architecture stage selection (round R6: dqkwg, wy_bwd, wy_bwd_bf16; round R7: the WY pullback also on SM100a)
 
 PER_ARCH_STAGES = {
-    # stage: {arch: (schedule the registry names, block)}; the eight-warp kernels are selected on SM103a only
+    # stage: {arch: (schedule the registry names, block)}; the eight-warp dqkwg is selected on SM103a only, the
+    # eight-warp WY pullback on SM100a and SM103a
     "dqkwg": {"sm_100a": ("gdn_chunk_bwd_dqkwg", 128), "sm_103a": ("gdn_chunk_bwd_dqkwg_w8", 256)},
-    "wy_bwd": {"sm_100a": ("gdn_chunk_bwd_wy", 128), "sm_103a": ("gdn_chunk_bwd_wy_w8", 256)},
-    "wy_bwd_bf16": {"sm_100a": ("gdn_chunk_bwd_wy_bf16", 128), "sm_103a": ("gdn_chunk_bwd_wy_bf16_w8", 256)},
+    "wy_bwd": {"sm_100a": ("gdn_chunk_bwd_wy_w8", 256), "sm_103a": ("gdn_chunk_bwd_wy_w8", 256)},
+    "wy_bwd_bf16": {"sm_100a": ("gdn_chunk_bwd_wy_bf16_w8", 256), "sm_103a": ("gdn_chunk_bwd_wy_bf16_w8", 256)},
 }
 
 
 def test_per_arch_stages_launch_the_kernel_selected_for_this_architecture():
-    """``dqkwg`` / ``wy_bwd`` / ``wy_bwd_bf16`` are the stages whose kernel differs per architecture: the registry the
-    host loads names the Weave schedule it was rendered from and carries that kernel's block / dynamic shared memory,
-    and ``kernel()`` launches exactly that record on the current device (eight warps on SM103a, four elsewhere)."""
+    """``dqkwg`` / ``wy_bwd`` / ``wy_bwd_bf16`` are the stages whose kernel is selected per architecture: the registry
+    the host loads names the Weave schedule it was rendered from and carries that kernel's block / dynamic shared
+    memory, and ``kernel()`` launches exactly that record on the current device (eight-warp dqkwg on SM103a only,
+    eight-warp WY pullback on both Blackwell parts)."""
     _require_blackwell()
     arch = ops.device_arch(DEVICE)
     for stage, per_arch in PER_ARCH_STAGES.items():
