@@ -224,8 +224,8 @@ def all_gather_with_cp(
 
     # logprob should be within the range of [prompt_length - 1, total_length - 1]
     if chunk_0.shape[0] == 0 and chunk_1.shape[0] == 0:
-        # all empty
-        full_tensor = zero(response_length)
+        # Keep upstream CP backward collectives connected on empty ranks.
+        full_tensor = zero(response_length) + tensor.sum() * 0
     elif chunk_0.shape[0] != 0 and chunk_1.shape[0] == 0:
         # only first chunk
         left = zero(logits_offset[0][0] - (prompt_length - 1))
