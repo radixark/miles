@@ -148,6 +148,45 @@ async def batched_custom_rm(args, samples: list[Sample]) -> list[float]:
 Prefixing any of them with `boxed_` (for example `boxed_math`) extracts `\boxed{}`
 from the response before grading.
 
+**What the function reads.** The whole `Sample` is passed; the fields a reward is
+expected to use are:
+
+| field | type | holds |
+| --- | --- | --- |
+| `response` | `str` | the generated text |
+| `label` | `str`, optional | ground truth, carried through from the prompt data |
+| `prompt` | `str` or chat turns | the prompt as given to the model |
+| `metadata` | `dict` | whatever the data source attached to the row |
+| `index`, `group_index` | `int`, optional | position in the rollout and in its group |
+
+The return value is assigned to `sample.reward`.
+
+**Scoring is skipped when `sample.reward` is already set.** Both the single and
+batched paths in `miles/rollout/sglang_rollout.py` only score samples whose reward
+is still `None`, so an environment that grades itself — a multi-turn agent, or a
+suite like Harbor that returns its own score — can assign `sample.reward` during
+generation and no reward function runs for that sample. If a `--custom-rm-path`
+never appears to fire, check whether something upstream already set the reward.
+
+**Per-sample overrides.** `sample.reward_spec` redirects scoring for one sample,
+which is how a mixed suite grades different rows differently:
+
+```python
+from miles.utils.types import RewardSpec
+
+sample.reward_spec = RewardSpec(custom_rm_path="my_pkg.rewards.strict_match")
+```
+
+The two fields do not resolve the same way:
+
+| setting | resolution order |
+| --- | --- |
+| `custom_rm_path` | `reward_spec.custom_rm_path` → `--custom-rm-path` |
+| `rm_type` | `reward_spec.rm_type` → `metadata["rm_type"]` → `--rm-type` |
+
+`rm_type` falls back to `metadata`; `custom_rm_path` does not. A `custom_rm_path`
+resolved from either source short-circuits `rm_type` entirely.
+
 ### `--custom-reward-post-process-path`
 
 Hook to normalize rewards differently from the default GRPO normalization.
