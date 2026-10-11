@@ -265,20 +265,72 @@ def test_glm5_rejects_the_cake_topk_backend(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     backend.check_cake_topk_backend("cake", 512, model="DeepSeek-V4.1")
     backend.check_cake_topk_backend("cake", None, model="DeepSeek-V4.1")
-    # The plugin specs call the guard before the model is built.
+    # The plugin specs call the guard (with the static key-row bound) before the model is built.
+    guard, bound = "check_cake_topk_backend", "cake_topk_key_bound"
     for relative, scopes in (
-        ("miles_plugins/models/glm5/glm5.py", {"get_glm5_spec", "__init__"}),
-        ("miles_plugins/models/deepseek_v4/deepseek_v4.py", {"get_dsv4_spec"}),
-        ("miles_plugins/models/deepseek_v4_1/deepseek_v4_1.py", {"get_dsv41_spec"}),
+        ("miles_plugins/models/glm5/glm5.py", {"get_glm5_spec": {guard, bound}, "__init__": {guard}}),
+        ("miles_plugins/models/deepseek_v4/deepseek_v4.py", {"get_dsv4_spec": {guard, bound}}),
+        ("miles_plugins/models/deepseek_v4_1/deepseek_v4_1.py", {"get_dsv41_spec": {guard, bound}}),
     ):
-        tree = ast.parse((REPO / relative).read_text())
-        callers = {
-            node.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef)
-            and any(
-                isinstance(call, ast.Call) and getattr(call.func, "id", None) == "check_cake_topk_backend"
-                for call in ast.walk(node)
-            )
-        }
-        assert scopes <= callers, (relative, callers)
+        called: dict[str, set] = {}
+        for node in ast.walk(ast.parse((REPO / relative).read_text())):
+            if isinstance(node, ast.FunctionDef):
+                called.setdefault(node.name, set()).update(
+                    getattr(call.func, "id", None) for call in ast.walk(node) if isinstance(call, ast.Call)
+                )
+        for scope, names in scopes.items():
+            assert names <= called.get(scope, set()), (relative, scope, called.get(scope))
+
+
+def test_cake_topk_backend_requires_blackwell(monkeypatch):
+    backend = _load("test_dsa_backend_capability_module", "miles/kernels/attention/dsa/backend.py")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (9, 0))
+    with pytest.raises(ValueError, match=r"SM100a / SM103a.*10\.0 / 10\.3.*got 9\.0"):
+        backend.check_cake_topk_backend("cake", 512, model="DeepSeek-V4.1")
+    backend.check_cake_topk_backend("torch", 512, model="DeepSeek-V4.1")  # other backends never probe the device
+    for capability in ((10, 0), (10, 3)):
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None, cap=capability: cap)
+        backend.check_cake_topk_backend("cake", 512, model="DeepSeek-V4.1")
+
+
+def test_cake_topk_backend_rejects_long_key_rows(monkeypatch):
+    backend = _load("test_dsa_backend_rows_module", "miles/kernels/attention/dsa/backend.py")
+    assert backend.cake_topk_key_bound(None) is None
+    assert backend.cake_topk_key_bound(4096) == 4096  # thd: the packed stream itself
+    assert backend.cake_topk_key_bound(65536, (0, 2, 1)) == 65536  # V4.1: a ratio-1 layer keeps every key
+    assert backend.cake_topk_key_bound(65536, (0, 2)) == 32768
+    assert backend.cake_topk_key_bound(131073, (4,)) == 32769  # V4: ceil(seq_length / 4)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    backend.check_cake_topk_backend("cake", 512, model="DeepSeek-V4.1", max_keys=32768)
+    backend.check_cake_topk_backend("cake", 512, model="DeepSeek-V4.1", max_keys=None)
+    backend.check_cake_topk_backend("torch", 512, model="DeepSeek-V4.1", max_keys=10**6)
+    with pytest.raises(ValueError, match=r"at most 32768 compressed keys.*DeepSeek-V4\.1.*32769 keys"):
+        backend.check_cake_topk_backend("cake", 512, model="DeepSeek-V4.1", max_keys=32769)
+
+
+def test_prebuild_is_scoped_to_the_stage_family(monkeypatch):
+    """The attention / indexer operators never compile the top-k variants and vice versa; PREBUILD=0 stays lazy."""
+    from miles.kernels.attention.dsa.cake import _jit, _kernels
+
+    calls = []
+    monkeypatch.setattr(_kernels, "device_arch", lambda device: "sm_100a")
+    monkeypatch.setattr(_kernels, "prebuild", lambda arch, stages=None, max_workers=None: calls.append((arch, stages)))
+    monkeypatch.setattr(_kernels, "kernel", lambda name, arch: (name, arch))
+    monkeypatch.setattr(_kernels, "_PREBUILT", set())
+    monkeypatch.delenv("MILES_DSA_TRAIN_PREBUILD", raising=False)
+    assert _kernels._kernel("dsa_topk_fp32_c4096_k512", "cuda") == ("dsa_topk_fp32_c4096_k512", "sm_100a")
+    assert len(calls) == 1 and calls[0][0] == "sm_100a" and set(calls[0][1]) == TOPK_STAGES
+    _kernels._kernel("dsa_topk_fp32_c32768_k512", "cuda")
+    assert len(calls) == 1, "a family is prebuilt once per architecture"
+    _kernels._kernel("dsa_indexer_clean", "cuda")
+    assert len(calls) == 2 and set(calls[1][1]) == set(_jit.MODULES) - TOPK_STAGES and len(calls[1][1]) == 17
+    monkeypatch.setenv("MILES_DSA_TRAIN_PREBUILD", "0")
+    monkeypatch.setattr(_kernels, "_PREBUILT", set())
+    _kernels._kernel("dsa_topk_fp32_c4096_k512", "cuda")
+    assert len(calls) == 2, "MILES_DSA_TRAIN_PREBUILD=0 builds lazily"
+    # The real prebuild honours the stage filter (its loader is replaced, so nothing compiles here).
+    loaded = []
+    monkeypatch.setattr(_jit, "load", lambda stage, arch: loaded.append(stage))
+    _jit.prebuild.__wrapped__("sm_100a", stages=("dsa_topk_fp32_c4096_k512", "dsa_indexer_clean"), max_workers=1)
+    assert set(loaded) == {"dsa_topk_fp32_c4096_k512", "dsa_indexer_clean"}

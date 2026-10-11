@@ -353,13 +353,14 @@ def ref_topk(logits, topk):
 
 
 def _topk_logits(rows, num_keys, seed):
-    """FP32 rows with exact ties (every third row quantized to half-integers), random valid prefix lengths like
-    causal / compressed-length masks (row 0 all ``-inf``, row 1 fewer finite keys than any tested top-k, row 2
-    full) and 5 % scattered ``-inf`` inside the prefix."""
+    """FP32 rows with exact ties (every third row quantized to half-integers), NaN at every fifth key of row 3,
+    random valid prefix lengths like causal / compressed-length masks (row 0 all ``-inf``, row 1 fewer finite
+    keys than any tested top-k, row 2 full) and 5 % scattered ``-inf`` inside the prefix."""
     gen = torch.Generator().manual_seed(seed)
     x = torch.randn(rows, num_keys, generator=gen)
     tie_rows = torch.arange(rows) % 3 == 0
     x[tie_rows] = torch.round(x[tie_rows] * 2) / 2
+    x[3, ::5] = math.nan
     lens = torch.randint(0, num_keys + 1, (rows,), generator=gen)
     lens[0], lens[1], lens[2] = 0, min(num_keys, 7), num_keys
     x = x.masked_fill(torch.arange(num_keys)[None, :] >= lens[:, None], -math.inf)
@@ -389,6 +390,9 @@ def _picks(logits, indices):
 _TOPK_CASES = [
     # (rows, num_keys, topk): thd-style flattened rows as lightning_indexer / select_topk feed the backend
     *((rows, num_keys, topk) for rows in (37, 256) for num_keys in (512, 513, 4096, 8191) for topk in (64, 512)),
+    (37, 4096, 1),  # a single slot
+    (256, 8191, 65),  # an odd width (the [rows, 512] kernel output is sliced)
+    (37, 513, 65),
     (37, 100, 512),  # topk > num_keys: the host pads -inf columns, the kernel writes the -1 tail
     (37, 12000, 512),  # capacity-16384 variant
     (37, 16385, 64),  # capacity-32768 variant
@@ -410,8 +414,11 @@ def test_cake_topk_matches_reference_and_is_bit_identical(rows, num_keys, topk):
     assert torch.equal(cake.select_topk(logits, topk, backend="cake"), out)
     for _ in range(19):
         assert torch.equal(cake.cake_topk(logits, topk), out), "cake top-k is not bit-identical across launches"
-    theirs = torch_dsa_topk(logits, min(topk, num_keys))
-    assert _picks(logits, out) == _picks(logits, theirs)
+    # torch.topk ranks NaN above every number while the cake contract never selects it (checked against
+    # ref_topk above), so the cross-backend comparison skips the NaN row.
+    finite_rows = ~torch.isnan(logits).any(dim=1)
+    theirs = torch_dsa_topk(logits[finite_rows], min(topk, num_keys))
+    assert _picks(logits[finite_rows], out[finite_rows]) == _picks(logits[finite_rows], theirs)
 
 
 @pytest.mark.parametrize(("rows", "num_keys", "topk"), [(256, 4096, 512), (37, 8192, 64)])
@@ -419,6 +426,7 @@ def test_cake_topk_agrees_with_flashinfer_up_to_ties(rows, num_keys, topk):
     cake = _cake()
     pytest.importorskip("flashinfer")
     logits = _topk_logits(rows, num_keys, seed=11)
+    logits = logits[~torch.isnan(logits).any(dim=1)]  # FlashInfer's NaN handling is not part of the contract
     assert _picks(logits, cake.cake_topk(logits, topk)) == _picks(logits, cake.flashinfer_topk(logits, topk))
 
 
@@ -435,11 +443,16 @@ def test_glm5_lightning_indexer_with_cake_topk_backend():
     assert torch.equal(scores, cake.extract_topk_scores(logits, topk_indices))
     # causal rows: row r sees r + 1 keys, so early rows end in -1 and late rows fill every slot
     assert (topk_indices[0, 1:] == -1).all() and (topk_indices[-1] >= 0).all()
+    # Replay seams: a callable backend (replay-manager wrapper) and the explicit topk_indices= pass-through.
     pinned = topk_indices.flip(-1)
     _, replayed = cake.lightning_indexer(
         index_q, index_k, weights, ks, ke, topk, layout="thd", topk_backend=lambda logits, k: pinned
     )
     assert torch.equal(replayed, pinned)
+    scores_pinned, passed = cake.lightning_indexer(
+        index_q, index_k, weights, ks, ke, topk, layout="thd", topk_backend="cake", topk_indices=pinned
+    )
+    assert passed is pinned and torch.equal(scores_pinned, cake.extract_topk_scores(logits, pinned))
 
 
 def _ref_logits_sbhd(q, k, weights, cu_ks, cu_ke):
