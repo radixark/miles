@@ -25,7 +25,7 @@ _POSITIONAL_PARAMS = ("est_time", "suite")
 # All accepted keyword arguments (in addition to the positional pair above).
 # `hardware` is CUDA-only; CPU has no GPU generation and ROCm is a separate
 # backend rather than a CUDA arch.
-_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled", "hardware"})
+_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled", "hardware", "num_gpus"})
 
 _REGISTER_NAMES = frozenset({"register_cpu_ci", "register_cuda_ci", "register_rocm_ci"})
 
@@ -53,6 +53,12 @@ class CIRegistry:
     # convention (currently for tests/fast/ files that declare no register
     # call); False for every entry parsed from a register_*_ci() call.
     implicit: bool = False
+    num_gpus: int | None = None
+
+    @property
+    def required_gpus(self):
+        # Older source snapshots declare their GPU budget through the home suite.
+        return self.num_gpus if self.num_gpus is not None else CUDA_STAGES[self.suite].num_gpus
 
 
 def register_cpu_ci(
@@ -65,8 +71,9 @@ def register_cpu_ci(
 ):
     """Marker for CPU CI registration (parsed via AST; runtime no-op).
 
-    `labels=None` and `labels=[]` are equivalent for CPU tests: the test is
-    always-on within every cadence that admits it. A non-empty `labels` list
+    Estimates above 30 seconds require `stage-b-cpu` and non-empty labels.
+    For shorter tests, `labels=None` and `labels=[]` are equivalent: the test
+    is always-on within every cadence that admits it. A non-empty `labels` list
     gates the test on the resolved domain scope; a PR can include `<x>` with
     `run-ci-<x>`, while broad scopes include many domain labels at once.
     `nightly=True` adds a cadence gate: regular runs exclude the test, while
@@ -81,6 +88,7 @@ def register_cuda_ci(
     *,
     labels: list[str],
     hardware: list[str],
+    num_gpus: int | None = None,
     nightly: bool = False,
     disabled: str | None = None,
 ):
@@ -93,7 +101,8 @@ def register_cuda_ci(
     test supports, e.g. `["hopper", "blackwell"]`. It is required: a default
     would silently claim a capability nobody decided. `suite` must name a stage
     on the first supported arch, so a test's home stage is where it runs when
-    nothing asks for a different one.
+    nothing asks for a different one. `num_gpus` is the smallest allocation that
+    preserves all cases; B200 jobs allocate this count independently of the stage.
     """
     return None
 
@@ -209,13 +218,14 @@ class RegistryVisitor(ast.NodeVisitor):
         if not isinstance(parsed["suite"], str):
             raise ValueError(f"{self.filename}: suite must be a string in {func_name}()")
 
-        # CPU labels remain optional; GPU registrations require an explicit
-        # non-empty domain so they cannot consume runners on every PR.
         labels = parsed.get("labels", [])
         if not isinstance(labels, list):
             raise ValueError(f"{self.filename}: labels must be a list or None in {func_name}()")
         backend = _REGISTER_BACKEND_MAP[func_name]
-        if backend != HWBackend.CPU and not labels:
+        slow_cpu = backend == HWBackend.CPU and parsed["est_time"] > 30
+        if slow_cpu and parsed["suite"] != "stage-b-cpu":
+            raise ValueError(f"{self.filename}: CPU est_time > 30 seconds requires suite='stage-b-cpu'")
+        if (backend != HWBackend.CPU or slow_cpu) and not labels:
             raise ValueError(f"{self.filename}: labels in {func_name}() must contain at least one domain label")
 
         nightly = parsed.get("nightly", False)
@@ -234,6 +244,15 @@ class RegistryVisitor(ast.NodeVisitor):
                 f"{self.filename}: hardware in {func_name}() is CUDA-only; "
                 f"CPU has no GPU generation and ROCm is a separate backend"
             )
+
+        num_gpus = parsed.get("num_gpus")
+        if "num_gpus" in parsed:
+            if backend is not HWBackend.CUDA:
+                raise ValueError(f"{self.filename}: num_gpus is CUDA-only")
+            if type(num_gpus) is not int or not 1 <= num_gpus <= 8:
+                raise ValueError(f"{self.filename}: num_gpus must be an integer from 1 to 8")
+            if num_gpus > CUDA_STAGES[parsed["suite"]].num_gpus:
+                raise ValueError(f"{self.filename}: num_gpus exceeds the home suite's capacity")
 
         unknown = [label for label in labels if label not in self.known_labels]
         if unknown:
@@ -255,6 +274,7 @@ class RegistryVisitor(ast.NodeVisitor):
             nightly=nightly,
             disabled=disabled,
             implicit=False,
+            num_gpus=num_gpus,
         )
 
     def _check_cuda_hardware(self, func_name: str, suite: str, hardware: list) -> None:

@@ -17,6 +17,7 @@ register_cuda_ci(
         "stage-c-8-gpu-h200 lane, then drop this argument -- nothing in the test itself is known broken. "
         "See tests/e2e/ft/README.md."
     ),
+    num_gpus=8,
 )
 
 _MODE: str = "kill_train_rollout__dp2_cp2"

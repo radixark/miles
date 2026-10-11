@@ -2,7 +2,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.torchtitan._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
-    est_time=1200, suite="stage-c-8-gpu-h200", labels=["torchtitan", "weight-update"], hardware=["hopper"]
+    est_time=1200, suite="stage-c-8-gpu-h200", labels=["torchtitan", "weight-update"], hardware=["hopper"], num_gpus=8
 )
 
 # Pushing weights out of a pipelined trainer, which is where the stream stops

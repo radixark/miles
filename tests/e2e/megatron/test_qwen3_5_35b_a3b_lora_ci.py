@@ -20,6 +20,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
+    num_gpus=8,
 )
 register_rocm_ci(est_time=900, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 

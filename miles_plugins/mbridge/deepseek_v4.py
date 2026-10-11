@@ -113,8 +113,36 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
                 self.dtype = saved_dtype
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
+    _MLA_YARN_KEYS = (
+        "beta_fast",
+        "beta_slow",
+        "factor",
+        "mscale",
+        "mscale_all_dim",
+        "original_max_position_embeddings",
+        "type",
+    )
+
     def _build_config(self):
-        self.hf_config.rope_theta = self.hf_config.rope_scaling["rope_theta"]
+        rope_scaling = self.hf_config.rope_scaling
+        if "rope_theta" in rope_scaling:
+            self.hf_config.rope_theta = rope_scaling["rope_theta"]
+        else:
+            # transformers >= 5.12 DeepseekV4Config republishes the checkpoint's flat
+            # yarn rope_scaling under "compress"; the DSV3 bridge base reads the flat form.
+            yarn = rope_scaling["compress"]
+            self.hf_config.rope_scaling = {key: yarn[key] for key in self._MLA_YARN_KEYS if key in yarn}
+        # MLA fields the DSV3 bridge base reads but DeepseekV4Config does not
+        # define; conversion builds the model from CLI args, so the DSV3Config
+        # defaults only need to exist here.
+        for key, value in (
+            ("kv_lora_rank", 512),
+            ("qk_nope_head_dim", 128),
+            ("v_head_dim", 128),
+            ("first_k_dense_replace", 3),
+        ):
+            if key not in self.hf_config:
+                setattr(self.hf_config, key, value)
         config = super()._build_config()
 
         config.attention_backend = AttnBackend.auto

@@ -49,8 +49,8 @@ miles supports the first two topologies today. The single-endpoint external
 rollout service is coming soon and extends that separation from GPU placement
 to independent scaling, routing, and lifecycle.
 
-`--rollout-external` is the second row, not the third. It prevents miles from
-launching SGLang, but miles still knows the individual engine addresses, checks
+`--rollout-external-engine-addrs` is the second row, not the third. It prevents
+miles from launching SGLang, but miles still knows the individual engine addresses, checks
 their configuration, registers them with its router, and calls their
 weight-update lifecycle.
 
@@ -82,13 +82,17 @@ To attach SGLang engines launched outside the miles Ray job, provide their
 addresses explicitly:
 
 ```bash
---rollout-external \
 --rollout-external-engine-addrs 10.0.1.10:30000 10.0.1.11:30000
 ```
 
+Setting the addresses is what makes the rollout external; miles discovers each
+engine's topology from its `/server_info`. If the attached fleet runs PD
+disaggregation, add `--rollout-external-router-pd`, because the router starts
+before the engines are discovered.
+
 The engines must be reachable from the miles job and must have server settings
 compatible with the rollout configuration. Because miles retains individual
-engine handles, `--rollout-external` does not hand off weight-update ownership:
+engine handles, attaching external engines does not hand off weight-update ownership:
 miles still runs the selected weight-update lifecycle.
 
 ## Weight synchronization

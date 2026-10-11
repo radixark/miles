@@ -6,7 +6,9 @@ model. Inputs vary across rows and channels so a wrong in-bounds address also fa
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-register_cuda_ci(est_time=180, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=180, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"], num_gpus=1
+)
 register_rocm_ci(est_time=40, suite="nightly-stage-c-2-gpu-mi350", labels=["miles-plugin"])
 
 import math
@@ -15,9 +17,10 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from miles_plugins.models.qwen3_8_next.ops.kernel import hc_triton as hc
-from miles_plugins.models.qwen3_8_next.ops.kernel import ple_triton as ple
-from miles_plugins.models.qwen3_8_next.ops.kernel.ple_gather import gather_ple_rows
+from miles.kernels.embedding import ple_gate_conv as ple
+from miles.kernels.embedding.ple_gather import gather_ple_rows
+from miles.kernels.hyper_connection import hc
+from miles.kernels.norm import grouped_rmsnorm
 
 N, C = 4, 2560
 W, EPS = N * C, 1e-6
@@ -63,7 +66,7 @@ def test_grouped_rmsnorm_long_offsets(tokens):
     weight = _input(1, phase=1, dtype=torch.float32).flatten() * 0.05
     sample = x[rows].float().requires_grad_()
     expected, expected_rstd = _norm_reference(sample, weight)
-    out, rstd = hc._norm_fwd(x, weight, N, EPS)
+    out, rstd = grouped_rmsnorm.grouped_rmsnorm_fwd(x, weight, N, EPS)
     _check(out, rows, expected)
     _check(rstd, rows, expected_rstd)
     del out
@@ -71,7 +74,9 @@ def test_grouped_rmsnorm_long_offsets(tokens):
     dout = _input(tokens, phase=2)
     expected.backward(dout[rows].float())
     dx = torch.empty_like(x)
-    hc._grouped_rmsnorm_bwd_kernel[(tokens * N,)](x, weight, rstd, dout, dx, tokens, N=N, C=C, BLOCK_C=4096)
+    grouped_rmsnorm.grouped_rmsnorm_bwd_kernel[(tokens * N,)](
+        x, weight, rstd, dout, dx, tokens, N=N, C=C, BLOCK_C=4096
+    )
     _check(dx, rows, sample.grad)
 
 

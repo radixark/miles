@@ -26,7 +26,7 @@ from miles.backends.megatron_utils.lora.checkpoint import load_slot, save_slot
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, adapter_slot_parameters, step_slot_optimizers
 from miles.utils.distributed_utils import init_gloo_group
 
-register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper"])
+register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper"], num_gpus=2)
 register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["lora"])
 
 ADAM = dict(learning_rate=3e-4, beta1=0.9, beta2=0.95, eps=1e-8, weight_decay=0.01, grad_clip_norm=1.0)

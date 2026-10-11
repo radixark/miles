@@ -54,6 +54,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = False
     num_rollout: int = 100
     rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
     global_batch_size: int = 64
 
     hf_checkpoint: str | None = None
@@ -141,7 +142,7 @@ def _train(args: ScriptArgs):
         "--rm-type math "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
-        "--n-samples-per-prompt 8 "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {args.rollout_max_response_len} "
         "--rollout-temperature 1 "
         f"--global-batch-size {args.global_batch_size} "

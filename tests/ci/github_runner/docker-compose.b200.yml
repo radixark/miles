@@ -1,0 +1,160 @@
+x-b200-runner: &b200-runner
+  extends:
+    file: docker-compose.yml
+    service: runner
+  image: ghcr.io/actions/actions-runner:2.336.0
+  init: true
+  environment: &b200-environment
+    RUNNER_ALLOW_RUNASROOT: "1"
+    CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
+    ACTIONS_RUNNER_HOOK_JOB_STARTED: /data/miles_ci/runner-hooks/b200-job-start.sh
+  entrypoint:
+    - /bin/bash
+    - -ec
+    - |
+      if [ ! -f /home/runner/.runner ]; then
+        /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --replace --name "$$HOSTNAME" --labels "b200,$${B200_GPU_COUNT}gpu,gpu-runner" --work "/data/miles_ci/runner_$$HOSTNAME" --disableupdate
+      fi
+      exec /home/runner/run.sh
+
+services:
+  b200-oma-8gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-8gpu-0
+    hostname: b200-oma-8gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "8"
+  b200-oma-7gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-7gpu-0
+    hostname: b200-oma-7gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "7"
+  b200-oma-6gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-6gpu-0
+    hostname: b200-oma-6gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "6"
+  b200-oma-5gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-5gpu-0
+    hostname: b200-oma-5gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "5"
+  b200-oma-4gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-4gpu-0
+    hostname: b200-oma-4gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "4"
+  b200-oma-4gpu-1:
+    <<: *b200-runner
+    container_name: b200-oma-4gpu-1
+    hostname: b200-oma-4gpu-1
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "4"
+  b200-oma-3gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-3gpu-0
+    hostname: b200-oma-3gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "3"
+  b200-oma-3gpu-1:
+    <<: *b200-runner
+    container_name: b200-oma-3gpu-1
+    hostname: b200-oma-3gpu-1
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "3"
+  b200-oma-2gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-2gpu-0
+    hostname: b200-oma-2gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "2"
+  b200-oma-2gpu-1:
+    <<: *b200-runner
+    container_name: b200-oma-2gpu-1
+    hostname: b200-oma-2gpu-1
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "2"
+  b200-oma-2gpu-2:
+    <<: *b200-runner
+    container_name: b200-oma-2gpu-2
+    hostname: b200-oma-2gpu-2
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "2"
+  b200-oma-2gpu-3:
+    <<: *b200-runner
+    container_name: b200-oma-2gpu-3
+    hostname: b200-oma-2gpu-3
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "2"
+  b200-oma-1gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-1gpu-0
+    hostname: b200-oma-1gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "1"
+  b200-oma-1gpu-1:
+    <<: *b200-runner
+    container_name: b200-oma-1gpu-1
+    hostname: b200-oma-1gpu-1
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "1"
+  b200-oma-1gpu-2:
+    <<: *b200-runner
+    container_name: b200-oma-1gpu-2
+    hostname: b200-oma-1gpu-2
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "1"
+  b200-oma-1gpu-3:
+    <<: *b200-runner
+    container_name: b200-oma-1gpu-3
+    hostname: b200-oma-1gpu-3
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "1"
+  b200-oma-1gpu-4:
+    <<: *b200-runner
+    container_name: b200-oma-1gpu-4
+    hostname: b200-oma-1gpu-4
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "1"
+  b200-oma-1gpu-5:
+    <<: *b200-runner
+    container_name: b200-oma-1gpu-5
+    hostname: b200-oma-1gpu-5
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "1"
+  b200-oma-1gpu-6:
+    <<: *b200-runner
+    container_name: b200-oma-1gpu-6
+    hostname: b200-oma-1gpu-6
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "1"
+  b200-oma-1gpu-7:
+    <<: *b200-runner
+    container_name: b200-oma-1gpu-7
+    hostname: b200-oma-1gpu-7
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "1"

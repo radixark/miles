@@ -11,6 +11,7 @@ register_cuda_ci(
     labels=["ckpt"],
     hardware=["hopper", "blackwell"],
     disabled="Disabled due to bugs.",
+    num_gpus=8,
 )
 
 ENABLE_EVAL = 0

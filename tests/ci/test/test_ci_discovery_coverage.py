@@ -44,7 +44,6 @@ _KNOWN_ORPHANS: set[str] = {
     "tests/test_attention_output_gate_tp.py",
     "tests/test_chunked_gae.py",
     "tests/test_fsdp_import.py",
-    "tests/test_fused_experts_backward.py",
 }
 
 

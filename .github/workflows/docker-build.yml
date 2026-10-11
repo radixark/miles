@@ -26,6 +26,7 @@ on:
           - cu13
           - cu13-x86
           - cu13-aarch64
+          - rubin
           - rocm724-mi35x
           - rocm10-mi35x
           - rocm10-mi30x

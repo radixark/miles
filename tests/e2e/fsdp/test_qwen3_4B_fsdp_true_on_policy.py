@@ -4,12 +4,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(
-    est_time=800,
-    suite="stage-c-2-gpu-h200",
-    labels=["fsdp"],
-    hardware=["hopper"],
-)
+register_cuda_ci(est_time=800, suite="stage-c-2-gpu-h200", labels=["fsdp"], hardware=["hopper"], num_gpus=2)
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 NUM_GPUS = 2

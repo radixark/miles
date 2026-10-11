@@ -55,4 +55,4 @@ class TestClusterToolsInEveryTrainingImage:
 
     def test_every_variant_of_the_build_script_is_covered(self):
         """A new variant pointing at a third Dockerfile must not quietly opt out of this check."""
-        assert len(training_dockerfiles()) == 2
+        assert len(training_dockerfiles()) == 3

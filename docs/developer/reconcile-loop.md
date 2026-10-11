@@ -111,7 +111,7 @@ An empty last column means 1:1. Each entry is the shadow of a **Dropped** / **Re
 
 ## Test layers
 
-All three run on every PR. `pytest tests/e2e/k8s_apiserver tests/e2e/k8s_kind` self-provisions everything below from a Docker daemon, and the modules that provision it depend on nothing from the reconcile package, so an environment can be verified before anything uses it.
+The fake-based tests remain always-on. The real-apiserver and kind tests run in Stage B CPU when selected by `run-ci-k8s` or a broad CI scope such as `run-ci-all`, `run-ci-image`, or nightly. `pytest tests/e2e/k8s_apiserver tests/e2e/k8s_kind` self-provisions everything below from a Docker daemon, and the modules that provision it depend on nothing from the reconcile package, so an environment can be verified before anything uses it.
 
 | Layer | Where | Proves | Provisions |
 | --- | --- | --- | --- |

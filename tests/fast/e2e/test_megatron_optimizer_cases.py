@@ -9,7 +9,7 @@ from miles.utils.external_utils import command_utils
 _CASES = (
     ("test_qwen3_30B_A3B", "test_nospec_nor3_bf16_sgl_tp4_meg_tp2cp2"),
     ("test_qwen3_5_35B_A3B", "test_nospec_nor3_bf16_sgl_dpattn2x2_meg_tp2pp2"),
-    ("test_glm47_flash", "test_nospec_r3_bf16_deepep_sgl_dpattn2x2_meg_tp2cp2"),
+    ("test_glm47_flash", "test_nospec_r3_bf16_deepep_sgl_dpattn2x2_meg_tp2cp2_bshd"),
 )
 _ADAM_ONLY_FLAGS = {
     "--optimizer-cpu-offload",

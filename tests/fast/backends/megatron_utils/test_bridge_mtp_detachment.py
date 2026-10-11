@@ -51,6 +51,7 @@ def runtime_args() -> argparse.Namespace:
         fp8=None,
         fp8_recipe=None,
         attention_backend="auto",
+        mtp_num_layers=1,
         moe_token_dispatcher_type="alltoall",
     )
 
@@ -82,3 +83,18 @@ def test_bridge_mtp_detachment(
 
     assert provider.mtp_detach_heads is expected_detach
     assert provider.mtp_num_layers == 1
+
+
+@pytest.mark.parametrize(
+    ("mtp_args", "expected_layers"),
+    [({}, 1), ({"mtp_num_layers": None}, None), ({"mtp_num_layers": 2}, 2)],
+    ids=["absent", "disabled", "enabled"],
+)
+def test_bridge_mtp_runtime_depth(apply_bridge_runtime_config, runtime_args, mtp_args, expected_layers):
+    del runtime_args.mtp_num_layers
+    vars(runtime_args).update(mtp_args)
+    provider = SimpleNamespace(mtp_num_layers=1)
+
+    apply_bridge_runtime_config(provider, runtime_args)
+
+    assert provider.mtp_num_layers == expected_layers
