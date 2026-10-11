@@ -2,6 +2,7 @@
  "meta": {
   "name": "cake_gdn_chunk_train_c3e454c87f088bd02e2f",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_meta",
   "cache_name": "cake_gdn_chunk_train_c3e454c87f088bd02e2f_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_c3e454c87f088bd02e2f",
   "arg_plan": [
@@ -102,6 +103,7 @@
  "prep": {
   "name": "cake_gdn_chunk_train_9c0c3498ddb761c916d3",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_prep",
   "cache_name": "cake_gdn_chunk_train_9c0c3498ddb761c916d3_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_9c0c3498ddb761c916d3",
   "arg_plan": [
@@ -194,6 +196,7 @@
  "prep_bf16beta": {
   "name": "cake_gdn_chunk_train_8d2ab73a2f6df16a9b75",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_prep_bf16beta",
   "cache_name": "cake_gdn_chunk_train_8d2ab73a2f6df16a9b75_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_8d2ab73a2f6df16a9b75",
   "arg_plan": [
@@ -286,6 +289,7 @@
  "wy": {
   "name": "cake_gdn_chunk_train_f64b1548cabb658b1dec",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_wy",
   "cache_name": "cake_gdn_chunk_train_f64b1548cabb658b1dec_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_f64b1548cabb658b1dec",
   "arg_plan": [
@@ -366,6 +370,7 @@
  "fwd_h_r32k2": {
   "name": "cake_gdn_chunk_train_9a5639faf97e99366b59",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_fwd_h_r32k2",
   "cache_name": "cake_gdn_chunk_train_9a5639faf97e99366b59_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_9a5639faf97e99366b59",
   "arg_plan": [
@@ -477,6 +482,7 @@
  "fwd_h_r32k1": {
   "name": "cake_gdn_chunk_train_dc657075f4da36018c8f",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_fwd_h_r32k1",
   "cache_name": "cake_gdn_chunk_train_dc657075f4da36018c8f_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_dc657075f4da36018c8f",
   "arg_plan": [
@@ -588,6 +594,7 @@
  "fwd_h_r64k1": {
   "name": "cake_gdn_chunk_train_5d5e1c7641bdfdc28977",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_fwd_h_r64k1",
   "cache_name": "cake_gdn_chunk_train_5d5e1c7641bdfdc28977_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_5d5e1c7641bdfdc28977",
   "arg_plan": [
@@ -699,6 +706,7 @@
  "fwd_h_pre_r32k2": {
   "name": "cake_gdn_chunk_train_f8a53d07a96cdd248a87",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_fwd_h_pre_r32k2",
   "cache_name": "cake_gdn_chunk_train_f8a53d07a96cdd248a87_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_f8a53d07a96cdd248a87",
   "arg_plan": [
@@ -818,6 +826,7 @@
  "fwd_h_pre_r64k1": {
   "name": "cake_gdn_chunk_train_1c1e31ceb04b396f87a9",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_fwd_h_pre_r64k1",
   "cache_name": "cake_gdn_chunk_train_1c1e31ceb04b396f87a9_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_1c1e31ceb04b396f87a9",
   "arg_plan": [
@@ -937,6 +946,7 @@
  "stitch": {
   "name": "cake_gdn_chunk_train_6b42ae1f3ed719f123b0",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_stitch",
   "cache_name": "cake_gdn_chunk_train_6b42ae1f3ed719f123b0_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_6b42ae1f3ed719f123b0",
   "arg_plan": [
@@ -1001,6 +1011,7 @@
  "fwd_o": {
   "name": "cake_gdn_chunk_train_65a366dbf2f97e860b2b",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_fwd_o",
   "cache_name": "cake_gdn_chunk_train_65a366dbf2f97e860b2b_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_65a366dbf2f97e860b2b",
   "arg_plan": [
@@ -1077,6 +1088,7 @@
  "dv_local": {
   "name": "cake_gdn_chunk_train_1595bf4913297e8f0074",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_bwd_dv_local",
   "cache_name": "cake_gdn_chunk_train_1595bf4913297e8f0074_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_1595bf4913297e8f0074",
   "arg_plan": [
@@ -1149,6 +1161,7 @@
  "dhu_r32k2": {
   "name": "cake_gdn_chunk_train_8adcf0161ab8747800f1",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_bwd_dhu_r32k2",
   "cache_name": "cake_gdn_chunk_train_8adcf0161ab8747800f1_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_8adcf0161ab8747800f1",
   "arg_plan": [
@@ -1272,6 +1285,7 @@
  "dhu_r32k1": {
   "name": "cake_gdn_chunk_train_1391e46ded1bdbcd9b39",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_bwd_dhu_r32k1",
   "cache_name": "cake_gdn_chunk_train_1391e46ded1bdbcd9b39_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_1391e46ded1bdbcd9b39",
   "arg_plan": [
@@ -1395,6 +1409,7 @@
  "dhu_r64k1": {
   "name": "cake_gdn_chunk_train_c21d7486a0a88f47dd52",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_bwd_dhu_r64k1",
   "cache_name": "cake_gdn_chunk_train_c21d7486a0a88f47dd52_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_c21d7486a0a88f47dd52",
   "arg_plan": [
@@ -1518,6 +1533,7 @@
  "dhu_pre_r32k2": {
   "name": "cake_gdn_chunk_train_9e8af6fe64510c6995c4",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_bwd_dhu_pre_r32k2",
   "cache_name": "cake_gdn_chunk_train_9e8af6fe64510c6995c4_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_9e8af6fe64510c6995c4",
   "arg_plan": [
@@ -1649,6 +1665,7 @@
  "dhu_pre_r64k1": {
   "name": "cake_gdn_chunk_train_9cb18f2f881f292610ea",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_bwd_dhu_pre_r64k1",
   "cache_name": "cake_gdn_chunk_train_9cb18f2f881f292610ea_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_9cb18f2f881f292610ea",
   "arg_plan": [
@@ -1780,6 +1797,7 @@
  "dqkwg": {
   "name": "cake_gdn_chunk_train_1a6521749f9b48fc464b",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_bwd_dqkwg",
   "cache_name": "cake_gdn_chunk_train_1a6521749f9b48fc464b_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_1a6521749f9b48fc464b",
   "arg_plan": [
@@ -1880,6 +1898,7 @@
  "wy_bwd": {
   "name": "cake_gdn_chunk_train_0d8c390041e8ef908589",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_bwd_wy",
   "cache_name": "cake_gdn_chunk_train_0d8c390041e8ef908589_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_0d8c390041e8ef908589",
   "arg_plan": [
@@ -1972,6 +1991,7 @@
  "wy_bwd_bf16": {
   "name": "cake_gdn_chunk_train_e8f9a510e21191612ecf",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_bwd_wy_bf16",
   "cache_name": "cake_gdn_chunk_train_e8f9a510e21191612ecf_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_e8f9a510e21191612ecf",
   "arg_plan": [
@@ -2064,6 +2084,7 @@
  "finalize": {
   "name": "cake_gdn_chunk_train_4e0c71c901510c55496e",
   "arch": "sm_100a",
+  "schedule": "gdn_chunk_bwd_finalize",
   "cache_name": "cake_gdn_chunk_train_4e0c71c901510c55496e_sm_100a",
   "kernel_symbol": "kernel_cake_gdn_chunk_train_4e0c71c901510c55496e",
   "arg_plan": [

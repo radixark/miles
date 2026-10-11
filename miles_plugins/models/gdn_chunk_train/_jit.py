@@ -142,8 +142,53 @@ class NativeKernel:
                 args.append(bindings[name])
         return self._call(*args)
 
+    def launcher(self, names):
+        """Positional launcher for one call site (host-path hot loop, round R6-7).
+
+        ``names`` lists every buffer and parameter name of the exported plan exactly once, in the order the call site
+        passes its values.  The order is resolved against the plan ONCE here; the returned ``run(grid_x, grid_y, grid_z,
+        *values)`` forwards the values to the native entry in plan order with the grid appended -- no per-launch keyword
+        dictionary, set comparison or plan walk (``launch`` keeps the keyword form for tests and one-off callers).  A name
+        set that does not match the plan raises here, never at launch time; a value count that does not match raises a
+        TypeError naming the stage.  Launch geometry and argument values are untouched: the same ints and tensors reach
+        ``cudaLaunchKernelExC`` as through ``launch``.
+        """
+        names = tuple(names)
+        plan = tuple(name for kind, name in self._arg_plan if kind != "grid")
+        grid_names = tuple(name for kind, name in self._arg_plan if kind == "grid")
+        if sorted(names) != sorted(plan) or len(set(names)) != len(names):
+            raise KeyError(
+                f"{self.stage}: launcher names {sorted(set(names) - set(plan))!r} unknown / {sorted(set(plan) - set(names))!r} missing"
+            )
+        if grid_names != ("grid_x", "grid_y", "grid_z") or tuple(kind for kind, _ in self._arg_plan[-3:]) != ("grid",) * 3:
+            raise ValueError(f"{self.stage}: the exported plan does not end with grid_x, grid_y, grid_z: {self._arg_plan!r}")
+        call, stage, count = self._call, self.stage, len(plan)
+        if names == plan:
+
+            def run(grid_x, grid_y, grid_z, *values):
+                if len(values) != count:
+                    raise TypeError(f"{stage}: launcher expects {count} values, got {len(values)}")
+                return call(*values, grid_x, grid_y, grid_z)
+
+        else:
+            order = tuple(names.index(name) for name in plan)  # call-site position of every plan slot
+
+            def run(grid_x, grid_y, grid_z, *values):
+                if len(values) != count:
+                    raise TypeError(f"{stage}: launcher expects {count} values, got {len(values)}")
+                return call(*[values[i] for i in order], grid_x, grid_y, grid_z)
+
+        run.stage, run.arch, run.names, run.plan = self.stage, self.arch, names, plan
+        return run
+
 
 @cache
 def kernel(stage, arch):
     """Return the process-wide NativeKernel for ``stage`` on ``arch``."""
     return NativeKernel(stage, arch)
+
+
+@cache
+def launcher(stage, arch, names):
+    """Process-wide positional launcher of ``stage`` on ``arch`` for the call-site order ``names`` (see ``NativeKernel.launcher``)."""
+    return kernel(stage, arch).launcher(names)
