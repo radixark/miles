@@ -175,6 +175,8 @@ def loss_function(
     )
 
     func = get_loss_function(args, batch.get("loss_fn"))
+    # with --log-probs-backend fused the loss's backward overwrites `logits` with their gradient
+    # (see get_log_probs_and_entropy); nothing may read them after it
 
     if args.recompute_loss_function:
         loss, log = checkpoint(

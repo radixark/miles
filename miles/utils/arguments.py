@@ -584,8 +584,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "How per-token log-probs and entropy are computed from the logits. 'torch' upcasts each "
                     "response chunk to fp32 and keeps its softmax for backward. 'fused' streams the logits "
-                    "through Triton kernels, writes the gradient in place, and normalizes over the true "
-                    "vocabulary (--vocab-size) as the rollout engine does, not over Megatron's padded one. "
+                    "through Triton kernels and writes the gradient in place; --log-probs-chunk-size does "
+                    "not apply to it. Not only an implementation choice: 'fused' normalizes over the true "
+                    "vocabulary (--vocab-size), as the rollout engine does, while 'torch' normalizes over "
+                    "Megatron's padded vocabulary (except for --loss-type score_centering), so with vocab "
+                    "padding (TP > 1) the two give slightly different log-probs, ratios and KL. "
                     "'fused' does not support --true-on-policy-mode or sampling-support replay "
                     "(--rollout-top-p below 1 or a positive --rollout-top-k)."
                 ),

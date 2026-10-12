@@ -149,7 +149,9 @@ def get_log_probs_and_entropy(
     log-probabilities via softmax across the tensor-parallel group. Log-probs
     are squeezed from `[R, 1]` to `[R]`. Entropy is computed and returned only
     when requested. With `--log-probs-backend fused` all samples go through one
-    fused op, normalized over the true vocabulary (`args.vocab_size`).
+    fused op, normalized over the true vocabulary (`args.vocab_size`), whose
+    backward writes the gradient into `logits` unless `--recompute-loss-function`:
+    after it, `logits` holds the gradient, not the logits.
 
     Args:
         logits: Policy logits with shape `[1, T, V]`.
