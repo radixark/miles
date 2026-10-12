@@ -95,7 +95,13 @@ def zigzag_response_ranges(
     _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
         total_length, response_length, qkv_format, max_seq_len, cp_rank=cp_rank, cp_size=cp_size
     )
-    prompt_length = total_length - response_length
+    return _response_ranges(tokens_offset, total_length - response_length)
+
+
+def _response_ranges(
+    tokens_offset: tuple[tuple[int, int], tuple[int, int]], prompt_length: int
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Token offsets of the two zigzag halves as response positions; an empty half becomes ``(0, 0)``."""
     first, second = (
         (start - prompt_length, end - prompt_length) if start < end else (0, 0) for start, end in tokens_offset
     )
@@ -141,11 +147,11 @@ def iter_local_response_rows(
                 response_length=response_length,
             )
         else:
-            chunk_size, chunks_offset, _, _ = get_logits_and_tokens_offset_with_cp(
+            chunk_size, chunks_offset, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
                 total_length, response_length, qkv_format, max_seq_len
             )
-            response_ranges = zigzag_response_ranges(total_length, response_length, qkv_format, max_seq_len)
             prompt_length = total_length - response_length
+            response_ranges = _response_ranges(tokens_offset, prompt_length)
             row_ranges = tuple(
                 _zigzag_half_rows(
                     slot_start + half * chunk_size, response_ranges[half], chunk_start - prompt_length + 1
