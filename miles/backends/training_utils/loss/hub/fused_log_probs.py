@@ -163,7 +163,13 @@ class _FusedSupportLogProbs(torch.autograd.Function):
         in_shard, listed_logits = _gather_listed(logits, rows, listed, options.vocab)
         support_in_shard, support_logits = in_shard[:, n_targets:], listed_logits[:, n_targets:]
         # the support's own statistics on this shard, as the kernel computes them over the vocabulary
-        support_logit_max = torch.where(support_in_shard, support_logits, -torch.inf).amax(dim=1)
+        masked_support = torch.where(support_in_shard, support_logits, -torch.inf)
+        # amax has no identity: a rank with no response rows pads the support to width 0
+        support_logit_max = (
+            masked_support.amax(dim=1)
+            if masked_support.size(1)
+            else masked_support.new_full((masked_support.size(0),), -torch.inf)
+        )
         inv_temperature = 1.0 / options.temperature
         d = torch.where(
             support_in_shard, (support_logits - support_logit_max.unsqueeze(1)) * inv_temperature, -torch.inf

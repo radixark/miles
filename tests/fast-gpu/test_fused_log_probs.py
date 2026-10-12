@@ -491,6 +491,19 @@ def test_the_op_holds_no_vocab_sized_buffer(nccl_world):
     assert extra["torch"] > 2 * logits_bytes
 
 
+def test_support_mode_on_a_rank_with_no_rows():
+    """A CP rank that scores no response row pads its supports to width 0; it must return empty
+    outputs that still give the logits a (zero) gradient."""
+    leaf = torch.randn(5, 4096, device="cuda", requires_grad=True)
+    empty = torch.empty(0, dtype=torch.long, device="cuda")
+    target_log_probs, support_log_probs, entropy = fused_support_log_probs(
+        leaf * 1, empty, empty, empty.view(0, 0), tp_group=None, with_entropy=True, inplace_backward=True
+    )
+    assert target_log_probs.numel() == 0 and support_log_probs.shape == (0, 0) and entropy.numel() == 0
+    (target_log_probs.sum() + entropy.sum()).backward()
+    assert leaf.grad is not None and (leaf.grad == 0).all()
+
+
 def _tp_worker(rank: int, world_size: int, port: int, padding: int, n_targets: int) -> None:
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(port)

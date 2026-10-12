@@ -414,6 +414,45 @@ def test_score_centering_rejects_a_candidate_outside_the_vocabulary(nccl_world):
         score_centering_loss._candidate_log_probs(_score_centering_args("fused", vocab_size), batch, logits)
 
 
+@pytest.mark.parametrize("cp_rank", [0, 1])
+def test_sampling_support_replay_zigzag_cp2_matches_the_torch_backend(nccl_world, cp_rank):
+    """Replay under zigzag CP2, with the layout where rank 1 scores no response row: its supports
+    pad to width 0, and it must still run and match the torch backend."""
+    set_parallel_state(dataclasses.replace(make_parallel_state(), cp=GroupInfo(rank=cp_rank, size=2, group=None)))
+    total_lens, tokens, supports = _support_batch(_ZIGZAG_PROMPT_LENS, _ZIGZAG_RESPONSE_LENS, _LOSS_VOCAB, 24, seed=43)
+    masks = [RolloutSamplingMask.from_mask_list(rows) for rows in supports]
+    local_rows = sum(2 * -(-total // 4) for total in total_lens)
+    logits = torch.randn(1, local_rows, _LOSS_VOCAB, device="cuda", generator=torch.Generator("cuda").manual_seed(44))
+
+    outputs = {}
+    for backend in ("torch", "fused"):
+        args = make_args(true_on_policy_mode=False, log_probs_backend=backend, rollout_temperature=0.8)
+        leaf = (logits * 4).requires_grad_(True)
+        res = get_log_probs_and_entropy(
+            leaf * 1,
+            args=args,
+            unconcat_tokens=tokens,
+            total_lengths=total_lens,
+            response_lengths=_ZIGZAG_RESPONSE_LENS,
+            with_entropy=True,
+            rollout_sampling_mask=masks,
+        )
+        log_probs, entropy = torch.cat(res["log_probs"]), torch.cat(res["entropy"])
+        (log_probs.sum() + 0.1 * entropy.sum()).backward()
+        outputs[backend] = ([lp.numel() for lp in res["log_probs"]], log_probs.detach(), entropy.detach(), leaf.grad)
+
+    (torch_sizes, torch_lp, torch_ent, torch_grad), (fused_sizes, fused_lp, fused_ent, fused_grad) = (
+        outputs["torch"],
+        outputs["fused"],
+    )
+    assert fused_sizes == torch_sizes
+    if cp_rank == 1:
+        assert fused_sizes[0] == 0
+    torch.testing.assert_close(fused_lp, torch_lp, rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(fused_ent, torch_ent, rtol=1e-5, atol=5e-5)
+    torch.testing.assert_close(fused_grad, torch_grad, **_TORCH_BACKEND_GRAD_TOL)
+
+
 # (prompt_lens, response_lens): totals divide by 2 * cp. In the second case rank 0's contiguous
 # half holds no response logits.
 _ALLGATHER_CP_CASES = [([16, 2], [8, 6]), ([40], [24])]
