@@ -250,12 +250,6 @@ the four-layer, 64-expert BF16 checkpoint and a small synthetic decoder; the ful
 CP converts headtail shards into contiguous segments for FLA's recurrent-state and
 convolution-halo exchange, then restores the original layout. MLA retains local
 queries and gathers keys and values with gradients summed back to their owners.
-The distributed decoder test compares CP against CP1 through backward and an
-optimizer update, including FSDP, EP and activation checkpointing:
-
-```bash
-python tests/fast-gpu/test_torchtitan_kimi_k3_cp.py
-```
 
 KDA and short convolution use existing FLA operations; MLA uses PyTorch SDPA. Explicit
 packed-document boundaries reach both attention types, including single-token samples
