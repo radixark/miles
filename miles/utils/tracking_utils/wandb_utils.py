@@ -145,7 +145,6 @@ def init_wandb_secondary(args, router_addr=None):
         "entity": args.wandb_team,
         "project": args.wandb_project,
         "config": args.__dict__,
-        "resume": "allow",
         "reinit": True,
         "settings": _wandb_settings(**settings_kwargs),
     }

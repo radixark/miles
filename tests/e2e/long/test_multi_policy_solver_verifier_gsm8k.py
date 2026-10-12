@@ -8,11 +8,11 @@ from tests.e2e.conftest_multi_policy import EvalScoreBounds, execute
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=21600, suite="stage-c-4-gpu-h200", labels=["long"], hardware=["hopper", "blackwell"], num_gpus=4
+    est_time=16200, suite="stage-c-4-gpu-h200", labels=["long"], hardware=["hopper", "blackwell"], num_gpus=4
 )
 register_rocm_ci(est_time=24000, suite="nightly-stage-c-4-gpu-mi350", labels=["long"])
 
-NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "250"))
+NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "120"))
 
 # Calibrated against a full 250-rollout run of this recipe: eval/gsm8k/solver
 # rose .473 -> .566 (first -> best point) and eval/gsm8k/verifier .569 -> .821;

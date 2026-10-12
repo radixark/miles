@@ -102,6 +102,13 @@ def _resolve_rollout_functions(args) -> None:
         assert (
             args.rollout_all_samples_process_path is None
         ), "--fully-async does not support --rollout-all-samples-process-path"
+        if args.over_sampling_batch_size is not None:
+            # Runs before the default fills it in, so non-None means the user passed it.
+            logger.warning(
+                "--over-sampling-batch-size has no effect under --fully-async: groups are submitted "
+                "continuously and each step drains --rollout-batch-size of them. "
+                "Use --async-max-concurrent-samples to control how many samples are in flight."
+            )
 
     user_eval_path = args.eval_function_path
     args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)

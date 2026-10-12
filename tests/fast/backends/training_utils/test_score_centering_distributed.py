@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.backends.training_utils.data.context_parallel import (
     get_sum_of_sample_mean,
@@ -25,6 +26,8 @@ from miles.backends.training_utils.loss.hub.score_centering import (
 from miles.backends.training_utils.loss.hub.score_centering_loss import score_centering_loss_function
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 from miles.utils.sampling_mask import RolloutSamplingMask
+
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["precision"])
 
 
 def _layout(parts: list[torch.Tensor], args: Namespace, cp_rank: int) -> torch.Tensor:

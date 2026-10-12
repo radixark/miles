@@ -112,7 +112,7 @@ def train_args_of(config: ExecuteTrainConfig, addrs: list[str], sandbox: Path) -
         addrs, object_store_args=script._object_store_args(config)
     )
     written = written.replace(f"/root/models/{script.MODEL_NAME}/", f"{model_dir(sandbox)}/")
-    return written.replace(f"/root/{script.MODEL_NAME}_torch_dist/", f"{ref_load_dir(sandbox)}/")
+    return written.replace(f"/root/models/{script.MODEL_NAME}_torch_dist/", f"{ref_load_dir(sandbox)}/")
 
 
 def launch(monkeypatch, sandbox: Path) -> _Launch:
