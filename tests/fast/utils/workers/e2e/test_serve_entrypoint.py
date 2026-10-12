@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.utils.workers.e2e.env_var_hooks import ENV_VAR_FN_FAILURE_MESSAGE, IMPORTED_MODULES_ENV_VAR
 from tests.fast.utils.workers.e2e.harness import (
     POOL_ID,
@@ -19,6 +20,8 @@ from tests.fast.utils.workers.e2e.harness import (
 from tests.fast.utils.workers.import_probe import unexpected_light_entrypoint_imports
 
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
+
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["rpc-comm"])
 
 SMOKE_MODULE = "tests.fast.utils.workers.e2e.env_var_hooks"
 SMOKE_SPECS_PATH = f"{SMOKE_MODULE}.compute_specs"

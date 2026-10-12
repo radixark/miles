@@ -250,6 +250,29 @@ class TestConvertCheckpoint:
         assert "--master-addr" not in commands[0]
 
 
+class TestExecCommandGpuOnce:
+    def test_a_finished_run_is_not_repeated(self, commands, tmp_path):
+        dst = str(tmp_path / "Qwen3-30B-A3B-INT4")
+
+        _backend().exec_command_gpu_once("convert", dst)
+        _backend().exec_command_gpu_once("convert", dst)
+
+        assert commands == [f"rm -rf {dst}", "convert"]
+        assert (tmp_path / "Qwen3-30B-A3B-INT4.done").exists()
+
+    def test_a_failed_run_leaves_no_marker(self, commands, monkeypatch, tmp_path):
+        def fail(self, cmd, capture_output=False, **kwargs):
+            raise RuntimeError("converter died")
+
+        patch_helper(monkeypatch, "exec_command_gpu", fail)
+        dst = str(tmp_path / "Qwen3-30B-A3B-INT4")
+
+        with pytest.raises(RuntimeError):
+            _backend().exec_command_gpu_once("convert", dst)
+
+        assert not (tmp_path / "Qwen3-30B-A3B-INT4.done").exists()
+
+
 class TestRsyncCmd:
     def test_creates_the_destination_before_copying(self):
         """rsync fails on a missing destination, so the mkdir has to precede it."""
