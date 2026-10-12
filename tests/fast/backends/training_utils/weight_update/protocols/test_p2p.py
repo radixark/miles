@@ -3,6 +3,8 @@ from typing import Any
 import pytest
 import torch
 
+from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfNameMapping
+
 _WAIT_BOUND = 10.0
 _STILL_BLOCKED_SECONDS = 0.2
 # the target model's own MTP layer drafts, as sglang resolves NEXTN
@@ -226,6 +228,33 @@ class TestConnect:
         assert len(p2p_sender.replicas_created) == 1
         assert p2p_sender.transfer_engines_created == 1
         assert len(p2p_sender.transfer_engine.registered) == 2
+
+    def test_a_reconnect_whose_replicas_join_params_into_a_larger_group_grows_the_transfer_buffers(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A param group is loaded whole into one buffer; buffers sized at the first sync would fail every update
+        after a reconnect whose new replicas share an HF tensor between two params."""
+        protocol = p2p_sender.make_protocol(update_weight_buffer_size=64)
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
+        p2p_sender.begin_sync(protocol, weight_version=1)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+        first_registrations = set(p2p_sender.transfer_engine.registered)
+
+        replaced_api = make_rollout_api("cell-a", gpu_count=1, generation=2, moe_runner_backend="triton")
+        p2p_sender.connect(protocol, [replaced_api])
+        p2p_sender.replicas_created[-1].map_hf_names = (
+            lambda hf_tensor_specs: HfNameMapping.from_hf_names_by_param_name(
+                {"w": frozenset({"hf.w", "hf.k"}), "qk": frozenset({"hf.q", "hf.k"})}
+            )
+        )
+        p2p_sender.begin_sync(protocol, weight_version=2)
+        protocol.send_bucket(make_bucket("hf.w", "hf.q", "hf.k"))
+        protocol.after_base_weights()
+
+        assert p2p_sender.transfer_engine.written_sessions()[-1] == replaced_api.session_id(0)
+        assert len(p2p_sender.transfer_engine.registered) == 2
+        assert not first_registrations & set(p2p_sender.transfer_engine.registered)
 
 
 class TestDraftRunner:

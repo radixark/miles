@@ -32,6 +32,7 @@ def make_transfer_buffers(monkeypatch: pytest.MonkeyPatch):
             buffer_nbytes,
             device=torch.device("cpu"),
             register_memory=lambda buffer: registered.append((buffer.data_ptr(), buffer.numel())),
+            unregister_memory=lambda buffer: registered.remove((buffer.data_ptr(), buffer.numel())),
             write_timeout=write_timeout,
         )
         return transfer_buffers, registered

@@ -24,9 +24,11 @@ class TransferBuffers:
         *,
         device: torch.device,
         register_memory: Callable[[torch.Tensor], None],
+        unregister_memory: Callable[[torch.Tensor], None],
         write_timeout: float,
     ) -> None:
         self.buffer_nbytes = buffer_nbytes
+        self._unregister_memory = unregister_memory
         self._write_timeout = write_timeout
         self._buffers = [_allocate_transfer_buffer(buffer_nbytes, device) for _ in range(num_buffers)]
         for buffer in self._buffers:
@@ -49,6 +51,12 @@ class TransferBuffers:
     def wait_for_all_writes(self) -> None:
         """Waits for every write still reading a buffer."""
         self._wait_for_writes_reading(range(len(self._buffers)))
+
+    def release(self) -> None:
+        """Waits for every write still reading a buffer, then unregisters the buffers from the transport."""
+        self.wait_for_all_writes()
+        for buffer in self._buffers:
+            self._unregister_memory(buffer)
 
     def _wait_for_writes_reading(self, buffer_indices: Sequence[int]) -> None:
         pending_writes = [write for index in buffer_indices for write in self._pending_writes_by_buffer_index[index]]
