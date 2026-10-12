@@ -59,7 +59,7 @@ def fused_log_probs_and_entropy(
 class _RowStats(NamedTuple):
     """Per selected row, over the true vocabulary, with ``d = (x - m) / T`` for the row max ``m``."""
 
-    max: Tensor  # m
+    row_max: Tensor  # m
     log_sum: Tensor  # log sum_v exp(d_v)
     target: Tensor  # d_y
     mean: Tensor | None  # sum_v p_v d_v, only with entropy
@@ -85,7 +85,13 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
         if not entropy_requires_grad:
             ctx.mark_non_differentiable(entropy)
         ctx.save_for_backward(
-            logits, rows, targets, stats.max, stats.log_sum, log_probs, stats.mean if entropy_requires_grad else None
+            logits,
+            rows,
+            targets,
+            stats.row_max,
+            stats.log_sum,
+            log_probs,
+            stats.mean if entropy_requires_grad else None,
         )
         ctx.tp_group = tp_group
         ctx.n_unpadded_cols = n_unpadded_cols
@@ -101,14 +107,14 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
         kernels.write_logits_grad(
             grad,
             logits,
-            rows,
-            targets,
-            row_max,
-            log_sum,
-            mean,
-            -torch.expm1(log_probs),  # 1 - p at the target, exact even when p is close to 1
-            _contiguous_or_none(grad_log_probs),
-            _contiguous_or_none(grad_entropy) if ctx.entropy_requires_grad else None,
+            rows=rows,
+            targets=targets,
+            row_max=row_max,
+            log_sum=log_sum,
+            mean=mean,
+            one_minus_p=-torch.expm1(log_probs),  # 1 - p at the target, exact even when p is close to 1
+            grad_log_probs=_contiguous_or_none(grad_log_probs),
+            grad_entropy=_contiguous_or_none(grad_entropy) if ctx.entropy_requires_grad else None,
             vocab_start=_vocab_start(logits, ctx.tp_group),
             n_unpadded_cols=ctx.n_unpadded_cols,
             temperature=ctx.temperature,

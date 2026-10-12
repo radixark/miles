@@ -168,16 +168,16 @@ def _zero_unscored_rows_kernel(grad_ptr, scored_ptr, grad_stride_row, n_vocab, B
 
 
 def row_statistics(
-    logits,
-    rows,
-    targets,
+    logits: torch.Tensor,
+    rows: torch.Tensor,
+    targets: torch.Tensor,
     *,
     vocab_start: int,
     n_unpadded_cols: int,
     temperature: float,
     with_entropy: bool,
     launch: LaunchConfig | None = None,
-):
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
     """This shard's ``(max, sum exp(d), sum exp(d) * d or None, d_y or 0)`` per row, ``d = (x - max) / T``.
 
     Only the first ``n_unpadded_cols`` columns count; a shard with none reports ``(-inf, 0, 0, 0)``.
@@ -207,24 +207,25 @@ def row_statistics(
 
 
 def write_logits_grad(
-    grad,
-    logits,
-    rows,
-    targets,
-    row_max,
-    log_sum,
-    mean,
-    one_minus_p,
-    grad_log_probs,
-    grad_entropy,
+    grad: torch.Tensor,
+    logits: torch.Tensor,
     *,
+    rows: torch.Tensor,
+    targets: torch.Tensor,
+    row_max: torch.Tensor,
+    log_sum: torch.Tensor,
+    mean: torch.Tensor | None,
+    one_minus_p: torch.Tensor,
+    grad_log_probs: torch.Tensor | None,
+    grad_entropy: torch.Tensor | None,
     vocab_start: int,
     n_unpadded_cols: int,
     temperature: float,
     launch: LaunchConfig | None = None,
-):
+) -> None:
     """Write the gradient of the selected rows into ``grad``; ``grad`` may be ``logits`` itself.
 
+    The per-row statistics are keyword-only: several are fp32 ``[R]``, so a swap would not raise.
     Every column of a selected row is written, the padding columns from ``n_unpadded_cols`` on with zero.
     """
     launch = launch or kernel_configs(logits.device).grad
@@ -256,7 +257,7 @@ def write_logits_grad(
     )
 
 
-def zero_unscored_rows(grad, rows, *, launch: LaunchConfig | None = None):
+def zero_unscored_rows(grad: torch.Tensor, rows: torch.Tensor, *, launch: LaunchConfig | None = None) -> None:
     """Zero the rows of ``grad`` that are not in ``rows``, writing only those rows."""
     launch = launch or kernel_configs(grad.device).zero
     n_rows = grad.size(0)
