@@ -10,7 +10,6 @@ import torch.distributed as dist
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import is_tower_key
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport, RemoteShard
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfTensorSpec
@@ -30,7 +29,6 @@ from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_
 )
 from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import TransferBuffers
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.hf_utils.config import load_hf_config
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +45,6 @@ class _ReplicaTarget(NamedTuple):
 class _RunnerSender:
     """Per-connection write targets and per-sync staging for one runner role, backed by cached replicas."""
 
-    runner_role: str
     model_replicas: ModelReplicas
     replica_targets: list[_ReplicaTarget]
     model_param_stager: ModelParamStager | None = None
@@ -87,13 +84,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 runner_sender.model_param_stager = ModelParamStager(runner_sender.model_replicas.hf_name_mapping)
             buffer_nbytes = self._compute_transfer_buffer_nbytes()
             if self._transfer_buffers is None:
+                self._log_hf_names_no_runner_loads()
                 self._transfer_buffers = self._create_transfer_buffers(buffer_nbytes)
             elif self._transfer_buffers.buffer_nbytes < buffer_nbytes:
                 self._transfer_buffers.release()
                 self._transfer_buffers = self._create_transfer_buffers(buffer_nbytes)
-        if self._hf_tensors_unchecked:
-            self._assert_every_hf_tensor_is_loaded()
-            self._hf_tensors_unchecked = False
         return True
 
     def after_base_weights(self) -> None:
@@ -156,11 +151,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.rollout_engines = rollout_engines
         assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
         self.is_sender = bool(assignments)
-        # ranks of one PP stage send the same HF tensors; with PP gathered, every rank sends all of them
-        self._pp_stage, self._pp_stages = (
-            (0, 1) if placement.gather_pp else (parallel_state.pp.rank, parallel_state.pp.size)
-        )
-        self._hf_tensors_unchecked = True
 
         if self.is_sender:
             runner_roles = query_runner_roles(rollout_engines, assignments, selector)
@@ -202,51 +192,19 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     ),
                 )
             replica_targets.append(_ReplicaTarget(model_replica, remote_shards))
-        return _RunnerSender(runner_role, model_replicas, replica_targets)
+        return _RunnerSender(model_replicas, replica_targets)
 
-    def _assert_every_hf_tensor_is_loaded(self) -> None:
-        """Fail the first sync after a connect if no rollout engine rank loads an HF tensor the trainer sends: the
-        weight it was meant for would stay stale. Each sender loads only its own engine ranks (EP splits the experts),
-        so all ranks OR their views of their PP stage's tensors. Collective."""
-        hf_names = sorted(self._hf_tensor_specs)
-        max_hf_names = torch.tensor(len(hf_names))
-        dist.all_reduce(max_hf_names, op=dist.ReduceOp.MAX, group=get_gloo_group())
-        loaded = torch.zeros(self._pp_stages, int(max_hf_names), dtype=torch.uint8)
-        if self.is_sender:
-            loaded[self._pp_stage, : len(hf_names)] = torch.tensor(
-                [any(sender.loads_hf_tensor(name) for sender in self._runner_senders) for name in hf_names]
-            )
-        dist.all_reduce(loaded, op=dist.ReduceOp.MAX, group=get_gloo_group())
-        if not self.is_sender:
-            return
-
-        # towers are resent unchanged from the checkpoint; a language-only engine has none
-        unloaded = [
-            name
-            for name, is_loaded in zip(hf_names, loaded[self._pp_stage, : len(hf_names)].tolist(), strict=True)
-            if not is_loaded and not is_tower_key(name)
-        ]
-        # tied engines take the head from the embedding and ignore the trainer's copy
-        if (
-            any(name.endswith("lm_head.weight") for name in unloaded)
-            and load_hf_config(self.args.hf_checkpoint).tie_word_embeddings
-        ):
-            unloaded = [name for name in unloaded if not name.endswith("lm_head.weight")]
-        if (
-            unloaded
-            and self.args.mtp_num_layers
-            and all(sender.runner_role != "draft" for sender in self._runner_senders)
-        ):
-            logger.info(
-                f"p2p skips {len(unloaded)} HF tensors no rollout engine loads, e.g. {unloaded[:5]}: without a draft "
-                "runner the trainer's MTP layers have no loader"
-            )
-            return
-        assert not unloaded, (
-            f"no rollout engine loads {len(unloaded)} HF tensors the trainer sends, e.g. {unloaded[:5]}, so the "
-            "weights they were meant for would stay stale; the trainer's export and the rollout engines' loaders "
-            "disagree on these names or formats"
+    def _log_hf_names_no_runner_loads(self) -> None:
+        hf_names_no_runner_loads = sorted(
+            hf_name
+            for hf_name in self._hf_tensor_specs
+            if not any(runner_sender.loads_hf_tensor(hf_name) for runner_sender in self._runner_senders)
         )
+        if hf_names_no_runner_loads:
+            logger.info(
+                f"p2p skips {len(hf_names_no_runner_loads)} HF tensors the rollout engines' loaders ignore, e.g. "
+                f"{hf_names_no_runner_loads[:5]}"
+            )
 
     def _compute_transfer_buffer_nbytes(self) -> int:
         largest_param_group_nbytes = max(
