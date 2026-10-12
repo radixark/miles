@@ -11,7 +11,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, and `ft-long` |
 | Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long` and `ft-long`, with fast-fail disabled |
 | Scope label | `run-ci-all` | run every enabled tag |
-| Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
+| Behavior label | `bypass-fastfail` | opt out of CUDA cross-stage gating and within-suite stopping |
 | Behavior label | `rebuild-ci-image` | force a rebuild when selected CUDA tests need an eligible PR image; does not select tests and is removed once consumed (see [Docker build](/developer/ci/02-docker-build)) |
 | Opt-in label | `run-ci` (or any `run-ci*` label) | lets a PR whose base is not the default branch run `PR Test` (see [below](#labels-opt-non-main-prs-into-ci)) |
 
@@ -188,15 +188,15 @@ A domain label explicitly requested on the PR wins over a scope subtraction: `ru
 
 ## Registration and scan scope
 
-Labels are optional for CPU registrations and required for GPU registrations; registration itself is not optional. The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e`, `tests/ci` recursively for `test_*.py`. Every file must resolve to a registration or collection fails:
+The registration parser in `tests/ci/ci_register.py` requires domain labels for GPU registrations and CPU registrations above the fast-test budget (`est_time > 30` seconds); those CPU files must use `stage-b-cpu`. Shorter CPU registrations may omit labels. The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e`, `tests/ci` recursively for `test_*.py`. Every file must resolve to a registration or collection fails:
 
 - A file outside `tests/fast/` with no `register_*_ci()` call → `No CI registry found`.
-- A CUDA or ROCm registration with missing, `None`, or empty `labels` → `labels ... must contain at least one domain label`.
+- A registration requiring domain labels with missing, `None`, or empty `labels` → `labels ... must contain at least one domain label`.
 - A `labels=[...]` value not in `KNOWN_LABELS` → `unknown labels [...]`.
 
 ## `tests/fast/` auto-registers as CPU
 
-Each `test_*.py` under `tests/fast/` is auto-registered as a CPU test (backend CPU, suite `stage-a-cpu`, `labels=[]`) with no `register_*_ci()` call, and runs on the GitHub-hosted `ubuntu-latest` runner. Here "CPU" is the hardware backend, not a label. A `register_cuda_ci()` under `tests/fast/` is a hard error — move it to `tests/fast-gpu/`.
+Each `test_*.py` under `tests/fast/` without an explicit registration is auto-registered as a CPU test (backend CPU, suite `stage-a-cpu`, `labels=[]`), and runs on the GitHub-hosted `ubuntu-latest` runner. Files exceeding the budget above need an explicit `register_cpu_ci(...)` with their estimate, suite, and domain labels. Here "CPU" is the hardware backend, not a label. A `register_cuda_ci()` under `tests/fast/` is a hard error — move it to `tests/fast-gpu/`.
 
 ## `bypass-fastfail`: opt out of fast-fail
 
@@ -205,14 +205,16 @@ By default CI fails fast on two levels:
 - Cross-stage: CUDA GPU stages run only when `stage-a-cpu` succeeds — the `if` requires `needs.stage-a-cpu.result == 'success'`.
 - Within-stage: each suite stops at the first failure (`pytest -x` for CPU; `run_unittest_files` breaks on the first failing file for CUDA).
 
-The `bypass-fastfail` PR label turns both off so one run surfaces every failure:
+The `bypass-fastfail` PR label disables CUDA cross-stage gating and within-suite stopping:
 
 - Cross-stage: each CUDA GPU stage consumes the shared `bypass_fastfail` policy output, so CUDA GPU stages run even after `stage-a-cpu` fails.
 - Within-stage: `run_suite.py` derives continue-on-error from the same resolved policy (drops `pytest -x`; sets `continue_on_error=True` for CUDA). The stage still ends red — it changes coverage, not the verdict.
 
 The ROCm workflow has no CPU cross-stage gate, so `bypass-fastfail` changes only its within-stage behavior.
 
-A resolved nightly, weekly, or release cadence bypasses fast-fail on both levels so a broad run surfaces every failure rather than stopping at the first. For nightly this applies equally whether the cadence came from the PR `nightly` label or the explicitly mapped nightly cron; release comes from the called workflow's explicit override. Local `--nightly` applies the same nightly selection and within-stage behavior; cross-stage gating does not exist in a local invocation.
+A resolved nightly, weekly, or release cadence applies the same bypass. For nightly this applies equally whether the cadence came from the PR `nightly` label or the explicitly mapped nightly cron; release comes from the called workflow's explicit override. Local `--nightly` applies the same nightly selection and within-stage behavior; cross-stage gating does not exist in a local invocation.
+
+These cross-stage exceptions apply to CUDA stages; [Stage B CPU still requires Stage A success](00-stage.md).
 
 Like the scope labels, `bypass-fastfail` is a workflow-only input and is not in `KNOWN_LABELS`.
 
