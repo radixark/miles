@@ -187,6 +187,20 @@ The launcher sets the required env vars for you: `SGLANG_SKIP_CHECKPOINT_LOAD_CH
 
 On the Megatron side, V4 needs `--qkv-format bshd` with CP-aware data slicing. With `--dsv4-impl miles`, `--dsa-attention-backend {tilelang,cake}` picks the indexer + sparse-attention kernels: `tilelang` (default) runs the per-sample TileLang kernels, `cake` the generated deterministic kernels in `miles/kernels/attention/dsa/cake` (Blackwell SM100a / SM103a) — the batched indexer in one launch, `bshd` sparse attention with the FP32 attention sink, and bit-identical gradients across calls (`tests/e2e/megatron/test_deepseek_v4_flash_4layer_dsa_cake.py`). The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
 
+**Measured kernel speed of `--dsa-attention-backend cake`** at the DeepSeek-V4-Flash training shapes (64 attention heads, 512 selected + 128 window slots, `bshd`; `sbhd` indexer with compress ratio 4; `r` = query rows per rank). CUPTI device time of the kernel launches, cold L2, median; ratio = TileLang time / cake time, > 1 = cake faster. The forward runs the tcgen05 stages on 16 / 32 / 64 local heads; the backward reduces its key-side gradients in a fixed FP32 order (no floating-point atomics), so both stay bit-deterministic run to run.
+
+| kernel | local heads | B200 r2048 / r4096 | GB300 r2048 / r4096 | numerics vs the register-MMA stages |
+|---|---|---|---|---|
+| attention fwd | 64 (TP 1) | 3.88x / 3.88x | 4.27x / 4.14x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
+| attention fwd | 32 (TP 2) | 2.08x / 2.06x | 2.34x / 2.27x | fixed-order FP32 |
+| attention fwd | 16 (TP 4) | 1.54x / 1.52x | 1.79x / 1.71x | fixed-order FP32 |
+| attention bwd | 64 (TP 1) | 0.87x / 0.72x | 0.84x / 0.71x | fixed-order FP32 (delta kernel; dq / dkv kernels bit-identical) |
+| attention bwd | 32 (TP 2) | 1.42x / 1.14x | 1.26x / 1.07x | fixed-order FP32 |
+| attention bwd | 16 (TP 4) | 1.51x / 1.11x | 1.27x / 1.04x | fixed-order FP32 |
+| indexer logits (`sbhd`) | 64 index heads | 1.43x / 1.47x | 1.44x / 1.48x | bit-identical (sources unchanged) |
+
+The 64-head backward is the one shape still slower than TileLang; its two kernels are bound by the shared-memory operand traffic of the register-MMA backward. `tests/manual/kernels/dsa/bench_dsa_backends.py` reproduces the comparison with its own timer.
+
 ### 5.4 Optimizer
 
 ```bash
