@@ -24,6 +24,22 @@ do when a check goes red is in `ci-failure-triage.md`.
   on every run. Add cases to an existing file with the same launch; a new file
   is for a new fixture, model, or parallel layout.
 
+## Host caches
+
+A runner host keeps `/data/miles_ci` across jobs and shares it among its
+runners; the rest of the job container is discarded with it. It holds the
+models, datasets and HF cache (mounted at `/root/models`, `/root/datasets`,
+`/root/.cache/huggingface`) and the compiled-kernel caches under
+`/data/miles_ci/jit`, configured by `_run-ci.yml`. Later jobs can reuse matching
+cache entries; library-specific isolation and the TileLang exception are
+listed in `tests/ci/README.md`.
+
+- A checkpoint a test derives (torch_dist, bf16 cast, FP8/INT4/NVFP4) follows
+  "Derived checkpoints" in `launch-and-model-scripts.md`: next to the HF one
+  under `/root/models`, made once, one directory per recipe.
+- Keep shared JIT cache paths under workflow ownership; tests must not clear
+  or delete caches that another runner may be using.
+
 ## Stage
 
 A Hopper test holds its stage allocation for its whole run. B200 allocates the
@@ -32,14 +48,16 @@ run the test; copying a neighbouring test's `suite=` is not a reason.
 
 | Order | Where | Runs on | Use for |
 |---|---|---|---|
-| 1 | `tests/fast/` (no declaration; suite `stage-a-cpu`) | GitHub-hosted CPU | CPU tests that finish in seconds; it gates every CUDA stage |
-| 2 | `register_cpu_ci(..., suite="stage-b-cpu")` | GitHub-hosted CPU | CPU tests that take minutes |
+| 1 | `tests/fast/` (no declaration; suite `stage-a-cpu`) | GitHub-hosted CPU | CPU tests within the fast budget below; it gates every CUDA stage |
+| 2 | `register_cpu_ci(..., suite="stage-b-cpu", labels=[...])` | GitHub-hosted CPU | CPU tests above the fast budget below |
 | 3 | `tests/fast-gpu/`, suite `stage-b-2-gpu-h200` | 2× H200 | GPU tests that finish in a few minutes |
 | 4 | `stage-c-2-gpu-h200` | 2× H200 | 2-GPU tests |
 | 5 | `stage-c-4-gpu-h200` | 4× H200 | 4-GPU tests |
 | 6 | `stage-c-8-gpu-h200` or `stage-c-8-gpu-h100` | 8× H200 / 8× H100 | 8-GPU tests |
 | — | `stage-c-4-gpu-b200` | 4× B200 | Blackwell tests needing up to 4 GPUs |
 | — | `stage-c-8-gpu-b200` | 8× B200 | Blackwell tests needing 8 GPUs |
+
+CPU registrations with `est_time > 30` seconds must use `stage-b-cpu` and at least one existing domain tag in `labels`; the registration parser rejects either violation. When profiling reveals a slow implicitly registered file under `tests/fast/`, add an explicit registration with an evidence-backed estimate instead of leaving its implicit fast-test estimate. Apply the budget to the whole file, including setup and teardown, not to each test case separately.
 
 The stage's GPU count equals the count the test requests (`ray start
 --num-gpus`, `--actor-num-gpus-per-node`, `torchrun --nproc-per-node`): a 4-GPU
@@ -71,10 +89,7 @@ register_cuda_ci(
 )
 ```
 
-- A GPU file has one top-level `register_cuda_ci(...)`, one
-  `register_rocm_ci(...)` per ROCm suite it runs in, or both. The calls are
-  parsed from the AST: top-level, literal arguments, no alias. `tests/fast/`
-  files need none.
+- A GPU file has one top-level `register_cuda_ci(...)`, one `register_rocm_ci(...)` per ROCm suite it runs in, or both. The calls are parsed from the AST: top-level, literal arguments, no alias. `tests/fast/` files need none only when the implicit fast CPU registration fits; slower files declare `register_cpu_ci(...)` as specified above.
 - `labels`: reuse a domain label from `tests/ci/labels.py`. A new label also
   needs a `run-ci-<key>` repository label, which only a maintainer can create,
   and an entry in `.github/workflows/policies/comment-command-access.json` to

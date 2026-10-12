@@ -92,6 +92,7 @@ run:
       SGLANG_MEMORY_SAVER_CUDA_GRAPH: 'true'
       SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: '1'
       SGLANG_RETURN_ORIGINAL_LOGPROB: '0'
+      SGLANG_TIMEOUT_KEEP_ALIVE: '60'
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: inference-engine-all-0-0
@@ -174,6 +175,7 @@ run:
       SGLANG_MEMORY_SAVER_CUDA_GRAPH: 'true'
       SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: '1'
       SGLANG_RETURN_ORIGINAL_LOGPROB: '0'
+      SGLANG_TIMEOUT_KEEP_ALIVE: '60'
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: inference-engine-all-0-1
