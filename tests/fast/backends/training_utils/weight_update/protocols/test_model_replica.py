@@ -142,6 +142,8 @@ def _toy_model(model_replica_module: ModuleType, *, restores_expert_layout: bool
             raise NotImplementedError
 
         def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+            layer.weight_interleaved = layer.weight.data.clone()
+            layer.kernel_operands = (layer.weight.data.clone(), layer.weight_scale.data.clone())
             layer.register_parameter("weight_scale_swizzled", layer.weight_scale)
             layer.weight_scale_inv = torch.nn.Parameter(
                 torch.zeros(5, device=layer.weight.device), requires_grad=False
@@ -154,6 +156,7 @@ def _toy_model(model_replica_module: ModuleType, *, restores_expert_layout: bool
     linear.weight = _parameter(3, 2)
     linear.weight_scale = _parameter(3)
     linear.quant_method = _SwizzledScaleMethod()
+    linear.lookup_table = torch.arange(3.0)
     norm = torch.nn.Module()
     norm.weight = _parameter(2)
 
@@ -224,6 +227,15 @@ class TestModelReplica:
             "norm.weight": ((2,), 8),
         }
         assert all(param.numel() == 0 for param in model_replica._model.parameters())
+
+    def test_tensors_postprocess_attaches_keep_no_storage(self, make_model_replica) -> None:
+        """They are what the engine's kernels read in forward; a replica never runs forward, and holding them would
+        keep postprocess-device memory for the whole trainer process."""
+        linear = make_model_replica()._model.linear
+
+        assert linear.weight_interleaved.is_meta and linear.weight_interleaved.shape == (3, 2)
+        assert all(operand.is_meta for operand in linear.kernel_operands)
+        assert not linear.lookup_table.is_meta
 
     def test_load_into_returns_the_loader_output_in_the_buffer(self, make_model_replica) -> None:
         """The returned bytes are what the transport writes, so they must be the loader's output and lie in the
