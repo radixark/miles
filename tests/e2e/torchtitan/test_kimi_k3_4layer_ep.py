@@ -34,12 +34,13 @@ CASE = KimiK3Case(
     num_gpus=8,
     ep_size=8,
     rollout_num_gpus_per_engine=4,
-    rollout_batch_size=4,
     seq_len=4096,
     max_response_len=256,
     mem_fraction_static=0.5,
     extra_args=(
         "--model-name kimi_k3 "
+        # extra_args follow the shared defaults; keep the partial-model batch at 16 samples.
+        "--rollout-batch-size 4 --n-samples-per-prompt 4 --global-batch-size 16 "
         # Hash-based rewards exercise RL updates even when the pruned model cannot solve GSM8K.
         "--prompt-data /root/datasets/gsm8k/train.parquet --input-key messages "
         "--rm-type deterministic_random "
