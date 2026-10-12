@@ -225,7 +225,9 @@ class ModelReplica:
             self._load_asserting_every_byte_is_written(param_bytes_by_name, hf_tensors)
         return param_bytes_by_name
 
-    def _load(self, param_bytes_by_name: Mapping[str, torch.Tensor], hf_tensors: list[tuple[str, torch.Tensor]]) -> None:
+    def _load(
+        self, param_bytes_by_name: Mapping[str, torch.Tensor], hf_tensors: list[tuple[str, torch.Tensor]]
+    ) -> None:
         with self._bind_params_to_bytes(param_bytes_by_name) as bound_params_by_name:
             state_before_load_by_name = {
                 name: _get_param_state_besides_bytes(param) for name, param in bound_params_by_name.items()
@@ -240,7 +242,9 @@ class ModelReplica:
         for param_bytes in param_bytes_by_name.values():
             param_bytes.zero_()
         self._load(param_bytes_by_name, hf_tensors)
-        bytes_loaded_over_zeros_by_name = {name: param_bytes.clone() for name, param_bytes in param_bytes_by_name.items()}
+        bytes_loaded_over_zeros_by_name = {
+            name: param_bytes.clone() for name, param_bytes in param_bytes_by_name.items()
+        }
         for param_bytes in param_bytes_by_name.values():
             param_bytes.fill_(0xFF)
         self._load(param_bytes_by_name, hf_tensors)
