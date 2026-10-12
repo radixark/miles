@@ -13,7 +13,7 @@ from miles.rollout.on_policy_distillation import (
 )
 from miles.utils.types import Sample
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["rollout"])
 
 
 def _entry(prob: float, token_id: int):

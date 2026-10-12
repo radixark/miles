@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_deployment_identity, make_provider
 
@@ -23,6 +24,8 @@ from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.ray_utils import Box
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.workers.naming import compute_cell_id
+
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["megatron"])
 
 pytestmark = pytest.mark.asyncio
 

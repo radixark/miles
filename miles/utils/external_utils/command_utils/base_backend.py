@@ -214,13 +214,12 @@ class BaseCommandBackend(ABC):
         multinode: bool = False,
         num_nodes: int | None = None,
         extra_args: str = "",
-        dir_dst: str = "/root",
+        dir_dst: str = "/root/models",
         hf_checkpoint: str | None = None,
         megatron_path: str = "/root/Megatron-LM",
     ):
         hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
 
-        # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
         path_dst = f"{dir_dst}/{model_name}_torch_dist"
         with exclusive_path_lock(path_dst):
             tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
@@ -301,6 +300,22 @@ class BaseCommandBackend(ABC):
                 f"--input-fp8-hf-path {path_src} "
                 f"--output-bf16-hf-path {path_dst} "
             )
+
+    def exec_command_gpu_once(self, cmd: str, path_dst: str):
+        """Run `cmd`, which writes `path_dst`, unless an earlier run on this host finished it.
+
+        The converters copy the source's index files first, so nothing inside `path_dst`
+        marks completion; a sibling `<path_dst>.done` written after `cmd` succeeds does.
+        """
+        done = Path(f"{path_dst}.done")
+        with exclusive_path_lock(path_dst):
+            if done.exists():
+                logger.info(f"exec_command_gpu_once skip {path_dst} since {done} exists")
+                return
+
+            self.exec_command_cpu(f"rm -rf {shlex.quote(path_dst)}")
+            self.exec_command_gpu(cmd)
+            done.touch()
 
     def api_server_host(self, config: ExecuteTrainConfig) -> str:
         return "localhost"
