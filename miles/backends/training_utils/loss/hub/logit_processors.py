@@ -14,6 +14,34 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.sampling_mask import RolloutSamplingMask
 
 
+class _ResponseSpanViews(torch.autograd.Function):
+    """Share one dense backward buffer across disjoint response-span views.
+
+    Forward does not copy logits. Unlike separate slice backward nodes, this
+    node writes all response gradients into one input-sized buffer. Consumers
+    must not modify its output views in place.
+    """
+
+    @staticmethod
+    def forward(ctx, logits: torch.Tensor, spans: list[tuple[int, int]]):
+        ctx.spans = spans
+        ctx.shape = logits.shape
+        ctx.set_materialize_grads(False)
+        return tuple(logits[start:stop] for start, stop in spans)
+
+    @staticmethod
+    def backward(ctx, *gradients):
+        grad_input = None
+        for (start, stop), gradient in zip(ctx.spans, gradients, strict=True):
+            if gradient is None:
+                continue
+            if grad_input is None:
+                grad_input = gradient.new_zeros(ctx.shape)
+            # Span metadata guarantees disjoint rows, so no reduction is needed.
+            grad_input[start:stop].copy_(gradient)
+        return grad_input, None
+
+
 def _iter_response_chunks(
     logits: torch.Tensor,
     *,
@@ -24,28 +52,12 @@ def _iter_response_chunks(
     max_seq_lens: list[int] | None = None,
     include_response_indices: bool,
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor, Sequence[int]]]:
-    """Yield response logits, tokens, and original response indices per sample.
+    """Yield response chunks without retaining a copy of the entire response batch.
 
-    After squeezing batch dimension and applying temperature scaling, this
-    function extracts the logits and tokens corresponding to response segments
-    for each sample. When context parallelism is disabled, it slices directly
-    from the concatenated sequence. With context parallelism enabled, it
-    handles split sequences across ranks.
-
-    Args:
-        logits: Model outputs with shape `[1, T, V]` (policy) or `[1, T, 1]`
-            (value). Must be float32.
-        args: Configuration containing `rollout_temperature` for scaling.
-        unconcat_tokens: List of token tensors (prompt+response) per sample.
-        total_lengths: Total sequence lengths (prompt+response) per sample.
-        response_lengths: Response segment lengths per sample.
-
-    Yields:
-        Tuple of `(logits_chunk, tokens_chunk, response_indices)`, where
-        `logits_chunk` is shape `[R, V]` (policy) or `[R, 1]` (value), and
-        `tokens_chunk` is shape `[R]` (1D int64). `response_indices` maps every
-        local row back to the full response. The mapping is empty when
-        `include_response_indices` is false.
+    Training span views share one backward node and one dense input gradient.
+    Only two-sided zigzag responses need a transient per-sample concatenation.
+    Consumers must not modify training views in place; policy scoring creates
+    owned FP32 chunks before applying masks or entropy operations.
     """
     qkv_format = args.qkv_format
 
@@ -69,6 +81,50 @@ def _iter_response_chunks(
         elif getattr(args, "fp16", False):
             logits = logits.to(torch.float16)
 
+    metadata = _iter_response_spans(
+        num_rows=logits.size(0),
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        include_response_indices=include_response_indices,
+    )
+    if torch.is_grad_enabled() and logits.requires_grad:
+        samples = list(metadata)
+        if not samples:
+            return
+        # Empty responses still need an empty output connected to the input.
+        sample_spans = [spans or [(0, 0)] for spans, _, _ in samples]
+        views = _ResponseSpanViews.apply(logits, [span for spans in sample_spans for span in spans])
+        offset = 0
+        for spans, (_, tokens, indices) in zip(sample_spans, samples, strict=True):
+            chunks = views[offset : offset + len(spans)]
+            chunk = chunks[0] if len(chunks) == 1 else torch.cat(chunks, dim=0)
+            yield chunk, tokens, indices
+            offset += len(spans)
+    else:
+        for spans, tokens, indices in metadata:
+            if len(spans) > 1:
+                chunk = torch.cat([logits[start:stop] for start, stop in spans], dim=0)
+            else:
+                start, stop = spans[0] if spans else (0, 0)
+                chunk = logits[start:stop]
+            yield chunk, tokens, indices
+
+
+def _iter_response_spans(
+    *,
+    num_rows: int,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None,
+    include_response_indices: bool,
+) -> Iterator[tuple[list[tuple[int, int]], torch.Tensor, Sequence[int]]]:
+    """Map each sample's response to flattened local logit spans, without copying logits."""
+    qkv_format = args.qkv_format
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
     end = 0
@@ -82,11 +138,11 @@ def _iter_response_chunks(
             if qkv_format == "bshd":
                 end = max_seq_len * i + total_length
                 start = end - response_length
-                logits_chunk = logits[start - 1 : end - 1]
+                spans = [(start - 1, end - 1)]
             else:
                 end += total_length
                 start = end - response_length
-                logits_chunk = logits[start - 1 : end - 1]
+                spans = [(start - 1, end - 1)]
             tokens_chunk = tokens[-response_length:] if response_length else tokens[0:0]
             response_indices = range(response_length) if include_response_indices else ()
         elif args.allgather_cp:
@@ -97,7 +153,7 @@ def _iter_response_chunks(
                 logits_offset = i * logits_local_len
                 sample_start = 0
             else:
-                logits_local_len = logits.size(0)
+                logits_local_len = num_rows
                 logits_offset = 0
                 sample_start = seq_start
             cp_rank = parallel_state.cp.rank
@@ -113,11 +169,11 @@ def _iter_response_chunks(
             s = max(logit_global_start, chunk_start)
             e = min(logit_global_end, chunk_end)
             if e <= s:
-                logits_chunk = logits[0:0]
+                spans = [(0, 0)]
                 tokens_chunk = tokens[0:0]
                 response_indices = ()
             else:
-                logits_chunk = logits[logits_offset + s - chunk_start : logits_offset + e - chunk_start]
+                spans = [(logits_offset + s - chunk_start, logits_offset + e - chunk_start)]
                 tokens_chunk = tokens[(s + 1) - sample_start : (e + 1) - sample_start]
                 response_indices = (
                     range(
@@ -127,26 +183,26 @@ def _iter_response_chunks(
                     if include_response_indices
                     else ()
                 )
-            assert logits_chunk.size(0) == tokens_chunk.size(0), f"{logits_chunk.size(0)} vs {tokens_chunk.size(0)}"
         else:
-            # TODO: this is super ugly... do better abstraction.
+            # Zigzag CP stores two local spans for each sample.
             chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
                 total_length, response_length, qkv_format, max_seq_len
             )
 
-            logits_0, logits_1 = logits[end : end + chunk_size], logits[end + chunk_size : end + 2 * chunk_size]
+            # Reject inconsistent padding on the host before a CUDA index error.
+            assert end + 2 * chunk_size <= num_rows, (
+                f"sample {i}: local logits have {num_rows} rows, "
+                f"but CP padding requires at least {end + 2 * chunk_size}"
+            )
+
+            spans = [
+                (end + half * chunk_size + start - chunk[0], end + half * chunk_size + stop - chunk[0])
+                for half, (chunk, (start, stop)) in enumerate(zip(chunks_offset, logits_offset, strict=True))
+                if start < stop
+            ]
             end += 2 * chunk_size
-
-            logits_0 = logits_0[logits_offset[0][0] - chunks_offset[0][0] : logits_offset[0][1] - chunks_offset[0][0]]
             tokens_0 = tokens[tokens_offset[0][0] : tokens_offset[0][1]]
-
-            logits_1 = logits_1[logits_offset[1][0] - chunks_offset[1][0] : logits_offset[1][1] - chunks_offset[1][0]]
             tokens_1 = tokens[tokens_offset[1][0] : tokens_offset[1][1]]
-
-            assert logits_0.size(0) == tokens_0.size(0), f"{logits_0.size(0)} vs {tokens_0.size(0)}"
-            assert logits_1.size(0) == tokens_1.size(0), f"{logits_1.size(0)} vs {tokens_1.size(0)}"
-
-            logits_chunk = torch.cat([logits_0, logits_1], dim=0)
             tokens_chunk = torch.cat([tokens_0, tokens_1], dim=0)
             if include_response_indices:
                 prompt_length = total_length - response_length
@@ -165,9 +221,15 @@ def _iter_response_chunks(
 
         seq_start += total_length
 
+        # Validate requested spans before response selection reaches CUDA. Empty
+        # spans do not dereference any row and may lie at a padding boundary.
+        assert all(
+            start == stop or 0 <= start < stop <= num_rows for start, stop in spans
+        ), f"sample {i}: response spans {spans} exceed local logits with {num_rows} rows"
         if include_response_indices:
             assert len(response_indices) == tokens_chunk.size(0)
-        yield logits_chunk, tokens_chunk, response_indices
+        assert sum(stop - start for start, stop in spans) == tokens_chunk.size(0)
+        yield spans, tokens_chunk, response_indices
 
 
 def get_responses(
