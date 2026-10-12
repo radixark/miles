@@ -50,30 +50,33 @@ __device__ __forceinline__ int make_warp_uniform(int x) {
 #define CAKE_INF CUDART_INF_F
 #define NUM_MAIN_STAGES 1
 #define SMEM_KEYS_OFF 0
-#define SMEM_KEYS_STAGE_BYTES 32768
-#define SMEM_KEYS_STRIDE 32768
-#define SMEM_PAIRS_OFF 32768
+#define SMEM_KEYS_STAGE_BYTES 16384
+#define SMEM_KEYS_STRIDE 16384
+#define SMEM_PAIRS_OFF 16384
 #define SMEM_PAIRS_STAGE_BYTES 4096
 #define SMEM_PAIRS_STRIDE 4096
-#define SMEM_HIST_OFF 36864
+#define SMEM_HIST_OFF 20480
 #define SMEM_HIST_STAGE_BYTES 1024
 #define SMEM_HIST_STRIDE 1024
-#define SMEM_CNT_SEL_OFF 37888
-#define SMEM_CNT_SEL_STAGE_BYTES 1024
-#define SMEM_CNT_SEL_STRIDE 1024
-#define SMEM_CNT_TIE_OFF 38912
-#define SMEM_CNT_TIE_STAGE_BYTES 1024
-#define SMEM_CNT_TIE_STRIDE 1024
-#define SMEM_WARP_SUMS_OFF 39936
+#define SMEM_CNT_SEL_OFF 21504
+#define SMEM_CNT_SEL_STAGE_BYTES 512
+#define SMEM_CNT_SEL_STRIDE 512
+#define SMEM_CNT_TIE_OFF 22016
+#define SMEM_CNT_TIE_STAGE_BYTES 512
+#define SMEM_CNT_TIE_STRIDE 512
+#define SMEM_WARP_SUMS_OFF 22528
 #define SMEM_WARP_SUMS_STAGE_BYTES 64
 #define SMEM_WARP_SUMS_STRIDE 64
-#define SMEM_STATE_OFF 40192
+#define SMEM_STATE_OFF 22784
 #define SMEM_STATE_STAGE_BYTES 16
 #define SMEM_STATE_STRIDE 16
 #define SMEM_PAIRS_B_OFF 0
 #define SMEM_PAIRS_B_STAGE_BYTES 4096
 #define SMEM_PAIRS_B_STRIDE 4096
-#define SMEM_TOTAL 40320
+#define SMEM_CAND_OFF 0
+#define SMEM_CAND_STAGE_BYTES 8
+#define SMEM_CAND_STRIDE 8
+#define SMEM_TOTAL 22912
 #define THREADS 256
 
 #include <math_constants.h>
@@ -96,7 +99,7 @@ __device__ __forceinline__ unsigned int __as_u32(int v) {
 extern "C" {
 
 __global__ __launch_bounds__(THREADS) void
-kernel_cake_dsa_train_be3e28d7b8a8e9016fb2(float* __restrict__ logits, int* __restrict__ out, int* __restrict__ row_end, int n_kv, int has_row_end)
+kernel_cake_dsa_train_b94041639064295336d1(float* __restrict__ logits, int* __restrict__ out, int* __restrict__ row_end, int n_kv, int has_row_end)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -133,6 +136,8 @@ kernel_cake_dsa_train_be3e28d7b8a8e9016fb2(float* __restrict__ logits, int* __re
     const int state_addr = smem + SMEM_STATE_OFF;
     unsigned long long* pairs_b = reinterpret_cast<unsigned long long*>(smem_raw + SMEM_PAIRS_B_OFF);
     const int pairs_b_addr = smem + SMEM_PAIRS_B_OFF;
+    unsigned long long* cand = reinterpret_cast<unsigned long long*>(smem_raw + SMEM_CAND_OFF);
+    const int cand_addr = smem + SMEM_CAND_OFF;
 
     // === Task calls (dependency order) ===
     int row = bid;
@@ -162,8 +167,58 @@ kernel_cake_dsa_train_be3e28d7b8a8e9016fb2(float* __restrict__ logits, int* __re
         pairs[s] = 0;
     }
     int last_sel = -1;
+    int n_vec4 = (((n_kv & 3) == 0) ? limit / 4 : 0);
     #pragma unroll 4
-    for (int idx = tid; idx < stage_end; idx += 256) {
+    for (int v4 = tid; v4 < n_vec4; v4 += 256) {
+        int pos0 = v4 * 4;
+        float _vec_load_0[4];
+        {
+            float4 _v4 = *reinterpret_cast<const float4*>(logits + (row_base + (unsigned long long)pos0) + 0);
+            _vec_load_0[0 + 0] = _v4.x;
+            _vec_load_0[0 + 1] = _v4.y;
+            _vec_load_0[0 + 2] = _v4.z;
+            _vec_load_0[0 + 3] = _v4.w;
+        }
+        float xv = _vec_load_0[0];
+        unsigned int bitsv = __as_u32(xv);
+        bitsv = ((bitsv == 2147483648u) ? 0 : bitsv);
+        unsigned int sign_v = (unsigned int)((int)bitsv >> 31);
+        unsigned int encv = bitsv ^ (sign_v | 2147483648u);
+        bool sel_v = encv - 8388608 <= 4278190080u;
+        unsigned int keyv = ((sel_v) ? encv : 0);
+        last_sel = ((sel_v) ? pos0 : last_sel);
+        keys[pos0] = keyv;
+        float xv_0 = _vec_load_0[1];
+        unsigned int bitsv_1 = __as_u32(xv_0);
+        bitsv_1 = ((bitsv_1 == 2147483648u) ? 0 : bitsv_1);
+        unsigned int sign_v_2 = (unsigned int)((int)bitsv_1 >> 31);
+        unsigned int encv_3 = bitsv_1 ^ (sign_v_2 | 2147483648u);
+        bool sel_v_4 = encv_3 - 8388608 <= 4278190080u;
+        unsigned int keyv_5 = ((sel_v_4) ? encv_3 : 0);
+        last_sel = ((sel_v_4) ? pos0 + 1 : last_sel);
+        keys[pos0 + 1] = keyv_5;
+        float xv_6 = _vec_load_0[2];
+        unsigned int bitsv_7 = __as_u32(xv_6);
+        bitsv_7 = ((bitsv_7 == 2147483648u) ? 0 : bitsv_7);
+        unsigned int sign_v_8 = (unsigned int)((int)bitsv_7 >> 31);
+        unsigned int encv_9 = bitsv_7 ^ (sign_v_8 | 2147483648u);
+        bool sel_v_10 = encv_9 - 8388608 <= 4278190080u;
+        unsigned int keyv_11 = ((sel_v_10) ? encv_9 : 0);
+        last_sel = ((sel_v_10) ? pos0 + 2 : last_sel);
+        keys[pos0 + 2] = keyv_11;
+        float xv_12 = _vec_load_0[3];
+        unsigned int bitsv_13 = __as_u32(xv_12);
+        bitsv_13 = ((bitsv_13 == 2147483648u) ? 0 : bitsv_13);
+        unsigned int sign_v_14 = (unsigned int)((int)bitsv_13 >> 31);
+        unsigned int encv_15 = bitsv_13 ^ (sign_v_14 | 2147483648u);
+        bool sel_v_16 = encv_15 - 8388608 <= 4278190080u;
+        unsigned int keyv_17 = ((sel_v_16) ? encv_15 : 0);
+        last_sel = ((sel_v_16) ? pos0 + 3 : last_sel);
+        keys[pos0 + 3] = keyv_17;
+    }
+    int tail_start = n_vec4 * 4;
+    #pragma unroll 1
+    for (int idx = tail_start + tid; idx < stage_end; idx += 256) {
         unsigned int key = 0;
         if (limit > idx) {
             float x = logits[row_base + (unsigned long long)idx];
@@ -217,6 +272,9 @@ kernel_cake_dsa_train_be3e28d7b8a8e9016fb2(float* __restrict__ logits, int* __re
     n_chunks_rt = (limit_eff + 255) / 256;
     stage_end = n_chunks_rt * 256;
     n_slots_rt = n_chunks_rt * 8;
+    int n_cand_rt = 0;
+    int n_chunks_fb = n_chunks_rt;
+    int stage_end_fb = stage_end;
     #pragma unroll 4
     for (int idx0 = tid; idx0 < stage_end; idx0 += 256) {
         unsigned int key0 = keys[idx0];
@@ -952,7 +1010,7 @@ kernel_cake_dsa_train_be3e28d7b8a8e9016fb2(float* __restrict__ logits, int* __re
     }
     unsigned int lt_mask = ~(4294967295u << (unsigned int)lane);
     if (quota == 0) {
-        #pragma unroll 1
+        #pragma unroll 4
         for (int cp = 0; cp < n_chunks_rt; cp++) {
             int idxp = cp * 256 + tid;
             unsigned int kp = keys[idxp];
@@ -975,7 +1033,7 @@ kernel_cake_dsa_train_be3e28d7b8a8e9016fb2(float* __restrict__ logits, int* __re
             }
         }
     } else {
-        #pragma unroll 1
+        #pragma unroll 4
         for (int c = 0; c < n_chunks_rt; c++) {
             int idx2 = c * 256 + tid;
             unsigned int k2 = keys[idx2];
@@ -1116,7 +1174,7 @@ kernel_cake_dsa_train_be3e28d7b8a8e9016fb2(float* __restrict__ logits, int* __re
     }
     __syncthreads();
     if (quota != 0) {
-        #pragma unroll 1
+        #pragma unroll 4
         for (int c2 = 0; c2 < n_chunks_rt; c2++) {
             int idx3 = c2 * 256 + tid;
             unsigned int k3 = keys[idx3];

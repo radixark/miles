@@ -50,31 +50,34 @@ __device__ __forceinline__ int make_warp_uniform(int x) {
 #define CAKE_INF CUDART_INF_F
 #define NUM_MAIN_STAGES 1
 #define SMEM_KEYS_OFF 0
-#define SMEM_KEYS_STAGE_BYTES 16384
-#define SMEM_KEYS_STRIDE 16384
-#define SMEM_PAIRS_OFF 16384
+#define SMEM_KEYS_STAGE_BYTES 65536
+#define SMEM_KEYS_STRIDE 65536
+#define SMEM_PAIRS_OFF 65536
 #define SMEM_PAIRS_STAGE_BYTES 4096
 #define SMEM_PAIRS_STRIDE 4096
-#define SMEM_HIST_OFF 20480
+#define SMEM_HIST_OFF 69632
 #define SMEM_HIST_STAGE_BYTES 1024
 #define SMEM_HIST_STRIDE 1024
-#define SMEM_CNT_SEL_OFF 21504
-#define SMEM_CNT_SEL_STAGE_BYTES 512
-#define SMEM_CNT_SEL_STRIDE 512
-#define SMEM_CNT_TIE_OFF 22016
-#define SMEM_CNT_TIE_STAGE_BYTES 512
-#define SMEM_CNT_TIE_STRIDE 512
-#define SMEM_WARP_SUMS_OFF 22528
-#define SMEM_WARP_SUMS_STAGE_BYTES 64
-#define SMEM_WARP_SUMS_STRIDE 64
-#define SMEM_STATE_OFF 22784
+#define SMEM_CNT_SEL_OFF 70656
+#define SMEM_CNT_SEL_STAGE_BYTES 2048
+#define SMEM_CNT_SEL_STRIDE 2048
+#define SMEM_CNT_TIE_OFF 72704
+#define SMEM_CNT_TIE_STAGE_BYTES 2048
+#define SMEM_CNT_TIE_STRIDE 2048
+#define SMEM_WARP_SUMS_OFF 74752
+#define SMEM_WARP_SUMS_STAGE_BYTES 128
+#define SMEM_WARP_SUMS_STRIDE 128
+#define SMEM_STATE_OFF 75008
 #define SMEM_STATE_STAGE_BYTES 16
 #define SMEM_STATE_STRIDE 16
 #define SMEM_PAIRS_B_OFF 0
 #define SMEM_PAIRS_B_STAGE_BYTES 4096
 #define SMEM_PAIRS_B_STRIDE 4096
-#define SMEM_TOTAL 22912
-#define THREADS 256
+#define SMEM_CAND_OFF 0
+#define SMEM_CAND_STAGE_BYTES 8
+#define SMEM_CAND_STRIDE 8
+#define SMEM_TOTAL 75136
+#define THREADS 512
 
 #include <math_constants.h>
 
@@ -96,7 +99,7 @@ __device__ __forceinline__ unsigned int __as_u32(int v) {
 extern "C" {
 
 __global__ __launch_bounds__(THREADS) void
-kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __restrict__ out, int* __restrict__ row_end, int n_kv, int has_row_end)
+kernel_cake_dsa_train_4ae182a6741bbae39b8d(float* __restrict__ logits, int* __restrict__ out, int* __restrict__ row_end, int n_kv, int has_row_end)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -133,6 +136,8 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
     const int state_addr = smem + SMEM_STATE_OFF;
     unsigned long long* pairs_b = reinterpret_cast<unsigned long long*>(smem_raw + SMEM_PAIRS_B_OFF);
     const int pairs_b_addr = smem + SMEM_PAIRS_B_OFF;
+    unsigned long long* cand = reinterpret_cast<unsigned long long*>(smem_raw + SMEM_CAND_OFF);
+    const int cand_addr = smem + SMEM_CAND_OFF;
 
     // === Task calls (dependency order) ===
     int row = bid;
@@ -147,9 +152,9 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
     if (limit < 0) {
         limit = 0;
     }
-    int n_chunks_rt = (limit + 255) / 256;
-    int stage_end = n_chunks_rt * 256;
-    int n_slots_rt = n_chunks_rt * 8;
+    int n_chunks_rt = (limit + 511) / 512;
+    int stage_end = n_chunks_rt * 512;
+    int n_slots_rt = n_chunks_rt * 16;
     int hidx = tid;
     if (hidx < 256) {
         hist[hidx] = 0;
@@ -158,12 +163,62 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
         state[2] = 0;
     }
     #pragma unroll 1
-    for (int s = tid; s < 512; s += 256) {
+    for (int s = tid; s < 512; s += 512) {
         pairs[s] = 0;
     }
     int last_sel = -1;
-    #pragma unroll 4
-    for (int idx = tid; idx < stage_end; idx += 256) {
+    int n_vec4 = (((n_kv & 3) == 0) ? limit / 4 : 0);
+    #pragma unroll 8
+    for (int v4 = tid; v4 < n_vec4; v4 += 512) {
+        int pos0 = v4 * 4;
+        float _vec_load_0[4];
+        {
+            float4 _v4 = *reinterpret_cast<const float4*>(logits + (row_base + (unsigned long long)pos0) + 0);
+            _vec_load_0[0 + 0] = _v4.x;
+            _vec_load_0[0 + 1] = _v4.y;
+            _vec_load_0[0 + 2] = _v4.z;
+            _vec_load_0[0 + 3] = _v4.w;
+        }
+        float xv = _vec_load_0[0];
+        unsigned int bitsv = __as_u32(xv);
+        bitsv = ((bitsv == 2147483648u) ? 0 : bitsv);
+        unsigned int sign_v = (unsigned int)((int)bitsv >> 31);
+        unsigned int encv = bitsv ^ (sign_v | 2147483648u);
+        bool sel_v = encv - 8388608 <= 4278190080u;
+        unsigned int keyv = ((sel_v) ? encv : 0);
+        last_sel = ((sel_v) ? pos0 : last_sel);
+        keys[pos0] = keyv;
+        float xv_0 = _vec_load_0[1];
+        unsigned int bitsv_1 = __as_u32(xv_0);
+        bitsv_1 = ((bitsv_1 == 2147483648u) ? 0 : bitsv_1);
+        unsigned int sign_v_2 = (unsigned int)((int)bitsv_1 >> 31);
+        unsigned int encv_3 = bitsv_1 ^ (sign_v_2 | 2147483648u);
+        bool sel_v_4 = encv_3 - 8388608 <= 4278190080u;
+        unsigned int keyv_5 = ((sel_v_4) ? encv_3 : 0);
+        last_sel = ((sel_v_4) ? pos0 + 1 : last_sel);
+        keys[pos0 + 1] = keyv_5;
+        float xv_6 = _vec_load_0[2];
+        unsigned int bitsv_7 = __as_u32(xv_6);
+        bitsv_7 = ((bitsv_7 == 2147483648u) ? 0 : bitsv_7);
+        unsigned int sign_v_8 = (unsigned int)((int)bitsv_7 >> 31);
+        unsigned int encv_9 = bitsv_7 ^ (sign_v_8 | 2147483648u);
+        bool sel_v_10 = encv_9 - 8388608 <= 4278190080u;
+        unsigned int keyv_11 = ((sel_v_10) ? encv_9 : 0);
+        last_sel = ((sel_v_10) ? pos0 + 2 : last_sel);
+        keys[pos0 + 2] = keyv_11;
+        float xv_12 = _vec_load_0[3];
+        unsigned int bitsv_13 = __as_u32(xv_12);
+        bitsv_13 = ((bitsv_13 == 2147483648u) ? 0 : bitsv_13);
+        unsigned int sign_v_14 = (unsigned int)((int)bitsv_13 >> 31);
+        unsigned int encv_15 = bitsv_13 ^ (sign_v_14 | 2147483648u);
+        bool sel_v_16 = encv_15 - 8388608 <= 4278190080u;
+        unsigned int keyv_17 = ((sel_v_16) ? encv_15 : 0);
+        last_sel = ((sel_v_16) ? pos0 + 3 : last_sel);
+        keys[pos0 + 3] = keyv_17;
+    }
+    int tail_start = n_vec4 * 4;
+    #pragma unroll 1
+    for (int idx = tail_start + tid; idx < stage_end; idx += 512) {
         unsigned int key = 0;
         if (limit > idx) {
             float x = logits[row_base + (unsigned long long)idx];
@@ -214,11 +269,30 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
     limit_eff = ((wl_9 > limit_eff) ? wl_9 : limit_eff);
     int wl_10 = (int)warp_sums[7];
     limit_eff = ((wl_10 > limit_eff) ? wl_10 : limit_eff);
-    n_chunks_rt = (limit_eff + 255) / 256;
-    stage_end = n_chunks_rt * 256;
-    n_slots_rt = n_chunks_rt * 8;
-    #pragma unroll 4
-    for (int idx0 = tid; idx0 < stage_end; idx0 += 256) {
+    int wl_11 = (int)warp_sums[8];
+    limit_eff = ((wl_11 > limit_eff) ? wl_11 : limit_eff);
+    int wl_12 = (int)warp_sums[9];
+    limit_eff = ((wl_12 > limit_eff) ? wl_12 : limit_eff);
+    int wl_13 = (int)warp_sums[10];
+    limit_eff = ((wl_13 > limit_eff) ? wl_13 : limit_eff);
+    int wl_14 = (int)warp_sums[11];
+    limit_eff = ((wl_14 > limit_eff) ? wl_14 : limit_eff);
+    int wl_15 = (int)warp_sums[12];
+    limit_eff = ((wl_15 > limit_eff) ? wl_15 : limit_eff);
+    int wl_16 = (int)warp_sums[13];
+    limit_eff = ((wl_16 > limit_eff) ? wl_16 : limit_eff);
+    int wl_17 = (int)warp_sums[14];
+    limit_eff = ((wl_17 > limit_eff) ? wl_17 : limit_eff);
+    int wl_18 = (int)warp_sums[15];
+    limit_eff = ((wl_18 > limit_eff) ? wl_18 : limit_eff);
+    n_chunks_rt = (limit_eff + 511) / 512;
+    stage_end = n_chunks_rt * 512;
+    n_slots_rt = n_chunks_rt * 16;
+    int n_cand_rt = 0;
+    int n_chunks_fb = n_chunks_rt;
+    int stage_end_fb = stage_end;
+    #pragma unroll 8
+    for (int idx0 = tid; idx0 < stage_end; idx0 += 512) {
         unsigned int key0 = keys[idx0];
         if (key0 != 0) {
             atomicAdd(&hist[key0 >> 24], 1);
@@ -404,8 +478,8 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
     }
     unsigned int prefix_hi = prefix >> 24;
     if (done == 0) {
-        #pragma unroll 4
-        for (int idx1 = tid; idx1 < stage_end; idx1 += 256) {
+        #pragma unroll 8
+        for (int idx1 = tid; idx1 < stage_end; idx1 += 512) {
             unsigned int key1 = keys[idx1];
             if (key1 != 0) {
                 if (key1 >> 24 == prefix_hi) {
@@ -582,13 +656,13 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
             }
         }
     }
-    unsigned int prefix_hi_11 = prefix >> 16;
+    unsigned int prefix_hi_19 = prefix >> 16;
     if (done == 0) {
-        #pragma unroll 4
-        for (int idx1_1 = tid; idx1_1 < stage_end; idx1_1 += 256) {
+        #pragma unroll 8
+        for (int idx1_1 = tid; idx1_1 < stage_end; idx1_1 += 512) {
             unsigned int key1_1 = keys[idx1_1];
             if (key1_1 != 0) {
-                if (key1_1 >> 16 == prefix_hi_11) {
+                if (key1_1 >> 16 == prefix_hi_19) {
                     atomicAdd(&hist[key1_1 >> 8 & 255], 1);
                 }
             }
@@ -750,11 +824,11 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
         }
     }
     __syncthreads();
-    unsigned int chosen1_12 = state[0];
+    unsigned int chosen1_20 = state[0];
     if (done == 0) {
-        prefix = prefix | (chosen1_12 >> 16 & 255) << 8;
-        remaining = chosen1_12 & 65535;
-        if ((chosen1_12 & 2147483648u) != 0) {
+        prefix = prefix | (chosen1_20 >> 16 & 255) << 8;
+        remaining = chosen1_20 & 65535;
+        if ((chosen1_20 & 2147483648u) != 0) {
             if (prefix != 0) {
                 pivot = prefix - 1;
                 count_gt = 512;
@@ -762,13 +836,13 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
             }
         }
     }
-    unsigned int prefix_hi_13 = prefix >> 8;
+    unsigned int prefix_hi_21 = prefix >> 8;
     if (done == 0) {
-        #pragma unroll 4
-        for (int idx1_2 = tid; idx1_2 < stage_end; idx1_2 += 256) {
+        #pragma unroll 8
+        for (int idx1_2 = tid; idx1_2 < stage_end; idx1_2 += 512) {
             unsigned int key1_2 = keys[idx1_2];
             if (key1_2 != 0) {
-                if (key1_2 >> 8 == prefix_hi_13) {
+                if (key1_2 >> 8 == prefix_hi_21) {
                     atomicAdd(&hist[key1_2 & 255], 1);
                 }
             }
@@ -930,11 +1004,11 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
         }
     }
     __syncthreads();
-    unsigned int chosen1_14 = state[0];
+    unsigned int chosen1_22 = state[0];
     if (done == 0) {
-        prefix = prefix | chosen1_14 >> 16 & 255;
-        remaining = chosen1_14 & 65535;
-        if ((chosen1_14 & 2147483648u) != 0) {
+        prefix = prefix | chosen1_22 >> 16 & 255;
+        remaining = chosen1_22 & 65535;
+        if ((chosen1_22 & 2147483648u) != 0) {
             if (prefix != 0) {
                 pivot = prefix - 1;
                 count_gt = 512;
@@ -952,9 +1026,9 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
     }
     unsigned int lt_mask = ~(4294967295u << (unsigned int)lane);
     if (quota == 0) {
-        #pragma unroll 1
+        #pragma unroll 8
         for (int cp = 0; cp < n_chunks_rt; cp++) {
-            int idxp = cp * 256 + tid;
+            int idxp = cp * 512 + tid;
             unsigned int kp = keys[idxp];
             bool is_selp = kp > pivot;
             unsigned int _vote_4 = __ballot_sync(0xFFFFFFFF, is_selp);
@@ -975,16 +1049,16 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
             }
         }
     } else {
-        #pragma unroll 1
+        #pragma unroll 8
         for (int c = 0; c < n_chunks_rt; c++) {
-            int idx2 = c * 256 + tid;
+            int idx2 = c * 512 + tid;
             unsigned int k2 = keys[idx2];
             unsigned int _vote_5 = __ballot_sync(0xFFFFFFFF, k2 > pivot);
             unsigned int sel_mask = _vote_5;
             unsigned int _vote_6 = __ballot_sync(0xFFFFFFFF, k2 == pivot);
             unsigned int tie_mask = _vote_6;
             if (lane == 0) {
-                int slot = c * 8 + warp;
+                int slot = c * 16 + warp;
                 int _popc_2 = __popc(sel_mask);
                 cnt_sel[slot] = (unsigned int)_popc_2;
                 int _popc_3 = __popc(tie_mask);
@@ -1047,7 +1121,7 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
         }
         if (lane == 31) {
             warp_sums[warp] = incl_sel;
-            warp_sums[8 + warp] = incl_tie;
+            warp_sums[16 + warp] = incl_tie;
         }
     }
     __syncthreads();
@@ -1055,52 +1129,100 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
         unsigned int base_sel = 0;
         unsigned int base_tie = 0;
         unsigned int ws = warp_sums[0];
-        unsigned int wt = warp_sums[8];
+        unsigned int wt = warp_sums[16];
         if (warp > 0) {
             base_sel = base_sel + ws;
             base_tie = base_tie + wt;
         }
         unsigned int ws_0 = warp_sums[1];
-        unsigned int wt_1 = warp_sums[9];
+        unsigned int wt_1 = warp_sums[17];
         if (warp > 1) {
             base_sel = base_sel + ws_0;
             base_tie = base_tie + wt_1;
         }
         unsigned int ws_2 = warp_sums[2];
-        unsigned int wt_3 = warp_sums[10];
+        unsigned int wt_3 = warp_sums[18];
         if (warp > 2) {
             base_sel = base_sel + ws_2;
             base_tie = base_tie + wt_3;
         }
         unsigned int ws_4 = warp_sums[3];
-        unsigned int wt_5 = warp_sums[11];
+        unsigned int wt_5 = warp_sums[19];
         if (warp > 3) {
             base_sel = base_sel + ws_4;
             base_tie = base_tie + wt_5;
         }
         unsigned int ws_6 = warp_sums[4];
-        unsigned int wt_7 = warp_sums[12];
+        unsigned int wt_7 = warp_sums[20];
         if (warp > 4) {
             base_sel = base_sel + ws_6;
             base_tie = base_tie + wt_7;
         }
         unsigned int ws_8 = warp_sums[5];
-        unsigned int wt_9 = warp_sums[13];
+        unsigned int wt_9 = warp_sums[21];
         if (warp > 5) {
             base_sel = base_sel + ws_8;
             base_tie = base_tie + wt_9;
         }
         unsigned int ws_10 = warp_sums[6];
-        unsigned int wt_11 = warp_sums[14];
+        unsigned int wt_11 = warp_sums[22];
         if (warp > 6) {
             base_sel = base_sel + ws_10;
             base_tie = base_tie + wt_11;
         }
         unsigned int ws_12 = warp_sums[7];
-        unsigned int wt_13 = warp_sums[15];
+        unsigned int wt_13 = warp_sums[23];
         if (warp > 7) {
             base_sel = base_sel + ws_12;
             base_tie = base_tie + wt_13;
+        }
+        unsigned int ws_14 = warp_sums[8];
+        unsigned int wt_15 = warp_sums[24];
+        if (warp > 8) {
+            base_sel = base_sel + ws_14;
+            base_tie = base_tie + wt_15;
+        }
+        unsigned int ws_16 = warp_sums[9];
+        unsigned int wt_17 = warp_sums[25];
+        if (warp > 9) {
+            base_sel = base_sel + ws_16;
+            base_tie = base_tie + wt_17;
+        }
+        unsigned int ws_18 = warp_sums[10];
+        unsigned int wt_19 = warp_sums[26];
+        if (warp > 10) {
+            base_sel = base_sel + ws_18;
+            base_tie = base_tie + wt_19;
+        }
+        unsigned int ws_20 = warp_sums[11];
+        unsigned int wt_21 = warp_sums[27];
+        if (warp > 11) {
+            base_sel = base_sel + ws_20;
+            base_tie = base_tie + wt_21;
+        }
+        unsigned int ws_22 = warp_sums[12];
+        unsigned int wt_23 = warp_sums[28];
+        if (warp > 12) {
+            base_sel = base_sel + ws_22;
+            base_tie = base_tie + wt_23;
+        }
+        unsigned int ws_24 = warp_sums[13];
+        unsigned int wt_25 = warp_sums[29];
+        if (warp > 13) {
+            base_sel = base_sel + ws_24;
+            base_tie = base_tie + wt_25;
+        }
+        unsigned int ws_26 = warp_sums[14];
+        unsigned int wt_27 = warp_sums[30];
+        if (warp > 14) {
+            base_sel = base_sel + ws_26;
+            base_tie = base_tie + wt_27;
+        }
+        unsigned int ws_28 = warp_sums[15];
+        unsigned int wt_29 = warp_sums[31];
+        if (warp > 15) {
+            base_sel = base_sel + ws_28;
+            base_tie = base_tie + wt_29;
         }
         unsigned int run_sel = base_sel + incl_sel - local_sel;
         unsigned int run_tie = base_tie + incl_tie - local_tie;
@@ -1116,9 +1238,9 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
     }
     __syncthreads();
     if (quota != 0) {
-        #pragma unroll 1
+        #pragma unroll 8
         for (int c2 = 0; c2 < n_chunks_rt; c2++) {
-            int idx3 = c2 * 256 + tid;
+            int idx3 = c2 * 512 + tid;
             unsigned int k3 = keys[idx3];
             bool is_sel = k3 > pivot;
             bool is_tie = k3 == pivot;
@@ -1126,7 +1248,7 @@ kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f(float* __restrict__ logits, int* __re
             unsigned int sel_mask2 = _vote_7;
             unsigned int _vote_8 = __ballot_sync(0xFFFFFFFF, is_tie);
             unsigned int tie_mask2 = _vote_8;
-            int slot2 = c2 * 8 + warp;
+            int slot2 = c2 * 16 + warp;
             unsigned int inv_idx = (unsigned int)idx3 ^ 4294967295u;
             unsigned long long composite = (unsigned long long)k3 << 32 | (unsigned long long)inv_idx;
             if (is_sel) {

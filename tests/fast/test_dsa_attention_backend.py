@@ -20,7 +20,7 @@ import torch
 
 REPO = Path(__file__).resolve().parents[2]
 TOPK_STAGES = {f"dsa_topk_fp32_c{capacity}_k512" for capacity in (4096, 8192, 16384, 32768)}
-TOPK_THREADS = {4096: 256, 8192: 256, 16384: 512, 32768: 1024}
+TOPK_THREADS = {4096: 256, 8192: 256, 16384: 512, 32768: 512}
 FUSED_STAGES = {"dsa_indexer_topk_scan_h32_d128", "dsa_indexer_topk_finalize_k512"}
 TC_STAGES = {f"dsa_attention_fwd_tc_h{h}_d512t{t}" for h in (16, 32, 64) for t in (64, 0)}
 TC_BWD_STAGES = {f"dsa_attention_bwd_tc_h64_d512t{t}" for t in (64, 0)}
@@ -105,7 +105,8 @@ def test_generated_package_registry_covers_both_architectures():
             "n_kv",
             "has_row_end",
         ], stage
-        # CTA size follows the row capacity (256 threads up to 8192 keys, 512 at 16384, 1024 at 32768).
+        # CTA size follows the row capacity (256 threads up to 8192 keys, 512 at 16384 and at 32768: the
+        # 32768-key program stages no keys and runs several 512-thread CTAs per SM).
         capacity = int(stage.split("_c")[1].split("_")[0])
         assert record["block"] == [TOPK_THREADS[capacity], 1, 1] and record["tma_workspace_bytes"] == 0, stage
     scan, finalize = jit.MODULES["dsa_indexer_topk_scan_h32_d128"], jit.MODULES["dsa_indexer_topk_finalize_k512"]

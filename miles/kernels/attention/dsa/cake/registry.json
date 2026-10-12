@@ -1472,8 +1472,8 @@
   ]
  },
  "dsa_topk_fp32_c4096_k512": {
-  "name": "cake_dsa_train_9d58a7cbbee0d8af9b9f",
-  "kernel_symbol": "kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f",
+  "name": "cake_dsa_train_b94041639064295336d1",
+  "kernel_symbol": "kernel_cake_dsa_train_b94041639064295336d1",
   "arg_plan": [
    [
     "buffer",
@@ -1509,8 +1509,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_9d58a7cbbee0d8af9b9f_kernel.cu",
-   "cake_dsa_train_9d58a7cbbee0d8af9b9f_binding.cu"
+   "cake_dsa_train_b94041639064295336d1_kernel.cu",
+   "cake_dsa_train_b94041639064295336d1_binding.cu"
   ],
   "block": [
    256,
@@ -1527,8 +1527,8 @@
   ]
  },
  "dsa_topk_fp32_c8192_k512": {
-  "name": "cake_dsa_train_be3e28d7b8a8e9016fb2",
-  "kernel_symbol": "kernel_cake_dsa_train_be3e28d7b8a8e9016fb2",
+  "name": "cake_dsa_train_3e4d32c5aca94f9e6dee",
+  "kernel_symbol": "kernel_cake_dsa_train_3e4d32c5aca94f9e6dee",
   "arg_plan": [
    [
     "buffer",
@@ -1564,8 +1564,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_be3e28d7b8a8e9016fb2_kernel.cu",
-   "cake_dsa_train_be3e28d7b8a8e9016fb2_binding.cu"
+   "cake_dsa_train_3e4d32c5aca94f9e6dee_kernel.cu",
+   "cake_dsa_train_3e4d32c5aca94f9e6dee_binding.cu"
   ],
   "block": [
    256,
@@ -1582,8 +1582,8 @@
   ]
  },
  "dsa_topk_fp32_c16384_k512": {
-  "name": "cake_dsa_train_0a0ca4f0b13765095fc5",
-  "kernel_symbol": "kernel_cake_dsa_train_0a0ca4f0b13765095fc5",
+  "name": "cake_dsa_train_4ae182a6741bbae39b8d",
+  "kernel_symbol": "kernel_cake_dsa_train_4ae182a6741bbae39b8d",
   "arg_plan": [
    [
     "buffer",
@@ -1619,8 +1619,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_0a0ca4f0b13765095fc5_kernel.cu",
-   "cake_dsa_train_0a0ca4f0b13765095fc5_binding.cu"
+   "cake_dsa_train_4ae182a6741bbae39b8d_kernel.cu",
+   "cake_dsa_train_4ae182a6741bbae39b8d_binding.cu"
   ],
   "block": [
    512,
@@ -1637,8 +1637,8 @@
   ]
  },
  "dsa_topk_fp32_c32768_k512": {
-  "name": "cake_dsa_train_648ca7d1bcc9a92b6ac8",
-  "kernel_symbol": "kernel_cake_dsa_train_648ca7d1bcc9a92b6ac8",
+  "name": "cake_dsa_train_a1f50b32c6a018e5c413",
+  "kernel_symbol": "kernel_cake_dsa_train_a1f50b32c6a018e5c413",
   "arg_plan": [
    [
     "buffer",
@@ -1674,15 +1674,15 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_648ca7d1bcc9a92b6ac8_kernel.cu",
-   "cake_dsa_train_648ca7d1bcc9a92b6ac8_binding.cu"
+   "cake_dsa_train_a1f50b32c6a018e5c413_kernel.cu",
+   "cake_dsa_train_a1f50b32c6a018e5c413_binding.cu"
   ],
   "block": [
-   1024,
+   512,
    1,
    1
   ],
-  "dynamic_smem_bytes": 144768,
+  "dynamic_smem_bytes": 50560,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
