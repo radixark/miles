@@ -63,6 +63,7 @@ class ServerCell:
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
     _env_reporter: EngineEnvReporter = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
+    _initial_weight_snapshot_taken: bool = dataclasses.field(default=False, init=False)
 
     def __post_init__(self) -> None:
         self._env_reporter = EngineEnvReporter(interval_seconds=self.args.env_report_interval_seconds)
@@ -178,8 +179,14 @@ class ServerCell:
         if not await probe_server_healthy(server_url=addr_info.server_url, api_key=self.meta.sglang_api_key):
             return
 
-        if self.args.check_weight_update_equal and self.meta.update_weights:
+        if (
+            self.args.check_weight_update_equal
+            and self.meta.update_weights
+            and not self._initial_weight_snapshot_taken
+        ):
             await self.check_weights(action="snapshot", allow_quant_error=False, selector="all", skip_list=None)
+            # A later reset may commit even if its request times out; preserve the original reference on retry.
+            self._initial_weight_snapshot_taken = True
 
         if self.meta.needs_offload:
             api_client = SGLangApiClient(server_url=addr_info.server_url)
