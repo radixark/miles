@@ -19,34 +19,28 @@ Public surface (see :mod:`.ops`): :func:`sparse_attention`, :func:`lightning_ind
 from ._jit import SUPPORTED_CAPABILITIES, device_arch
 from .ops import (
     extract_topk_scores,
-    flashinfer_topk,
     get_topk_fn,
     indexer_backward,
     indexer_logits,
     indexer_topk_scores,
     lightning_indexer,
-    register_topk_backend,
     select_topk,
     sparse_attention,
     sparse_attention_backward,
     sparse_attention_forward,
-    torch_topk,
 )
 
 __all__ = [
     "SUPPORTED_CAPABILITIES",
     "device_arch",
     "extract_topk_scores",
-    "flashinfer_topk",
     "get_topk_fn",
     "indexer_backward",
     "indexer_logits",
     "indexer_topk_scores",
     "lightning_indexer",
-    "register_topk_backend",
     "select_topk",
     "sparse_attention",
     "sparse_attention_backward",
     "sparse_attention_forward",
-    "torch_topk",
 ]

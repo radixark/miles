@@ -11,8 +11,9 @@ Public surface (all layouts of :mod:`.layouts`):
   with optional FP32 attention sink; replaces ``glm5.ops.sparse_mla.SparseMLA`` and
   ``deepseek_v4...tilelang_sparse_mla.sparse_attn_tilelang``.
 * :func:`indexer_logits`, :func:`select_topk`, :func:`indexer_topk_scores`,
-  :func:`lightning_indexer` -- the indexer pipeline with a replaceable top-k
-  backend and an explicit ``topk_indices`` override for rollout replay; replaces
+  :func:`lightning_indexer` -- the indexer pipeline over the shared Miles top-k
+  backends (:mod:`miles.kernels.attention.dsa.topk`) or a caller-supplied top-k
+  callable, with an explicit ``topk_indices`` override for rollout replay; replaces
   ``glm5.ops.indexer.lighting_indexer`` / ``IndexerFunction`` and
   ``deepseek_v4...tilelang_indexer.V4IndexerFunction``.
 * :func:`sparse_attention_forward` / :func:`sparse_attention_backward` /
@@ -31,6 +32,8 @@ from collections.abc import Callable
 
 import torch
 
+from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
+
 from . import layouts
 from .layouts import RowMeta
 
@@ -41,44 +44,17 @@ TopkFn = Callable[[torch.Tensor, int], torch.Tensor]
 
 
 # --------------------------------------------------------------------------- #
-# Top-k backends
+# Top-k backends (one registry for both kernel backends: miles.kernels.attention.dsa.topk)
 # --------------------------------------------------------------------------- #
 
 
-def torch_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
-    """``torch.topk`` over the last axis; ``-inf`` picks become ``-1`` (matches Miles ``torch_dsa_topk``)."""
-    score, indices = torch.topk(logits, topk, dim=-1)
-    indices = indices.to(torch.int32)
-    return indices.masked_fill(score == -torch.inf, -1)
-
-
-def flashinfer_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
-    """FlashInfer ``top_k`` (deterministic mode) with the same ``-1`` convention."""
-    import flashinfer
-
-    orig_shape = logits.shape
-    flat = logits.reshape(-1, logits.shape[-1]) if logits.dim() > 2 else logits
-    score, indices = flashinfer.top_k(flat, topk, sorted=False, deterministic=True, dsa_graph_safe=True)
-    indices = indices.to(torch.int32).masked_fill(score == -torch.inf, -1)
-    return indices.reshape(*orig_shape[:-1], topk) if logits.dim() > 2 else indices
-
-
-_TOPK_BACKENDS: dict[str, TopkFn] = {"torch": torch_topk, "flashinfer": flashinfer_topk}
-
-
-def register_topk_backend(name: str, fn: TopkFn) -> None:
-    """Register a named top-k backend ``fn(logits, topk) -> int32 indices`` (``-1`` = empty slot)."""
-    _TOPK_BACKENDS[name] = fn
-
-
 def get_topk_fn(backend: str | TopkFn) -> TopkFn:
-    """Resolve a top-k backend by name or accept a callable (e.g. a replay-manager wrapper)."""
+    """Resolve a top-k backend: a callable (e.g. a replay-manager wrapper) is used as is; a name
+    (``torch``, ``flashinfer``) resolves through :func:`miles.kernels.attention.dsa.topk.get_dsa_topk_fn`,
+    the registry the TileLang path uses too."""
     if callable(backend):
         return backend
-    try:
-        return _TOPK_BACKENDS[backend]
-    except KeyError:
-        raise ValueError(f"unknown DSA top-k backend {backend!r}; registered: {sorted(_TOPK_BACKENDS)}") from None
+    return get_dsa_topk_fn(backend)
 
 
 def select_topk(logits: torch.Tensor, topk: int, backend: str | TopkFn = "torch") -> torch.Tensor:
