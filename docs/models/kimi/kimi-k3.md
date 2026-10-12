@@ -214,10 +214,15 @@ standalone launch command; `run_kimi_k3.py train` remains the Megatron recipe.
 --gradient-checkpointing
 ```
 
-The trainer loads BF16 HF weights directly; no `torch_dist` conversion is needed. Use
-that same BF16 directory for SGLang. Raw MXFP4 checkpoints are rejected before model
-allocation. The adapter exports HF-named decoder weights through the existing Miles
-weight-sync path and leaves frozen multimodal towers to that shared path.
+The trainer loads the BF16 HF checkpoint into FP32 master parameters; no `torch_dist`
+conversion is needed. With the default TorchTitan mixed-precision settings, FSDP uses
+BF16 parameters for forward/backward computation and FP32 gradient reductions; the
+optimizer updates the FP32 master parameters. KDA core, short-convolution and output
+normalization parameters retain FP32 precision during computation as well.
+
+Use that same BF16 checkpoint directory for SGLang. Raw MXFP4 checkpoints are rejected
+before model allocation. The adapter exports HF-named decoder weights through the
+existing Miles weight-sync path and leaves frozen multimodal towers to that shared path.
 
 The eight-GPU smoke test downloads and converts the four-layer checkpoint, then
 runs two synchronous colocated rollouts with full-parameter updates:
