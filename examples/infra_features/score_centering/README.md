@@ -21,6 +21,8 @@ Add these arguments to an existing text-only GRPO training recipe:
 --calculate-per-token-loss
 ```
 
+Selecting `--loss-type score_centering` automatically enables `--sglang-enable-fp32-lm-head` for rollouts. This avoids rounding LM-head logits to lower precision before computing sampling probabilities. It can increase serving compute and memory costs, depending on the SGLang version.
+
 Keep reward mean subtraction enabled. Disabling standard-deviation normalization gives the paper's group-centered rewards. This is a separate REINFORCE-style loss: PPO clipping parameters do not apply. Existing batch size and update scheduling still control how many updates consume a rollout batch; choose them explicitly when reproducing an experiment.
 
 Choose `--score-centering-is tis` for weights clipped at `--score-centering-tis-clip` (default 2). Choose `mis` to retain ratios in `[--score-centering-mis-low, --score-centering-mis-high]` (defaults 0.5 and 5), setting other weights to zero. These weights are centered together with the score. Use these options instead of `--use-tis` or a custom TIS function.

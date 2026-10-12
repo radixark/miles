@@ -185,6 +185,9 @@ def add_sglang_arguments(parser):
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
 
+    if getattr(args, "loss_type", None) == "score_centering":
+        args.sglang_enable_fp32_lm_head = True
+
     if args.true_on_policy_mode:
         args.sglang_enable_deterministic_inference = True
 

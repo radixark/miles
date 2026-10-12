@@ -9,7 +9,7 @@ pytest.importorskip("sglang")
 
 from sglang.srt.server_args import ServerArgs
 
-from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
+from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides, validate_args
 from miles.utils.workers.argv_utils import _record_field_names
 
 
@@ -66,3 +66,17 @@ class TestAllocatorOwnedServerArgs:
     def test_the_skipped_launch_gate_port_names_a_real_server_args_field(self):
         """A renamed upstream field would leave the skip entry stale and quietly re-expose the flag."""
         assert "gated_launch_port" in set(_record_field_names(ServerArgs))
+
+
+@pytest.mark.parametrize("loss_type", ["score_centering", "policy_loss", "sft_loss", None])
+@pytest.mark.parametrize("explicit_fp32", [False, True])
+def test_score_centering_enables_fp32_lm_head(loss_type: str | None, explicit_fp32: bool) -> None:
+    args = _parse_sglang_args(["--sglang-enable-fp32-lm-head"] if explicit_fp32 else [])
+    args.loss_type = loss_type
+    args.rollout_num_gpus_per_engine = 1
+    args.true_on_policy_mode = False
+    args.use_session_server = False
+
+    validate_args(args)
+
+    assert args.sglang_enable_fp32_lm_head is (explicit_fp32 or loss_type == "score_centering")
