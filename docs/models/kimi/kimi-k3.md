@@ -251,9 +251,10 @@ CP converts headtail shards into contiguous segments for FLA's recurrent-state a
 convolution-halo exchange, then restores the original layout. MLA retains local
 queries and gathers keys and values with gradients summed back to their owners.
 
-KDA and short convolution use existing FLA operations; MLA uses PyTorch SDPA. Explicit
-packed-document boundaries reach both attention types, including single-token samples
-and the trailing padding segment. MLA currently materializes a dense attention mask
+KDA and short convolution use existing FLA operations; MLA uses PyTorch SDPA. The
+adapter reconstructs packed-document boundaries from the trainer's position IDs,
+including single-token samples and padding, without changing the shared trainer.
+MLA currently materializes a dense attention mask
 (local queries by global keys under CP), so long-context performance and memory still need work. This adapter does not include
 new GPU kernels or the separate FSDP/performance experiments.
 
