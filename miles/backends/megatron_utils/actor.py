@@ -51,7 +51,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
+from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled, lora_base_cpu_backup_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef, ValueSpec
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -524,9 +524,22 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
     @property
+    def _lora_sync_skips_base(self) -> bool:
+        """Colocated LoRA whose engines keep the frozen base across pauses (--lora-base-cpu-backup)
+        streams only the adapter, which the exporters read from the resident adapter params, so
+        weight sync never reads a host copy of the base (mirrors needs_base_resync_for_lora).
+        Model switching (ref/teacher/old_actor) and the weight checker still need the full backup."""
+        return (
+            self.args.colocate
+            and lora_base_cpu_backup_enabled(self.args)
+            and not self.args.check_weight_update_equal
+            and not (self.with_ref or self.with_opd_teacher or self.args.keep_old_actor)
+        )
+
+    @property
     def _enable_weight_backup(self) -> bool:
         """Keep host weights for model switching and weight sync while offloaded."""
-        if self._weight_sync_reads_tms_backup:
+        if self._weight_sync_reads_tms_backup or self._lora_sync_skips_base:
             return False
         return (
             self.with_ref
@@ -896,6 +909,16 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
     def _get_actor_weights(self, *, include_model_companion: bool = False) -> dict[str, torch.Tensor]:
+        if self._lora_sync_skips_base:
+            # no base stream in this configuration; the adapter export reads the resident adapter params,
+            # so only the model companion (its weight version, kept on CPU) is read here
+            if not include_model_companion:
+                return {}
+            return {
+                name: tensor
+                for name, tensor in self._named_actor_weights(include_model_companion=True)
+                if ModelCompanionInstallationUtils.is_companion_parameter(name)
+            }
         if self._weight_sync_reads_tms_backup:
             return dict(
                 self._named_actor_weights(translate_gpu_to_cpu=True, include_model_companion=include_model_companion)

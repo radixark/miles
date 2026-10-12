@@ -801,6 +801,64 @@ def test_offloading_keeps_weight_backup_without_reference_model(
     assert worker._enable_weight_backup is offload_train
 
 
+def _colocated_lora_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Any:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    worker.args.colocate = True
+    worker.args.offload_train = True
+    worker.args.lora_rank = 16
+    worker.args.lora_base_cpu_backup = True
+    worker.args.check_weight_update_equal = False
+    worker.args.offload_train_target = "disk"
+    worker.with_ref = False
+    worker.with_opd_teacher = False
+    for key, value in overrides.items():
+        setattr(worker.args if hasattr(worker.args, key) else worker, key, value)
+    return worker
+
+
+def test_colocated_lora_with_engine_base_backup_keeps_no_host_copy_of_the_base(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engines keep the frozen base, so the sync streams only the adapter: no pinned host copy."""
+    worker = _colocated_lora_worker(actor_module, monkeypatch)
+    worker._named_actor_weights = Mock()
+    worker.weights_backuper = Mock()
+
+    assert worker._lora_sync_skips_base
+    assert worker._enable_weight_backup is False
+    assert worker._get_actor_weights() == {}
+    worker._named_actor_weights.assert_not_called()
+    worker.weights_backuper.get.assert_not_called()
+
+    # the weight version still comes from the model companion, which stays on CPU
+    worker._named_actor_weights.return_value = [
+        ("decoder.layers.0.mlp.linear_fc1.weight", torch.zeros(2)),
+        ("model_companion.weight_version", torch.tensor(5, dtype=torch.int64)),
+    ]
+    assert worker._get_actor_weight_version() == 5
+    worker._named_actor_weights.assert_called_once_with(include_model_companion=True)
+    worker.weights_backuper.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"check_weight_update_equal": True},
+        {"lora_base_cpu_backup": False},
+        {"keep_old_actor": True},
+        {"with_ref": True},
+    ],
+    ids=["weight-checker", "engines-drop-the-base", "old-actor", "reference-model"],
+)
+def test_base_copy_stays_when_something_reads_it(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any]
+) -> None:
+    worker = _colocated_lora_worker(actor_module, monkeypatch, **overrides)
+
+    assert not worker._lora_sync_skips_base
+    assert worker._enable_weight_backup is True
+
+
 @pytest.mark.parametrize("active_tag", ["actor", "ref", "teacher", "old_actor"])
 def test_switch_model_restores_the_already_active_tag(
     actor_module: Any, monkeypatch: pytest.MonkeyPatch, active_tag: str
