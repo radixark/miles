@@ -296,6 +296,37 @@ export NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
 export FLASHINFER_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
 ```
 
+### 5. Match an FP8 DSA KV cache in Megatron
+
+SGLang can store a DSA model's 512-wide MLA latent in E4M3 with one FP32 scale
+per 128 values while keeping its 64-wide RoPE component in BF16. Native
+Megatron DSA otherwise attends over the unquantized BF16 latent. Opt into the
+same represented cache values in the actor's forward passes with:
+
+```bash
+--match-sglang-fp8-dsa-kv-cache-values
+--dsa-impl megatron
+--bf16
+--sglang-dtype bfloat16
+--sglang-attention-backend dsa
+--sglang-kv-cache-dtype fp8_e4m3
+--sglang-dsa-prefill-backend flashmla_sparse
+--sglang-dsa-decode-backend flashmla_kv
+```
+
+The trainer calls SGLang's cache quantize and dequantize kernels directly
+before each Megatron core-attention call. The forward value is therefore the
+BF16 value represented by SGLang's stored bytes; backward passes the gradient
+through this boundary unchanged. The hook runs again during activation
+recomputation and applies to every weight set loaded into the actor model
+(actor, old actor, reference, or teacher), but not to a separate critic model.
+
+This option is intentionally restricted to the scaled FP8 DSA cache layout
+above. External rollout engines and per-group `--sglang-config` overrides are
+rejected because Miles cannot prove their effective cache contract. The option
+does not align DSA indexer decisions, attention-kernel arithmetic, MoE routing,
+or LM-head precision, and does not by itself make a rollout true-on-policy.
+
 ## Fine-grained BF16 exceptions
 
 Miles supports per-layer precision configuration across checkpoint

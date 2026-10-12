@@ -466,6 +466,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--match-sglang-fp8-dsa-kv-cache-values",
+                action="store_true",
+                default=False,
+                help=(
+                    "Make Megatron DSA attention read the K/V values SGLang's fp8_e4m3 KV cache stores: every "
+                    "forward quantizes and dequantizes the compressed K/V latent with SGLang's own cache "
+                    "kernels, with a straight-through gradient. Requires --dsa-impl megatron and "
+                    "--sglang-dtype bfloat16 with --sglang-kv-cache-dtype fp8_e4m3, "
+                    "--sglang-dsa-decode-backend flashmla_kv, and --sglang-dsa-prefill-backend "
+                    "flashmla_sparse or flashmla_kv. Per-group --sglang-config overrides are not supported."
+                ),
+            )
+            parser.add_argument(
                 "--train-env-vars",
                 type=json.loads,
                 default="{}",
@@ -3211,6 +3224,70 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
     return generate_run_uuid()
 
 
+# SGLang backends that read the scaled FP8 DSA cache back as BF16 fp8 * scale. trtllm uses
+# a different cache layout and flashmla_sparse_q8 requantizes it; auto-selection may pick either.
+_SGLANG_FP8_DSA_KV_CACHE_PREFILL_BACKENDS = ("flashmla_sparse", "flashmla_kv")
+_SGLANG_FP8_DSA_KV_CACHE_DECODE_BACKENDS = ("flashmla_kv",)
+
+
+def validate_match_sglang_fp8_dsa_kv_cache_values_args(args) -> None:
+    """Accept --match-sglang-fp8-dsa-kv-cache-values only for the trainer/sampler pairing whose cache it reproduces."""
+    if not getattr(args, "match_sglang_fp8_dsa_kv_cache_values", False):
+        return
+    train_backend = getattr(args, "train_backend", None)
+    dsa_impl = getattr(args, "dsa_impl", None)
+    if train_backend != "megatron" or dsa_impl != "megatron":
+        raise ValueError(
+            "--match-sglang-fp8-dsa-kv-cache-values hooks Megatron's native DSA attention; it requires "
+            f"--train-backend megatron and --dsa-impl megatron, got {train_backend!r} and {dsa_impl!r}"
+        )
+    if getattr(args, "rollout_external", False):
+        raise ValueError(
+            "--match-sglang-fp8-dsa-kv-cache-values cannot validate an external rollout engine; launch SGLang through Miles"
+        )
+    if getattr(args, "sglang_config", None) is not None:
+        raise ValueError(
+            "--match-sglang-fp8-dsa-kv-cache-values does not support per-group --sglang-config overrides; "
+            "pass the validated SGLang settings directly"
+        )
+    sglang_dtype = getattr(args, "sglang_dtype", None)
+    if sglang_dtype != "bfloat16":
+        raise ValueError(
+            "--match-sglang-fp8-dsa-kv-cache-values matches BF16 cache inputs; it requires "
+            f"--sglang-dtype bfloat16, got {sglang_dtype!r}"
+        )
+    kv_cache_dtype = getattr(args, "sglang_kv_cache_dtype", None)
+    if kv_cache_dtype != "fp8_e4m3":
+        raise ValueError(
+            "--match-sglang-fp8-dsa-kv-cache-values reproduces SGLang's FP8 KV cache; it requires "
+            f"--sglang-kv-cache-dtype fp8_e4m3, got {kv_cache_dtype!r}"
+        )
+    attention_backend = getattr(args, "sglang_attention_backend", None)
+    for phase in ("prefill", "decode"):
+        phase_backend = getattr(args, f"sglang_{phase}_attention_backend", None)
+        effective_backend = phase_backend or attention_backend
+        if effective_backend not in ("dsa", "nsa"):
+            raise ValueError(
+                f"--match-sglang-fp8-dsa-kv-cache-values requires SGLang DSA for {phase}; got "
+                f"--sglang-{phase}-attention-backend {phase_backend!r} over "
+                f"--sglang-attention-backend {attention_backend!r}"
+            )
+    dsa_prefill_backend = getattr(args, "sglang_dsa_prefill_backend", None)
+    if dsa_prefill_backend not in _SGLANG_FP8_DSA_KV_CACHE_PREFILL_BACKENDS:
+        raise ValueError(
+            f"--match-sglang-fp8-dsa-kv-cache-values requires --sglang-dsa-prefill-backend in "
+            f"{_SGLANG_FP8_DSA_KV_CACHE_PREFILL_BACKENDS}, got {dsa_prefill_backend!r}"
+        )
+    dsa_decode_backend = getattr(args, "sglang_dsa_decode_backend", None)
+    if dsa_decode_backend not in _SGLANG_FP8_DSA_KV_CACHE_DECODE_BACKENDS:
+        raise ValueError(
+            f"--match-sglang-fp8-dsa-kv-cache-values requires --sglang-dsa-decode-backend in "
+            f"{_SGLANG_FP8_DSA_KV_CACHE_DECODE_BACKENDS}, got {dsa_decode_backend!r}"
+        )
+    if not getattr(args, "bf16", False):
+        raise ValueError("--match-sglang-fp8-dsa-kv-cache-values quantizes BF16 attention keys; it requires --bf16")
+
+
 def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
@@ -3859,6 +3936,7 @@ def miles_validate_args(args):
 
     args.rollout_external = _compute_rollout_external(args)
     args.custom_inference_engine_provider_path = _compute_custom_inference_engine_provider_path(args)
+    validate_match_sglang_fp8_dsa_kv_cache_values_args(args)
 
     args.worker_comm_backend = resolve_worker_comm_backend(
         cluster_backend=ClusterBackend(args.cluster_backend), requested=args.worker_comm_backend

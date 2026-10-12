@@ -2998,3 +2998,25 @@ class TestWeightTransferModeSelection:
         args = self._parse(["--custom-config-path", str(config), *extra])
         with pytest.raises(ValueError, match=error):
             miles_validate_args(args)
+
+    def test_yaml_cannot_bypass_fp8_dsa_kv_cache_contract(self, tmp_path):
+        config = tmp_path / "custom.yaml"
+        config.write_text("sglang_dtype: float16\n")
+        args = self._parse(["--custom-config-path", str(config)])
+        _set_megatron_parallel_sizes(args)
+        args.match_sglang_fp8_dsa_kv_cache_values = True
+        args.train_backend = "megatron"
+        args.dsa_impl = "megatron"
+        args.sglang_dtype = "bfloat16"
+        args.sglang_kv_cache_dtype = "fp8_e4m3"
+        args.sglang_attention_backend = "dsa"
+        args.sglang_prefill_attention_backend = None
+        args.sglang_decode_attention_backend = None
+        args.sglang_dsa_prefill_backend = "flashmla_sparse"
+        args.sglang_dsa_decode_backend = "flashmla_kv"
+        args.bf16 = True
+
+        with pytest.raises(ValueError, match="--sglang-dtype bfloat16"):
+            miles_validate_args(args)
+
+        assert args.sglang_dtype == "float16"

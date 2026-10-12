@@ -15,7 +15,7 @@ MODEL_NAME = "GLM-5.2_5layer"
 MODEL_TYPE = "glm5.2-744B-A40B_5layer"
 MEGATRON_MODEL_NAME = f"{MODEL_NAME}-megatron-dsa"
 NVFP4_MODEL_NAME = f"{MODEL_NAME}-NVFP4-w4a16"
-DSA_ARGS = "--megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend cudnn "
+DSA_ARGS = "--megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend cudnn --no-rope-fusion "
 NUM_GPUS = 8
 ACTOR_NUM_GPUS = 4
 ROLLOUT_NUM_GPUS = 4
@@ -203,6 +203,7 @@ def execute():
 
     sglang_args = (
         "--sglang-mem-fraction-static 0.7 "
+        "--sglang-dtype bfloat16 "
         "--sglang-enable-dp-attention "
         "--sglang-attention-backend nsa "
         "--sglang-dsa-decode-backend flashmla_kv "
@@ -236,6 +237,7 @@ def execute():
 
     misc_args = (
         f"{DSA_ARGS}"
+        "--match-sglang-fp8-dsa-kv-cache-values "
         "--qkv-format thd "
         "--use-rollout-routing-replay "
         "--use-miles-router "

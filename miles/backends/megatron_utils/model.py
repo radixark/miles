@@ -182,6 +182,11 @@ def setup_model_and_optimizer(
                 )
         model = get_model(provider_func, ModelType.encoder_or_decoder)
 
+    if getattr(args, "match_sglang_fp8_dsa_kv_cache_values", False) and role == "actor":
+        from .sglang_fp8_dsa_kv_cache_match import register_sglang_fp8_dsa_kv_cache_match_hooks
+
+        register_sglang_fp8_dsa_kv_cache_match_hooks(model)
+
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
             logger.warning(
