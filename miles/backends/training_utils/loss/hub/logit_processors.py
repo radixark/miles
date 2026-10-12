@@ -151,7 +151,7 @@ def get_log_probs_and_entropy(
                     f"sampling-mask length {len(sampling_mask)} != response length "
                     f"{response_length} for sample {sample_index}"
                 )
-    if getattr(args, "log_probs_backend", "torch") == "fused":
+    if args.log_probs_backend == "fused":
         assert rollout_sampling_mask is None, "--log-probs-backend fused does not take a sampling mask"
         res = _fused_log_probs_and_entropy(
             logits,

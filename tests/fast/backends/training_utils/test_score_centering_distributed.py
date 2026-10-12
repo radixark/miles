@@ -77,6 +77,7 @@ def _check_loss(
     use_kl: bool = True,
 ) -> None:
     args = Namespace(
+        log_probs_backend="torch",
         loss_type="score_centering",
         qkv_format="bshd" if layout in ("bshd", "bshd_allgather") else "thd",
         allgather_cp=layout in ("allgather", "bshd_allgather"),

@@ -17,6 +17,7 @@ def test_loss_passes_return_independent_detached_outputs(monkeypatch, recompute)
     monkeypatch.setattr(loss_module, "get_sum_of_sample_mean", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tinker_losses, "_target_logprobs", lambda _args, _batch, logits: [logits])
     args = Namespace(
+        log_probs_backend="torch",
         calculate_per_token_loss=False,
         qkv_format="thd",
         recompute_loss_function=recompute,
@@ -102,6 +103,7 @@ def test_nonzero_objectives_and_gradients(monkeypatch, recompute, loss_fn, confi
     monkeypatch.setattr(loss_module, "get_sum_of_sample_mean", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tinker_losses, "_target_logprobs", lambda _args, _batch, logits: [logits[:3], logits[3:]])
     args = Namespace(
+        log_probs_backend="torch",
         calculate_per_token_loss=False,
         qkv_format="thd",
         recompute_loss_function=recompute,

@@ -152,6 +152,7 @@ def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeyp
     monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     args = SimpleNamespace(
+        log_probs_backend="torch",
         qkv_format="thd",
         rollout_temperature=1.0,
         true_on_policy_mode=True,
@@ -196,7 +197,13 @@ def test_get_log_probs_and_entropy_rejects_mask_shorter_than_response(monkeypatc
         cp=SimpleNamespace(rank=0, size=1),
     )
     monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
-    args = SimpleNamespace(qkv_format="thd", rollout_temperature=1.0, true_on_policy_mode=False, allgather_cp=False)
+    args = SimpleNamespace(
+        qkv_format="thd",
+        rollout_temperature=1.0,
+        true_on_policy_mode=False,
+        allgather_cp=False,
+        log_probs_backend="torch",
+    )
 
     with pytest.raises(ValueError, match="sampling-mask length 1 != response length 2"):
         logit_processors.get_log_probs_and_entropy(
@@ -215,6 +222,7 @@ def test_allgather_cp_response_rows_keep_global_response_indices(monkeypatch, cp
     monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     args = SimpleNamespace(
+        log_probs_backend="torch",
         qkv_format="thd",
         rollout_temperature=1.0,
         true_on_policy_mode=False,
@@ -244,6 +252,7 @@ def test_zigzag_cp_response_rows_keep_global_response_indices(monkeypatch, cp_ra
     monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     args = SimpleNamespace(
+        log_probs_backend="torch",
         qkv_format="thd",
         rollout_temperature=1.0,
         true_on_policy_mode=False,
