@@ -11,6 +11,7 @@ from torchtitan.protocols.model import BaseModel
 from torchtitan.protocols.module import Module, ModuleDict
 
 from miles.backends.torchtitan_utils.models.kimi_k3.attention import DeltaAttention, MLAAttention
+from miles.backends.torchtitan_utils.models.kimi_k3.context_parallel import ContextParallelLayout
 from miles.backends.torchtitan_utils.models.kimi_k3.ops import (
     DenseMLP,
     KimiTokenDispatcher,
@@ -20,6 +21,7 @@ from miles.backends.torchtitan_utils.models.kimi_k3.ops import (
     linear,
     packed_metadata,
 )
+from miles_plugins.models.cp_utils import build_fla_cp_context
 
 
 class LatentMoE(Module):
@@ -77,14 +79,14 @@ class KimiBlock(Module):
         else:
             self.mlp = DenseMLP(config.dim, config.dense_intermediate)
 
-    def forward(self, x, bank, cu_seqlens, mask):
+    def forward(self, x, bank, cu_seqlens, mask, cp_layout=None, cp_context=None):
         prefix = x
         if bank.shape[-2]:
             x = attention_residual(prefix, bank, self.self_attention_res_norm, self.self_attention_res_proj)
         if self.layer_idx % self.block_size == 0:
             bank = torch.cat((bank, prefix.unsqueeze(-2)), dim=-2)
             prefix = None
-        x = self.self_attn(self.input_layernorm(x), cu_seqlens, mask)
+        x = self.self_attn(self.input_layernorm(x), cu_seqlens, mask, cp_layout, cp_context)
         prefix = x if prefix is None else prefix + x
         x = attention_residual(prefix, bank, self.mlp_res_norm, self.mlp_res_proj)
         x = self.post_attention_layernorm(x)
@@ -122,8 +124,10 @@ class KimiK3Model(BaseModel):
 
         def update_from_config(self, *, config, **kwargs):
             p = config.parallelism
-            if p.context_parallel_degree != 1 or p.pipeline_parallel_degree != 1:
-                raise ValueError("Kimi K3 currently requires CP=PP=1")
+            if p.pipeline_parallel_degree != 1:
+                raise ValueError("Kimi K3 currently requires PP=1")
+            if p.context_parallel_degree > 1 and p.context_parallel_load_balancer != "headtail":
+                raise ValueError("Kimi K3 context parallelism requires headtail load balancing")
             if (
                 self.n_heads % p.tensor_parallel_degree
                 or self.mla_heads % p.tensor_parallel_degree
@@ -145,6 +149,7 @@ class KimiK3Model(BaseModel):
         self.config = config
         self.enable_weight_tying = False
         self._skip_lm_head = False
+        self.cp_mesh = None
         self.tok_embeddings = Embedding.Config(num_embeddings=config.vocab_size, embedding_dim=config.dim).build()
         self.layers = ModuleDict({str(i): KimiBlock(config, i) for i in range(config.n_layers)})
         self.output_attn_res_norm = RMSNorm(config.dim, eps=config.norm_eps)
@@ -153,11 +158,27 @@ class KimiK3Model(BaseModel):
         self.lm_head = linear(config.dim, config.vocab_size)
 
     def forward(self, tokens, *, positions=None, cu_seqlens=None, **kwargs):
-        cu_seqlens, mask = packed_metadata(tokens, positions, cu_seqlens)
+        cp_layout, cp_context = None, None
+        metadata_tokens = tokens
+        if self.cp_mesh is not None:
+            if tokens.shape[0] != 1:
+                raise ValueError("Kimi K3 CP expects one flattened packed row")
+            cp_layout = ContextParallelLayout.build(self.cp_mesh, tokens.shape[1], tokens.device)
+            metadata_tokens = tokens.new_empty(1, tokens.numel() * self.cp_mesh.size())
+            if cu_seqlens is None and positions is not None:
+                positions = cp_layout.gather(positions)
+        cu_seqlens, mask = packed_metadata(
+            metadata_tokens,
+            positions,
+            cu_seqlens,
+            query_indices=cp_layout.local_indices if cp_layout is not None else None,
+        )
+        if cp_layout is not None:
+            cp_context = build_fla_cp_context(cu_seqlens, cp_layout.group, self.config.conv_kernel_size, tokens.device)
         x = self.tok_embeddings(tokens).reshape(1, -1, self.config.dim)
         bank = x.new_empty(1, x.shape[1], 0, x.shape[2])
         for layer in self.layers.values():
-            x, bank = layer(x, bank, cu_seqlens, mask)
+            x, bank = layer(x, bank, cu_seqlens, mask, cp_layout, cp_context)
         x = attention_residual(x, bank, self.output_attn_res_norm, self.output_attn_res_proj)
         x = self.norm(x).reshape(*tokens.shape, -1)
         return x if self._skip_lm_head else self.lm_head(x)

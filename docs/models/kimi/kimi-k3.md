@@ -224,6 +224,8 @@ runs two synchronous colocated rollouts with full-parameter updates:
 
 ```bash
 python tests/e2e/torchtitan/test_kimi_k3_4layer_ep.py
+# The same workload with trainer CP2 and EP8:
+python tests/e2e/torchtitan/test_kimi_k3_4layer_cp.py
 ```
 
 K3 hot weight updates require SGLang to refresh the attention-residual score cache
@@ -233,19 +235,27 @@ MLA absorbed-buffer storage across reloads, addressed by
 [the SGLang MLA reload fix](https://github.com/sgl-project/sglang/pull/43675).
 These SGLang changes are prerequisites, not installed by the test.
 
-Validation covers the four-layer, 64-expert BF16 checkpoint. Full-model training,
-long-context behavior and convergence remain unvalidated. The adapter currently
-requires CP=PP=1 and rejects compilation.
+The implementation includes FSDP, TP/sequence parallelism, EP and CP. For TP greater
+than one, use EP=TP, with head/expert counts divisible by those degrees. CP uses
+TorchTitan's `headtail` load balancing and expects one flattened packed row, as
+produced by the Miles trainer. PP and `torch.compile` are rejected. Validation uses
+the four-layer, 64-expert BF16 checkpoint and a small synthetic decoder; the full
+93-layer model, long-context behavior and convergence remain unvalidated.
 
-The implementation includes FSDP, TP/sequence parallelism and EP. For TP greater than
-one, use EP=TP, with head/expert counts divisible by those degrees. CP, PP and
-`torch.compile` are rejected. The four-layer/64-expert checkpoint is the initial
-integration target; the full 93-layer model has not been validated end to end.
+CP converts headtail shards into contiguous segments for FLA's recurrent-state and
+convolution-halo exchange, then restores the original layout. MLA retains local
+queries and gathers keys and values with gradients summed back to their owners.
+The distributed decoder test compares CP against CP1 through backward and an
+optimizer update, including FSDP, EP and activation checkpointing:
+
+```bash
+python tests/fast-gpu/test_torchtitan_kimi_k3_cp.py
+```
 
 KDA and short convolution use existing FLA operations; MLA uses PyTorch SDPA. Explicit
 packed-document boundaries reach both attention types, including single-token samples
-and the trailing padding segment. MLA currently materializes a quadratic attention mask,
-so long-context performance and memory still need work. This adapter does not include
+and the trailing padding segment. MLA currently materializes a dense attention mask
+(local queries by global keys under CP), so long-context performance and memory still need work. This adapter does not include
 new GPU kernels or the separate FSDP/performance experiments.
 
 ## 7. Pairs Well With

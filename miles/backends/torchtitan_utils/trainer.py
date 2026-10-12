@@ -98,7 +98,11 @@ class TitanTrainer(Trainer):
             if "cu_seqlens" in self._forward_parameters:
                 # Keep the batch's padding segment intact. Zero-filled position IDs
                 # cannot distinguish padding from genuine one-token documents.
-                inputs["cu_seqlens"] = batch.get("cu_seqlens")
+                cu_seqlens = batch.get("cu_seqlens")
+                if cu_seqlens is not None and tokens.shape[1] > batch["tokens"].shape[1]:
+                    # CP/PP alignment adds a new padding segment after the batch.
+                    cu_seqlens = torch.cat((cu_seqlens, cu_seqlens.new_tensor([tokens.shape[1]])))
+                inputs["cu_seqlens"] = cu_seqlens
             input_dicts.append(inputs)
         labels = [torch.full_like(input_dicts[i]["input"], i, dtype=torch.long) for i in range(len(batches))]
         return input_dicts, labels

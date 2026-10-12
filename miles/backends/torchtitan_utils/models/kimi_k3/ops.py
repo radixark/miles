@@ -42,18 +42,19 @@ class RMSNorm(Module):
 class ShortConv(ShortConvolution, Module):
     """FLA convolution with TorchTitan's parameter initialization protocol."""
 
-    def forward(self, x, *, cu_seqlens=None, output_final_state=False):
-        if not isinstance(x, DTensor):
+    def forward(self, x, *, cu_seqlens=None, output_final_state=False, cp_context=None):
+        if not isinstance(x, DTensor) and cp_context is None:
             return super().forward(x, cu_seqlens=cu_seqlens, output_final_state=output_final_state)
         if output_final_state:
             raise ValueError("K3 training does not export convolution state")
         output, _ = causal_conv1d(
-            x=x.to_local(),
+            x=local_tensor(x),
             weight=local_tensor(self.weight).squeeze(1),
             bias=local_tensor(self.bias),
             activation=self.activation,
             backend=self.backend,
             cu_seqlens=cu_seqlens,
+            cp_context=cp_context,
             output_final_state=False,
         )
         return wrap_like(output, x), None
@@ -137,10 +138,11 @@ def attention_residual(prefix, bank, norm, proj):
     return (scores.softmax(-1).unsqueeze(-2) @ values_float).squeeze(-2).to(values.dtype)
 
 
-def packed_metadata(tokens, positions, cu_seqlens=None):
+def packed_metadata(tokens, positions, cu_seqlens=None, *, query_indices=None):
     """Flatten batches for FLA, retaining document boundaries in packed rows."""
     batch, length = tokens.shape
     if cu_seqlens is not None:
+        torch._assert_async(cu_seqlens[-1] == tokens.numel(), "K3 boundaries must include all padded tokens")
         starts = cu_seqlens[:-1].long()
     elif positions is None:
         starts = torch.arange(0, batch * length, length, device=tokens.device)
@@ -151,5 +153,7 @@ def packed_metadata(tokens, positions, cu_seqlens=None):
     document = torch.zeros(tokens.numel(), dtype=torch.int32, device=tokens.device)
     document[starts] = 1
     document = document.cumsum(0)
-    causal = torch.ones(tokens.numel(), tokens.numel(), device=tokens.device, dtype=torch.bool).tril()
-    return cu_seqlens, causal & (document[:, None] == document[None, :])
+    keys = torch.arange(tokens.numel(), device=tokens.device)
+    queries = keys if query_indices is None else query_indices
+    causal = queries[:, None] >= keys[None, :]
+    return cu_seqlens, causal & (document[queries, None] == document[None, :])

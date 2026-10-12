@@ -414,7 +414,8 @@ def test_custom_tokenizer_fallback_preserves_native_checkpoints(tmp_path, single
 
 
 @pytest.mark.parametrize("accepts_boundaries", [False, True])
-def test_trainer_preserves_explicit_packed_boundaries_only_for_models_that_accept_them(accepts_boundaries):
+@pytest.mark.parametrize("cp_degree", [1, 2])
+def test_trainer_preserves_explicit_packed_boundaries_only_for_models_that_accept_them(accepts_boundaries, cp_degree):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.trainer import TitanTrainer
 
@@ -427,7 +428,7 @@ def test_trainer_preserves_explicit_packed_boundaries_only_for_models_that_accep
             pass
 
     trainer = object.__new__(TitanTrainer)
-    trainer.parallel_dims = SimpleNamespace(pp_enabled=False, cp_enabled=False)
+    trainer.parallel_dims = SimpleNamespace(pp_enabled=False, cp_enabled=cp_degree > 1, cp=cp_degree)
     trainer.model_parts = [Model() if accepts_boundaries else LegacyModel()]
     boundaries = torch.tensor([0, 3, 4, 8], dtype=torch.int32)
     inputs, _ = trainer._microbatch_inputs(
@@ -439,7 +440,13 @@ def test_trainer_preserves_explicit_packed_boundaries_only_for_models_that_accep
             }
         ]
     )
+    expected_length = 8 if cp_degree == 1 else 1024
+    assert inputs[0]["input"].shape[1] == expected_length
+    assert boundaries.tolist() == [0, 3, 4, 8]
     if accepts_boundaries:
-        assert inputs[0]["cu_seqlens"] is boundaries
+        if cp_degree == 1:
+            assert inputs[0]["cu_seqlens"] is boundaries
+        else:
+            assert inputs[0]["cu_seqlens"].tolist() == [0, 3, 4, 8, expected_length]
     else:
         assert "cu_seqlens" not in inputs[0]

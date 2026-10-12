@@ -30,7 +30,7 @@ class KDACore(Module):
         nn.init.zeros_(self.A_log)
         nn.init.zeros_(self.dt_bias)
 
-    def forward(self, q, k, v, gate, beta, cu_seqlens):
+    def forward(self, q, k, v, gate, beta, cu_seqlens, cp_context=None):
         distributed_q = q if isinstance(q, DTensor) else None
         q, k, v, gate, beta = [local_tensor(value) for value in (q, k, v, gate, beta)]
         heads = q.shape[-2]
@@ -50,6 +50,7 @@ class KDACore(Module):
             lower_bound=self.lower_bound,
             state_v_first=True,
             cu_seqlens=cu_seqlens,
+            cp_context=cp_context,
         )
         return wrap_like(output, distributed_q)
 
@@ -69,9 +70,12 @@ class DeltaAttention(Module):
         self.b_proj, self.g_proj = linear(dim, heads), linear(dim, width)
         self.o_norm, self.o_proj = GatedRMSNorm(head_dim, eps=config.norm_eps), linear(width, dim)
 
-    def forward(self, x, cu_seqlens, mask):
+    def forward(self, x, cu_seqlens, mask, cp_layout=None, cp_context=None):
+        if cp_layout is not None:
+            x = cp_layout.to_contiguous(x)
+            cu_seqlens = cp_context.cu_seqlens
         q, k, v = [
-            conv(proj(x), cu_seqlens=cu_seqlens, output_final_state=False)[0].unflatten(
+            conv(proj(x), cu_seqlens=cu_seqlens, output_final_state=False, cp_context=cp_context)[0].unflatten(
                 -1, (self.heads, self.head_dim)
             )
             for proj, conv in (
@@ -81,9 +85,12 @@ class DeltaAttention(Module):
             )
         ]
         gate = self.f_b_proj(self.f_a_proj(x)).unflatten(-1, (self.heads, self.head_dim))
-        output = self.core(q, k, v, gate, self.b_proj(x), cu_seqlens)
+        output = self.core(q, k, v, gate, self.b_proj(x), cu_seqlens, cp_context)
         output = self.o_norm(output, self.g_proj(x).unflatten(-1, (self.heads, self.head_dim)))
-        return self.o_proj(output.flatten(-2))
+        output = output.flatten(-2)
+        if cp_layout is not None:
+            output = cp_layout.from_contiguous(output)
+        return self.o_proj(output)
 
 
 class MLAAttention(Module):
@@ -102,7 +109,7 @@ class MLAAttention(Module):
         self.g_proj = linear(config.dim, self.heads * self.v_head_dim)
         self.o_proj = linear(self.heads * self.v_head_dim, config.dim)
 
-    def forward(self, x, cu_seqlens, mask):
+    def forward(self, x, cu_seqlens, mask, cp_layout=None, cp_context=None):
         q = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(x))).unflatten(-1, (self.heads, self.qk_head_dim))
         latent, key_shared = self.kv_a_proj_with_mqa(x).split(
             (self.kv_lora_rank, self.qk_head_dim - self.nope_head_dim), dim=-1
@@ -115,6 +122,8 @@ class MLAAttention(Module):
         key = torch.cat((key, key_shared.unsqueeze(-2).expand(*key.shape[:-1], key_shared.shape[-1])), dim=-1)
         distributed_q = q if isinstance(q, DTensor) else None
         q, key, value = [local_tensor(tensor) for tensor in (q, key, value)]
+        if cp_layout is not None:
+            key, value = cp_layout.gather(key), cp_layout.gather(value)
         output = F.scaled_dot_product_attention(
             q.transpose(1, 2),
             key.transpose(1, 2),

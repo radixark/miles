@@ -2,7 +2,9 @@
 
 import shlex
 
+import pytest
 from tests.e2e.torchtitan import _common
+from tests.e2e.torchtitan.test_kimi_k3_4layer_cp import CASE as CP_CASE
 from tests.e2e.torchtitan.test_kimi_k3_4layer_ep import CASE
 
 
@@ -12,8 +14,10 @@ def _flags(case, monkeypatch):
     return {token: argv[i + 1] for i, token in enumerate(argv[:-1]) if token.startswith("--")}
 
 
-def test_partial_model_uses_sixteen_samples_and_bf16_for_both_engines(monkeypatch):
-    flags = _flags(CASE, monkeypatch)
+@pytest.mark.parametrize("case", [CASE, CP_CASE])
+def test_partial_model_uses_sixteen_samples_and_bf16_for_both_engines(monkeypatch, case):
+    flags = _flags(case, monkeypatch)
+    assert flags["--context-parallel-size"] == str(case.cp_size)
     assert int(flags["--rollout-batch-size"]) * int(flags["--n-samples-per-prompt"]) == 16
     assert flags["--global-batch-size"] == "16"
     assert flags["--hf-checkpoint"].endswith("Kimi-K3-4layer-64experts-bf16")

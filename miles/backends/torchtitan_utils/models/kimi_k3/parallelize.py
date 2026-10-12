@@ -10,8 +10,12 @@ from miles.backends.torchtitan_utils.models.kimi_k3.sharding import shard_kimi_k
 
 
 def parallelize_kimi_k3(model, *, parallel_dims, training, parallelism, compile_config, ac_config, dump_folder):
-    if parallel_dims.cp_enabled or parallel_dims.pp_enabled:
-        raise ValueError("Kimi K3 currently requires CP=PP=1")
+    if parallel_dims.pp_enabled:
+        raise ValueError("Kimi K3 currently requires PP=1")
+    if parallel_dims.cp_enabled:
+        if parallelism.context_parallel_load_balancer != "headtail":
+            raise ValueError("Kimi K3 context parallelism requires headtail load balancing")
+        model.cp_mesh = parallel_dims.get_mesh("cp")
     if compile_config.enable:
         raise ValueError("Kimi K3 compilation has not been validated")
     replicate_dims = ["dp_replicate"] if parallel_dims.dp_replicate_enabled else []
