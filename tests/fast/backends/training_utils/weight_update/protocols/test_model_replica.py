@@ -107,6 +107,10 @@ def _copy_into_param(param: torch.nn.Parameter, loaded_weight: torch.Tensor) -> 
     param.data.copy_(loaded_weight)
 
 
+def _copy_into_first_element(param: torch.nn.Parameter, loaded_weight: torch.Tensor) -> None:
+    param.data[:1].copy_(loaded_weight[:1])
+
+
 def _reshape_then_copy(param: torch.nn.Parameter, loaded_weight: torch.Tensor) -> None:
     param.data = param.data.view(loaded_weight.shape)
     param.data.copy_(loaded_weight)
@@ -287,9 +291,20 @@ class TestModelReplica:
                 torch.zeros(1024, dtype=torch.uint8), ["norm.weight"], [("norm.weight", _float_tensor(1.0, 2))]
             )
 
-        assert trtllm_replica._model.server_args_seen_by_loads == [trtllm_server_args] * 3
-        assert triton_replica._model.server_args_seen_by_loads == [triton_server_args]
+        assert {id(seen) for seen in trtllm_replica._model.server_args_seen_by_loads} == {id(trtllm_server_args)}
+        assert {id(seen) for seen in triton_replica._model.server_args_seen_by_loads} == {id(triton_server_args)}
         assert published_server_args[1:] == [trtllm_server_args, triton_server_args, trtllm_server_args]
+
+    def test_a_loader_that_leaves_bytes_of_a_param_unwritten_is_rejected(self, make_model_replica) -> None:
+        """A write carries every byte of a param, so bytes the loader skips, such as padding, would reach the rollout
+        engine as whatever an earlier load left in the buffer."""
+        model_replica = make_model_replica()
+        model_replica._params_by_name["norm.weight"].weight_loader = _copy_into_first_element
+
+        with pytest.raises(NotImplementedError, match=r"norm.weight \(4 of 8 bytes\)"):
+            model_replica.load_into(
+                torch.zeros(1024, dtype=torch.uint8), ["norm.weight"], [("norm.weight", _float_tensor(1.0, 2))]
+            )
 
     def test_hf_tensors_of_a_param_outside_the_group_fail_the_load(self, make_model_replica) -> None:
         """Only the group's params have storage, so an HF tensor of another param cannot be silently dropped."""

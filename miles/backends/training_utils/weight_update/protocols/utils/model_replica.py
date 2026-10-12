@@ -200,6 +200,7 @@ class ModelReplica:
             model, built_shapes_by_name, config.parallelism, postprocess_device
         )
         self._params_by_name = dict(model.named_parameters())
+        self._fully_written_param_names: set[str] = set()
         self.param_mapper = ParameterMapper.from_model(model)
 
     def load_into(
@@ -208,13 +209,23 @@ class ModelReplica:
         """Loads `hf_tensors`, the HF tensors of exactly `param_names`, into the uint8 `buffer`; returns the bytes
         of each param in `buffer`, by name.
 
-        `pack_into_buffers` gives groups of params that fit one buffer. Raises if loading changed a param in any way
-        but its bytes, since a write carries only bytes to the rollout engine.
+        `pack_into_buffers` gives groups of params that fit one buffer. A write carries a param's bytes, all of them,
+        to the rollout engine, so this raises if loading changed a param in any way but its bytes, or, the first time
+        a param is loaded, left any of its bytes unwritten.
         """
         # sglang keeps one live config per process; load under the one this replica was built with
         if get_server_args() is not self._config.server_args:
             _publish_server_args(self._config.server_args)
         param_bytes_by_name = _slice_buffer_by_param(buffer, param_names, self.transfer_buffer_param_layouts)
+        if self._fully_written_param_names.issuperset(param_names):
+            self._load(param_bytes_by_name, hf_tensors)
+        else:
+            self._load_asserting_every_byte_is_written(param_bytes_by_name, hf_tensors)
+        return param_bytes_by_name
+
+    def _load(
+        self, param_bytes_by_name: Mapping[str, torch.Tensor], hf_tensors: list[tuple[str, torch.Tensor]]
+    ) -> None:
         with self._bind_params_to_bytes(param_bytes_by_name) as bound_params_by_name:
             state_before_load_by_name = {
                 name: _get_param_state_besides_bytes(param) for name, param in bound_params_by_name.items()
@@ -222,7 +233,34 @@ class ModelReplica:
             with ParallelismContext(self._config.parallelism):
                 self._model.load_weights(hf_tensors)
             self._assert_params_changed_only_bytes(bound_params_by_name, state_before_load_by_name)
-        return param_bytes_by_name
+
+    def _load_asserting_every_byte_is_written(
+        self, param_bytes_by_name: Mapping[str, torch.Tensor], hf_tensors: list[tuple[str, torch.Tensor]]
+    ) -> None:
+        for param_bytes in param_bytes_by_name.values():
+            param_bytes.zero_()
+        self._load(param_bytes_by_name, hf_tensors)
+        bytes_loaded_over_zeros_by_name = {
+            name: param_bytes.clone() for name, param_bytes in param_bytes_by_name.items()
+        }
+        for param_bytes in param_bytes_by_name.values():
+            param_bytes.fill_(0xFF)
+        self._load(param_bytes_by_name, hf_tensors)
+        unwritten_nbytes_by_name = {
+            name: int(torch.count_nonzero(param_bytes != bytes_loaded_over_zeros_by_name[name]))
+            for name, param_bytes in param_bytes_by_name.items()
+        }
+        partly_written_param_names = [name for name, nbytes in unwritten_nbytes_by_name.items() if nbytes]
+        if partly_written_param_names:
+            raise NotImplementedError(
+                f"the rollout engine's loader leaves bytes of {len(partly_written_param_names)} params unwritten, e.g. "
+                + ", ".join(
+                    f"{name} ({unwritten_nbytes_by_name[name]} of {param_bytes_by_name[name].numel()} bytes)"
+                    for name in partly_written_param_names[:5]
+                )
+                + "; p2p would send what an earlier load left there in their place"
+            )
+        self._fully_written_param_names.update(param_bytes_by_name)
 
     @contextmanager
     def _bind_params_to_bytes(
