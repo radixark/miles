@@ -58,11 +58,13 @@ def _install_import_stubs(monkeypatch):
     for name in [
         "megatron",
         "megatron.core",
+        "megatron.core.utils",
         "megatron.core.transformer",
         "megatron.core.transformer.transformer_layer",
     ]:
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     sys.modules["megatron.core.transformer.transformer_layer"].get_transformer_layer_offset = lambda *args: 0
+    sys.modules["megatron.core.utils"].unwrap_model = lambda model: model
 
 
 @pytest.fixture
