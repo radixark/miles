@@ -1,7 +1,9 @@
 """Per-kernel device time of the DSA backends at production shapes: ``cake`` (generated) vs ``tilelang``.
 
 Both kernel families run in this one process (the generated kernels are torch CUDA extensions), so the
-same inputs and the same timing method apply to both.  Timing = CUDA kernel device time from
+same inputs and the same timing method apply to both.  The TileLang side is the production API
+(``miles.kernels.attention.dsa.sparse_attention`` with ``forward_backend="tilelang"``, ``indexer_logits`` /
+``indexer_logits_sbhd`` and ``tilelang.indexer_bwd``).  Timing = CUDA kernel device time from
 ``torch.profiler`` (CUPTI activity records) summed per operator call; an explicit 256 MiB write flushes L2
 before every timed call and is excluded from the sum.  Reported as the median over ``--iters`` calls.
 
@@ -163,25 +165,42 @@ def bench_attention(shape, timer, backends):
         )
     )
     if "tilelang" in backends:
+        # The TileLang kernels live in miles.kernels.attention.dsa.sparse_attention (production API: q [B, S, H, D],
+        # kv [B, S_kv, G, D], indices [B, S, G, topk]); ``forward_backend="tilelang"`` times the pure TileLang
+        # forward (the default config may pick FlashMLA), the backward is the TileLang kernel through autograd.
+        from dataclasses import replace
+
+        from miles.kernels.attention.dsa.sparse_attention import _default_config
+        from miles.kernels.attention.dsa.sparse_attention import sparse_attention as tl_sparse_attention
+
+        d_v = 512
         if shape.layout == "thd":
-            from miles_plugins.models.glm5.ops.tilelang_sparse_mla_bwd import sparse_mla_bwd
-            from miles_plugins.models.glm5.ops.tilelang_sparse_mla_fwd import sparse_mla_fwd_interface
-
-            idx_c, q_c, kv_c = idx.contiguous(), q.contiguous(), kv.contiguous()
-            tl_o, tl_lse = sparse_mla_fwd_interface(q_c, kv_c, idx_c, sm_scale=sm_scale)
-            row["tilelang_fwd_ms"] = timer(lambda: sparse_mla_fwd_interface(q_c, kv_c, idx_c, sm_scale=sm_scale))
-            row["tilelang_bwd_ms"] = timer(
-                lambda: sparse_mla_bwd(q_c, kv_c, tl_o, do.contiguous(), idx_c, tl_lse, sm_scale=sm_scale)
-            )
+            tq, tkv, tidx, tdo = q.unsqueeze(0), kv.unsqueeze(0), idx.unsqueeze(0), do.unsqueeze(0)
         else:
-            from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_bwd import sparse_mqa_bwd_interface
-            from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
+            tq, tkv, tidx, tdo = q, kv.unsqueeze(2), idx.unsqueeze(2), do
+        tq, tkv, tidx, tdo = (t.contiguous() for t in (tq, tkv, tidx, tdo))
+        cfg_default = _default_config(tq, tkv, d_v)
+        heads_bucket = min(max(8, 1 << (tq.shape[2] // tkv.shape[2] - 1).bit_length()), 64)
+        tl_threads = cfg_default.forward_threads
+        if cfg_default.forward_backend != "tilelang":
+            tl_threads = 128 if heads_bucket < 64 else 256
+        cfg = replace(cfg_default, forward_backend="tilelang", forward_threads=tl_threads)
 
-            tl_o, tl_lse = sparse_mqa_fwd_interface(q, kv, sink, idx, sm_scale=sm_scale)
-            row["tilelang_fwd_ms"] = timer(lambda: sparse_mqa_fwd_interface(q, kv, sink, idx, sm_scale=sm_scale))
-            row["tilelang_bwd_ms"] = timer(
-                lambda: sparse_mqa_bwd_interface(q, kv, sink, tl_o, do, idx, tl_lse, sm_scale=sm_scale)
-            )
+        def tl_fwd():
+            return tl_sparse_attention(tq, tkv, tidx, sm_scale, d_v=d_v, attn_sink=sink, config=cfg)
+
+        tl_fwd()
+        row["tilelang_fwd_ms"] = timer(tl_fwd)
+        tq_g, tkv_g = tq.detach().requires_grad_(True), tkv.detach().requires_grad_(True)
+        sink_g = sink.detach().requires_grad_(True) if sink is not None else None
+        out_g = tl_sparse_attention(tq_g, tkv_g, tidx, sm_scale, d_v=d_v, attn_sink=sink_g, config=cfg)
+        grads_in = [tq_g, tkv_g] + ([sink_g] if sink_g is not None else [])
+
+        def tl_bwd():
+            return torch.autograd.grad(out_g, grads_in, tdo, retain_graph=True)
+
+        tl_bwd()
+        row["tilelang_bwd_ms"] = timer(tl_bwd)
     return row
 
 
@@ -197,15 +216,20 @@ def bench_indexer(shape, timer, backends):
         row["cake_bwd_ms"] = timer(lambda: cake.indexer_backward(q, k, w, topk_indices, grad_scores, layout="thd"))
     if "tilelang" in backends:
         if shape.layout == "thd":
-            from miles_plugins.models.glm5.ops.tilelang_indexer_bwd import indexer_bwd_interface
-            from miles_plugins.models.glm5.ops.tilelang_indexer_fwd import indexer_fwd_interface
+            from miles.kernels.attention.dsa import indexer_logits as tl_indexer_logits
+            from miles.kernels.attention.dsa.indexer import _pad_topk_pow2
+            from miles.kernels.attention.dsa.tilelang.indexer_bwd import indexer_bwd
 
-            row["tilelang_logits_ms"] = timer(lambda: indexer_fwd_interface(q, k, w, ks, ke, clean_logits=True))
-            row["tilelang_bwd_ms"] = timer(lambda: indexer_bwd_interface(q, w, k, topk_indices, grad_scores))
+            row["tilelang_logits_ms"] = timer(lambda: tl_indexer_logits(q, k, w, ks, ke))
+            # the TileLang backward takes a power-of-two top-k (padded with -1 / 0 as the production path does)
+            ti, gs = _pad_topk_pow2(topk_indices, grad_scores)
+            wf = w.float()
+            row["tilelang_bwd_ms"] = timer(lambda: indexer_bwd(q, wf, k, ti, gs))
+            row["tilelang_bwd_padded_topk"] = int(ti.shape[-1])
         else:
-            from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import batched_indexer_fwd
+            from miles.kernels.attention.dsa import indexer_logits_sbhd
 
-            row["tilelang_logits_ms"] = timer(lambda: batched_indexer_fwd(q, k, w, ks, ke))
+            row["tilelang_logits_ms"] = timer(lambda: indexer_logits_sbhd(q, k, w, ks, ke))
     return row
 
 
