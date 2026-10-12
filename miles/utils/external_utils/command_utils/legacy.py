@@ -112,7 +112,7 @@ def convert_checkpoint(
     multinode: bool = False,
     num_nodes: int | None = None,
     extra_args: str = "",
-    dir_dst: str = "/root",
+    dir_dst: str = "/root/models",
     hf_checkpoint: str | None = None,
     megatron_path: str = "/root/Megatron-LM",
 ) -> None:
