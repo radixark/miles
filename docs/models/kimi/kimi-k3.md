@@ -185,13 +185,13 @@ weight sync, the adapter export is leaking and the run will die later rather tha
   `miles/backends/megatron_utils/megatron_to_hf/kimi_k3.py`, and the model itself in
   `miles_plugins/models/kimi_k3/`.
 
-## 6. Experimental TorchTitan text decoder
+## 6. TorchTitan support
 
 The TorchTitan model adapter lives entirely under
 `miles/backends/torchtitan_utils/models/kimi_k3/`. It follows the Miles `ModelSpec`
 interface and reads architecture dimensions and the KDA/MLA layer lists from the HF
 `text_config`. `--titan-model-flavor hf` labels the run; it does not select hard-coded sizes.
-This is full-parameter **text-decoder** training. Image inputs, LoRA and MTP are outside
+The adapter supports full-parameter training. Image inputs, LoRA and MTP are outside
 this adapter's scope. Rollout still uses Miles' SGLang integration.
 
 Prepare a BF16 HF checkpoint with the existing commands:
@@ -221,7 +221,7 @@ optimizer updates the FP32 master parameters. KDA core, short-convolution and ou
 normalization parameters retain FP32 precision during computation as well.
 
 Use that same BF16 checkpoint directory for SGLang. Raw MXFP4 checkpoints are rejected
-before model allocation. The adapter exports HF-named decoder weights through the
+before model allocation. The adapter exports HF-named training weights through the
 existing Miles weight-sync path and leaves frozen multimodal towers to that shared path.
 
 The eight-GPU smoke test downloads and converts the four-layer checkpoint, then
@@ -244,8 +244,8 @@ The implementation includes FSDP, TP/sequence parallelism, EP and CP. For TP gre
 than one, use EP=TP, with head/expert counts divisible by those degrees. CP uses
 TorchTitan's `headtail` load balancing and expects one flattened packed row, as
 produced by the Miles trainer. PP and `torch.compile` are rejected. Validation uses
-the four-layer, 64-expert BF16 checkpoint and a small synthetic decoder; the full
-93-layer model, long-context behavior and convergence remain unvalidated.
+the four-layer, 64-expert BF16 checkpoint and synthetic K3 configurations with reduced
+dimensions; the full 93-layer model, long-context behavior and convergence remain unvalidated.
 
 CP converts headtail shards into contiguous segments for FLA's recurrent-state and
 convolution-halo exchange, then restores the original layout. MLA retains local

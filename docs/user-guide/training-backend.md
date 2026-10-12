@@ -538,7 +538,7 @@ For profiling: `--use-pytorch-profiler` with `--profile-step-start` / `--profile
 
 ## torchtitan
 
-The experimental [Kimi K3 text decoder](/models/kimi/kimi-k3#6-experimental-torchtitan-text-decoder)
+The [Kimi K3 model adapter](/models/kimi/kimi-k3#6-torchtitan-support)
 is a Miles-local model package, configured from its HF checkpoint.
 
 The torchtitan backend lives at `miles/backends/torchtitan_utils/`. One idea explains the

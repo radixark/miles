@@ -1,4 +1,4 @@
-"""Kimi K3 text decoder: KDA/NoPE MLA, latent MoE and attention residuals."""
+"""Kimi K3 model: KDA/NoPE MLA, latent MoE and attention residuals."""
 
 from dataclasses import dataclass
 

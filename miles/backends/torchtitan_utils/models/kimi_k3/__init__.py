@@ -1,4 +1,4 @@
-"""Kimi K3 text-decoder support, without changes to TorchTitan or Megatron."""
+"""Kimi K3 support for the Miles TorchTitan backend."""
 
 from miles.backends.torchtitan_utils.models.kimi_k3.config import model_config_kwargs
 

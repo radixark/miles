@@ -1,4 +1,4 @@
-"""Training operations for the Kimi K3 text decoder."""
+"""Training operations for Kimi K3."""
 
 from dataclasses import dataclass
 

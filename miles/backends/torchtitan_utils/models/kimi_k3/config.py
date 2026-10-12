@@ -1,4 +1,4 @@
-"""Read the decoder architecture from HF metadata; a flavor only labels the run."""
+"""Read the Kimi K3 architecture from HF metadata; a flavor only labels the run."""
 
 
 def model_config_kwargs(hf_config) -> dict:

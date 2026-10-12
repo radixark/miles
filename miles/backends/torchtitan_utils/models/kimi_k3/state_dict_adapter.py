@@ -1,4 +1,4 @@
-"""Map K3's multimodal HF checkpoint to the trainable text decoder."""
+"""Map Kimi K3 HF checkpoint weights to TorchTitan parameters."""
 
 import re
 
