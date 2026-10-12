@@ -188,6 +188,7 @@ def test_attention_forward_dispatch_selects_the_tcgen05_stage_for_production_hea
     monkeypatch.setenv("MILES_DSA_ATTENTION_TC", "0")
     assert _kernels.attention_tc_stage(64, 0, "sm_100a") is None
     assert _kernels.attention_block_h(64) == 32 and _kernels.attention_head_blocks(64) == 2
+    assert {_kernels._stage_family(stage) for stage in TC_STAGES} == {"attention"}
 
 
 # --------------------------------------------------------------------------- #
@@ -435,7 +436,8 @@ def test_prebuild_is_scoped_to_the_stage_family(monkeypatch):
     assert len(calls) == 1, "a family is prebuilt once per architecture"
     _kernels._kernel("dsa_indexer_clean", "cuda")
     assert len(calls) == 2 and set(calls[1][1]) == set(_jit.MODULES) - TOPK_STAGES - FUSED_STAGES
-    assert len(calls[1][1]) == 17, "the attention / indexer family builds neither top-k family"
+    # 17 pre-existing + delta + split reducer + the six tcgen05 forward stages
+    assert len(calls[1][1]) == 19 + len(TC_STAGES), "the attention / indexer family builds neither top-k family"
     _kernels._kernel("dsa_indexer_topk_scan_h32_d128", "cuda")
     assert len(calls) == 3 and set(calls[2][1]) == FUSED_STAGES, "the fused family builds exactly its two stages"
     _kernels._kernel("dsa_indexer_topk_finalize_k512", "cuda")
