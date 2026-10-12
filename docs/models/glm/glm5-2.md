@@ -140,14 +140,14 @@ The launcher exposes these as flags:
 - `--use-deepep` (default `True`) — enables Megatron-side DeepEP (`--moe-enable-deepep --moe-token-dispatcher-type flex`); falls back to `alltoall`. On GB300 you must pass `--no-megatron-use-deepep` (known Megatron DeepEP failure; the launcher asserts).
 - On B200/GB300 (without `balanced` or FP8 + DeepEP) the launcher pins `--sglang-moe-runner-backend`: `flashinfer_trtllm_routed` for FP8 rollout, `triton` for BF16.
 
-**Measured kernel speed of `--dsa-attention-backend cake`** at the GLM-5.2 training shapes (64 attention heads, `index_topk` 2048, `thd`; 32 indexer heads; `r` = query rows per rank). CUPTI device time of the kernel launches, cold L2, median; ratio = TileLang time / cake time, > 1 = cake faster. The forward runs the tcgen05 stages on 16 / 32 / 64 local heads; the backward kernels reduce their key-side gradients in a fixed FP32 order (no floating-point atomics), so both stay bit-deterministic run to run.
+**Measured kernel speed of `--dsa-attention-backend cake`** at the GLM-5.2 training shapes (64 attention heads, `index_topk` 2048, `thd`; 32 indexer heads; `r` = query rows per rank). CUPTI device time of the kernel launches, cold L2, median; ratio = TileLang time / cake time, > 1 = cake faster. The forward runs the tcgen05 stages on 16 / 32 / 64 local heads; the backward runs a tcgen05 rows kernel on 64 local heads (one CTA per query row, the key-side gradient accumulated over the heads in tensor memory) and the register-MMA rows kernels otherwise, and reduces its key-side partials with a fixed 4-way FP32 tree (no floating-point atomics), so both stay bit-deterministic run to run.
 
 | kernel | local heads | B200 r2048 / r4096 | GB300 r2048 / r4096 | numerics vs the register-MMA stages |
 |---|---|---|---|---|
-| attention fwd | 16 (TP 4) | 1.72x / 1.60x | 1.69x / 1.72x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
-| attention fwd | 64 (TP 1) | 4.27x / 3.88x | 4.15x / 4.17x | fixed-order FP32 |
-| attention bwd | 16 (TP 4) | 3.80x / 1.87x | 4.02x / 2.13x | fixed-order FP32 (delta kernel; dq / dkv kernels bit-identical) |
-| attention bwd | 64 (TP 1) | 1.53x / 0.85x | 1.84x / 1.02x | fixed-order FP32 |
+| attention fwd | 16 (TP 4) | 1.70x / 1.62x | 1.70x / 1.72x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
+| attention fwd | 64 (TP 1) | 4.29x / 3.97x | 4.15x / 4.14x | fixed-order FP32 |
+| attention bwd | 16 (TP 4) | 4.31x / 2.08x | 4.61x / 2.43x | fixed-order FP32 (delta kernel; dq / dkv rows kernels bit-identical) |
+| attention bwd | 64 (TP 1) | 5.05x / 2.82x | 5.46x / 3.24x | fixed-order FP32 (tcgen05 rows kernel: dKV over the 64 heads in tensor memory; delta kernel) |
 | indexer logits (`thd`) | 32 index heads | 1.49x / 1.39x | 1.55x / 1.41x | bit-identical (sources unchanged) |
 | indexer bwd | 32 index heads | 1.48x / 1.28x | 1.52x / 1.28x | fixed-order FP32 (d_index_k via the split4 reducer; dq / dw bit-identical) |
 
