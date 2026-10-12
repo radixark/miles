@@ -258,12 +258,19 @@ class TestConnect:
 
 
 class TestDraftRunner:
-    def test_mtp_weights_reach_the_draft_and_weights_it_shares_go_once_through_the_target(
-        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    @pytest.mark.parametrize("draft_shares_target_weights", [True, False], ids=["shared", "own_copy"])
+    def test_each_runner_writes_every_weight_its_loader_loads(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any, draft_shares_target_weights: bool
     ) -> None:
-        """The draft must receive MTP weights without overwriting shared weights through its own loader."""
+        """A draft's own copy of a target weight was never written when each HF tensor went to the first runner
+        loading it; a weight it shares gets the same bytes from both runners."""
         protocol = p2p_sender.make_protocol()
-        api = make_rollout_api("cell-a", gpu_count=1, speculative_args=_EAGLE_MTP)
+        api = make_rollout_api(
+            "cell-a",
+            gpu_count=1,
+            speculative_args=_EAGLE_MTP,
+            draft_shares_target_weights=draft_shares_target_weights,
+        )
         p2p_sender.connect(protocol, [api])
         p2p_sender.begin_sync(protocol, weight_version=1)
 
@@ -275,20 +282,9 @@ class TestDraftRunner:
             api.target_address(0, "qk"): [5.0, 6.0, 7.0, 8.0],
         }
         assert p2p_sender.transfer_engine.payload_of(api.session_id(0, "draft")) == {
-            api.target_address(0, "mtp"): [9.0, 10.0, 11.0, 12.0]
+            api.published_address(0, "w", "draft"): [1.0, 2.0, 3.0, 4.0],
+            api.published_address(0, "mtp", "draft"): [9.0, 10.0, 11.0, 12.0],
         }
-
-    def test_a_draft_holding_its_own_copy_of_a_target_weight_is_rejected(
-        self, p2p_sender: Any, make_rollout_api: Any
-    ) -> None:
-        """Each HF tensor goes through the target first, so a draft param that is not the target's storage would
-        never be written."""
-        protocol = p2p_sender.make_protocol()
-        api = make_rollout_api("cell-a", gpu_count=1, speculative_args=_EAGLE_MTP, draft_shares_target_weights=False)
-        p2p_sender.connect(protocol, [api])
-
-        with pytest.raises(NotImplementedError, match=r"the draft .* \['w'\]"):
-            p2p_sender.begin_sync(protocol, weight_version=1)
 
     @pytest.mark.parametrize(
         "selector, speculative_args",

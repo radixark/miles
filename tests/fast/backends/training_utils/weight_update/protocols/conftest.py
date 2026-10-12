@@ -208,11 +208,14 @@ class _FakeRolloutApi:
         # one address per weight of a rank: a param the draft shares is the target's storage
         return hash((self.session_id(rank), name)) & 0xFFFFFFFF
 
+    def published_address(self, rank: int, name: str, runner_role: str) -> int:
+        address_role = "target" if self.draft_shares_target_weights else runner_role
+        return hash((self.session_id(rank, address_role), name)) & 0xFFFFFFFF
+
     async def get_remote_instance_transfer_engine_info(self, rank: int, role: str) -> tuple[str, dict]:
         self.calls.append(f"get_remote_instance_transfer_engine_info {role}")
-        address_session = self.session_id(rank, "target" if self.draft_shares_target_weights else role)
         weights = {
-            name: (hash((address_session, name)) & 0xFFFFFFFF, self.published_weight_numel, 4)
+            name: (self.published_address(rank, name, role), self.published_weight_numel, 4)
             for name in _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE[role]
         }
         return self.session_id(rank, role), weights
