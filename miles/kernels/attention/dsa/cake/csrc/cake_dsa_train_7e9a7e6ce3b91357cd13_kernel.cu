@@ -90,7 +90,7 @@ __device__ __forceinline__ float approx_exp2(float x) {
 extern "C" {
 
 __global__ __launch_bounds__(THREADS) void
-kernel_cake_dsa_train_b0d3fecc3b148ce4503b(__nv_bfloat16* __restrict__ q, __nv_bfloat16* __restrict__ kv, __nv_bfloat16* __restrict__ do_, int* __restrict__ indices, float* __restrict__ lse, float* __restrict__ delta, __nv_bfloat16* __restrict__ dq, float* __restrict__ partial, int heads, int topk, int num_head_blocks, float sm_scale, float scale_log2)
+kernel_cake_dsa_train_7e9a7e6ce3b91357cd13(__nv_bfloat16* __restrict__ q, __nv_bfloat16* __restrict__ kv, __nv_bfloat16* __restrict__ do_, int* __restrict__ indices, float* __restrict__ lse, float* __restrict__ delta, __nv_bfloat16* __restrict__ dq, float* __restrict__ partial, int heads, int topk, int num_head_blocks, float sm_scale, float scale_log2)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -303,6 +303,7 @@ kernel_cake_dsa_train_b0d3fecc3b148ce4503b(__nv_bfloat16* __restrict__ q, __nv_b
     float lse_b = s_lse[hg * 16 + r_b];
     float delta_a = s_delta[hg * 16 + r_a];
     float delta_b = s_delta[hg * 16 + r_b];
+    int prev_live = 0;
     #pragma unroll 1
     for (int blk = 0; blk < num_blocks; blk++) {
         int st = blk % 2;
@@ -313,10 +314,13 @@ kernel_cake_dsa_train_b0d3fecc3b148ce4503b(__nv_bfloat16* __restrict__ q, __nv_b
             }
         }
         __syncthreads();
+        int idx_v = s_idx[st * 32 + lane_1];
+        int _vote_0 = __any_sync(0xFFFFFFFF, idx_v >= 0);
+        int live = _vote_0;
         if (num_blocks > blk + 1) {
-            int idx_v = s_idx[nst * 32 + lane_1];
-            int _vote_0 = __any_sync(0xFFFFFFFF, idx_v >= 0);
-            int next_live = _vote_0;
+            int idx_v_0 = s_idx[nst * 32 + lane_1];
+            int _vote_1 = __any_sync(0xFFFFFFFF, idx_v_0 >= 0);
+            int next_live = _vote_1;
             if (next_live != 0) {
                 asm volatile("cp.async.cg.shared::cta.global [%0], [%1], 16, %2;"
                     :: "r"(s_kv_addr + (unsigned int)(nst * 36864) + (unsigned int)(tid % 72 * 8 / 64 * 4096 + (tid / 72 * 128 + tid % 72 * 8 % 64 * 2 ^ (tid / 72 * 128 + tid % 72 * 8 % 64 * 2 >> 7 & 7) << 4))), "l"(kv + ((long long)s_idx[nst * 32 + tid / 72] * 576 + (long long)(tid % 72 * 8))), "r"((s_idx[nst * 32 + tid / 72] >= 0) ? 16 : 0));
@@ -344,9 +348,6 @@ kernel_cake_dsa_train_b0d3fecc3b148ce4503b(__nv_bfloat16* __restrict__ q, __nv_b
         }
         __syncthreads();
         int kv_base = s_kv_addr + (unsigned int)(st * 36864);
-        int idx_v_1 = s_idx[st * 32 + lane_1];
-        int _vote_1 = __any_sync(0xFFFFFFFF, idx_v_1 >= 0);
-        int live = _vote_1;
         if (live != 0) {
             if (grp == 0) {
                 #pragma unroll

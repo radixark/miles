@@ -71,8 +71,8 @@
   ]
  },
  "dsa_attention_bwd_h16_d512t64": {
-  "name": "cake_dsa_train_6ac11ca1d4d05894d5bb",
-  "kernel_symbol": "kernel_cake_dsa_train_6ac11ca1d4d05894d5bb",
+  "name": "cake_dsa_train_0eb4ed1c080107e23f57",
+  "kernel_symbol": "kernel_cake_dsa_train_0eb4ed1c080107e23f57",
   "arg_plan": [
    [
     "buffer",
@@ -140,8 +140,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_6ac11ca1d4d05894d5bb_kernel.cu",
-   "cake_dsa_train_6ac11ca1d4d05894d5bb_binding.cu"
+   "cake_dsa_train_0eb4ed1c080107e23f57_kernel.cu",
+   "cake_dsa_train_0eb4ed1c080107e23f57_binding.cu"
   ],
   "block": [
    256,
@@ -229,8 +229,8 @@
   ]
  },
  "dsa_attention_bwd_h16_d512t0": {
-  "name": "cake_dsa_train_f355cfa42f0f702a1846",
-  "kernel_symbol": "kernel_cake_dsa_train_f355cfa42f0f702a1846",
+  "name": "cake_dsa_train_9fd0d765700968122201",
+  "kernel_symbol": "kernel_cake_dsa_train_9fd0d765700968122201",
   "arg_plan": [
    [
     "buffer",
@@ -298,8 +298,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_f355cfa42f0f702a1846_kernel.cu",
-   "cake_dsa_train_f355cfa42f0f702a1846_binding.cu"
+   "cake_dsa_train_9fd0d765700968122201_kernel.cu",
+   "cake_dsa_train_9fd0d765700968122201_binding.cu"
   ],
   "block": [
    256,
@@ -387,8 +387,8 @@
   ]
  },
  "dsa_attention_bwd_h32_d512t64": {
-  "name": "cake_dsa_train_b0d3fecc3b148ce4503b",
-  "kernel_symbol": "kernel_cake_dsa_train_b0d3fecc3b148ce4503b",
+  "name": "cake_dsa_train_7e9a7e6ce3b91357cd13",
+  "kernel_symbol": "kernel_cake_dsa_train_7e9a7e6ce3b91357cd13",
   "arg_plan": [
    [
     "buffer",
@@ -456,8 +456,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_b0d3fecc3b148ce4503b_kernel.cu",
-   "cake_dsa_train_b0d3fecc3b148ce4503b_binding.cu"
+   "cake_dsa_train_7e9a7e6ce3b91357cd13_kernel.cu",
+   "cake_dsa_train_7e9a7e6ce3b91357cd13_binding.cu"
   ],
   "block": [
    256,
@@ -545,8 +545,8 @@
   ]
  },
  "dsa_attention_bwd_h32_d512t0": {
-  "name": "cake_dsa_train_508752e1761dc1b1916d",
-  "kernel_symbol": "kernel_cake_dsa_train_508752e1761dc1b1916d",
+  "name": "cake_dsa_train_3512b831f4234be3805a",
+  "kernel_symbol": "kernel_cake_dsa_train_3512b831f4234be3805a",
   "arg_plan": [
    [
     "buffer",
@@ -614,8 +614,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_508752e1761dc1b1916d_kernel.cu",
-   "cake_dsa_train_508752e1761dc1b1916d_binding.cu"
+   "cake_dsa_train_3512b831f4234be3805a_kernel.cu",
+   "cake_dsa_train_3512b831f4234be3805a_binding.cu"
   ],
   "block": [
    256,
@@ -623,6 +623,180 @@
    1
   ],
   "dynamic_smem_bytes": 144896,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_bwd_h32x2_d512t64": {
+  "name": "cake_dsa_train_ec4987f0492b1c232a5d",
+  "kernel_symbol": "kernel_cake_dsa_train_ec4987f0492b1c232a5d",
+  "arg_plan": [
+   [
+    "buffer",
+    "q"
+   ],
+   [
+    "buffer",
+    "kv"
+   ],
+   [
+    "buffer",
+    "do"
+   ],
+   [
+    "buffer",
+    "indices"
+   ],
+   [
+    "buffer",
+    "lse"
+   ],
+   [
+    "buffer",
+    "delta"
+   ],
+   [
+    "buffer",
+    "dq"
+   ],
+   [
+    "buffer",
+    "partial"
+   ],
+   [
+    "parameter",
+    "heads"
+   ],
+   [
+    "parameter",
+    "topk"
+   ],
+   [
+    "parameter",
+    "num_head_blocks"
+   ],
+   [
+    "parameter",
+    "sm_scale"
+   ],
+   [
+    "parameter",
+    "scale_log2"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_ec4987f0492b1c232a5d_kernel.cu",
+   "cake_dsa_train_ec4987f0492b1c232a5d_binding.cu"
+  ],
+  "block": [
+   256,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 195072,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_bwd_h32x2_d512t0": {
+  "name": "cake_dsa_train_f2c52a8dc5a125ae7df5",
+  "kernel_symbol": "kernel_cake_dsa_train_f2c52a8dc5a125ae7df5",
+  "arg_plan": [
+   [
+    "buffer",
+    "q"
+   ],
+   [
+    "buffer",
+    "kv"
+   ],
+   [
+    "buffer",
+    "do"
+   ],
+   [
+    "buffer",
+    "indices"
+   ],
+   [
+    "buffer",
+    "lse"
+   ],
+   [
+    "buffer",
+    "delta"
+   ],
+   [
+    "buffer",
+    "dq"
+   ],
+   [
+    "buffer",
+    "partial"
+   ],
+   [
+    "parameter",
+    "heads"
+   ],
+   [
+    "parameter",
+    "topk"
+   ],
+   [
+    "parameter",
+    "num_head_blocks"
+   ],
+   [
+    "parameter",
+    "sm_scale"
+   ],
+   [
+    "parameter",
+    "scale_log2"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_f2c52a8dc5a125ae7df5_kernel.cu",
+   "cake_dsa_train_f2c52a8dc5a125ae7df5_binding.cu"
+  ],
+  "block": [
+   256,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 178688,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
@@ -2062,6 +2236,364 @@
   ],
   "block": [
    384,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 231680,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_bwd_tc_h64_d512t64": {
+  "name": "cake_dsa_train_f91a3ad6150c22e98b9e",
+  "kernel_symbol": "kernel_cake_dsa_train_f91a3ad6150c22e98b9e",
+  "arg_plan": [
+   [
+    "tma_buffer",
+    "q_latent"
+   ],
+   [
+    "tma_buffer",
+    "q_rope"
+   ],
+   [
+    "tma_buffer",
+    "dout"
+   ],
+   [
+    "tma_buffer",
+    "dq_latent"
+   ],
+   [
+    "tma_buffer",
+    "dq_rope"
+   ],
+   [
+    "tma_buffer",
+    "kv_latent"
+   ],
+   [
+    "tma_buffer",
+    "k_rope"
+   ],
+   [
+    "buffer",
+    "lse"
+   ],
+   [
+    "buffer",
+    "delta"
+   ],
+   [
+    "buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "o_lo"
+   ],
+   [
+    "buffer",
+    "indices"
+   ],
+   [
+    "buffer",
+    "topk_length"
+   ],
+   [
+    "buffer",
+    "dkv_f32"
+   ],
+   [
+    "buffer",
+    "dkr_f32"
+   ],
+   [
+    "parameter",
+    "dkv_stride"
+   ],
+   [
+    "parameter",
+    "dkr_stride"
+   ],
+   [
+    "parameter",
+    "dkr_col0"
+   ],
+   [
+    "buffer",
+    "dkv_dst_map"
+   ],
+   [
+    "parameter",
+    "dkv_has_map"
+   ],
+   [
+    "parameter",
+    "num_queries"
+   ],
+   [
+    "parameter",
+    "num_kv"
+   ],
+   [
+    "parameter",
+    "topk"
+   ],
+   [
+    "parameter",
+    "idx_stride"
+   ],
+   [
+    "parameter",
+    "indices_offset"
+   ],
+   [
+    "parameter",
+    "has_topk_length"
+   ],
+   [
+    "parameter",
+    "token_base"
+   ],
+   [
+    "parameter",
+    "token_step"
+   ],
+   [
+    "parameter",
+    "scale_log2"
+   ],
+   [
+    "parameter",
+    "sm_scale"
+   ],
+   [
+    "parameter",
+    "pass_lo"
+   ],
+   [
+    "parameter",
+    "pass_hi"
+   ],
+   [
+    "parameter",
+    "dq_mode"
+   ],
+   [
+    "buffer",
+    "dq_partial"
+   ],
+   [
+    "buffer",
+    "key_scratch"
+   ],
+   [
+    "buffer",
+    "pass_counts"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_f91a3ad6150c22e98b9e_kernel.cu",
+   "cake_dsa_train_f91a3ad6150c22e98b9e_binding.cu"
+  ],
+  "block": [
+   640,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 231680,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_bwd_tc_h64_d512t0": {
+  "name": "cake_dsa_train_b081261da31439655152",
+  "kernel_symbol": "kernel_cake_dsa_train_b081261da31439655152",
+  "arg_plan": [
+   [
+    "tma_buffer",
+    "q_latent"
+   ],
+   [
+    "tma_buffer",
+    "q_rope"
+   ],
+   [
+    "tma_buffer",
+    "dout"
+   ],
+   [
+    "tma_buffer",
+    "dq_latent"
+   ],
+   [
+    "tma_buffer",
+    "dq_rope"
+   ],
+   [
+    "tma_buffer",
+    "kv_latent"
+   ],
+   [
+    "tma_buffer",
+    "k_rope"
+   ],
+   [
+    "buffer",
+    "lse"
+   ],
+   [
+    "buffer",
+    "delta"
+   ],
+   [
+    "buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "o_lo"
+   ],
+   [
+    "buffer",
+    "indices"
+   ],
+   [
+    "buffer",
+    "topk_length"
+   ],
+   [
+    "buffer",
+    "dkv_f32"
+   ],
+   [
+    "buffer",
+    "dkr_f32"
+   ],
+   [
+    "parameter",
+    "dkv_stride"
+   ],
+   [
+    "parameter",
+    "dkr_stride"
+   ],
+   [
+    "parameter",
+    "dkr_col0"
+   ],
+   [
+    "buffer",
+    "dkv_dst_map"
+   ],
+   [
+    "parameter",
+    "dkv_has_map"
+   ],
+   [
+    "parameter",
+    "num_queries"
+   ],
+   [
+    "parameter",
+    "num_kv"
+   ],
+   [
+    "parameter",
+    "topk"
+   ],
+   [
+    "parameter",
+    "idx_stride"
+   ],
+   [
+    "parameter",
+    "indices_offset"
+   ],
+   [
+    "parameter",
+    "has_topk_length"
+   ],
+   [
+    "parameter",
+    "token_base"
+   ],
+   [
+    "parameter",
+    "token_step"
+   ],
+   [
+    "parameter",
+    "scale_log2"
+   ],
+   [
+    "parameter",
+    "sm_scale"
+   ],
+   [
+    "parameter",
+    "pass_lo"
+   ],
+   [
+    "parameter",
+    "pass_hi"
+   ],
+   [
+    "parameter",
+    "dq_mode"
+   ],
+   [
+    "buffer",
+    "dq_partial"
+   ],
+   [
+    "buffer",
+    "key_scratch"
+   ],
+   [
+    "buffer",
+    "pass_counts"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_b081261da31439655152_kernel.cu",
+   "cake_dsa_train_b081261da31439655152_binding.cu"
+  ],
+  "block": [
+   640,
    1,
    1
   ],
