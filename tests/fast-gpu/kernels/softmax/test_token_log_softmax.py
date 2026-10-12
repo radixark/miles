@@ -41,7 +41,7 @@ def test_every_launch_shape_matches_log_softmax(launch, n_unpadded_cols):
     gradient over the true vocabulary, write every element of the gradient, and zero the padding."""
     logits, rows, targets = _inputs(64, _VOCAB, n_unpadded_cols, seed=15)
     ref_log_probs, ref_entropy = _reference(logits, rows, targets, n_unpadded_cols)
-    row_max, row_sum, row_dsum, target = row_statistics(
+    logit_max, sum_exp, sum_exp_logit, target_logit = row_statistics(
         logits,
         rows,
         targets,
@@ -51,9 +51,9 @@ def test_every_launch_shape_matches_log_softmax(launch, n_unpadded_cols):
         with_entropy=True,
         launch=launch,
     )
-    log_sum, mean = torch.log(row_sum), row_dsum / row_sum
-    torch.testing.assert_close(target - log_sum, ref_log_probs, rtol=1e-5, atol=2e-5)
-    torch.testing.assert_close(log_sum - mean, ref_entropy, rtol=1e-5, atol=5e-5)
+    log_sum_exp, expected_mean_logit = torch.log(sum_exp), sum_exp_logit / sum_exp
+    torch.testing.assert_close(target_logit - log_sum_exp, ref_log_probs, rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(log_sum_exp - expected_mean_logit, ref_entropy, rtol=1e-5, atol=5e-5)
 
     gen = torch.Generator(device="cuda").manual_seed(16)
     g = torch.randn(rows.numel(), device="cuda", generator=gen)
@@ -67,10 +67,10 @@ def test_every_launch_shape_matches_log_softmax(launch, n_unpadded_cols):
         logits,
         rows=rows,
         targets=targets,
-        row_max=row_max,
-        log_sum=log_sum,
-        mean=mean,
-        one_minus_p=-torch.expm1(target - log_sum),
+        logit_max=logit_max,
+        log_sum_exp=log_sum_exp,
+        expected_mean_logit=expected_mean_logit,
+        one_minus_p=-torch.expm1(target_logit - log_sum_exp),
         grad_log_probs=g,
         grad_entropy=c,
         vocab_start=0,
@@ -87,11 +87,11 @@ def test_an_all_padding_shard_reports_no_mass():
     """The last tensor-parallel shard can hold only padding: it must report a zero sum from a max of
     -inf, and no target, so that combining it with the other shards adds nothing."""
     logits, rows, targets = _inputs(16, 1024, 1024, seed=19)
-    row_max, row_sum, row_dsum, target = row_statistics(
+    logit_max, sum_exp, sum_exp_logit, target_logit = row_statistics(
         logits, rows, targets, vocab_start=0, n_unpadded_cols=0, temperature=_TEMPERATURE, with_entropy=True
     )
-    assert (row_max == float("-inf")).all()
-    assert (row_sum == 0).all() and (row_dsum == 0).all() and (target == 0).all()
+    assert (logit_max == float("-inf")).all()
+    assert (sum_exp == 0).all() and (sum_exp_logit == 0).all() and (target_logit == 0).all()
 
 
 if __name__ == "__main__":

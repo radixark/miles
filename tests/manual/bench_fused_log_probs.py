@@ -81,7 +81,7 @@ def main() -> None:
                 launch=launch,
             )
 
-    row_max, row_sum, row_dsum, target = kernels.row_statistics(
+    logit_max, sum_exp, sum_exp_logit, target_logit = kernels.row_statistics(
         logits,
         rows,
         targets,
@@ -90,8 +90,8 @@ def main() -> None:
         temperature=TEMPERATURE,
         with_entropy=True,
     )
-    log_sum, mean = torch.log(row_sum), row_dsum / row_sum
-    one_minus_p = -torch.expm1(target - log_sum)
+    log_sum_exp, expected_mean_logit = torch.log(sum_exp), sum_exp_logit / sum_exp
+    one_minus_p = -torch.expm1(target_logit - log_sum_exp)
     grad_log_probs = torch.randn(args.rows, device=device)
     grad_entropy = torch.randn(args.rows, device=device)
     grad = torch.empty_like(logits)
@@ -102,9 +102,9 @@ def main() -> None:
             logits,
             rows=rows,
             targets=targets,
-            row_max=row_max,
-            log_sum=log_sum,
-            mean=mean,
+            logit_max=logit_max,
+            log_sum_exp=log_sum_exp,
+            expected_mean_logit=expected_mean_logit,
             one_minus_p=one_minus_p,
             grad_log_probs=grad_log_probs,
             grad_entropy=grad_entropy,

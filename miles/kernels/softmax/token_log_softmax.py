@@ -58,10 +58,10 @@ def _row_stats_kernel(
     logits_ptr,
     rows_ptr,
     targets_ptr,
-    max_ptr,
-    sum_ptr,
-    dsum_ptr,
-    target_ptr,
+    logit_max_ptr,
+    sum_exp_ptr,
+    sum_exp_logit_ptr,
+    target_logit_ptr,
     stride_row,
     n_unpadded_cols,
     vocab_start,
@@ -79,7 +79,7 @@ def _row_stats_kernel(
     run_max = tl.full([], float("-inf"), tl.float32)
     run_sum = tl.zeros([], tl.float32)
     run_sum_error = tl.zeros([], tl.float32)  # Kahan compensation of run_sum
-    run_dsum = tl.zeros([], tl.float32)
+    run_sum_exp_logit = tl.zeros([], tl.float32)
     for start in range(0, n_unpadded_cols, BLOCK_V):
         cols = start + lanes
         in_vocab = cols < n_unpadded_cols
@@ -91,7 +91,9 @@ def _row_stats_kernel(
             # re-measuring the running sums from the new max shifts every earlier d by the same amount
             shift = tl.where(run_max == float("-inf"), 0.0, (run_max - new_max) * inv_temperature)
             d = (x - new_max) * inv_temperature
-            run_dsum = (run_dsum + shift * run_sum) * rescale + tl.sum(tl.where(in_vocab, e * d, 0.0), axis=0)
+            run_sum_exp_logit = (run_sum_exp_logit + shift * run_sum) * rescale + tl.sum(
+                tl.where(in_vocab, e * d, 0.0), axis=0
+            )
         # Kahan: for a confident token run_sum sits near 1, and later blocks' ~1e-7 sums would round away
         scaled_sum = run_sum * rescale
         addend = tl.sum(e, axis=0) - run_sum_error * rescale
@@ -100,15 +102,15 @@ def _row_stats_kernel(
         run_sum = new_sum
         run_max = new_max
 
-    tl.store(max_ptr + pid, run_max)
-    tl.store(sum_ptr + pid, run_sum)
+    tl.store(logit_max_ptr + pid, run_max)
+    tl.store(sum_exp_ptr + pid, run_sum)
     if WITH_ENTROPY:
-        tl.store(dsum_ptr + pid, run_dsum)
+        tl.store(sum_exp_logit_ptr + pid, run_sum_exp_logit)
 
     target = tl.load(targets_ptr + pid) - vocab_start
     in_shard = (target >= 0) & (target < n_unpadded_cols)
     target_x = tl.load(row_ptr + target, mask=in_shard, other=0.0).to(tl.float32)
-    tl.store(target_ptr + pid, tl.where(in_shard, (target_x - run_max) * inv_temperature, 0.0))
+    tl.store(target_logit_ptr + pid, tl.where(in_shard, (target_x - run_max) * inv_temperature, 0.0))
 
 
 @triton.jit
@@ -117,9 +119,9 @@ def _logits_grad_kernel(
     grad_ptr,
     rows_ptr,
     targets_ptr,
-    max_ptr,
-    log_sum_ptr,
-    mean_ptr,
+    logit_max_ptr,
+    log_sum_exp_ptr,
+    expected_mean_logit_ptr,
     one_minus_p_ptr,
     grad_log_probs_ptr,
     grad_entropy_ptr,
@@ -140,8 +142,8 @@ def _logits_grad_kernel(
     in_vocab = cols < n_vocab
 
     x = tl.load(logits_ptr + row * stride_row + cols, mask=in_vocab, other=0.0).to(tl.float32)
-    d = (x - tl.load(max_ptr + pid_row)) * inv_temperature
-    p = tl.exp2((d - tl.load(log_sum_ptr + pid_row)) * 1.4426950408889634)
+    d = (x - tl.load(logit_max_ptr + pid_row)) * inv_temperature
+    p = tl.exp2((d - tl.load(log_sum_exp_ptr + pid_row)) * 1.4426950408889634)
     p = tl.where(cols < n_unpadded_cols, p, 0.0)  # padding columns: zero probability, so a zero gradient
     dd = tl.zeros([BLOCK_V], tl.float32)
     if HAS_GRAD_LOG_PROBS:
@@ -151,7 +153,7 @@ def _logits_grad_kernel(
         dd = tl.where(cols == target, g * tl.load(one_minus_p_ptr + pid_row), -g * p)
     if HAS_GRAD_ENTROPY:
         c = tl.load(grad_entropy_ptr + pid_row)
-        dd = dd - c * p * (d - tl.load(mean_ptr + pid_row))
+        dd = dd - c * p * (d - tl.load(expected_mean_logit_ptr + pid_row))
     grad = dd * inv_temperature
     tl.store(grad_ptr + row * grad_stride_row + cols, grad.to(grad_ptr.dtype.element_ty), mask=in_vocab)
 
@@ -202,8 +204,8 @@ def row_statistics(
             BLOCK_V=launch.block_v,
             num_warps=launch.num_warps,
         )
-    row_max, row_sum, row_dsum, target = stats
-    return row_max, row_sum, (row_dsum if with_entropy else None), target
+    logit_max, sum_exp, sum_exp_logit, target_logit = stats
+    return logit_max, sum_exp, (sum_exp_logit if with_entropy else None), target_logit
 
 
 def write_logits_grad(
@@ -212,9 +214,9 @@ def write_logits_grad(
     *,
     rows: torch.Tensor,
     targets: torch.Tensor,
-    row_max: torch.Tensor,
-    log_sum: torch.Tensor,
-    mean: torch.Tensor | None,
+    logit_max: torch.Tensor,
+    log_sum_exp: torch.Tensor,
+    expected_mean_logit: torch.Tensor | None,
     one_minus_p: torch.Tensor,
     grad_log_probs: torch.Tensor | None,
     grad_entropy: torch.Tensor | None,
@@ -238,12 +240,12 @@ def write_logits_grad(
         grad,
         rows,
         targets,
-        row_max,
-        log_sum,
-        mean if mean is not None else log_sum,
+        logit_max,
+        log_sum_exp,
+        expected_mean_logit if expected_mean_logit is not None else log_sum_exp,
         one_minus_p,
-        grad_log_probs if grad_log_probs is not None else log_sum,
-        grad_entropy if grad_entropy is not None else log_sum,
+        grad_log_probs if grad_log_probs is not None else log_sum_exp,
+        grad_entropy if grad_entropy is not None else log_sum_exp,
         logits.stride(0),
         grad.stride(0),
         logits.size(1),

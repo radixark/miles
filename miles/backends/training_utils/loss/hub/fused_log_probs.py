@@ -56,13 +56,13 @@ def fused_log_probs_and_entropy(
     return log_probs, (entropy if with_entropy else None)
 
 
-class _RowStats(NamedTuple):
-    """Per selected row, over the true vocabulary, with ``d = (x - m) / T`` for the row max ``m``."""
+class _SoftmaxStats(NamedTuple):
+    """Softmax statistics of each selected row over the true vocabulary, in ``d = (x - logit_max) / T``."""
 
-    row_max: Tensor  # m
-    log_sum: Tensor  # log sum_v exp(d_v)
-    target: Tensor  # d_y
-    mean: Tensor | None  # sum_v p_v d_v, only with entropy
+    logit_max: Tensor  # m
+    log_sum_exp: Tensor  # log sum_v exp(d_v)
+    target_logit: Tensor  # d_y
+    expected_mean_logit: Tensor | None  # sum_v p_v d_v, only with entropy
 
 
 class _FusedLogProbsAndEntropy(torch.autograd.Function):
@@ -80,18 +80,18 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
         inplace_backward,
     ):
         stats = _row_statistics(logits, rows, targets, tp_group, n_unpadded_cols, temperature, with_entropy)
-        log_probs = stats.target - stats.log_sum
-        entropy = stats.log_sum - stats.mean if with_entropy else log_probs.new_empty(0)
+        log_probs = stats.target_logit - stats.log_sum_exp
+        entropy = stats.log_sum_exp - stats.expected_mean_logit if with_entropy else log_probs.new_empty(0)
         if not entropy_requires_grad:
             ctx.mark_non_differentiable(entropy)
         ctx.save_for_backward(
             logits,
             rows,
             targets,
-            stats.row_max,
-            stats.log_sum,
+            stats.logit_max,
+            stats.log_sum_exp,
             log_probs,
-            stats.mean if entropy_requires_grad else None,
+            stats.expected_mean_logit if entropy_requires_grad else None,
         )
         ctx.tp_group = tp_group
         ctx.n_unpadded_cols = n_unpadded_cols
@@ -102,16 +102,16 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_log_probs, grad_entropy):
-        logits, rows, targets, row_max, log_sum, log_probs, mean = ctx.saved_tensors
+        logits, rows, targets, logit_max, log_sum_exp, log_probs, expected_mean_logit = ctx.saved_tensors
         grad = logits if ctx.inplace_backward else torch.empty_like(logits)
         kernels.write_logits_grad(
             grad,
             logits,
             rows=rows,
             targets=targets,
-            row_max=row_max,
-            log_sum=log_sum,
-            mean=mean,
+            logit_max=logit_max,
+            log_sum_exp=log_sum_exp,
+            expected_mean_logit=expected_mean_logit,
             one_minus_p=-torch.expm1(log_probs),  # 1 - p at the target, exact even when p is close to 1
             grad_log_probs=_contiguous_or_none(grad_log_probs),
             grad_entropy=_contiguous_or_none(grad_entropy) if ctx.entropy_requires_grad else None,
@@ -127,10 +127,10 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
         return grad, None, None, None, None, None, None, None, None
 
 
-def _row_statistics(logits, rows, targets, tp_group, n_unpadded_cols, temperature, with_entropy) -> _RowStats:
+def _row_statistics(logits, rows, targets, tp_group, n_unpadded_cols, temperature, with_entropy) -> _SoftmaxStats:
     """Statistics of the selected rows, combined over the vocab-parallel group."""
     vocab_start = _vocab_start(logits, tp_group)
-    row_max, row_sum, row_dsum, target = kernels.row_statistics(
+    logit_max, sum_exp, sum_exp_logit, target_logit = kernels.row_statistics(
         logits,
         rows,
         targets,
@@ -140,27 +140,29 @@ def _row_statistics(logits, rows, targets, tp_group, n_unpadded_cols, temperatur
         with_entropy=with_entropy,
     )
     in_shard = (targets >= vocab_start) & (targets < vocab_start + n_unpadded_cols)
-    row_max, row_sum, row_dsum, target = _combine_over_tp(
-        row_max, row_sum, row_dsum, target, in_shard, tp_group, temperature
+    logit_max, sum_exp, sum_exp_logit, target_logit = _combine_over_tp(
+        logit_max, sum_exp, sum_exp_logit, target_logit, in_shard, tp_group, temperature
     )
-    return _RowStats(row_max, torch.log(row_sum), target, (row_dsum / row_sum if with_entropy else None))
+    return _SoftmaxStats(
+        logit_max, torch.log(sum_exp), target_logit, (sum_exp_logit / sum_exp if with_entropy else None)
+    )
 
 
-def _combine_over_tp(row_max, row_sum, row_dsum, target, in_shard, tp_group, temperature):
+def _combine_over_tp(logit_max, sum_exp, sum_exp_logit, target_logit, in_shard, tp_group, temperature):
     """Re-measure each shard's sums from the global max and add them; only the target's shard adds ``d_y``."""
     if tp_group is None or dist.get_world_size(tp_group) == 1:
-        return row_max, row_sum, row_dsum, target
-    global_max = row_max.clone()
-    dist.all_reduce(global_max, op=dist.ReduceOp.MAX, group=tp_group)
+        return logit_max, sum_exp, sum_exp_logit, target_logit
+    global_logit_max = logit_max.clone()
+    dist.all_reduce(global_logit_max, op=dist.ReduceOp.MAX, group=tp_group)
     # an all-padding shard has max -inf and zero sums; a -inf shift would make -inf * 0 = nan
-    shift = torch.where(row_sum > 0, (row_max - global_max) / temperature, 0.0)
+    shift = torch.where(sum_exp > 0, (logit_max - global_logit_max) / temperature, 0.0)
     rescale = torch.exp(shift)
-    columns = [row_sum * rescale, torch.where(in_shard, target + shift, torch.zeros_like(target))]
-    if row_dsum is not None:
-        columns.append((row_dsum + shift * row_sum) * rescale)
+    columns = [sum_exp * rescale, torch.where(in_shard, target_logit + shift, torch.zeros_like(target_logit))]
+    if sum_exp_logit is not None:
+        columns.append((sum_exp_logit + shift * sum_exp) * rescale)
     sums = torch.stack(columns, dim=1)
     dist.all_reduce(sums, group=tp_group)
-    return global_max, sums[:, 0], (sums[:, 2] if row_dsum is not None else None), sums[:, 1]
+    return global_logit_max, sums[:, 0], (sums[:, 2] if sum_exp_logit is not None else None), sums[:, 1]
 
 
 def _vocab_start(logits: Tensor, tp_group: dist.ProcessGroup | None) -> int:
