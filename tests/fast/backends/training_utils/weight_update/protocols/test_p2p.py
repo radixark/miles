@@ -117,7 +117,7 @@ class TestWriteCompletion:
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=3)
         p2p_sender.connect(protocol, [api])
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.begin_sync(protocol, weight_version=1)
         p2p_sender.transfer_engine.failing_sessions = {api.session_id(0)}
 
         with pytest.raises(RuntimeError, match=api.session_id(0)):

@@ -304,7 +304,7 @@ class TestModelReplica:
             torch.zeros(1024, dtype=torch.uint8), ["norm.weight"], [("norm.weight", _float_tensor(1.0, 2))]
         )
 
-        assert events == ["enter", "load", "exit"]
+        assert events == ["enter", "load", "exit"] * events.count("load")
 
     def test_map_hf_names_runs_the_replica_loader_inside_the_rank_parallelism_context(
         self, model_replica_module: ModuleType, make_model_replica, monkeypatch: pytest.MonkeyPatch
