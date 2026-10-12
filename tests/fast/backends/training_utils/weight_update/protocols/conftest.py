@@ -128,6 +128,10 @@ class _FakeTransferEngine:
         self.registered.append((address, size))
         return 0
 
+    def unregister_memory(self, address: int) -> int:
+        self.registered = [(start, size) for start, size in self.registered if start != address]
+        return 0
+
     def batch_transfer_sync_write(
         self, session_id: str, source_ptrs: list[int], target_ptrs: list[int], source_lens: list[int]
     ) -> int:
@@ -247,12 +251,14 @@ class _P2PSenderHarness:
     def loaded_event(self, tp_rank: int) -> threading.Event:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
 
-    def make_protocol(self, *, p2p_transfer_timeout: float = _FAILURE_BOUND) -> Any:
+    def make_protocol(
+        self, *, p2p_transfer_timeout: float = _FAILURE_BOUND, update_weight_buffer_size: int = 1024
+    ) -> Any:
         args = Namespace(
             hf_checkpoint="/model",
             p2p_transfer_timeout=p2p_transfer_timeout,
             update_weight_engine_request_timeout=_FAILURE_BOUND,
-            update_weight_buffer_size=1024,
+            update_weight_buffer_size=update_weight_buffer_size,
             sglang_pp_size=1,
         )
         return self._p2p_protocol.UpdateWeightP2P(args)

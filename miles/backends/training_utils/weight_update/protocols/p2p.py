@@ -64,7 +64,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
     def begin_sync(
         self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
     ) -> bool:
-        """Map new replicas and reset staging; all ranks must join the first iterator pass's collectives."""
+        """Map new replicas, reset staging and grow the transfer buffers if a param group no longer fits; all ranks
+        must join the first iterator pass's collectives."""
         if self._hf_tensor_specs is None:
             self._hf_tensor_specs = {
                 hf_name: HfTensorSpec(tuple(tensor.shape), tensor.dtype)
@@ -74,9 +75,13 @@ class UpdateWeightP2P(WeightTransferProtocol):
         if self.is_sender:
             self._model_replicas.map_hf_names(self._hf_tensor_specs)
             self._model_param_stager = ModelParamStager(self._model_replicas.hf_name_mapping)
+            buffer_nbytes = self._compute_transfer_buffer_nbytes()
             if self._transfer_buffers is None:
                 self._log_hf_names_no_replica_loads()
-                self._transfer_buffers = self._create_transfer_buffers()
+                self._transfer_buffers = self._create_transfer_buffers(buffer_nbytes)
+            elif self._transfer_buffers.buffer_nbytes < buffer_nbytes:
+                self._transfer_buffers.release()
+                self._transfer_buffers = self._create_transfer_buffers(buffer_nbytes)
         return True
 
     def after_base_weights(self) -> None:
@@ -159,15 +164,19 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 f"{hf_names_no_replica_loads[:5]}"
             )
 
-    def _create_transfer_buffers(self) -> TransferBuffers:
+    def _compute_transfer_buffer_nbytes(self) -> int:
         largest_param_group_nbytes = max(
             compute_param_group_nbytes(param_group, self._model_replicas.transfer_buffer_param_layouts)
             for param_group in self._model_param_stager.param_groups
         )
+        return max(self.args.update_weight_buffer_size, largest_param_group_nbytes)
+
+    def _create_transfer_buffers(self, buffer_nbytes: int) -> TransferBuffers:
         return TransferBuffers(
             _NUM_TRANSFER_BUFFERS,
-            max(self.args.update_weight_buffer_size, largest_param_group_nbytes),
+            buffer_nbytes,
             device=self._transport.transfer_buffer_device,
             register_memory=self._transport.register_memory,
+            unregister_memory=self._transport.unregister_memory,
             write_timeout=self.args.p2p_transfer_timeout,
         )

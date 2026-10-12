@@ -78,6 +78,11 @@ class MooncakeTransport:
                 f"Mooncake could not register {_nbytes(tensor)} bytes at {tensor.data_ptr():#x}: error {ret}"
             )
 
+    def unregister_memory(self, tensor: torch.Tensor) -> None:
+        ret = self._transfer_engine.unregister_memory(tensor.data_ptr())
+        if ret != 0:
+            raise RuntimeError(f"Mooncake could not unregister the memory at {tensor.data_ptr():#x}: error {ret}")
+
     def write(self, remote_shards: Sequence[RemoteShard], tensors_by_name: dict[str, torch.Tensor]) -> list[Future]:
         """Writes each tensor into the weight of the same name on every shard; returns one future per shard.
 
