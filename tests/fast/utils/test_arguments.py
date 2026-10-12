@@ -2081,6 +2081,27 @@ def test_bridge_mode_accepts_critic(tmp_path):
     assert args.use_critic is True
 
 
+def test_p2p_accepts_megatron_bridge(tmp_path):
+    """Bridge gathers PP and p2p assigns senders over the gathered placement, so each rollout engine rank is written once."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--update-weight-transfer-mode",
+            "p2p",
+            "--megatron-to-hf-mode",
+            "bridge",
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    miles_validate_args(args)
+
+
 def test_critic_is_accepted_on_the_only_trainer(tmp_path):
     """Shared actor/critic PPO used to be rejected on the cell based trainer, which is now the only one."""
     parser = argparse.ArgumentParser()
