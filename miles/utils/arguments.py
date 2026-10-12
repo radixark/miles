@@ -509,6 +509,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--kimi-k3-situ-backend",
+                type=str,
+                choices=["eager", "fused"],
+                default="eager",
+                help=(
+                    "Implementation of Kimi-K3's SiTU-and-mul expert activation in the trainer. 'eager' composes "
+                    "PyTorch elementwise ops (about ten kernels forward, fifteen backward). 'fused' runs forward "
+                    "and backward as one Triton pass each: the forward stays within one bf16 ulp of eager and the "
+                    "closed-form backward within a few ulp."
+                ),
+            )
+            parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,

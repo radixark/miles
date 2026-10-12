@@ -5,16 +5,19 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
+from .fused_situ import fused_situ_and_mul
 from .layers import KimiK3Attention, KimiK3KDAAttention, KimiK3TransformerLayer
 from .ops import situ_and_mul
-
 
 KIMI_K3_KDA_LAYERS = tuple(
     layer_number for layer_number in range(1, 94) if layer_number % 4 != 0 and layer_number != 93
 )
 
 
-def configure_kimi_k3(config) -> None:
+_SITU_BACKENDS = {"eager": situ_and_mul, "fused": fused_situ_and_mul}
+
+
+def configure_kimi_k3(config, situ_backend: str = "eager") -> None:
     assert config.num_layers <= 93
     assert config.num_attention_heads == 96
     assert config.moe_latent_size == 3584
@@ -26,7 +29,7 @@ def configure_kimi_k3(config) -> None:
     config.kimi_linear_conv_kernel_size = 4
     config.kimi_kda_gate_lower_bound = -5.0
     config.kimi_attn_res_block_size = 12
-    config.gated_activation_func = situ_and_mul
+    config.gated_activation_func = _SITU_BACKENDS[situ_backend]
     config.moe_latent_use_norm = True
     config.bias_activation_fusion = False
     config.use_te_activation_func = False
@@ -63,6 +66,5 @@ def build_kimi_k3_spec(config, vp_stage=None):
 
 
 def get_kimi_k3_spec(args, config, vp_stage):
-    del args
-    configure_kimi_k3(config)
+    configure_kimi_k3(config, situ_backend=args.kimi_k3_situ_backend)
     return build_kimi_k3_spec(config, vp_stage=vp_stage)
