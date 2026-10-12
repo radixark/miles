@@ -1,6 +1,8 @@
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=300, suite="stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=300, suite="stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=2
+)
 
 """``--log-probs-backend fused`` must match log_softmax and the torch backend, over TP shards, CP layouts and losses."""
 
