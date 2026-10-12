@@ -218,18 +218,24 @@ class _FusedSupportLogProbs(torch.autograd.Function):
             grad_entropy.contiguous() if grad_entropy is not None and options.entropy_requires_grad else None
         )
         vocab_entropy_grad = grad_entropy if vocab_stats is not None else None
-        # outside the support only a vocabulary entropy has a gradient; the dense pass writes it, or zeros
-        kernels.write_logits_grad(
-            grad,
-            logits,
-            rows=rows,
-            targets=None,
-            stats=vocab_stats if vocab_stats is not None else support_stats,
-            grad_log_probs=None,
-            grad_entropy=vocab_entropy_grad,
-            vocab=options.vocab,
-            temperature=options.temperature,
-        )
+        if vocab_entropy_grad is None:
+            # no gradient outside the support: zero every row with a store-only pass, reading no logits
+            kernels.zero_unscored_rows(grad, rows[:0])
+        else:
+            # outside the support only the vocabulary entropy has a gradient; the dense pass writes it
+            kernels.write_logits_grad(
+                grad,
+                logits,
+                rows=rows,
+                targets=None,
+                stats=vocab_stats,
+                grad_log_probs=None,
+                grad_entropy=vocab_entropy_grad,
+                vocab=options.vocab,
+                temperature=options.temperature,
+            )
+            if rows.numel() < grad.size(0):
+                kernels.zero_unscored_rows(grad, rows)
         support_grad = _support_column_grads(
             targets,
             support,
@@ -247,8 +253,6 @@ class _FusedSupportLogProbs(torch.autograd.Function):
         owned = options.vocab.holds(support)
         # support ids are unique within a row, so this plain assignment writes each column once
         grad[rows.unsqueeze(1).expand_as(support)[owned], local_cols[owned]] = support_grad[owned].to(grad.dtype)
-        if rows.numel() < grad.size(0):
-            kernels.zero_unscored_rows(grad, rows)
         if options.inplace_backward:
             torch.autograd.graph.increment_version(logits)
         return grad, None, None, None, None, None
