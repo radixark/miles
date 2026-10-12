@@ -283,7 +283,7 @@ class ModelReplica:
         # the trainer's HF tensors are on the GPU postprocess runs on
         self._hf_tensor_device = postprocess_device
         self._transfer_buffer_device = transfer_buffer_device
-        self.transfer_buffer_param_layouts = _bring_to_reload_state(
+        self.transfer_buffer_param_layouts = _run_engine_postprocess_and_restore(
             model, built_shapes_by_name, config.parallelism, postprocess_device
         )
         self._params_by_name = dict(model.named_parameters())
@@ -412,7 +412,7 @@ def _materialize_loader_written_buffers(
             module._buffers[local_name] = scratch_buffers_by_id[id(buffer)]
 
 
-def _bring_to_reload_state(
+def _run_engine_postprocess_and_restore(
     model: torch.nn.Module,
     built_shapes_by_name: Mapping[str, torch.Size],
     parallelism: RankParallelismConfig,
@@ -425,7 +425,7 @@ def _bring_to_reload_state(
     for module_name, module in model.named_modules():
         # modules without one keep their params as built
         if getattr(module, "quant_method", None) is not None:
-            reload_layouts_by_param_id |= _bring_module_to_reload_state(
+            reload_layouts_by_param_id |= _run_module_postprocess_and_restore(
                 module_name, module, built_shapes_by_param_id, parallelism, postprocess_device
             )
 
@@ -439,7 +439,7 @@ def _bring_to_reload_state(
     return param_layouts
 
 
-def _bring_module_to_reload_state(
+def _run_module_postprocess_and_restore(
     module_name: str,
     module: torch.nn.Module,
     built_shapes_by_param_id: Mapping[int, torch.Size],
@@ -448,6 +448,7 @@ def _bring_module_to_reload_state(
 ) -> dict[int, TransferBufferParamLayout]:
     for param in module.parameters(recurse=False):
         param.data = torch.zeros(built_shapes_by_param_id[id(param)], dtype=param.dtype, device=postprocess_device)
+    attributes_before_postprocess = [*vars(module).values(), *module._buffers.values()]
     with ParallelismContext(parallelism):
         module.quant_method.process_weights_after_loading(module)
         # as the engine does: duck-typed quant methods have no restore
@@ -463,7 +464,25 @@ def _bring_module_to_reload_state(
         )
         reload_layouts_by_param_id[id(param)] = TransferBufferParamLayout.from_tensor(param)
         param.data = torch.empty(0, dtype=param.dtype)
+    _free_postprocess_tensors(module, attributes_before_postprocess)
     return reload_layouts_by_param_id
+
+
+def _free_postprocess_tensors(module: torch.nn.Module, attributes_before_postprocess: Sequence[object]) -> None:
+    """Postprocess attaches what the engine's kernels read in forward; a replica never runs forward."""
+
+    def without_storage(value: object) -> object:
+        if isinstance(value, torch.Tensor) and not isinstance(value, torch.nn.Parameter):
+            return value.to("meta")
+        if type(value) in (tuple, list):
+            return type(value)(without_storage(item) for item in value)
+        return value
+
+    ids_before_postprocess = {id(value) for value in attributes_before_postprocess}
+    for attributes in (vars(module), module._buffers):
+        for name, value in list(attributes.items()):
+            if id(value) not in ids_before_postprocess:
+                attributes[name] = without_storage(value)
 
 
 def _slice_buffer_by_param(
