@@ -82,6 +82,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
             for runner_sender in self._runner_senders:
                 runner_sender.model_replicas.map_hf_names(self._hf_tensor_specs)
                 runner_sender.model_param_stager = ModelParamStager(runner_sender.model_replicas.hf_name_mapping)
+            self._assert_common_hf_tensors_land_in_shared_params()
             buffer_nbytes = self._compute_transfer_buffer_nbytes()
             if self._transfer_buffers is None:
                 self._log_hf_names_no_runner_loads()
@@ -209,6 +210,31 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 f"{hf_names_no_runner_loads[:5]}"
             )
 
+    def _assert_common_hf_tensors_land_in_shared_params(self) -> None:
+        earlier_hf_names, earlier_locations = set(), set()
+        for runner_sender in self._runner_senders:
+            param_names_by_hf_name = runner_sender.model_replicas.hf_name_mapping.param_names_by_hf_name
+            remote_shards = [shard for target in runner_sender.replica_targets for shard in target.remote_shards]
+            unshared_param_names = sorted(
+                {
+                    param_name
+                    for hf_name in earlier_hf_names & param_names_by_hf_name.keys()
+                    for param_name in param_names_by_hf_name[hf_name]
+                    for shard in remote_shards
+                    if _published_location(shard, param_name) not in earlier_locations
+                }
+            )
+            if unshared_param_names:
+                raise NotImplementedError(
+                    f"the {remote_shards[0].runner_role} loads HF tensors the target loads too into params it does not "
+                    f"share with the target, e.g. {unshared_param_names[:5]}; p2p writes those tensors through the "
+                    "target only, so these params would never be updated"
+                )
+            earlier_hf_names |= param_names_by_hf_name.keys()
+            earlier_locations |= {
+                _published_location(shard, name) for shard in remote_shards for name in shard.weight_locations_by_name
+            }
+
     def _compute_transfer_buffer_nbytes(self) -> int:
         largest_param_group_nbytes = max(
             compute_param_group_nbytes(param_group, runner_sender.model_replicas.transfer_buffer_param_layouts)
@@ -226,3 +252,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
             unregister_memory=self._transport.unregister_memory,
             write_timeout=self.args.p2p_transfer_timeout,
         )
+
+
+def _published_location(remote_shard: RemoteShard, param_name: str) -> tuple[int, int, int]:
+    location = remote_shard.weight_locations_by_name[param_name]
+    return remote_shard.rollout_engine_ind, remote_shard.rollout_engine_rank, location.address

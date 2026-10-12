@@ -188,8 +188,10 @@ class _FakeRolloutApi:
         moe_runner_backend: str = "auto",
         expert_placement: dict | None = None,
         speculative_args: dict | None = None,
+        draft_shares_target_weights: bool = True,
     ) -> None:
         self.cell_id = cell_id
+        self.draft_shares_target_weights = draft_shares_target_weights
         self.gpu_count = gpu_count
         self.generation = generation
         self.published_weight_numel = published_weight_numel
@@ -208,8 +210,9 @@ class _FakeRolloutApi:
 
     async def get_remote_instance_transfer_engine_info(self, rank: int, role: str) -> tuple[str, dict]:
         self.calls.append(f"get_remote_instance_transfer_engine_info {role}")
+        address_session = self.session_id(rank, "target" if self.draft_shares_target_weights else role)
         weights = {
-            name: (self.target_address(rank, name), self.published_weight_numel, 4)
+            name: (hash((address_session, name)) & 0xFFFFFFFF, self.published_weight_numel, 4)
             for name in _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE[role]
         }
         return self.session_id(rank, role), weights

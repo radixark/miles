@@ -278,6 +278,18 @@ class TestDraftRunner:
             api.target_address(0, "mtp"): [9.0, 10.0, 11.0, 12.0]
         }
 
+    def test_a_draft_holding_its_own_copy_of_a_target_weight_is_rejected(
+        self, p2p_sender: Any, make_rollout_api: Any
+    ) -> None:
+        """Each HF tensor goes through the target first, so a draft param that is not the target's storage would
+        never be written."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1, speculative_args=_EAGLE_MTP, draft_shares_target_weights=False)
+        p2p_sender.connect(protocol, [api])
+
+        with pytest.raises(NotImplementedError, match=r"the draft .* \['w'\]"):
+            p2p_sender.begin_sync(protocol, weight_version=1)
+
     @pytest.mark.parametrize(
         "selector, speculative_args",
         [("target", _EAGLE_MTP), ("all", {"speculative_algorithm": "NGRAM"})],
