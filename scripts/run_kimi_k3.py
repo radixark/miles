@@ -17,6 +17,21 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
+# Rollout-decode fast paths of the SGLang build named in docs/models/kimi/kimi-k3.md 3; every flag is off by
+# default in SGLang and bit-identical or within 1-2 bf16 ulp of the stock path.
+_FAST_LORA_DECODE_ENV = {
+    "SGLANG_OPT_LORA_SHARED_OUTER_MOE_DECODE": "1",
+    "SGLANG_OPT_LORA_DECODE_FUSED_LAUNCHES": "1",
+    "SGLANG_OPT_LORA_ROW_PARALLEL_FUSED_ALL_REDUCE": "1",
+    "SGLANG_OPT_LORA_FAST_STREAMED_LOAD": "1",
+    "SGLANG_OPT_MXFP4_MOE_DECODE_GEMM": "1",
+    "SGLANG_OPT_K3_FUSED_KDA_DECODE_TP16": "1",
+    "SGLANG_OPT_CUSTOM_ALL_REDUCE_V2_ALLOW_NON_VMM": "1",
+    # miles turns the v2 custom all-reduce off for colocated multi-GPU engines; the build above runs it across
+    # nodes without a VMM allocator, so the TP16 engines get the one-shot NVLink all-reduce back
+    "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": "1",
+}
+
 _DEFAULT_MODEL_ORG = {
     "Kimi-K3": "moonshotai",
     # prunes of the native MXFP4 checkpoint: the first dense layer plus three MoE layers, with all 896 routed
@@ -88,6 +103,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_wandb: bool = False
     skip_saving: bool = False
 
+    # Keep the trainer's LoRA params and NCCL groups and the engines' weights on GPU across offload, so
+    # sleep, wake-up and the engines' release/resume move no weights (docs/models/kimi/kimi-k3.md 5.6).
+    resident_colocate: bool = False
+    # Rollout-decode fast paths of the SGLang build named in docs/models/kimi/kimi-k3.md 3 (LoRA MoE
+    # decode kernels, MXFP4 decode GEMM, fused KDA decode, cross-node custom all-reduce, LoRA loading).
+    fast_lora_decode: bool = False
+    situ_backend: Literal["eager", "fused"] = "eager"
+
     check_weight_update_equal: bool = False
     check_lora_weight_equal: bool = False
     update_weight_buffer_size: int | None = None
@@ -114,6 +137,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
         if self.train_mode == "lora" and self.lora_rank <= 0:
             raise ValueError(f"LoRA rank must be positive, got {self.lora_rank}")
+        if (self.resident_colocate or self.fast_lora_decode) and self.train_mode != "lora":
+            raise ValueError("resident_colocate and fast_lora_decode are LoRA-only")
+        if self.fast_lora_decode and self.check_lora_weight_equal:
+            # the engines keep only their TP shard of the streamed expert factors, so there is no full tensor
+            # to checksum
+            raise ValueError("fast_lora_decode cannot be combined with check_lora_weight_equal")
         if self.sglang_max_total_tokens is not None and self.sglang_max_total_tokens <= 0:
             raise ValueError("SGLang max total tokens must be positive")
         if self.distributed_timeout_minutes <= 0:
@@ -393,6 +422,7 @@ def _train(args: ScriptArgs) -> None:
         f"--max-tokens-per-gpu {max_tokens_per_gpu} "
         "--log-probs-chunk-size 512 "
         f"--distributed-timeout-minutes {args.distributed_timeout_minutes} "
+        f"--kimi-k3-situ-backend {args.situ_backend} "
     )
 
     optimizer_args = (
@@ -461,6 +491,10 @@ def _train(args: ScriptArgs) -> None:
         )
     if args.sglang_max_total_tokens is not None:
         sglang_args += f"--sglang-max-total-tokens {args.sglang_max_total_tokens} "
+    if args.resident_colocate and not args.is_4layer:
+        # the trainer's ~90 GB/GPU of LoRA params now stays resident next to the engine; SGLang sizes its
+        # static pool from the memory that is actually free at startup
+        sglang_args += "--sglang-mem-fraction-static 0.88 "
     if is_debug:
         sglang_args += "--sglang-context-length 8192 "
 
@@ -476,6 +510,9 @@ def _train(args: ScriptArgs) -> None:
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
     )
+    if args.resident_colocate:
+        # engines keep their weights (kv cache and CUDA graphs still go), the trainer keeps its params and groups
+        misc_args += "--offload-rollout-level kv_cache --no-offload-train-params --no-offload-train-process-groups "
     if args.is_4layer:
         misc_args += "--no-check-for-nan-in-loss-and-grad "
     # the trainer has no vision tower, and the MXFP4 experts round-trip through BF16 on every sync
@@ -517,6 +554,12 @@ def _train(args: ScriptArgs) -> None:
     if is_lora:
         # the LoRA wrapper bypasses the o_proj.forward patch the K3 all-reduce fusion relies on
         extra_env_vars["SGLANG_K3_AR_FUSION"] = "0"
+    if args.resident_colocate:
+        # NVLS multicast buffers are bound lazily at the trainer's first collectives, where the resident
+        # engine weights leave too little free memory for them
+        extra_env_vars["NCCL_NVLS_ENABLE"] = "0"
+    if args.fast_lora_decode:
+        extra_env_vars.update(_FAST_LORA_DECODE_ENV)
     # Ray's runtime_env replaces the actor env; without the JIT cache dirs the KDA kernels recompile every run
     for cache_var in ("TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR"):
         cache_dir = os.environ.get(cache_var)
