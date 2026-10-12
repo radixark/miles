@@ -105,10 +105,24 @@ class TestWriteCompletion:
 
         protocol.send_bucket(make_bucket("hf.w"))
 
-        with pytest.raises(RuntimeError, match="2 of 3 p2p writes failed") as failure:
+        with pytest.raises(RuntimeError, match="2 of 2 p2p writes failed") as failure:
             protocol.after_base_weights()
         assert api.session_id(1) in str(failure.value) and api.session_id(2) in str(failure.value)
         assert api.session_id(0) not in str(failure.value)
+
+    def test_a_failed_write_fails_the_update_before_its_transfer_buffer_is_loaded_again(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """Waiting for the end of the base weights would queue every later write behind the broken rank first."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=3)
+        p2p_sender.connect(protocol, [api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.transfer_engine.failing_sessions = {api.session_id(0)}
+
+        with pytest.raises(RuntimeError, match=api.session_id(0)):
+            protocol.send_bucket(make_bucket("hf.w"))
+        assert api.session_id(2) not in p2p_sender.transfer_engine.written_sessions()
 
     def test_a_write_still_running_at_the_timeout_fails_the_update(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
