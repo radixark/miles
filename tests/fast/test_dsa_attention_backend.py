@@ -1,6 +1,8 @@
 """The DSA attention backend switch: one value selects the kernel family for both DSA model plugins."""
 
 import importlib.util
+import sys
+import types
 from argparse import Namespace
 from pathlib import Path
 
@@ -10,10 +12,20 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def _load(name: str, relative: str):
+    """Execute one source file as module ``name`` without importing its package (keeps the plug-ins' GPU imports out).
+
+    The module is registered in ``sys.modules`` before it runs: ``dataclasses`` (Python 3.12) and ``typing`` resolve
+    a class's module through ``sys.modules[cls.__module__]`` while the body executes.
+    """
     spec = importlib.util.spec_from_file_location(name, REPO / relative)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
-    spec.loader.exec_module(module)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
     return module
 
 
@@ -29,7 +41,13 @@ def test_plugin_backend_resolution():
         backend.resolve_dsa_attention_backend("nope")
 
 
-def test_bridge_path_rejects_cake():
+def test_bridge_path_rejects_cake(monkeypatch):
+    # ``megatron_bridge_utils`` imports ``megatron.core.utils`` at module level.  Without a GPU driver (CPU-only
+    # container, no libcuda) that import dies inside transformer_engine with OSError, which its ``except ImportError``
+    # does not catch, so the three package entries are stubbed for this load; ``apply_dsa_backend_args`` is pure.
+    for module_name in ("megatron", "megatron.core", "megatron.core.utils"):
+        monkeypatch.setitem(sys.modules, module_name, types.ModuleType(module_name))
+    sys.modules["megatron.core.utils"].unwrap_model = lambda model: [model]
     bridge = _load("test_megatron_bridge_utils_module", "miles/utils/megatron_bridge_utils.py")
     provider = Namespace(dsa_attention_backend="megatron")
     bridge.apply_dsa_backend_args(provider, Namespace(dsa_attention_backend="tilelang"))
