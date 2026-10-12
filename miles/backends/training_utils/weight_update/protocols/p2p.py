@@ -1,8 +1,6 @@
-import concurrent.futures
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -64,7 +62,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
             raise NotImplementedError("Rollout pipeline parallelism is not tested yet.")
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._hf_tensor_specs: dict[str, HfTensorSpec] | None = None
-        self._pending_writes: list[tuple[RemoteShard, Future]] = []
         self._model_replicas_by_runner_role: dict[str, ModelReplicas] = {}
         self._transport: MooncakeTransport | None = None
         self._transfer_buffers: TransferBuffers | None = None
@@ -93,8 +90,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         """Wait for every write of this update; fail the update if any write failed or is still running."""
         if not self.is_sender:
             return
-        pending_writes, self._pending_writes = self._pending_writes, []
-        _raise_if_any_write_failed(pending_writes, timeout=self.args.p2p_transfer_timeout)
+        self._transfer_buffers.wait_for_all_writes()
         for runner_sender in self._runner_senders:
             runner_sender.model_param_stager.assert_all_done()
 
@@ -138,8 +134,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 buffer = self._transfer_buffers.acquire()
                 param_bytes_by_name = target.model_replica.load_into(buffer, param_names, hf_tensors)
                 writes = self._transport.write(target.remote_shards, param_bytes_by_name)
-                self._transfer_buffers.release_after(buffer, writes)
-                self._pending_writes += zip(target.remote_shards, writes, strict=True)
+                self._transfer_buffers.release_after(buffer, list(zip(target.remote_shards, writes, strict=True)))
 
     def connect(
         self,
@@ -220,22 +215,5 @@ class UpdateWeightP2P(WeightTransferProtocol):
             max(self.args.update_weight_buffer_size, largest_param_group_nbytes),
             device=self._transport.transfer_buffer_device,
             register_memory=self._transport.register_memory,
+            write_timeout=self.args.p2p_transfer_timeout,
         )
-
-
-def _raise_if_any_write_failed(pending_writes: list[tuple[RemoteShard, Future]], timeout: float) -> None:
-    _, unfinished_writes = concurrent.futures.wait([write for _, write in pending_writes], timeout=timeout)
-    failures = []
-    for remote_shard, write in pending_writes:
-        if write in unfinished_writes:
-            reason = f"still running after {timeout}s"
-        elif write.exception() is not None:
-            reason = repr(write.exception())
-        else:
-            continue
-        failures.append(
-            f"the {remote_shard.runner_role} of rollout engine {remote_shard.rollout_engine_ind} rank "
-            f"{remote_shard.rollout_engine_rank} (session {remote_shard.session_id}): {reason}"
-        )
-    if failures:
-        raise RuntimeError(f"{len(failures)} of {len(pending_writes)} p2p writes failed:\n" + "\n".join(failures))
