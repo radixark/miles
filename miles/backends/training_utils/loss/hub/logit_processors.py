@@ -325,8 +325,10 @@ def _fused_log_probs_and_entropy(
         targets.append(tokens_chunk)
         lengths.append(tokens_chunk.size(0))
     device = flat_logits.device
-    # built on the CPU and copied once: one arange kernel per run would be hundreds of tiny launches
-    rows = torch.cat([torch.arange(row_start, row_end) for row_start, row_end in row_ranges]).to(device)
+    # built on the CPU and copied once: one arange kernel per run would be hundreds of tiny launches;
+    # from pinned memory the copy queues behind the model forward instead of waiting for it to finish
+    rows = torch.cat([torch.arange(row_start, row_end) for row_start, row_end in row_ranges])
+    rows = rows.pin_memory().to(device, non_blocking=True)
     log_probs, entropy = fused_log_probs_and_entropy(
         flat_logits,
         rows,
