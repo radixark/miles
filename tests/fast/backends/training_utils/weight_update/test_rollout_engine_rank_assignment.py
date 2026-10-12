@@ -10,6 +10,7 @@ from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.parallel import GroupInfo
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     RolloutEngineRankAssignment,
     assign_rollout_engine_ranks,
@@ -112,6 +113,15 @@ def _assert_one_writer_per_rollout_engine_rank(gathered: list, *, gather_pp: boo
         for pp_rank in range(_PP_SIZE):
             writers = Counter(target for stage, targets in gathered if stage == pp_rank for target in targets)
             assert set(writers) == all_targets and set(writers.values()) == {1}
+
+
+@pytest.mark.parametrize("ungathered", ["gather_tp", "gather_ep"])
+def test_ranks_are_data_replicas_only_with_tp_and_ep_gathered(ungathered: str):
+    """A rank holding its own TP or EP shard does not hold the data its PP peers hold."""
+    placement = WeightUpdatePlacement(gather_pp=True, **{ungathered: False})
+
+    with pytest.raises(AssertionError, match="TP and EP are gathered"):
+        get_data_replica_rank_and_size(SimpleNamespace(), placement)
 
 
 def test_bridge_writes_each_rollout_engine_rank_once():
