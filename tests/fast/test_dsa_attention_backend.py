@@ -209,26 +209,28 @@ def test_core_topk_resolver_defers_the_plugin_import():
 
 
 def test_plugin_topk_backends_include_cake():
+    from miles.kernels.attention.dsa import topk
     from miles.kernels.attention.dsa.cake import ops
 
-    assert set(ops._TOPK_BACKENDS) >= {"torch", "flashinfer", "cake"}
-    assert ops.get_topk_fn("cake") is ops.cake_topk
+    # One registry for both kernel backends: cake resolves names through miles.kernels.attention.dsa.topk.
+    assert ops.get_topk_fn("cake") is topk.cake_dsa_topk
+    assert ops.get_topk_fn("torch") is topk.torch_dsa_topk
+    assert ops.get_topk_fn("flashinfer") is topk.flashinfer_dsa_topk
+    assert not hasattr(ops, "_TOPK_BACKENDS") and not hasattr(ops, "register_topk_backend")
 
     def replay_wrapper(logits, topk):  # a replay-manager style callable passes through untouched
         return logits
 
     assert ops.get_topk_fn(replay_wrapper) is replay_wrapper
-    with pytest.raises(ValueError, match="unknown DSA top-k backend"):
+    with pytest.raises(ValueError, match="Unsupported miles DSA topk backend"):
         ops.get_topk_fn("nope")
     # "cake_fused" is a lightning_indexer switch, never a fn(logits, topk) backend: there are no logits to pass.
-    assert "cake_fused" not in ops._TOPK_BACKENDS
+    with pytest.raises(ValueError, match="Unsupported miles DSA topk backend"):
+        topk.get_dsa_topk_fn("cake_fused")
     with pytest.raises(ValueError, match="fused indexer switch"):
         ops.get_topk_fn("cake_fused")
     with pytest.raises(ValueError, match="fused indexer switch"):
         ops.select_topk(torch.zeros(2, 8), 4, "cake_fused")
-    with pytest.raises(ValueError, match="fused indexer switch"):
-        ops.register_topk_backend("cake_fused", replay_wrapper)
-    assert "cake_fused" not in ops._TOPK_BACKENDS
 
 
 def test_dsa_topk_validates_before_any_launch(monkeypatch):

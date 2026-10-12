@@ -429,8 +429,10 @@ def test_cake_topk_agrees_with_flashinfer_up_to_ties(rows, num_keys, topk):
     cake = _cake()
     pytest.importorskip("flashinfer")
     logits = _topk_logits(rows, num_keys, seed=11)
+    from miles.kernels.attention.dsa.topk import flashinfer_dsa_topk
+
     logits = logits[~torch.isnan(logits).any(dim=1)]  # FlashInfer's NaN handling is not part of the contract
-    assert _picks(logits, cake.cake_topk(logits, topk)) == _picks(logits, cake.flashinfer_topk(logits, topk))
+    assert _picks(logits, cake.cake_topk(logits, topk)) == _picks(logits, flashinfer_dsa_topk(logits, topk))
 
 
 def test_glm5_lightning_indexer_with_cake_topk_backend():
