@@ -170,6 +170,7 @@ def test_attention_backward_dispatch_selects_the_tcgen05_stage_for_64_heads(monk
     assert geo.kv_partials == 1 and geo.d_qk == 512
     assert _kernels.AttentionGeometry(64, 512, 0, 32, 2, 640, True).kv_partials == 1
     assert _kernels.AttentionGeometry(64, 512, 0, 32, 2, 640, False).kv_partials == 2
+    assert {_kernels._stage_family(stage) for stage in TC_BWD_STAGES} == {"attention"}
 
 
 def test_attention_forward_dispatch_selects_the_tcgen05_stage_for_production_head_counts(monkeypatch):
@@ -437,8 +438,11 @@ def test_prebuild_is_scoped_to_the_stage_family(monkeypatch):
     assert len(calls) == 1, "a family is prebuilt once per architecture"
     _kernels._kernel("dsa_indexer_clean", "cuda")
     assert len(calls) == 2 and set(calls[1][1]) == set(_jit.MODULES) - TOPK_STAGES - FUSED_STAGES
-    # 17 pre-existing + delta + split reducer + the six tcgen05 forward stages
-    assert len(calls[1][1]) == 19 + len(TC_STAGES), "the attention / indexer family builds neither top-k family"
+    # 17 pre-existing + delta + split reducer + the six tcgen05 forward stages + the two cluster-pair backward stages
+    # + the two tcgen05 backward stages
+    assert len(calls[1][1]) == 21 + len(TC_STAGES) + len(
+        TC_BWD_STAGES
+    ), "the attention / indexer family builds neither top-k family"
     _kernels._kernel("dsa_indexer_topk_scan_h32_d128", "cuda")
     assert len(calls) == 3 and set(calls[2][1]) == FUSED_STAGES, "the fused family builds exactly its two stages"
     _kernels._kernel("dsa_indexer_topk_finalize_k512", "cuda")
