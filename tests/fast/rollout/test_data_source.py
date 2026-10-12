@@ -2,7 +2,10 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
-from miles.rollout.data_source import RolloutDataSource
+import pytest
+import torch
+
+from miles.rollout.data_source import RolloutDataSource, compute_global_dataset_state_path
 
 
 def _make_args(**overrides) -> SimpleNamespace:
@@ -68,10 +71,6 @@ def test_load_says_so_when_the_run_keeps_no_global_dataset(tmp_path: Path, caplo
 
 def test_load_restores_the_state_it_finds(tmp_path: Path) -> None:
     """This is the ordinary resume, and the position it restores is what keeps a run off samples it has seen."""
-    import torch
-
-    from miles.rollout.data_source import compute_global_dataset_state_path
-
     path = Path(compute_global_dataset_state_path(str(tmp_path), rollout_id=3))
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"sample_offset": 7, "epoch_id": 1}, path)
@@ -80,3 +79,25 @@ def test_load_restores_the_state_it_finds(tmp_path: Path) -> None:
     source.load(rollout_id=3)
 
     assert (source.sample_offset, source.epoch_id) == (7, 1)
+
+
+def test_lora_resume_loads_the_cursor_of_the_resumed_run(tmp_path: Path) -> None:
+    """A LoRA resume keeps --load on the base model, so the cursor comes from the adapter's run."""
+    path = Path(compute_global_dataset_state_path(str(tmp_path / "run"), rollout_id=7))
+    path.parent.mkdir(parents=True)
+    torch.save({"sample_offset": 64, "epoch_id": 2}, path)
+    source = _bare_source(
+        rollout_global_dataset=True, load=str(tmp_path / "base"), lora_resume_root=str(tmp_path / "run")
+    )
+
+    source.load(rollout_id=7)
+
+    assert (source.sample_offset, source.epoch_id) == (64, 2)
+
+
+def test_lora_resume_without_a_cursor_fails(tmp_path: Path) -> None:
+    source = _bare_source(rollout_global_dataset=True, lora_resume_root=str(tmp_path / "run"))
+
+    with pytest.raises(FileNotFoundError, match="global_dataset_state_dict_7.pt"):
+        source.load(rollout_id=7)
+    source.load(rollout_id=-1)  # a run that starts at rollout 0 has no cursor to restore

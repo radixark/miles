@@ -10,7 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from miles.backends.megatron_utils.checkpoint import _is_megatron_checkpoint, save_checkpoint_with_lora
+from miles.backends.megatron_utils.checkpoint import (
+    _is_megatron_checkpoint,
+    load_checkpoint,
+    save_checkpoint_with_lora,
+)
 
 # ---------------------------------------------------------------------------
 # _is_megatron_checkpoint
@@ -94,3 +98,26 @@ class TestSaveCheckpointWithLoRA:
         save_checkpoint_with_lora(42, model, MagicMock(), MagicMock())
 
         mock_save_ckpt.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# load_checkpoint — LoRA resume
+# ---------------------------------------------------------------------------
+
+
+@patch("miles.backends.megatron_utils.checkpoint._load_checkpoint_hf", return_value=(0, 0))
+@patch("miles.backends.megatron_utils.checkpoint.get_args")
+def test_resume_fails_when_the_adapter_cannot_be_loaded(mock_get_args, mock_load_hf, tmp_path):
+    """Falling back to a fresh adapter would continue the run from rollout 1 with untrained weights."""
+    (tmp_path / "base").mkdir()
+    (tmp_path / "base" / "config.json").write_text("{}")
+    mock_get_args.return_value = Namespace(
+        load=str(tmp_path / "base"),
+        lora_rank=8,
+        lora_adapter_path=str(tmp_path / "run" / "iter_0000007" / "adapter"),
+        lora_resume_root=str(tmp_path / "run"),
+        no_load_optim=False,
+    )
+
+    with pytest.raises(FileNotFoundError, match="No native LoRA adapter shards"):
+        load_checkpoint([MagicMock()], MagicMock(), MagicMock(), None, skip_load_to_model_and_opt=False)
