@@ -42,14 +42,23 @@ def _check_layout(layout: str) -> None:
 def globalize_indices(indices: torch.Tensor, seq_len_kv: int) -> torch.Tensor:
     """Offset batch-local ``[B, S, topk]`` indices by ``b * seq_len_kv`` and flatten to ``[B * S, topk]``.
 
-    ``-1`` padding is preserved.  Always returns a fresh contiguous ``int32`` tensor.
+    Negative padding stays negative (``-1`` in, ``-1`` out; batch 1 returns the pads unchanged).  Returns a
+    contiguous ``int32`` tensor; at batch 1 with int32 contiguous input this is a view, not a copy.
     """
     if indices.dim() != 3:
         raise ValueError(f"batched indices must be [B, S, topk], got {tuple(indices.shape)}")
-    batch = indices.shape[0]
-    offsets = (torch.arange(batch, device=indices.device, dtype=torch.int64) * seq_len_kv).view(batch, 1, 1)
-    flat = torch.where(indices < 0, torch.full_like(indices, -1, dtype=torch.int64), indices.to(torch.int64) + offsets)
-    return flat.reshape(batch * indices.shape[1], indices.shape[2]).to(torch.int32).contiguous()
+    batch, seq, topk = indices.shape
+    if batch == 1:
+        # Batch-local == global: no offsets to add.  The kernels treat every negative slot as padding, so the
+        # (already negative) pads need no rewrite either; this is a view when the input is int32 and contiguous.
+        flat = indices.reshape(seq, topk)
+        if flat.dtype != torch.int32:
+            flat = flat.to(torch.int32)
+        return flat.contiguous()
+    idx32 = indices.to(torch.int32)
+    offsets = (torch.arange(batch, device=indices.device, dtype=torch.int32) * seq_len_kv).view(batch, 1, 1)
+    flat = torch.where(idx32 < 0, -1, idx32 + offsets)
+    return flat.reshape(batch * seq, topk).contiguous()
 
 
 def pad_topk(indices: torch.Tensor, multiple: int) -> torch.Tensor:

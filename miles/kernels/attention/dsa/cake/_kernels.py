@@ -24,6 +24,14 @@ LOG2E = 1.4426950408889634
 INDEXER_HEAD_DIM = 128
 INDEXER_HEADS = (8, 16, 32, 64)
 ATTENTION_SHAPES = ((512, 64), (512, 0))  # (d_v, d_tail)
+ATTENTION_D_LATENT = 512  # the K = V latent width every attention stage shares; d_qk = 512 + d_tail
+ATTENTION_D_ROPE = 64  # the MLA rope tail width (d_tail 64)
+# The tcgen05 forward stages ``dsa_attention_fwd_tc_h{H}_d512t{d_tail}`` (one CTA per query row, 64 query rows per
+# token, the generator's ``dsa_h64_fwd`` schedule on the flat contract) exist for these head counts on these
+# architectures; every other head count runs the register-MMA forward stages.  ``MILES_DSA_ATTENTION_TC=0`` forces the
+# register-MMA forward everywhere.
+ATTENTION_TC_HEADS = (16, 32, 64)
+ATTENTION_TC_ARCHES = ("sm_100a", "sm_103a")
 
 _PREBUILT: set[str] = set()
 
@@ -89,11 +97,84 @@ def attention_geometry(q, kv, indices, d_v: int) -> AttentionGeometry:
     return AttentionGeometry(heads, d_v, d_qk - d_v, block_h, attention_head_blocks(heads), topk)
 
 
+def attention_tc_stage(heads: int, d_tail: int, arch: str) -> str | None:
+    """The tcgen05 forward stage for ``heads`` on ``arch``, or ``None`` when the register-MMA forward applies."""
+    if heads not in ATTENTION_TC_HEADS or arch not in ATTENTION_TC_ARCHES:
+        return None
+    if os.environ.get("MILES_DSA_ATTENTION_TC", "1") == "0":
+        return None
+    return f"dsa_attention_fwd_tc_h{heads}_d512t{d_tail}"
+
+
+def _storage_alias(tensor):
+    """``(flat contiguous alias of the storage, element offset)`` for a raw pointer argument.
+
+    The generated launchers check raw pointer arguments for contiguity and the tcgen05 kernel derives the alignment
+    of its vector loads from ``(row stride | element offset)`` on the assumption that the pointer it receives is the
+    (aligned) storage base; a contiguous view that starts inside its storage therefore travels as the whole storage
+    viewed flat plus its element offset.
+    """
+    if tensor.is_contiguous() and tensor.storage_offset() == 0:
+        return tensor, 0
+    flat = torch.empty(0, dtype=tensor.dtype, device=tensor.device)
+    flat.set_(tensor.untyped_storage())
+    return flat, int(tensor.storage_offset())
+
+
+def _launch_attention_forward_tc(stage: str, q, kv, indices, sink, out, lse, sm_scale: float, geo: AttentionGeometry):
+    """Launch the tcgen05 forward: one CTA per query row (``grid = (num_rows, 1, 1)``), the ``dsa_h64_fwd`` ABI.
+
+    ``q_latent`` / ``q_rope`` / ``kv_latent`` / ``out`` are TMA tensor maps the launcher encodes from the bound views
+    (``q[:, :, :512]``, the rope tail ``q[:, :, 512:]``, ``kv[:, :512]``; the no-rope program never loads its
+    ``q_rope`` descriptor and takes a placeholder view); ``k_rope`` is the packed ``kv`` storage with the tail's
+    element offset and the row stride ``d_qk``; ``o_lo`` is never written (placeholder = ``out``); ``topk_length`` is
+    unused (``has_topk_length = derive_length = 0``: the kernel reads ``indices`` to the end of the row, ``-1``
+    anywhere).
+    """
+    num_rows, num_kv = int(q.shape[0]), int(kv.shape[0])
+    d_latent, d_qk = ATTENTION_D_LATENT, geo.d_qk
+    q_latent = q[:, :, :d_latent]
+    q_rope = q[:, :, d_latent:] if geo.d_tail else q[:, :, :ATTENTION_D_ROPE]
+    kv_latent = kv[:, :d_latent]
+    k_rope, k_rope_offset = _storage_alias(kv)
+    k_rope_offset += d_latent if geo.d_tail else 0
+    indices_ptr, indices_offset = _storage_alias(indices)
+    _kernel(stage, q.device).launch(
+        grid=(num_rows, 1, 1),
+        q_latent=q_latent,
+        q_rope=q_rope,
+        kv_latent=kv_latent,
+        k_rope=k_rope,
+        out=out,
+        o_lo=out,
+        lse=lse,
+        indices=indices_ptr,
+        topk_length=indices_ptr,
+        sink=sink,
+        num_queries=num_rows,
+        num_kv=num_kv,
+        topk=geo.topk,
+        idx_stride=int(indices.stride(0)),
+        indices_offset=indices_offset,
+        k_rope_stride=d_qk,
+        k_rope_offset=k_rope_offset,
+        has_topk_length=0,
+        derive_length=0,
+        scale_log2=float(sm_scale) * LOG2E,
+        heads=geo.heads,
+    )
+
+
 def dsa_attention_forward(q, kv, indices, sink, sm_scale: float, *, d_v: int = 512, out=None):
     """Flat-contract forward: ``(out[num_rows, heads, d_v] BF16, lse[num_rows, heads] FP32 base-2)``.
 
     ``out`` may be a caller-owned contiguous ``[num_rows, heads, d_v]`` buffer (for example a flat view of a
     layout-shaped tensor); it is allocated here otherwise.
+
+    Head counts in ``ATTENTION_TC_HEADS`` run the tcgen05 forward stage (one CTA per row; FP32 accumulation in the
+    tensor-core order, bit-deterministic run to run, within the register-MMA stages' tolerances but not bit-identical
+    to them); every other head count runs the register-MMA stage selected by ``attention_block_h``.  Both write the
+    same base-2 ``lse`` the backward consumes.
     """
     geo = attention_geometry(q, kv, indices, d_v)
     num_rows = q.shape[0]
@@ -103,6 +184,10 @@ def dsa_attention_forward(q, kv, indices, sink, sm_scale: float, *, d_v: int = 5
         raise ValueError(f"out must be a contiguous [{num_rows}, {geo.heads}, {geo.d_v}] {q.dtype} tensor")
     lse = torch.empty(num_rows, geo.heads, dtype=torch.float32, device=q.device)
     if num_rows == 0:
+        return out, lse
+    tc_stage = attention_tc_stage(geo.heads, geo.d_tail, device_arch(q.device))
+    if tc_stage is not None:
+        _launch_attention_forward_tc(tc_stage, q, kv, indices, sink, out, lse, sm_scale, geo)
         return out, lse
     _kernel(_attention_name("fwd", geo.block_h, geo.d_v, geo.d_tail), q.device).launch(
         grid=(num_rows, geo.head_blocks, 1),
@@ -117,6 +202,25 @@ def dsa_attention_forward(q, kv, indices, sink, sm_scale: float, *, d_v: int = 5
         scale_log2=float(sm_scale) * LOG2E,
     )
     return out, lse
+
+
+ATTENTION_D_V = 512  # the value width of every ATTENTION_SHAPES entry; ``dsa_attention_delta`` is traced for it
+
+
+def dsa_attention_delta_launch(o, do):
+    """``delta[row, h] = sum_d o * do`` in FP32 for flat ``[num_rows, heads, 512]`` BF16 ``o`` and ``do`` (fixed order)."""
+    num_rows, heads, d_v = o.shape
+    if d_v != ATTENTION_D_V or do.shape != o.shape or o.dtype != torch.bfloat16 or do.dtype != torch.bfloat16:
+        raise ValueError(
+            f"delta expects BF16 o and do of shape [rows, heads, {ATTENTION_D_V}], got {tuple(o.shape)} / {tuple(do.shape)}"
+        )
+    if not (o.is_contiguous() and do.is_contiguous()):
+        raise ValueError("delta expects contiguous o and do")
+    delta = torch.empty(num_rows, heads, dtype=torch.float32, device=o.device)
+    if num_rows == 0:
+        return delta
+    _kernel("dsa_attention_delta", o.device).launch(grid=(num_rows, 1, 1), o=o, do=do, delta=delta, heads=heads)
+    return delta
 
 
 def dsa_attention_backward_rows(q, kv, do, indices, lse, delta, dq, partial, sm_scale: float, geo: AttentionGeometry):
@@ -142,12 +246,39 @@ def dsa_attention_backward_rows(q, kv, do, indices, lse, delta, dq, partial, sm_
     )
 
 
-def dsa_segmented_reduce_launch(partial, order, seg_start, seg_count, out) -> None:
-    """``out[key, :] += sum partial[order[p], :]`` over each key's sorted segment, in order."""
+# SMEM combine buffer of the split reducer: 4 warps x (dim / 4) float4 columns.
+REDUCE_SPLIT_MAX_DIM = 576
+
+
+def dsa_segmented_reduce_launch(partial, order, seg_start, seg_count, out, *, split: int = 1) -> None:
+    """``out[key, :] += sum partial[order[p], :]`` over each key's sorted segment.
+
+    ``split=1``: ``dsa_segmented_reduce`` adds the segment pair by pair in ``order``
+    sequence (``keys_per_cta`` keys share a CTA).  ``split=4``: ``dsa_segmented_reduce_split4``
+    runs one CTA per key whose four warps each add a contiguous quarter of the segment in
+    ``order`` sequence; the quarter sums are combined in warp order.  Both depend only on
+    ``order`` / ``seg_count`` (deterministic FP32); their rounding differs.
+    """
     num_out = int(out.shape[0])
     dim = int(partial.shape[1])
     if num_out == 0:
         return
+    if split == 4:
+        if dim > REDUCE_SPLIT_MAX_DIM:
+            raise ValueError(f"split reducer supports dim <= {REDUCE_SPLIT_MAX_DIM}, got {dim}")
+        _kernel("dsa_segmented_reduce_split4", out.device).launch(
+            grid=(num_out, 1, 1),
+            partial=partial,
+            order=order,
+            seg_start=seg_start,
+            seg_count=seg_count,
+            out=out,
+            dim=dim,
+            num_out=num_out,
+        )
+        return
+    if split != 1:
+        raise ValueError(f"split must be 1 or 4, got {split}")
     chunks = dim // 4
     keys_per_cta = 1
     for candidate in (4, 2):
@@ -225,7 +356,7 @@ def dsa_indexer_backward_rows(index_q, index_k, weights, topk_indices, grad_scor
     """Launch the indexer backward on a contiguous slice of query rows.
 
     ``partial`` receives one FP32 ``[128]`` key-side partial per ``(row, slot)`` at
-    ``row * topk + slot``; padded slots (``-1``) hold exact zeros.
+    ``row * topk + slot``; rows of padded slots (``-1``) are not written.
     """
     num_rows, heads, dim = index_q.shape
     if num_rows == 0:
@@ -254,15 +385,22 @@ def dsa_indexer_backward_rows(index_q, index_k, weights, topk_indices, grad_scor
 
 
 __all__ = [
+    "ATTENTION_D_LATENT",
+    "ATTENTION_D_ROPE",
     "ATTENTION_SHAPES",
+    "ATTENTION_TC_ARCHES",
+    "ATTENTION_TC_HEADS",
     "INDEXER_HEADS",
     "INDEXER_HEAD_DIM",
+    "REDUCE_SPLIT_MAX_DIM",
     "MODULES",
     "AttentionGeometry",
     "attention_block_h",
     "attention_geometry",
     "attention_head_blocks",
+    "attention_tc_stage",
     "dsa_attention_backward_rows",
+    "dsa_attention_delta_launch",
     "dsa_attention_forward",
     "dsa_indexer_backward_rows",
     "dsa_indexer_logits",

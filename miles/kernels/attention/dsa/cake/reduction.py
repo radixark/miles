@@ -9,9 +9,11 @@ Given ``partial[p, :]`` for pairs ``p`` and the key row ``keys[p]`` each pair
 belongs to (``-1`` for padded slots), :func:`deterministic_scatter_add` computes
 ``out[k, :] += sum_{p : keys[p] == k} partial[p, :]`` with a summation order that
 is a pure function of ``keys``: pairs are stably sorted by key, so ties keep their
-pair order, and one CTA per key row adds them sequentially.  Repeated runs give
-bit-identical results; the atomics they replace do not.  No host synchronisation
-is needed: segment starts and counts come from ``searchsorted`` on the sorted keys.
+pair order, and each key row is added either sequentially (``split=1``) or as a
+fixed 4-way tree over its segment (``split=4``: four contiguous quarters summed in
+pair order, then combined in quarter order).  Repeated runs give bit-identical
+results; the atomics they replace do not.  No host synchronisation is needed: the
+segment bounds come from one ``searchsorted`` on the sorted keys.
 
 Workspace planning (:func:`plan_row_chunks`) bounds the partial buffer to a byte
 budget by processing query rows in chunks; chunks are reduced in order, which keeps
@@ -53,18 +55,24 @@ def segment_pairs(keys: torch.Tensor, num_out: int) -> tuple[torch.Tensor, torch
     if keys.dim() != 1:
         raise ValueError("keys must be a flat [num_pairs] tensor")
     keys32 = keys.to(torch.int32)
-    sorted_keys, order = torch.sort(keys32, stable=True)
-    probe = torch.arange(num_out, device=keys.device, dtype=torch.int32)
-    starts = torch.searchsorted(sorted_keys, probe)
-    ends = torch.searchsorted(sorted_keys, probe, right=True)
-    return order.to(torch.int32), starts.to(torch.int32).contiguous(), (ends - starts).to(torch.int32).contiguous()
+    # Narrow sort keys when every key (and the probe ``num_out``) fits int16: half the radix passes,
+    # the same stable order (the cast is monotonic on [-1, num_out]).
+    sort_keys = keys32.to(torch.int16) if num_out + 1 <= 32767 else keys32
+    sorted_keys, order = torch.sort(sort_keys, stable=True)
+    # One search over ``0 .. num_out`` gives every segment's start and (as the next start) its end;
+    # the final probe ``num_out`` lands past the last key.
+    probe = torch.arange(num_out + 1, device=keys.device, dtype=sort_keys.dtype)
+    bounds = torch.searchsorted(sorted_keys, probe, out_int32=True)
+    return order.to(torch.int32), bounds[:-1], (bounds[1:] - bounds[:-1]).contiguous()
 
 
-def deterministic_scatter_add(partial: torch.Tensor, keys: torch.Tensor, out: torch.Tensor) -> None:
+def deterministic_scatter_add(partial: torch.Tensor, keys: torch.Tensor, out: torch.Tensor, *, split: int = 1) -> None:
     """``out[keys[p], :] += partial[p, :]`` in a fixed order (see module docstring).
 
     ``partial`` is ``[num_pairs, dim]`` FP32, ``keys`` ``[num_pairs]`` integer with
     ``-1`` for pairs to skip, ``out`` ``[num_out, dim]`` FP32 (updated in place).
+    ``split`` selects the per-key reduction order: ``1`` sequential, ``4`` the fixed
+    4-way tree (``dsa_segmented_reduce_split4``).
     """
     from . import _kernels as weave
 
@@ -79,4 +87,45 @@ def deterministic_scatter_add(partial: torch.Tensor, keys: torch.Tensor, out: to
     if keys.numel() == 0 or out.shape[0] == 0:
         return
     order, seg_start, seg_count = segment_pairs(keys, int(out.shape[0]))
-    weave.dsa_segmented_reduce_launch(partial.contiguous(), order, seg_start, seg_count, out)
+    weave.dsa_segmented_reduce_launch(partial.contiguous(), order, seg_start, seg_count, out, split=split)
+
+
+class ChunkedSegments:
+    """Per-chunk reducer segments from ONE global stable sort (the chunk loop of the attention backward).
+
+    The attention backward processes query rows in chunks of ``rows_per_chunk`` and reduces each chunk's
+    partials ``partial[(row_local * num_head_blocks + hb) * topk + slot, :]`` into ``out[key, :]``.  Sorting each
+    chunk's keys separately costs ~14 launches per chunk; instead the composite key ``key * num_chunks + chunk``
+    of every pair is stably sorted once.  Within one ``(key, chunk)`` segment the pairs then appear in ascending
+    global pair order -- exactly the sequence the per-chunk stable sort produced -- so the reduction is
+    bit-identical to the per-chunk plan for the same chunking.  Padded pairs (``key == -1``) map to negative
+    composites and sort before every probe.  ``order_local`` is the pair index inside its chunk (``order %
+    pairs_per_chunk``: every chunk but the last holds exactly ``pairs_per_chunk`` pairs), the row index the
+    reducer uses into the chunk's partial buffer.  Segment starts/counts of all chunks come from two
+    ``searchsorted`` calls; :meth:`segment` is launch-free.
+    """
+
+    def __init__(self, indices: torch.Tensor, num_head_blocks: int, rows_per_chunk: int, num_out: int):
+        num_rows, topk = indices.shape
+        device = indices.device
+        num_chunks = (num_rows + rows_per_chunk - 1) // rows_per_chunk
+        comp_dtype = torch.int32 if num_out * num_chunks < 2**31 else torch.int64
+        chunk_of_row = torch.arange(num_rows, device=device, dtype=comp_dtype) // rows_per_chunk
+        comp = indices.to(comp_dtype) * num_chunks + chunk_of_row[:, None]
+        comp = comp.unsqueeze(1).expand(num_rows, num_head_blocks, topk).reshape(-1)
+        sorted_comp, order = torch.sort(comp, stable=True)
+        pairs_per_chunk = rows_per_chunk * num_head_blocks * topk
+        self.order_local = (order % pairs_per_chunk).to(torch.int32)
+        probe = (
+            torch.arange(num_chunks, device=device, dtype=comp_dtype)[:, None]
+            + (torch.arange(num_out, device=device, dtype=comp_dtype) * num_chunks)[None, :]
+        )
+        starts = torch.searchsorted(sorted_comp, probe.reshape(-1), out_int32=True).view(num_chunks, num_out)
+        ends = torch.searchsorted(sorted_comp, probe.reshape(-1), right=True, out_int32=True).view(num_chunks, num_out)
+        self.seg_start = starts
+        self.seg_count = ends - starts
+        self.num_chunks = num_chunks
+
+    def segment(self, chunk: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """``(order_local, seg_start, seg_count)`` for ``chunk`` (contiguous int32 rows, no launch)."""
+        return self.order_local, self.seg_start[chunk], self.seg_count[chunk]

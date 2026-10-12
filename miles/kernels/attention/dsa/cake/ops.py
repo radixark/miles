@@ -39,6 +39,9 @@ from .layouts import RowMeta
 
 ATTENTION_TOPK_MULTIPLE = 64
 LOG2E = 1.4426950408889634
+# Reducer of the lightning-indexer backward: 4 = ``dsa_segmented_reduce_split4`` (fixed 4-way tree per key,
+# deterministic FP32); 1 = the serial per-key reducer the attention backward keeps using.
+INDEXER_REDUCE_SPLIT = 4
 
 TopkFn = Callable[[torch.Tensor, int], torch.Tensor]
 
@@ -124,8 +127,8 @@ def _flat_attention_backward(q, kv, o, do, indices, lse, sink, sm_scale, d_v, wo
     topk = indices.shape[1]
     do = do.contiguous()
     geo = weave.attention_geometry(q, kv, indices, d_v)
-    # delta = rowsum(O * dO) in FP32 (a fixed-shape torch reduction: deterministic).
-    delta = (o.float() * do.float()).sum(dim=-1).contiguous()
+    # delta = rowsum(O * dO) in FP32: one kernel, fixed order (bit-reproducible).
+    delta = weave.dsa_attention_delta_launch(o.contiguous(), do)
     dq = torch.empty_like(q)
     dkv32 = torch.zeros(num_kv, d_qk, dtype=torch.float32, device=q.device)
     num_head_blocks = geo.head_blocks
@@ -134,7 +137,9 @@ def _flat_attention_backward(q, kv, o, do, indices, lse, sink, sm_scale, d_v, wo
     )
     rows_per_chunk = chunks[0][1] - chunks[0][0]
     partial = torch.empty(rows_per_chunk * num_head_blocks * topk, d_qk, dtype=torch.float32, device=q.device)
-    for start, end in chunks:
+    # one global stable sort of (key, chunk) composites: per-chunk reducer segments without per-chunk sorts
+    segments = reduction.ChunkedSegments(indices, num_head_blocks, rows_per_chunk, num_kv)
+    for chunk, (start, end) in enumerate(chunks):
         rows = end - start
         part = partial[: rows * num_head_blocks * topk]
         weave.dsa_attention_backward_rows(
@@ -149,8 +154,8 @@ def _flat_attention_backward(q, kv, o, do, indices, lse, sink, sm_scale, d_v, wo
             float(sm_scale),
             geo,
         )
-        keys = indices[start:end].unsqueeze(1).expand(rows, num_head_blocks, topk).reshape(-1)
-        reduction.deterministic_scatter_add(part, keys, dkv32)
+        order_local, seg_start, seg_count = segments.segment(chunk)
+        weave.dsa_segmented_reduce_launch(part, order_local, seg_start, seg_count, dkv32)
     dkv = dkv32.to(kv.dtype)
     dsink = None
     if sink is not None:
@@ -350,12 +355,14 @@ def _flat_indexer_backward(q, k, w, indices, grad_scores, workspace_bytes):
     topk = indices.shape[1]
     dq = torch.empty_like(q)
     dw = torch.empty(num_rows, heads, dtype=torch.float32, device=q.device)
-    dk32 = torch.zeros(num_kv, dim, dtype=torch.float32, device=q.device)
     chunks = reduction.plan_row_chunks(num_rows, topk, dim, reduction.workspace_budget(workspace_bytes))
     rows_per_chunk = chunks[0][1] - chunks[0][0]
     partial = torch.empty(rows_per_chunk * topk, dim, dtype=torch.float32, device=q.device)
+    dk32 = None
     for start, end in chunks:
         part = partial[: (end - start) * topk]
+        # The rows kernel is the first launch of the call: the host prepares the segment glue of
+        # this chunk (and the dk32 fill) while it runs instead of leaving the GPU idle before it.
         weave.dsa_indexer_backward_rows(
             q[start:end],
             k,
@@ -366,7 +373,9 @@ def _flat_indexer_backward(q, k, w, indices, grad_scores, workspace_bytes):
             dw[start:end],
             part,
         )
-        reduction.deterministic_scatter_add(part, indices[start:end].reshape(-1), dk32)
+        if dk32 is None:
+            dk32 = torch.zeros(num_kv, dim, dtype=torch.float32, device=q.device)
+        reduction.deterministic_scatter_add(part, indices[start:end].reshape(-1), dk32, split=INDEXER_REDUCE_SPLIT)
     return dq, dw, dk32
 
 
@@ -394,9 +403,9 @@ def indexer_backward(
     grad_flat = layouts.flatten_scores(grad_scores, meta)
     if grad_flat.shape[1] != idx_flat.shape[1]:
         grad_flat = torch.nn.functional.pad(grad_flat, (0, idx_flat.shape[1] - grad_flat.shape[1]), value=0.0)
-    # Empty slots carry no gradient (their upstream scores are -inf); keep NaN/inf out of the kernel.
-    grad_flat = torch.where(idx_flat >= 0, grad_flat, torch.zeros_like(grad_flat)).contiguous()
-    dq, dw, dk = _flat_indexer_backward(q_flat, k_flat, w_flat, idx_flat, grad_flat, workspace_bytes)
+    # Empty slots carry no gradient (their upstream scores are -inf, so grad may be NaN / inf there):
+    # the rows kernel loads an exact 0.0 for idx == -1, so no host-side masking launch is needed.
+    dq, dw, dk = _flat_indexer_backward(q_flat, k_flat, w_flat, idx_flat, grad_flat.contiguous(), workspace_bytes)
     dk = meta.kv_rows_to_layout(dk)
     if layout == "thd" and index_k.dim() == 3:
         dk = dk.unsqueeze(1)
