@@ -52,6 +52,8 @@ Both broadcast and P2P modes share the same bucketed weight-update pipeline in `
 | **Transfer buffers** | `protocols/utils/transfer_buffers.py` | Two pinned host buffers per sender, each `--update-weight-buffer-size` bytes (or the largest parameter, if larger), registered with the Mooncake TransferEngine once per trainer process. Ready parameters are packed into groups that fit one buffer; a buffer is loaded again only after every write reading it has returned, and a write that failed or is still running after `--p2p-transfer-timeout` fails the update there. |
 | **Pipelined transfer** | `p2p.py`, `protocols/transports/mooncake.py` | While the writes reading one transfer buffer are in flight, the sender loads the next group of parameters into the other. Each rollout engine has its own write thread, so a stuck engine delays only its own writes. The end of the update waits for the remaining writes and fails it if any failed or is still running after `--p2p-transfer-timeout`. |
 
+The model replica runs the rollout engine's own sglang code in the trainer process: its model construction, startup postprocess and weight loaders. The trainer and the rollout engines therefore run the same sglang build, and their GPUs share an architecture: postprocess chooses kernels and layouts by architecture (TRT-LLM MoE layouts and UE8M0 scales on Blackwell, for example), so a replica on a Hopper trainer would lay out bytes for Hopper while Blackwell engines expect their own.
+
 ## Supported Model Architectures
 
 P2P weight transfer relies on a unified weight name mapping interface between Megatron and sglang (see [sglang#17326](https://github.com/sgl-project/sglang/pull/17326)). The following sglang model classes are supported:
