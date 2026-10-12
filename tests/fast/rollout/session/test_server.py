@@ -52,6 +52,7 @@ def test_run_session_server_suppresses_routine_request_logs(monkeypatch):
         "port": 31001,
         "log_level": "info",
         "access_log": False,
+        "timeout_keep_alive": 60,
     }
 
 

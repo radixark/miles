@@ -20,11 +20,11 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 |---|---|---|---|---|
 | `stage-a-cpu` | GitHub-hosted CPU | — (`ubuntu-latest`) | 4 | `resolve-ci-policy` |
 | `stage-b-cpu` | GitHub-hosted CPU | — (`ubuntu-latest`) | 4 | `resolve-ci-policy`, `stage-a-cpu` |
-| `stage-b-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 1 | both resolvers, `stage-a-cpu` |
-| `stage-c-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 | both resolvers, `stage-a-cpu` |
-| `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 3 | both resolvers, `stage-a-cpu` |
-| `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
-| `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 2 | both resolvers, `stage-a-cpu` |
+| `stage-b-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 | both resolvers, `stage-a-cpu` |
+| `stage-c-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 regular / 4 otherwise | both resolvers, `stage-a-cpu` |
+| `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 9 | both resolvers, `stage-a-cpu` |
+| `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 1 regular / 2 otherwise | both resolvers, `stage-a-cpu` |
+| `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 4 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-b200` | B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-b200` | same B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | same plan, no 8-GPU stage barrier |
 | `stage-c-4-gpu-mi350` | 4× MI350 | `["self-hosted","amd","mi350","4gpu"]` | 2 | both resolvers |
@@ -99,11 +99,11 @@ Both workflows receive `execute_command` and an optional `ref`; CUDA callers add
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 
-Weekly runs keep the same shards but limit each Hopper and ROCm GPU matrix to one runner. B200 uses the same per-file GPU pool for every cadence, with no matrix parallelism cap within each bounded batch; each file starts when its declared GPU budget is available. Other stages remain independent: `stage-b-2-gpu-h200` and `stage-c-2-gpu-h200` may each occupy one 2-GPU runner at the same time. PR, nightly, and release runs retain their existing matrix parallelism.
+Shard sizing and concurrency policy live in [CI Maintenance](../../../.claude/rules/ci-maintenance.md).
 
 ## ROCm PR/nightly/weekly mirror
 
-`pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi350` through `_run-ci-rocm.yml` on two 4-GPU MI350 runners and splits tests into two `est_time`-balanced shards; weekly alone limits the matrix to one runner at a time. It runs no CPU tests.
+`pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi350` through `_run-ci-rocm.yml` on two 4-GPU MI350 runners and splits tests into two `est_time`-balanced shards. It runs no CPU tests.
 
 Reusable calls can select a Miles `ref` and cadence, but resolve the same undated `rocm/sgl-dev:miles-rocm724-mi35x` image as the other automatic paths. SGLang and Megatron-LM remain baked into that image. The release branch-cut workflow does not call ROCm CI or include it in the `release-ci` gate.
 
@@ -123,4 +123,4 @@ Both runner containers can see all eight host GPUs through `/dev/dri`. Each runn
 
 - Suite-to-stage mappings are maintained manually across `run_suite.py`, the Miles workflows, and the external MI350 nightly workflow.
 - Runner placement assumes the live fleet actually carries the requested `runs_on` labels for each GPU class and count.
-- `est_time` only affects shard balancing and per-file timeout, never pass/fail.
+- `est_time` controls shard balancing, CPU [registration eligibility](01-label.md#registration-and-scan-scope), and timeouts for per-file runs.
