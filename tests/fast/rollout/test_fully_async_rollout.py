@@ -1,7 +1,7 @@
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["fully-async"])
 
 import argparse
 import asyncio

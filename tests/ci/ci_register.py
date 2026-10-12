@@ -71,8 +71,9 @@ def register_cpu_ci(
 ):
     """Marker for CPU CI registration (parsed via AST; runtime no-op).
 
-    `labels=None` and `labels=[]` are equivalent for CPU tests: the test is
-    always-on within every cadence that admits it. A non-empty `labels` list
+    Estimates above 30 seconds require `stage-b-cpu` and non-empty labels.
+    For shorter tests, `labels=None` and `labels=[]` are equivalent: the test
+    is always-on within every cadence that admits it. A non-empty `labels` list
     gates the test on the resolved domain scope; a PR can include `<x>` with
     `run-ci-<x>`, while broad scopes include many domain labels at once.
     `nightly=True` adds a cadence gate: regular runs exclude the test, while
@@ -217,13 +218,14 @@ class RegistryVisitor(ast.NodeVisitor):
         if not isinstance(parsed["suite"], str):
             raise ValueError(f"{self.filename}: suite must be a string in {func_name}()")
 
-        # CPU labels remain optional; GPU registrations require an explicit
-        # non-empty domain so they cannot consume runners on every PR.
         labels = parsed.get("labels", [])
         if not isinstance(labels, list):
             raise ValueError(f"{self.filename}: labels must be a list or None in {func_name}()")
         backend = _REGISTER_BACKEND_MAP[func_name]
-        if backend != HWBackend.CPU and not labels:
+        slow_cpu = backend == HWBackend.CPU and parsed["est_time"] > 30
+        if slow_cpu and parsed["suite"] != "stage-b-cpu":
+            raise ValueError(f"{self.filename}: CPU est_time > 30 seconds requires suite='stage-b-cpu'")
+        if (backend != HWBackend.CPU or slow_cpu) and not labels:
             raise ValueError(f"{self.filename}: labels in {func_name}() must contain at least one domain label")
 
         nightly = parsed.get("nightly", False)
