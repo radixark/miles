@@ -325,7 +325,8 @@ def _fused_log_probs_and_entropy(
         targets.append(tokens_chunk)
         lengths.append(tokens_chunk.size(0))
     device = flat_logits.device
-    rows = torch.cat([torch.arange(row_start, row_end, device=device) for row_start, row_end in row_ranges])
+    # built on the CPU and copied once: one arange kernel per run would be hundreds of tiny launches
+    rows = torch.cat([torch.arange(row_start, row_end) for row_start, row_end in row_ranges]).to(device)
     log_probs, entropy = fused_log_probs_and_entropy(
         flat_logits,
         rows,
