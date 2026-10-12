@@ -102,6 +102,15 @@ def _assert_roundtrips(server_args_dict: dict) -> None:
 
 
 class TestServerArgsToArgv:
+    def test_modelexpress_configuration_survives_managed_launch(self):
+        config = {"model_name": "policy", "initial_base_version_id": "policy-v0", "server_url": "mx:8001"}
+        args = _args()
+        args.update_weight_transfer_mode = "modelexpress"
+        args.modelexpress_config = config
+        server_args = _server_args(args=args)
+        parsed = parse_server_args_argv(server_args_to_argv(server_args))
+        assert json.loads(parsed.modelexpress_config) == config
+
     def test_a_regular_engine_launch_roundtrips(self):
         """The exact ServerArgs the launch computes survives the argv boundary."""
         server_args = _server_args()

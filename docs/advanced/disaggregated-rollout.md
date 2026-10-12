@@ -107,6 +107,7 @@ miles-managed path:
 | `broadcast_packed` | Pack each weight bucket into one byte buffer and issue one NCCL broadcast | Non-colocated Megatron with SGLang mixed-dtype flattened-bucket support; trades contiguous bucket storage for fewer collectives |
 | `p2p` | Convert and re-shard weights, then write them directly to rollout-rank memory over RDMA | miles-managed, in-cluster jobs with direct rank-to-rank connectivity; see [P2P Weight Transfer](/advanced/p2p-weight-transfer) |
 | `disk-delta` | Publish changed canonical checkpoint bytes to shared storage, let rollout hosts materialize them locally, then reload | Trainer and rollout cannot share an NCCL fabric, or model-sized full-weight transfer dominates the update |
+| `modelexpress` | Publish canonical XOR deltas and optional full HF checkpoints to S3 through ModelExpress | Trainer and SGLang have a common seed checkpoint and can reach S3 and the ModelExpress catalog |
 
 These are weight synchronization choices, not different rollout APIs. In the
 broadcast and P2P modes, miles transfers tensors into known engine ranks directly.
@@ -175,6 +176,81 @@ Current `main` rejects disk-delta with `--colocate`, LoRA, or PD
 disaggregation. It also requires `--hf-checkpoint` to be a local checkpoint
 directory. The implementation is selected by the Megatron actor; it is not a
 general FSDP weight-update path.
+
+### ModelExpress S3 delta refit
+
+<Warning>
+**Development version:** This integration uses unreleased ModelExpress features
+and may introduce breaking changes. Until
+[ModelExpress #826](https://github.com/ai-dynamo/modelexpress/pull/826) merges,
+install the integration branch shown below; use `main` after it merges.
+</Warning>
+
+Install the optional ModelExpress client on every trainer and rollout worker.
+In the Miles image, prepare the S3 dependencies before installing MX:
+
+```bash
+uv pip install 'boto3>=1.35.2' 'protobuf>=5.27.2,<7'
+uv pip install --no-deps \
+  "git+https://github.com/ai-dynamo/modelexpress@hwoo/delta-refit-miles#subdirectory=modelexpress_client/python"
+```
+
+```mermaid
+flowchart LR
+    T[Megatron HF tensor iterator] --> P[ModelExpress publisher]
+    P --> S3[S3 deltas / full checkpoints]
+    P --> C[ModelExpress version catalog]
+    S3 --> G[SGLang refit]
+    C --> G
+```
+
+```bash
+--update-weight-transfer-mode modelexpress \
+--modelexpress-config '{
+  "model_name": "policy-run-unique-id",
+  "server_url": "modelexpress:8001",
+  "initial_base_version_id": "policy-run-unique-id-v0",
+  "seed_checkpoint_path": "/models/Qwen3-0.6B",
+  "refit_checkpoint_dir": "/local-nvme/mx-refit",
+  "object_storage_uri_prefix": "s3://weight-updates/policy-run-unique-id",
+  "object_storage_region_name": "us-west-2",
+  "full_hf_checkpoint_interval": 10
+}'
+```
+
+The `modelexpress` transfer mode selects Miles' `UpdateWeightFromModelExpressDelta`
+protocol in `miles.backends.training_utils.weight_update.protocols.modelexpress`.
+Miles launches SGLang through its normal Ray worker lifecycle and forwards this
+configuration to the engine. Both roles need the same canonical HF seed and S3
+credentials through the normal AWS credential chain. Use a fresh model name,
+initial version, and S3 prefix for every run.
+
+Set `object_storage_endpoint_url` in the JSON config for MinIO or another custom
+endpoint. Miles forwards the same storage-neutral connection keys to SGLang.
+
+The initial sync registers a catalog-only READY v0 and captures the seed without
+uploading it. Later updates stage and publish every sender's contribution, mark
+the version READY, then pause, install, and resume SGLang. Full checkpoints
+start a new delta chain at the configured cadence; omitting
+`full_hf_checkpoint_interval` publishes only deltas. Installation failure keeps
+generation paused and propagates the error to every trainer rank. Metrics expose
+delta density, wire bytes, staging time, publication time, and installation time.
+
+`pause_engines()` flushes the serving caches before refit. The refit request uses
+the opaque ModelExpress version ID to select the checkpoint. After it succeeds,
+Miles sets SGLang's reported weight version to its numeric update counter before
+resuming generation. ModelExpress retains the opaque ID for delta-chain tracking.
+
+Each `send_bucket()` call submits tensors to ModelExpress's bounded staging pool
+through `stage_shard(tensors=bucket)`. The first real bucket initializes the
+version's staged payload. The existing `after_base_weights()` hook calls
+`publish()` on sender ranks, which waits for staging to complete before
+publishing the version's shards and index.
+
+ModelExpress uses a separate Gloo group containing only sender ranks. All trainer
+ranks still participate in Megatron weight gathering, control broadcasts, and
+synchronization barriers. Non-senders do not initialize an MX trainer or stage
+empty tensor buckets.
 
 ## External rollout service contract
 
