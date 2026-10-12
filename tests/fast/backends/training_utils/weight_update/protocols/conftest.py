@@ -265,7 +265,16 @@ class _P2PSenderHarness:
         monkeypatch.setattr(mooncake_transport, "_create_transfer_engine", self._create_transfer_engine)
         monkeypatch.setattr(p2p_protocol, "assign_rollout_engine_ranks", self._assign_rollout_engine_ranks)
         monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
-        monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
+        # one rank: reducing across ranks changes nothing
+        monkeypatch.setattr(
+            p2p_protocol,
+            "dist",
+            SimpleNamespace(
+                get_rank=lambda group=None: 0,
+                all_reduce=lambda tensor, op, group: None,
+                ReduceOp=SimpleNamespace(MAX=None),
+            ),
+        )
         self._model_replica_module = sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
         monkeypatch.setattr(self._model_replica_module, "RankParallelismConfig", _FakeRankParallelismConfig)
         monkeypatch.setattr(self._model_replica_module, "ServerArgs", _FakeServerArgs)
@@ -285,6 +294,8 @@ class _P2PSenderHarness:
     ) -> Any:
         args = Namespace(
             hf_checkpoint="/model",
+            # the trainer sends an MTP layer, hf.mtp
+            mtp_num_layers=1,
             p2p_transfer_timeout=p2p_transfer_timeout,
             update_weight_engine_request_timeout=_FAILURE_BOUND,
             update_weight_buffer_size=update_weight_buffer_size,
@@ -300,16 +311,17 @@ class _P2PSenderHarness:
             engine_gpu_counts=[api.gpu_count for api in apis],
             engine_gpu_offsets=None,
             parallel_state=None,
-            placement=placement,
+            placement=placement or SimpleNamespace(gather_pp=True),
             selector=selector,
         )
 
-    def begin_sync(self, protocol: Any, weight_version: int) -> None:
+    def begin_sync(self, protocol: Any, weight_version: int, extra_hf_names: tuple[str, ...] = ()) -> None:
         """As the updater begins a sync: the iterator it hands over yields every HF tensor the trainer sends."""
 
         def iter_buckets(materialize: bool):
             self.first_passes += 1
             yield [(name, torch.tensor(values)) for name, values in _BUCKET_VALUES.items()]
+            yield [(name, torch.zeros(4)) for name in extra_hf_names]
 
         protocol.begin_sync(weight_version=weight_version, iter_buckets=iter_buckets)
 

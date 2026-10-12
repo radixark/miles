@@ -1,3 +1,5 @@
+import contextlib
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -153,7 +155,7 @@ class TestConnect:
         protocol = p2p_sender.make_protocol()
         protocol.args.rollout_num_gpus_per_engine = 1
         protocol.args.rollout_num_gpus = 1
-        resolved_placement = object()
+        resolved_placement = SimpleNamespace(gather_pp=True)
         api = make_rollout_api("cell-a", gpu_count=2)
 
         p2p_sender.connect(protocol, [api], placement=resolved_placement)
@@ -364,6 +366,57 @@ class TestHfNames:
         with pytest.raises(AssertionError, match="were not in the trainer's first pass"):
             protocol.send_bucket([("hf.unknown", torch.zeros(4))])
         assert p2p_sender.transfer_engine.writes == []
+
+    def test_a_tensor_no_rollout_engine_loads_fails_the_first_sync(
+        self, p2p_sender: Any, make_rollout_api: Any
+    ) -> None:
+        """Its weight would keep the value the rollout engine started with."""
+        protocol = p2p_sender.make_protocol()
+        protocol.args.mtp_num_layers = None
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
+
+        with pytest.raises(AssertionError, match=r"no rollout engine loads 1 HF tensors .*'hf.mtp'"):
+            p2p_sender.begin_sync(protocol, weight_version=1)
+
+    def test_a_tensor_another_rank_loads_passes(
+        self, p2p_sender: Any, p2p_protocol: ModuleType, make_rollout_api: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With EP each sender's rollout engine ranks hold only their own experts; other ranks load the rest."""
+        protocol = p2p_sender.make_protocol()
+        protocol.args.mtp_num_layers = None
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
+        # another rank's rollout engines load every tensor
+        monkeypatch.setattr(
+            p2p_protocol.dist, "all_reduce", lambda tensor, op, group: tensor.fill_(1) if tensor.dim() == 2 else None
+        )
+
+        p2p_sender.begin_sync(protocol, weight_version=1)
+
+    @pytest.mark.parametrize("ties_embeddings", [True, False])
+    def test_towers_and_a_tied_head_need_no_loader(
+        self,
+        p2p_sender: Any,
+        p2p_protocol: ModuleType,
+        make_rollout_api: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        ties_embeddings: bool,
+    ) -> None:
+        """Towers are resent unchanged and a tied engine takes its head from the embedding; an untied head must load."""
+        monkeypatch.setattr(
+            p2p_protocol, "load_hf_config", lambda path: SimpleNamespace(tie_word_embeddings=ties_embeddings)
+        )
+        protocol = p2p_sender.make_protocol()
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1, speculative_args=_EAGLE_MTP)])
+
+        expectation = (
+            contextlib.nullcontext()
+            if ties_embeddings
+            else pytest.raises(AssertionError, match=r"no rollout engine loads 1 HF tensors .*'lm_head.weight'")
+        )
+        with expectation:
+            p2p_sender.begin_sync(
+                protocol, weight_version=1, extra_hf_names=("model.visual.blocks.0.weight", "lm_head.weight")
+            )
 
     def test_a_tensor_no_runner_loads_is_skipped(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
