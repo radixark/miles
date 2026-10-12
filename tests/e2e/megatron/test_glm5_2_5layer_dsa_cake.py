@@ -29,8 +29,6 @@ from scripts.run_glm5_2_744b_a40b import (
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
-
 register_cuda_ci(
     est_time=1800, suite="stage-c-4-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"]
 )
@@ -93,6 +91,7 @@ def _args() -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)
