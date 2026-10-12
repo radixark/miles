@@ -3,7 +3,11 @@ from collections.abc import Iterator, Sequence
 
 import torch
 
-from miles.backends.training_utils.data.context_parallel import allgather_cp_redistribute, iter_local_response_rows
+from miles.backends.training_utils.data.context_parallel import (
+    LocalResponseRows,
+    allgather_cp_redistribute,
+    iter_local_response_rows,
+)
 from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask
 from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.loss.hub.score_centering import selected_log_probs_and_entropy
@@ -19,6 +23,31 @@ def _flatten_logits(logits: torch.Tensor, qkv_format: str, max_seq_lens: list[in
         return logits.squeeze(0)
     assert max_seq_lens is not None
     return logits.view(-1, logits.size(-1))
+
+
+def _local_response_layout(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None,
+    include_response_indices: bool,
+) -> tuple[torch.Tensor, Iterator[LocalResponseRows]]:
+    """This rank's logits as ``[rows, V]``, and per sample the rows of them that score its response."""
+    flat_logits = _flatten_logits(logits, args.qkv_format, max_seq_lens)
+    layout = iter_local_response_rows(
+        flat_logits.size(0),
+        qkv_format=args.qkv_format,
+        allgather_cp=args.allgather_cp,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        include_response_indices=include_response_indices,
+    )
+    return flat_logits, layout
 
 
 def _iter_response_chunks(
@@ -55,7 +84,15 @@ def _iter_response_chunks(
     if not args.true_on_policy_mode:
         # Model-precision callers hand native bf16/fp16 logits; chunks are upcast to fp32 downstream
         assert logits.dtype in (torch.float32, torch.bfloat16, torch.float16), f"{logits.dtype}"
-    logits = _flatten_logits(logits, args.qkv_format, max_seq_lens)
+    logits, layout = _local_response_layout(
+        logits,
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        include_response_indices=include_response_indices,
+    )
 
     if args.true_on_policy_mode:
         if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
@@ -65,16 +102,7 @@ def _iter_response_chunks(
         elif getattr(args, "fp16", False):
             logits = logits.to(torch.float16)
 
-    for row_ranges, tokens_chunk, response_indices in iter_local_response_rows(
-        logits.size(0),
-        qkv_format=args.qkv_format,
-        allgather_cp=args.allgather_cp,
-        unconcat_tokens=unconcat_tokens,
-        total_lengths=total_lengths,
-        response_lengths=response_lengths,
-        max_seq_lens=max_seq_lens,
-        include_response_indices=include_response_indices,
-    ):
+    for row_ranges, tokens_chunk, response_indices in layout:
         pieces = [logits[row_start:row_end] for row_start, row_end in row_ranges]
         logits_chunk = pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=0)
         yield logits_chunk, tokens_chunk, response_indices
@@ -280,18 +308,17 @@ def _fused_log_probs_and_entropy(
     # imported here: the op needs triton, which not every host that imports the losses has
     from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy
 
-    flat_logits = _flatten_logits(logits, args.qkv_format, max_seq_lens)
-    row_ranges, targets, lengths = [], [], []
-    for sample_ranges, tokens_chunk, _ in iter_local_response_rows(
-        flat_logits.size(0),
-        qkv_format=args.qkv_format,
-        allgather_cp=args.allgather_cp,
+    flat_logits, layout = _local_response_layout(
+        logits,
+        args=args,
         unconcat_tokens=unconcat_tokens,
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
         include_response_indices=False,
-    ):
+    )
+    row_ranges, targets, lengths = [], [], []
+    for sample_ranges, tokens_chunk, _ in layout:
         row_ranges.extend(sample_ranges)
         targets.append(tokens_chunk)
         lengths.append(tokens_chunk.size(0))
