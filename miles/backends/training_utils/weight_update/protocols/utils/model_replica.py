@@ -198,7 +198,7 @@ class ModelReplica:
             model.post_load_weights = lambda *args, **kwargs: None
         self._model = model
         self._config = config
-        self.transfer_buffer_param_layouts = _bring_to_reload_state(
+        self.transfer_buffer_param_layouts = _run_engine_postprocess_and_restore(
             model, built_shapes_by_name, config.parallelism, postprocess_device
         )
         self._params_by_name = dict(model.named_parameters())
@@ -294,7 +294,7 @@ class ModelReplica:
         )
 
 
-def _bring_to_reload_state(
+def _run_engine_postprocess_and_restore(
     model: torch.nn.Module,
     built_shapes_by_name: Mapping[str, torch.Size],
     parallelism: RankParallelismConfig,
@@ -307,7 +307,7 @@ def _bring_to_reload_state(
     for module_name, module in model.named_modules():
         # modules without one keep their params as built
         if getattr(module, "quant_method", None) is not None:
-            reload_layouts_by_param_id |= _bring_module_to_reload_state(
+            reload_layouts_by_param_id |= _run_module_postprocess_and_restore(
                 module_name, module, built_shapes_by_param_id, parallelism, postprocess_device
             )
 
@@ -321,7 +321,7 @@ def _bring_to_reload_state(
     return param_layouts
 
 
-def _bring_module_to_reload_state(
+def _run_module_postprocess_and_restore(
     module_name: str,
     module: torch.nn.Module,
     built_shapes_by_param_id: Mapping[int, torch.Size],
