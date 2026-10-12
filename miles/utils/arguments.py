@@ -521,13 +521,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--dsa-attention-backend",
-                choices=["megatron", "tilelang", "loom"],
+                choices=["megatron", "tilelang", "cake"],
                 default="tilelang",
                 help=(
                     "DSA indexer + sparse-attention kernel backend. Plugin specs (GLM-5 get_glm5_spec, "
                     "DeepSeek-V4 get_dsv4_spec with --dsv4-impl miles): 'tilelang' (default) uses the fused "
-                    "TileLang kernels in miles/kernels/attention/dsa; 'loom' uses the generated deterministic "
-                    "kernels in miles_plugins/models/dsa_train (SM100a/SM103a: bit-deterministic backward, "
+                    "TileLang kernels in miles/kernels/attention/dsa; 'cake' uses the generated deterministic "
+                    "kernels in miles/kernels/attention/dsa/cake (SM100a/SM103a: bit-deterministic backward, "
                     "batched DeepSeek-V4 indexer in one launch). Under --megatron-to-hf-mode bridge (GLM-5.1 "
                     "and GLM-5.2, full or LoRA): 'tilelang' or 'megatron' (portable unfused megatron-core "
                     "kernels); 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "

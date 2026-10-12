@@ -23,7 +23,7 @@ from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, compress_bounds_at_positions, get_q_positions_thd
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
-from miles_plugins.models.dsa_backend import loom_dsa_ops, resolve_dsa_attention_backend
+from miles.kernels.attention.dsa.backend import cake_dsa_ops, resolve_dsa_attention_backend
 
 
 class V4Indexer(MegatronModule):
@@ -167,7 +167,7 @@ class V4Indexer(MegatronModule):
 
         # RL replay can pin the rollout's top-k picks here; get_topk_fn is transparent when disabled.
         topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
-        logits_fn = _loom_indexer_logits if self.attention_backend == "loom" else indexer_logits_sbhd
+        logits_fn = _cake_indexer_logits if self.attention_backend == "cake" else indexer_logits_sbhd
         return topk_for_local_rows(
             exchange,
             k,
@@ -190,8 +190,8 @@ def start_row_exchange(q, weights, thd_layout, cp_group, *, balance: bool) -> Ro
     return send_rows_to_scorers(tensors, plan, cp_group)
 
 
-def _loom_indexer_logits(q, k, weights, cu_ks, cu_ke):
-    return loom_dsa_ops().indexer_logits(q, k, weights, cu_ks, cu_ke, layout="sbhd")
+def _cake_indexer_logits(q, k, weights, cu_ks, cu_ke):
+    return cake_dsa_ops().indexer_logits(q, k, weights, cu_ks, cu_ke, layout="sbhd")
 
 
 def topk_for_local_rows(

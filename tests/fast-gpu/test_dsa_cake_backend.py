@@ -1,4 +1,4 @@
-"""Generated deterministic DSA kernels (``--dsa-attention-backend loom``) vs the TileLang kernels and an FP32 reference.
+"""Generated deterministic DSA kernels (``--dsa-attention-backend cake``) vs the TileLang kernels and an FP32 reference.
 
 Covers both model contracts on Blackwell (SM100a / SM103a):
 
@@ -7,7 +7,7 @@ Covers both model contracts on Blackwell (SM100a / SM103a):
 * DeepSeek-V4 ``bshd`` MQA (``d = 512``, FP32 sink, batched): ``sparse_attention`` vs ``sparse_attn_tilelang`` and
   the batched ``sbhd`` indexer logits vs ``batched_indexer_fwd``.
 
-Every loom gradient is checked to be bit-identical across two passes.  The TileLang comparisons skip when
+Every cake gradient is checked to be bit-identical across two passes.  The TileLang comparisons skip when
 ``tilelang`` is not importable; the FP32-reference and determinism checks always run.
 """
 
@@ -37,11 +37,11 @@ def _require_blackwell():
         pytest.skip("the generated DSA kernels target SM100a / SM103a")
 
 
-def _loom():
+def _cake():
     _require_blackwell()
-    from miles_plugins.models import dsa_train
+    from miles.kernels.attention.dsa import cake
 
-    return dsa_train
+    return cake
 
 
 def _rel_err(actual, expected):
@@ -120,19 +120,19 @@ def _glm5_attention_inputs(rows, heads, topk, device):
 
 @pytest.mark.parametrize("heads", [16, 64], ids=["tp4-h16", "tp1-h64"])
 def test_glm5_sparse_attention_matches_reference_and_is_deterministic(heads):
-    loom = _loom()
+    cake = _cake()
     q, kv, indices, do, sm_scale = _glm5_attention_inputs(512, heads, 256, "cuda")
 
     def run():
         q_ = q.clone().requires_grad_(True)
         kv_ = kv.clone().requires_grad_(True)
-        out = loom.sparse_attention(q_, kv_, indices, sm_scale=sm_scale, layout="thd")
+        out = cake.sparse_attention(q_, kv_, indices, sm_scale=sm_scale, layout="thd")
         out.backward(do)
         return out.detach(), q_.grad, kv_.grad
 
     out, dq, dkv = run()
     out2, dq2, dkv2 = run()
-    assert torch.equal(out, out2) and torch.equal(dq, dq2) and torch.equal(dkv, dkv2), "loom pass is not bit-identical"
+    assert torch.equal(out, out2) and torch.equal(dq, dq2) and torch.equal(dkv, dkv2), "cake pass is not bit-identical"
 
     q32 = q.clone().float().requires_grad_(True)
     kv32 = kv.squeeze(1).clone().float().requires_grad_(True)
@@ -168,18 +168,18 @@ def _glm5_indexer_inputs(rows, heads, topk, device):
 
 @pytest.mark.parametrize("heads", [32, 64])
 def test_glm5_lightning_indexer_matches_reference_and_is_deterministic(heads):
-    loom = _loom()
+    cake = _cake()
     rows, topk = 512, 128
     index_q, index_k, weights, ks, ke = _glm5_indexer_inputs(rows, heads, topk, "cuda")
 
-    logits = loom.indexer_logits(index_q, index_k, weights, ks, ke, layout="thd")
+    logits = cake.indexer_logits(index_q, index_k, weights, ks, ke, layout="thd")
     assert _rel_err(logits, ref_indexer_logits(index_q, index_k, weights, ks, ke)) < 1e-3
 
     def run():
         q_ = index_q.clone().requires_grad_(True)
         k_ = index_k.clone().requires_grad_(True)
         w_ = weights.clone().requires_grad_(True)
-        scores, topk_indices = loom.lightning_indexer(q_, k_, w_, ks, ke, topk, layout="thd", topk_backend="torch")
+        scores, topk_indices = cake.lightning_indexer(q_, k_, w_, ks, ke, topk, layout="thd", topk_backend="torch")
         grad = torch.randn_like(scores).masked_fill(~torch.isfinite(scores), 0.0)
         torch.manual_seed(3)
         grad = torch.randn_like(scores).masked_fill(~torch.isfinite(scores), 0.0)
@@ -234,7 +234,7 @@ def _dsv4_attention_inputs(batch, seq, heads, topk, device):
 
 @pytest.mark.parametrize("heads", [16, 64], ids=["tp4-h16", "tp1-h64"])
 def test_dsv4_sparse_attention_with_sink_matches_reference_and_is_deterministic(heads):
-    loom = _loom()
+    cake = _cake()
     batch, seq, topk = 2, 256, 192  # 128 window + 64 compressed slots; padded to 256 inside
     q, kv, indices, sink, do, sm_scale = _dsv4_attention_inputs(batch, seq, heads, topk, "cuda")
 
@@ -242,7 +242,7 @@ def test_dsv4_sparse_attention_with_sink_matches_reference_and_is_deterministic(
         q_ = q.clone().requires_grad_(True)
         kv_ = kv.clone().requires_grad_(True)
         s_ = sink.clone().requires_grad_(True)
-        out = loom.sparse_attention(q_, kv_, indices, sm_scale=sm_scale, attn_sink=s_, layout="bshd")
+        out = cake.sparse_attention(q_, kv_, indices, sm_scale=sm_scale, attn_sink=s_, layout="bshd")
         out.backward(do)
         return out.detach(), q_.grad, kv_.grad, s_.grad
 
@@ -279,23 +279,23 @@ def test_dsv4_sparse_attention_with_sink_matches_reference_and_is_deterministic(
             ("dsink", dsink, s_t.grad),
         ):
             err = _rel_err(ours, theirs)
-            print(f"dsv4 attention {name}: loom vs tilelang rel err {err:.3e}")
+            print(f"dsv4 attention {name}: cake vs tilelang rel err {err:.3e}")
             assert err < 1e-2, name
 
 
 def test_dsv4_sparse_attention_output_allows_inplace_rope_before_backward():
     """DeepSeek-V4 applies the inverse RoPE in place on the attention output before the output projection."""
-    loom = _loom()
+    cake = _cake()
     q, kv, indices, sink, do, sm_scale = _dsv4_attention_inputs(2, 128, 16, 64, "cuda")
     q_ = q.clone().requires_grad_(True)
-    out = loom.sparse_attention(q_, kv, indices, sm_scale=sm_scale, attn_sink=sink, layout="bshd")
+    out = cake.sparse_attention(q_, kv, indices, sm_scale=sm_scale, attn_sink=sink, layout="bshd")
     assert out.shape == q.shape and out._base is None, "the output must be a fresh layout-shaped tensor, not a view"
     out[..., -64:].mul_(-1.0)  # in-place on a slice, as apply_rotary_emb(o[..., -rd:], ..., inverse=True) does
     out.backward(do)
     assert q_.grad is not None and torch.isfinite(q_.grad).all()
     # The saved forward output must not see the in-place update: same gradient as the out-of-place form.
     q_ref = q.clone().requires_grad_(True)
-    out_ref = loom.sparse_attention(q_ref, kv, indices, sm_scale=sm_scale, attn_sink=sink, layout="bshd")
+    out_ref = cake.sparse_attention(q_ref, kv, indices, sm_scale=sm_scale, attn_sink=sink, layout="bshd")
     scale = torch.ones_like(out_ref)
     scale[..., -64:] = -1.0
     (out_ref * scale).backward(do)
@@ -303,7 +303,7 @@ def test_dsv4_sparse_attention_output_allows_inplace_rope_before_backward():
 
 
 def test_dsv4_batched_indexer_logits_match_reference_and_tilelang():
-    loom = _loom()
+    cake = _cake()
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(5)
     seq, batch, heads, ratio = 256, 2, 64, 4
@@ -315,9 +315,9 @@ def test_dsv4_batched_indexer_logits_match_reference_and_tilelang():
     ks = torch.zeros(seq, device=device, dtype=torch.int32)
     ke = ((positions + 1) // ratio).to(torch.int32)
 
-    logits = loom.indexer_logits(q, k, weights, ks, ke, layout="sbhd")
+    logits = cake.indexer_logits(q, k, weights, ks, ke, layout="sbhd")
     assert logits.shape == (batch, seq, seq_kv)
-    assert torch.equal(logits, loom.indexer_logits(q, k, weights, ks, ke, layout="sbhd"))
+    assert torch.equal(logits, cake.indexer_logits(q, k, weights, ks, ke, layout="sbhd"))
     for b in range(batch):
         assert _rel_err(logits[b], ref_indexer_logits(q[:, b], k[:, b], weights[:, b], ks, ke)) < 1e-3
 

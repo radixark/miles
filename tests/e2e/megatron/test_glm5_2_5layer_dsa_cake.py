@@ -1,16 +1,16 @@
 """E2E: GLM-5.2 (5-layer prune) full-parameter GRPO with the deterministic DSA kernels.
 
-Runs ``--dsa-attention-backend loom`` (the generated deterministic indexer + sparse-attention kernels
-in ``miles_plugins/models/dsa_train``) on the GLM-5.2 training script with TP4 (4 GPUs) and the DSA
+Runs ``--dsa-attention-backend cake`` (the generated deterministic indexer + sparse-attention kernels
+in ``miles/kernels/attention/dsa/cake``) on the GLM-5.2 training script with TP4 (4 GPUs) and the DSA
 cross-layer index-sharing path (5 layers = 3 dense + 2 MoE; computing layers 0-2, skip layers 3-4).
 ``MILES_DSA_BACKEND=tilelang`` runs the same recipe on the fused TileLang kernels for an A/B reference.
-Needs Blackwell (SM100a / SM103a) GPUs for the loom backend.
+Needs Blackwell (SM100a / SM103a) GPUs for the cake backend.
 
 ``MILES_E2E_MODE`` selects ``live`` (default: rollouts + training), ``record`` (live, additionally dumps every
 rollout batch to ``MILES_E2E_DEBUG_DIR``) or ``replay`` (``--debug-train-only`` on the recorded batches, saving
 the per-step grad norm and the per-rank train data, incl. the trainer log-probs, under ``MILES_E2E_RUN_TAG``; ``MILES_E2E_REPLAY_LOSS_ARGS`` defaults to ``--entropy-coef 0.001`` so the
 backward carries non-zero gradients although the truncated smoke responses give zero advantages).
-Two ``replay`` runs of the loom backend on the same recorded batches must produce bit-identical grad norms and
+Two ``replay`` runs of the cake backend on the same recorded batches must produce bit-identical grad norms and
 log-probs; ``tilelang`` replays give the non-deterministic reference.
 
 Paths default to the CI layout (``/root/models``, ``/root/datasets``, ``/root/Megatron-LM``); set
@@ -41,7 +41,7 @@ register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
-BACKEND = os.environ.get("MILES_DSA_BACKEND", "loom")
+BACKEND = os.environ.get("MILES_DSA_BACKEND", "cake")
 ROOT = os.environ.get("MILES_E2E_ROOT")
 MODE = os.environ.get("MILES_E2E_MODE", "live")
 NUM_ROLLOUT = int(os.environ.get("MILES_E2E_NUM_ROLLOUT", "2"))

@@ -18,29 +18,29 @@ def _load(name: str, relative: str):
 
 
 def test_plugin_backend_resolution():
-    backend = _load("test_dsa_backend_module", "miles_plugins/models/dsa_backend.py")
+    backend = _load("test_dsa_backend_module", "miles/kernels/attention/dsa/backend.py")
     assert backend.resolve_dsa_attention_backend(None) == "tilelang"
     assert backend.resolve_dsa_attention_backend("tilelang") == "tilelang"
-    assert backend.resolve_dsa_attention_backend("loom") == "loom"
+    assert backend.resolve_dsa_attention_backend("cake") == "cake"
     # ``megatron`` is a bridge-path choice; the plugin specs keep their fused kernels.
     assert backend.resolve_dsa_attention_backend("megatron") == "tilelang"
-    assert backend.use_loom_dsa("loom") and not backend.use_loom_dsa("tilelang")
+    assert backend.use_cake_dsa("cake") and not backend.use_cake_dsa("tilelang")
     with pytest.raises(ValueError, match="Unsupported DSA attention backend"):
         backend.resolve_dsa_attention_backend("nope")
 
 
-def test_bridge_path_rejects_loom():
+def test_bridge_path_rejects_cake():
     bridge = _load("test_megatron_bridge_utils_module", "miles/utils/megatron_bridge_utils.py")
     provider = Namespace(dsa_attention_backend="megatron")
     bridge.apply_dsa_backend_args(provider, Namespace(dsa_attention_backend="tilelang"))
     assert provider.dsa_attention_backend == "tilelang"
     with pytest.raises(ValueError, match="only available with the miles_plugins model specs"):
-        bridge.apply_dsa_backend_args(provider, Namespace(dsa_attention_backend="loom"))
+        bridge.apply_dsa_backend_args(provider, Namespace(dsa_attention_backend="cake"))
 
 
 def test_generated_package_registry_covers_both_architectures():
     """Every exported stage is exported for SM100a and SM103a from one source set that exists on disk."""
-    jit = _load("test_dsa_train_jit_module", "miles_plugins/models/dsa_train/_jit.py")
+    jit = _load("test_dsa_train_jit_module", "miles/kernels/attention/dsa/cake/_jit.py")
     assert set(jit.MODULES), "registry.json missing"
     expected = {
         *(f"dsa_attention_{kind}_h{h}_d512t{t}" for kind in ("fwd", "bwd") for h in (16, 32) for t in (64, 0)),
@@ -54,4 +54,4 @@ def test_generated_package_registry_covers_both_architectures():
         assert set(record["arches"]) == {"sm_100a", "sm_103a"}, stage
         assert record["kernel_symbol"] == f"kernel_{record['name']}", stage
         for relative in record["sources"]:
-            assert (REPO / "miles_plugins/models/dsa_train/csrc" / relative).is_file(), (stage, relative)
+            assert (REPO / "miles/kernels/attention/dsa/cake/csrc" / relative).is_file(), (stage, relative)

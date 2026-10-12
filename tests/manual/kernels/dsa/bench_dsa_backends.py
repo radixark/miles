@@ -1,12 +1,12 @@
-"""Per-kernel device time of the DSA backends at production shapes: ``loom`` (generated) vs ``tilelang``.
+"""Per-kernel device time of the DSA backends at production shapes: ``cake`` (generated) vs ``tilelang``.
 
 Both kernel families run in this one process (the generated kernels are torch CUDA extensions), so the
 same inputs and the same timing method apply to both.  Timing = CUDA kernel device time from
 ``torch.profiler`` (CUPTI activity records) summed per operator call; an explicit 256 MiB write flushes L2
 before every timed call and is excluded from the sum.  Reported as the median over ``--iters`` calls.
 
-    python tests/manual/models/dsa_train/bench_dsa_backends.py --json results.json
-    python tests/manual/models/dsa_train/bench_dsa_backends.py --only glm52_tp4_attention,dsv4_tp1_attention
+    python tests/manual/kernels/dsa/bench_dsa_backends.py --json results.json
+    python tests/manual/kernels/dsa/bench_dsa_backends.py --only glm52_tp4_attention,dsv4_tp1_attention
 
 Shapes (see ``--list``): the GLM-5.2 5-layer e2e (TP4: 16 local heads, index heads from the checkpoint,
 topk 2048, d_qk 576) and the DeepSeek-V4-Flash 4-layer e2e (TP1: 64 heads, d 512, window 128 + 512
@@ -146,19 +146,19 @@ class DeviceTimer:
 
 
 def bench_attention(shape, timer, backends):
-    from miles_plugins.models import dsa_train
+    from miles.kernels.attention.dsa import cake
 
     inputs = make_attention_inputs(shape)
     q, kv, idx, do, sink, sm_scale = (inputs[k] for k in ("q", "kv", "indices", "do", "sink", "sm_scale"))
     row = asdict(shape)
 
-    def loom_fwd():
-        return dsa_train.sparse_attention_forward(q, kv, idx, sm_scale=sm_scale, attn_sink=sink, layout=shape.layout)
+    def cake_fwd():
+        return cake.sparse_attention_forward(q, kv, idx, sm_scale=sm_scale, attn_sink=sink, layout=shape.layout)
 
-    o, lse = loom_fwd()
-    row["loom_fwd_ms"] = timer(loom_fwd)
-    row["loom_bwd_ms"] = timer(
-        lambda: dsa_train.sparse_attention_backward(
+    o, lse = cake_fwd()
+    row["cake_fwd_ms"] = timer(cake_fwd)
+    row["cake_bwd_ms"] = timer(
+        lambda: cake.sparse_attention_backward(
             q, kv, o, do, idx, lse, sm_scale=sm_scale, attn_sink=sink, layout=shape.layout
         )
     )
@@ -186,17 +186,15 @@ def bench_attention(shape, timer, backends):
 
 
 def bench_indexer(shape, timer, backends):
-    from miles_plugins.models import dsa_train
+    from miles.kernels.attention.dsa import cake
 
     inputs = make_indexer_inputs(shape)
     q, k, w, ks, ke = (inputs[n] for n in ("q", "k", "w", "ks", "ke"))
     row = asdict(shape)
-    row["loom_logits_ms"] = timer(lambda: dsa_train.indexer_logits(q, k, w, ks, ke, layout=shape.layout))
+    row["cake_logits_ms"] = timer(lambda: cake.indexer_logits(q, k, w, ks, ke, layout=shape.layout))
     if shape.layout == "thd":
         topk_indices, grad_scores = inputs["topk_indices"], inputs["grad_scores"]
-        row["loom_bwd_ms"] = timer(
-            lambda: dsa_train.indexer_backward(q, k, w, topk_indices, grad_scores, layout="thd")
-        )
+        row["cake_bwd_ms"] = timer(lambda: cake.indexer_backward(q, k, w, topk_indices, grad_scores, layout="thd"))
     if "tilelang" in backends:
         if shape.layout == "thd":
             from miles_plugins.models.glm5.ops.tilelang_indexer_bwd import indexer_bwd_interface
@@ -219,7 +217,7 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iters", type=int, default=10)
-    parser.add_argument("--backends", default="loom,tilelang")
+    parser.add_argument("--backends", default="cake,tilelang")
     parser.add_argument("--only", default="", help="comma-separated label prefixes")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--json", default="")
@@ -229,7 +227,7 @@ def main(argv=None) -> int:
         try:
             import tilelang  # noqa: F401
         except ImportError:
-            print("tilelang not importable: timing the loom backend only", file=sys.stderr)
+            print("tilelang not importable: timing the cake backend only", file=sys.stderr)
             backends.discard("tilelang")
     only = [p for p in args.only.split(",") if p]
     selected = []

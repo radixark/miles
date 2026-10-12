@@ -1,15 +1,15 @@
 """E2E: DeepSeek-V4-Flash (4-layer prune) GRPO with the deterministic DSA kernels.
 
-Runs ``--dsv4-impl miles --dsa-attention-backend loom`` (the generated deterministic kernels in
-``miles_plugins/models/dsa_train``: batched ``sbhd`` indexer in one launch, ``bshd`` sparse attention with
+Runs ``--dsv4-impl miles --dsa-attention-backend cake`` (the generated deterministic kernels in
+``miles/kernels/attention/dsa/cake``: batched ``sbhd`` indexer in one launch, ``bshd`` sparse attention with
 the FP32 attention sink) on the DeepSeek-V4 training script with 4 GPUs (TP1, EP1).
 ``MILES_DSA_BACKEND=tilelang`` runs the same recipe on the per-sample TileLang kernels for an A/B reference.
-Needs Blackwell (SM100a / SM103a) GPUs for the loom backend.
+Needs Blackwell (SM100a / SM103a) GPUs for the cake backend.
 
 ``MILES_E2E_MODE`` selects ``live`` (default), ``record`` (live + dump every rollout batch to ``MILES_E2E_DEBUG_DIR``)
 or ``replay`` (``--debug-train-only`` on the recorded batches, saving per-step grad norms and per-rank train data
 under ``MILES_E2E_RUN_TAG``; ``MILES_E2E_REPLAY_LOSS_ARGS`` defaults to ``--entropy-coef 0.001`` so the
-backward carries non-zero gradients although the truncated smoke responses give zero advantages).  Two loom replays must be bit-identical.
+backward carries non-zero gradients although the truncated smoke responses give zero advantages).  Two cake replays must be bit-identical.
 
 Paths default to the CI layout (``/root/models``, ``/root/datasets``, ``/root/Megatron-LM``); set
 ``MILES_E2E_ROOT`` to relocate them (out-of-CI runs on scratch storage).
@@ -33,7 +33,7 @@ register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
-BACKEND = os.environ.get("MILES_DSA_BACKEND", "loom")
+BACKEND = os.environ.get("MILES_DSA_BACKEND", "cake")
 ROOT = os.environ.get("MILES_E2E_ROOT")
 MODE = os.environ.get("MILES_E2E_MODE", "live")
 NUM_ROLLOUT = int(os.environ.get("MILES_E2E_NUM_ROLLOUT", "2"))

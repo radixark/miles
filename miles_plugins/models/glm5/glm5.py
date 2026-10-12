@@ -27,7 +27,7 @@ from megatron.core.transformer.transformer_config import MLATransformerConfig
 from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, lighting_indexer, sparse_attention
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.replay_base import indexer_replay_manager
-from miles_plugins.models.dsa_backend import loom_dsa_ops, resolve_dsa_attention_backend
+from miles.kernels.attention.dsa.backend import cake_dsa_ops, resolve_dsa_attention_backend
 from miles_plugins.models.normalization import rms_norm
 
 # Names of the indexer submodules. On a DSA model with *cross-layer index
@@ -166,8 +166,8 @@ class DSAMultiLatentAttention(Attention):
         if topk_backend not in ("torch", "flashinfer"):
             raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
         self.topk_backend = topk_backend
-        # ``tilelang``: the miles.kernels DSA ops; ``loom``: the generated deterministic
-        # kernels in miles_plugins/models/dsa_train (same thd contract).
+        # ``tilelang``: the miles.kernels DSA ops; ``cake``: the generated deterministic
+        # kernels in miles/kernels/attention/dsa/cake (same thd contract).
         self.attention_backend = resolve_dsa_attention_backend(attention_backend)
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
@@ -253,8 +253,8 @@ class DSAMultiLatentAttention(Attention):
                 starts_block = starts_block.to(torch.int32)
                 ends_block = ends_block.to(torch.int32)
                 topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
-                if self.attention_backend == "loom":
-                    indexer_topk_scores_block, topk_indices_block = loom_dsa_ops().lightning_indexer(
+                if self.attention_backend == "cake":
+                    indexer_topk_scores_block, topk_indices_block = cake_dsa_ops().lightning_indexer(
                         index_q_block,
                         index_k,
                         w_block.squeeze(-1),
@@ -320,8 +320,8 @@ class DSAMultiLatentAttention(Attention):
             ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
             _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
-        if self.attention_backend == "loom":
-            core_attn_out = loom_dsa_ops().sparse_attention(
+        if self.attention_backend == "cake":
+            core_attn_out = cake_dsa_ops().sparse_attention(
                 q, kv, topk_indices, sm_scale=self.softmax_scale, layout="thd"
             )
         else:
