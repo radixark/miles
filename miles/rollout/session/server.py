@@ -90,7 +90,10 @@ def run_session_server(config: SessionServerConfig):
         config.port,
         config.backend_url,
     )
-    uvicorn.run(server.app, host=config.host, port=config.port, log_level="info", access_log=False)
+    # Keep server-side idle closure well after the HTTP client's default 5s expiry.
+    uvicorn.run(
+        server.app, host=config.host, port=config.port, log_level="info", access_log=False, timeout_keep_alive=60
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

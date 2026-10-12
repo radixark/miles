@@ -110,7 +110,7 @@ def test_primary_wandb_init_resumes_a_preassigned_run(monkeypatch):
     assert init_calls[0]["resume"] == "allow"
 
 
-def test_secondary_wandb_init_uses_extended_init_timeout(monkeypatch):
+def test_secondary_wandb_init_attaches_without_resuming(monkeypatch):
     init_calls = []
 
     monkeypatch.setattr(wandb_utils.wandb, "init", lambda **kwargs: init_calls.append(kwargs))
@@ -119,6 +119,8 @@ def test_secondary_wandb_init_uses_extended_init_timeout(monkeypatch):
     args = _args(wandb_run_id="run-id")
     wandb_utils.init_wandb_secondary(args)
 
+    assert init_calls[0]["id"] == "run-id"
+    assert init_calls[0].get("resume") is None
     settings = init_calls[0]["settings"]
     assert settings.mode == "shared"
     assert settings.x_primary is False

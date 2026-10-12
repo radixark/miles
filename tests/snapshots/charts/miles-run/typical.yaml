@@ -1322,6 +1322,8 @@ spec:
                 value: "1"
               - name: "SGLANG_RETURN_ORIGINAL_LOGPROB"
                 value: "0"
+              - name: "SGLANG_TIMEOUT_KEEP_ALIVE"
+                value: "60"
             ports:
               - name: "primary"
                 containerPort: 8000
@@ -1527,6 +1529,8 @@ spec:
                 value: "1"
               - name: "SGLANG_RETURN_ORIGINAL_LOGPROB"
                 value: "0"
+              - name: "SGLANG_TIMEOUT_KEEP_ALIVE"
+                value: "60"
             ports:
               - name: "primary"
                 containerPort: 8000
