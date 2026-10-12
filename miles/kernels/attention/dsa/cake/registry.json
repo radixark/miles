@@ -1472,8 +1472,8 @@
   ]
  },
  "dsa_topk_fp32_c4096_k512": {
-  "name": "cake_dsa_train_b32a0382146ad9e9b743",
-  "kernel_symbol": "kernel_cake_dsa_train_b32a0382146ad9e9b743",
+  "name": "cake_dsa_train_9d58a7cbbee0d8af9b9f",
+  "kernel_symbol": "kernel_cake_dsa_train_9d58a7cbbee0d8af9b9f",
   "arg_plan": [
    [
     "buffer",
@@ -1509,15 +1509,15 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_b32a0382146ad9e9b743_kernel.cu",
-   "cake_dsa_train_b32a0382146ad9e9b743_binding.cu"
+   "cake_dsa_train_9d58a7cbbee0d8af9b9f_kernel.cu",
+   "cake_dsa_train_9d58a7cbbee0d8af9b9f_binding.cu"
   ],
   "block": [
    256,
    1,
    1
   ],
-  "dynamic_smem_bytes": 22656,
+  "dynamic_smem_bytes": 22912,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
@@ -1527,8 +1527,8 @@
   ]
  },
  "dsa_topk_fp32_c8192_k512": {
-  "name": "cake_dsa_train_ef89ae1df38870d631f6",
-  "kernel_symbol": "kernel_cake_dsa_train_ef89ae1df38870d631f6",
+  "name": "cake_dsa_train_be3e28d7b8a8e9016fb2",
+  "kernel_symbol": "kernel_cake_dsa_train_be3e28d7b8a8e9016fb2",
   "arg_plan": [
    [
     "buffer",
@@ -1564,15 +1564,15 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_ef89ae1df38870d631f6_kernel.cu",
-   "cake_dsa_train_ef89ae1df38870d631f6_binding.cu"
+   "cake_dsa_train_be3e28d7b8a8e9016fb2_kernel.cu",
+   "cake_dsa_train_be3e28d7b8a8e9016fb2_binding.cu"
   ],
   "block": [
    256,
    1,
    1
   ],
-  "dynamic_smem_bytes": 40064,
+  "dynamic_smem_bytes": 40320,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
@@ -1582,8 +1582,8 @@
   ]
  },
  "dsa_topk_fp32_c16384_k512": {
-  "name": "cake_dsa_train_3a88e07387f31c3c58f5",
-  "kernel_symbol": "kernel_cake_dsa_train_3a88e07387f31c3c58f5",
+  "name": "cake_dsa_train_0a0ca4f0b13765095fc5",
+  "kernel_symbol": "kernel_cake_dsa_train_0a0ca4f0b13765095fc5",
   "arg_plan": [
    [
     "buffer",
@@ -1619,15 +1619,15 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_3a88e07387f31c3c58f5_kernel.cu",
-   "cake_dsa_train_3a88e07387f31c3c58f5_binding.cu"
+   "cake_dsa_train_0a0ca4f0b13765095fc5_kernel.cu",
+   "cake_dsa_train_0a0ca4f0b13765095fc5_binding.cu"
   ],
   "block": [
-   256,
+   512,
    1,
    1
   ],
-  "dynamic_smem_bytes": 74880,
+  "dynamic_smem_bytes": 75136,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
@@ -1637,8 +1637,8 @@
   ]
  },
  "dsa_topk_fp32_c32768_k512": {
-  "name": "cake_dsa_train_3a1f16c2de2cf7b3d926",
-  "kernel_symbol": "kernel_cake_dsa_train_3a1f16c2de2cf7b3d926",
+  "name": "cake_dsa_train_648ca7d1bcc9a92b6ac8",
+  "kernel_symbol": "kernel_cake_dsa_train_648ca7d1bcc9a92b6ac8",
   "arg_plan": [
    [
     "buffer",
@@ -1674,15 +1674,15 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_3a1f16c2de2cf7b3d926_kernel.cu",
-   "cake_dsa_train_3a1f16c2de2cf7b3d926_binding.cu"
+   "cake_dsa_train_648ca7d1bcc9a92b6ac8_kernel.cu",
+   "cake_dsa_train_648ca7d1bcc9a92b6ac8_binding.cu"
   ],
   "block": [
-   256,
+   1024,
    1,
    1
   ],
-  "dynamic_smem_bytes": 144512,
+  "dynamic_smem_bytes": 144768,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
