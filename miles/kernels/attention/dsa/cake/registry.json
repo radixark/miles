@@ -71,8 +71,8 @@
   ]
  },
  "dsa_attention_bwd_h16_d512t64": {
-  "name": "cake_dsa_train_30f33ed9940a474b73a6",
-  "kernel_symbol": "kernel_cake_dsa_train_30f33ed9940a474b73a6",
+  "name": "cake_dsa_train_6ac11ca1d4d05894d5bb",
+  "kernel_symbol": "kernel_cake_dsa_train_6ac11ca1d4d05894d5bb",
   "arg_plan": [
    [
     "buffer",
@@ -140,15 +140,15 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_30f33ed9940a474b73a6_kernel.cu",
-   "cake_dsa_train_30f33ed9940a474b73a6_binding.cu"
+   "cake_dsa_train_6ac11ca1d4d05894d5bb_kernel.cu",
+   "cake_dsa_train_6ac11ca1d4d05894d5bb_binding.cu"
   ],
   "block": [
    256,
    1,
    1
   ],
-  "dynamic_smem_bytes": 191104,
+  "dynamic_smem_bytes": 191616,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
@@ -229,8 +229,8 @@
   ]
  },
  "dsa_attention_bwd_h16_d512t0": {
-  "name": "cake_dsa_train_e2a6d5ce64f700f8073b",
-  "kernel_symbol": "kernel_cake_dsa_train_e2a6d5ce64f700f8073b",
+  "name": "cake_dsa_train_f355cfa42f0f702a1846",
+  "kernel_symbol": "kernel_cake_dsa_train_f355cfa42f0f702a1846",
   "arg_plan": [
    [
     "buffer",
@@ -298,15 +298,15 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_e2a6d5ce64f700f8073b_kernel.cu",
-   "cake_dsa_train_e2a6d5ce64f700f8073b_binding.cu"
+   "cake_dsa_train_f355cfa42f0f702a1846_kernel.cu",
+   "cake_dsa_train_f355cfa42f0f702a1846_binding.cu"
   ],
   "block": [
    256,
    1,
    1
   ],
-  "dynamic_smem_bytes": 172672,
+  "dynamic_smem_bytes": 173184,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
@@ -387,8 +387,8 @@
   ]
  },
  "dsa_attention_bwd_h32_d512t64": {
-  "name": "cake_dsa_train_b128a2509c8b9b5b8a26",
-  "kernel_symbol": "kernel_cake_dsa_train_b128a2509c8b9b5b8a26",
+  "name": "cake_dsa_train_b0d3fecc3b148ce4503b",
+  "kernel_symbol": "kernel_cake_dsa_train_b0d3fecc3b148ce4503b",
   "arg_plan": [
    [
     "buffer",
@@ -456,15 +456,15 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_b128a2509c8b9b5b8a26_kernel.cu",
-   "cake_dsa_train_b128a2509c8b9b5b8a26_binding.cu"
+   "cake_dsa_train_b0d3fecc3b148ce4503b_kernel.cu",
+   "cake_dsa_train_b0d3fecc3b148ce4503b_binding.cu"
   ],
   "block": [
    256,
    1,
    1
   ],
-  "dynamic_smem_bytes": 156160,
+  "dynamic_smem_bytes": 157184,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
@@ -545,8 +545,8 @@
   ]
  },
  "dsa_attention_bwd_h32_d512t0": {
-  "name": "cake_dsa_train_ad424e252c694e7e99a4",
-  "kernel_symbol": "kernel_cake_dsa_train_ad424e252c694e7e99a4",
+  "name": "cake_dsa_train_508752e1761dc1b1916d",
+  "kernel_symbol": "kernel_cake_dsa_train_508752e1761dc1b1916d",
   "arg_plan": [
    [
     "buffer",
@@ -614,15 +614,15 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_ad424e252c694e7e99a4_kernel.cu",
-   "cake_dsa_train_ad424e252c694e7e99a4_binding.cu"
+   "cake_dsa_train_508752e1761dc1b1916d_kernel.cu",
+   "cake_dsa_train_508752e1761dc1b1916d_binding.cu"
   ],
   "block": [
    256,
    1,
    1
   ],
-  "dynamic_smem_bytes": 143872,
+  "dynamic_smem_bytes": 144896,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
@@ -900,8 +900,8 @@
   ]
  },
  "dsa_indexer_bwd_h16": {
-  "name": "cake_dsa_train_5caea9c0d91099007e2f",
-  "kernel_symbol": "kernel_cake_dsa_train_5caea9c0d91099007e2f",
+  "name": "cake_dsa_train_a03ec4bc5be256e3b310",
+  "kernel_symbol": "kernel_cake_dsa_train_a03ec4bc5be256e3b310",
   "arg_plan": [
    [
     "buffer",
@@ -957,8 +957,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_5caea9c0d91099007e2f_kernel.cu",
-   "cake_dsa_train_5caea9c0d91099007e2f_binding.cu"
+   "cake_dsa_train_a03ec4bc5be256e3b310_kernel.cu",
+   "cake_dsa_train_a03ec4bc5be256e3b310_binding.cu"
   ],
   "block": [
    128,
@@ -975,8 +975,8 @@
   ]
  },
  "dsa_indexer_bwd_h32": {
-  "name": "cake_dsa_train_eaa09afe9fca1215ca5f",
-  "kernel_symbol": "kernel_cake_dsa_train_eaa09afe9fca1215ca5f",
+  "name": "cake_dsa_train_8b9da8b0a1ede8fb7d21",
+  "kernel_symbol": "kernel_cake_dsa_train_8b9da8b0a1ede8fb7d21",
   "arg_plan": [
    [
     "buffer",
@@ -1032,8 +1032,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_eaa09afe9fca1215ca5f_kernel.cu",
-   "cake_dsa_train_eaa09afe9fca1215ca5f_binding.cu"
+   "cake_dsa_train_8b9da8b0a1ede8fb7d21_kernel.cu",
+   "cake_dsa_train_8b9da8b0a1ede8fb7d21_binding.cu"
   ],
   "block": [
    128,
@@ -1050,8 +1050,8 @@
   ]
  },
  "dsa_indexer_bwd_h64": {
-  "name": "cake_dsa_train_9947659b8a972e6c655a",
-  "kernel_symbol": "kernel_cake_dsa_train_9947659b8a972e6c655a",
+  "name": "cake_dsa_train_14e92451a856d3999844",
+  "kernel_symbol": "kernel_cake_dsa_train_14e92451a856d3999844",
   "arg_plan": [
    [
     "buffer",
@@ -1107,8 +1107,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_9947659b8a972e6c655a_kernel.cu",
-   "cake_dsa_train_9947659b8a972e6c655a_binding.cu"
+   "cake_dsa_train_14e92451a856d3999844_kernel.cu",
+   "cake_dsa_train_14e92451a856d3999844_binding.cu"
   ],
   "block": [
    128,
@@ -1180,8 +1180,8 @@
   ]
  },
  "dsa_segmented_reduce": {
-  "name": "cake_dsa_train_7f1382296ce942c94186",
-  "kernel_symbol": "kernel_cake_dsa_train_7f1382296ce942c94186",
+  "name": "cake_dsa_train_9959b25a12a1350f6418",
+  "kernel_symbol": "kernel_cake_dsa_train_9959b25a12a1350f6418",
   "arg_plan": [
    [
     "buffer",
@@ -1229,8 +1229,8 @@
    ]
   ],
   "sources": [
-   "cake_dsa_train_7f1382296ce942c94186_kernel.cu",
-   "cake_dsa_train_7f1382296ce942c94186_binding.cu"
+   "cake_dsa_train_9959b25a12a1350f6418_kernel.cu",
+   "cake_dsa_train_9959b25a12a1350f6418_binding.cu"
   ],
   "block": [
    128,
@@ -1238,6 +1238,834 @@
    1
   ],
   "dynamic_smem_bytes": 0,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_delta": {
+  "name": "cake_dsa_train_891901a9531dd15abae2",
+  "kernel_symbol": "kernel_cake_dsa_train_891901a9531dd15abae2",
+  "arg_plan": [
+   [
+    "buffer",
+    "o"
+   ],
+   [
+    "buffer",
+    "do"
+   ],
+   [
+    "buffer",
+    "delta"
+   ],
+   [
+    "parameter",
+    "heads"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_891901a9531dd15abae2_kernel.cu",
+   "cake_dsa_train_891901a9531dd15abae2_binding.cu"
+  ],
+  "block": [
+   256,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 0,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_segmented_reduce_split4": {
+  "name": "cake_dsa_train_d1104bd6373a6115f000",
+  "kernel_symbol": "kernel_cake_dsa_train_d1104bd6373a6115f000",
+  "arg_plan": [
+   [
+    "buffer",
+    "partial"
+   ],
+   [
+    "buffer",
+    "order"
+   ],
+   [
+    "buffer",
+    "seg_start"
+   ],
+   [
+    "buffer",
+    "seg_count"
+   ],
+   [
+    "buffer",
+    "out"
+   ],
+   [
+    "parameter",
+    "dim"
+   ],
+   [
+    "parameter",
+    "num_out"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_d1104bd6373a6115f000_kernel.cu",
+   "cake_dsa_train_d1104bd6373a6115f000_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 9216,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_fwd_tc_h16_d512t64": {
+  "name": "cake_dsa_train_664456dde4afa521ac98",
+  "kernel_symbol": "kernel_cake_dsa_train_664456dde4afa521ac98",
+  "arg_plan": [
+   [
+    "tma_buffer",
+    "q_latent"
+   ],
+   [
+    "tma_buffer",
+    "q_rope"
+   ],
+   [
+    "tma_buffer",
+    "kv_latent"
+   ],
+   [
+    "buffer",
+    "k_rope"
+   ],
+   [
+    "tma_buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "o_lo"
+   ],
+   [
+    "buffer",
+    "lse"
+   ],
+   [
+    "buffer",
+    "indices"
+   ],
+   [
+    "buffer",
+    "topk_length"
+   ],
+   [
+    "buffer",
+    "sink"
+   ],
+   [
+    "parameter",
+    "num_queries"
+   ],
+   [
+    "parameter",
+    "num_kv"
+   ],
+   [
+    "parameter",
+    "topk"
+   ],
+   [
+    "parameter",
+    "idx_stride"
+   ],
+   [
+    "parameter",
+    "indices_offset"
+   ],
+   [
+    "parameter",
+    "k_rope_stride"
+   ],
+   [
+    "parameter",
+    "k_rope_offset"
+   ],
+   [
+    "parameter",
+    "has_topk_length"
+   ],
+   [
+    "parameter",
+    "derive_length"
+   ],
+   [
+    "parameter",
+    "scale_log2"
+   ],
+   [
+    "parameter",
+    "heads"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_664456dde4afa521ac98_kernel.cu",
+   "cake_dsa_train_664456dde4afa521ac98_binding.cu"
+  ],
+  "block": [
+   384,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 231680,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_fwd_tc_h16_d512t0": {
+  "name": "cake_dsa_train_00fb702f072f5c53d710",
+  "kernel_symbol": "kernel_cake_dsa_train_00fb702f072f5c53d710",
+  "arg_plan": [
+   [
+    "tma_buffer",
+    "q_latent"
+   ],
+   [
+    "tma_buffer",
+    "q_rope"
+   ],
+   [
+    "tma_buffer",
+    "kv_latent"
+   ],
+   [
+    "buffer",
+    "k_rope"
+   ],
+   [
+    "tma_buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "o_lo"
+   ],
+   [
+    "buffer",
+    "lse"
+   ],
+   [
+    "buffer",
+    "indices"
+   ],
+   [
+    "buffer",
+    "topk_length"
+   ],
+   [
+    "buffer",
+    "sink"
+   ],
+   [
+    "parameter",
+    "num_queries"
+   ],
+   [
+    "parameter",
+    "num_kv"
+   ],
+   [
+    "parameter",
+    "topk"
+   ],
+   [
+    "parameter",
+    "idx_stride"
+   ],
+   [
+    "parameter",
+    "indices_offset"
+   ],
+   [
+    "parameter",
+    "k_rope_stride"
+   ],
+   [
+    "parameter",
+    "k_rope_offset"
+   ],
+   [
+    "parameter",
+    "has_topk_length"
+   ],
+   [
+    "parameter",
+    "derive_length"
+   ],
+   [
+    "parameter",
+    "scale_log2"
+   ],
+   [
+    "parameter",
+    "heads"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_00fb702f072f5c53d710_kernel.cu",
+   "cake_dsa_train_00fb702f072f5c53d710_binding.cu"
+  ],
+  "block": [
+   384,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 231680,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_fwd_tc_h32_d512t64": {
+  "name": "cake_dsa_train_e12772a5f085d7195076",
+  "kernel_symbol": "kernel_cake_dsa_train_e12772a5f085d7195076",
+  "arg_plan": [
+   [
+    "tma_buffer",
+    "q_latent"
+   ],
+   [
+    "tma_buffer",
+    "q_rope"
+   ],
+   [
+    "tma_buffer",
+    "kv_latent"
+   ],
+   [
+    "buffer",
+    "k_rope"
+   ],
+   [
+    "tma_buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "o_lo"
+   ],
+   [
+    "buffer",
+    "lse"
+   ],
+   [
+    "buffer",
+    "indices"
+   ],
+   [
+    "buffer",
+    "topk_length"
+   ],
+   [
+    "buffer",
+    "sink"
+   ],
+   [
+    "parameter",
+    "num_queries"
+   ],
+   [
+    "parameter",
+    "num_kv"
+   ],
+   [
+    "parameter",
+    "topk"
+   ],
+   [
+    "parameter",
+    "idx_stride"
+   ],
+   [
+    "parameter",
+    "indices_offset"
+   ],
+   [
+    "parameter",
+    "k_rope_stride"
+   ],
+   [
+    "parameter",
+    "k_rope_offset"
+   ],
+   [
+    "parameter",
+    "has_topk_length"
+   ],
+   [
+    "parameter",
+    "derive_length"
+   ],
+   [
+    "parameter",
+    "scale_log2"
+   ],
+   [
+    "parameter",
+    "heads"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_e12772a5f085d7195076_kernel.cu",
+   "cake_dsa_train_e12772a5f085d7195076_binding.cu"
+  ],
+  "block": [
+   384,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 231680,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_fwd_tc_h32_d512t0": {
+  "name": "cake_dsa_train_670475469542d8141df4",
+  "kernel_symbol": "kernel_cake_dsa_train_670475469542d8141df4",
+  "arg_plan": [
+   [
+    "tma_buffer",
+    "q_latent"
+   ],
+   [
+    "tma_buffer",
+    "q_rope"
+   ],
+   [
+    "tma_buffer",
+    "kv_latent"
+   ],
+   [
+    "buffer",
+    "k_rope"
+   ],
+   [
+    "tma_buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "o_lo"
+   ],
+   [
+    "buffer",
+    "lse"
+   ],
+   [
+    "buffer",
+    "indices"
+   ],
+   [
+    "buffer",
+    "topk_length"
+   ],
+   [
+    "buffer",
+    "sink"
+   ],
+   [
+    "parameter",
+    "num_queries"
+   ],
+   [
+    "parameter",
+    "num_kv"
+   ],
+   [
+    "parameter",
+    "topk"
+   ],
+   [
+    "parameter",
+    "idx_stride"
+   ],
+   [
+    "parameter",
+    "indices_offset"
+   ],
+   [
+    "parameter",
+    "k_rope_stride"
+   ],
+   [
+    "parameter",
+    "k_rope_offset"
+   ],
+   [
+    "parameter",
+    "has_topk_length"
+   ],
+   [
+    "parameter",
+    "derive_length"
+   ],
+   [
+    "parameter",
+    "scale_log2"
+   ],
+   [
+    "parameter",
+    "heads"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_670475469542d8141df4_kernel.cu",
+   "cake_dsa_train_670475469542d8141df4_binding.cu"
+  ],
+  "block": [
+   384,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 231680,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_fwd_tc_h64_d512t64": {
+  "name": "cake_dsa_train_4615ad9861a213d4a0ef",
+  "kernel_symbol": "kernel_cake_dsa_train_4615ad9861a213d4a0ef",
+  "arg_plan": [
+   [
+    "tma_buffer",
+    "q_latent"
+   ],
+   [
+    "tma_buffer",
+    "q_rope"
+   ],
+   [
+    "tma_buffer",
+    "kv_latent"
+   ],
+   [
+    "buffer",
+    "k_rope"
+   ],
+   [
+    "tma_buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "o_lo"
+   ],
+   [
+    "buffer",
+    "lse"
+   ],
+   [
+    "buffer",
+    "indices"
+   ],
+   [
+    "buffer",
+    "topk_length"
+   ],
+   [
+    "buffer",
+    "sink"
+   ],
+   [
+    "parameter",
+    "num_queries"
+   ],
+   [
+    "parameter",
+    "num_kv"
+   ],
+   [
+    "parameter",
+    "topk"
+   ],
+   [
+    "parameter",
+    "idx_stride"
+   ],
+   [
+    "parameter",
+    "indices_offset"
+   ],
+   [
+    "parameter",
+    "k_rope_stride"
+   ],
+   [
+    "parameter",
+    "k_rope_offset"
+   ],
+   [
+    "parameter",
+    "has_topk_length"
+   ],
+   [
+    "parameter",
+    "derive_length"
+   ],
+   [
+    "parameter",
+    "scale_log2"
+   ],
+   [
+    "parameter",
+    "heads"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_4615ad9861a213d4a0ef_kernel.cu",
+   "cake_dsa_train_4615ad9861a213d4a0ef_binding.cu"
+  ],
+  "block": [
+   384,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 231680,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_attention_fwd_tc_h64_d512t0": {
+  "name": "cake_dsa_train_1654b25c2b5cb8c61a2b",
+  "kernel_symbol": "kernel_cake_dsa_train_1654b25c2b5cb8c61a2b",
+  "arg_plan": [
+   [
+    "tma_buffer",
+    "q_latent"
+   ],
+   [
+    "tma_buffer",
+    "q_rope"
+   ],
+   [
+    "tma_buffer",
+    "kv_latent"
+   ],
+   [
+    "buffer",
+    "k_rope"
+   ],
+   [
+    "tma_buffer",
+    "out"
+   ],
+   [
+    "buffer",
+    "o_lo"
+   ],
+   [
+    "buffer",
+    "lse"
+   ],
+   [
+    "buffer",
+    "indices"
+   ],
+   [
+    "buffer",
+    "topk_length"
+   ],
+   [
+    "buffer",
+    "sink"
+   ],
+   [
+    "parameter",
+    "num_queries"
+   ],
+   [
+    "parameter",
+    "num_kv"
+   ],
+   [
+    "parameter",
+    "topk"
+   ],
+   [
+    "parameter",
+    "idx_stride"
+   ],
+   [
+    "parameter",
+    "indices_offset"
+   ],
+   [
+    "parameter",
+    "k_rope_stride"
+   ],
+   [
+    "parameter",
+    "k_rope_offset"
+   ],
+   [
+    "parameter",
+    "has_topk_length"
+   ],
+   [
+    "parameter",
+    "derive_length"
+   ],
+   [
+    "parameter",
+    "scale_log2"
+   ],
+   [
+    "parameter",
+    "heads"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_1654b25c2b5cb8c61a2b_kernel.cu",
+   "cake_dsa_train_1654b25c2b5cb8c61a2b_binding.cu"
+  ],
+  "block": [
+   384,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 231680,
   "tma_workspace_bytes": 0,
   "ffi_entry": "run",
   "compile_flags": [],
