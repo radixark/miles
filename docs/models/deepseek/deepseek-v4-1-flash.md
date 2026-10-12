@@ -116,15 +116,15 @@ Three flags are not optional in this configuration:
 
 | rows x keys | B200 | GB300 |
 |---|---|---|
-| 4096 x 4096 (compress ratio 1) | 1.38x | 1.41x |
-| 4096 x 2048 (compress ratio 2) | 1.43x | 1.47x |
-| 3072 x 1536 | 1.32x | 1.35x |
-| 3072 x 3072 | 1.40x | 1.39x |
-| 4096 x 8192 (random rows) | 1.07x | 1.07x |
-| 4096 x 16384 (random rows) | 0.95x | 0.96x |
-| 2048 x 32768 (random rows) | 0.50x | 0.49x |
+| 4096 x 4096 (compress ratio 1) | 1.39x | 1.41x |
+| 4096 x 2048 (compress ratio 2) | 1.40x | 1.43x |
+| 3072 x 1536 | 1.31x | 1.32x |
+| 3072 x 3072 | 1.38x | 1.39x |
+| 4096 x 8192 (random rows) | 1.14x | 1.13x |
+| 4096 x 16384 (random rows) | 1.04x | 1.05x |
+| 2048 x 32768 (random rows) | 0.96x | 0.98x |
 
-The whole V4.1 `indexer_select` (indexer logits + selection) runs 1.29x / 1.47x / 1.52x / 1.36x faster than the `deep_select` version on B200 and 1.28x / 1.42x / 1.47x / 1.32x on GB300 for the four production shapes above. The attention kernels behind `--dsa-attention-backend cake` are measured on the [DeepSeek-V4-Flash page](/models/deepseek/deepseek-v4-flash).
+The whole V4.1 `indexer_select` (indexer logits + selection) runs 1.30x / 1.46x / 1.51x / 1.36x faster than the `deep_select` version on B200 and 1.28x / 1.40x / 1.43x / 1.32x on GB300 for the four production shapes above. The 32768-key variant selects over a sampled-threshold candidate set instead of staging the row (whole-row fallback when the candidate set misses the bound), which is where the 2048 x 32768 rows gain most. The attention kernels behind `--dsa-attention-backend cake` are measured on the [DeepSeek-V4-Flash page](/models/deepseek/deepseek-v4-flash).
 
 **Fused indexer scoring + top-k (`cake_fused`).** `lightning_indexer(..., topk_backend="cake_fused")` (operator-level switch in `miles/kernels/attention/dsa/cake`; Blackwell SM100a / SM103a only; `thd` layout) replaces indexer logits + top-k + score gather by the generated fused stages `dsa_indexer_topk_scan_h32_d128` / `dsa_indexer_topk_finalize_k512`: the scan scores the keys of each packed sequence in FP32 (`sum_h w[t,h] * relu(q[t,h,:] . k[j,:])`, as `indexer_logits`) and keeps every query's exact top-k on chip, the finalize emits each row in ascending key order with the `-1` / `-inf` tail; the dense `[T, T_kv]` logits are never materialised. Contract: `index_q` with 32 indexer heads of dim 128, `topk <= 512`, per-query key bounds that are each sequence's causal prefix (`ratio=1`) or compressed-key prefix (`ratio >= 2`: key `j` is visible to query `u` iff `j < floor((u + 1) / ratio)`); any other input raises a `ValueError` (no fallback). Ties resolve to the smaller key id as in `cake`; the two kernels round their FP32 sums in different orders, so a near-tie may still select differently. No floating-point atomics: indices and scores are bit-identical across runs. The backward is the same deterministic `indexer_backward` as for every other backend, and `topk_indices=` (rollout replay) keeps the dense scoring path. It is not reachable from `--miles-dsa-topk-backend`: the DeepSeek-V4.1 model path keeps its own indexer kernels, and GLM-5 / DeepSeek-V3.2 select 2048 keys per query, beyond the exported finalize. The first call JIT-compiles the two stages (the scan takes a few minutes; `MILES_DSA_TRAIN_PREBUILD` applies); they form their own stage family, so neither the attention / indexer kernels nor the `dsa_topk_fp32_*` variants are built for it. `tests/fast-gpu/test_dsa_cake_backend.py -k cake_fused` checks it against the dense `cake` path.
 
