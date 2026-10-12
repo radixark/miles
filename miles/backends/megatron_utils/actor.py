@@ -455,7 +455,8 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("before offload model")
         should_log_cpu_memory = is_first_replica_megatron_main_rank() and self._last_rollout_id is not None
 
-        destroy_process_groups()
+        if self.args.offload_train_process_groups:
+            destroy_process_groups()
 
         if self.args.rematerialize_param_from_master_weight and self.role == "actor":
             # Params stay resident for update_weights, which pauses them afterwards.
@@ -466,7 +467,8 @@ class MegatronTrainRayActor(TrainRayActor):
             if not self._grad_buffer_paused:
                 torch_memory_saver.pause(tag="grad_buffer")
                 self._grad_buffer_paused = True
-            torch_memory_saver.pause(tag="default")
+            if self.args.offload_train_params:
+                torch_memory_saver.pause(tag="default")
         else:
             torch_memory_saver.pause(tag=None)
 
@@ -500,7 +502,8 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("before wake_up model")
 
         if lora_rollout_enabled(self.args):
-            torch_memory_saver.resume(tag="default")
+            if self.args.offload_train_params:
+                torch_memory_saver.resume(tag="default")
             torch_memory_saver.resume(tag="grad_buffer")
             self._grad_buffer_paused = False
         else:
@@ -947,7 +950,9 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self.weight_updater is not None, "weight update requires a weight updater"
         rollout_engines = info.rollout_engines
 
-        process_groups_are_temporary = self.args.offload_train and self._asleep
+        process_groups_are_temporary = (
+            self.args.offload_train and self._asleep and self.args.offload_train_process_groups
+        )
         if process_groups_are_temporary:
             reload_process_groups()
 

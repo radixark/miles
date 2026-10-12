@@ -224,9 +224,11 @@ def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, 
     assert events == ["finalize", "save", "save_hf", "finalize"]
 
 
+@pytest.mark.parametrize("keep_groups", [False, True], ids=["groups-offloaded", "groups-kept"])
 @pytest.mark.parametrize("asleep", [False, True])
-def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_module, monkeypatch, asleep):
-    """Weight update reloads and destroys temporary process groups only when the model is offloaded."""
+def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_module, monkeypatch, asleep, keep_groups):
+    """Weight update reloads and destroys temporary process groups only when the model is offloaded
+    and its groups went with it (--no-offload-train-process-groups keeps them alive)."""
     from miles.ray.rollout.inference_controller import UpdatableEngines
 
     worker = object.__new__(actor_module.MegatronTrainRayActor)
@@ -235,6 +237,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
         debug_skip_weight_update=True,
         debug_train_only=False,
         offload_train=True,
+        offload_train_process_groups=keep_groups is False,
         rematerialize_param_from_master_weight=False,
     )
     worker._asleep = asleep
@@ -256,17 +259,22 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
 
     worker.update_weights(info)
 
-    assert reload_groups.call_count == int(asleep)
-    assert destroy_groups.call_count == int(asleep)
+    temporary = asleep and not keep_groups
+    assert reload_groups.call_count == int(temporary)
+    assert destroy_groups.call_count == int(temporary)
 
 
-def _lifecycle_worker(actor_module, monkeypatch, asleep):
+def _lifecycle_worker(actor_module, monkeypatch, asleep, **args):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(
         offload_train=True,
+        offload_train_process_groups=True,
+        offload_train_params=True,
         rematerialize_param_from_master_weight=False,
         clear_quantized_weight_workspaces_on_offload=False,
     )
+    for key, value in args.items():
+        setattr(worker.args, key, value)
     worker._asleep = asleep
     worker._grad_buffer_paused = False
     saver = Mock()
@@ -279,6 +287,27 @@ def _lifecycle_worker(actor_module, monkeypatch, asleep):
     monkeypatch.setattr(actor_module, "is_first_replica_megatron_main_rank", lambda: False)
     monkeypatch.setattr(actor_module, "is_lora_enabled", lambda _args: False)
     return worker, saver, reload_groups
+
+
+def test_sleep_keeps_process_groups_when_asked(actor_module, monkeypatch):
+    worker, _, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False, offload_train_process_groups=False)
+
+    worker.sleep()
+
+    actor_module.destroy_process_groups.assert_not_called()
+
+
+def test_lora_sleep_with_resident_params_moves_only_the_grad_buffers(actor_module, monkeypatch):
+    """--no-offload-train-params: the frozen base and the adapter stay on GPU; nothing to back up or restore."""
+    worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False, offload_train_params=False)
+    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+
+    worker.sleep()
+    worker.wake_up()
+
+    assert saver.pause.call_args_list == [call(tag="grad_buffer")]
+    assert saver.resume.call_args_list == [call(tag="grad_buffer")]
+    assert worker._asleep is False
 
 
 def test_sleep_is_idempotent(actor_module, monkeypatch):
@@ -746,6 +775,7 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
         debug_train_only=False,
         keep_old_actor=False,
         offload_train=False,
+        offload_train_process_groups=True,
         rematerialize_param_from_master_weight=False,
     )
     worker._asleep = False
