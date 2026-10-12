@@ -73,8 +73,6 @@ def _get_shard_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
         "moe_runner_backend",
         "disable_shared_experts_fusion",
         "enforce_shared_experts_fusion",
-        "enable_two_batch_overlap",
-        "enable_single_batch_overlap",
         "enable_waterfill",
         "disable_flashinfer_cutlass_moe_fp4_allgather",
         # layouts postprocess leaves in the reload state
