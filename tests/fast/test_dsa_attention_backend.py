@@ -10,6 +10,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 TC_STAGES = {f"dsa_attention_fwd_tc_h{h}_d512t{t}" for h in (16, 32, 64) for t in (64, 0)}
+TC_BWD_STAGES = {f"dsa_attention_bwd_tc_h64_d512t{t}" for t in (64, 0)}
 
 
 def _load(name: str, relative: str):
@@ -63,6 +64,7 @@ def test_generated_package_registry_covers_both_architectures():
     assert set(jit.MODULES), "registry.json missing"
     expected = {
         *(f"dsa_attention_{kind}_h{h}_d512t{t}" for kind in ("fwd", "bwd") for h in (16, 32) for t in (64, 0)),
+        *(f"dsa_attention_bwd_h32x2_d512t{t}" for t in (64, 0)),
         *(f"dsa_indexer_logits_h{h}" for h in (8, 16, 32, 64)),
         *(f"dsa_indexer_bwd_h{h}" for h in (16, 32, 64)),
         "dsa_indexer_clean",
@@ -70,6 +72,7 @@ def test_generated_package_registry_covers_both_architectures():
         "dsa_segmented_reduce_split4",
         "dsa_attention_delta",
         *TC_STAGES,
+        *TC_BWD_STAGES,
     }
     assert set(jit.MODULES) == expected
     for stage, record in jit.MODULES.items():
@@ -90,6 +93,42 @@ def test_generated_package_registry_covers_both_architectures():
         assert record["block"] == [384, 1, 1] and record["tma_workspace_bytes"] == 0, stage
         assert record["compile_flags"] == [], stage
     assert len({jit.MODULES[stage]["name"] for stage in TC_STAGES}) == len(TC_STAGES)
+    # the tcgen05 backward rows stages: the generator's dsa_h64_bwd ABI (seven by-value tensor maps, no workspace), 640
+    # threads, built plain
+    tc_bwd_args = (
+        "q_latent q_rope dout dq_latent dq_rope kv_latent k_rope lse delta out o_lo indices topk_length dkv_f32 dkr_f32 "
+        "dkv_stride dkr_stride dkr_col0 dkv_dst_map dkv_has_map num_queries num_kv topk idx_stride indices_offset "
+        "has_topk_length token_base token_step scale_log2 sm_scale pass_lo pass_hi dq_mode dq_partial key_scratch pass_counts"
+    ).split()
+    for stage in sorted(TC_BWD_STAGES):
+        record = jit.MODULES[stage]
+        assert [name for kind, name in record["arg_plan"] if kind != "grid"] == tc_bwd_args, stage
+        assert "workspace" not in {kind for kind, _ in record["arg_plan"]}, stage
+        assert record["block"] == [640, 1, 1] and record["tma_workspace_bytes"] == 0, stage
+        assert record["compile_flags"] == [], stage
+    assert len({jit.MODULES[stage]["name"] for stage in TC_BWD_STAGES}) == len(TC_BWD_STAGES)
+
+
+def test_attention_backward_dispatch_selects_the_tcgen05_stage_for_64_heads(monkeypatch):
+    """Rows with exactly 64 heads run the tcgen05 backward rows kernel on both exported architectures (one partial per
+    slot); other head counts, other architectures and the kill switch keep the register-MMA / cluster-pair rows kernels.
+    """
+    from miles.kernels.attention.dsa.cake import _kernels
+
+    monkeypatch.delenv("MILES_DSA_ATTENTION_BWD_TC", raising=False)
+    for arch in ("sm_100a", "sm_103a"):
+        for tail in (64, 0):
+            assert _kernels.attention_tc_bwd_stage(64, tail, arch) == f"dsa_attention_bwd_tc_h64_d512t{tail}"
+            assert _kernels.attention_tc_bwd_stage(64, tail, arch) in TC_BWD_STAGES
+        for heads in (1, 16, 32, 40, 48, 65, 128):
+            assert _kernels.attention_tc_bwd_stage(heads, 0, arch) is None
+    assert _kernels.attention_tc_bwd_stage(64, 0, "sm_90a") is None
+    monkeypatch.setenv("MILES_DSA_ATTENTION_BWD_TC", "0")
+    assert _kernels.attention_tc_bwd_stage(64, 0, "sm_100a") is None
+    geo = _kernels.AttentionGeometry(64, 512, 0, 32, 2, 640, False, True)
+    assert geo.kv_partials == 1 and geo.d_qk == 512
+    assert _kernels.AttentionGeometry(64, 512, 0, 32, 2, 640, True).kv_partials == 1
+    assert _kernels.AttentionGeometry(64, 512, 0, 32, 2, 640, False).kv_partials == 2
 
 
 def test_attention_forward_dispatch_selects_the_tcgen05_stage_for_production_head_counts(monkeypatch):
