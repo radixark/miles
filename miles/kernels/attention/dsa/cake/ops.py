@@ -40,8 +40,11 @@ from .layouts import RowMeta
 ATTENTION_TOPK_MULTIPLE = 64
 LOG2E = 1.4426950408889634
 # Reducer of the lightning-indexer backward: 4 = ``dsa_segmented_reduce_split4`` (fixed 4-way tree per key,
-# deterministic FP32); 1 = the serial per-key reducer the attention backward keeps using.
+# deterministic FP32); 1 = the serial per-key reducer ``dsa_segmented_reduce``.
 INDEXER_REDUCE_SPLIT = 4
+# Reducer of the sparse-attention backward: the same fixed 4-way tree (bandwidth-bound; the serial reducer's
+# per-key latency chain is the tail of every chunk).  Fixed-order FP32.
+ATTENTION_REDUCE_SPLIT = 4
 
 TopkFn = Callable[[torch.Tensor, int], torch.Tensor]
 
@@ -131,17 +134,17 @@ def _flat_attention_backward(q, kv, o, do, indices, lse, sink, sm_scale, d_v, wo
     delta = weave.dsa_attention_delta_launch(o.contiguous(), do)
     dq = torch.empty_like(q)
     dkv32 = torch.zeros(num_kv, d_qk, dtype=torch.float32, device=q.device)
-    num_head_blocks = geo.head_blocks
-    chunks = reduction.plan_row_chunks(
-        num_rows, num_head_blocks * topk, d_qk, reduction.workspace_budget(workspace_bytes)
-    )
+    # FP32 partial rows per (query row, slot): one per head block, or one per row when the two head blocks of a row
+    # run as a cluster and sum their contributions on chip (``geo.pair``)
+    kv_partials = geo.kv_partials
+    chunks = reduction.plan_row_chunks(num_rows, kv_partials * topk, d_qk, reduction.workspace_budget(workspace_bytes))
     rows_per_chunk = chunks[0][1] - chunks[0][0]
-    partial = torch.empty(rows_per_chunk * num_head_blocks * topk, d_qk, dtype=torch.float32, device=q.device)
+    partial = torch.empty(rows_per_chunk * kv_partials * topk, d_qk, dtype=torch.float32, device=q.device)
     # one global stable sort of (key, chunk) composites: per-chunk reducer segments without per-chunk sorts
-    segments = reduction.ChunkedSegments(indices, num_head_blocks, rows_per_chunk, num_kv)
+    segments = reduction.ChunkedSegments(indices, kv_partials, rows_per_chunk, num_kv)
     for chunk, (start, end) in enumerate(chunks):
         rows = end - start
-        part = partial[: rows * num_head_blocks * topk]
+        part = partial[: rows * kv_partials * topk]
         weave.dsa_attention_backward_rows(
             q[start:end],
             kv,
@@ -155,7 +158,7 @@ def _flat_attention_backward(q, kv, o, do, indices, lse, sink, sm_scale, d_v, wo
             geo,
         )
         order_local, seg_start, seg_count = segments.segment(chunk)
-        weave.dsa_segmented_reduce_launch(part, order_local, seg_start, seg_count, dkv32)
+        weave.dsa_segmented_reduce_launch(part, order_local, seg_start, seg_count, dkv32, split=ATTENTION_REDUCE_SPLIT)
     dkv = dkv32.to(kv.dtype)
     dsink = None
     if sink is not None:

@@ -32,6 +32,13 @@ ATTENTION_D_ROPE = 64  # the MLA rope tail width (d_tail 64)
 # register-MMA forward everywhere.
 ATTENTION_TC_HEADS = (16, 32, 64)
 ATTENTION_TC_ARCHES = ("sm_100a", "sm_103a")
+# The tcgen05 backward rows stages ``dsa_attention_bwd_tc_h64_d512t{d_tail}`` (one CTA per query row holding all 64
+# heads, the generator's ``dsa_h64_bwd`` schedule on the flat contract; the key-side dKV is accumulated over the heads
+# in tensor memory and written as ONE FP32 partial per (row, slot) for the sorted segmented reducer) exist for rows with
+# exactly 64 heads on ``ATTENTION_TC_ARCHES``; every other head count runs the register-MMA rows kernels (h16 / h32 /
+# the h32x2 cluster pair).  ``MILES_DSA_ATTENTION_BWD_TC=0`` forces the register-MMA backward everywhere.  Numerics:
+# FP32 accumulation in the tensor-core order (deterministic run to run, within the register-MMA stages' tolerances).
+ATTENTION_TC_BWD_HEADS = (64,)
 
 _PREBUILT: set[str] = set()
 
@@ -47,6 +54,11 @@ def _kernel(name: str, device):
 
 def _attention_name(kind: str, block_h: int, d_v: int, d_tail: int) -> str:
     return f"dsa_attention_{kind}_h{block_h}_d{d_v}t{d_tail}"
+
+
+def _attention_pair_name(d_v: int, d_tail: int) -> str:
+    """The 2-CTA-cluster backward rows kernel of rows with two 32-head blocks (33-64 heads)."""
+    return f"dsa_attention_bwd_h32x2_d{d_v}t{d_tail}"
 
 
 # --------------------------------------------------------------------------- #
@@ -72,6 +84,8 @@ class AttentionGeometry:
     block_h: int
     head_blocks: int
     topk: int
+    pair: bool  # backward: the two head blocks of a row run as a 2-CTA cluster and write one shared partial
+    tc_bwd: bool = False  # backward: one tcgen05 CTA per row holds all 64 heads and writes one partial per slot
 
     @property
     def d_qk(self) -> int:
@@ -80,6 +94,17 @@ class AttentionGeometry:
     @property
     def key_block(self) -> int:
         return 32 if self.block_h == 32 else 64
+
+    @property
+    def kv_partials(self) -> int:
+        """FP32 key-side partial rows the backward writes per (query row, slot): one per head block, or one per row
+        (pair cluster or tcgen05 64-head CTA)."""
+        return 1 if (self.pair or self.tc_bwd) else self.head_blocks
+
+
+def _attention_pair_supported(device) -> bool:
+    """The 2-CTA-cluster backward rows kernel needs thread-block clusters (sm_90 and later)."""
+    return tuple(torch.cuda.get_device_capability(device)) >= (9, 0)
 
 
 def attention_geometry(q, kv, indices, d_v: int) -> AttentionGeometry:
@@ -94,7 +119,10 @@ def attention_geometry(q, kv, indices, d_v: int) -> AttentionGeometry:
     topk = int(indices.shape[1])
     if topk % 64 != 0:
         raise ValueError(f"topk must be a multiple of 64 (pad with -1), got {topk}")
-    return AttentionGeometry(heads, d_v, d_qk - d_v, block_h, attention_head_blocks(heads), topk)
+    head_blocks = attention_head_blocks(heads)
+    tc_bwd = attention_tc_bwd_stage(heads, d_qk - d_v, device_arch(q.device)) is not None
+    pair = head_blocks == 2 and not tc_bwd and _attention_pair_supported(q.device)
+    return AttentionGeometry(heads, d_v, d_qk - d_v, block_h, head_blocks, topk, pair, tc_bwd)
 
 
 def attention_tc_stage(heads: int, d_tail: int, arch: str) -> str | None:
@@ -104,6 +132,15 @@ def attention_tc_stage(heads: int, d_tail: int, arch: str) -> str | None:
     if os.environ.get("MILES_DSA_ATTENTION_TC", "1") == "0":
         return None
     return f"dsa_attention_fwd_tc_h{heads}_d512t{d_tail}"
+
+
+def attention_tc_bwd_stage(heads: int, d_tail: int, arch: str) -> str | None:
+    """The tcgen05 backward rows stage for ``heads`` on ``arch``, or ``None`` when the register-MMA rows kernels apply."""
+    if heads not in ATTENTION_TC_BWD_HEADS or arch not in ATTENTION_TC_ARCHES:
+        return None
+    if os.environ.get("MILES_DSA_ATTENTION_BWD_TC", "1") == "0":
+        return None
+    return f"dsa_attention_bwd_tc_h{heads}_d512t{d_tail}"
 
 
 def _storage_alias(tensor):
@@ -224,12 +261,23 @@ def dsa_attention_delta_launch(o, do):
 
 
 def dsa_attention_backward_rows(q, kv, do, indices, lse, delta, dq, partial, sm_scale: float, geo: AttentionGeometry):
-    """Launch the backward kernel on a contiguous slice of query rows (fills ``dq`` rows and ``partial``)."""
+    """Launch the backward kernel on a contiguous slice of query rows (fills ``dq`` rows and ``partial``).
+
+    ``partial`` holds ``geo.kv_partials`` FP32 rows per (query row, slot): with ``geo.pair`` the two head-block CTAs of
+    a row form one cluster (grid ``2 * num_rows``) and write a single summed partial per slot.
+    """
     num_rows = q.shape[0]
     if num_rows == 0:
         return
-    _kernel(_attention_name("bwd", geo.block_h, geo.d_v, geo.d_tail), q.device).launch(
-        grid=(num_rows, geo.head_blocks, 1),
+    if geo.tc_bwd:
+        _launch_attention_backward_tc(q, kv, do, indices, lse, delta, dq, partial, sm_scale, geo)
+        return
+    if geo.pair:
+        name, grid = _attention_pair_name(geo.d_v, geo.d_tail), (2 * num_rows, 1, 1)
+    else:
+        name, grid = _attention_name("bwd", geo.block_h, geo.d_v, geo.d_tail), (num_rows, geo.head_blocks, 1)
+    _kernel(name, q.device).launch(
+        grid=grid,
         q=q,
         kv=kv,
         do=do,
@@ -243,6 +291,66 @@ def dsa_attention_backward_rows(q, kv, do, indices, lse, delta, dq, partial, sm_
         num_head_blocks=geo.head_blocks,
         sm_scale=float(sm_scale),
         scale_log2=float(sm_scale) * LOG2E,
+    )
+
+
+def _launch_attention_backward_tc(
+    q, kv, do, indices, lse, delta, dq, partial, sm_scale: float, geo: AttentionGeometry
+):
+    """Launch the tcgen05 backward rows kernel: one CTA per query row (``grid = (num_rows, 1, 1)``), the ``dsa_h64_bwd`` ABI.
+
+    ``q_latent`` / ``q_rope`` / ``dout`` / ``dq_latent`` / ``dq_rope`` / ``kv_latent`` are TMA tensor maps encoded from
+    the bound views (``q[:, :, :512]``, the rope tails ``q[:, :, 512:]`` / ``kv[:, 512:]``, ``kv[:, :512]``; the no-rope
+    program never touches its rope descriptors and takes placeholder views); the partial rows ``partial[(row * topk + slot), 0:d_qk]`` are addressed through ``dkv_f32`` / ``dkr_f32``
+    (row stride ``d_qk``, rope column 512); ``lse`` is the forward's base-2 lse.  ``out`` / ``o_lo`` / ``topk_length`` /
+    ``dkv_dst_map`` / the key-pass buffers are inert single-pass bindings (never read).
+    """
+    num_rows, num_kv = int(q.shape[0]), int(kv.shape[0])
+    d_latent, d_qk = ATTENTION_D_LATENT, geo.d_qk
+    q_latent, dq_latent, kv_latent = q[:, :, :d_latent], dq[:, :, :d_latent], kv[:, :d_latent]
+    if geo.d_tail:
+        q_rope, dq_rope, k_rope = q[:, :, d_latent:], dq[:, :, d_latent:], kv[:, d_latent:]
+    else:
+        q_rope, dq_rope, k_rope = q[:, :, :ATTENTION_D_ROPE], dq[:, :, :ATTENTION_D_ROPE], kv
+    indices_ptr, indices_offset = _storage_alias(indices)
+    _kernel(attention_tc_bwd_stage(geo.heads, geo.d_tail, device_arch(q.device)), q.device).launch(
+        grid=(num_rows, 1, 1),
+        q_latent=q_latent,
+        q_rope=q_rope,
+        dout=do,
+        dq_latent=dq_latent,
+        dq_rope=dq_rope,
+        kv_latent=kv_latent,
+        k_rope=k_rope,
+        lse=lse,
+        delta=delta,
+        out=do,
+        o_lo=do,
+        indices=indices_ptr,
+        topk_length=indices_ptr,
+        dkv_f32=partial,
+        dkr_f32=partial,
+        dkv_stride=d_qk,
+        dkr_stride=d_qk,
+        dkr_col0=d_latent,
+        dkv_dst_map=indices_ptr,
+        dkv_has_map=0,
+        num_queries=num_rows,
+        num_kv=num_kv,
+        topk=geo.topk,
+        idx_stride=int(indices.stride(0)),
+        indices_offset=indices_offset,
+        has_topk_length=0,
+        token_base=0,
+        token_step=1,
+        scale_log2=float(sm_scale) * LOG2E,
+        sm_scale=float(sm_scale),
+        pass_lo=0,
+        pass_hi=num_kv,
+        dq_mode=0,
+        dq_partial=delta,
+        key_scratch=indices_ptr,
+        pass_counts=indices_ptr,
     )
 
 
@@ -389,6 +497,7 @@ __all__ = [
     "ATTENTION_D_ROPE",
     "ATTENTION_SHAPES",
     "ATTENTION_TC_ARCHES",
+    "ATTENTION_TC_BWD_HEADS",
     "ATTENTION_TC_HEADS",
     "INDEXER_HEADS",
     "INDEXER_HEAD_DIM",
@@ -398,6 +507,7 @@ __all__ = [
     "attention_block_h",
     "attention_geometry",
     "attention_head_blocks",
+    "attention_tc_bwd_stage",
     "attention_tc_stage",
     "dsa_attention_backward_rows",
     "dsa_attention_delta_launch",
