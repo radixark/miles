@@ -239,8 +239,10 @@ class TestConnect:
 
         replaced_api = make_rollout_api("cell-a", gpu_count=1, generation=2, moe_runner_backend="triton")
         p2p_sender.connect(protocol, [replaced_api])
-        p2p_sender.replicas_created[-1].map_hf_names = lambda hf_tensor_specs: HfNameMapping.from_hf_names_by_param_name(
-            {"w": frozenset({"hf.w", "hf.k"}), "qk": frozenset({"hf.q", "hf.k"})}
+        p2p_sender.replicas_created[-1].map_hf_names = (
+            lambda hf_tensor_specs: HfNameMapping.from_hf_names_by_param_name(
+                {"w": frozenset({"hf.w", "hf.k"}), "qk": frozenset({"hf.q", "hf.k"})}
+            )
         )
         p2p_sender.begin_sync(protocol, weight_version=2)
         protocol.send_bucket(make_bucket("hf.w", "hf.q", "hf.k"))
