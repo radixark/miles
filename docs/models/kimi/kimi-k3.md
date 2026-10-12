@@ -48,6 +48,9 @@ Architecture, from `scripts/models/kimi-k3.py`: hidden 7168, FFN 33792, 96 atten
 Use the `radixark/miles:dev` image with the Megatron and SGLang changes from
 [radixark/Megatron-LM#94](https://github.com/radixark/Megatron-LM/pull/94) and
 [sgl-project/sglang#37704](https://github.com/sgl-project/sglang/pull/37704) until they merge.
+`--fast-lora-decode` (section 5.6) also needs
+[sgl-project/sglang#44617](https://github.com/sgl-project/sglang/pull/44617) until it merges; each change
+there sits behind an `SGLANG_OPT_*` flag that is off by default.
 
 The only external asset is the native MXFP4 checkpoint; the BF16 dequantization and the
 `torch_dist` conversion derive from it. `scripts/run_kimi_k3.py` names the three by model:
@@ -184,6 +187,41 @@ weight sync, the adapter export is leaking and the run will die later rather tha
 - Weight conversion for K3 lives in
   `miles/backends/megatron_utils/megatron_to_hf/kimi_k3.py`, and the model itself in
   `miles_plugins/models/kimi_k3/`.
+
+### 5.6 Faster steps
+
+Rollout decode is about two thirds of a step. Most of the rest goes to moving the colocated trainer and engines
+off the GPUs and back. `scripts/run_kimi_k3.py` has three LoRA-only options, all off by default, that reduce both:
+
+- `--resident-colocate` keeps on the GPU the state that does not change between steps:
+  - The engines keep their weights and release only the KV cache and CUDA graphs (`--offload-rollout-level kv_cache`).
+  - The trainer keeps its parameters and NCCL process groups and offloads only its gradient buffers
+    (`--no-offload-train-params --no-offload-train-process-groups`).
+  - A weight sync then moves only the adapter, gathered across PP one stage at a time.
+- `--fast-lora-decode` turns on the rollout decode paths of the SGLang branch in section 3:
+  - a decode path for the shared-A / per-expert-B MoE adapters;
+  - fewer LoRA launches per layer;
+  - one all-reduce for row-parallel LoRA layers;
+  - an MXFP4 decode GEMM in place of Marlin;
+  - the fused KDA decode at TP16;
+  - the custom all-reduce across nodes;
+  - a TP-sharded adapter stash.
+
+  The stash holds only the rank's shard, so this option cannot be combined with `--check-lora-weight-equal`.
+- `--situ-backend fused` runs the trainer's SiTU-and-mul as one Triton kernel in each direction, instead of the eager op.
+
+With the trainer's state resident, the engines still have room for twice the KV cache, so the measured run also
+doubles the rollout concurrency. The measured run took the section 4 command at `--lora-rank 16 --lora-alpha 32`
+and added:
+
+```bash
+  --resident-colocate --fast-lora-decode --situ-backend fused \
+  --rollout-max-concurrency 16 --sglang-max-total-tokens 131072
+```
+
+Over ten rollouts on 16 × 4 GB300 this took the median step from 558 s to 112 s (4.96×). Reward, the
+rollout/trainer log-prob mismatch (`train/train_rollout_kl`) and `eval/aime` stayed in the stock run's range.
+The first step is slower on both paths, because it compiles kernels and includes eval@0.
 
 ## 6. Pairs Well With
 
