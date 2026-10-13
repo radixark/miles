@@ -78,10 +78,10 @@ def register_cpu_ci(
 ):
     """Marker for CPU CI registration (parsed via AST; runtime no-op).
 
-    Estimates above 30 seconds require `stage-b-cpu` and non-empty labels.
-    For shorter tests, `labels=None` and `labels=[]` are equivalent: the test
-    is always-on within every cadence that admits it. A non-empty `labels` list
-    gates the test on the resolved domain scope; a PR can include `<x>` with
+    Estimates above 30 seconds require `stage-b-cpu` and at least one domain
+    label; `perf` is not one. A shorter test without a domain label is
+    always-on within every cadence that admits it. A domain label gates the
+    test on the resolved domain scope; a PR can include `<x>` with
     `run-ci-<x>`, while broad scopes include many domain labels at once.
     `nightly=True` adds a cadence gate: regular runs exclude the test, while
     nightly and weekly runs include it alongside regular registrations.
