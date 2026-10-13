@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import safetensors.numpy
 
-from miles.utils.disk_delta import make_tensor_reader
+from miles.utils.disk_delta import checkpoint_tensor_layout, make_tensor_reader
 
 
 def test_tensor_reader_validates_declared_layout(tmp_path):
@@ -17,3 +17,5 @@ def test_tensor_reader_validates_declared_layout(tmp_path):
         read("weight", expected_dtype="BF16", expected_shape=(2, 3))
     with pytest.raises(ValueError, match="dtype=F16, shape=\\(2, 3\\)"):
         read("weight", expected_dtype="F16", expected_shape=(3, 2))
+
+    assert checkpoint_tensor_layout(str(tmp_path), "weight") == ("F16", (2, 3))
