@@ -134,8 +134,8 @@ cmd_add() {
     -e RUNNER_DIR="$SETUP_ROOT/$NAME"
   )
   # Register through one-shot containers that read the token from a 0600 file,
-  # so the runner container never carries it. Any exit before the runner starts
-  # deletes the container; a failed start deregisters the runner first.
+  # so the runner container never carries it. The trap set right after `docker
+  # create` deletes it on any exit until it starts; a failed start tries to deregister.
   local token_dir
   token_dir=$(mktemp -d)
   trap "rm -rf '$token_dir'" EXIT
