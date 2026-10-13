@@ -2700,6 +2700,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "the pretokenized prefix in multi-turn agentic sessions.",
             )
             parser.add_argument(
+                "--tito-session-mismatch-rate",
+                type=float,
+                default=0.0,
+                help="v2 only. Share of sessions (0 to 1) whose samples op computes the "
+                "tito_session_mismatch diagnostic, which re-renders the whole conversation "
+                "with the chat template; 0 (default) never, 1 every session. Chosen per "
+                "session from a hash of its id. Sampled because a 260K-token session costs "
+                "seconds per render; the diagnostic only reports, nothing trains on it.",
+            )
+            parser.add_argument(
+                "--session-chat-timing-log",
+                action="store_true",
+                default=False,
+                help="v2 only. Log one line per chat completion with the session server's own "
+                "prepare and commit seconds and the engine proxy seconds, to measure the "
+                "server's event-loop time under load (a samples op building in a worker "
+                "thread shares the GIL). Off by default: one line per request.",
+            )
+            parser.add_argument(
                 "--session-message-matcher",
                 type=str,
                 default="strict",

@@ -1,4 +1,5 @@
-import json
+import asyncio
+import hashlib
 import logging
 import time
 
@@ -11,8 +12,10 @@ from miles.rollout.session.core import (
     _chat_client_response,
     _render_json,
     _samples_response,
+    engine_request_body,
     extract_completion,
     proxy_result_to_response,
+    store_request_media,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
@@ -43,15 +46,33 @@ class SessionCoreV2(SessionCore):
         self.sample_picker = load_function(config.session_sample_picker_path, sync_required=True)
         self.sample_postprocessor = load_function(config.session_sample_postprocessor_path, sync_required=True)
 
-    def _session_metadata(self, session_id: str, session) -> dict:
+    def mismatch_sampled(self, session_id: str) -> bool:
+        """Whether this session's samples op computes tito_session_mismatch:
+        a per-session draw from a hash of its id against
+        ``--tito-session-mismatch-rate`` (0 never, 1 always). The diagnostic
+        re-renders the whole conversation, seconds for a 260K-token session,
+        and only reports; nothing trains on it."""
+        rate = float(getattr(self.config, "tito_session_mismatch_rate", 0.0) or 0.0)
+        if rate >= 1.0:
+            return True
+        if rate <= 0.0:
+            return False
+        draw = int(hashlib.sha256(session_id.encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+        return draw < rate
+
+    def _session_metadata(self, session_id: str, session, *, with_mismatch: bool = True) -> dict:
         """Mirrors ``core.SessionCore._session_metadata``: token ids come from
-        the latest committed generation's path, plus the ``tree`` block."""
+        the latest committed generation's path, plus the ``tree`` block.
+        ``with_mismatch`` False skips the tito_session_mismatch diagnostic
+        (the samples op passes ``mismatch_sampled``; the debug read keeps it)."""
         metadata: dict = {}
-        try:
-            mismatch = self.registry.compute_session_mismatch(session)
-        except TokenizationError:
-            logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
-            mismatch = None
+        mismatch = None
+        if with_mismatch:
+            try:
+                mismatch = self.registry.compute_session_mismatch(session)
+            except TokenizationError:
+                logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
+                mismatch = None
         if mismatch is not None:
             metadata["tito_session_mismatch"] = mismatch
         latest = session.latest()
@@ -79,12 +100,60 @@ class SessionCoreV2(SessionCore):
         """Samples op: assemble one raw sample per leaf, then run the
         pick/post-process hook pipeline and encode the result.
 
-        Synchronous on the server loop (no await), so the session read cannot
-        interleave with chat commits. Deterministic assembly/hook failures map
+        The build runs in a worker thread under the session's own lock: the
+        lock keeps chat commits of this session out while the tree is read,
+        and the event loop keeps serving every other session. On the loop it
+        froze a whole server instance for 160 to 190 s per 320-turn session
+        (13 sessions, 2026-10-13). Deterministic assembly/hook failures map
         to 422; unknown exceptions propagate.
         """
         session = self.registry.get_session(session_id)
-        metadata = self._session_metadata(session_id, session)
+        started = time.perf_counter()
+        async with session.lock:
+            worker = asyncio.ensure_future(
+                asyncio.to_thread(self._collect_samples_sync, session_id, session, max_seq_len, agent_metadata)
+            )
+            cancelled = False
+            while True:
+                try:
+                    if cancelled:
+                        # Wait without consuming the result: the caller gets
+                        # its cancellation, not the build's outcome.
+                        await asyncio.wait({worker})
+                        break
+                    response = await asyncio.shield(worker)
+                    break
+                except asyncio.CancelledError:
+                    # The client went away (timeout, disconnect). A thread
+                    # cannot be cancelled and keeps reading the tree, so the
+                    # lock stays held until it ends, however many cancels
+                    # arrive; a chat commit of this session waits.
+                    cancelled = True
+            if cancelled:
+                if worker.done() and not worker.cancelled() and worker.exception() is not None:
+                    logger.warning(
+                        "samples op for session %s failed after its request was cancelled: %r",
+                        session_id,
+                        worker.exception(),
+                    )
+                raise asyncio.CancelledError()
+        latest = session.latest()
+        logger.info(
+            "samples op: session=%s status=%s tokens=%d nodes=%d %.1fs off the event loop",
+            session_id,
+            response.status_code,
+            len(latest.token_ids) if latest is not None else 0,
+            len(session.tree.nodes),
+            time.perf_counter() - started,
+        )
+        return response
+
+    def _collect_samples_sync(
+        self, session_id: str, session, max_seq_len: int | None, agent_metadata: dict | None
+    ) -> Response:
+        """The samples build, pure CPU work on the session's tree and media;
+        called in a thread with the session lock held."""
+        metadata = self._session_metadata(session_id, session, with_mismatch=self.mismatch_sampled(session_id))
         fields = COMPUTED_FIELDS_V2
         if session.sampling_support_replay:
             fields += ROLLOUT_SAMPLING_MASK_FIELDS
@@ -143,6 +212,7 @@ class SessionCoreV2(SessionCore):
         inference call so DELETE/other ops are not blocked if the agent disconnects.
         """
         request_timestamp = time.time()
+        t_prepare = time.perf_counter()
         session = self.registry.get_session(session_id)
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
@@ -152,7 +222,7 @@ class SessionCoreV2(SessionCore):
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            client_args = parse_chat_request(body)
+            client_args = store_request_media(parse_chat_request(body), session.media)
             prepared, attach_parent = prepare_token_ids_and_request_args(
                 session,
                 client_args,
@@ -169,14 +239,16 @@ class SessionCoreV2(SessionCore):
             checkpoint_token_ids = attach_parent.token_ids if attach_parent is not None else []
             self._maybe_request_addition_r3(request_body, checkpoint_token_ids, prompt_token_ids)
 
-            proxy_body = json.dumps(request_body).encode()
+            proxy_body = engine_request_body(request_body, session.media)
         # --- lock released ---
 
         # --- Phase 2: proxy to backend (NO lock held) ---
+        t_proxy = time.perf_counter()
         headers = {**headers, "X-SMG-Routing-Key": session_id}
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
         )
+        t_commit = time.perf_counter()
 
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the
         # agent can retry or handle the error.
@@ -219,5 +291,15 @@ class SessionCoreV2(SessionCore):
                 turn_args=request_body,
             )
         # --- lock released ---
+        if getattr(self.config, "session_chat_timing_log", False):
+            done = time.perf_counter()
+            logger.info(
+                "chat timing: session=%s prepare=%.3fs proxy=%.3fs commit=%.3fs prompt_tokens=%s",
+                session_id,
+                t_proxy - t_prepare,
+                t_commit - t_proxy,
+                done - t_commit,
+                (response.get("usage") or {}).get("prompt_tokens"),
+            )
 
         return _chat_client_response(result, response, response_intent)

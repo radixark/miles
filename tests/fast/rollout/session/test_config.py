@@ -31,6 +31,8 @@ _ARGS_TO_CONFIG_FIELD = {
     "rollout_top_logprobs_num": "rollout_top_logprobs_num",
     "rollout_sampling_logprobs_mode": "rollout_sampling_logprobs_mode",
     "rollout_temperature": "rollout_temperature",
+    "tito_session_mismatch_rate": "tito_session_mismatch_rate",
+    "session_chat_timing_log": "session_chat_timing_log",
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
@@ -67,6 +69,8 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    tito_session_mismatch_rate=0.25,
+    session_chat_timing_log=True,
 )
 
 
@@ -120,6 +124,21 @@ class TestComputeSessionServerConfig:
         )
         assert [getattr(config, name) for name in _OPTIONAL_ARGS_ATTRS] == [None] * len(_OPTIONAL_ARGS_ATTRS)
 
+    def test_older_args_default_the_session_diagnostics_off(self):
+        """Args without the samples-op diagnostics (older launchers) get rate 0 and no timing log."""
+        args = Namespace(
+            **{
+                key: value
+                for key, value in _DISTINCT_ARGS_VALUES.items()
+                if key not in ("tito_session_mismatch_rate", "session_chat_timing_log")
+            }
+        )
+        config = compute_session_server_config(
+            args, host="127.0.0.1", port=5001, instance_id=None, backend_url="http://127.0.0.1:3000"
+        )
+        assert config.tito_session_mismatch_rate == 0.0
+        assert config.session_chat_timing_log is False
+
     def test_older_args_default_rollout_temperature(self):
         args = Namespace(
             **{key: value for key, value in _DISTINCT_ARGS_VALUES.items() if key != "rollout_temperature"}
@@ -158,6 +177,8 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_top_logprobs_num=0,
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
+    tito_session_mismatch_rate=0.0,
+    session_chat_timing_log=False,
 )
 
 

@@ -1,6 +1,7 @@
 import base64
 import inspect
 import io
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -160,8 +161,37 @@ def load_processor(name_or_path: str, **kwargs):
 
     # If HF returned a tokenizer, discard it.
     if isinstance(proc, PreTrainedTokenizerBase) or not isinstance(proc, ProcessorMixin):
-        proc = None
+        proc = _engine_processor_fallback(name_or_path, **kwargs)
 
+    return proc
+
+
+def _checkpoint_model_type(name_or_path: str) -> str | None:
+    config_path = Path(name_or_path) / "config.json"
+    if not config_path.is_file():
+        return None
+    try:
+        return json.loads(config_path.read_text()).get("model_type")
+    except (OSError, ValueError):
+        return None
+
+
+def _engine_processor_fallback(name_or_path: str, **kwargs):
+    """The rollout engine's own processor for a model whose processor this
+    transformers cannot resolve (GLM-5.3 on a transformers without a
+    ``glm5_next`` module: ``AutoProcessor`` returns the bare tokenizer).
+    The session server counts and grids images with it, so the counts match
+    what the engine expands; the GLM-5.3 trainer provider loads the same
+    class (``backends/torchtitan_utils/models/glm5_next/vision.py``). None
+    when the model is not one of those or this SGLang does not ship it."""
+    if _checkpoint_model_type(name_or_path) != "glm5_next":
+        return None
+    try:
+        from sglang.srt.configs.glm5_next_processing import Glm5NextProcessor
+    except ImportError:
+        return None
+    proc = Glm5NextProcessor.from_pretrained(name_or_path, **kwargs)
+    logger.info(f"load_processor: {name_or_path} uses SGLang's {type(proc).__name__} (not resolvable by transformers)")
     return proc
 
 

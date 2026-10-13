@@ -34,6 +34,8 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
         rollout_temperature=1.0,
+        tito_session_mismatch_rate=0.0,
+        session_chat_timing_log=False,
     )
     defaults.update(overrides)
     return SessionServerConfig(**defaults)

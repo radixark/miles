@@ -50,7 +50,7 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcherError,
     resolve_session_message_matcher,
 )
-from miles.utils.processing_utils import load_tokenizer
+from miles.utils.processing_utils import load_processor, load_tokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -74,16 +74,33 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         chat_template_kwargs=config.apply_chat_template_kwargs,
     )
     merge_inline_system = not detect_inline_system_support(getattr(tokenizer, "chat_template", None))
+    # The image processor of a vision model (None for a text model): the
+    # sessions count and grid their images with it (miles.rollout.session.media).
+    processor = load_processor(config.hf_checkpoint, trust_remote_code=True)
+    image_token_ids = tito_tokenizer.image_token_ids()  # raises when the family names a token this tokenizer lacks
+    if processor is not None and image_token_ids is None:
+        logger.warning(
+            "[session] %s has an image processor but TITO family %r has no entry in the image-token table "
+            "(ImageTokens, miles.utils.chat_template_utils.tito_tokenizer); requests with images are refused",
+            config.hf_checkpoint,
+            config.tito_model,
+        )
+    elif image_token_ids is not None:
+        logger.info("[session] TITO family %r image tokens: %s", config.tito_model, image_token_ids)
 
     use_v2 = config.use_session_server == "v2"
     if use_v2:
         from miles.rollout.session.v2.core import SessionCoreV2
         from miles.rollout.session.v2.session_state import SessionRegistryV2
 
-        registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
+        registry = SessionRegistryV2(
+            tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher, processor=processor
+        )
         core = SessionCoreV2(backend, registry, config, config.instance_id, use_addition_r3=use_addition_r3)
     else:
-        registry = SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
+        registry = SessionRegistry(
+            tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher, processor=processor
+        )
         core = SessionCore(backend, registry, config, config.instance_id, use_addition_r3=use_addition_r3)
 
     @app.exception_handler(SessionError)
