@@ -255,12 +255,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         # publish destination addresses for P2P writes
         sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
 
+    mtp_args = ""
     if case.use_spec:
         mtp_args = "--enable-mtp-training " "--mtp-loss-scaling-factor 0.2 "
-    else:
-        # The model script always passes --mtp-num-layers 1, and Megatron adds an MTP loss whenever the
-        # layer exists, even without --enable-mtp-training; this later flag overrides it.
-        mtp_args = "--mtp-num-layers 0 "
 
     ci_args = "--ci-test "
     if not case.use_spec:

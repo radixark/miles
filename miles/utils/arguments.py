@@ -14,6 +14,7 @@ from miles.backends.megatron_utils.megatron_config import (
     CRITIC_ROLE,
     resolve_args_checkpoint_load,
     resolve_megatron_config,
+    resolve_mtp_num_layers,
 )
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
@@ -3868,19 +3869,12 @@ def miles_validate_args(args):
         assert (
             args.train_backend == "megatron"
         ), f"--enable-mtp-training is megatron-only: the {args.train_backend} backend builds no MTP layers"
-        assert args.mtp_num_layers, "--enable-mtp-training needs --mtp-num-layers > 0 to build the MTP layers"
         if not args.mtp_detach_heads:
             logger.warning(
                 "--no-mtp-detach-heads: MTP loss gradients flow back into the main model's embedding, "
                 "output layer and hidden states, so the MTP loss also trains the policy"
             )
-    elif args.mtp_num_layers:
-        # Megatron trains every MTP layer it builds, so a run that does not train MTP builds none
-        logger.info(
-            f"--mtp-num-layers {args.mtp_num_layers} without --enable-mtp-training: building no MTP layers, "
-            "so exported checkpoints carry no MTP weights"
-        )
-        args.mtp_num_layers = 0
+    resolve_mtp_num_layers(args)
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
