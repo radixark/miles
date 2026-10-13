@@ -116,6 +116,7 @@ cmd_add() {
   if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
     die "container $NAME already exists; remove it first or pick a different --name"
   fi
+  [ ! -e "$SETUP_ROOT/$NAME/.runner" ] || die "$SETUP_ROOT/$NAME still holds a registration; run remove first"
 
   local labels="self-hosted,Linux,X64,gpu-runner,$NAME,$HWTYPE,${NGPU}gpu${TAGS:+,$TAGS}"
   local hook_args=()
@@ -132,23 +133,8 @@ cmd_add() {
     -e RUNNER_LABELS="$labels"
     -e RUNNER_DIR="$SETUP_ROOT/$NAME"
   )
-  # Register in a one-shot container that reads the token from a 0600 file, so
-  # the long-lived runner container never carries it.
-  local token_dir
-  token_dir=$(mktemp -d)
-  printf '%s' "$TOKEN" > "$token_dir/token"
-  chmod 0600 "$token_dir/token"
-  docker run --rm "${runner_env[@]}" \
-    -e RUNNER_TOKEN_FILE=/run/runner-token -e RUNNER_REGISTER_ONLY=1 \
-    -v "$token_dir/token:/run/runner-token:ro" \
-    -v "$SETUP_ROOT/$NAME:$SETUP_ROOT/$NAME" \
-    "$IMAGE" || { rm -rf "$token_dir"; die "registration failed (an $IMAGE older than gh-runner/ lacks RUNNER_TOKEN_FILE: rebuild it)"; }
-  rm -rf "$token_dir"
-  [ -f "$SETUP_ROOT/$NAME/.runner" ] || die "registration left no $SETUP_ROOT/$NAME/.runner"
-
-  docker run -d --name "$NAME" \
+  docker create --name "$NAME" \
     --restart unless-stopped \
-    --log-opt max-size=100m --log-opt max-file=3 \
     --runtime=nvidia --gpus all \
     "${runner_env[@]}" \
     -e CUDA_VISIBLE_DEVICES="$CVD" \
@@ -157,6 +143,27 @@ cmd_add() {
     -v "$CACHE_ROOT/$NAME/.cache:/root/.cache" \
     "${hook_args[@]}" \
     "$IMAGE" >/dev/null
+
+  # Register through one-shot containers that read the token from a 0600 file,
+  # so the runner container never carries it; a runner that then fails to start
+  # is deregistered and deleted.
+  local token_dir
+  token_dir=$(mktemp -d)
+  trap "rm -rf '$token_dir'" EXIT
+  printf '%s' "$TOKEN" > "$token_dir/token"
+  chmod 0600 "$token_dir/token"
+  local oneshot=(docker run --rm "${runner_env[@]}" -e RUNNER_TOKEN_FILE=/run/runner-token
+    -v "$token_dir/token:/run/runner-token:ro" -v "$SETUP_ROOT/$NAME:$SETUP_ROOT/$NAME")
+  if ! "${oneshot[@]}" -e RUNNER_REGISTER_ONLY=1 "$IMAGE"; then
+    docker rm "$NAME" >/dev/null
+    die "registration failed; if the output says RUNNER_TOKEN is required, $IMAGE predates RUNNER_TOKEN_FILE: rebuild it"
+  fi
+  if ! docker start "$NAME" >/dev/null; then
+    "${oneshot[@]}" --entrypoint bash "$IMAGE" -c 'cd "$RUNNER_DIR" && ./config.sh remove --token "$(cat "$RUNNER_TOKEN_FILE")"' \
+      || echo "WARN: could not deregister $NAME; delete it in the repository's runner settings" >&2
+    docker rm "$NAME" >/dev/null
+    die "$NAME failed to start; see the docker error above"
+  fi
 
   if [ ${#hook_args[@]} -gt 0 ]; then
     [ "$(docker exec "$NAME" sh -c 'command -v docker')" = /opt/runner-hooks/aliyun/docker ] \
