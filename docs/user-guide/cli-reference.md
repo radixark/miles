@@ -335,7 +335,6 @@ contract, session behavior, and model-family selection.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--mtp-num-layers` | int | `0` | MTP layers to build and train alongside the policy (Megatron only). |
-| `--no-mtp-detach-heads` | flag | off | Let MTP loss gradients flow back into the main model (detached by default). |
 | `--mtp-loss-scaling-factor` | float | `0.2` | Weight of MTP loss. |
 
 ### Fault tolerance

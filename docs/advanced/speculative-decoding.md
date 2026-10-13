@@ -58,7 +58,6 @@ PERF_ARGS+=(
 | Flag | Notes |
 |---|---|
 | `--mtp-num-layers` | MTP layers to build and train (1 matches GLM/DeepSeek release defaults). They train whenever they exist, so 0 or unset leaves the draft at its checkpoint weights. Megatron only. |
-| `--no-mtp-detach-heads` | Let MTP loss gradients flow back into the main model's embedding, output layer and hidden states. By default the MTP heads are detached, so the MTP loss trains only the MTP layers. |
 | `--mtp-loss-scaling-factor` | Weight of the MTP loss in the combined gradient (default `0.2`). |
 
 <Note>
