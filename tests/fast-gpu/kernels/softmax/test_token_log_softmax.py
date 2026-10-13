@@ -11,7 +11,13 @@ register_cuda_ci(
 import pytest
 import torch
 
-from miles.kernels.softmax.token_log_softmax import LaunchConfig, row_statistics, write_logits_grad, zero_unscored_rows
+from miles.kernels.softmax.token_log_softmax import (
+    LaunchConfig,
+    VocabRange,
+    row_statistics,
+    write_logits_grad,
+    zero_unscored_rows,
+)
 
 _VOCAB = 50_001
 _TEMPERATURE = 0.7
@@ -41,19 +47,12 @@ def test_every_launch_shape_matches_log_softmax(launch, n_unpadded_cols):
     gradient over the true vocabulary, write every element of the gradient, and zero the padding."""
     logits, rows, targets = _inputs(64, _VOCAB, n_unpadded_cols, seed=15)
     ref_log_probs, ref_entropy = _reference(logits, rows, targets, n_unpadded_cols)
-    logit_max, sum_exp, sum_exp_logit, target_logit = row_statistics(
-        logits,
-        rows,
-        targets,
-        vocab_start=0,
-        n_unpadded_cols=n_unpadded_cols,
-        temperature=_TEMPERATURE,
-        with_entropy=True,
-        launch=launch,
-    )
-    log_sum_exp, expected_mean_logit = torch.log(sum_exp), sum_exp_logit / sum_exp
-    torch.testing.assert_close(target_logit - log_sum_exp, ref_log_probs, rtol=1e-5, atol=2e-5)
-    torch.testing.assert_close(log_sum_exp - expected_mean_logit, ref_entropy, rtol=1e-5, atol=5e-5)
+    vocab = VocabRange(start=0, n_unpadded=n_unpadded_cols)
+    stats = row_statistics(
+        logits, rows, targets, vocab=vocab, temperature=_TEMPERATURE, with_entropy=True, launch=launch
+    ).as_softmax_stats()
+    torch.testing.assert_close(stats.target_logit - stats.log_sum_exp, ref_log_probs, rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(stats.log_sum_exp - stats.expected_mean_logit, ref_entropy, rtol=1e-5, atol=5e-5)
 
     gen = torch.Generator(device="cuda").manual_seed(16)
     g = torch.randn(rows.numel(), device="cuda", generator=gen)
@@ -67,14 +66,10 @@ def test_every_launch_shape_matches_log_softmax(launch, n_unpadded_cols):
         logits,
         rows=rows,
         targets=targets,
-        logit_max=logit_max,
-        log_sum_exp=log_sum_exp,
-        expected_mean_logit=expected_mean_logit,
-        one_minus_p=-torch.expm1(target_logit - log_sum_exp),
+        stats=stats,
         grad_log_probs=g,
         grad_entropy=c,
-        vocab_start=0,
-        n_unpadded_cols=n_unpadded_cols,
+        vocab=vocab,
         temperature=_TEMPERATURE,
         launch=launch,
     )
@@ -87,11 +82,11 @@ def test_an_all_padding_shard_reports_no_mass():
     """The last tensor-parallel shard can hold only padding: it must report a zero sum from a max of
     -inf, and no target, so that combining it with the other shards adds nothing."""
     logits, rows, targets = _inputs(16, 1024, 1024, seed=19)
-    logit_max, sum_exp, sum_exp_logit, target_logit = row_statistics(
-        logits, rows, targets, vocab_start=0, n_unpadded_cols=0, temperature=_TEMPERATURE, with_entropy=True
+    shard = row_statistics(
+        logits, rows, targets, vocab=VocabRange(start=0, n_unpadded=0), temperature=_TEMPERATURE, with_entropy=True
     )
-    assert (logit_max == float("-inf")).all()
-    assert (sum_exp == 0).all() and (sum_exp_logit == 0).all() and (target_logit == 0).all()
+    assert (shard.logit_max == float("-inf")).all()
+    assert (shard.sum_exp == 0).all() and (shard.sum_exp_logit == 0).all() and (shard.target_logit == 0).all()
 
 
 if __name__ == "__main__":

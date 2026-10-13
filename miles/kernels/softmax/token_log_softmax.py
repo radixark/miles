@@ -1,7 +1,7 @@
 """Log-softmax of one target token per selected row: per-row statistics and the logits gradient.
 
 The kernels read one vocab shard of the selected rows in the logits' dtype and compute in fp32 on
-``d = (x - m) / T``, measured from the row max ``m``. Columns from ``n_unpadded_cols`` on are vocab
+``d = (x - m) / T``, measured from the row max ``m``. Columns from ``VocabRange.n_unpadded`` on are vocab
 padding, with probability and gradient zero. A third, store-only kernel zeroes the rows the op did
 not score. All three are memory-bound streaming passes, so the launch shape is the only per-GPU
 setting; ``kernel_configs`` picks it by GPU family.
@@ -9,6 +9,7 @@ setting; ``kernel_configs`` picks it by GPU family.
 
 import functools
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import torch
 import triton
@@ -51,6 +52,44 @@ def gpu_family(device: torch.device) -> str:
 @functools.cache
 def kernel_configs(device: torch.device) -> KernelConfigs:
     return _MEASURED_CONFIGS.get(gpu_family(device), _FALLBACK_CONFIGS)
+
+
+@dataclass(frozen=True)
+class VocabRange:
+    """The vocabulary a logits shard holds: column ``c`` is token id ``start + c``, padding from ``n_unpadded`` on."""
+
+    start: int
+    n_unpadded: int
+
+
+class ShardStats(NamedTuple):
+    """Per selected row, sums over one shard's vocabulary columns, in ``d = (x - logit_max) / T``.
+
+    A shard with no real columns has ``logit_max = -inf`` and zero sums. Combined over every shard,
+    they are the stats of one shard holding the whole vocabulary.
+    """
+
+    logit_max: torch.Tensor
+    sum_exp: torch.Tensor  # sum_v exp(d_v)
+    sum_exp_logit: torch.Tensor | None  # sum_v exp(d_v) d_v, only with entropy
+    target_logit: torch.Tensor  # d_y, 0 when the target is in another shard
+
+    def as_softmax_stats(self) -> "SoftmaxStats":
+        """The softmax statistics, for stats over the whole vocabulary."""
+        expected_mean_logit = self.sum_exp_logit / self.sum_exp if self.sum_exp_logit is not None else None
+        return SoftmaxStats(self.logit_max, torch.log(self.sum_exp), self.target_logit, expected_mean_logit)
+
+
+class SoftmaxStats(NamedTuple):
+    """Per selected row, the softmax over the whole true vocabulary, in ``d = (x - logit_max) / T``.
+
+    ``log p_y = target_logit - log_sum_exp`` and ``H = log_sum_exp - expected_mean_logit``.
+    """
+
+    logit_max: torch.Tensor
+    log_sum_exp: torch.Tensor  # log sum_v exp(d_v)
+    target_logit: torch.Tensor  # d_y
+    expected_mean_logit: torch.Tensor | None  # sum_v p_v d_v, only with entropy
 
 
 @triton.jit
@@ -174,16 +213,12 @@ def row_statistics(
     rows: torch.Tensor,
     targets: torch.Tensor,
     *,
-    vocab_start: int,
-    n_unpadded_cols: int,
+    vocab: VocabRange,
     temperature: float,
     with_entropy: bool,
     launch: LaunchConfig | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
-    """This shard's ``(max, sum exp(d), sum exp(d) * d or None, d_y or 0)`` per row, ``d = (x - max) / T``.
-
-    Only the first ``n_unpadded_cols`` columns count; a shard with none reports ``(-inf, 0, 0, 0)``.
-    """
+) -> ShardStats:
+    """This shard's stats of the selected rows; only its first ``vocab.n_unpadded`` columns count."""
     launch = launch or kernel_configs(logits.device).stats
     n_rows = rows.numel()
     stats = torch.empty((4, n_rows), dtype=torch.float32, device=logits.device)
@@ -197,15 +232,15 @@ def row_statistics(
             stats[2],
             stats[3],
             logits.stride(0),
-            n_unpadded_cols,
-            vocab_start,
+            vocab.n_unpadded,
+            vocab.start,
             1.0 / temperature,
             WITH_ENTROPY=with_entropy,
             BLOCK_V=launch.block_v,
             num_warps=launch.num_warps,
         )
     logit_max, sum_exp, sum_exp_logit, target_logit = stats
-    return logit_max, sum_exp, (sum_exp_logit if with_entropy else None), target_logit
+    return ShardStats(logit_max, sum_exp, sum_exp_logit if with_entropy else None, target_logit)
 
 
 def write_logits_grad(
@@ -214,43 +249,42 @@ def write_logits_grad(
     *,
     rows: torch.Tensor,
     targets: torch.Tensor,
-    logit_max: torch.Tensor,
-    log_sum_exp: torch.Tensor,
-    expected_mean_logit: torch.Tensor | None,
-    one_minus_p: torch.Tensor,
+    stats: SoftmaxStats,
     grad_log_probs: torch.Tensor | None,
     grad_entropy: torch.Tensor | None,
-    vocab_start: int,
-    n_unpadded_cols: int,
+    vocab: VocabRange,
     temperature: float,
     launch: LaunchConfig | None = None,
 ) -> None:
     """Write the gradient of the selected rows into ``grad``; ``grad`` may be ``logits`` itself.
 
-    The per-row statistics are keyword-only: several are fp32 ``[R]``, so a swap would not raise.
-    Every column of a selected row is written, the padding columns from ``n_unpadded_cols`` on with zero.
+    Every column of a selected row is written, the padding columns from ``vocab.n_unpadded`` on with zero.
     """
+    assert grad_entropy is None or stats.expected_mean_logit is not None, "the entropy gradient needs its mean"
     launch = launch or kernel_configs(logits.device).grad
     n_rows = rows.numel()
     if not n_rows:
         return
+    # 1 - p at the target, exact even when p is close to 1
+    one_minus_p = -torch.expm1(stats.target_logit - stats.log_sum_exp)
+    placeholder = stats.log_sum_exp  # any fp32 [R] pointer for an input the kernel is compiled not to read
     grid = (n_rows, triton.cdiv(logits.size(1), launch.block_v))
     _logits_grad_kernel[grid](
         logits,
         grad,
         rows,
         targets,
-        logit_max,
-        log_sum_exp,
-        expected_mean_logit if expected_mean_logit is not None else log_sum_exp,
+        stats.logit_max,
+        stats.log_sum_exp,
+        stats.expected_mean_logit if stats.expected_mean_logit is not None else placeholder,
         one_minus_p,
-        grad_log_probs if grad_log_probs is not None else log_sum_exp,
-        grad_entropy if grad_entropy is not None else log_sum_exp,
+        grad_log_probs if grad_log_probs is not None else placeholder,
+        grad_entropy if grad_entropy is not None else placeholder,
         logits.stride(0),
         grad.stride(0),
         logits.size(1),
-        n_unpadded_cols,
-        vocab_start,
+        vocab.n_unpadded,
+        vocab.start,
         1.0 / temperature,
         HAS_GRAD_LOG_PROBS=grad_log_probs is not None,
         HAS_GRAD_ENTROPY=grad_entropy is not None,

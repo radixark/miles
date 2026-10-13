@@ -68,30 +68,17 @@ def main() -> None:
     print(f"{torch.cuda.get_device_name(device)} ({family}): [{args.rows}, {args.vocab}] bf16 logits")
     print(f"  device copy {copy_tbps:5.2f} TB/s")
 
+    vocab = kernels.VocabRange(start=0, n_unpadded=logits.size(1))
+
     def stats(launch):
         for with_entropy in (False, True):
             kernels.row_statistics(
-                logits,
-                rows,
-                targets,
-                vocab_start=0,
-                n_unpadded_cols=logits.size(1),
-                temperature=TEMPERATURE,
-                with_entropy=with_entropy,
-                launch=launch,
+                logits, rows, targets, vocab=vocab, temperature=TEMPERATURE, with_entropy=with_entropy, launch=launch
             )
 
-    logit_max, sum_exp, sum_exp_logit, target_logit = kernels.row_statistics(
-        logits,
-        rows,
-        targets,
-        vocab_start=0,
-        n_unpadded_cols=logits.size(1),
-        temperature=TEMPERATURE,
-        with_entropy=True,
-    )
-    log_sum_exp, expected_mean_logit = torch.log(sum_exp), sum_exp_logit / sum_exp
-    one_minus_p = -torch.expm1(target_logit - log_sum_exp)
+    softmax_stats = kernels.row_statistics(
+        logits, rows, targets, vocab=vocab, temperature=TEMPERATURE, with_entropy=True
+    ).as_softmax_stats()
     grad_log_probs = torch.randn(args.rows, device=device)
     grad_entropy = torch.randn(args.rows, device=device)
     grad = torch.empty_like(logits)
@@ -102,14 +89,10 @@ def main() -> None:
             logits,
             rows=rows,
             targets=targets,
-            logit_max=logit_max,
-            log_sum_exp=log_sum_exp,
-            expected_mean_logit=expected_mean_logit,
-            one_minus_p=one_minus_p,
+            stats=softmax_stats,
             grad_log_probs=grad_log_probs,
             grad_entropy=grad_entropy,
-            vocab_start=0,
-            n_unpadded_cols=logits.size(1),
+            vocab=vocab,
             temperature=TEMPERATURE,
             launch=launch,
         )
