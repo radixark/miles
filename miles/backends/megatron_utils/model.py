@@ -986,7 +986,10 @@ def load_model_state(
     load_dir = getattr(args, "load", None)
     native_optimizer_restored = False
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
-    if load_dir is None or _has_loadable_ckpt(load_dir):
+    explicit_selection = getattr(args, "ckpt_step", None) is not None or getattr(
+        args, "exit_on_missing_checkpoint", False
+    )
+    if load_dir is None or explicit_selection or _has_loadable_ckpt(load_dir):
         with load_ctx:
             iteration, _, native_optimizer_restored = load_checkpoint(
                 model,
