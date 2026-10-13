@@ -350,12 +350,14 @@ def resolve_mtp_num_layers(args: Namespace) -> None:
     """Keep the model's MTP layers only under --enable-mtp-training, since Megatron trains every MTP layer it builds."""
     if args.enable_mtp_training:
         assert args.mtp_num_layers, "--enable-mtp-training needs --mtp-num-layers > 0 to build the MTP layers"
-    elif args.mtp_num_layers:
+        return
+    if args.mtp_num_layers:
         logger.info(
             f"--mtp-num-layers {args.mtp_num_layers} without --enable-mtp-training: building no MTP layers, "
             "so exported checkpoints carry no MTP weights"
         )
-        args.mtp_num_layers = None
+    # None, not 0: Megatron treats any non-None value as an MTP model, e.g. in its overlap_moe_expert_parallel_comm check
+    args.mtp_num_layers = None
 
 
 # ---------------------------- checkpoint dirs -----------------------------
