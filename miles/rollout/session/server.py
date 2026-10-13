@@ -14,7 +14,9 @@ from contextlib import asynccontextmanager
 import aiohttp
 import setproctitle
 import uvicorn
+from aiohttp.helpers import get_env_proxy_for_url
 from fastapi import FastAPI
+from yarl import URL
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import ProxyRequest
@@ -55,6 +57,12 @@ class SessionServer:
         # Connecting (pool wait included) and each socket read; the payload bounds writing.
         self.timeout = aiohttp.ClientTimeout(total=None, connect=config.timeout, sock_read=config.timeout)
         self.client: aiohttp.ClientSession
+        # Read the proxy environment once, as httpx did: aiohttp's trust_env re-reads it, and ~/.netrc,
+        # on a worker thread for every request.
+        try:
+            self.proxy, self.proxy_auth = get_env_proxy_for_url(URL(self.backend_url))
+        except LookupError:
+            self.proxy, self.proxy_auth = None, None
 
         # `retract` may recompute earlier rows and must return full R3; all other
         # pause modes preserve prior rows and can request only the appended R3.
@@ -67,7 +75,6 @@ class SessionServer:
         async with aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(limit=1024, keepalive_timeout=5),
             timeout=self.timeout,
-            trust_env=True,
         ) as client:
             self.client = client
             yield
@@ -90,6 +97,8 @@ class SessionServer:
                 headers=headers,
                 allow_redirects=False,
                 skip_auto_headers=("Content-Type",),
+                proxy=self.proxy,
+                proxy_auth=self.proxy_auth,
             ) as response:
                 content = await response.read()
         # ValueError: aiohttp refuses to send a CR/LF header value (e.g. in a session id), which httpx raised as a

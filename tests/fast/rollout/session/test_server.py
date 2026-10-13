@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from tests.fast.fixtures.session_fixtures import make_session_server_config
+from yarl import URL
 
 from miles.rollout.session import server as session_server_module
 from miles.rollout.session.core import ProxyRequest
@@ -31,6 +32,17 @@ class TestSessionServer:
         finally:
             http_server.stop()
         assert client.closed
+
+    @pytest.mark.parametrize(("no_proxy", "expected"), [("", "http://proxy.invalid:3128"), ("backend.invalid", None)])
+    def test_backend_proxy_is_read_from_the_environment(self, monkeypatch, no_proxy, expected):
+        for name in ("http_proxy", "HTTP_PROXY"):
+            monkeypatch.setenv(name, "http://proxy.invalid:3128")
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.setenv(name, no_proxy)
+
+        server = SessionServer(make_session_server_config(backend_url="http://backend.invalid:8000"))
+
+        assert server.proxy == (URL(expected) if expected else None)
 
 
 @pytest.fixture
@@ -98,6 +110,18 @@ class TestDoProxy:
 
         assert result["status_code"] == 502
         assert json.loads(result["response_body"])["error"].startswith("backend transport error: ValueError")
+
+    def test_netrc_adds_no_credentials(self, echo_backend, monkeypatch, tmp_path):
+        """httpx never read ~/.netrc; a matching entry must neither replace nor clash with the client's header."""
+        netrc = tmp_path / "netrc"
+        netrc.write_text("default login user password secret\n")
+        netrc.chmod(0o600)
+        monkeypatch.setenv("NETRC", str(netrc))
+
+        result = _proxy_to(echo_backend, "echo", headers={"authorization": "Bearer client"})
+
+        assert result["status_code"] == 201
+        assert json.loads(result["response_body"])["headers"]["authorization"] == "Bearer client"
 
     def test_reply_cut_off_mid_body_is_a_502(self):
         """A failed body read is a transport error too, as when httpx read the body inside request()."""
