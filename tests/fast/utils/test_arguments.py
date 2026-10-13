@@ -1701,6 +1701,10 @@ class TestMtpTrainingValidation:
         """Megatron trains every MTP layer it builds, so the model script's layer count alone builds none."""
         assert self._validate(["--train-backend", backend, "--mtp-num-layers", "1"]).mtp_num_layers is None
 
+    def test_an_explicit_zero_becomes_megatrons_no_mtp_value(self):
+        """Megatron treats any non-None mtp_num_layers as an MTP model, so 0 must not reach it."""
+        assert self._validate(["--mtp-num-layers", "0"]).mtp_num_layers is None
+
     def test_mtp_training_keeps_the_layers(self):
         assert self._validate(["--enable-mtp-training", "--mtp-num-layers", "1"]).mtp_num_layers == 1
 
