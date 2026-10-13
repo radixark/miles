@@ -1,5 +1,6 @@
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import torch
@@ -62,6 +63,48 @@ def get_logits_and_tokens_offset_with_cp(
     return chunk_size, (chunk_0, chunk_1), (logits_0, logits_1), (token_0, token_1)
 
 
+@dataclass(frozen=True)
+class SampleSpan:
+    """One sample's lengths: its whole sequence, the response that ends it, and its bshd slot."""
+
+    total_length: int
+    response_length: int
+    max_seq_len: int | None = None  # its padded slot under bshd; None under thd
+
+    @property
+    def prompt_length(self) -> int:
+        return self.total_length - self.response_length
+
+
+def sample_spans(
+    total_lengths: Sequence[int], response_lengths: Sequence[int], max_seq_lens: Sequence[int] | None = None
+) -> list[SampleSpan]:
+    """A micro-batch's per-sample lengths as spans."""
+    max_seq_lens = max_seq_lens if max_seq_lens is not None else [None] * len(total_lengths)
+    return [
+        SampleSpan(total_length, response_length, max_seq_len)
+        for total_length, response_length, max_seq_len in zip(
+            total_lengths, response_lengths, max_seq_lens, strict=True
+        )
+    ]
+
+
+@dataclass(frozen=True)
+class CPLayout:
+    """How a micro-batch's sequences sit on one context-parallel rank."""
+
+    qkv_format: str  # "thd" packs the samples back to back, "bshd" pads each to its own slot
+    cp_rank: int
+    cp_size: int
+    allgather_cp: bool = False  # one contiguous piece of the sequence per rank instead of two zigzag chunks
+
+    @classmethod
+    def current(cls, qkv_format: str, *, allgather_cp: bool = False) -> "CPLayout":
+        """This rank's layout, from the parallel state."""
+        cp = get_parallel_state().cp
+        return cls(qkv_format, cp.rank, cp.size, allgather_cp)
+
+
 class LocalResponseRows(NamedTuple):
     """Where one sample's response sits in this rank's flattened logits.
 
@@ -82,20 +125,22 @@ class LocalResponseRows(NamedTuple):
         return [index for start, end in self.response_ranges for index in range(start, end)]
 
 
-def zigzag_response_ranges(
-    total_length: int,
-    response_length: int,
-    qkv_format: str = "thd",
-    max_seq_len: int | None = None,
-    *,
-    cp_rank: int | None = None,
-    cp_size: int | None = None,
-) -> tuple[tuple[int, int], tuple[int, int]]:
+def zigzag_response_ranges(span: SampleSpan, layout: CPLayout) -> tuple[tuple[int, int], tuple[int, int]]:
     """The response positions a zigzag CP rank holds, one range per zigzag half; an empty half is ``(0, 0)``."""
-    _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
-        total_length, response_length, qkv_format, max_seq_len, cp_rank=cp_rank, cp_size=cp_size
+    assert not layout.allgather_cp, "zigzag ranges of an all-gather layout"
+    _, _, _, tokens_offset = _zigzag_offsets(span, layout)
+    return _response_ranges(tokens_offset, span.prompt_length)
+
+
+def _zigzag_offsets(span: SampleSpan, layout: CPLayout):
+    return get_logits_and_tokens_offset_with_cp(
+        span.total_length,
+        span.response_length,
+        layout.qkv_format,
+        span.max_seq_len,
+        cp_rank=layout.cp_rank,
+        cp_size=layout.cp_size,
     )
-    return _response_ranges(tokens_offset, total_length - response_length)
 
 
 def _response_ranges(
@@ -109,58 +154,46 @@ def _response_ranges(
 
 
 def iter_local_response_rows(
-    num_rows: int,
-    *,
-    total_lengths: list[int],
-    response_lengths: list[int],
-    qkv_format: str,
-    allgather_cp: bool,
-    max_seq_lens: list[int] | None = None,
+    num_rows: int, spans: Sequence[SampleSpan], layout: CPLayout
 ) -> Iterator[LocalResponseRows]:
     """Per sample, the rows of this rank's ``[num_rows, V]`` logits that score its response.
 
     Without context parallelism a response is one run of rows. Under all-gather CP this rank holds
     at most one run of it; under zigzag CP it holds two, one per zigzag half, and either may be empty.
     """
-    cp = get_parallel_state().cp
     slot_start = 0  # first local row of the sample's slot, without CP or under zigzag CP
     seq_start = 0  # first global token of the sample, under all-gather CP
-    for i, (total_length, response_length) in enumerate(zip(total_lengths, response_lengths, strict=True)):
-        max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
-        if cp.size == 1:
+    for i, span in enumerate(spans):
+        if layout.cp_size == 1:
             # bshd gives each sample its own padded slot; thd packs the samples back to back
-            sample_start = max_seq_len * i if qkv_format == "bshd" else slot_start
-            end = sample_start + total_length - 1
-            sample_rows = LocalResponseRows(((end - response_length, end),), ((0, response_length),))
-            if qkv_format == "thd":
-                slot_start += total_length
-        elif allgather_cp:
+            sample_start = span.max_seq_len * i if layout.qkv_format == "bshd" else slot_start
+            end = sample_start + span.total_length - 1
+            sample_rows = LocalResponseRows(((end - span.response_length, end),), ((0, span.response_length),))
+            if layout.qkv_format == "thd":
+                slot_start += span.total_length
+        elif layout.allgather_cp:
             # thd splits the concatenated samples into one contiguous piece per rank; bshd splits
             # each padded sample on its own, so every sample has a piece of max_seq_len // cp rows
-            piece_rows = max_seq_len // cp.size if qkv_format == "bshd" else num_rows
+            piece_rows = span.max_seq_len // layout.cp_size if layout.qkv_format == "bshd" else num_rows
             sample_rows = _response_rows_allgather_cp(
-                local_start=piece_rows * i if qkv_format == "bshd" else 0,
-                global_start=cp.rank * piece_rows,
+                span,
+                local_start=piece_rows * i if layout.qkv_format == "bshd" else 0,
+                global_start=layout.cp_rank * piece_rows,
                 piece_rows=piece_rows,
-                seq_start=0 if qkv_format == "bshd" else seq_start,
-                total_length=total_length,
-                response_length=response_length,
+                seq_start=0 if layout.qkv_format == "bshd" else seq_start,
             )
         else:
-            chunk_size, chunks_offset, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
-                total_length, response_length, qkv_format, max_seq_len
-            )
-            prompt_length = total_length - response_length
-            response_ranges = _response_ranges(tokens_offset, prompt_length)
+            chunk_size, chunks_offset, _, tokens_offset = _zigzag_offsets(span, layout)
+            response_ranges = _response_ranges(tokens_offset, span.prompt_length)
             row_ranges = tuple(
                 _zigzag_half_rows(
-                    slot_start + half * chunk_size, response_ranges[half], chunk_start - prompt_length + 1
+                    slot_start + half * chunk_size, response_ranges[half], chunk_start - span.prompt_length + 1
                 )
                 for half, (chunk_start, _) in enumerate(chunks_offset)
             )
             sample_rows = LocalResponseRows(row_ranges, response_ranges)
             slot_start += 2 * chunk_size
-        seq_start += total_length
+        seq_start += span.total_length
 
         assert all(
             0 <= start <= end <= num_rows for start, end in sample_rows.row_ranges
@@ -175,15 +208,15 @@ def iter_local_response_rows(
 
 
 def _response_rows_allgather_cp(
-    *, local_start, global_start, piece_rows, seq_start, total_length, response_length
+    span: SampleSpan, *, local_start: int, global_start: int, piece_rows: int, seq_start: int
 ) -> LocalResponseRows:
     """At most one run: the response's rows within this rank's contiguous piece of the sequence.
 
     The piece is global rows ``[global_start, global_start + piece_rows)``, held from local row
     ``local_start``; the sample starts at global row ``seq_start``.
     """
-    logit_start = seq_start + total_length - response_length - 1
-    logit_end = seq_start + total_length - 1
+    logit_start = seq_start + span.prompt_length - 1
+    logit_end = seq_start + span.total_length - 1
     start, end = max(logit_start, global_start), min(logit_end, global_start + piece_rows)
     if end <= start:
         return LocalResponseRows(((local_start, local_start),), ((0, 0),))
@@ -323,7 +356,9 @@ def all_gather_with_cp(
     parallel_state = get_parallel_state()
     if parallel_state.cp.size == 1:
         return tensor
-    ranges = zigzag_response_ranges(total_length, response_length, qkv_format, max_seq_len)
+    ranges = zigzag_response_ranges(
+        SampleSpan(total_length, response_length, max_seq_len), CPLayout.current(qkv_format)
+    )
     positions = torch.cat([torch.arange(start, end, device=tensor.device) for start, end in ranges])
     assert positions.numel() == tensor.size(0), f"{positions.numel()} positions vs {tensor.size(0)} values"
     zeros = tensor.new_zeros((response_length, *tensor.shape[1:]))
@@ -435,24 +470,18 @@ def allgather_cp_redistribute(
 
     # thd logits are [1, T_local, V] and bshd [B, S_local, V]; either way flattened rows
     num_rows = logits.size(0) * logits.size(1)
-    layout = list(
-        iter_local_response_rows(
-            num_rows,
-            total_lengths=total_lengths,
-            response_lengths=response_lengths,
-            qkv_format=args.qkv_format,
-            allgather_cp=True,
-            max_seq_lens=max_seq_lens,
-        )
-    )
+    spans = sample_spans(total_lengths, response_lengths, max_seq_lens)
+    layout = list(iter_local_response_rows(num_rows, spans, CPLayout.current(args.qkv_format, allgather_cp=True)))
 
     for key, values in res.items():
         # each rank pads its contiguous share to the full response; the shares do not overlap
         full_resps = []
-        for value, sample_rows, response_length in zip(values, layout, response_lengths, strict=True):
+        for value, sample_rows, span in zip(values, layout, spans, strict=True):
             ((start, end),) = sample_rows.response_ranges
-            full_resp = F.pad(value, (0, 0) * (value.ndim - 1) + (start, response_length - end))
-            assert full_resp.size(0) == response_length, f"Expected {response_length}, got {full_resp.size(0)}"
+            full_resp = F.pad(value, (0, 0) * (value.ndim - 1) + (start, span.response_length - end))
+            assert (
+                full_resp.size(0) == span.response_length
+            ), f"Expected {span.response_length}, got {full_resp.size(0)}"
             full_resps.append(full_resp)
 
         # Single differentiable all-reduce to gather full response from all CP ranks
@@ -460,14 +489,12 @@ def allgather_cp_redistribute(
         all_cat = dist.nn.all_reduce(all_cat, group=cp_group)
 
         # Re-slice each sample into zigzag CP pattern
-        new_values = []
-        for idx, (full_resp, total_length, response_length) in enumerate(
-            zip(all_cat.split(response_lengths, dim=0), total_lengths, response_lengths, strict=False)
-        ):
-            max_seq_len = max_seq_lens[idx] if max_seq_lens is not None else None
-            new_values.append(
-                slice_log_prob_with_cp(full_resp, total_length, response_length, args.qkv_format, max_seq_len)
+        new_values = [
+            slice_log_prob_with_cp(
+                full_resp, span.total_length, span.response_length, args.qkv_format, span.max_seq_len
             )
+            for full_resp, span in zip(all_cat.split(response_lengths, dim=0), spans, strict=True)
+        ]
 
         res[key] = new_values
 
@@ -484,7 +511,7 @@ def slice_log_prob_with_cp(
     if get_parallel_state().cp.size == 1:
         return log_prob
     (start_0, end_0), (start_1, end_1) = zigzag_response_ranges(
-        total_length, response_length, qkv_format, max_token_len
+        SampleSpan(total_length, response_length, max_token_len), CPLayout.current(qkv_format)
     )
     if isinstance(log_prob, list):
         return log_prob[start_0:end_0] + log_prob[start_1:end_1]
@@ -508,11 +535,10 @@ def assemble_log_prob_from_cp(
     missing = sorted(set(range(cp_size)) - set(chunks))
     assert not missing, f"cp ranks {missing} missing; cannot reassemble a partial group"
 
+    span = SampleSpan(total_length, response_length, max_seq_len)
     out = torch.zeros(response_length, dtype=next(iter(chunks.values())).dtype)
     for cp_rank, chunk in chunks.items():
-        ranges = zigzag_response_ranges(
-            total_length, response_length, qkv_format, max_seq_len, cp_rank=cp_rank, cp_size=cp_size
-        )
+        ranges = zigzag_response_ranges(span, CPLayout(qkv_format, cp_rank, cp_size))
         taken = 0
         for start, end in ranges:
             out[start:end] = chunk[taken : taken + end - start]

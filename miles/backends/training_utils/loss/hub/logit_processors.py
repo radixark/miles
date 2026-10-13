@@ -5,9 +5,11 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.data.context_parallel import (
+    CPLayout,
     LocalResponseRows,
     allgather_cp_redistribute,
     iter_local_response_rows,
+    sample_spans,
 )
 from miles.backends.training_utils.data.sampling_mask import (
     build_local_sampling_mask,
@@ -46,11 +48,8 @@ def _local_response_layout(
     flat_logits = _flatten_logits(logits, args.qkv_format, max_seq_lens)
     layout = iter_local_response_rows(
         flat_logits.size(0),
-        qkv_format=args.qkv_format,
-        allgather_cp=args.allgather_cp,
-        total_lengths=total_lengths,
-        response_lengths=response_lengths,
-        max_seq_lens=max_seq_lens,
+        sample_spans(total_lengths, response_lengths, max_seq_lens),
+        CPLayout.current(args.qkv_format, allgather_cp=args.allgather_cp),
     )
     return flat_logits, layout
 
