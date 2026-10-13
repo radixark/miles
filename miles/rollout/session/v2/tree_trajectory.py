@@ -5,7 +5,6 @@ key. Everything here is synchronous pure data — serving policy,
 concurrency, and tokenization live one layer up in ``session_state``.
 """
 
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,7 +26,7 @@ class TrajectoryNode:
     response_id: str  # upstream response id: the agent-branch <-> leaf join key
     record: SessionRecord
     finish_reason: str
-    # Full resolved request for this generation, isolated from mutable request data.
+    # Full resolved request for this generation, held by reference: read-only once committed.
     turn_args: dict[str, Any] = field(default_factory=dict)
     parent: "TrajectoryNode | None" = None
     children: list["TrajectoryNode"] = field(default_factory=list, repr=False)
@@ -96,7 +95,7 @@ class SessionTree:
             response_id=response_id,
             record=record,
             finish_reason=finish_reason,
-            turn_args=deepcopy(turn_args or {}),
+            turn_args=turn_args or {},
             parent=parent,
         )
         self.nodes.append(node)
