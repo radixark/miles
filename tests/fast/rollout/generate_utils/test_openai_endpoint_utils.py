@@ -458,6 +458,25 @@ async def test_post_buffer_no_retry_returns_the_body_as_a_writable_array(body):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(not hasattr(mmap, "MAP_POPULATE"), reason="MAP_POPULATE is Linux-only")
+async def test_post_buffer_no_retry_prefaults_the_reply_buffer_on_a_worker_thread(monkeypatch):
+    allocations = []
+    real_mmap = mmap.mmap
+
+    def recording_mmap(*args, **kwargs):
+        allocations.append((threading.get_ident(), kwargs["flags"]))
+        return real_mmap(*args, **kwargs)
+
+    monkeypatch.setattr(mmap, "mmap", recording_mmap)
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        reply = await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert reply.tobytes() == b"sample"
+    [(thread, flags)] = allocations
+    assert thread != threading.get_ident()
+    assert flags & mmap.MAP_POPULATE
+
+
+@pytest.mark.asyncio
 async def test_post_buffer_no_retry_works_without_linux_prefault_support(monkeypatch):
     monkeypatch.delattr(mmap, "MAP_POPULATE", raising=False)
     async with _ReplyServer(_reply(200, b"sample")) as server:
