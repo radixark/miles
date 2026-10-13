@@ -58,8 +58,8 @@ PERF_ARGS+=(
 
 | Flag | Notes |
 |---|---|
-| `--mtp-num-layers` | MTP layers to build (1 matches GLM/DeepSeek release defaults). Megatron trains them whenever they exist, so pass it with `--enable-mtp-training`, or 0 to build none. |
-| `--enable-mtp-training` | Train the MTP layers alongside the policy. Megatron only; requires `--mtp-num-layers` > 0. |
+| `--mtp-num-layers` | MTP layers the model has (1 matches GLM/DeepSeek release defaults). Built only with `--enable-mtp-training`. |
+| `--enable-mtp-training` | Build and train the MTP layers alongside the policy (Megatron only). Without it no MTP layer is built, so exported checkpoints carry no MTP weights. |
 | `--mtp-loss-scaling-factor` | Weight of the MTP loss in the combined gradient (default `0.2`). |
 
 <Note>

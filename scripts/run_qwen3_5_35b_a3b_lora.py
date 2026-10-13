@@ -188,8 +188,6 @@ def _train(args: ScriptArgs):
     save_args = f"--save-interval 1 --save {load_save_path} "
 
     misc_args = (
-        # LoRA trains no MTP layer, so drop the one the model script builds
-        "--mtp-num-layers 0 "
         "--attention-dropout 0.0 --hidden-dropout 0.0 "
         "--update-weight-buffer-size 536870912 "
         f"--actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --colocate "

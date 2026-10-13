@@ -81,7 +81,6 @@ MODEL_ARGS_LINE="$(python3 "<REPO_ROOT>/miles/utils/external_utils/model_args_ut
   --rollout-num-gpus 4
   --sglang-mem-fraction-static 0.8
   --sglang-remote-instance-weight-loader-start-seed-via-transfer-engine '--sglang-load-format dummy'
-  --mtp-num-layers 0
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32

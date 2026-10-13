@@ -119,7 +119,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-lora-backend triton 
   --save-interval 1
   --save /personal/checkpoints/260101-000000-000 
-  --mtp-num-layers 0
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --update-weight-buffer-size 536870912
