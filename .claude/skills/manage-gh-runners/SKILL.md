@@ -1,6 +1,6 @@
 ---
 name: manage-gh-runners
-description: Add, remove, list, or swap GitHub Actions self-hosted runners on a CI host that uses the env-var-driven `gh-runner` docker image (raw `docker run`, no compose). Triggers, "add gh runner", "remove gh runner", "list ci runners", or similar. Run `setup-ci-host` first if /data/miles_ci is not yet provisioned. Boundary vs the `actions-runner` + docker-compose flow documented in `tests/ci/README.md`, only use this skill when `docker ps` shows the `gh-runner` image. Does NOT prepare the host filesystem layout — that is `setup-ci-host`'s job.
+description: Add, remove, list, or swap GitHub Actions self-hosted runners on a CI host that uses the env-var-driven `gh-runner` docker image (raw `docker run`, no compose). Triggers, "add gh runner", "remove gh runner", "list ci runners", or similar. Run `setup-ci-host` first if /data/miles_ci is not yet provisioned. Boundary vs the `actions-runner` + docker-compose flow documented in `tests/ci/README.md`, only use this skill when `docker ps` shows the `gh-runner` image. Does NOT prepare the host filesystem layout — that is `setup-ci-host`'s job. Host tags (`--tags aliyun`) give job containers RDMA on RoCE hosts.
 user_invocable: true
 ---
 
@@ -45,6 +45,7 @@ export REPO_URL=https://github.com/<org>/<repo>
 
 ./manage-runners.sh list
 ./manage-runners.sh add    --name <host>-4gpu-0 --cvd 0,1,2,3 --hwtype h200 --ngpu 4 --token <REG_TOKEN>
+./manage-runners.sh add    --name <host>-4gpu-0 --cvd 0,1,2,3 --hwtype h200 --ngpu 4 --token <REG_TOKEN> --tags aliyun
 ./manage-runners.sh remove --name <host>-4gpu-0 --token <REG_TOKEN>
 ```
 
@@ -78,6 +79,53 @@ host's physical GPU count. Example 4+2+2 split on an 8-GPU H200 host:
 | `<host>-4gpu-0` | `0,1,2,3` |
 | `<host>-2gpu-0` | `4,5` |
 | `<host>-2gpu-1` | `6,7` |
+
+## Host tags
+
+`--tags` adds comma-separated host tags as runner labels and enables per-tag
+runner setup. Changing a runner's tags means `remove` + `add`: GitHub keeps the
+labels a runner registered with.
+
+### `aliyun`: RDMA in job containers on RoCE hosts
+
+aliyun hosts are RoCE: eight `mlx5_bond_N` LAG devices on `bond0`-`bond7`, each
+rail its own IPv6 `/64` with the host at `::1`, and cross-rail or cross-host
+traffic routed by a `/46` route via a per-rail gateway. GitHub attaches each job
+container to a runner-created bridge network (`container.options` cannot set
+`--network`). The HCAs are visible there, but their GIDs belong to netdevs
+outside the container's network namespace, so `ibv_modify_qp` to RTR fails with
+`ENODEV`: Mooncake, NVSHMEM and plain verbs all fail. IB hosts do not need this
+tag.
+
+With `--tags aliyun`, `add` also:
+
+* creates one `rdma-railN` docker network per bond, once per host: ipvlan L2
+  (it keeps the bond's MAC; the fabric drops macvlan MACs), IPv6 only in the
+  rail's `/64` with containers in `<prefix>:ffff::/80`, no gateway (one would
+  install an IPv6 default route through a nonexistent next hop), and the host's
+  non-connected routes on that bond in the `rdma.routes` label;
+* installs [`hooks/aliyun/docker`](hooks/aliyun/docker) under
+  `/data/runner-setup/hooks/aliyun`, mounts it read-only first in the runner
+  container's `PATH`, and checks that the runner resolves `docker` to it.
+
+The runner resolves `docker` through `PATH` and runs `docker create`, then
+`docker start <id>`, before any job step. The hook passes every command through
+except `docker start`: after a successful start of a container on
+`github_network_*`, it connects every `rdma-railN` and installs the routes,
+running the host's `ip` in the job's network namespace through a short-lived
+`--pid host --privileged` helper from the runner's own image. Any failure fails
+the start, so a job never runs without RDMA silently. The job's IPv4 networking
+(default route, Ray and SGLang node IPs) stays on the GitHub bridge. A runner
+started as a service instead of this container reads `PATH` from
+`RUNNER_DIR/.path`.
+
+Check a tagged runner: `docker exec <name> sh -c 'command -v docker'` prints
+`/opt/runner-hooks/aliyun/docker`, and a job container started through it lists
+eight `rdma-railN` networks and eight `/46` routes. On aliyun-2 a cross-rail
+`ib_write_bw` inside such a container (8 MiB messages, 4 QPs) reached 388 Gb/s,
+and Mooncake CPU-to-CPU reached 92-106 GB/s, matching host networking;
+`docker start` takes about 2.4 s longer. To undo, recreate the runner without
+the tag; the networks are inert without attached containers.
 
 ## Why the script does what it does
 

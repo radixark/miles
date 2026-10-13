@@ -22,6 +22,9 @@ REPO_URL=${REPO_URL:-}
 IMAGE=${IMAGE:-gh-runner:latest}
 SETUP_ROOT=/data/runner-setup/data
 CACHE_ROOT=/data/runner-cache
+HOOK_ROOT=/data/runner-setup/hooks
+SKILL_DIR=$(cd "$(dirname "$0")" && pwd)
+DEFAULT_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -29,7 +32,7 @@ usage() {
   cat >&2 <<EOF
 usage:
   $0 list
-  $0 add    --name NAME --cvd CVD --hwtype HWTYPE --ngpu N --token TOKEN
+  $0 add    --name NAME --cvd CVD --hwtype HWTYPE --ngpu N --token TOKEN [--tags TAGS]
   $0 remove --name NAME [--token TOKEN]
 
 flags:
@@ -37,6 +40,9 @@ flags:
   --cvd CVD        CUDA_VISIBLE_DEVICES, e.g. 0,1,2,3
   --hwtype TYPE    hardware label, e.g. h200 / h100
   --ngpu N         gpu-count for the \${N}gpu meta-label (must match #devices in --cvd)
+  --tags TAGS      comma-separated host tags, also added as runner labels.
+                   aliyun: RoCE host; job containers get the host's RDMA view
+                   (rdma-rail networks + the hooks/aliyun docker wrapper)
   --token TOKEN    registration token from
                    https://github.com/<org>/<repo>/settings/actions/runners/new
                    (the same token is accepted for config.sh remove)
@@ -55,6 +61,7 @@ parse_flags() {
       --cvd)    CVD=$2; shift 2 ;;
       --hwtype) HWTYPE=$2; shift 2 ;;
       --ngpu)   NGPU=$2; shift 2 ;;
+      --tags)   TAGS=$2; shift 2 ;;
       --token)  TOKEN=$2; shift 2 ;;
       *) die "unknown flag: $1" ;;
     esac
@@ -77,8 +84,27 @@ cmd_list() {
   done
 }
 
+# One gateway-less IPv6 ipvlan L2 network per RoCE bond (ipvlan keeps the bond's
+# MAC, the only one the fabric forwards), in the bond's /64 above the host's ::1.
+# The host's non-connected routes on that bond ride along as a label for the
+# aliyun docker hook.
+ensure_rdma_networks() {
+  local dev net pfx routes
+  for dev in $(ls /sys/class/net | grep -E '^bond[0-9]+$'); do
+    net=rdma-rail${dev#bond}
+    docker network inspect "$net" >/dev/null 2>&1 && continue
+    pfx=$(ip -6 -o addr show dev "$dev" scope global | awk '$4 ~ /::1\/64$/ {sub(/::1\/64$/, "", $4); print $4; exit}')
+    [ -n "$pfx" ] || die "$dev has no <prefix>::1/64 address"
+    routes=$(ip -6 route show dev "$dev" | awk '$2 == "via" {m = ""; for (i = 3; i <= NF; i++) if ($i == "metric") m = " metric " $(i + 1); print $1 " via " $3 m}' | paste -sd, -)
+    docker network create -d ipvlan -o ipvlan_mode=l2 -o parent="$dev" --ipv4=false --ipv6 \
+      --subnet "$pfx::/64" --ip-range "$pfx:ffff::/80" --label rdma.routes="$routes" "$net" >/dev/null
+    echo "created $net on $dev ($pfx::/64, routes: ${routes:-none})"
+  done
+  docker network ls --filter label=rdma.routes -q | grep -q . || die "no RoCE bonds found for the aliyun tag"
+}
+
 cmd_add() {
-  NAME=${NAME:-}; CVD=${CVD:-}; HWTYPE=${HWTYPE:-}; NGPU=${NGPU:-}; TOKEN=${TOKEN:-}
+  NAME=${NAME:-}; CVD=${CVD:-}; HWTYPE=${HWTYPE:-}; NGPU=${NGPU:-}; TAGS=${TAGS:-}; TOKEN=${TOKEN:-}
   [ -n "$NAME" ] && [ -n "$CVD" ] && [ -n "$HWTYPE" ] && [ -n "$NGPU" ] && [ -n "$TOKEN" ] \
     || die "add requires --name --cvd --hwtype --ngpu --token (see --help)"
   [ -n "$REPO_URL" ] || die "REPO_URL not set; export REPO_URL=https://github.com/<org>/<repo>"
@@ -91,7 +117,13 @@ cmd_add() {
     die "container $NAME already exists; remove it first or pick a different --name"
   fi
 
-  local labels="self-hosted,Linux,X64,gpu-runner,$NAME,$HWTYPE,${NGPU}gpu"
+  local labels="self-hosted,Linux,X64,gpu-runner,$NAME,$HWTYPE,${NGPU}gpu${TAGS:+,$TAGS}"
+  local hook_args=()
+  if [[ ",$TAGS," == *",aliyun,"* ]]; then
+    ensure_rdma_networks
+    install -D -m 0755 "$SKILL_DIR/hooks/aliyun/docker" "$HOOK_ROOT/aliyun/docker"
+    hook_args=(-v "$HOOK_ROOT/aliyun:/opt/runner-hooks/aliyun:ro" -e "PATH=/opt/runner-hooks/aliyun:$DEFAULT_PATH")
+  fi
   mkdir -p "$SETUP_ROOT/$NAME" "$CACHE_ROOT/$NAME/.cache"
 
   docker run -d --name "$NAME" \
@@ -106,7 +138,13 @@ cmd_add() {
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$SETUP_ROOT/$NAME:$SETUP_ROOT/$NAME" \
     -v "$CACHE_ROOT/$NAME/.cache:/root/.cache" \
+    "${hook_args[@]}" \
     "$IMAGE" >/dev/null
+
+  if [ ${#hook_args[@]} -gt 0 ]; then
+    [ "$(docker exec "$NAME" sh -c 'command -v docker')" = /opt/runner-hooks/aliyun/docker ] \
+      || die "$NAME does not resolve docker to the aliyun hook"
+  fi
 
   echo "started $NAME (cvd=$CVD, labels=$labels)"
   echo "tail logs with: docker logs -f $NAME"
