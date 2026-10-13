@@ -50,7 +50,6 @@ CASE = CaseConfig(
     use_fp8_rollout=True,
     enable_mtp_training=False,
     use_r3=False,
-    check_weight_update_selector="target",
     # miles has no VLM/vision implementation on the training side, so vision weights are
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),

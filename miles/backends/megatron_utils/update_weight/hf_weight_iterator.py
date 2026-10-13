@@ -11,7 +11,6 @@ from collections.abc import Sequence
 
 import torch
 import torch.distributed as dist
-from megatron.core.utils import unwrap_model
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
@@ -35,9 +34,6 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             and self.quantization_config["quant_method"] == "compressed-tensors"
             else None
         )
-        trainer_has_mtp = bool(unwrap_model(self.model)[0].config.mtp_num_layers)
-        if self.args.sglang_speculative_algorithm and not trainer_has_mtp:
-            self.weight_update_selector = "target"
 
     def _hf_atomic_update_groups(self):
         return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.q_lora_rank)

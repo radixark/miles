@@ -17,6 +17,7 @@ from miles.backends.megatron_utils.megatron_config import (
 )
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.backends.training_utils.weight_update.session import weight_update_selector
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
@@ -2247,11 +2248,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--check-weight-update-selector",
                 type=str,
-                default="all",
+                default=None,
                 choices=["all", "target", "draft"],
-                help="Which model the post-update equality check covers: 'all' (target + "
-                "draft/MTP), 'target' (target model only; skips the draft, e.g. when MTP "
-                "training is off), or 'draft' (draft/MTP worker only).",
+                help="Which engine runners the post-update equality check snapshots, resets and compares: "
+                "'all' (target + draft/MTP), 'target' or 'draft'. Defaults to the runners the weight sync "
+                "covers, which leaves out a speculative draft unless --enable-mtp-training trains it.",
             )
             parser.add_argument(
                 "--check-weight-update-skip-list",
@@ -3610,6 +3611,10 @@ def miles_validate_args(args):
         and not args.ci_disable_weight_update_checker
     ):
         args.check_weight_update_equal = True
+
+    if args.check_weight_update_selector is None:
+        # reset_tensors scrambles every tensor it covers, so it must cover only what the sync rewrites
+        args.check_weight_update_selector = weight_update_selector(args)
 
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode == "p2p":

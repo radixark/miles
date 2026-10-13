@@ -3086,3 +3086,28 @@ def test_fully_async_without_over_sampling_batch_size_does_not_warn(caplog):
         _resolve_rollout_functions(args)
 
     assert "over-sampling-batch-size" not in caplog.text
+
+
+class TestCheckWeightUpdateSelectorDefault:
+    """reset_tensors scrambles every tensor the checker covers, so by default it covers what the sync rewrites."""
+
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        return args
+
+    @pytest.mark.parametrize(
+        ("extra", "selector"),
+        [
+            ([], "all"),
+            (["--sglang-speculative-algorithm", "EAGLE"], "target"),
+            (["--sglang-speculative-algorithm", "EAGLE", "--enable-mtp-training", "--mtp-num-layers", "1"], "all"),
+            (["--sglang-speculative-algorithm", "EAGLE", "--check-weight-update-selector", "draft"], "draft"),
+        ],
+        ids=["no_draft", "frozen_draft", "trained_draft", "explicit"],
+    )
+    def test_the_checker_covers_what_the_sync_rewrites_unless_narrowed(self, extra, selector):
+        assert self._validate(extra).check_weight_update_selector == selector
