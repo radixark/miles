@@ -1686,7 +1686,7 @@ def test_stream_optimizer_state_to_disk_rejects_reading_grads_outside_the_step(m
 
 
 class TestMtpTrainingValidation:
-    """--enable-mtp-training states the intent; Megatron trains the MTP layers whenever they exist."""
+    """--mtp-num-layers describes the model; only --enable-mtp-training builds and trains the MTP layers."""
 
     def _validate(self, extra):
         parser = argparse.ArgumentParser()
@@ -1696,30 +1696,22 @@ class TestMtpTrainingValidation:
         miles_validate_args(args)
         return args
 
+    @pytest.mark.parametrize("backend", ["megatron", "fsdp", "torchtitan"])
+    def test_a_run_that_does_not_train_mtp_builds_no_mtp_layer(self, backend):
+        """Megatron trains every MTP layer it builds, so the model script's layer count alone builds none."""
+        assert self._validate(["--train-backend", backend, "--mtp-num-layers", "1"]).mtp_num_layers == 0
+
+    def test_mtp_training_keeps_the_layers(self):
+        assert self._validate(["--enable-mtp-training", "--mtp-num-layers", "1"]).mtp_num_layers == 1
+
+    def test_mtp_training_needs_layers_to_train(self):
+        with pytest.raises(AssertionError, match="needs --mtp-num-layers > 0"):
+            self._validate(["--enable-mtp-training"])
+
     @pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
-    @pytest.mark.parametrize(
-        "mtp_args",
-        [["--enable-mtp-training", "--mtp-num-layers", "1"], ["--mtp-num-layers", "1"]],
-        ids=["train", "layers"],
-    )
-    def test_backends_that_build_no_mtp_layers_reject_mtp(self, backend, mtp_args):
+    def test_backends_that_build_no_mtp_layers_reject_mtp_training(self, backend):
         with pytest.raises(AssertionError, match=f"the {backend} backend builds no MTP layers"):
-            self._validate(["--train-backend", backend] + mtp_args)
-
-    @pytest.mark.parametrize(
-        "mtp_args", [["--mtp-num-layers", "1"], ["--enable-mtp-training"]], ids=["layers_only", "intent_only"]
-    )
-    def test_megatron_requires_the_intent_and_the_layers_together(self, mtp_args):
-        with pytest.raises(AssertionError, match="Megatron trains the MTP layers whenever"):
-            self._validate(mtp_args)
-
-    def test_a_rollout_only_run_trains_nothing_so_layers_need_no_intent(self):
-        assert (
-            self._validate(
-                ["--mtp-num-layers", "1", "--debug-rollout-only", "--rollout-num-gpus", "8"]
-            ).enable_mtp_training
-            is False
-        )
+            self._validate(["--train-backend", backend, "--enable-mtp-training", "--mtp-num-layers", "1"])
 
     @pytest.mark.parametrize(("extra", "expect_warning"), [([], False), (["--no-mtp-detach-heads"], True)])
     def test_mtp_heads_are_detached_unless_the_user_opts_out(self, caplog, extra, expect_warning):

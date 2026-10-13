@@ -103,7 +103,6 @@ MODEL_ARGS_LINE="$(python3 "<REPO_ROOT>/miles/utils/external_utils/model_args_ut
   --sglang-moe-runner-backend triton
   --sglang-fp8-gemm-backend triton
   --sglang-remote-instance-weight-loader-start-seed-via-transfer-engine '--sglang-load-format dummy'
-  --mtp-num-layers 0
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32

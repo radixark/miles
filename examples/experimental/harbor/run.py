@@ -161,8 +161,6 @@ def execute(args: ScriptArgs):
         session_server_external_host=args.session_server_external_host,
     )
     misc_args = (
-        # this recipe trains no MTP layer, so drop the one the model script builds
-        "--mtp-num-layers 0 "
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "

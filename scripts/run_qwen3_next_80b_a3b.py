@@ -220,7 +220,7 @@ def execute(args: ScriptArgs):
         )
 
     # train the model script's MTP layer only when it serves as the EAGLE draft
-    mtp_args = "--enable-mtp-training " if args.recipe.enable_spec else "--mtp-num-layers 0 "
+    mtp_args = "--enable-mtp-training " if args.recipe.enable_spec else ""
 
     misc_args = (
         f"{mtp_args}"

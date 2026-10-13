@@ -2539,14 +2539,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_mtp_training_arguments(parser):
             """Add MTP training specific arguments."""
+            # The model's MTP layers; built only under --enable-mtp-training, since Megatron trains any it builds.
             reset_arg(parser, "--mtp-num-layers", type=int, default=None)
             reset_arg(parser, "--mtp-loss-scaling-factor", type=float, default=0.2)
             parser.add_argument(
                 "--enable-mtp-training",
                 action="store_true",
                 default=False,
-                help="Train the MTP layers alongside the policy (megatron only). Megatron trains the MTP layers "
-                "whenever --mtp-num-layers builds them, so the two must be passed together.",
+                help="Build and train the model's --mtp-num-layers MTP layers alongside the policy (megatron "
+                "only). Without it no MTP layer is built, so exported checkpoints carry no MTP weights.",
             )
             # Megatron's own TransformerConfig flag, defaulted on so MTP loss trains only the MTP layers.
             reset_arg(parser, "--mtp-detach-heads", action="store_true", default=True)
@@ -3868,21 +3869,23 @@ def miles_validate_args(args):
                 "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
             )
 
-    if args.enable_mtp_training or args.mtp_num_layers:
-        assert args.train_backend == "megatron", (
-            f"MTP training is megatron-only: the {args.train_backend} backend builds no MTP layers, so drop "
-            "--enable-mtp-training and --mtp-num-layers"
-        )
-        if not args.debug_rollout_only:
-            assert args.enable_mtp_training and args.mtp_num_layers, (
-                "Megatron trains the MTP layers whenever --mtp-num-layers builds them: pass --enable-mtp-training "
-                "with --mtp-num-layers > 0 to train MTP, or --mtp-num-layers 0 to build none"
-            )
-        if args.enable_mtp_training and not args.mtp_detach_heads:
+    if args.enable_mtp_training:
+        assert (
+            args.train_backend == "megatron"
+        ), f"--enable-mtp-training is megatron-only: the {args.train_backend} backend builds no MTP layers"
+        assert args.mtp_num_layers, "--enable-mtp-training needs --mtp-num-layers > 0 to build the MTP layers"
+        if not args.mtp_detach_heads:
             logger.warning(
                 "--no-mtp-detach-heads: MTP loss gradients flow back into the main model's embedding, "
                 "output layer and hidden states, so the MTP loss also trains the policy"
             )
+    elif args.mtp_num_layers:
+        # Megatron trains every MTP layer it builds, so a run that does not train MTP builds none
+        logger.info(
+            f"--mtp-num-layers {args.mtp_num_layers} without --enable-mtp-training: building no MTP layers, "
+            "so exported checkpoints carry no MTP weights"
+        )
+        args.mtp_num_layers = 0
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True

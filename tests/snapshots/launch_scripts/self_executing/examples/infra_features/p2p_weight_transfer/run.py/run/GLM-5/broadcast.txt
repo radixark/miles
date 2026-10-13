@@ -105,7 +105,6 @@ MODEL_ARGS_LINE="$(python3 "<REPO_ROOT>/miles/utils/external_utils/model_args_ut
   --sglang-chunked-prefill-size 131072
   --sglang-watchdog-timeout 3600
   --sglang-disable-cuda-graph '--sglang-load-format dummy'
-  --mtp-num-layers 0
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
