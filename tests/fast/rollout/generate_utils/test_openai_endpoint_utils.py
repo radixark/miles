@@ -457,6 +457,15 @@ async def test_post_buffer_no_retry_returns_the_body_as_a_writable_array(body):
     assert server.requests == [b'{"max_seq_len": 7}']
 
 
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_works_without_linux_prefault_support(monkeypatch):
+    monkeypatch.delattr(mmap, "MAP_POPULATE", raising=False)
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        reply = await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert reply.flags.writeable and reply.tobytes() == b"sample"
+    assert server.requests == [b"{}"]
+
+
 _ERROR_BODY = b"cursor 3 != len(accumulated_token_ids) 4"
 
 
