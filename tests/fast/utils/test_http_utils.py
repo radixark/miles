@@ -514,6 +514,28 @@ class TestGeneralHttpClientProvider:
 
         assert others and others[0] is not mine
 
+    async def test_a_closed_loops_client_is_dropped_on_the_next_lookup(self, monkeypatch):
+        """A caller that keeps creating loops (repeated asyncio.run) must not accumulate one client,
+        and its keep-alive sockets, per loop. Eviction is lazy: the first loop's entry goes when the
+        second loop looks one up."""
+        monkeypatch.setattr(GeneralHttpClientProvider, "_clients", {})
+        seen: list[httpx.AsyncClient] = []
+
+        async def _on_a_fresh_loop():
+            return GeneralHttpClientProvider.client()
+
+        def _run_two_loops_in_turn():
+            seen.append(asyncio.run(_on_a_fresh_loop()))
+            seen.append(asyncio.run(_on_a_fresh_loop()))
+
+        thread = threading.Thread(target=_run_two_loops_in_turn)
+        thread.start()
+        thread.join(timeout=10)
+
+        first, second = seen
+        assert first is not second
+        assert list(GeneralHttpClientProvider._clients.values()) == [second]
+
     def test_calling_it_off_loop_fails_loudly(self):
         """Building the client outside a loop would bind it to whichever loop ran next."""
         with pytest.raises(RuntimeError):
