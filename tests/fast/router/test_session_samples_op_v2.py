@@ -1068,6 +1068,26 @@ def _exploding_postprocessor(picked_samples, session_metadata):
     raise RuntimeError("postprocess bug")
 
 
+def _clear_session_mismatch(picked_samples, session_metadata):
+    session_metadata["tito_session_mismatch"].clear()
+    return picked_samples
+
+
+async def test_postprocessor_editing_session_mismatch_keeps_the_latest_sample_mismatch(monkeypatch):
+    """The latest leaf reuses the session's mismatch; a hook editing the session's must not change the sample's."""
+    with function_registry.temporary("test_hooks.clear_mismatch", _clear_session_mismatch):
+        hooked = _build_core_with_hooks(session_sample_postprocessor_path="test_hooks.clear_mismatch")
+        monkeypatch.setattr(hooked.registry, "compute_mismatch", lambda *args, **kwargs: [{"type": "planted"}])
+        sid = await _rolled_back_session(hooked)
+
+        response = await hooked.collect_samples(sid, max_seq_len=None)
+
+        assert response.status_code == 200
+        reply = decode_samples_and_merge_input_sample(bytes(response.body), Sample(), fields=COMPUTED_FIELDS_V2)
+        (sample,) = reply.samples
+        assert sample.metadata["tito_session_mismatch"] == [{"type": "planted"}]
+
+
 class TestConfiguredPostprocessor:
     async def test_configured_postprocessor_failure_maps_to_422_with_identity(self):
         """A configured postprocessor is loaded and invoked, and its failure is a 422 naming that postprocessor."""

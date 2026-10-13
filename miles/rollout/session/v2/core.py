@@ -1,5 +1,6 @@
 import logging
 import time
+from copy import deepcopy
 
 import orjson
 from starlette.responses import Response
@@ -103,7 +104,8 @@ class SessionCoreV2(SessionCore):
                 max_seq_len=max_seq_len,
                 use_addition_r3=self.use_addition_r3,
                 # The latest generation is always a leaf; its mismatch is already in the session metadata.
-                computed_mismatch={session.latest().seq: metadata.get("tito_session_mismatch")},
+                # A copy: hooks may edit the session metadata, which must not reach that leaf's sample.
+                computed_mismatch={session.latest().seq: deepcopy(metadata.get("tito_session_mismatch"))},
             )
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
