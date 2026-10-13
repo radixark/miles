@@ -1,9 +1,10 @@
 """Resolve chat arguments before rendering or forwarding a request.
 
-``prepare_chat_request`` owns a copy of the client's input. Config rules apply
-Session server constraints and retain what the client asked the response to
-carry. The session's sampling defaults fill the fields the client omitted. The TITO
-tokenizer then applies model rules to the same full request.
+``prepare_chat_request`` owns a copy of the client's input, except ``messages``,
+which it shares read-only. Config rules apply Session server constraints and
+retain what the client asked the response to carry. The session's sampling
+defaults fill the fields the client omitted. The TITO tokenizer then applies
+model rules to the same full request.
 
 After rendering and a successful generation, the session records the complete
 resolved request as ``turn_args``. A continuation supplies that history to the
