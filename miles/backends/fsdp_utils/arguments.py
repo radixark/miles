@@ -29,6 +29,12 @@ class FSDPArgs:
 
     attn_implementation: str = "flash_attention_2"
 
+    # DiffusionGemma fixed-data SFT. The checkpoint selects this model-specific path.
+    diffusion_noise_epsilon: float = 0.001
+    diffusion_self_conditioning_probability: float = 0.5
+    diffusion_encoder_loss_weight: float = 1.0
+    diffusion_freeze_router: bool = True
+
     # Compute kernels. "hub" resolves the module-level kernels in plugins/hf_kernels/presets.py
     # from the Hugging Face Hub instead of the image's wheels; see plugins/hf_kernels/loader.py.
     kernel_backend: str = "native"  # {"native", "hub"}

@@ -65,6 +65,24 @@ def _load_rollout_data(
     return loaded_rollout_data
 
 
+def test_bshd_padding_without_megatron_compression_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = _args("bshd")
+    del args.compress_ratios
+    rollout_data = {
+        "tokens": [list(range(11))],
+        "loss_masks": [[1] * 7],
+        "total_lengths": [11],
+        "response_lengths": [7],
+    }
+    monkeypatch.setattr(data_utils, "process_rollout_data", lambda *args, **kwargs: (rollout_data, object()))
+    monkeypatch.setattr(data_utils, "get_parallel_state", lambda: _parallel_state(cp_size=1))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
+
+    loaded, _ = data_utils.get_rollout_data(args, object())
+
+    assert loaded["max_seq_lens"] == [16]
+
+
 @pytest.mark.parametrize("opd_key", ["teacher_log_probs", "opd_reverse_kl"])
 @pytest.mark.parametrize(
     ("qkv_format", "cp_size", "cp_rank", "expected_indices"),
