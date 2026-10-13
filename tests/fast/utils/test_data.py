@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from argparse import Namespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from tests.fast.fixtures.driver_fakes import FakeObjectStore
@@ -14,6 +15,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import (
     Dataset,
     RolloutDataPack,
+    filter_long_prompt,
     process_rollout_data,
     remove_rollout_data_refs,
     remove_train_output_refs,
@@ -26,6 +28,7 @@ from miles.utils.object_store import (
     ValueSpec,
     _MooncakeStoreObjectRef,
 )
+from miles.utils.types import Sample
 
 
 class _RecordingProcessor:
@@ -77,6 +80,29 @@ def test_mixed_dataset_uses_processor_only_for_structured_prompts(tmp_path) -> N
         "videos": [],
     }
     assert processor.prompts == [multimodal_prompt]
+
+
+def test_length_filter_uses_saved_media_with_rendered_prompts() -> None:
+    text_samples = [Sample(prompt="short text"), Sample(prompt="long text")]
+    images = [object()]
+    multimodal_samples = [
+        Sample(prompt="<image> short", multimodal_inputs={"images": images}),
+        Sample(prompt="<image> long", multimodal_inputs={"images": images}),
+    ]
+    tokenizer = Mock(return_value={"input_ids": [[1] * 4, [1] * 5]})
+    processed = []
+
+    def processor(*, text, images, **kwargs):
+        processed.append((text, images))
+        return {"input_ids": [[1] * (4 if text.endswith("short") else 5)]}
+
+    processor.extract_media = Mock(side_effect=AssertionError("Rendered prompts no longer contain media"))
+    samples = filter_long_prompt(text_samples + multimodal_samples, tokenizer, processor, max_length=4)
+
+    assert samples == [text_samples[0], multimodal_samples[0]]
+    tokenizer.assert_called_once_with(["short text", "long text"], add_special_tokens=False)
+    assert [text for text, _ in processed] == ["<image> short", "<image> long"]
+    assert all(media is images for _, media in processed)
 
 
 def _ref(payload: Any) -> StoreObjectRef:
