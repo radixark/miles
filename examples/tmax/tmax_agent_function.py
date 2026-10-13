@@ -22,7 +22,13 @@ Failure semantics (see docs/deep-dive/agentic-rollout-internals.md section 4.5):
 * sandbox infra failure after the first model call: ``reward=None``, which the
   missing-reward filter turns into a dropped group (open-instruct instead
   scores these 0 under SWERL_RESET_FAILURE_ZERO_REWARD=1);
-* sandbox OOM or episode wall-clock cap: reward 0, as in open-instruct.
+* sandbox OOM or episode wall-clock cap: reward 0, as in open-instruct;
+* over-sampling abort: ``reward=None``; the group is discarded anyway.
+
+Each call runs in its own process under ``--custom-agent-function-mode subproc``
+(the default), so the abort hook, which runs in the rollout process, reaches
+in-flight episodes through a generation counter in a file scoped to that rollout
+process, plus removal of the rollout's containers to cut long commands short.
 
 Env vars:
   TMAX_TASK_DATA_DIR       directory holding one sub-directory per task_id (required).
@@ -36,14 +42,17 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from openai import AsyncOpenAI
 from tmax_sandbox import SandboxInfraError, SandboxOOMError, TmaxSandbox, remove_owned_sandboxes
 
-from miles.rollout.agentic.session import resolve_session_url
+from miles.rollout.agentic.rollout_limits import current_scope
+from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
 
@@ -75,23 +84,27 @@ class _Aborted(Exception):
     """The rollout step aborted this episode (over-sampling); its group is discarded."""
 
 
-# One event per abort generation. `abort` sets the current one and installs a fresh one,
-# so episodes started after an abort are unaffected.
-_abort_event: asyncio.Event | None = None
+_ABORT_POLL_S = 1.0
 
 
-def _current_abort_event() -> asyncio.Event:
-    global _abort_event
-    if _abort_event is None:
-        _abort_event = asyncio.Event()
-    return _abort_event
+def _abort_generation_file() -> Path:
+    """Shared by the rollout process and its agent processes (they inherit its scope)."""
+    return Path(tempfile.gettempdir()) / f"miles-tmax-abort-{current_scope()}"
+
+
+def _abort_generation() -> int:
+    try:
+        return int(_abort_generation_file().read_text() or 0)
+    except FileNotFoundError:
+        return 0
 
 
 @dataclass
 class _Episode:
     task_id: str
     max_seq_len: int | None
-    abort_event: asyncio.Event
+    # The abort generation the episode started under; a later abort ends it, an earlier one does not.
+    abort_generation: int
     turns: int = 0
     tool_calls: int = 0
     end_reason: str = "max_steps"
@@ -111,9 +124,9 @@ async def run(
     metadata = metadata or {}
     task_id = metadata["task_id"]
     episode = _Episode(
-        task_id=task_id, max_seq_len=metadata.get("max_seq_len"), abort_event=_current_abort_event()
+        task_id=task_id, max_seq_len=metadata.get("max_seq_len"), abort_generation=_abort_generation()
     )
-    policy = AsyncOpenAI(base_url=resolve_session_url(base_url), api_key="EMPTY", timeout=3600)
+    policy = AsyncOpenAI(base_url=openai_session_url(base_url), api_key="EMPTY", timeout=3600)
     task_dir = os.path.join(os.environ["TMAX_TASK_DATA_DIR"], task_id)
     t_start = time.monotonic()
 
@@ -129,11 +142,14 @@ async def run(
             episode.end_reason, episode.reward = "episode_timeout", 0.0
         except SandboxOOMError:
             episode.end_reason, episode.reward = "oom", 0.0
-        except SandboxInfraError as e:
-            logger.warning(f"[{task_id}] sandbox infra failure, dropping group: {e}")
-            episode.end_reason, episode.reward = "infra_error", None
         except _Aborted:
             episode.end_reason, episode.reward = "aborted", None
+        except SandboxInfraError as e:
+            if _abort_generation() != episode.abort_generation:  # the abort hook removed the container
+                episode.end_reason, episode.reward = "aborted", None
+            else:
+                logger.warning(f"[{task_id}] sandbox infra failure, dropping group: {e}")
+                episode.end_reason, episode.reward = "infra_error", None
 
     metrics = _metrics(episode, time.monotonic() - t_start)
     logger.info(
@@ -145,9 +161,10 @@ async def run(
 
 async def abort(args) -> None:
     """Over-sampling abort hook: stop in-flight episodes so the step does not wait on them."""
-    global _abort_event
-    event, _abort_event = _current_abort_event(), asyncio.Event()
-    event.set()
+    path = _abort_generation_file()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(str(_abort_generation() + 1))
+    tmp.replace(path)  # atomic, so a reader never sees a half-written counter
     removed = await remove_owned_sandboxes()
     logger.info(f"TMax abort: signalled in-flight episodes, removed {removed} sandboxes")
 
@@ -224,7 +241,7 @@ async def _run_tool_call(episode: _Episode, box: TmaxSandbox, tool_call: Any) ->
 async def _race_abort(episode: _Episode, coro: Any) -> Any:
     """Await ``coro`` unless the rollout aborts first."""
     task = asyncio.ensure_future(coro)
-    abort_wait = asyncio.ensure_future(episode.abort_event.wait())
+    abort_wait = asyncio.ensure_future(_wait_for_abort(episode.abort_generation))
     try:
         await asyncio.wait({task, abort_wait}, return_when=asyncio.FIRST_COMPLETED)
     finally:
@@ -233,6 +250,11 @@ async def _race_abort(episode: _Episode, coro: Any) -> Any:
         task.cancel()
         raise _Aborted()
     return task.result()
+
+
+async def _wait_for_abort(started_under: int) -> None:
+    while _abort_generation() == started_under:
+        await asyncio.sleep(_ABORT_POLL_S)
 
 
 def _metrics(episode: _Episode, total_time: float) -> dict[str, Any]:

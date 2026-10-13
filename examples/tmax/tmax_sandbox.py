@@ -14,14 +14,19 @@ Behavior kept identical to open-instruct, since it shapes the reward:
 * reward = ``/logs/verifier/reward.txt`` clamped to [0, 1], 0 when missing,
 * an OOM-killed sandbox ends the episode with reward 0.
 
+Under ``--custom-agent-function-mode subproc`` (the default) each episode runs in
+a process of its own, so the limits shared across episodes (start and exec
+concurrency, one pull per image) are ``rollout_limits`` file locks scoped to the
+rollout process, and containers are labelled with that scope rather than a pid.
+
 Env vars:
   TMAX_DOCKER_HOST          Docker API endpoint (default: $DOCKER_HOST, else
                             unix:///run/podman/podman.sock).
   TMAX_SANDBOX_MEM_LIMIT    per-container memory limit (default: 4g).
   TMAX_COMMAND_TIMEOUT_S    per-bash-command timeout (default: 120).
   TMAX_TEST_TIMEOUT_S       verifier timeout (default: 600, open-instruct's floor).
-  TMAX_START_CONCURRENCY    concurrent container starts per process (default: 16).
-  TMAX_EXEC_CONCURRENCY     concurrent execs per process (default: 128).
+  TMAX_START_CONCURRENCY    concurrent container starts per rollout process (default: 16).
+  TMAX_EXEC_CONCURRENCY     concurrent execs per rollout process (default: 128).
   TMAX_REGISTRY_USERNAME /  optional pull credentials. Always sent explicitly, so the
   TMAX_REGISTRY_PASSWORD    client's ~/.docker/config.json credential helper is never
                             consulted; without them Podman uses its own auth.json.
@@ -39,12 +44,13 @@ from functools import cache
 
 import docker
 
+from miles.rollout.agentic.rollout_limits import current_scope, rollout_semaphore
+
 logger = logging.getLogger(__name__)
 
 SUBMIT_MARKER = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
 SANDBOX_LABEL = "miles_tmax_sandbox"
-# Containers are labelled with their creator so `abort` and sweeps only touch this process's sandboxes.
-OWNER = f"{socket.gethostname()}-{os.getpid()}"
+_OWNER_LABEL = f"{SANDBOX_LABEL}_owner"
 
 _MAX_OUTPUT_BYTES = 1_000_000
 _OBS_MAX_CHARS = 10_000
@@ -127,20 +133,9 @@ def _client() -> docker.DockerClient:
     return docker.DockerClient(base_url=_settings().docker_host, timeout=300)
 
 
-# Semaphores and pull locks are created lazily so they bind to the rollout event loop.
-@cache
-def _start_semaphore() -> asyncio.Semaphore:
-    return asyncio.Semaphore(_settings().start_concurrency)
-
-
-@cache
-def _exec_semaphore() -> asyncio.Semaphore:
-    return asyncio.Semaphore(_settings().exec_concurrency)
-
-
-@cache
-def _pull_lock(image: str) -> asyncio.Lock:
-    return asyncio.Lock()
+def owner() -> str:
+    """The rollout process this process's sandboxes belong to; shared by its agent processes."""
+    return f"{socket.gethostname()}-{current_scope()}"
 
 
 def truncate_observation(output: str) -> str:
@@ -238,22 +233,22 @@ class TmaxSandbox:
                 logger.warning(f"failed to remove sandbox {container.short_id}: {e!r}")
 
     async def _start(self) -> None:
-        async with _start_semaphore():
+        async with rollout_semaphore("tmax-start", _settings().start_concurrency):
             await self._ensure_image()
             self._container = await asyncio.to_thread(
                 _client().containers.create,
                 self._image,
                 command="sleep infinity",
                 detach=True,
-                labels={SANDBOX_LABEL: "1", f"{SANDBOX_LABEL}_owner": OWNER},
+                labels={SANDBOX_LABEL: "1", _OWNER_LABEL: owner()},
                 mem_limit=_settings().mem_limit,
                 memswap_limit=_settings().mem_limit,
             )
             await asyncio.to_thread(self._container.start)
 
     async def _ensure_image(self) -> None:
-        # Siblings of a GRPO group start the same image at once; pull it once per process.
-        async with _pull_lock(self._image):
+        # Siblings of a GRPO group start the same image at once; pull it once per rollout process.
+        async with rollout_semaphore(f"tmax-pull-{self._image}", 1):
             try:
                 await asyncio.to_thread(_client().images.get, self._image)
             except docker.errors.ImageNotFound:
@@ -281,7 +276,7 @@ class TmaxSandbox:
     async def _exec(self, command: str, timeout_s: int | None = None) -> ExecResult:
         timeout_s = timeout_s or _settings().command_timeout_s
         wrapped = f"timeout --signal=TERM --kill-after=10 {timeout_s} bash -c {shlex.quote(command)}"
-        async with _exec_semaphore():
+        async with rollout_semaphore("tmax-exec", _settings().exec_concurrency):
             exit_code, output = await self._exec_with_retries(wrapped)
         stdout = ((output[0] or b"") if output else b"")[:_MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
         stderr = ((output[1] or b"") if output else b"")[:_MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
@@ -310,9 +305,9 @@ class TmaxSandbox:
 
 
 async def remove_owned_sandboxes() -> int:
-    """Force-remove every sandbox this process created. Returns the count."""
+    """Force-remove every sandbox this rollout process's episodes created. Returns the count."""
     containers = await asyncio.to_thread(
-        _client().containers.list, all=True, filters={"label": f"{SANDBOX_LABEL}_owner={OWNER}"}
+        _client().containers.list, all=True, filters={"label": f"{_OWNER_LABEL}={owner()}"}
     )
     for container in containers:
         try:

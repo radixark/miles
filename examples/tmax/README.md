@@ -161,9 +161,12 @@ above 1 nat).
 - `--fully-async` rejects `--colocate` and `--rollout-function-path`, so `agent/*` metrics are only logged
   in synchronous mode; the per-episode log lines are written in both.
 - The abort hook matters only in synchronous mode: after over-sampling finishes a step, Miles waits for all
-  pending episodes. `abort` signals an event that every in-flight model call and bash command races
-  against, then removes this process's containers; aborted episodes return within ~10 s. The episodes are
-  not cancelled, because `as_completed_async` would re-raise the cancellation.
+  pending episodes. Each episode runs in its own process (`--custom-agent-function-mode subproc`, the
+  default), so `abort`, which runs in the rollout process, bumps a generation counter in a file scoped to
+  that process and removes its containers; every in-flight model call and bash command races against the
+  counter, and aborted episodes return within seconds. The episodes are not cancelled, because
+  `as_completed_async` would re-raise the cancellation. Limits shared across episodes (start and exec
+  concurrency, one pull per image) are `rollout_limits` file locks for the same reason.
 - With OPD the trainer is the bottleneck on a 2 + 2 split (a 455 s step, 241 s of it the teacher forward),
   so staleness climbs one version per step and would reach `--max-weight-staleness` on the next. Give the
   trainer more GPUs than the generator for async OPD.
@@ -190,7 +193,9 @@ above 1 nat).
   create cgroups, and the `/proc` bind it falls back to belongs to another PID namespace, which makes
   `cuInit` fail with CUDA error 304. Run the Miles image as the Beaker task itself and nest only the CPU
   sandboxes. `radixark/miles:latest` is CUDA 13; use `latest-cu12` on 570-series drivers.
-- `resolve_session_url` already appends `/v1`; agent functions pass its result to the OpenAI client as is.
+- `openai_session_url` already appends `/v1`; agent functions pass its result to the OpenAI client as is.
+- Qwen3.5 `torch_dist` checkpoints converted before the head-sharded linear-attention layout (upstream #3610)
+  are rejected at load; re-convert them from HF into a new `--model-dir`.
 - On B300 with TP=1 and no optimizer offload, Qwen3.5-9B training uses ~58 GB allocated per GPU, and a
   weight sync to the engines takes ~2.6 s.
 

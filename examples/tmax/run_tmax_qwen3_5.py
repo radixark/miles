@@ -78,7 +78,7 @@ from typing import Literal
 import pandas as pd
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 from tmax_prompts import TMAX_SYSTEM_PROMPT
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -109,8 +109,8 @@ app = typer.Typer()
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     model_name: _MODEL_NAMES = "Qwen3.5-9B"
     opd_teacher: _MODEL_NAMES | None = None
     opd_kl_coef: float = 1.0
@@ -168,8 +168,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.hf_download_dataset(_DATASET, data_dir=args.data_dir)
     if not Path(args.task_data_dir).exists():
         U.exec_command_cpu(
@@ -207,8 +208,9 @@ def _write_prompt_data(args: ScriptArgs) -> None:
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
@@ -330,7 +332,7 @@ def execute(args: ScriptArgs):
         f"{agent_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{misc_args} "
@@ -339,13 +341,12 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.recipe.megatron_model_type,
         megatron_path=args.megatron_path,
         train_script="train_async.py" if args.fully_async else "train.py",
         extra_env_vars={
-            "PYTHONPATH": f"{args.megatron_path}:{_SCRIPT_DIR}:{U.repo_base_dir}",
+            "PYTHONPATH": f"{args.megatron_path}:{_SCRIPT_DIR}:{command_utils.repo_base_dir}",
             "TMAX_TASK_DATA_DIR": args.task_data_dir,
             "TMAX_DOCKER_HOST": args.docker_host,
             "TMAX_MAX_STEPS": str(args.max_steps),
