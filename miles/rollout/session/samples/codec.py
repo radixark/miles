@@ -195,8 +195,9 @@ def decode_samples_and_merge_input_sample(
 
     ``fields`` must match the server's encode allowlist (v1 default); extra
     keys a newer server sent are ignored, so a v1 decode of a v2 payload
-    keeps exactly the v1 overlay semantics. Tensor fields (R3, top-k, sampling
-    mask) are views of ``payload``.
+    keeps exactly the v1 overlay semantics. R3 and top-k tensor fields are
+    views of the payload buffer (see ``_load_tensor_views``); a sampling mask
+    copies its ids and offsets.
     """
     tensors = _load_tensor_views(payload)  # ValueError/KeyError propagate: invalid container
     meta_arr = tensors.pop(_SAMPLES_META_KEY)  # KeyError propagates: missing meta is malformed

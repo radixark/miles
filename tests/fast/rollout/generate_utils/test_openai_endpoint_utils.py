@@ -471,7 +471,7 @@ async def test_post_buffer_no_retry_does_not_retry_and_carries_body():
     ("reply", "expected_error"),
     [
         pytest.param(_reply(200, b"x" * 50, declared_length=100), httpx.ReadError, id="body-cut-short"),
-        pytest.param(_reply(200, b"", declared_length=2**100), httpx.ReadError, id="length-overflows-mmap"),
+        pytest.param(_reply(200, b"", declared_length=2**63), httpx.ReadError, id="length-overflows-mmap"),
         pytest.param(_reply(200, b"abc", head=b"HTTP/1.1 200 OK\r\n\r\n"), httpx.RemoteProtocolError, id="no-length"),
     ],
 )
