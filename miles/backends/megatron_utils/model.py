@@ -505,7 +505,7 @@ def run_forward_backward_pass(
             m.stage = "replay_forward"
 
         if return_schedule_plan:
-            assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
+            assert not args.mtp_num_layers, "MTP layers are not supported with combined 1f1b"
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
             output_tensor = model.build_schedule_plan(
                 input_ids=batch["tokens"],
@@ -625,7 +625,7 @@ def train_one_step(
 
     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
     # This check must happen before optimizer.step() as gradients may be modified during step
-    if args.ci_test and args.enable_mtp_training and args.rollout_max_response_len <= 128:
+    if args.ci_test and args.mtp_num_layers and args.mtp_detach_heads and args.rollout_max_response_len <= 128:
         # under response length <= 128, all outputs are truncated and loss mask is all zeros, so only MTP parameters have non-zero gradients
         from miles.backends.megatron_utils.ci_utils import check_mtp_only_grad
 
@@ -803,7 +803,7 @@ def train(
                 pre_hook_enabled = True
 
         mtp_losses = None
-        if args.enable_mtp_training:
+        if args.mtp_num_layers:
             from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
 
             mtp_loss_scale = 1.0 if args.calculate_per_token_loss else 1 / num_microbatches[step_id]
@@ -831,7 +831,7 @@ def train(
             role_tag = "" if role == "actor" else f"{role}-"
 
             extra_metrics = {}
-            if args.enable_mtp_training and mtp_losses is not None:
+            if mtp_losses is not None:
                 extra_metrics["mtp_loss"] = mtp_losses
 
             if not disable_optimizer:

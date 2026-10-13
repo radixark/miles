@@ -125,10 +125,9 @@ def _build_bridge_subclass():
                 provider.moe_shared_expert_overlap = False
 
             # MTP head: Super-120B's HF config has num_nextn_predict_layers=1, which
-            # the base CONFIG_MAPPING translates to provider.mtp_num_layers=1. Miles'
-            # generic training loop only feeds MTP labels when --enable-mtp-training is
-            # set, so building the head adds dead weights. Disable unless explicitly
-            # requested via the MILES_NEMOTRONH_KEEP_MTP env var.
+            # the base CONFIG_MAPPING translates to provider.mtp_num_layers=1. Miles
+            # builds (and trains) MTP layers only for --mtp-num-layers, so drop the head
+            # unless explicitly requested via the MILES_NEMOTRONH_KEEP_MTP env var.
             import os
 
             if not os.environ.get("MILES_NEMOTRONH_KEEP_MTP"):

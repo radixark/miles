@@ -35,9 +35,8 @@ class CaseConfig:
     tp_size: int
     ep_size: int
     rollout_num_gpus_per_engine: int
-    # Whether MTP training is enabled. On -> --enable-mtp-training --mtp-num-layers 1
-    # (+ loss factor); off -> --mtp-num-layers 0, so the trainer builds no MTP layer (note
-    # `--enable-mtp-training --mtp-num-layers 0` would fail the arguments.py assert).
+    # Whether MTP training is enabled. On -> --mtp-num-layers 1 (+ loss factor); off ->
+    # --mtp-num-layers 0, so the trainer builds no MTP layer.
     enable_mtp_training: bool
     # Whether to enable R3 routing replay (--use-rollout-routing-replay).
     use_r3: bool
@@ -229,10 +228,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     # draft; those draft weights just never get synced (the spec_nor3 case checks only the
     # target through its selector).
     if case.enable_mtp_training:
-        mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
+        mtp_args = "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
     else:
-        # The model script always passes --mtp-num-layers 1, and Megatron adds an MTP loss whenever the
-        # layer exists, even without --enable-mtp-training; this later flag overrides it.
+        # MTP layers always train, so drop the model script's --mtp-num-layers 1
         mtp_args = "--mtp-num-layers 0 "
 
     ci_args = "--ci-test "

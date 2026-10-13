@@ -103,7 +103,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-speculative-num-draft-tokens 3
   --sglang-max-running-requests 256
   --sglang-mamba-radix-cache-strategy extra_buffer 
-  --enable-mtp-training
   --mtp-num-layers 1
   --mtp-loss-scaling-factor 0.2 
   --attention-dropout 0.0

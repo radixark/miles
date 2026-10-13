@@ -107,12 +107,12 @@ def execute():
     )
 
     # Enable MTP training with loss scaling
-    mtp_args = "--mtp-num-layers 1 " "--enable-mtp-training " "--mtp-loss-scaling-factor 0.2 "
+    mtp_args = "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
 
     ci_args = (
         "--ci-test "
         "--ci-disable-kl-checker "
-        # MTP grad check is automatically triggered when ci_test and enable_mtp_training are both set
+        # the MTP grad check runs under ci_test with detached MTP heads (the default)
     )
 
     misc_args = (

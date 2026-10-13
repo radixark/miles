@@ -142,7 +142,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
     if USE_DEEPEP:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
 
-    mtp_args = "--enable-mtp-training --mtp-loss-scaling-factor 0.2 "
+    mtp_args = "--mtp-loss-scaling-factor 0.2 "
 
     # FIXME: add optimizer equality check here.
     ci_args = "--ci-test "

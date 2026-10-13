@@ -70,7 +70,7 @@ def make_train_one_step_args(**overrides: Any) -> Namespace:
         micro_batch_size=1,
         check_for_nan_in_loss_and_grad=True,
         ci_test=False,
-        enable_mtp_training=False,
+        mtp_num_layers=None,
         rollout_max_response_len=512,
         use_sampling_support_replay=False,
         enable_witness=False,

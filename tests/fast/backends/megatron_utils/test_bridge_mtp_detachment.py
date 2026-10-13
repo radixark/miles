@@ -52,36 +52,28 @@ def runtime_args() -> argparse.Namespace:
         fp8_recipe=None,
         attention_backend="auto",
         mtp_num_layers=1,
+        mtp_detach_heads=True,
         moe_token_dispatcher_type="alltoall",
     )
 
 
 @pytest.mark.parametrize(
-    ("enabled", "initial_detach", "expected_detach"),
-    [
-        (True, False, True),
-        (True, True, True),
-        (False, False, False),
-        (False, True, True),
-        (None, False, False),
-        (None, True, True),
-    ],
+    ("detach", "initial_detach"),
+    [(True, False), (True, True), (False, False), (False, True)],
 )
 def test_bridge_mtp_detachment(
     apply_bridge_runtime_config: Callable,
     runtime_args: argparse.Namespace,
-    enabled: bool | None,
+    detach: bool,
     initial_detach: bool,
-    expected_detach: bool,
 ) -> None:
-    # A missing flag covers callers that only register Megatron's arguments.
-    if enabled is not None:
-        runtime_args.enable_mtp_training = enabled
+    """The provider takes --mtp-detach-heads from args, whatever the bridge's HF config set."""
+    runtime_args.mtp_detach_heads = detach
     provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=initial_detach)
 
     apply_bridge_runtime_config(provider, runtime_args)
 
-    assert provider.mtp_detach_heads is expected_detach
+    assert provider.mtp_detach_heads is detach
     assert provider.mtp_num_layers == 1
 
 

@@ -1667,7 +1667,7 @@ def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
         ({"fp16": True}, "does not support loss scaling"),
         ({"loss_scale": 1024.0}, "does not support loss scaling"),
         ({"log_num_zeros_in_grad": True}, "does not support --log-num-zeros-in-grad"),
-        ({"enable_mtp_training": True}, "does not support --enable-mtp-training"),
+        ({"mtp_num_layers": 1}, "does not support detached MTP heads"),
     ],
 )
 def test_stream_optimizer_state_to_disk_rejects_reading_grads_outside_the_step(megatron_args, match):
@@ -1683,6 +1683,35 @@ def test_stream_optimizer_state_to_disk_rejects_reading_grads_outside_the_step(m
 
     with pytest.raises(AssertionError, match=match):
         miles_validate_args(args)
+
+
+class TestMtpLayerValidation:
+    """MTP layers train whenever they exist, so --mtp-num-layers is the one switch for MTP training."""
+
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        return args
+
+    @pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
+    def test_backends_that_build_no_mtp_layers_reject_them(self, backend):
+        with pytest.raises(AssertionError, match=f"which the {backend} backend does not"):
+            self._validate(["--train-backend", backend, "--mtp-num-layers", "1"])
+
+    def test_mtp_heads_are_detached_by_default(self):
+        assert self._validate(["--mtp-num-layers", "1"]).mtp_detach_heads is True
+
+    @pytest.mark.parametrize(("extra", "expect_warning"), [([], False), (["--no-mtp-detach-heads"], True)])
+    def test_warns_when_the_mtp_loss_reaches_the_main_model(self, caplog, extra, expect_warning):
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            args = self._validate(["--mtp-num-layers", "1"] + extra)
+
+        assert args.mtp_detach_heads is not expect_warning
+        warned = any("MTP loss gradients flow back" in record.message for record in caplog.records)
+        assert warned is expect_warning
 
 
 class TestCriticSaveDerivation:

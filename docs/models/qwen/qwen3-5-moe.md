@@ -73,7 +73,6 @@ python scripts/run_qwen3_5_35b_a3b_mtp.py \
 GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --use-kl-loss --kl-loss-coef 0.00`. Plus MTP training:
 
 ```bash
---enable-mtp-training
 --mtp-num-layers 1
 --mtp-loss-scaling-factor 0.2
 ```

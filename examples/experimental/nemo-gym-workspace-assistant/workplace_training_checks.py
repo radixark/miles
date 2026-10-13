@@ -30,7 +30,7 @@ def before_train_step(
         assert not getattr(module, "mtp_process", False), "MTP forward is active"
         assert getattr(module, "mtp", None) is None, "MTP module is present"
         assert not any("mtp" in name.lower() for name, _ in module.named_parameters()), "MTP weights are present"
-    assert not args.enable_mtp_training, "MTP training must be disabled"
+    assert not args.mtp_num_layers, "MTP training must be disabled"
     if rollout_id == 0 and step_id == 0:
         assert args.start_rollout_id in (None, 0), "Expected a fresh rollout cursor"
         assert args.finetune and args.no_load_optim and args.no_load_rng, "Expected fresh training state"
