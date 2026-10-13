@@ -126,14 +126,31 @@ cmd_add() {
   fi
   mkdir -p "$SETUP_ROOT/$NAME" "$CACHE_ROOT/$NAME/.cache"
 
+  local runner_env=(
+    -e RUNNER_URL="$REPO_URL"
+    -e RUNNER_NAME="$NAME"
+    -e RUNNER_LABELS="$labels"
+    -e RUNNER_DIR="$SETUP_ROOT/$NAME"
+  )
+  # Register in a one-shot container that reads the token from a 0600 file, so
+  # the long-lived runner container never carries it.
+  local token_dir
+  token_dir=$(mktemp -d)
+  printf '%s' "$TOKEN" > "$token_dir/token"
+  chmod 0600 "$token_dir/token"
+  docker run --rm "${runner_env[@]}" \
+    -e RUNNER_TOKEN_FILE=/run/runner-token -e RUNNER_REGISTER_ONLY=1 \
+    -v "$token_dir/token:/run/runner-token:ro" \
+    -v "$SETUP_ROOT/$NAME:$SETUP_ROOT/$NAME" \
+    "$IMAGE" || { rm -rf "$token_dir"; die "registration failed (an $IMAGE older than gh-runner/ lacks RUNNER_TOKEN_FILE: rebuild it)"; }
+  rm -rf "$token_dir"
+  [ -f "$SETUP_ROOT/$NAME/.runner" ] || die "registration left no $SETUP_ROOT/$NAME/.runner"
+
   docker run -d --name "$NAME" \
     --restart unless-stopped \
+    --log-opt max-size=100m --log-opt max-file=3 \
     --runtime=nvidia --gpus all \
-    -e RUNNER_URL="$REPO_URL" \
-    -e RUNNER_TOKEN="$TOKEN" \
-    -e RUNNER_NAME="$NAME" \
-    -e RUNNER_LABELS="$labels" \
-    -e RUNNER_DIR="$SETUP_ROOT/$NAME" \
+    "${runner_env[@]}" \
     -e CUDA_VISIBLE_DEVICES="$CVD" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$SETUP_ROOT/$NAME:$SETUP_ROOT/$NAME" \

@@ -2,6 +2,9 @@
 # Entrypoint for the gh-runner image. Contract matches manage-runners.sh:
 #   RUNNER_DIR   host-mounted, identity-bind, may be empty on first start
 #   RUNNER_URL / RUNNER_TOKEN / RUNNER_NAME / RUNNER_LABELS  registration inputs
+#   RUNNER_TOKEN_FILE      token read from a file when RUNNER_TOKEN is unset
+#   RUNNER_REGISTER_ONLY   exit once registered (manage-runners.sh registers in a
+#                          one-shot container, so the runner never holds the token)
 # Populates RUNNER_DIR from the baked-in distribution if needed, then
 # configures (once) and runs. .runner persists in the host volume.
 set -e
@@ -19,8 +22,13 @@ cd "$RUNNER_DIR"
 
 # Already configured (survived a restart): just run.
 if [ -f .runner ]; then
+    [ -z "${RUNNER_REGISTER_ONLY:-}" ] || exit 0
     echo "Runner already configured, starting..."
     exec ./run.sh
+fi
+
+if [ -z "${RUNNER_TOKEN:-}" ] && [ -n "${RUNNER_TOKEN_FILE:-}" ]; then
+    RUNNER_TOKEN=$(cat "$RUNNER_TOKEN_FILE")
 fi
 
 if [ -z "${RUNNER_TOKEN:-}" ]; then
@@ -45,5 +53,6 @@ echo "  Dir:    ${RUNNER_DIR}"
     --unattended \
     --replace
 
+[ -z "${RUNNER_REGISTER_ONLY:-}" ] || exit 0
 echo "Runner configured, starting..."
 exec ./run.sh

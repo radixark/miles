@@ -142,6 +142,13 @@ A few invariants the script encodes that are easy to get wrong by hand:
   per-job containers it spawns need that path, and that bind is declared
   in [`_run-ci.yml`](../../../../.github/workflows/_run-ci.yml) (resolved
   against the HOST filesystem by the daemon).
+* **Token only at registration**: `add` registers in a one-shot container that
+  reads the token from a 0600 temporary file (`RUNNER_TOKEN_FILE`,
+  `RUNNER_REGISTER_ONLY`), then starts the runner without it, so `docker
+  inspect` never shows a token. An image built before these variables fails
+  registration with a rebuild hint.
+* **Log rotation** (`max-size=100m`, `max-file=3`) bounds the listener's docker
+  log on the host disk.
 * **Deregister BEFORE `docker rm -f`**: `config.sh remove --token <TOKEN>`
   inside the container clears the runner from GitHub's UI. Skipping it
   leaves an offline-zombie entry that confuses future operators.
