@@ -55,5 +55,5 @@ def test_agentic_rollout_benchmark(rollout_benchmark_result, capsys):
         assert step["manager_cpu_s"] > 0
     with capsys.disabled():
         print("ROLLOUT_BENCHMARK " + json.dumps(result, sort_keys=True))
-    # Hosted four-vCPU runs measured about 5.5 s/batch; allow runner variation.
-    assert result["median_manager_cpu_s"] <= 8.0, result
+    # Four hosted four-vCPU runs measured 2.5-4.7 s/batch; allow 1.5x the slowest.
+    assert result["median_manager_cpu_s"] <= 7.0, result

@@ -96,8 +96,8 @@ def test_session_server_benchmark(version, tmp_path, capsys):
     with capsys.disabled():
         print(json.dumps(report), flush=True)
     assert report["tree_peak_rss_bytes"] <= MEMORY_BUDGET_BYTES, report
-    # Hosted four-vCPU runs measured about 25 ms/turn; allow 40% runner variation.
-    assert report["median_cpu_ms_per_turn"] <= 35.0, report
+    # Four hosted four-vCPU runs measured 8.5-11.1 ms/turn; allow 1.5x the slowest.
+    assert report["median_cpu_ms_per_turn"] <= 17.0, report
 
 
 @pytest.mark.parametrize("failure", ["start", "ready"])
