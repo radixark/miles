@@ -51,13 +51,15 @@ Miles supports training the draft alongside the target through online MTP-SFT.
 ```bash
 PERF_ARGS+=(
    --mtp-num-layers 1
+   --enable-mtp-training
    --mtp-loss-scaling-factor 0.2
 )
 ```
 
 | Flag | Notes |
 |---|---|
-| `--mtp-num-layers` | MTP layers to build and train (1 matches GLM/DeepSeek release defaults). They train whenever they exist, so 0 or unset leaves the draft at its checkpoint weights. Megatron only. |
+| `--mtp-num-layers` | MTP layers to build (1 matches GLM/DeepSeek release defaults). Megatron trains them whenever they exist, so pass it with `--enable-mtp-training`, or 0 to build none. |
+| `--enable-mtp-training` | Train the MTP layers alongside the policy. Megatron only; requires `--mtp-num-layers` > 0. |
 | `--mtp-loss-scaling-factor` | Weight of the MTP loss in the combined gradient (default `0.2`). |
 
 <Note>

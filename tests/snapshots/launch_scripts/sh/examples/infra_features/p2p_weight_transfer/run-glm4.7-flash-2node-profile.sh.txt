@@ -252,6 +252,8 @@
 "--sglang-enable-dp-attention"
 "--sglang-enable-dp-lm-head"
 "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine"
+"--mtp-num-layers"
+"0"
 "--attention-dropout"
 "0.0"
 "--hidden-dropout"

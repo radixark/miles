@@ -121,6 +121,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-speculative-eagle-topk 1
   --sglang-speculative-num-draft-tokens 3
   --use-rollout-routing-replay 
+  --enable-mtp-training
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32

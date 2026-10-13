@@ -95,6 +95,7 @@ MODEL_ARGS_LINE="$(MODEL_ARGS_ROTARY_BASE=1000000 python3 "<REPO_ROOT>/miles/uti
   --sglang-cuda-graph-bs-decode 1 2 4 8 16
   --sglang-enable-dp-attention
   --sglang-enable-dp-lm-head '--sglang-load-format dummy'
+  --mtp-num-layers 0
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32

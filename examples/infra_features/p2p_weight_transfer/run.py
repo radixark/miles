@@ -995,6 +995,9 @@ def cmd_run(
     # Misc
     args.extend(
         [
+            # the profiles train no MTP layer, so drop any a model script builds
+            "--mtp-num-layers",
+            "0",
             "--attention-dropout",
             "0.0",
             "--hidden-dropout",

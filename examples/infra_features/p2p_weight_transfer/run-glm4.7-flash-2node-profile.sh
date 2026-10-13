@@ -195,6 +195,8 @@ run_mode() {
     BUFFER_SIZE=$((1 * 1024 * 1024 * 1024))
 
     MISC_ARGS=(
+        # this profile trains no MTP layer, so drop the one the model script builds
+        --mtp-num-layers 0
         --attention-dropout 0.0
         --hidden-dropout 0.0
         --accumulate-allreduce-grads-in-fp32

@@ -31,7 +31,7 @@ from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args
-from miles.utils.lora.utils import is_lora_enabled, is_multi_lora_enabled
+from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.object_store_config import (
@@ -2538,10 +2538,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_mtp_training_arguments(parser):
             """Add MTP training specific arguments."""
-            # MTP layers always train: Megatron adds their loss whenever they exist, so 0 or unset
-            # is the only way to leave MTP untrained.
             reset_arg(parser, "--mtp-num-layers", type=int, default=None)
             reset_arg(parser, "--mtp-loss-scaling-factor", type=float, default=0.2)
+            parser.add_argument(
+                "--enable-mtp-training",
+                action="store_true",
+                default=False,
+                help="Train the MTP layers alongside the policy (megatron only). Megatron trains the MTP layers "
+                "whenever --mtp-num-layers builds them, so the two must be passed together.",
+            )
             # Megatron's own TransformerConfig flag, defaulted on so MTP loss trains only the MTP layers.
             reset_arg(parser, "--mtp-detach-heads", action="store_true", default=True)
             parser.add_argument(
@@ -3745,10 +3750,9 @@ def miles_validate_args(args):
                 "--stream-optimizer-state-to-disk does not support --log-num-zeros-in-grad: the zero count reads "
                 "the fp32 gradients outside the step, where the streamed params have none"
             )
-            assert not (args.mtp_num_layers and args.mtp_detach_heads), (
-                "--stream-optimizer-state-to-disk does not support detached MTP heads (--mtp-num-layers with "
-                "--mtp-detach-heads): they are clipped by their own grad norm, which reads the fp32 gradients "
-                "outside the step"
+            assert not (args.enable_mtp_training and args.mtp_detach_heads), (
+                "--stream-optimizer-state-to-disk does not support --enable-mtp-training: the detached MTP heads "
+                "are clipped by their own grad norm, which reads the fp32 gradients outside the step"
             )
         assert not (args.multi_lora or is_lora_enabled(args)), (
             "--stream-optimizer-state-to-disk does not support LoRA: the LoRA checkpoint path "
@@ -3859,13 +3863,17 @@ def miles_validate_args(args):
                 "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
             )
 
-    if args.mtp_num_layers:
+    if args.enable_mtp_training or args.mtp_num_layers:
         assert args.train_backend == "megatron", (
-            f"--mtp-num-layers builds and trains MTP layers, which the {args.train_backend} backend does not; "
-            "drop it"
+            f"MTP training is megatron-only: the {args.train_backend} backend builds no MTP layers, so drop "
+            "--enable-mtp-training and --mtp-num-layers"
         )
-        assert not is_multi_lora_enabled(args), "multi-LoRA builds no MTP layers; pass --mtp-num-layers 0"
-        if not args.mtp_detach_heads:
+        if not args.debug_rollout_only:
+            assert args.enable_mtp_training and args.mtp_num_layers, (
+                "Megatron trains the MTP layers whenever --mtp-num-layers builds them: pass --enable-mtp-training "
+                "with --mtp-num-layers > 0 to train MTP, or --mtp-num-layers 0 to build none"
+            )
+        if args.enable_mtp_training and not args.mtp_detach_heads:
             logger.warning(
                 "--no-mtp-detach-heads: MTP loss gradients flow back into the main model's embedding, "
                 "output layer and hidden states, so the MTP loss also trains the policy"

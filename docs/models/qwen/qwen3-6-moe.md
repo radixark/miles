@@ -105,6 +105,7 @@ GRPO_ARGS=(
 )
 
 MTP_ARGS=(
+   --enable-mtp-training
    --mtp-num-layers 1
    --mtp-loss-scaling-factor 0.2
 )

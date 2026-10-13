@@ -196,6 +196,8 @@
 "--use-rollout-routing-replay"
 "--sglang-mamba-radix-cache-strategy"
 "extra_buffer"
+"--mtp-num-layers"
+"0"
 "--attention-dropout"
 "0.0"
 "--hidden-dropout"

@@ -334,7 +334,8 @@ contract, session behavior, and model-family selection.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--mtp-num-layers` | int | `0` | MTP layers to build and train alongside the policy (Megatron only). |
+| `--mtp-num-layers` | int | `0` | MTP layers to build; Megatron trains them, so it requires `--enable-mtp-training`. |
+| `--enable-mtp-training` | flag | off | Train the MTP layers alongside the policy (Megatron only; requires `--mtp-num-layers` > 0). |
 | `--mtp-loss-scaling-factor` | float | `0.2` | Weight of MTP loss. |
 
 ### Fault tolerance

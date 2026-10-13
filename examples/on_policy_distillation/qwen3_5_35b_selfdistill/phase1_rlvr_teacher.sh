@@ -87,6 +87,8 @@ SGLANG_ARGS=(
    --sglang-mamba-radix-cache-strategy extra_buffer
 )
 MISC_ARGS=(
+   # this recipe trains no MTP layer, so drop the one MODEL_ARGS describes
+   --mtp-num-layers 0
    --attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32
    --attention-softmax-in-fp32 --attention-backend flash
 )

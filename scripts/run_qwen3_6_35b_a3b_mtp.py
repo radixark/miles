@@ -170,7 +170,7 @@ def execute(args: ScriptArgs):
         "--sglang-mamba-radix-cache-strategy extra_buffer "
     )
 
-    mtp_args = "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
+    mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
 
     misc_args = (
         "--attention-dropout 0.0 "

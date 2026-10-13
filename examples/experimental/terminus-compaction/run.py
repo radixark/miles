@@ -188,6 +188,8 @@ def _agent_args(args: ScriptArgs) -> str:
 def _misc_args(args: ScriptArgs) -> str:
     debug_arg = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
     return (
+        # this recipe trains no MTP layer, so drop the one the model script builds
+        "--mtp-num-layers 0 "
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
