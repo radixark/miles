@@ -686,6 +686,16 @@ class TestPerPolicyDerivedDefaults:
 
         assert _model_args(args, model_id="a").tokenizer_model == "/models/shared"
 
+    @pytest.mark.parametrize(("enable_mtp_training", "expected_layers"), [(False, None), (True, 1)])
+    def test_a_policy_builds_its_own_mtp_layers_only_when_the_run_trains_mtp(
+        self, tmp_path, enable_mtp_training, expected_layers
+    ):
+        """The override lands after validation, yet Megatron would still train every MTP layer it builds."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"mtp_num_layers": 1}}]}, tmp_path)
+        args = _make_args(path, enable_mtp_training=enable_mtp_training, mtp_num_layers=expected_layers)
+
+        assert _model_args(args, model_id="a").mtp_num_layers == expected_layers
+
 
 class TestMultiPolicyIds:
     def test_an_explicitly_named_policy_keeps_its_trainer_model_id(self, tmp_path):
