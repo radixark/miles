@@ -88,6 +88,13 @@ class TestDoProxy:
         assert "content-type" not in received["headers"]
         assert received["headers"]["content-length"] == str(len(body))
 
+    def test_does_not_forward_expect_100_continue(self, echo_backend):
+        """httpx sent the body at once; aiohttp would first wait for the backend's 100 response."""
+        result = _proxy_to(echo_backend, "echo", headers={"expect": "100-continue"})
+
+        assert result["status_code"] == 201
+        assert "expect" not in json.loads(result["response_body"])["headers"]
+
     def test_returns_the_upstream_status_and_lower_case_headers(self, echo_backend):
         result = _proxy_to(echo_backend, "echo")
 
