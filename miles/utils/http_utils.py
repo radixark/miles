@@ -295,6 +295,9 @@ async def _post_buffer(url: str, payload: dict) -> np.ndarray:
             async with client.post(
                 url, json=payload, headers={"Connection": "close"}, allow_redirects=False
             ) as response:
+                if not (200 <= response.status < 300):
+                    body = (await response.read()).decode(errors="replace")
+                    raise RuntimeError(f"POST {url} failed with {response.status}: {body}")
                 length = response.content_length
                 if length is None:
                     raise httpx.RemoteProtocolError("reply without Content-Length")
@@ -311,10 +314,6 @@ async def _post_buffer(url: str, payload: dict) -> np.ndarray:
                     filled += len(chunk)
                 if filled != length:
                     raise httpx.ReadError(f"connection closed after {filled} of {length} body bytes")
-                if not (200 <= response.status < 300):
-                    raise RuntimeError(
-                        f"POST {url} failed with {response.status}: {reply.tobytes().decode(errors='replace')}"
-                    )
                 return reply
     except aiohttp.ClientConnectorError as exc:
         raise httpx.ConnectError(str(exc)) from exc

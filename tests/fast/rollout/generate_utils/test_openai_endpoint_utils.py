@@ -457,9 +457,26 @@ async def test_post_buffer_no_retry_returns_the_body_as_a_writable_array(body):
     assert server.requests == [b'{"max_seq_len": 7}']
 
 
+_ERROR_BODY = b"cursor 3 != len(accumulated_token_ids) 4"
+
+
 @pytest.mark.asyncio
-async def test_post_buffer_no_retry_does_not_retry_and_carries_body():
-    async with _ReplyServer(_reply(422, b"cursor 3 != len(accumulated_token_ids) 4")) as server:
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param(_reply(422, _ERROR_BODY), id="content-length"),
+        pytest.param(
+            _reply(
+                422,
+                b"%x\r\n%s\r\n0\r\n\r\n" % (len(_ERROR_BODY), _ERROR_BODY),
+                head=b"HTTP/1.1 422 X\r\ntransfer-encoding: chunked\r\n\r\n",
+            ),
+            id="chunked",
+        ),
+    ],
+)
+async def test_post_buffer_no_retry_does_not_retry_and_carries_body(reply):
+    async with _ReplyServer(reply) as server:
         with pytest.raises(RuntimeError, match="422.*cursor 3"):
             await post_buffer_no_retry(server.url, {}, timeout=5)
     assert len(server.requests) == 1

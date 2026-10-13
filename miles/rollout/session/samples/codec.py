@@ -95,6 +95,7 @@ def _asarray_wire(field: str, value, dtype: np.dtype) -> np.ndarray:
 
 
 # safetensors dtype names of every wire dtype in SAMPLES_VALUE_SPEC_V2 (incl. sampling-mask ids/offsets).
+# TODO: add "I16": np.int16 for #4035's int16 routed experts (past 256 experts), whichever lands second.
 _WIRE_DTYPES = {"I64": np.int64, "I32": np.int32, "U8": np.uint8, "F64": np.float64, "F32": np.float32}
 
 
