@@ -89,6 +89,8 @@ def test_session_server_benchmark(version, tmp_path, capsys):
         ],
         cwd=root,
         env=env,
+        # Both versions, with startup and cleanup, fit the 562 s file timeout: an overrun fails here with its log.
+        timeout=250,
     )
     report = json.loads(result_path.read_text())["summary"]
     with capsys.disabled():
@@ -141,13 +143,14 @@ def test_benchmark_process_stops_children(tmp_path, limit):
         f"Path({str(identities)!r}).write_text(json.dumps([(p.pid,p.create_time()) for p in processes])); "
         + ("" if limit == "orphan" else "time.sleep(60)")
     )
-    expected = {"memory": "RSS", "deadline": "deadline", "orphan": "left child processes"}
+    expected = {"memory": "exceeds budget", "deadline": "deadline", "orphan": "left child processes"}
     with pytest.raises(AssertionError, match=expected[limit]):
         run_benchmark_process(
             [sys.executable, "-c", command],
             cwd=tmp_path,
             env=dict(os.environ),
-            timeout=2,
+            # Only the deadline case should reach its deadline; the others stop as soon as they are detected.
+            timeout=2 if limit == "deadline" else 30,
             memory_bytes=50_000_000,
         )
     for pid, created in json.loads(identities.read_text()):

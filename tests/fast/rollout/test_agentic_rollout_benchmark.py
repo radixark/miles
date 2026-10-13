@@ -28,7 +28,8 @@ def _run_benchmark(source_root, result_path):
         OMP_NUM_THREADS="1",
     )
     env["PYTHONPATH"] = str(source_root) + os.pathsep + env.get("PYTHONPATH", "")
-    run_benchmark_process(command, cwd=source_root, env=env)
+    # With startup and cleanup, inside the 237 s file timeout: an overrun fails here with its log.
+    run_benchmark_process(command, cwd=source_root, env=env, timeout=190)
     return json.loads(result_path.read_text())
 
 
