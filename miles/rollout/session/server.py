@@ -92,7 +92,9 @@ class SessionServer:
                 skip_auto_headers=("Content-Type",),
             ) as response:
                 content = await response.read()
-        except (aiohttp.ClientError, TimeoutError) as exc:
+        # ValueError: aiohttp refuses to send a CR/LF header value (e.g. in a session id), which httpx raised as a
+        # transport error.
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             logger.warning("Proxy transport error for %s %s: %s", request.method, path, exc)
             error_body = json.dumps({"error": f"backend transport error: {type(exc).__name__}: {exc}"}).encode()
             return {

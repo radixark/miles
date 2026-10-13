@@ -92,6 +92,13 @@ class TestDoProxy:
         assert result["status_code"] == 502
         assert json.loads(result["response_body"])["error"].startswith("backend transport error: ")
 
+    def test_header_value_with_a_line_break_is_a_502(self, echo_backend):
+        """The routing key is the session id from a decoded URL path, so it can carry CR/LF."""
+        result = _proxy_to(echo_backend, "echo", headers={"X-SMG-Routing-Key": "a\r\nX-Injected: 1"})
+
+        assert result["status_code"] == 502
+        assert json.loads(result["response_body"])["error"].startswith("backend transport error: ValueError")
+
     def test_reply_cut_off_mid_body_is_a_502(self):
         """A failed body read is a transport error too, as when httpx read the body inside request()."""
 
