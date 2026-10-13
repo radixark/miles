@@ -94,6 +94,37 @@ def _asarray_wire(field: str, value, dtype: np.dtype) -> np.ndarray:
     return converted
 
 
+# safetensors dtype names of every wire dtype in SAMPLES_VALUE_SPEC_V2 (incl. sampling-mask ids/offsets).
+_WIRE_DTYPES = {"I64": np.int64, "I32": np.int32, "U8": np.uint8, "F64": np.float64, "F32": np.float32}
+
+
+def _load_tensor_views(payload: bytes | np.ndarray) -> dict[str, np.ndarray]:
+    """Parse the safetensors container into arrays that view ``payload`` instead of copying it.
+
+    Layout: u64-le header length, JSON header (``dtype``, ``shape``, ``data_offsets`` per tensor),
+    then the tensor bytes. A read-only payload (``bytes``) is copied once into a writable buffer, so
+    decoded arrays are writable either way; the caller's buffer stays alive while any view does.
+    """
+    buffer = np.frombuffer(payload, dtype=np.uint8)
+    if not buffer.flags.writeable:
+        buffer = buffer.copy()
+    header_len = int.from_bytes(buffer[:8].tobytes(), "little")
+    if len(buffer) < 8 or 8 + header_len > len(buffer):
+        raise ValueError(f"invalid safetensors container: {len(buffer)} bytes, header length {header_len}")
+    header = json.loads(buffer[8 : 8 + header_len].tobytes())
+    data = buffer[8 + header_len :]
+    tensors = {}
+    for name, info in header.items():
+        if name == "__metadata__":
+            continue
+        dtype = np.dtype(_WIRE_DTYPES[info["dtype"]])  # KeyError propagates: dtype outside the wire contract
+        start, end = info["data_offsets"]
+        if not 0 <= start <= end <= len(data) or end - start != dtype.itemsize * int(np.prod(info["shape"])):
+            raise ValueError(f"invalid safetensors entry {name}: offsets {start}..{end}, shape {info['shape']}")
+        tensors[name] = data[start:end].view(dtype).reshape(info["shape"])
+    return tensors
+
+
 def encode_samples(
     samples: list[Sample],
     session_metadata: dict,
@@ -158,15 +189,16 @@ def encode_samples(
 
 
 def decode_samples_and_merge_input_sample(
-    payload: bytes, input_sample: Sample, *, fields: tuple[str, ...] = COMPUTED_FIELDS
+    payload: bytes | np.ndarray, input_sample: Sample, *, fields: tuple[str, ...] = COMPUTED_FIELDS
 ) -> SamplesReply:
     """Driver side: overlay each wire sample's computed fields onto a deepcopy of `input_sample`.
 
     ``fields`` must match the server's encode allowlist (v1 default); extra
     keys a newer server sent are ignored, so a v1 decode of a v2 payload
-    keeps exactly the v1 overlay semantics.
+    keeps exactly the v1 overlay semantics. Tensor fields (R3, top-k, sampling
+    mask) are views of ``payload``.
     """
-    tensors = safetensors.numpy.load(payload)  # SafetensorError propagates: invalid container
+    tensors = _load_tensor_views(payload)  # ValueError/KeyError propagate: invalid container
     meta_arr = tensors.pop(_SAMPLES_META_KEY)  # KeyError propagates: missing meta is malformed
     if meta_arr.ndim != 1 or meta_arr.dtype != np.uint8:
         raise ValueError(

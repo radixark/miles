@@ -9,7 +9,6 @@ import json
 import numpy as np
 import pytest
 import safetensors.numpy
-from safetensors import SafetensorError
 
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
@@ -200,6 +199,18 @@ class TestSamplesWireCodec:
         assert np.array_equal(out.rollout_routed_experts, routed)
         assert out.rollout_indexer_topk.dtype == np.int32 and np.array_equal(out.rollout_indexer_topk, indexer)
 
+    def test_tensor_fields_view_a_writable_payload_without_copying(self):
+        buffer = np.frombuffer(encode_samples([_computed_sample()], {}, None), dtype=np.uint8).copy()
+        (out,) = decode_samples_and_merge_input_sample(buffer, Sample()).samples
+        assert np.shares_memory(out.rollout_routed_experts, buffer)
+        np.testing.assert_array_equal(out.rollout_routed_experts, np.arange(24, dtype=np.int32).reshape(4, 3, 2))
+
+    def test_bytes_payload_decodes_to_writable_tensors(self):
+        (out,) = decode_samples_and_merge_input_sample(
+            encode_samples([_computed_sample()], {}, None), Sample()
+        ).samples
+        assert out.rollout_routed_experts.flags.writeable
+
     def test_default_fields_do_not_emit_sampling_mask(self):
         payload = encode_samples([_computed_sample()], {}, None)
         tensors = safetensors.numpy.load(payload)
@@ -242,8 +253,8 @@ class TestSamplesWireCodec:
     @pytest.mark.parametrize(
         ("build_payload", "expected_error", "match"),
         [
-            pytest.param(lambda p: p[: len(p) - 100], SafetensorError, None, id="truncated-container"),
-            pytest.param(lambda p: b"", SafetensorError, None, id="empty-container"),
+            pytest.param(lambda p: p[: len(p) - 100], ValueError, "invalid safetensors", id="truncated-container"),
+            pytest.param(lambda p: b"", ValueError, "invalid safetensors", id="empty-container"),
             pytest.param(
                 lambda p: safetensors.numpy.save({"tokens.0": np.arange(3, dtype=np.int64)}),
                 KeyError,
