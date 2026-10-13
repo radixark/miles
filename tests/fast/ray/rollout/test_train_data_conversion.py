@@ -820,6 +820,66 @@ class TestSplitTrainDataRaw:
             assert len(part["rollout_indexer_topk"]) == 2
             assert len(part["opd_reverse_kl"]) == 2
 
+    def _balance_data_case(self, lengths: list[int]) -> dict:
+        n = len(lengths)
+        return {
+            "tokens": [list(range(length)) for length in lengths],
+            "response_lengths": lengths,
+            "rewards": [0] * n,
+            "truncated": [0] * n,
+            "loss_masks": [[1] * length for length in lengths],
+            "sample_indices": list(range(n)),
+        }
+
+    def test_balance_data_handles_count_not_divisible_by_dp_size(self) -> None:
+        """Regression for #969: with --balance-data, a valid sample count that is
+        not divisible by dp_size (e.g. after invalid rollout samples are dropped)
+        must still partition by token balance instead of asserting `N % dp != 0`.
+
+        The strided non-balance path already tolerates this; the balance path
+        should too. We require a real partition (every sample assigned exactly
+        once, no empty rank), matching the documented token-balancing intent."""
+        args = make_args(balance_data=True)
+        # varied lengths so token balancing is actually exercised
+        lengths = [1, 2, 3, 4, 5, 6]
+        n = len(lengths)  # 6 % 4 != 0 -- the divisibility that used to crash
+        result = split_train_data_by_dp_raw(args, self._balance_data_case(lengths), dp_size=4)
+
+        assert len(result) == 4
+        # every sample assigned exactly once
+        all_indices = sorted(i for shard in result for i in shard["partition"])
+        assert all_indices == list(range(n))
+        # no rank left empty
+        assert all(len(shard["partition"]) >= 1 for shard in result)
+
+    def test_balance_data_falls_back_when_fewer_samples_than_dp_size(self) -> None:
+        """Also #969: when so many samples are dropped that the valid count is
+        below dp_size, token balancing cannot fill every rank (Karmarkar-Karp
+        requires len >= k_partitions). The balance path must not crash -- it
+        falls back to the strided split, exactly as the non-balance path does
+        for the same degenerate input. Samples are still assigned exactly once;
+        some ranks are legitimately empty."""
+        args = make_args(balance_data=True)
+        lengths = [1, 2]
+        n = len(lengths)  # fewer samples than dp_size=4
+        result = split_train_data_by_dp_raw(args, self._balance_data_case(lengths), dp_size=4)
+
+        assert len(result) == 4
+        all_indices = sorted(i for shard in result for i in shard["partition"])
+        assert all_indices == list(range(n))
+
+    def test_balance_data_still_equalises_counts_when_divisible(self) -> None:
+        """The fix must not loosen the divisible case: when the count divides
+        evenly, `equal_size=True` still applies and every rank gets N/dp."""
+        args = make_args(balance_data=True)
+        lengths = [1, 2, 3, 4, 5, 6, 7, 8]
+        result = split_train_data_by_dp_raw(args, self._balance_data_case(lengths), dp_size=4)
+
+        assert len(result) == 4
+        assert all(len(shard["partition"]) == 2 for shard in result)
+        all_indices = sorted(i for shard in result for i in shard["partition"])
+        assert all_indices == list(range(len(lengths)))
+
     def test_no_witness_ids_when_absent(self) -> None:
         tokens = [[1, 2], [3, 4]]
         data = {
