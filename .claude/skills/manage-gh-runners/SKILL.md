@@ -23,6 +23,20 @@ docker ps --format '{{.Names}}\t{{.Image}}'
 Run [Step 0 (`setup-ci-host`)](../setup-ci-host/SKILL.md) before any of the
 operations below if `/data/miles_ci` is not yet provisioned on the host.
 
+## Runner image
+
+`manage-runners.sh` launches `gh-runner:latest`, built on each host from
+[`gh-runner/`](gh-runner/): Ubuntu with the actions-runner distribution baked
+in, the docker CLI for sibling job containers, and an entrypoint that seeds the
+identity-mounted `RUNNER_DIR`, registers once, and otherwise runs the existing
+registration.
+
+```shell
+docker build -t gh-runner:latest /root/miles/.claude/skills/manage-gh-runners/gh-runner
+```
+
+Existing runner containers keep their old image until they are recreated.
+
 ## Usage
 
 ```shell
