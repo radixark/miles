@@ -12,7 +12,7 @@ from tests.ci.ci_policy import (
     registration_matches_selection,
     resolve_policy,
 )
-from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
+from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files, file_timeout
 from tests.ci.ci_utils import (
     CI_GATE_RECORD_DIR_ENV,
     build_store_from_env,
@@ -21,7 +21,7 @@ from tests.ci.ci_utils import (
     run_unittest_files,
 )
 from tests.ci.hardware import CUDA_STAGES, dispatch_targets
-from tests.ci.labels import KNOWN_LABELS
+from tests.ci.labels import KNOWN_LABELS, PERF_LABEL
 
 HW_MAPPING = {
     "cpu": HWBackend.CPU,
@@ -208,6 +208,28 @@ def build_cpu_pytest_cmd(filenames: list[str], continue_on_error: bool) -> list[
     return cmd
 
 
+def run_cpu_tests(ci_tests: list[CIRegistry], timeout_per_file: float, continue_on_error: bool) -> int:
+    """Run a CPU suite in one pytest, except that each `perf` file runs alone within its file timeout."""
+    shared = [t.filename for t in ci_tests if PERF_LABEL not in t.labels]
+    runs = [(build_cpu_pytest_cmd(shared, continue_on_error), None)] if shared else []
+    for test in ci_tests:
+        if PERF_LABEL in test.labels:
+            timeout = file_timeout(test.est_time, test.labels, timeout_per_file)
+            # The bound of a /rerun-test file run: TERM the process group, KILL it 30 s later.
+            bound = ["timeout", "--signal=TERM", "--kill-after=30s", f"{timeout}s"]
+            runs.append((bound + build_cpu_pytest_cmd([test.filename], continue_on_error), (test.filename, timeout)))
+    status = 0
+    for cmd, bounded in runs:
+        print(f"Running: {' '.join(cmd)}", flush=True)
+        returncode = subprocess.call(cmd)
+        if bounded is not None and returncode == 124:  # coreutils `timeout` expired
+            print(f"TIMEOUT: {bounded[0]} after {bounded[1]} seconds", flush=True)
+        status = status or returncode
+        if status and not continue_on_error:
+            break
+    return status
+
+
 def run_a_suite(args):
     hw = HW_MAPPING[args.hw]
     suite = args.suite
@@ -258,9 +280,7 @@ def run_a_suite(args):
 
     # CPU tests (fast/) use pytest; CUDA tests use python3 per-file
     if hw == HWBackend.CPU:
-        cmd = build_cpu_pytest_cmd([t.filename for t in ci_tests], continue_on_error)
-        print(f"Running: {' '.join(cmd)}", flush=True)
-        return subprocess.call(cmd)
+        return run_cpu_tests(ci_tests, args.timeout_per_file, continue_on_error)
 
     # Add extra timeout when retry is enabled
     timeout = args.timeout_per_file

@@ -13,7 +13,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from tests.ci.ci_register import CIRegistry, HWBackend
+from tests.ci.ci_register import CIRegistry, HWBackend, file_timeout
 from tests.ci.metric_history import (
     NEON_DATABASE_URL_ENV,
     MetricSample,
@@ -471,11 +471,11 @@ def run_unittest_files(
 
     for i, file in enumerate(files):
         if isinstance(file, CIRegistry):
-            filename, estimated_time = file.filename, file.est_time
+            filename, estimated_time, labels = file.filename, file.est_time, file.labels
         else:
-            filename, estimated_time = file.name, file.estimated_time
+            filename, estimated_time, labels = file.name, file.estimated_time, ()
 
-        effective_timeout = max(timeout_per_file, int(estimated_time * 1.25))
+        effective_timeout = file_timeout(estimated_time, labels, timeout_per_file)
 
         process = None
         output_lines = []

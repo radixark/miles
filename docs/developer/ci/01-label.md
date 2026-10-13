@@ -15,7 +15,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Behavior label | `rebuild-ci-image` | force a rebuild when selected CUDA tests need an eligible PR image; does not select tests and is removed once consumed (see [Docker build](/developer/ci/02-docker-build)) |
 | Opt-in label | `run-ci` (or any `run-ci*` label) | lets a PR whose base is not the default branch run `PR Test` (see [below](#labels-opt-non-main-prs-into-ci)) |
 
-Only domain labels are declared in `labels=[...]`; scope and behavior labels are workflow inputs resolved by `tests/ci/ci_policy.py`. The separate `nightly=True` registration field is a cadence gate described below.
+Registrations declare domain labels and optionally the non-selecting `perf` marker in `labels=[...]`; scope and behavior labels are workflow inputs resolved by `tests/ci/ci_policy.py`. The separate `nightly=True` registration field is a cadence gate described below.
 
 ## Domain labels: `register_*_ci(labels=...)` ↔ `run-ci-<x>`
 
@@ -34,7 +34,7 @@ CUDA and ROCm registrations must declare at least one domain label. GPU runners 
 
 ### The canonical label list
 
-Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it is a hard error. That file is the current set, with a one-line description per label.
+Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it, other than the non-selecting `perf` marker, is a hard error. That file is the current set, with a one-line description per label.
 
 To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` repository label in GitHub. No workflow edit is needed. To expose it through PR comments, also add that exact label to `commands.add_label.allowed_labels` in `.github/workflows/policies/comment-command-access.json`.
 
@@ -196,7 +196,7 @@ The registration parser in `tests/ci/ci_register.py` requires domain labels for 
 
 - A file outside `tests/fast/` with no `register_*_ci()` call → `No CI registry found`.
 - A registration requiring domain labels with missing, `None`, or empty `labels` → `labels ... must contain at least one domain label`.
-- A `labels=[...]` value not in `KNOWN_LABELS` → `unknown labels [...]`.
+- A `labels=[...]` value other than `perf` and not in `KNOWN_LABELS` → `unknown labels [...]`.
 
 ## `tests/fast/` auto-registers as CPU
 

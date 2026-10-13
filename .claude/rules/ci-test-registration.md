@@ -112,18 +112,17 @@ register_cuda_ci(
 
 ## `est_time`
 
-For a `register_cuda_ci` test, `est_time` balances shards and sets the per-file
-timeout, `max(1800 s, 1.25 × est_time)`, in stage runs and in `/rerun-test`
-alike. It is measured, never copied from a neighbouring test. CPU and ROCm
-registrations need no timing run.
+For a `register_cuda_ci` test without `perf`, `est_time` balances shards and sets the per-file timeout, `max(1800 s, 1.25 × est_time)`, in stage runs and in `/rerun-test` alike. It is measured, never copied from a neighbouring test. CPU and ROCm registrations need no timing run unless they carry `perf`.
+
+A performance benchmark adds `perf` (`PERF_LABEL` in `tests/ci/labels.py`) to its `labels`. Its timeout is `1.25 × est_time` with no 1800 s floor, in stage runs and in `/rerun-test`; a CPU stage runs it in its own `pytest` under that timeout. Its `est_time` is therefore its wall-time budget: the whole-file runtime, including startup, collection and teardown, rounded up with step 4's buckets but without its 1.25 factor, which the timeout already applies. `perf` selects nothing: the registration still needs a domain label.
+
+For CPU `perf` files, measure the `/rerun-test` **Run tests** step; CPU stage runs do not print the per-file `End (...)` line mentioned in step 3. A run terminated by its timeout is only a lower bound, not a completed timing sample.
 
 An enabled `register_cuda_ci` test with neither `nightly=True` nor a `long` or
 `ft-long` label keeps `est_time` at or below 2400 s; cut its workload until it
 fits.
 
-1. Before the first run, use an upper bound that safely exceeds the expected
-   runtime, so the timeout does not kill it. Up to 1440 s the 1800 s floor
-   applies anyway.
+1. Before the first run, use an upper bound that safely exceeds the expected runtime, so the timeout does not kill it. For registrations without `perf`, the 1800 s floor applies up to 1440 s; `perf` has no floor.
 2. Before the PR merges, comment `/rerun-test <path/to/test_file.py>` on it. It
    runs only that file, on its registered suite's runner, at the PR head; it
    needs no domain label and writes no performance baseline. Posting it takes a

@@ -1,6 +1,7 @@
 """Unit tests for `tests/ci/file_run.py`, the /rerun-test resolve step."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,12 @@ def test_cpu_file_resolves_without_runner_labels():
 def test_long_file_extends_the_default_timeout():
     tests = [_make("tests/e2e/x/test_a.py", est_time=2000)]
     assert plan_file_run(tests, "tests/e2e/x/test_a.py", "dev")["timeout_seconds"] == "2500"
+
+
+def test_perf_file_times_out_at_its_estimate():
+    registration = _make("tests/fast/x/test_a.py", backend=HWBackend.CPU, suite="stage-b-cpu", est_time=400)
+    tests = [replace(registration, labels=["rollout", "perf"])]
+    assert plan_file_run(tests, "tests/fast/x/test_a.py", "dev")["timeout_seconds"] == "500"
 
 
 def test_unknown_cpu_suite_is_a_hard_error():
