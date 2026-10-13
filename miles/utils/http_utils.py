@@ -301,8 +301,8 @@ async def _post_buffer(url: str, payload: dict) -> np.ndarray:
                 length = response.content_length
                 if length is None:
                     raise httpx.RemoteProtocolError("reply without Content-Length")
-                # Private mmap avoids numpy huge-page compaction; prefault on a worker
-                # keeps page faults out of the event-loop copy into the reply buffer.
+                # Private mmap avoids numpy huge-page compaction; prefault on a worker keeps page
+                # faults out of the event-loop copy into the reply buffer. mmap rejects length 0.
                 try:
                     mapping = await asyncio.to_thread(
                         mmap.mmap,
