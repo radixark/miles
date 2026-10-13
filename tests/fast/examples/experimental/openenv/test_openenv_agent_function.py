@@ -14,6 +14,7 @@ import asyncio
 import types
 
 import openenv_agent_function as oaf
+import pytest
 
 
 def run_async(coro):
@@ -259,3 +260,84 @@ def test_truncated_turn_ends_the_episode(monkeypatch):
     assert any(a.action_type == "evaluate" for a in actions), "scoring still runs"
     assert reward == 1.0 and metrics["turns"] == 1
     assert metrics["end_reason"] == "length"
+
+
+class _BudgetPolicy:
+    """Reports total_tokens off a per-turn sequence; None when emit_usage is off."""
+
+    def __init__(self, totals, stop_after=None, emit_usage=True, finish="stop"):
+        self.totals = totals
+        self.stop_after = stop_after
+        self.emit_usage = emit_usage
+        self.finish = finish
+        self.n = 0
+        self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self._create))
+
+    async def _create(self, **kw):
+        self.n += 1
+        text = "TASK_COMPLETE" if (self.stop_after and self.n == self.stop_after) else "```bash\necho hi\n```"
+        msg = types.SimpleNamespace(
+            content=text, model_dump=lambda exclude_none=True: {"role": "assistant", "content": text}
+        )
+        usage = (
+            types.SimpleNamespace(total_tokens=self.totals[self.n - 1])
+            if (self.emit_usage and self.n <= len(self.totals))
+            else None
+        )
+        return types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=msg, finish_reason=self.finish)], usage=usage
+        )
+
+
+@pytest.mark.parametrize(
+    "case_id, extra_meta, totals, stop_after, emit_usage, finish, exp_calls, exp_cmds, exp_reason, exp_tokens",
+    [
+        # totals are cumulative session totals, as the server reports them.
+        ("crosses_mid_episode", {"max_seq_len": 1000}, [400, 1000], None, True, "stop", 2, 1, "max_seq_len", 1000),
+        ("crosses_on_first_turn", {"max_seq_len": 1000}, [1200], None, True, "stop", 1, 0, "max_seq_len", 1200),
+        ("stays_under_budget", {"max_seq_len": 100000}, [10, 20], 2, True, "stop", 2, 1, "task_complete", 20),
+        ("no_budget_in_metadata", {}, [10000, 20000], 2, True, "stop", 2, 1, "task_complete", 20000),
+        # A turn with no usage must not end the episode on an earlier turn's stale count.
+        ("no_usage_reported", {"max_seq_len": 1}, [0, 0], 2, False, "stop", 2, 1, "task_complete", 0),
+        # The per-turn cut closes the sample, so it wins even when the budget is also crossed.
+        ("length_beats_budget", {"max_seq_len": 1000}, [1200], None, True, "length", 1, 0, "length", 1200),
+    ],
+)
+def test_budget_capped_turn_ends_the_episode(
+    monkeypatch,
+    case_id,
+    extra_meta,
+    totals,
+    stop_after,
+    emit_usage,
+    finish,
+    exp_calls,
+    exp_cmds,
+    exp_reason,
+    exp_tokens,
+):
+    """--max-seq-len is enforced after the episode, in collect_samples, so the loop sees no
+    finish_reason and no error when a session crosses it. It has to watch usage.total_tokens
+    itself or it generates turns that sample assembly throws away."""
+    monkeypatch.setattr(oaf, "load_tbench2", lambda: _CLASSES)
+
+    async def spying_with_env(env_cls, env_url, body):
+        return await body(env_cls())
+
+    monkeypatch.setattr(oaf, "_with_env", spying_with_env)
+
+    metadata = {"task_id": "t1", **extra_meta}
+    policy = _BudgetPolicy(totals, stop_after=stop_after, emit_usage=emit_usage, finish=finish)
+    reward, metrics = run_async(oaf.run_episode(policy, "m", [{"role": "system", "content": "s"}], {}, metadata))
+
+    assert policy.n == exp_calls
+    cmds = [
+        a.command
+        for a in _FakeEnv.last_actions
+        if a.action_type == "exec" and "/tmp/tbench2_env_runs" not in (a.command or "")
+    ]
+    assert len(cmds) == exp_cmds, "a turn stopped on the budget must not execute its command"
+    assert any(a.action_type == "evaluate" for a in _FakeEnv.last_actions), "scoring still runs"
+    assert reward == 1.0 and metrics["turns"] == exp_calls
+    assert metrics["end_reason"] == exp_reason
+    assert metrics["session_tokens"] == exp_tokens
