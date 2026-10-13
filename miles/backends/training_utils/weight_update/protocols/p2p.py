@@ -12,6 +12,7 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport
+from miles.backends.training_utils.weight_update.protocols.transports.nixl import NixlTransport
 from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import RemoteShard
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfTensorSpec
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
@@ -55,7 +56,7 @@ class _RunnerSender:
 
 
 class UpdateWeightP2P(WeightTransferProtocol):
-    """Write target and supported MTP draft weights to published GPU addresses over Mooncake."""
+    """Write target and supported MTP draft weights to published GPU addresses over Mooncake or NIXL."""
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
@@ -64,7 +65,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._hf_tensor_specs: dict[str, HfTensorSpec] | None = None
         self._model_replicas_by_runner_role: dict[str, ModelReplicas] = {}
-        self._transport: MooncakeTransport | None = None
+        self._transport: MooncakeTransport | NixlTransport | None = None
         self._transfer_buffers: TransferBuffers | None = None
         self._runner_senders: list[_RunnerSender] = []
 
@@ -160,7 +161,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 for runner_role in runner_roles
             }
             if self._transport is None:
-                self._transport = MooncakeTransport()
+                self._transport = (
+                    NixlTransport(write_timeout=self.args.p2p_transfer_timeout)
+                    if self.args.p2p_transport == "nixl"
+                    else MooncakeTransport()
+                )
             remote_shards_by_runner_role = self._transport.connect(rollout_engines, assignments, runner_roles)
             self._runner_senders = [
                 self._connect_runner(
