@@ -1699,7 +1699,7 @@ class TestMtpTrainingValidation:
     @pytest.mark.parametrize("backend", ["megatron", "fsdp", "torchtitan"])
     def test_a_run_that_does_not_train_mtp_builds_no_mtp_layer(self, backend):
         """Megatron trains every MTP layer it builds, so the model script's layer count alone builds none."""
-        assert self._validate(["--train-backend", backend, "--mtp-num-layers", "1"]).mtp_num_layers == 0
+        assert self._validate(["--train-backend", backend, "--mtp-num-layers", "1"]).mtp_num_layers is None
 
     def test_mtp_training_keeps_the_layers(self):
         assert self._validate(["--enable-mtp-training", "--mtp-num-layers", "1"]).mtp_num_layers == 1
