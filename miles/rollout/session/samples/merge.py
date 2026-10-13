@@ -8,6 +8,7 @@ Owned by the session package so the assembly runs on the owning instance (record
 """
 
 from argparse import Namespace
+from copy import deepcopy
 
 import numpy as np
 
@@ -88,7 +89,10 @@ def compute_samples_from_openai_records(
         )
         attach_lifecycle_metadata(sample, record, records[i - 1] if i else None, turn=i + 1)
         if is_last and args.save_debug_trajectory_data is not None:
-            sample.metadata["messages"] = record.request["messages"] + [record.response["choices"][0]["message"]]
+            # A copy: sample hooks may edit the exported messages, which must not reach the session's records.
+            sample.metadata["messages"] = deepcopy(
+                record.request["messages"] + [record.response["choices"][0]["message"]]
+            )
         samples.append(sample)
 
     if accumulated_token_ids is not None:

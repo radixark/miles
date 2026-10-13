@@ -112,6 +112,45 @@ class TestServerOwnedFields:
             assert "lora_path" not in env.backend.request_log[-1]
 
 
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_non_ascii_content_reaches_the_backend_and_record_as_sent(version):
+    """The proxy body is UTF-8 JSON rather than ASCII escapes; the content must not change on the way."""
+    message = {"role": "user", "content": "你好, naïve café \U0001d11e"}
+    with _serve(version) as env:
+        session_id = _create_session(env.url)
+        assert _post_chat(env.url, session_id, {"messages": [message]}).status_code == 200
+        assert env.backend.request_log[-1]["messages"] == [message]
+        assert _records(env.url, session_id)[0]["request"]["messages"] == [message]
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_invalid_unicode_returns_400_without_changing_session(version):
+    invalid_bodies = [
+        rb'{"messages":[{"role":"user","content":"\ud800"}]}',
+        rb'{"messages":[{"role":"user","content":"\udfff"}]}',
+        rb'{"messages":[{"role":"user","content":"hi"}],"metadata":{"note":"\ud800"}}',
+        rb'{"messages":[{"role":"user","content":"hi"}],"\ud800":1}',
+        b'{"messages":[{"role":"user","content":"\xff"}]}',
+    ]
+    with _serve(version) as env:
+        session_id = _create_session(env.url)
+        assert _post_chat(env.url, session_id, {"messages": [USER]}).status_code == 200
+        records = _records(env.url, session_id)
+        backend_calls = len(env.backend.request_log)
+        for body in invalid_bodies:
+            response = requests.post(
+                f"{env.url}/sessions/{session_id}/v1/chat/completions",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                timeout=10.0,
+            )
+            assert response.status_code == 400, response.text
+            assert "invalid JSON body" in response.json()["error"]
+            assert _records(env.url, session_id) == records
+            assert len(env.backend.request_log) == backend_calls
+        assert _post_chat(env.url, session_id, {"messages": [USER]}).status_code == 200
+
+
 class TestChatTemplateKwargs:
     def test_request_kwargs_override_the_launch_for_renderer_and_wire(self):
         with _serve_router() as env:

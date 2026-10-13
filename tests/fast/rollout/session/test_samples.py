@@ -325,6 +325,21 @@ class TestComputeSamplesFromRecords:
 
         assert merged.metadata["messages"] == samples[-1].metadata["messages"]
 
+    @pytest.mark.parametrize("num_records", [1, 2])
+    def test_editing_exported_messages_keeps_session_records(self, num_records):
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11]),
+            _make_record(prompt_token_ids=[1, 2, 3, 10, 11, 20, 21], output_token_ids=[30, 31]),
+        ][:num_records]
+
+        merged = merge_samples(compute_samples_from_openai_records(_ARGS_RECORDING, records, tok), tok)
+        for message in merged.metadata["messages"]:
+            message["content"] = "redacted"
+
+        assert records[-1].request["messages"] == [{"role": "user", "content": "hello"}]
+        assert records[-1].response["choices"][0]["message"] == {"role": "assistant", "content": "response"}
+
     def test_finish_reason_length_gives_truncated(self):
         tok = _mock_tokenizer()
         record = _make_record(
