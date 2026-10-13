@@ -15,7 +15,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Behavior label | `rebuild-ci-image` | force a rebuild when selected CUDA tests need an eligible PR image; does not select tests and is removed once consumed (see [Docker build](/developer/ci/02-docker-build)) |
 | Opt-in label | `run-ci` (or any `run-ci*` label) | lets a PR whose base is not the default branch run `PR Test` (see [below](#labels-opt-non-main-prs-into-ci)) |
 
-Registrations declare domain labels and optionally the non-selecting `perf` marker in `labels=[...]`; scope and behavior labels are workflow inputs resolved by `tests/ci/ci_policy.py`. The separate `nightly=True` registration field is a cadence gate described below.
+Registrations declare domain labels and optionally the non-selecting `perf` marker in `labels=[...]`; scope and behavior labels are workflow inputs resolved by `tests/ci/ci_policy.py`. The separate `nightly=True` registration field is a cadence gate described below. A performance benchmark adds `perf`: its file time limit is `1.25 × est_time` without the usual 1800 s minimum, and a CPU stage runs it alone in its own `pytest`.
 
 ## Domain labels: `register_*_ci(labels=...)` ↔ `run-ci-<x>`
 
