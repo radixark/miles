@@ -30,7 +30,7 @@ from linear_attn_reference import (  # noqa: E402
 )
 
 register_cuda_ci(
-    est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=4
+    est_time=300, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2
 )
 
 HIDDEN = 256

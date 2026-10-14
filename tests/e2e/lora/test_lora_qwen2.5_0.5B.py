@@ -7,7 +7,7 @@ with LoRA enabled (rank=32, all-linear) to validate:
   - LoRA checkpoint save (native + HF PEFT format)
   - Training completes without errors
 
-Requires: 8 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
+Requires: 2 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
 Triggered by label: run-ci-lora
 """
 
@@ -18,16 +18,16 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=400, suite="stage-c-4-gpu-h200", labels=["lora"], hardware=["hopper", "blackwell"], num_gpus=4
+    est_time=400, suite="stage-c-2-gpu-h200", labels=["lora"], hardware=["hopper", "blackwell"], num_gpus=2
 )
-register_rocm_ci(est_time=500, suite="nightly-stage-c-4-gpu-mi350", labels=["lora"])
+register_rocm_ci(est_time=500, suite="nightly-stage-c-2-gpu-mi350", labels=["lora"])
 
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 4
+NUM_GPUS = 2
 
 
 def prepare():
