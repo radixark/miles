@@ -19,6 +19,7 @@ from miles.utils.misc import (
     get_free_port,
     get_gpu_uuids,
     merge_asserting_consistency,
+    partition,
 )
 
 
@@ -508,3 +509,21 @@ class TestMutableBox:
         first.value = 7
 
         assert second.value == 0
+
+
+class TestPartition:
+    def test_the_matching_items_come_back_second(self):
+        """The helper answers (falses, trues), so reading it the other way round inverts every caller."""
+        assert partition([1, 2, 3, 4], lambda x: x % 2 == 0) == ([1, 3], [2, 4])
+
+    def test_each_side_keeps_the_input_order(self):
+        """Callers pair the partitioned cells back against their own ordered bookkeeping."""
+        assert partition("bacd", lambda c: c < "c") == (["c", "d"], ["b", "a"])
+
+    def test_an_empty_input_yields_two_empty_lists(self):
+        """An update that reached no cell at all must not be mistaken for a missing answer."""
+        assert partition([], lambda x: True) == ([], [])
+
+    def test_a_predicate_no_item_matches_leaves_the_true_side_empty(self):
+        """Every cell succeeding is the happy path and must produce an empty failure list."""
+        assert partition([1, 3], lambda x: x % 2 == 0) == ([1, 3], [])
