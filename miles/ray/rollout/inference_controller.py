@@ -97,7 +97,7 @@ class InferenceController:
     @with_lock
     async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
         # TEMPORARY: colocate cannot kill rollout workers while trainer ranks own the shared GPUs
-        server = next((srv for srv in self.servers.values() if cell_id in srv.server_cells), None)
+        server = next((srv for srv in self.servers.values() if cell_id in srv.all_server_cells), None)
         if server is None:
             raise KeyError(f"Unknown rollout cell {cell_id!r}")
         if not server.health_checker_activeness.get().active:
@@ -250,7 +250,9 @@ class InferenceController:
             engine_gpu_counts=srv.engine_gpu_counts,
             engine_gpu_offsets=srv.engine_gpu_offsets,
             engine_cell_ids=srv.engine_cell_ids,
-            snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
+            snapshot_cell_id_to_hashes={
+                cell_id: cell.meta.workers_hash for cell_id, cell in srv.all_server_cells.items()
+            },
         )
 
     @releases_lock
@@ -263,7 +265,7 @@ class InferenceController:
             *[
                 cell.mark_weights_ready()
                 for srv in self.servers.values()
-                for cell_id, cell in srv.server_cells.items()
+                for cell_id, cell in srv.all_server_cells.items()
                 if cell_id in snapshot_cell_id_to_hashes
                 and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
                 and cell.is_pending_weights
@@ -274,7 +276,7 @@ class InferenceController:
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:
         deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
         while True:
-            cells = [cell for srv in self._get_servers_of_model_id(model_id) for cell in srv.server_cells.values()]
+            cells = [cell for srv in self._get_servers_of_model_id(model_id) for cell in srv.all_server_cells.values()]
             if self.args.colocate:
                 await asyncio.gather(*[cell.init() for cell in cells if cell.is_uninitialized])
             pending = [cell for cell in cells if not cell.is_pending_weights_or_serving]
@@ -336,7 +338,7 @@ class InferenceController:
         return {
             cell_id: cell.cell_status()
             for srv in list(self.servers.values())
-            for cell_id, cell in list(srv.server_cells.items())
+            for cell_id, cell in list(srv.all_server_cells.items())
         }
 
     @with_lock
@@ -360,7 +362,7 @@ class InferenceController:
 
     @with_lock
     async def _tick_cells(self) -> None:
-        cells = [cell for srv in list(self.servers.values()) for cell in list(srv.server_cells.values())]
+        cells = [cell for srv in list(self.servers.values()) for cell in list(srv.all_server_cells.values())]
         results = await asyncio.gather(
             *[asyncio.wait_for(cell.tick(), timeout=CELL_TICK_TIMEOUT_SECONDS) for cell in cells],
             return_exceptions=True,
@@ -376,7 +378,7 @@ class InferenceController:
         actual_srv: RolloutServer | None = None
         actual_cell: ServerCell | None = None
         for srv in self.servers.values():
-            if (c := srv.server_cells.get(cell_id)) is not None:
+            if (c := srv.all_server_cells.get(cell_id)) is not None:
                 actual_srv, actual_cell = srv, c
                 break
 
