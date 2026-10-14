@@ -14,7 +14,8 @@ max_steps: 64                                 # --max_steps 64
 filter_zero_std: true                         # --active_sampling
 async_rollout_gpus: 4                         # --async_steps 4 on disjoint GPUs, 1:1 like 16 learners : 16 engines
 max_weight_staleness: 4                       # groups older than --async_steps 4 are dropped
-async_max_concurrent_samples: 512             # --pool_size 512: 2 batches of 256 trajectories in flight
+async_max_concurrent_samples: 256             # --pool_size 512 is 2 batches in flight over 4 nodes (128 sandboxes per
+                                              # node); one node holds 256 sandboxes reliably, so 1 batch here
 async_data_buffer_capacity_factor: 4          # --async_steps 4: generation runs at most 4 steps ahead
 tensor_model_parallel_size: 2                 # 64k trajectories: TP 2 x CP 2 on the 4 training GPUs
 context_parallel_size: 2
