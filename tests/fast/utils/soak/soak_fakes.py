@@ -1,20 +1,35 @@
+import asyncio
+import builtins
+import random
 import subprocess
 import threading
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tests.utils.soak.core.config import SoakRunnerConfig
+from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import (
     SoakActionAppliedEvent,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakCollectionClosedEvent,
     SoakEvent,
     SoakObservationEvent,
     SoakRunContext,
     SoakRunContextEvent,
     StoredEvent,
 )
-from tests.utils.soak.core.types import SoakActionRequest, SoakTarget
+from tests.utils.soak.core.runner import SoakRunner
+from tests.utils.soak.core.types import (
+    BaseSoakActionForm,
+    SoakActionEvidence,
+    SoakActionRequest,
+    SoakForms,
+    SoakObserver,
+    SoakTarget,
+)
+from tests.utils.soak.core.views import SoakActionRecord
 from tests.utils.soak.ft.types import CellTarget, PodDetails
 from tests.utils.soak.k8s_utils.pod_manipulation import PodDeletedEvidence, SoakPodTarget
 
@@ -25,6 +40,8 @@ from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, Trai
 from miles.utils.workers.naming import compute_cell_id
 
 _BASE = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
+
+_ExecuteBehavior = Callable[[SoakActionRequest, Callable[[SoakActionEvidence], None]], Awaitable[None]]
 
 
 def _at(seconds: float) -> datetime:
@@ -137,6 +154,87 @@ def _result(
     return SoakActionResultEvent(timestamp=at, request_id=request.request_id, returned=returned, error=error)
 
 
+# ============================== fake forms ===============================
+
+
+async def _apply_and_return(request: SoakActionRequest, report_applied: Callable[[SoakActionEvidence], None]) -> None:
+    report_applied(_pod_evidence())
+
+
+class _FakeForm(BaseSoakActionForm):
+    def __init__(
+        self,
+        *,
+        name: str = "fake",
+        harms_target: bool = False,
+        recovered: bool = True,
+        creates_request: bool = True,
+        execute: _ExecuteBehavior = _apply_and_return,
+    ) -> None:
+        self._name = name
+        self._harms_target = harms_target
+        self.recovered = recovered
+        self.creates_request = creates_request
+        self._execute = execute
+        self.created: list[SoakActionRequest] = []
+        self.executed: list[SoakActionRequest] = []
+        self.recovery_checks: list[SoakActionRecord] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def harms_target(self) -> bool:
+        return self._harms_target
+
+    def maybe_create_request(
+        self,
+        *,
+        target: SoakTarget,
+        observation: SoakObservationEvent,
+        events: list[SoakEvent],
+        rng: random.Random,
+    ) -> SoakActionRequest | None:
+        if not self.creates_request:
+            return None
+        request = _request(target, form_name=self._name, request_id=f"{self._name}-{len(self.created)}")
+        self.created.append(request)
+        return request
+
+    async def execute(
+        self, request: SoakActionRequest, *, report_applied: Callable[[SoakActionEvidence], None]
+    ) -> None:
+        self.executed.append(request)
+        await self._execute(request, report_applied)
+
+    def is_recovered(self, *, action: SoakActionRecord, events: list[SoakEvent]) -> bool:
+        self.recovery_checks.append(action)
+        return self.recovered
+
+
+# ============================ fake observers =============================
+
+
+class _ScriptedObserver(SoakObserver):
+    def __init__(
+        self,
+        make_observation: Callable[[int], SoakObservationEvent],
+        *,
+        hang_from_call: int | None = None,
+    ) -> None:
+        self._make_observation = make_observation
+        self._hang_from_call = hang_from_call
+        self.calls = 0
+
+    async def observe(self) -> SoakObservationEvent:
+        index = self.calls
+        self.calls += 1
+        if self._hang_from_call is not None and index >= self._hang_from_call:
+            await asyncio.Event().wait()
+        return self._make_observation(index)
+
+
 # ============================= stored evidence =============================
 
 
@@ -185,3 +283,79 @@ class _RecordingReleaseRemoval:
             self._block.wait(timeout=10)
         if self._error is not None:
             raise self._error
+
+
+# ============================== runner boundary ==============================
+
+
+class _ScriptedScheduler:
+    def __init__(self, requests: list[SoakActionRequest | None] | None = None) -> None:
+        self._requests = list(requests or [])
+        self.seen_event_counts: list[int] = []
+
+    def choose(self, *, events: list[SoakEvent], now: float) -> SoakActionRequest | None:
+        self.seen_event_counts.append(len(events))
+        return self._requests.pop(0) if self._requests else None
+
+
+class _ScriptedSutFeed:
+    def __init__(self, batches: list[list[Event]]) -> None:
+        self._batches = list(batches)
+
+    async def attach(self, observation: SoakObservationEvent) -> SoakObservationEvent:
+        batch = self._batches.pop(0) if self._batches else []
+        return observation.model_copy(update={"new_sut_events": batch})
+
+
+class _RecordingTeardown:
+    def __init__(self, event_log: EventLog) -> None:
+        self._event_log = event_log
+        self.calls = 0
+        self.closed_when_called: list[bool] = []
+
+    async def __call__(self) -> None:
+        self.calls += 1
+        self.closed_when_called.append(
+            any(isinstance(event, SoakCollectionClosedEvent) for event in self._event_log.events)
+        )
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.001)
+
+
+def _flatten_errors(error: BaseException) -> list[BaseException]:
+    if isinstance(error, builtins.BaseExceptionGroup):
+        return [leaf for inner in error.exceptions for leaf in _flatten_errors(inner)]
+    return [error]
+
+
+def _healthy_observer() -> _ScriptedObserver:
+    return _ScriptedObserver(lambda index: _observation([_cell_target()], at=_now()))
+
+
+def _runner_config(**overrides: object) -> SoakRunnerConfig:
+    return SoakRunnerConfig(seed=0, poll_interval_seconds=0.001, **overrides)
+
+
+def _make_runner(
+    tmp_path: Path,
+    *,
+    observer: SoakObserver,
+    forms: SoakForms | None = None,
+    config: SoakRunnerConfig | None = None,
+    sut_events: _ScriptedSutFeed | None = None,
+) -> SoakRunner:
+    return SoakRunner(
+        observer=observer,
+        forms={"actor": [_FakeForm()]} if forms is None else forms,
+        event_log=EventLog(tmp_path / "evidence" / "events.jsonl"),
+        config=config or _runner_config(),
+        sut_events=sut_events,
+    )
