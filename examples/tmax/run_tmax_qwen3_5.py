@@ -15,7 +15,7 @@ Mapping from the open-instruct recipe:
   --advantage_normalization_type centered -> grpo + --disable-grpo-std-normalization
   --loss_denominator token       -> --calculate-per-token-loss
   --active_sampling              -> --dynamic-sampling-filter-path apply_reward_nonzero_std_filter
-  --per_turn_max_tokens 8192     -> --rollout-max-response-len 8192
+  --per_turn_max_tokens          -> --rollout-max-response-len (8192 here; prod uses 16384)
   --response_length 32768        -> --max-seq-len 34816 (Miles counts the prompt too)
   --max_steps 64                 -> TMAX_MAX_STEPS=64
   --loss_fn dppo                 -> not available; PPO clip (eps 0.2 / 0.28) instead
@@ -43,7 +43,11 @@ Args:
   --num-gpus-per-node: GPUs per node (default: 8).
   --rollout-batch-size / --n-samples-per-prompt: prompts x samples per step (default: 32 x 8).
   --max-seq-len: per-episode token budget including the prompt (default: 34816).
-  --tensor-model-parallel-size: Megatron TP (default: 4).
+  --rollout-max-response-len: per-turn generation cap (default: 8192).
+  --tensor-model-parallel-size / --context-parallel-size: Megatron TP / CP (default: 4 / 1). With CP,
+      --max-tokens-per-gpu must cover max_seq_len / CP so the longest trajectory fits one micro-batch.
+  --exp-name: fixed checkpoint directory under --output-dir, so a retried or preempted job resumes
+      from its last checkpoint (default: unset, a fresh directory per run id).
   --filter-zero-std: drop all-pass / all-fail groups, open-instruct's --active_sampling (default: on;
       turn off for smoke tests, where small groups are almost always zero-variance).
   --async-rollout-gpus: 0 = synchronous and colocated (default); N = --fully-async with N rollout GPUs.
@@ -119,7 +123,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     n_samples_per_prompt: int = 8
     num_rollout: int = 500
     max_seq_len: int = 34816
+    rollout_max_response_len: int = 8192
     tensor_model_parallel_size: int = 4
+    context_parallel_size: int = 1
     max_tokens_per_gpu: int = 8192
     optimizer_cpu_offload: bool = True
     filter_zero_std: bool = True
@@ -132,6 +138,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     max_steps: int = 64
     docker_host: str = "unix:///run/podman/podman.sock"
     save_interval: int = 20
+    exp_name: str = ""
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -148,6 +155,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     @property
     def recipe(self) -> _Recipe:
         return _RECIPES[self.model_name]
+
+    @property
+    def checkpoint_dir(self) -> str:
+        return f"{self.output_dir}/{self.exp_name or self.run_id}/checkpoints"
 
     @property
     def fully_async(self) -> bool:
@@ -214,8 +225,8 @@ def execute(args: ScriptArgs):
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
-        f"--load {args.output_dir}/{args.run_id}/checkpoints "
-        f"--save {args.output_dir}/{args.run_id}/checkpoints "
+        f"--load {args.checkpoint_dir} "
+        f"--save {args.checkpoint_dir} "
         f"--save-interval {args.save_interval} "
     )
 
@@ -228,7 +239,7 @@ def execute(args: ScriptArgs):
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 1.0 "
-        "--rollout-max-response-len 8192 "
+        f"--rollout-max-response-len {args.rollout_max_response_len} "
         f"--max-seq-len {args.max_seq_len} "
         f"--global-batch-size {args.rollout_batch_size * args.n_samples_per_prompt} "
         "--balance-data "
@@ -240,7 +251,6 @@ def execute(args: ScriptArgs):
         "--custom-rm-path generate.reward_func "
         "--use-session-server "
         "--tito-model qwen35 "
-        "--session-server-workers 8 "
     )
     if not args.recipe.enable_thinking:
         agent_args += """--apply-chat-template-kwargs '{"enable_thinking": false}' """
@@ -256,7 +266,7 @@ def execute(args: ScriptArgs):
         f"--tensor-model-parallel-size {args.tensor_model_parallel_size} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 1 "
+        f"--context-parallel-size {args.context_parallel_size} "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "

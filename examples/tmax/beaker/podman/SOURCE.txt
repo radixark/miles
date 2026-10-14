@@ -1,0 +1,12 @@
+Vendored unchanged from open-instruct (Apache-2.0), branch omni_agent_cuda13 @ 037b15aff, the bring-up its
+Terminal-RL production jobs run:
+
+  docker_login.sh            <- scripts/docker/docker_login.sh  (sharded podman services, mirror, janitors, Docker Hub creds)
+  setup_dockerio_mirror      <- docker/podman/setup_dockerio_mirror  (registries.conf from MIRROR_URL, num_locks)
+  containers.conf            <- docker/podman/containers.conf  (host netns, cgroups disabled, /proc bind)
+  policy.json                <- docker/podman/policy.json
+  10-unqualified-search-registries.conf <- docker/podman/10-unqualified-search-registries.conf
+
+Configured through the same SWERL_* / MIRROR_URL / PODMAN_NUM_LOCKS env vars as open-instruct's launch scripts;
+see open-instruct docs/podman_sandboxes.md. tmax_sandbox reads the resulting SWERL_PODMAN_DOCKER_HOSTS via
+TMAX_DOCKER_HOST.

@@ -70,9 +70,17 @@ On 80 GB+ GPUs add `--tensor-model-parallel-size 1 --no-optimizer-cpu-offload`. 
 
 ### Beaker
 
-`beaker/tmax_smoke.sh` is the entrypoint for `docker.io/radixark/miles:latest`. It installs Podman from apt,
-writes open-instruct's container config (host network, cgroups disabled, `/proc` bind), starts the API
-socket, logs in to Docker Hub, and runs `prepare` + `execute` for `MODE=sync|async|opd|opd-async`.
+`beaker/tmax_smoke.sh` is the entrypoint for `docker.io/radixark/miles:latest`. It installs Podman from apt and
+then runs open-instruct's own Terminal-RL bring-up, vendored unchanged in `beaker/podman/` (see `SOURCE.txt`):
+container config (host network, cgroups disabled, `/proc` bind), `SANDBOX_SHARDS` podman daemons with their own
+storage, the docker.io mirror when `MIRROR_URL` is set, the image janitor and Docker Hub credentials. It then
+runs `prepare` + `execute` for:
+
+| `MODE` | GPUs | What |
+|---|---|---|
+| `sync`, `async`, `opd`, `opd-async` | 4 | 3-4 step smoke tests on a 64-prompt subset |
+| `prod-1node` | 8 | open-instruct's production recipe on one node: `hamishivi/Qwen3.5-9B`, 8 x 32, 64k per episode / 16k per turn, fully async (4 + 4 GPUs, TP 2 x CP 2), active sampling, checkpoints every 5 steps under `EXP_NAME` (a restarted job resumes), 4 sandbox daemons |
+
 Models, datasets and outputs are cached under `TMAX_CACHE_DIR`. Edit the paths, budget and secret names in
 `beaker/tmax_smoke.yaml`, then:
 
@@ -80,7 +88,9 @@ Models, datasets and outputs are cached under `TMAX_CACHE_DIR`. Edit the paths, 
 beaker experiment create --workspace ai2/oe-agents-holmes examples/tmax/beaker/tmax_smoke.yaml
 ```
 
-The task needs `BEAKER_ALLOW_SUBCONTAINERS=1`; the sandboxes are nested containers inside it.
+The task needs `BEAKER_ALLOW_SUBCONTAINERS=1`; the sandboxes are nested containers inside it. `tmax_sandbox`
+spreads episodes over the daemons in `TMAX_DOCKER_HOST` (comma-separated), retries a failed start 5 times with
+1-16 s backoff, and benches a daemon that fails to connect for 300-330 s, as open-instruct's environment pool does.
 
 ## Mapping from open-instruct
 
@@ -202,6 +212,7 @@ above 1 nat).
 ### Known gaps
 
 - No DPPO in Miles; add it as a custom loss (`--loss-type custom_loss`) if the ablation matters.
-- No warm container pool, sharded Podman daemons or registry mirror; every episode pulls (cached per
-  daemon), creates and removes its own container.
+- No warm container pool: every episode pulls (cached per daemon), creates and removes its own container.
+- Podman comes from Ubuntu's apt (4.9) at job start; open-instruct's image builds 5.6.2 and crun 1.14.3 from
+  source. Bake them into a Miles image for production.
 - Group-granular dropping: one infra failure discards its whole group.

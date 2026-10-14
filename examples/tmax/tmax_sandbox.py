@@ -12,7 +12,9 @@ Behavior kept identical to open-instruct, since it shapes the reward:
 * mini-swe-agent head/tail observation truncation plus ``(exit_code=N)``,
 * the ``COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`` submit marker,
 * reward = ``/logs/verifier/reward.txt`` clamped to [0, 1], 0 when missing,
-* an OOM-killed sandbox ends the episode with reward 0.
+* an OOM-killed sandbox ends the episode with reward 0,
+* a failed start is retried 5 times with 1-16 s backoff, and a daemon that fails with a connectivity
+  error is benched for 300-330 s (open-instruct's SWERLVanilluxSandboxEnv.reset and EnvironmentPool).
 
 Under ``--custom-agent-function-mode subproc`` (the default) each episode runs in
 a process of its own, so the limits shared across episodes (start and exec
@@ -20,8 +22,10 @@ concurrency, one pull per image) are ``rollout_limits`` file locks scoped to the
 rollout process, and containers are labelled with that scope rather than a pid.
 
 Env vars:
-  TMAX_DOCKER_HOST          Docker API endpoint (default: $DOCKER_HOST, else
-                            unix:///run/podman/podman.sock).
+  TMAX_DOCKER_HOST          Docker API endpoint(s), comma-separated (default: $DOCKER_HOST,
+                            else unix:///run/podman/podman.sock). One podman daemon serializes
+                            on its lock database at high concurrency, so open-instruct runs
+                            several per node; each episode picks one at random and keeps it.
   TMAX_SANDBOX_MEM_LIMIT    per-container memory limit (default: 4g).
   TMAX_COMMAND_TIMEOUT_S    per-bash-command timeout (default: 120).
   TMAX_TEST_TIMEOUT_S       verifier timeout (default: 600, open-instruct's floor).
@@ -36,11 +40,15 @@ import asyncio
 import io
 import logging
 import os
+import random
 import shlex
 import socket
 import tarfile
+import tempfile
+import time
 from dataclasses import dataclass
 from functools import cache
+from pathlib import Path
 
 import docker
 
@@ -67,6 +75,22 @@ _OBS_TOO_LONG_HINT = (
 )
 _TRANSIENT_EXEC_MARKERS = ("database is locked", "retrieving exec session", "timed out waiting for file")
 _TRANSIENT_EXEC_RETRIES = 5
+# open-instruct backends.DOCKER_HOST_CONNECTIVITY_ERROR_MARKERS
+_CONNECTIVITY_MARKERS = (
+    "error while fetching server api version",
+    "unixhttpconnectionpool",
+    "read timed out",
+    "connection refused",
+    "connection aborted",
+    "broken pipe",
+    "connection reset",
+)
+_START_ATTEMPTS = 5
+_START_RETRY_BASE_S = 1.0
+_START_RETRY_MAX_S = 16.0
+_START_RETRY_JITTER_S = 2.0
+_HOST_COOLDOWN_S = 300.0
+_HOST_COOLDOWN_JITTER_S = 30.0
 
 _BASH_WRAPPER_PATH = "/tmp/.swerl_vanillux_bash_wrapper.sh"
 _BASH_CWD_PATH = "/tmp/.swerl_vanillux_cwd"
@@ -102,7 +126,7 @@ class ExecResult:
 
 @dataclass(frozen=True)
 class _Settings:
-    docker_host: str
+    docker_hosts: tuple[str, ...]
     mem_limit: str
     command_timeout_s: int
     test_timeout_s: int
@@ -114,7 +138,13 @@ class _Settings:
 @cache
 def _settings() -> _Settings:
     return _Settings(
-        docker_host=os.getenv("TMAX_DOCKER_HOST") or os.getenv("DOCKER_HOST") or "unix:///run/podman/podman.sock",
+        docker_hosts=tuple(
+            host.strip()
+            for host in (
+                os.getenv("TMAX_DOCKER_HOST") or os.getenv("DOCKER_HOST") or "unix:///run/podman/podman.sock"
+            ).split(",")
+            if host.strip()
+        ),
         mem_limit=os.getenv("TMAX_SANDBOX_MEM_LIMIT", "4g"),
         command_timeout_s=int(os.getenv("TMAX_COMMAND_TIMEOUT_S", "120")),
         test_timeout_s=int(os.getenv("TMAX_TEST_TIMEOUT_S", "600")),
@@ -129,8 +159,39 @@ def _settings() -> _Settings:
 
 
 @cache
-def _client() -> docker.DockerClient:
-    return docker.DockerClient(base_url=_settings().docker_host, timeout=300)
+def _client(docker_host: str) -> docker.DockerClient:
+    return docker.DockerClient(base_url=docker_host, timeout=300)
+
+
+def _bench_dir() -> Path:
+    bench_dir = Path(tempfile.gettempdir()) / f"miles-tmax-benched-hosts-{current_scope()}"
+    bench_dir.mkdir(exist_ok=True)
+    return bench_dir
+
+
+def _bench_path(docker_host: str) -> Path:
+    return _bench_dir() / "".join(c if c.isalnum() else "_" for c in docker_host)
+
+
+def _bench(docker_host: str, error: BaseException) -> None:
+    """Keep every episode of this rollout off a daemon that just failed to connect."""
+    cooldown = _HOST_COOLDOWN_S + random.uniform(0.0, _HOST_COOLDOWN_JITTER_S)
+    _bench_path(docker_host).write_text(str(time.time() + cooldown))
+    logger.warning(f"benching sandbox daemon {docker_host} for {cooldown:.0f}s after: {error!r}")
+
+
+def _pick_host() -> str:
+    """A random daemon that is not benched; any daemon if all of them are."""
+    hosts = _settings().docker_hosts
+    now = time.time()
+
+    def benched(host: str) -> bool:
+        try:
+            return float(_bench_path(host).read_text()) > now
+        except (FileNotFoundError, ValueError):
+            return False
+
+    return random.choice([host for host in hosts if not benched(host)] or list(hosts))
 
 
 def owner() -> str:
@@ -179,16 +240,31 @@ class TmaxSandbox:
         self._image = image
         self._task_dir = task_dir
         self._tests_dir = os.path.join(task_dir, "tests")
+        self._docker_host = _pick_host()
         self._container = None
 
     async def __aenter__(self) -> "TmaxSandbox":
-        try:
-            await self._start()
-            await self._prepare_runtime()
-        except Exception as e:
-            await self.close()
-            raise SandboxInfraError(f"sandbox start failed for image={self._image}: {e!r}") from e
-        return self
+        last_error: Exception | None = None
+        for attempt in range(_START_ATTEMPTS):
+            try:
+                await self._start()
+                await self._prepare_runtime()
+                return self
+            except asyncio.CancelledError:
+                await asyncio.shield(self.close())
+                raise
+            except Exception as e:
+                last_error = e
+                await self.close()
+                if any(marker in str(e).lower() for marker in _CONNECTIVITY_MARKERS):
+                    _bench(self._docker_host, e)
+                if attempt + 1 < _START_ATTEMPTS:
+                    delay = min(_START_RETRY_BASE_S * 2**attempt, _START_RETRY_MAX_S)
+                    await asyncio.sleep(delay + random.uniform(0.0, _START_RETRY_JITTER_S))
+                    self._docker_host = _pick_host()
+        raise SandboxInfraError(
+            f"sandbox start failed {_START_ATTEMPTS}x for image={self._image}: {last_error!r}"
+        ) from last_error
 
     async def __aexit__(self, *exc) -> None:
         await self.close()
@@ -236,7 +312,7 @@ class TmaxSandbox:
         async with rollout_semaphore("tmax-start", _settings().start_concurrency):
             await self._ensure_image()
             self._container = await asyncio.to_thread(
-                _client().containers.create,
+                _client(self._docker_host).containers.create,
                 self._image,
                 command="sleep infinity",
                 detach=True,
@@ -247,13 +323,14 @@ class TmaxSandbox:
             await asyncio.to_thread(self._container.start)
 
     async def _ensure_image(self) -> None:
-        # Siblings of a GRPO group start the same image at once; pull it once per rollout process.
-        async with rollout_semaphore(f"tmax-pull-{self._image}", 1):
+        # Siblings of a GRPO group start the same image at once; pull it once per daemon (each has its own store).
+        client = _client(self._docker_host)
+        async with rollout_semaphore(f"tmax-pull-{self._docker_host}-{self._image}", 1):
             try:
-                await asyncio.to_thread(_client().images.get, self._image)
+                await asyncio.to_thread(client.images.get, self._image)
             except docker.errors.ImageNotFound:
-                logger.info(f"pulling sandbox image {self._image}")
-                await asyncio.to_thread(_client().images.pull, self._image, auth_config=_settings().registry_auth)
+                logger.info(f"pulling sandbox image {self._image} on {self._docker_host}")
+                await asyncio.to_thread(client.images.pull, self._image, auth_config=_settings().registry_auth)
 
     async def _prepare_runtime(self) -> None:
         await self._exec("mkdir -p /workspace /output /logs/verifier /root")
@@ -305,13 +382,22 @@ class TmaxSandbox:
 
 
 async def remove_owned_sandboxes() -> int:
-    """Force-remove every sandbox this rollout process's episodes created. Returns the count."""
-    containers = await asyncio.to_thread(
-        _client().containers.list, all=True, filters={"label": f"{_OWNER_LABEL}={owner()}"}
-    )
-    for container in containers:
+    """Force-remove every sandbox this rollout process's episodes created, on every daemon. Returns the count."""
+    removed = 0
+    for docker_host in _settings().docker_hosts:
         try:
-            await asyncio.to_thread(container.remove, force=True)
-        except docker.errors.NotFound:
-            pass
-    return len(containers)
+            containers = await asyncio.to_thread(
+                lambda host=docker_host: _client(host).containers.list(
+                    all=True, filters={"label": f"{_OWNER_LABEL}={owner()}"}
+                )
+            )
+        except docker.errors.DockerException as e:  # one unreachable daemon must not stop the sweep of the others
+            logger.warning(f"cannot list sandboxes on {docker_host}: {e!r}")
+            continue
+        for container in containers:
+            try:
+                await asyncio.to_thread(container.remove, force=True)
+            except docker.errors.NotFound:
+                pass
+        removed += len(containers)
+    return removed
