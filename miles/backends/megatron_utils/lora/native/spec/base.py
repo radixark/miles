@@ -11,6 +11,7 @@ from typing import Any, Protocol
 import torch.nn as nn
 
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
+from miles.backends.megatron_utils.lora.native.naming import HFNaming
 
 
 class ShardLayout(str, enum.Enum):
@@ -32,13 +33,14 @@ class AttentionFamily(str, enum.Enum):
 class ProjectionSpec:
     """External name and shard layout for one logical HF LoRA projection.
 
-    ``attr`` names the parameter pair stored on the adapter
-    (``<attr>_A``/``<attr>_B``). The exporters derive each rank's shard width from
-    those parameter shapes, so this descriptor stays static and pickle-safe.
+    ``hf_leaf`` is the projection's HF module name inside its block (``q_proj``).
+    ``param_prefix`` names the parameter pair stored on the adapter
+    (``<param_prefix>_A``/``<param_prefix>_B``). The exporters derive each rank's shard
+    width from those parameter shapes, so this descriptor stays static and pickle-safe.
     """
 
-    hf: str
-    attr: str
+    hf_leaf: str
+    param_prefix: str
     layout: ShardLayout
 
 
@@ -53,28 +55,8 @@ class AttachContext:
     transformer_config: Any
     tp_size: int
     tp_rank: int
-    naming: Any
+    naming: HFNaming
     full_sequence: bool = False
-
-    @property
-    def rank(self) -> int:
-        return self.lora.rank
-
-    @property
-    def scale(self) -> float:
-        return self.lora.scale
-
-    @property
-    def dropout(self) -> float:
-        return self.lora.dropout
-
-    @property
-    def a_init(self) -> str:
-        return self.lora.a_init_method
-
-    @property
-    def hidden(self) -> int:
-        return self.transformer_config.hidden_size
 
     @property
     def sequence_parallel(self) -> bool:
@@ -84,9 +66,6 @@ class AttachContext:
     @property
     def output_gate(self) -> bool:
         return bool(getattr(self.transformer_config, "attention_output_gate", False))
-
-    def selects(self, hf_module: str) -> bool:
-        return self.lora.selects(hf_module)
 
 
 class AttentionLoRASpec(Protocol):
@@ -147,7 +126,7 @@ class LoRAArchSpec:
     mlp: MLPLoRASpec
     experts: ExpertsLoRASpec | None = None
     lm_head: Any = None
-    allows_mixer_only_adapter_chunks: bool = False
+    has_linear_attention_layers: bool = False
     fixed_targets: FixedTargets | None = None
     # None names adapters after the raw-mode converter's HF weight names
     declared_naming: Any = None

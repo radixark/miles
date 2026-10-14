@@ -9,7 +9,7 @@ from typing import Protocol
 import torch
 import torch.nn as nn
 
-_EXPERT_INDEX = re.compile(r"\.experts\.\d+\.")
+_EXPERT_INDEX_PATTERN = re.compile(r"\.experts\.\d+\.")
 
 
 class HFNaming(Protocol):
@@ -26,33 +26,35 @@ class ConverterNaming:
     names depend on shapes, never on values.
     """
 
-    def __init__(self, args, model_name: str, tp_size: int, in_hf_namespace: Callable[[str], bool]):
+    def __init__(self, args, model_name: str, tp_size: int, is_hf_name: Callable[[str], bool]):
         self.args = args
         self.model_name = model_name
         self.tp_size = tp_size
-        self.in_hf_namespace = in_hf_namespace
+        self.is_hf_name = is_hf_name
 
     def block_prefix(self, layer: nn.Module, host_weight: nn.Parameter, leaves: Sequence[str]) -> str:
         from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf_names
 
-        relative = next(name for name, param in layer.named_parameters() if param is host_weight)
-        global_name = f"module.module.decoder.layers.{layer.layer_number - 1}.{relative}"
-        probe = torch.empty(self._global_shape(host_weight), dtype=host_weight.dtype, device="meta")
-        hf_weights = convert_to_hf_names(self.args, self.model_name, global_name, probe)
+        name_in_layer = next(name for name, param in layer.named_parameters() if param is host_weight)
+        global_name = f"module.module.decoder.layers.{layer.layer_number - 1}.{name_in_layer}"
+        meta_weight = torch.empty(self._global_shape(host_weight), dtype=host_weight.dtype, device="meta")
+        hf_weight_names = convert_to_hf_names(self.args, self.model_name, global_name, meta_weight)
         # target selectors match HF names; a converter name outside that namespace is never selected
-        outside = [name for name in hf_weights if not self.in_hf_namespace(name)]
-        assert not outside, (
-            f"the {self.model_name} converter names host {global_name} {outside}, which the HF model of "
+        names_outside_hf_namespace = [name for name in hf_weight_names if not self.is_hf_name(name)]
+        assert not names_outside_hf_namespace, (
+            f"the {self.model_name} converter names host {global_name} {names_outside_hf_namespace}, which the HF model of "
             f"{self.args.hf_checkpoint} does not have, so no --target-modules selector can reach its adapter"
         )
         # shared-outer expert adapters are expert-agnostic: one name for the whole grouped host
-        names = [_EXPERT_INDEX.sub(".experts.", name.removesuffix(".weight")) for name in hf_weights]
-        prefixes = {name.rpartition(".")[0] for name in names}
-        assert len(prefixes) == 1 and [name.rpartition(".")[2] for name in names] == list(leaves), (
-            f"the {self.model_name} converter names host {global_name} {names}, but the native LoRA spec "
+        module_names = [
+            _EXPERT_INDEX_PATTERN.sub(".experts.", name.removesuffix(".weight")) for name in hf_weight_names
+        ]
+        block_prefixes = {name.rpartition(".")[0] for name in module_names}
+        assert len(block_prefixes) == 1 and [name.rpartition(".")[2] for name in module_names] == list(leaves), (
+            f"the {self.model_name} converter names host {global_name} {module_names}, but the native LoRA spec "
             f"declares projections {list(leaves)} for it"
         )
-        return f"{prefixes.pop()}."
+        return f"{block_prefixes.pop()}."
 
     def _global_shape(self, weight: nn.Parameter) -> list[int]:
         shape = list(weight.shape)
@@ -66,19 +68,19 @@ class DeclaredNaming:
     """Adapters named by a fixed table, for architectures whose served adapter names are not
     the HF checkpoint names the converter produces (Inkling: SGLang's module names).
 
-    ``blocks`` maps a host's path inside its layer, by prefix, to its HF block.
+    ``hf_blocks_by_param_prefix`` maps a host's parameter name inside its layer, by prefix, to its HF block.
     """
 
-    def __init__(self, layer_prefix: str, blocks: Mapping[str, str]):
+    def __init__(self, layer_prefix: str, hf_blocks_by_param_prefix: Mapping[str, str]):
         self.layer_prefix = layer_prefix
-        self.blocks = blocks
+        self.hf_blocks_by_param_prefix = hf_blocks_by_param_prefix
 
     def block_prefix(self, layer: nn.Module, host_weight: nn.Parameter, leaves: Sequence[str]) -> str:
         del leaves
-        relative = next(name for name, param in layer.named_parameters() if param is host_weight)
-        block = next(
-            block
-            for path, block in sorted(self.blocks.items(), key=lambda item: -len(item[0]))
-            if relative.startswith(path)
+        name_in_layer = next(name for name, param in layer.named_parameters() if param is host_weight)
+        hf_block = next(
+            hf_block
+            for param_prefix, hf_block in sorted(self.hf_blocks_by_param_prefix.items(), key=lambda item: -len(item[0]))
+            if name_in_layer.startswith(param_prefix)
         )
-        return f"{self.layer_prefix}{layer.layer_number - 1}.{block}"
+        return f"{self.layer_prefix}{layer.layer_number - 1}.{hf_block}"

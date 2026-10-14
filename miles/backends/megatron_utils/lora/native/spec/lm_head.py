@@ -26,14 +26,14 @@ class InklingLMHeadSpec:
             context=context,
             vocab_local=output_layer.weight.shape[0],
             mup_width_multiplier=float(mup) if mup else None,
-            unpadded_vocab_size=_served_vocab_size(args.hf_checkpoint),
+            unpadded_vocab_size=_read_unpadded_vocab_size(args.hf_checkpoint),
         )
         model.lora_lm_head_adapter = adapter
-        attach_adapter_forward(output_layer, adapter, context.scale)
+        attach_adapter_forward(output_layer, adapter, context.lora.scale)
         return 1
 
 
-def _served_vocab_size(hf_checkpoint: str) -> int | None:
+def _read_unpadded_vocab_size(hf_checkpoint: str) -> int | None:
     """SGLang serves Inkling's lm_head over ``unpadded_vocab_size`` when the config declares one
     (sglang configs/inkling.py); None keeps every row."""
     with open(os.path.join(hf_checkpoint, "config.json"), encoding="utf-8") as handle:

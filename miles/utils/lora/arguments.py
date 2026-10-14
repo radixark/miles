@@ -161,7 +161,7 @@ def validate_lora_args(args):
         )
 
 
-def validate_lora_backend_args(args):
+def validate_lora_args_after_megatron(args):
     """LoRA checks that read Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
     if is_lora_enabled(args) and args.megatron_to_hf_mode == "raw":
         validate_native_lora_args(args)

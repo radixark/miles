@@ -54,7 +54,7 @@ def test_fused_qkv_and_gate_up_are_named_per_projection_from_their_global_shape(
         self_attention__linear_proj__weight=((8, 4), 1, False),
         mlp__linear_fc1__weight=((6, 8), 0, False),
     )
-    naming = ConverterNaming(_GQA_ARGS, "qwen3config", tp_size=2, in_hf_namespace=_ANY)
+    naming = ConverterNaming(_GQA_ARGS, "qwen3config", tp_size=2, is_hf_name=_ANY)
 
     qkv = _weight(layer, "self_attention__linear_qkv__weight")
     assert naming.block_prefix(layer, qkv, ["q_proj", "k_proj", "v_proj"]) == "model.layers.3.self_attn."
@@ -67,13 +67,13 @@ def test_fused_qkv_and_gate_up_are_named_per_projection_from_their_global_shape(
 def test_a_spec_that_disagrees_with_the_converter_fails():
     """GLM-4 keeps gate/up fused in HF: split adapters would be saved under names HF GLM-4 has no module for."""
     layer = _layer(1, mlp__linear_fc1__weight=((12, 8), 0, False))
-    naming = ConverterNaming(_GQA_ARGS, "glm4config", tp_size=1, in_hf_namespace=_ANY)
+    naming = ConverterNaming(_GQA_ARGS, "glm4config", tp_size=1, is_hf_name=_ANY)
     fc1 = _weight(layer, "mlp__linear_fc1__weight")
 
     with pytest.raises(AssertionError, match=r"\['model.layers.0.mlp.gate_up_proj'\].*\['gate_proj', 'up_proj'\]"):
         naming.block_prefix(layer, fc1, ["gate_proj", "up_proj"])
     assert naming.block_prefix(layer, fc1, ["gate_up_proj"]) == "model.layers.0.mlp."
-    assert [binding.projection.hf for binding in MODEL_SPECS["glm4"].mlp.layout.singles] == [
+    assert [binding.projection.hf_leaf for binding in MODEL_SPECS["glm4"].mlp.layout.singles] == [
         "gate_up_proj",
         "down_proj",
     ]
@@ -87,7 +87,7 @@ def test_kimi_k3_names_kda_experts_and_shared_experts():
         mlp__experts__linear_fc2__weight0=((4, 5), 1, True),
         mlp__shared_experts__linear_fc1__weight=((10, 8), 0, False),
     )
-    naming = ConverterNaming(SimpleNamespace(), "kimi_k3", tp_size=4, in_hf_namespace=_ANY)
+    naming = ConverterNaming(SimpleNamespace(), "kimi_k3", tp_size=4, is_hf_name=_ANY)
     prefix = "language_model.model.layers.4."
 
     out_proj = _weight(layer, "self_attention__linear_attn__out_proj__weight")
@@ -127,7 +127,7 @@ def test_a_converter_name_outside_the_hf_namespace_fails_instead_of_never_being_
     hf_names = {f"model.layers.0.self_attn.{leaf}.weight" for leaf in ("q_proj", "k_proj", "v_proj")}
     # gated q: 2 groups x (2 q heads x 2 (gate) + k + v) x head_dim 2 = 24 rows
     layer = _layer(1, self_attention__linear_qkv__weight=((24, 8), 0, False))
-    naming = ConverterNaming(_GQA_ARGS, "qwen3_5config", tp_size=1, in_hf_namespace=hf_names.__contains__)
+    naming = ConverterNaming(_GQA_ARGS, "qwen3_5config", tp_size=1, is_hf_name=hf_names.__contains__)
     qkv = _weight(layer, "self_attention__linear_qkv__weight")
 
     with pytest.raises(AssertionError, match=r"model.language_model.layers.0.self_attn.q_proj.weight"):

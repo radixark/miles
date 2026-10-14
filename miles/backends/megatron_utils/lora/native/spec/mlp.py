@@ -38,12 +38,12 @@ def _build_split_fc1(
     )
 
 
-class FusedGatedMLPSpec(LayoutSpec):
+class SplitGateUpMLPSpec(LayoutSpec):
     """Fused ``[gate; up]`` FC1 plus row-parallel down projection."""
 
-    name = "fused_gated_mlp"
+    name = "split_gate_up_mlp"
     layout = ModuleLayout(
-        name="fused_gated_mlp",
+        name="split_gate_up_mlp",
         present_when_attr="linear_fc1",
         fused=(
             FusedAttach(
@@ -61,7 +61,7 @@ class FusedGatedMLPSpec(LayoutSpec):
                 projection=ProjectionSpec("down_proj", "down", ShardLayout.ROW),
                 module_attr="linear_fc2",
                 in_dim=_fc1_inter_local,
-                out_dim=L.hidden,
+                out_dim=L.hidden_size,
                 adapter_attr="lora_fc2_adapter",
             ),
         ),
@@ -76,18 +76,18 @@ class LoRAFusedGateUp(LoRALinear):
     """
 
     def export_plan(self, gather) -> list:
-        b = getattr(self, f"{self.attr}_B")
+        b = getattr(self, f"{self.param_prefix}_B")
         i_loc = b.shape[0] // 2
         gate = gather.request(b[:i_loc], 0)
         up = gather.request(b[i_loc:], 0)
         return [
-            (f"{self.hf_prefix}gate_up_proj.lora_A.weight", getattr(self, f"{self.attr}_A")),
+            (f"{self.hf_prefix}gate_up_proj.lora_A.weight", getattr(self, f"{self.param_prefix}_A")),
             (f"{self.hf_prefix}gate_up_proj.lora_B.weight", lambda: torch.cat([gate(), up()], dim=0)),
         ]
 
-    def load_plan_custom(self, take) -> list:
-        a = getattr(self, f"{self.attr}_A")
-        b = getattr(self, f"{self.attr}_B")
+    def load_plan(self, take) -> list:
+        a = getattr(self, f"{self.param_prefix}_A")
+        b = getattr(self, f"{self.param_prefix}_B")
         i_loc = b.shape[0] // 2
         full_b = take(f"{self.hf_prefix}gate_up_proj.lora_B.weight")
         full_i = full_b.shape[0] // 2
@@ -115,7 +115,7 @@ class FusedGateUpMLPSpec(LayoutSpec):
             ProjectionBinding(
                 projection=ProjectionSpec("gate_up_proj", "fc1", ShardLayout.COLUMN),
                 module_attr="linear_fc1",
-                in_dim=L.hidden,
+                in_dim=L.hidden_size,
                 out_dim=_fc1_full_local,
                 adapter_attr="lora_fc1_adapter",
                 adapter_class=LoRAFusedGateUp,
@@ -124,7 +124,7 @@ class FusedGateUpMLPSpec(LayoutSpec):
                 projection=ProjectionSpec("down_proj", "fc2", ShardLayout.ROW),
                 module_attr="linear_fc2",
                 in_dim=_fc1_inter_local,
-                out_dim=L.hidden,
+                out_dim=L.hidden_size,
                 adapter_attr="lora_fc2_adapter",
             ),
         ),

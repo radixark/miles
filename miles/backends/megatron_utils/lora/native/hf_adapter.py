@@ -98,7 +98,7 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
 
 def _load_adapter(adapter: NativeLoRAAdapter, take) -> list[tuple[torch.Tensor, torch.Tensor]]:
     """Build a fully shape-validated load plan for one native adapter."""
-    custom = adapter.load_plan_custom(take)
+    custom = adapter.load_plan(take)
     if custom is not None:
         for parameter, tensor in custom:
             assert tuple(parameter.shape) == tuple(tensor.shape), (
@@ -109,10 +109,10 @@ def _load_adapter(adapter: NativeLoRAAdapter, take) -> list[tuple[torch.Tensor, 
     tp_size = adapter.context.tp_size
     plan: list[tuple[torch.Tensor, torch.Tensor]] = []
     for projection in adapter.projection_specs:
-        a_parameter = getattr(adapter, f"{projection.attr}_A")
-        b_parameter = getattr(adapter, f"{projection.attr}_B")
-        a_name = f"{adapter.hf_prefix}{projection.hf}.lora_A.weight"
-        b_name = f"{adapter.hf_prefix}{projection.hf}.lora_B.weight"
+        a_parameter = getattr(adapter, f"{projection.param_prefix}_A")
+        b_parameter = getattr(adapter, f"{projection.param_prefix}_B")
+        a_name = f"{adapter.hf_prefix}{projection.hf_leaf}.lora_A.weight"
+        b_name = f"{adapter.hf_prefix}{projection.hf_leaf}.lora_B.weight"
         a_full = take(a_name)
         b_full = take(b_name)
 

@@ -18,7 +18,7 @@ from miles.backends.megatron_utils.lora.native.spec.attention import (
 from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, LoRAArchSpec
 from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
 from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec
-from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGatedMLPSpec, FusedGateUpMLPSpec
+from miles.backends.megatron_utils.lora.native.spec.mlp import SplitGateUpMLPSpec, FusedGateUpMLPSpec
 from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import lora_rollout_enabled, matches_lora_target
@@ -27,14 +27,14 @@ logger = logging.getLogger(__name__)
 
 
 def _arch_spec(
-    attention: AttentionSpecBase, *, mlp=None, allows_mixer_only_adapter_chunks: bool = False
+    attention: AttentionSpecBase, *, mlp=None, has_linear_attention_layers: bool = False
 ) -> LoRAArchSpec:
     return LoRAArchSpec(
         name=attention.name,
         model_family=attention.family,
         attention=attention,
-        mlp=mlp or FusedGatedMLPSpec(),
-        allows_mixer_only_adapter_chunks=allows_mixer_only_adapter_chunks,
+        mlp=mlp or SplitGateUpMLPSpec(),
+        has_linear_attention_layers=has_linear_attention_layers,
     )
 
 
@@ -68,7 +68,7 @@ def _kimi_k3_arch_spec() -> LoRAArchSpec:
         name=attention.name,
         model_family=attention.family,
         attention=attention,
-        mlp=FusedGatedMLPSpec(),
+        mlp=SplitGateUpMLPSpec(),
         experts=GroupedExpertsSpec(),
         # the routed-expert down-proj may be omitted: its EP-shared w2_lora_B dominates adapter growth (#1559)
         fixed_targets=FixedTargets(
@@ -87,7 +87,7 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
     # HF GLM-4 keeps gate/up fused in one gate_up_proj module
     glm4 = _arch_spec(GQAAttentionSpec(), mlp=FusedGateUpMLPSpec())
     mla = _arch_spec(MLAAttentionSpec())
-    hybrid = _arch_spec(HybridGQAGDNAttentionSpec(), allows_mixer_only_adapter_chunks=True)
+    hybrid = _arch_spec(HybridGQAGDNAttentionSpec(), has_linear_attention_layers=True)
     inkling = _inkling_arch_spec()
     return {
         "llama": gqa,
@@ -158,7 +158,7 @@ def resolve_adapter_targets(
         spec.experts is None or experts_shared_outer_loras
     ), f"native {spec.name} LoRA trains shared-outer expert adapters; pass --experts-shared-outer-loras"
     if spec.fixed_targets is not None:
-        _check_fixed_targets(spec, hf_config, hf_targets)
+        _assert_fixed_target_layout(spec, hf_config, hf_targets)
         return spec.fixed_targets.serving(hf_targets)
 
     selected = [module for module in hf_modules if any(matches_lora_target(module, t) for t in hf_targets)]
@@ -166,7 +166,7 @@ def resolve_adapter_targets(
     assert not unattachable, (
         f"native LoRA ({spec.name} spec) does not implement adapters for {unattachable[:8]}"
         f"{' ...' if len(unattachable) > 8 else ''}. Select supported projections (e.g. "
-        f"--target-modules {default_target_modules(hf_config)}) or use --megatron-to-hf-mode bridge."
+        f"--target-modules {attention_target_modules_csv(hf_config)}) or use --megatron-to-hf-mode bridge."
     )
     return _expand_fused_families(hf_targets, spec.serving_fused_families())
 
@@ -195,7 +195,7 @@ def validate_native_lora_args(args) -> None:
     ), f"native {spec.name} expert LoRA assumes --expert-tensor-parallel-size 1"
 
 
-def _check_fixed_targets(spec: LoRAArchSpec, hf_config: dict, hf_targets: list[str]) -> None:
+def _assert_fixed_target_layout(spec: LoRAArchSpec, hf_config: dict, hf_targets: list[str]) -> None:
     layout = resolve_hf_lora_targets(hf_config)
     optional = {t for t in layout if any(t.endswith(f".{suffix}") for suffix in spec.fixed_targets.optional)}
     missing = sorted(set(layout) - set(hf_targets) - optional)
@@ -217,7 +217,7 @@ def _expand_fused_families(targets: list[str], families: list[frozenset[str]]) -
     return list(dict.fromkeys(expanded))
 
 
-def default_target_modules(hf_config: dict) -> str:
+def attention_target_modules_csv(hf_config: dict) -> str:
     """Attention-only ``--target-modules`` for the checkpoint's native spec, in declaration order."""
     _model_type, spec = resolve_config_spec(hf_config)
     return spec.attention.canonical_targets_csv

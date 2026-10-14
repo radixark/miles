@@ -87,10 +87,10 @@ class NativeLoRAAdapter(nn.Module):
         assert (
             projection_specs or type(self).export_plan is not NativeLoRAAdapter.export_plan
         ), "a native LoRA adapter requires projections, unless it owns its IO via export_plan()"
-        assert len({projection.hf for projection in projection_specs}) == len(
+        assert len({projection.hf_leaf for projection in projection_specs}) == len(
             projection_specs
         ), "native LoRA projection HF names must be unique"
-        assert len({projection.attr for projection in projection_specs}) == len(
+        assert len({projection.param_prefix for projection in projection_specs}) == len(
             projection_specs
         ), "native LoRA projection parameter attributes must be unique"
         assert all(
@@ -111,9 +111,9 @@ class NativeLoRAAdapter(nn.Module):
 
     def _validate_projection_parameters(self) -> None:
         for projection in self._projection_specs:
-            assert hasattr(self, f"{projection.attr}_A") and hasattr(
-                self, f"{projection.attr}_B"
-            ), f"native LoRA projection {projection.hf!r} has no complete A/B parameter pair"
+            assert hasattr(self, f"{projection.param_prefix}_A") and hasattr(
+                self, f"{projection.param_prefix}_B"
+            ), f"native LoRA projection {projection.hf_leaf!r} has no complete A/B parameter pair"
 
     def exports(self) -> Iterator[ProjectionExport]:
         """Yield one public descriptor per logical projection; adapters owning an ``export_plan`` have none."""
@@ -129,7 +129,7 @@ class NativeLoRAAdapter(nn.Module):
         del gather
         return None
 
-    def load_plan_custom(self, take) -> list | None:
+    def load_plan(self, take) -> list | None:
         """Custom HF load: ``[(parameter, full_tensor_slice)]`` given ``take(hf_name)``.
 
         Return None (the default) to use the generic TP-sliced projection load.
@@ -148,11 +148,11 @@ class NativeLoRAAdapter(nn.Module):
     def _export_projections(self, fused_group: SGLangFusedGroup | None) -> Iterator[ProjectionExport]:
         tp = self.context.tp_size
         for projection in self.projection_specs:
-            b = getattr(self, f"{projection.attr}_B")
+            b = getattr(self, f"{projection.param_prefix}_B")
             yield ProjectionExport(
-                hf_name=f"{self.hf_prefix}{projection.hf}",
+                hf_name=f"{self.hf_prefix}{projection.hf_leaf}",
                 layout=projection.layout,
-                a=getattr(self, f"{projection.attr}_A"),
+                a=getattr(self, f"{projection.param_prefix}_A"),
                 b=b,
                 b_rows_full=b.shape[0] * (tp if projection.layout == ShardLayout.COLUMN else 1),
                 fused_group=fused_group,
@@ -180,7 +180,7 @@ class LoRALinear(NativeLoRAAdapter):
     ):
         super().__init__(hf_prefix, (projection,), context.tp_rank)
         self.context = context
-        self.attr = projection.attr
+        self.param_prefix = projection.param_prefix
         self.layout = projection.layout
         self.sglang_group = sglang_group
 
@@ -191,20 +191,20 @@ class LoRALinear(NativeLoRAAdapter):
         if self.layout == ShardLayout.REPLICATED and context.sequence_parallel:
             a_grad_group = "tp"
         self.register_parameter(
-            f"{self.attr}_A",
+            f"{self.param_prefix}_A",
             new_lora_parameter(
                 reference,
-                (context.rank, in_features),
-                init=context.a_init,
+                (context.lora.rank, in_features),
+                init=context.lora.a_init_method,
                 grad_sum_group=a_grad_group,
                 partition_dim=1 if self.layout == ShardLayout.ROW else None,
             ),
         )
         self.register_parameter(
-            f"{self.attr}_B",
+            f"{self.param_prefix}_B",
             new_lora_parameter(
                 reference,
-                (out_features, context.rank),
+                (out_features, context.lora.rank),
                 init="zero",
                 grad_sum_group=b_grad_group,
                 partition_dim=0 if self.layout == ShardLayout.COLUMN else None,
@@ -213,8 +213,8 @@ class LoRALinear(NativeLoRAAdapter):
         self._validate_projection_parameters()
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
-        a = getattr(self, f"{self.attr}_A")
-        b = getattr(self, f"{self.attr}_B")
+        a = getattr(self, f"{self.param_prefix}_A")
+        b = getattr(self, f"{self.param_prefix}_B")
         if self.layout == ShardLayout.COLUMN:
             x = branch_input(x, base_module, self.context)
             return F.linear(F.linear(x, a), b)
@@ -231,9 +231,9 @@ class LoRALinear(NativeLoRAAdapter):
 
     def weight_deltas(self):
         (host,) = self._hosts
-        a = getattr(self, f"{self.attr}_A")
-        b = getattr(self, f"{self.attr}_B")
-        yield host.weight, lambda: self.context.scale * (b.float() @ a.float())
+        a = getattr(self, f"{self.param_prefix}_A")
+        b = getattr(self, f"{self.param_prefix}_B")
+        yield host.weight, lambda: self.context.lora.scale * (b.float() @ a.float())
 
 
 class LoRAUnreducedRowLinear(LoRALinear):
@@ -248,11 +248,11 @@ class LoRAUnreducedRowLinear(LoRALinear):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         assert self.layout == ShardLayout.ROW, f"{type(self).__name__} requires a row-parallel projection"
-        getattr(self, f"{self.attr}_B")._lora_grad_sum_group = "tp"
+        getattr(self, f"{self.param_prefix}_B")._lora_grad_sum_group = "tp"
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         x = apply_lora_dropout(x, self.context, base_module.training)
-        return F.linear(F.linear(x, getattr(self, f"{self.attr}_A")), getattr(self, f"{self.attr}_B"))
+        return F.linear(F.linear(x, getattr(self, f"{self.param_prefix}_A")), getattr(self, f"{self.param_prefix}_B"))
 
 
 class LoRASplitAdapter(NativeLoRAAdapter):
@@ -260,8 +260,8 @@ class LoRASplitAdapter(NativeLoRAAdapter):
 
     Shared machinery for every fused physical linear: parameter layout, the
     down/up drain, absent-slot zero-fill, and the export descriptor. Subclasses
-    supply the physical slot widths (``rows``, keyed by projection attr in slot
-    order), the serving group name, and an optional output packing.
+    supply the physical slot widths (``rows_by_param_prefix``, in slot order), the serving
+    group name, and an optional output packing.
     """
 
     _group_name = ""
@@ -273,31 +273,35 @@ class LoRASplitAdapter(NativeLoRAAdapter):
         reference: torch.Tensor,
         context: AttachContext,
         projections: Sequence[ProjectionSpec],
-        rows: dict[str, int],
+        rows_by_param_prefix: dict[str, int],
         member_projections: Sequence[ProjectionSpec] | None = None,
     ):
         projections = tuple(projections)
         self._member_projections = tuple(member_projections) if member_projections is not None else projections
-        attrs = [projection.attr for projection in projections]
+        param_prefixes = [projection.param_prefix for projection in projections]
         cls = type(self).__name__
-        assert len(set(attrs)) == len(attrs), f"{cls} projection attributes must be unique"
-        assert set(attrs) <= set(rows), f"{cls} requires projections among {sorted(rows)}"
+        assert len(set(param_prefixes)) == len(param_prefixes), f"{cls} projection parameter prefixes must be unique"
+        assert set(param_prefixes) <= set(
+            rows_by_param_prefix
+        ), f"{cls} requires projections among {sorted(rows_by_param_prefix)}"
         assert all(
             projection.layout == ShardLayout.COLUMN for projection in projections
         ), f"{cls} projections must be column parallel"
-        by_attr = {projection.attr: projection for projection in projections}
-        ordered = tuple(by_attr[name] for name in rows if name in by_attr)
+        projections_by_param_prefix = {projection.param_prefix: projection for projection in projections}
+        ordered = tuple(
+            projections_by_param_prefix[prefix] for prefix in rows_by_param_prefix if prefix in projections_by_param_prefix
+        )
         super().__init__(hf_prefix, ordered, context.tp_rank)
         self.context = context
-        self._rows = rows
-        self._active = tuple(projection.attr for projection in ordered)
+        self._rows_by_param_prefix = rows_by_param_prefix
+        self._active = tuple(projection.param_prefix for projection in ordered)
         for name in self._active:
             self.register_parameter(
                 f"{name}_A",
                 new_lora_parameter(
                     reference,
-                    (context.rank, context.hidden),
-                    init=context.a_init,
+                    (context.lora.rank, context.transformer_config.hidden_size),
+                    init=context.lora.a_init_method,
                     grad_sum_group="tp",
                 ),
             )
@@ -305,7 +309,7 @@ class LoRASplitAdapter(NativeLoRAAdapter):
                 f"{name}_B",
                 new_lora_parameter(
                     reference,
-                    (rows[name], context.rank),
+                    (rows_by_param_prefix[name], context.lora.rank),
                     init="zero",
                     partition_dim=0,
                 ),
@@ -328,15 +332,15 @@ class LoRASplitAdapter(NativeLoRAAdapter):
                     if name in self._active
                     else host.weight.new_zeros(rows, host.weight.shape[1], dtype=torch.float32)
                 )
-                for name, rows in self._rows.items()
+                for name, rows in self._rows_by_param_prefix.items()
             ]
-            return self.context.scale * self._pack_rows(torch.cat(slots, dim=0))
+            return self.context.lora.scale * self._pack_rows(torch.cat(slots, dim=0))
 
         yield host.weight, delta
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         x = branch_input(x, base_module, self.context)
-        rank = self.context.rank
+        rank = self.context.lora.rank
         down = F.linear(x, torch.cat([getattr(self, f"{name}_A") for name in self._active], dim=0))
         active_delta = {
             name: F.linear(down[..., index * rank : (index + 1) * rank], getattr(self, f"{name}_B"))
@@ -344,7 +348,7 @@ class LoRASplitAdapter(NativeLoRAAdapter):
         }
         full_delta = [
             active_delta[name] if name in active_delta else x.new_zeros(*x.shape[:-1], rows)
-            for name, rows in self._rows.items()
+            for name, rows in self._rows_by_param_prefix.items()
         ]
         return self._pack(torch.cat(full_delta, dim=-1))
 
@@ -352,7 +356,7 @@ class LoRASplitAdapter(NativeLoRAAdapter):
         group = SGLangFusedGroup(
             name=self._group_name,
             member_rows={
-                projection.hf: self._rows[projection.attr] * self.context.tp_size
+                projection.hf_leaf: self._rows_by_param_prefix[projection.param_prefix] * self.context.tp_size
                 for projection in self._member_projections
             },
         )
@@ -382,7 +386,7 @@ class LoRASplitQKV(LoRASplitAdapter):
             reference=reference,
             context=context,
             projections=projections,
-            rows={"q": q_rows, "k": num_kv * head_dim, "v": num_kv * head_dim},
+            rows_by_param_prefix={"q": q_rows, "k": num_kv * head_dim, "v": num_kv * head_dim},
             member_projections=member_projections,
         )
         self.register_buffer(
@@ -415,7 +419,7 @@ class LoRASplitFC1(LoRASplitAdapter):
             reference=reference,
             context=context,
             projections=projections,
-            rows={"gate": inter_local, "up": inter_local},
+            rows_by_param_prefix={"gate": inter_local, "up": inter_local},
             member_projections=member_projections,
         )
         self.inter_local = inter_local

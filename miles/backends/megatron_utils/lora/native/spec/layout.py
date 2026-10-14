@@ -19,11 +19,11 @@ from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, A
 DimFn = Callable[[nn.Module, AttachContext], int]
 
 
-def hidden(_module: nn.Module, context: AttachContext) -> int:
-    return context.hidden
+def hidden_size(_module: nn.Module, context: AttachContext) -> int:
+    return context.transformer_config.hidden_size
 
 
-def cfg(field: str) -> DimFn:
+def config_dim(field: str) -> DimFn:
     """A transformer-config field used verbatim (e.g. ``q_lora_rank``)."""
 
     def resolve(_module: nn.Module, context: AttachContext) -> int:
@@ -34,11 +34,11 @@ def cfg(field: str) -> DimFn:
     return resolve
 
 
-def host_in_local(attr: str) -> DimFn:
-    """This rank's input width of the host linear ``attr``, read from its weight."""
+def host_in_local(host_attr: str) -> DimFn:
+    """This rank's input width of the host linear ``host_attr``, read from its weight."""
 
     def resolve(module: nn.Module, _context: AttachContext) -> int:
-        return getattr(module, attr).weight.shape[1]
+        return getattr(module, host_attr).weight.shape[1]
 
     return resolve
 
@@ -137,7 +137,7 @@ class FusedAttach:
 
     @property
     def targets(self) -> frozenset[str]:
-        return frozenset(projection.hf for projection in self.projections)
+        return frozenset(projection.hf_leaf for projection in self.projections)
 
 
 @dataclass(frozen=True)
@@ -159,15 +159,15 @@ class ModuleLayout:
 
     @property
     def targets(self) -> frozenset[str]:
-        names = [projection.hf for group in self.fused for projection in group.projections]
-        names.extend(binding.projection.hf for binding in self.singles)
+        names = [projection.hf_leaf for group in self.fused for projection in group.projections]
+        names.extend(binding.projection.hf_leaf for binding in self.singles)
         assert len(names) == len(set(names)), f"layout {self.name!r} declares duplicate projection names"
         return frozenset(names)
 
     @property
     def fused_targets(self) -> frozenset[str]:
         """Names living in fused physical linears (union over this layout's groups)."""
-        return frozenset(projection.hf for group in self.fused for projection in group.projections)
+        return frozenset(projection.hf_leaf for group in self.fused for projection in group.projections)
 
 
 def layout_applies_to(block: nn.Module, layout: ModuleLayout) -> bool:
@@ -185,22 +185,22 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
     for group in layout.fused:
         host = getattr(block, group.module_attr)
         hf_prefix = context.naming.block_prefix(
-            layer, host.weight, [projection.hf for projection in group.projections]
+            layer, host.weight, [projection.hf_leaf for projection in group.projections]
         )
         active = tuple(
-            projection for projection in group.projections if context.selects(f"{hf_prefix}{projection.hf}")
+            projection for projection in group.projections if context.lora.selects(f"{hf_prefix}{projection.hf_leaf}")
         )
         if not active:
             continue
         adapter = group.build(block, hf_prefix, context, active, group.projections)
         setattr(block, group.adapter_attr, adapter)
-        attach_adapter_forward(host, adapter, context.scale)
+        attach_adapter_forward(host, adapter, context.lora.scale)
         count += 1
 
     for binding in layout.singles:
         host = getattr(block, binding.module_attr)
-        hf_prefix = context.naming.block_prefix(layer, host.weight, [binding.projection.hf])
-        if not context.selects(f"{hf_prefix}{binding.projection.hf}"):
+        hf_prefix = context.naming.block_prefix(layer, host.weight, [binding.projection.hf_leaf])
+        if not context.lora.selects(f"{hf_prefix}{binding.projection.hf_leaf}"):
             continue
         out_features = binding.out_dim(block, context)
         if binding.guard is not None:
@@ -217,7 +217,7 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
             ),
         )
         setattr(block, binding.adapter_attr, adapter)
-        attach_adapter_forward(host, adapter, context.scale)
+        attach_adapter_forward(host, adapter, context.lora.scale)
         count += 1
     return count
 
@@ -242,8 +242,8 @@ class LayoutSpec:
     @property
     def canonical_targets_csv(self) -> str:
         """Targets in declaration order, as launchers pass them to --target-modules."""
-        names = [projection.hf for group in self.layout.fused for projection in group.projections]
-        names.extend(binding.projection.hf for binding in self.layout.singles)
+        names = [projection.hf_leaf for group in self.layout.fused for projection in group.projections]
+        names.extend(binding.projection.hf_leaf for binding in self.layout.singles)
         return ",".join(names)
 
     def applies_to(self, block: nn.Module) -> bool:
@@ -254,7 +254,7 @@ class LayoutSpec:
 
     def serving_fused_families(self) -> list[frozenset[str]]:
         """Projection families SGLang stores in one fused buffer for this layout."""
-        families = [frozenset(projection.hf for projection in group.projections) for group in self.layout.fused]
+        families = [frozenset(projection.hf_leaf for projection in group.projections) for group in self.layout.fused]
         seen: set[frozenset[str]] = set(families)
         for binding in self.layout.singles:
             if binding.serving_group is None:

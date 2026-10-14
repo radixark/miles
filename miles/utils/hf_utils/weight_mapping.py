@@ -57,7 +57,7 @@ class HfWeightMapping:
 
 
 @functools.cache
-def hf_namespace_contains(hf_checkpoint: str) -> Callable[[str], bool]:
+def build_hf_namespace_predicate(hf_checkpoint: str) -> Callable[[str], bool]:
     """Whether a checkpoint weight name exists in the HF namespace LoRA targets are selected in: the HF
     model's parameters, or for a custom HF implementation without conversion rules the checkpoint's own
     modules (compared by module, so quantized suffixes like ``weight_packed`` still match)."""

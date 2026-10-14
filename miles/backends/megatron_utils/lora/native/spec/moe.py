@@ -41,18 +41,18 @@ class GroupedExpertsSpec:
         count = 0
         fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, ["w1", "w3"])
         # selectors address one expert ("experts.*.w1"); shared-outer adapters cover them all
-        if context.selects(f"{fc1_prefix}0.w1") or context.selects(f"{fc1_prefix}0.w3"):
+        if context.lora.selects(f"{fc1_prefix}0.w1") or context.lora.selects(f"{fc1_prefix}0.w3"):
             experts.lora_fc1_adapter = LoRAGroupedFC1(
                 hf_prefix=fc1_prefix, reference=fc1.weight0, width=fc1.weight0.shape[1], **common
             )
-            attach_adapter_forward(fc1, experts.lora_fc1_adapter, context.scale)
+            attach_adapter_forward(fc1, experts.lora_fc1_adapter, context.lora.scale)
             count += 1
         fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, ["w2"])
-        if context.selects(f"{fc2_prefix}0.w2"):
+        if context.lora.selects(f"{fc2_prefix}0.w2"):
             experts.lora_fc2_adapter = LoRAGroupedFC2(
                 hf_prefix=fc2_prefix, reference=fc2.weight0, width=fc2.weight0.shape[0], **common
             )
-            attach_adapter_forward(fc2, experts.lora_fc2_adapter, context.scale)
+            attach_adapter_forward(fc2, experts.lora_fc2_adapter, context.lora.scale)
             count += 1
 
         shared = getattr(mlp, "shared_experts", None)  # absent on MoEs without shared experts
@@ -77,10 +77,10 @@ class GroupedExpertsSpec:
         for index, sub in enumerate(subs):
             for host_attr, delta in (("linear_fc1", adapter.fc1_delta), ("linear_fc2", adapter.fc2_delta)):
                 host = getattr(sub, host_attr)
-                attach_delta_forward(host, functools.partial(_indexed, delta, index), context.scale)
+                attach_delta_forward(host, functools.partial(_sub_expert_delta, delta, index), context.lora.scale)
                 adapter.bind_host(host)
         return 1
 
 
-def _indexed(delta, index: int, x: torch.Tensor, host: nn.Module, *_host_args) -> torch.Tensor:
+def _sub_expert_delta(delta, index: int, x: torch.Tensor, host: nn.Module, *_host_args) -> torch.Tensor:
     return delta(x, host, index)

@@ -22,7 +22,7 @@ def _grouped_linear(inputs: torch.Tensor, weights: torch.Tensor, tokens_per_expe
     return torch.cat([F.linear(segment, weights[idx]) for idx, segment in enumerate(segments)], dim=0)
 
 
-def _expert_param(parameter: nn.Parameter, is_ep: bool) -> nn.Parameter:
+def _mark_expert_param(parameter: nn.Parameter, is_ep: bool) -> nn.Parameter:
     if is_ep:
         parameter.allreduce = False
     return parameter
@@ -53,38 +53,38 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
     ):
         super().__init__(hf_prefix, (), context.tp_rank)
         self.context = context
-        rank = context.rank
+        rank = context.lora.rank
         ep_group = "ep" if is_ep else None
         self.register_parameter(
             "w1_A",
-            _expert_param(
-                new_lora_parameter(reference, (rank, width), init=context.a_init, grad_sum_group=ep_group),
+            _mark_expert_param(
+                new_lora_parameter(reference, (rank, width), init=context.lora.a_init_method, grad_sum_group=ep_group),
                 is_ep,
             ),
         )
         self.register_parameter(
             "w3_A",
-            _expert_param(
-                new_lora_parameter(reference, (rank, width), init=context.a_init, grad_sum_group=ep_group),
+            _mark_expert_param(
+                new_lora_parameter(reference, (rank, width), init=context.lora.a_init_method, grad_sum_group=ep_group),
                 is_ep,
             ),
         )
         self.register_parameter(
             "w1_B",
-            _expert_param(
+            _mark_expert_param(
                 new_lora_parameter(reference, (num_local_experts, moe_intermediate, rank), init="zero"), is_ep
             ),
         )
         self.register_parameter(
             "w3_B",
-            _expert_param(
+            _mark_expert_param(
                 new_lora_parameter(reference, (num_local_experts, moe_intermediate, rank), init="zero"), is_ep
             ),
         )
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *host_args) -> torch.Tensor:
         tokens_per_expert = host_args[0]
-        rank = self.context.rank
+        rank = self.context.lora.rank
         dropped = apply_lora_dropout(x, self.context, base_module.training)
         joint = F.linear(dropped, torch.cat([self.w1_A, self.w3_A], dim=0))
         gate = _grouped_linear(joint[..., :rank].contiguous(), self.w1_B, tokens_per_expert)
@@ -94,7 +94,7 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
     def weight_deltas(self):
         (host,) = self._hosts
         for index in range(self.w1_B.shape[0]):
-            yield getattr(host, f"weight{index}"), lambda index=index: self.context.scale * torch.cat(
+            yield getattr(host, f"weight{index}"), lambda index=index: self.context.lora.scale * torch.cat(
                 [self.w1_B[index].float() @ self.w1_A.float(), self.w3_B[index].float() @ self.w3_A.float()]
             )
 
@@ -107,7 +107,7 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
             (f"{prefix}w3.lora_B.weight", gather.request(self.w3_B, 0, group="ep")),
         ]
 
-    def load_plan_custom(self, take) -> list:
+    def load_plan(self, take) -> list:
         num_local = self.w1_B.shape[0]
         lo = _ep_rank() * num_local
         hi = lo + num_local
@@ -135,18 +135,18 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
     ):
         super().__init__(hf_prefix, (), context.tp_rank)
         self.context = context
-        rank = context.rank
+        rank = context.lora.rank
         ep_group = "ep" if is_ep else None
         self.register_parameter(
             "w2_A",
-            _expert_param(
-                new_lora_parameter(reference, (num_local_experts, rank, moe_intermediate), init=context.a_init),
+            _mark_expert_param(
+                new_lora_parameter(reference, (num_local_experts, rank, moe_intermediate), init=context.lora.a_init_method),
                 is_ep,
             ),
         )
         self.register_parameter(
             "w2_B",
-            _expert_param(new_lora_parameter(reference, (width, rank), init="zero", grad_sum_group=ep_group), is_ep),
+            _mark_expert_param(new_lora_parameter(reference, (width, rank), init="zero", grad_sum_group=ep_group), is_ep),
         )
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *host_args) -> torch.Tensor:
@@ -159,7 +159,7 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
     def weight_deltas(self):
         (host,) = self._hosts
         for index in range(self.w2_A.shape[0]):
-            yield getattr(host, f"weight{index}"), lambda index=index: self.context.scale * (
+            yield getattr(host, f"weight{index}"), lambda index=index: self.context.lora.scale * (
                 self.w2_B.float() @ self.w2_A[index].float()
             )
 
@@ -170,7 +170,7 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
             (f"{prefix}w2.lora_B.weight", self.w2_B.unsqueeze(0)),
         ]
 
-    def load_plan_custom(self, take) -> list:
+    def load_plan(self, take) -> list:
         num_local = self.w2_A.shape[0]
         lo = _ep_rank() * num_local
         hi = lo + num_local
@@ -199,13 +199,13 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
     ):
         super().__init__(hf_prefix, (), context.tp_rank)
         self.context = context
-        rank = context.rank
+        rank = context.lora.rank
         sp_group = "tp" if context.sequence_parallel else None
         self.register_parameter(
-            "w1_A", new_lora_parameter(fc1_reference, (rank, context.hidden), init=context.a_init, grad_sum_group="tp")
+            "w1_A", new_lora_parameter(fc1_reference, (rank, context.transformer_config.hidden_size), init=context.lora.a_init_method, grad_sum_group="tp")
         )
         self.register_parameter(
-            "w3_A", new_lora_parameter(fc1_reference, (rank, context.hidden), init=context.a_init, grad_sum_group="tp")
+            "w3_A", new_lora_parameter(fc1_reference, (rank, context.transformer_config.hidden_size), init=context.lora.a_init_method, grad_sum_group="tp")
         )
         self.register_parameter(
             "w1_B", new_lora_parameter(fc1_reference, (num_shared, local_intermediate, rank), init="zero")
@@ -214,10 +214,10 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
             "w3_B", new_lora_parameter(fc1_reference, (num_shared, local_intermediate, rank), init="zero")
         )
         self.register_parameter(
-            "w2_A", new_lora_parameter(fc2_reference, (num_shared, rank, local_intermediate), init=context.a_init)
+            "w2_A", new_lora_parameter(fc2_reference, (num_shared, rank, local_intermediate), init=context.lora.a_init_method)
         )
         self.register_parameter(
-            "w2_B", new_lora_parameter(fc2_reference, (context.hidden, rank), init="zero", grad_sum_group=sp_group)
+            "w2_B", new_lora_parameter(fc2_reference, (context.transformer_config.hidden_size, rank), init="zero", grad_sum_group=sp_group)
         )
 
     def fc1_delta(self, x: torch.Tensor, host: nn.Module, index: int) -> torch.Tensor:
@@ -232,7 +232,7 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
 
     def weight_deltas(self):
         """Hosts are bound per sub-expert as ``fc1, fc2`` pairs, in sub-expert order."""
-        scale = self.context.scale
+        scale = self.context.lora.scale
         for index in range(self.w1_B.shape[0]):
             fc1, fc2 = self._hosts[2 * index : 2 * index + 2]
             yield fc1.weight, lambda index=index: scale * torch.cat(
@@ -255,7 +255,7 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
             (f"{prefix}w2.lora_B.weight", self.w2_B),
         ]
 
-    def load_plan_custom(self, take) -> list:
+    def load_plan(self, take) -> list:
         num_shared, local_i, _rank = self.w1_B.shape
         tp_rank = self.tp_rank
         plan = [

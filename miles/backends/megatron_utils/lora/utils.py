@@ -81,19 +81,19 @@ def adapter_named_parameters(model: Sequence[torch.nn.Module]) -> dict[str, torc
     ``AdapterWrapper`` holds besides the base module it wraps."""
     from megatron.bridge.peft.adapter_wrapper import AdapterWrapper
 
-    adapter_ids: set[int] = set()
+    adapter_param_ids: set[int] = set()
     for model_chunk in model:
         for module in model_chunk.modules():
             if isinstance(module, NativeLoRAAdapter):
-                adapter_ids.update(id(param) for param in module.parameters())
+                adapter_param_ids.update(id(param) for param in module.parameters())
             elif isinstance(module, AdapterWrapper):
-                base_ids = {id(param) for param in module.to_wrap.parameters()}
-                adapter_ids.update(id(param) for param in module.parameters() if id(param) not in base_ids)
+                base_param_ids = {id(param) for param in module.to_wrap.parameters()}
+                adapter_param_ids.update(id(param) for param in module.parameters() if id(param) not in base_param_ids)
     return {
         name: param
         for model_chunk in model
         for name, param in model_chunk.named_parameters()
-        if id(param) in adapter_ids
+        if id(param) in adapter_param_ids
     }
 
 

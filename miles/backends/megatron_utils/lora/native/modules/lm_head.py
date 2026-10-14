@@ -30,9 +30,9 @@ class LoRAOutputHead(NativeLoRAAdapter):
         self.unpadded_vocab_size = unpadded_vocab_size
         self.register_parameter(
             "head_A",
-            new_lora_parameter(reference, (context.rank, context.hidden), init=context.a_init, grad_sum_group="tp"),
+            new_lora_parameter(reference, (context.lora.rank, context.transformer_config.hidden_size), init=context.lora.a_init_method, grad_sum_group="tp"),
         )
-        self.register_parameter("head_B", new_lora_parameter(reference, (vocab_local, context.rank), init="zero"))
+        self.register_parameter("head_B", new_lora_parameter(reference, (vocab_local, context.lora.rank), init="zero"))
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         scaled = x / self.mup if self.mup else x
@@ -42,7 +42,7 @@ class LoRAOutputHead(NativeLoRAAdapter):
     def weight_deltas(self):
         """The host divides its input by muP too, so the merged head carries the full delta."""
         (host,) = self._hosts
-        yield host.weight, lambda: self.context.scale * (self.head_B.float() @ self.head_A.float())
+        yield host.weight, lambda: self.context.lora.scale * (self.head_B.float() @ self.head_A.float())
 
     def export_plan(self, gather) -> list:
         head_b = gather.request(self.head_B, 0)
@@ -58,7 +58,7 @@ class LoRAOutputHead(NativeLoRAAdapter):
             (f"{self.hf_prefix}lora_B.weight", trimmed),
         ]
 
-    def load_plan_custom(self, take) -> list:
+    def load_plan(self, take) -> list:
         vocab_local = self.head_B.shape[0]
         lo = self.tp_rank * vocab_local
         return [

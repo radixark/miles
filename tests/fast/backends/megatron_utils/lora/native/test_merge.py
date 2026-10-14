@@ -14,7 +14,7 @@ from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutput
 from miles.backends.megatron_utils.lora.native.modules.moe import LoRAGroupedFC1, LoRAGroupedFC2, _grouped_linear
 from miles.backends.megatron_utils.lora.native.spec.attention import GQAAttentionSpec, MLAAttentionSpec
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
-from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGatedMLPSpec, FusedGateUpMLPSpec
+from miles.backends.megatron_utils.lora.native.spec.mlp import SplitGateUpMLPSpec, FusedGateUpMLPSpec
 from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
 
 HIDDEN = 8
@@ -141,7 +141,7 @@ def test_mla_replicated_and_column_projections():
     )
 
 
-@pytest.mark.parametrize("spec", [FusedGatedMLPSpec(), FusedGateUpMLPSpec()], ids=["split-gate-up", "fused-gate-up"])
+@pytest.mark.parametrize("spec", [SplitGateUpMLPSpec(), FusedGateUpMLPSpec()], ids=["split-gate-up", "fused-gate-up"])
 def test_gated_mlp(spec):
     mlp = nn.Module()
     mlp.linear_fc1, mlp.linear_fc2 = _Linear(10, HIDDEN, fused_norm=True), _Linear(HIDDEN, 5)
@@ -158,8 +158,8 @@ def test_grouped_routed_experts():
     common = dict(reference=experts.linear_fc1.weight0, context=context, num_local_experts=3, moe_intermediate=5)
     experts.lora_fc1_adapter = LoRAGroupedFC1(hf_prefix="e.", is_ep=False, width=HIDDEN, **common)
     experts.lora_fc2_adapter = LoRAGroupedFC2(hf_prefix="e.", is_ep=False, width=HIDDEN, **common)
-    attach_adapter_forward(experts.linear_fc1, experts.lora_fc1_adapter, context.scale)
-    attach_adapter_forward(experts.linear_fc2, experts.lora_fc2_adapter, context.scale)
+    attach_adapter_forward(experts.linear_fc1, experts.lora_fc1_adapter, context.lora.scale)
+    attach_adapter_forward(experts.linear_fc2, experts.lora_fc2_adapter, context.lora.scale)
     module = nn.Module()
     module.experts = experts
     _assert_merge_matches_forward(
@@ -210,7 +210,7 @@ def test_output_head_with_mup_input_scaling():
         vocab_local=12,
         mup_width_multiplier=4.0,
     )
-    attach_adapter_forward(module.output_layer, module.head, context.scale)
+    attach_adapter_forward(module.output_layer, module.head, context.lora.scale)
     _assert_merge_matches_forward(module, [("output_layer", module.output_layer)])
 
 
@@ -218,7 +218,7 @@ def test_merge_refuses_a_host_weight_that_is_not_exported():
     module = nn.Module()
     module.mlp = nn.Module()
     module.mlp.linear_fc1, module.mlp.linear_fc2 = _Linear(10, HIDDEN), _Linear(HIDDEN, 5)
-    FusedGatedMLPSpec().attach(module.mlp, None, named(_context(), "model.layers.0.mlp."))
+    SplitGateUpMLPSpec().attach(module.mlp, None, named(_context(), "model.layers.0.mlp."))
     with pytest.raises(AssertionError, match="not exported"):
         merge_lora_into_weights([module], {"mlp.linear_fc1.weight": module.mlp.linear_fc1.weight})
 
@@ -228,7 +228,7 @@ def test_unadapted_weights_pass_through_untouched():
     module.mlp = nn.Module()
     module.mlp.linear_fc1, module.mlp.linear_fc2 = _Linear(10, HIDDEN), _Linear(HIDDEN, 5)
     module.norm = nn.Parameter(torch.ones(HIDDEN))
-    FusedGatedMLPSpec().attach(module.mlp, None, named(_context(("down_proj",)), "model.layers.0.mlp."))
+    SplitGateUpMLPSpec().attach(module.mlp, None, named(_context(("down_proj",)), "model.layers.0.mlp."))
     merged = _merged(module)
     assert merged["norm"] is module.norm
     assert merged["mlp.linear_fc1.weight"] is module.mlp.linear_fc1.weight

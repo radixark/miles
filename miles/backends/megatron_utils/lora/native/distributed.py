@@ -13,8 +13,8 @@ from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
 def apply_lora_dropout(x: torch.Tensor, context: AttachContext, training: bool) -> torch.Tensor:
-    if context.dropout and training:
-        return F.dropout(x, p=context.dropout, training=True)
+    if context.lora.dropout and training:
+        return F.dropout(x, p=context.lora.dropout, training=True)
     return x
 
 

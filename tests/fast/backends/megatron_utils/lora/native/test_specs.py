@@ -207,7 +207,7 @@ class TestAttachWalk:
     def test_partial_fused_selection_builds_a_split_adapter_for_the_selected_rows(self):
         attention = _gqa_attention()
         GQAAttentionSpec().attach(attention, None, named(self._context(("q_proj",)), "model.layers.0.self_attn."))
-        assert [projection.hf for projection in attention.lora_qkv_adapter.projection_specs] == ["q_proj"]
+        assert [projection.hf_leaf for projection in attention.lora_qkv_adapter.projection_specs] == ["q_proj"]
 
     def test_a_renamed_host_in_an_applicable_block_fails_instead_of_dropping_its_adapter(self):
         """A model change that renames a projection must not silently train without its adapter."""
@@ -265,11 +265,11 @@ def test_native_run_contract_accepts_its_validated_configs(tmp_path):
 
 def test_inkling_head_export_rows_follow_sglangs_served_vocab(tmp_path):
     """A missing or unreadable config must fail, not export the padded head SGLang cannot load."""
-    from miles.backends.megatron_utils.lora.native.spec.lm_head import _served_vocab_size
+    from miles.backends.megatron_utils.lora.native.spec.lm_head import _read_unpadded_vocab_size
 
     (tmp_path / "config.json").write_text(json.dumps({"text_config": {"vocab_size": 16, "unpadded_vocab_size": 12}}))
-    assert _served_vocab_size(str(tmp_path)) == 12
+    assert _read_unpadded_vocab_size(str(tmp_path)) == 12
     (tmp_path / "config.json").write_text(json.dumps({"vocab_size": 16}))
-    assert _served_vocab_size(str(tmp_path)) is None
+    assert _read_unpadded_vocab_size(str(tmp_path)) is None
     with pytest.raises(FileNotFoundError):
-        _served_vocab_size(str(tmp_path / "missing"))
+        _read_unpadded_vocab_size(str(tmp_path / "missing"))

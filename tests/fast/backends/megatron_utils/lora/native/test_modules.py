@@ -163,12 +163,12 @@ def test_a_column_adapter_reads_its_fused_norm_hosts_own_norm_output():
     with torch.no_grad():
         adapter.up_A.normal_()
         adapter.up_B.normal_()
-    attach_adapter_forward(host, adapter, context.scale)
+    attach_adapter_forward(host, adapter, context.lora.scale)
     x = torch.randn(3, 6)
 
     out, bias = host(x)
 
     assert bias is None
-    expected = host.normed(x) @ (host.weight + context.scale * adapter.up_B @ adapter.up_A).t()
+    expected = host.normed(x) @ (host.weight + context.lora.scale * adapter.up_B @ adapter.up_A).t()
     torch.testing.assert_close(out, expected)
     assert host.return_layernorm_output and not host.return_layernorm_output_gathered
