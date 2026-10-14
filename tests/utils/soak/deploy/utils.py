@@ -12,7 +12,7 @@ CHECKPOINT_DIRNAME: str = "checkpoints"
 
 
 def compute_checkpoint_dir(dump_dir: str) -> Path:
-    raise NotImplementedError
+    return Path(dump_dir) / CHECKPOINT_DIRNAME
 
 
 def compute_hot_restart_config(config: ExecuteTrainConfig, *, installed_release: str) -> ExecuteTrainConfig:
