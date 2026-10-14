@@ -159,6 +159,58 @@ class MultiTurnLossMaskGenerator:
         loss_mask = [0] * len(prompt_tokens) + [1] * len(response_tokens)
         return token_ids, loss_mask
 
+    def gen_single_turn_loss_mask_glm(
+        self, messages: list[dict], tools: list[dict] = None
+    ) -> tuple[list[int], list[int]]:
+        """Mask a GLM thinking-mode conversation up to the assistant completion.
+
+        GLM's template stores reasoning in ``reasoning_content`` and renders it
+        inside ``<think>`` tags. Rendering the complete conversation is
+        therefore safer than tokenizing ``content`` directly. The generation
+        prompt and complete conversation share the exact prefix through
+        ``<|assistant|><think>``; only the suffix receives loss.
+        """
+        if not messages or messages[-1].get("role") != "assistant":
+            raise ValueError("GLM SFT samples must end with an assistant message")
+
+        prompt_ids = self.tokenizer.apply_chat_template(
+            messages[:-1],
+            tokenize=True,
+            return_dict=False,
+            tools=tools,
+            add_generation_prompt=True,
+            enable_thinking=True,
+            clear_thinking=False,
+        )
+        token_ids = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            return_dict=False,
+            tools=tools,
+            add_generation_prompt=False,
+            enable_thinking=True,
+            clear_thinking=False,
+        )
+
+        prefix_length = 0
+        for prompt_token, full_token in zip(prompt_ids, token_ids):
+            if prompt_token != full_token:
+                break
+            prefix_length += 1
+
+        if prefix_length != len(prompt_ids):
+            raise ValueError(
+                "GLM chat template generation prompt is not an exact prefix "
+                f"of the rendered SFT sample ({prefix_length}/{len(prompt_ids)} tokens match)"
+            )
+        if prefix_length == len(token_ids):
+            raise ValueError("GLM SFT sample has an empty assistant completion")
+
+        loss_mask = [0] * prefix_length + [1] * (len(token_ids) - prefix_length)
+        if messages[-1].get("step_loss_mask", 1) != 1:
+            loss_mask = [0] * len(token_ids)
+        return token_ids, loss_mask
+
     def get_loss_mask(self, messages: list[dict], tools: list[dict] = None) -> tuple[list[int], list[int]]:
         if self.tokenizer_type == "qwen":
             if "<｜Assistant｜>" in self.tokenizer.get_added_vocab():
@@ -169,6 +221,8 @@ class MultiTurnLossMaskGenerator:
             return self.gen_multi_turn_loss_mask_qwen3(messages, tools)
         elif self.tokenizer_type == "distill_qwen":
             return self.gen_multi_turn_loss_mask_distill_qwen(messages, tools)
+        elif self.tokenizer_type == "glm":
+            return self.gen_single_turn_loss_mask_glm(messages, tools)
         else:
             raise ValueError(f"Unsupported tokenizer type: {self.tokenizer_type}")
 

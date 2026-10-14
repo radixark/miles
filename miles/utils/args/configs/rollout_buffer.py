@@ -29,7 +29,7 @@ class RolloutBufferRolloutOnlyConfig(BaseConfig):
     loss_mask_type: A[
         str,
         Arg(
-            choices=["qwen", "qwen3", "distill_qwen"],
+            choices=["qwen", "qwen3", "distill_qwen", "glm"],
             help="Loss mask type",
         ),
     ] = "qwen"
