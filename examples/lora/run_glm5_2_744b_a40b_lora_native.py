@@ -131,7 +131,11 @@ def _preflight(args: ScriptArgs) -> None:
         from miles.backends.megatron_utils.lora.native import preflight_native_lora
     except ImportError:  # older plugin without the helper
         return
-    report = preflight_native_lora(args.hf_checkpoint, args.megatron_model_type, strict=True)
+    report = preflight_native_lora(
+        args.hf_checkpoint,
+        f"{U.repo_base_dir}/scripts/models/{args.megatron_model_type}.py",
+        strict=True,
+    )
     print(report.render(), flush=True)
 
 

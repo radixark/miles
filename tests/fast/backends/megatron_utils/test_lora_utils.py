@@ -95,7 +95,7 @@ class TestAdapterNamedParameters:
         ]
 
     def test_bridge_wrappers_contribute_everything_but_the_wrapped_base(self):
-        from megatron.bridge.peft.adapter_wrapper import AdapterWrapper
+        AdapterWrapper = pytest.importorskip("megatron.bridge.peft.adapter_wrapper").AdapterWrapper
 
         adapter = torch.nn.Module()
         adapter.linear_in = torch.nn.Linear(2, 1, bias=False)

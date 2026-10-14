@@ -79,14 +79,17 @@ def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
 def adapter_named_parameters(model: Sequence[torch.nn.Module]) -> dict[str, torch.nn.Parameter]:
     """Every adapter parameter, found by the module that owns it: a native adapter, or what a Bridge
     ``AdapterWrapper`` holds besides the base module it wraps."""
-    from megatron.bridge.peft.adapter_wrapper import AdapterWrapper
+    try:
+        from megatron.bridge.peft.adapter_wrapper import AdapterWrapper
+    except ImportError:
+        AdapterWrapper = None
 
     adapter_param_ids: set[int] = set()
     for model_chunk in model:
         for module in model_chunk.modules():
             if isinstance(module, NativeLoRAAdapter):
                 adapter_param_ids.update(id(param) for param in module.parameters())
-            elif isinstance(module, AdapterWrapper):
+            elif AdapterWrapper is not None and isinstance(module, AdapterWrapper):
                 base_param_ids = {id(param) for param in module.to_wrap.parameters()}
                 adapter_param_ids.update(id(param) for param in module.parameters() if id(param) not in base_param_ids)
     return {

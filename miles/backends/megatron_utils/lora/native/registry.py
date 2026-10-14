@@ -225,7 +225,7 @@ class PreflightReport:
     model_type: str
     spec_name: str
     mbridge_registered: bool
-    model_args_script: str | None  # path when megatron_model_type was given and found
+    model_args_script: str | None  # path when one was given and found
 
     @property
     def convertible(self) -> bool:
@@ -244,16 +244,16 @@ class PreflightReport:
 
 def preflight_native_lora(
     hf_checkpoint: str,
-    megatron_model_type: str | None = None,
+    model_args_script: str | None = None,
     *,
     strict: bool = False,
 ) -> PreflightReport:
     """Audit native-LoRA support for a checkpoint before touching any GPU.
 
-    Checks the plugin registry, the mbridge conversion bridge, and — when
-    ``megatron_model_type`` is given — the ``scripts/models`` model args file
-    the launch tooling will source. ``strict=True`` raises on any gap a run
-    cannot survive; the default returns the report for the caller to log.
+    Checks the plugin registry, the mbridge conversion bridge, and — when the
+    launch tooling passes ``model_args_script`` — that the model args file it
+    will source exists. ``strict=True`` raises on any gap a run cannot survive;
+    the default returns the report for the caller to log.
     """
     model_type, spec = resolve_checkpoint_spec(hf_checkpoint)
 
@@ -265,28 +265,12 @@ def preflight_native_lora(
     except ImportError:
         mbridge_registered = False
 
-    model_args_script = None
-    if megatron_model_type is not None:
-        try:
-            from miles.utils.external_utils.command_utils import repo_base_dir
-
-            model_args_script = next(
-                (
-                    candidate
-                    for suffix in (".py", ".sh")
-                    if os.path.exists(
-                        candidate := os.path.join(repo_base_dir, "scripts", "models", f"{megatron_model_type}{suffix}")
-                    )
-                ),
-                None,
-            )
-        except ImportError:
-            model_args_script = None
-        if strict:
-            assert model_args_script is not None, (
-                f"[lora-preflight] scripts/models/{megatron_model_type}.py not found; raw-mode conversion "
-                "and training source MODEL_ARGS from that file."
-            )
+    if model_args_script is not None and not os.path.exists(model_args_script):
+        assert not strict, (
+            f"[lora-preflight] {model_args_script} not found; raw-mode conversion "
+            "and training source MODEL_ARGS from that file."
+        )
+        model_args_script = None
 
     report = PreflightReport(
         model_type=model_type,
