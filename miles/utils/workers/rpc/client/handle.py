@@ -20,7 +20,15 @@ from miles.utils.workers.rpc.common.metadata import (
     canonicalize_method_arguments,
     collect_rpc_method_specs,
 )
-from miles.utils.workers.rpc.common.protocol import HEALTH_PATH, IN_FLIGHT_PATH, HealthResponse, InFlightResponse
+from miles.utils.workers.rpc.common.protocol import (
+    BOOT_UUID_HEADER,
+    HEALTH_PATH,
+    IN_FLIGHT_PATH,
+    POD_UID_HEADER,
+    HealthResponse,
+    InFlightResponse,
+    ServerHealth,
+)
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerStillBusyError, WorkerUnreachableError
 
 DEFAULT_CALL_TIMEOUT_SECONDS = 3600.0
@@ -139,6 +147,12 @@ class RpcWorkerHandle(BaseWorkerHandle):
             initial_delay=_IDLE_POLL_INTERVAL_SECONDS,
             backoff_factor=1.0,
             log_fields={"tag": "rpc", "op": "wait_idle", "target": self._worker_cls_name},
+        )
+
+    async def read_health(self) -> ServerHealth:
+        response = await self._transport.send("GET", HEALTH_PATH, seconds=_HEALTH_TIMEOUT_SECONDS)
+        return ServerHealth(
+            boot_uuid=response.headers.get(BOOT_UUID_HEADER), pod_uid=response.headers.get(POD_UID_HEADER)
         )
 
     async def probe_is_dead(self) -> bool:
