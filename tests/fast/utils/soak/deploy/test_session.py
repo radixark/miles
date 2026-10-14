@@ -23,7 +23,7 @@ def _failure(error: BaseException) -> asyncio.Task[LaunchOutcome]:
 def _install_first_launch(monkeypatch: pytest.MonkeyPatch, first: LaunchOutcome | BaseException) -> list[object]:
     runs: list[object] = []
 
-    async def _execute_gsm8k_session(run: object) -> LaunchOutcome:
+    async def _execute_gsm8k_session(run: object, *, accept_replaced: bool) -> LaunchOutcome:
         runs.append(run)
         if isinstance(first, BaseException):
             raise first
@@ -34,10 +34,10 @@ def _install_first_launch(monkeypatch: pytest.MonkeyPatch, first: LaunchOutcome 
 
 
 class TestExecuteHotRestartSession:
-    async def test_a_finished_first_launch_ends_the_session_without_touching_the_chain(
+    async def test_a_finished_first_launch_still_waits_for_the_take_over_launcher(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A run that trained to its end with no take-over has nothing to follow."""
+        """The first launcher follows the run to its end, so a take-over started meanwhile must be awaited too."""
         runs = _install_first_launch(monkeypatch, LaunchOutcome.FINISHED)
         chain = LauncherChain()
         successor = _outcome(LaunchOutcome.FINISHED)
@@ -46,13 +46,12 @@ class TestExecuteHotRestartSession:
         await execute_hot_restart_session("run", chain=chain)
 
         assert runs == ["run"]
-        assert chain.qsize() == 1
-        await successor
+        assert chain.empty() and successor.done()
 
     async def test_each_replaced_launcher_hands_over_to_the_next_in_order(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The session follows every successor until one of them finishes the run."""
+        """The session follows every successor until the chain is drained and the last one finished."""
         _install_first_launch(monkeypatch, LaunchOutcome.REPLACED)
         chain = LauncherChain()
         chain.put_nowait(_outcome(LaunchOutcome.REPLACED))
@@ -61,8 +60,7 @@ class TestExecuteHotRestartSession:
 
         await execute_hot_restart_session("run", chain=chain)
 
-        assert chain.qsize() == 1
-        await chain.get_nowait()
+        assert chain.empty()
 
     async def test_a_replaced_launcher_without_a_successor_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A SIGTERM exit that no take-over explains is an unexplained kill, not a finished run."""
