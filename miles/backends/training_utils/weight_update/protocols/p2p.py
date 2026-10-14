@@ -1,132 +1,142 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import torch
 import torch.distributed as dist
-from sglang.srt import server_args as server_args_module
-from sglang.srt.configs.device_config import DeviceConfig
-from sglang.srt.configs.load_config import LoadConfig
-from sglang.srt.configs.model_config import ModelConfig
-from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
-from sglang.srt.layers.moe import initialize_moe_config
-from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
-from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
-from sglang.srt.model_loader import get_model
-from sglang.srt.model_loader.parameter_mapper import ParameterMapper
-from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.utils.distributed_utils import get_gloo_group
-
-from .p2p_transfer_utils import (
-    P2PTransferManager,
-    RemoteTransferPlan,
-    RemoteWeightInfo,
-    create_transfer_engine,
-    query_remote_weight_infos,
-    register_cpu_memory,
+from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport, RemoteShard
+from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfTensorSpec
+from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
+from miles.backends.training_utils.weight_update.protocols.utils.model_replica import (
+    ModelReplica,
+    ModelReplicas,
+    RolloutEngineRankConfig,
+    assert_replica_matches_shard,
+    compute_param_group_nbytes,
+    pack_into_buffers,
+    query_rollout_engine_rank_configs,
+    query_runner_roles,
 )
+from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
+    assign_rollout_engine_ranks,
+)
+from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import TransferBuffers
+from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
 
+# one is loaded while the writes of the other are in flight
+_NUM_TRANSFER_BUFFERS = 2
+
 
 class _ReplicaTarget(NamedTuple):
-    model_replica: torch.nn.Module
-    remote_weight_infos: list[RemoteWeightInfo]
-    parallelism_config: RankParallelismConfig
+    model_replica: ModelReplica
+    remote_shards: list[RemoteShard]
+
+
+@dataclass
+class _RunnerSender:
+    """Per-connection write targets and per-sync staging for one runner role, backed by cached replicas."""
+
+    model_replicas: ModelReplicas
+    replica_targets: list[_ReplicaTarget]
+    model_param_stager: ModelParamStager | None = None
+
+    def loads_hf_tensor(self, hf_name: str) -> bool:
+        return hf_name in self.model_replicas.hf_name_mapping.param_names_by_hf_name
 
 
 class UpdateWeightP2P(WeightTransferProtocol):
-    """P2P weight transfer over the updater's bucketed all-gather + HF conversion,
-    and a single set of shared CPU pinned buffers for P2P writes.
-
-    Compute transfer_ready_params once (same for all engine ranks)
-    For each engine rank:
-        load_weights(shared buffer) → P2P write
-        where the last rank's write is submitted to a background thread
-    wait_transfers() at finish to collect all background writes
-    """
+    """Write target and supported MTP draft weights to published GPU addresses over Mooncake."""
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
-        self.transfer_plan = RemoteTransferPlan(args)
+        if args.sglang_pp_size != 1:
+            raise NotImplementedError("Rollout pipeline parallelism is not tested yet.")
         self.global_rank = dist.get_rank(group=get_gloo_group())
-        self._model_registered = False
-        self._tensor_update_pending: dict[str, int] = {}
-
-        self._staged_tensors: dict[str, list[tuple[str, torch.Tensor]]] = {}
-        self.transfer_manager = P2PTransferManager(
-            num_workers=getattr(args, "p2p_transfer_num_workers", 4),
-            transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
-        )
-
-    def after_base_weights(self) -> None:
-        """Wait for all background P2P writes to complete."""
-        if not self.is_sender:
-            return
-        self.transfer_manager.wait_transfers()
-        assert len(self._tensor_update_pending) == 0 and len(self._staged_tensors) == 0, (
-            f"Some tensors were not transferred during P2P weight update. "
-            f"Pending: {self._tensor_update_pending}, Staged: {self._staged_tensors}"
-        )
+        self._hf_tensor_specs: dict[str, HfTensorSpec] | None = None
+        self._model_replicas_by_runner_role: dict[str, ModelReplicas] = {}
+        self._transport: MooncakeTransport | None = None
+        self._transfer_buffers: TransferBuffers | None = None
+        self._runner_senders: list[_RunnerSender] = []
 
     def begin_sync(
         self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
     ) -> bool:
-        """Register shared CPU pinned memory with P2P on the first sync."""
-        if self.is_sender and not self._model_registered:
-            self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
-            self._model_registered = True
+        """Map new replicas, reset staging and grow the transfer buffers if a param group no longer fits; all ranks
+        must join the first iterator pass's collectives."""
+        if self._hf_tensor_specs is None:
+            self._hf_tensor_specs = {
+                hf_name: HfTensorSpec(tuple(tensor.shape), tensor.dtype)
+                for bucket in iter_buckets(materialize=True)
+                for hf_name, tensor in bucket
+            }
+        if self.is_sender:
+            for runner_sender in self._runner_senders:
+                runner_sender.model_replicas.map_hf_names(self._hf_tensor_specs)
+                runner_sender.model_param_stager = ModelParamStager(runner_sender.model_replicas.hf_name_mapping)
+            buffer_nbytes = self._compute_transfer_buffer_nbytes()
+            if self._transfer_buffers is None:
+                self._log_hf_names_no_runner_loads()
+                self._transfer_buffers = self._create_transfer_buffers(buffer_nbytes)
+            elif self._transfer_buffers.buffer_nbytes < buffer_nbytes:
+                self._transfer_buffers.release()
+                self._transfer_buffers = self._create_transfer_buffers(buffer_nbytes)
         return True
 
-    def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
-        """Stage incoming tensors; when all shards for a param are collected,
-        load into shared buffer and P2P-write per engine rank.
+    def after_base_weights(self) -> None:
+        """Wait for every write of this update; fail the update if any write failed or is still running."""
+        if not self.is_sender:
+            return
+        self._transfer_buffers.wait_for_all_writes()
+        for runner_sender in self._runner_senders:
+            runner_sender.model_param_stager.assert_all_done()
 
-        Only calls load_weights() with complete accumulated tensors, preventing
-        partial writes that would corrupt the shared buffer when different engine
-        ranks have different EP expert-to-local mappings.
-        """
+    def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
+        """Write complete parameter groups to every runner whose loader takes them, as the engine's own updates do."""
         if not self.is_sender or not converted_named_tensors:
             return
-        # `ready_hf_tensors`` here are the complete tensors ready to be transferred.
-        transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
-
-        if transfer_ready_params and ready_hf_tensors:
-            last_idx = len(self._replica_targets) - 1
-            for i, target in enumerate(self._replica_targets):
-                with ParallelismContext(target.parallelism_config):
-                    target.model_replica.load_weights(ready_hf_tensors)
-
-                is_last = i == last_idx
-                if is_last:
-                    # Last engine rank: fire-and-forget all sessions to background,
-                    # as the weight will no longer be overwritten
-                    for remote_session in target.remote_weight_infos:
-                        self.transfer_manager.submit(
-                            self._do_p2p_write_one_session,
-                            remote_session,
-                            transfer_ready_params,
-                        )
-                else:
-                    # Non-last engine rank needs to be fully written to target before next update can happen.
-                    futures = [
-                        self.transfer_manager.submit_returning_future(
-                            self._do_p2p_write_one_session,
-                            remote_session,
-                            transfer_ready_params,
-                        )
-                        for remote_session in target.remote_weight_infos
-                    ]
-                    for f in futures:
-                        f.result()
-
+        unknown_hf_names = [hf_name for hf_name, _ in converted_named_tensors if hf_name not in self._hf_tensor_specs]
+        assert not unknown_hf_names, (
+            f"{unknown_hf_names[:5]} ({len(unknown_hf_names)} in all) were not in the trainer's first pass, so no "
+            "replica was mapped for them"
+        )
+        for runner_sender in self._runner_senders:
+            self._send_runner_bucket(
+                runner_sender,
+                [
+                    (hf_name, tensor)
+                    for hf_name, tensor in converted_named_tensors
+                    if runner_sender.loads_hf_tensor(hf_name)
+                ],
+            )
         converted_named_tensors.clear()
+
+    def _send_runner_bucket(
+        self, runner_sender: _RunnerSender, converted_named_tensors: list[tuple[str, torch.Tensor]]
+    ) -> None:
+        ready_hf_tensors_by_param_group = runner_sender.model_param_stager.stage(converted_named_tensors)
+        for param_groups in pack_into_buffers(
+            ready_hf_tensors_by_param_group,
+            runner_sender.model_replicas.transfer_buffer_param_layouts,
+            self._transfer_buffers.buffer_nbytes,
+        ):
+            param_names = [param_name for param_group in param_groups for param_name in param_group]
+            hf_tensors = [
+                hf_tensor for param_group in param_groups for hf_tensor in ready_hf_tensors_by_param_group[param_group]
+            ]
+            for target in runner_sender.replica_targets:
+                buffer = self._transfer_buffers.acquire()
+                param_bytes_by_name = target.model_replica.load_into(buffer, param_names, hf_tensors)
+                writes = self._transport.write(target.remote_shards, param_bytes_by_name)
+                self._transfer_buffers.release_after(buffer, list(zip(target.remote_shards, writes, strict=True)))
 
     def connect(
         self,
@@ -137,210 +147,79 @@ class UpdateWeightP2P(WeightTransferProtocol):
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
-        """``connect`` here will:
-
-        - Create a transfer plan that maps each training rank to its target
-          rollout rank(s) based on GPU counts and parallelism configuration.
-        - Query remote rollout engines for their weight memory registration
-          info (addresses and sizes for RDMA writes).
-        - Query remote parallelism config and construct a local CPU model
-          replica that mirrors the target's sharding layout, enabling correct
-          weight format conversion before transfer.
-        """
+        """Assign and validate write targets, reusing replicas, mappings, transport and buffers across reconnects."""
         self.rollout_engines = rollout_engines
-
-        self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
+        assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
+        self.is_sender = bool(assignments)
 
         if self.is_sender:
-            self.group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
-            targets = self.transfer_plan.plan_p2p()
-            (
-                self.remote_weight_infos_by_session_id,
-                targets_to_session_id,
-                self.session_id_to_server_args,
-            ) = query_remote_weight_infos(rollout_engines, targets)
-
-            targets_grouped_by_engine_rank: dict[int, list] = {}
-            for target in targets:
-                targets_grouped_by_engine_rank.setdefault(target.engine_rank, []).append(target)
-
-            # Create ONE transfer engine for all engine ranks
-            self._transfer_engine = create_transfer_engine()
-            self._shared_params_dict: dict[str, torch.Tensor] = {}
-            self._shared_param_mapper: ParameterMapper | None = None
-            self._replica_targets: list[_ReplicaTarget] = []
-            first_engine_rank = True
-            for rank_targets in targets_grouped_by_engine_rank.values():
-                first_target = rank_targets[0]
-                session_id = targets_to_session_id[(first_target.engine_ind, first_target.engine_rank)]
-                parallelism_config = RankParallelismConfig.from_dict(
-                    self.remote_weight_infos_by_session_id[session_id][1]
+            runner_roles = query_runner_roles(rollout_engines, assignments, selector)
+            configs_by_runner_role = {
+                runner_role: query_rollout_engine_rank_configs(rollout_engines, assignments, runner_role)
+                for runner_role in runner_roles
+            }
+            if self._transport is None:
+                self._transport = MooncakeTransport()
+            remote_shards_by_runner_role = self._transport.connect(rollout_engines, assignments, runner_roles)
+            self._runner_senders = [
+                self._connect_runner(
+                    runner_role, configs_by_runner_role[runner_role], remote_shards_by_runner_role[runner_role]
                 )
-                server_args = self.session_id_to_server_args[session_id]
+                for runner_role in runner_roles
+            ]
 
-                model_replica = self._create_cpu_replica(
-                    parallelism_config,
-                    self.args.hf_checkpoint,
-                    server_args,
-                    first_engine_rank=first_engine_rank,
-                )
-                if first_engine_rank:
-                    self._shared_params_dict = dict(model_replica.named_parameters())
-                    self._shared_param_mapper = ParameterMapper.from_model(model_replica)
-                    first_engine_rank = False
-
-                remote_infos = [
-                    RemoteWeightInfo(
-                        targets_to_session_id[(t.engine_ind, t.engine_rank)],
-                        self.remote_weight_infos_by_session_id[targets_to_session_id[(t.engine_ind, t.engine_rank)]][
-                            0
-                        ],
-                    )
-                    for t in rank_targets
-                ]
-
-                self._replica_targets.append(_ReplicaTarget(model_replica, remote_infos, parallelism_config))
-
-    def _create_cpu_replica(
+    def _connect_runner(
         self,
-        parallelism_config: RankParallelismConfig,
-        model_path: str,
-        server_args: ServerArgs,
-        first_engine_rank: bool = False,
-    ) -> torch.nn.Module:
-        """Create a CPU model replica that loads the right shard and skips post_load_weights."""
-        load_config = LoadConfig(
-            load_format="dummy",
-            model_loader_extra_config=None,
-            rl_quant_profile=server_args.rl_quant_profile,
-        )
-        server_args_module.set_global_server_args_for_scheduler(server_args)
-        initialize_moe_config()
-        initialize_fp8_gemm_config()
-        initialize_fp4_gemm_config()
-
-        # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
-        # because get_model() calls post_load_weights() internally (loader.py:1310)
-        # which may invoke CUDA-only kernels (e.g., per_tensor_quant_fp8 for FP8 models).
-        # This is safe because the rollout engine runs post_load_weights on its own GPU
-        # after RDMA transfer, at end_weight_update.
-        from sglang.srt.model_loader import loader as model_loader_module
-
-        original_post_load_weights = model_loader_module.post_load_weights
-        model_loader_module.post_load_weights = lambda *args, **kwargs: None
-        try:
-            with ParallelismContext(parallelism_config):
-                model = get_model(
-                    model_config=ModelConfig(model_path),
-                    load_config=load_config,
-                    device_config=DeviceConfig(device="cpu"),
-                )
-        finally:
-            model_loader_module.post_load_weights = original_post_load_weights
-
-        # Also patch the instance method for subsequent load_weights() calls
-        # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).
-        if hasattr(model, "post_load_weights"):
-            model.post_load_weights = lambda *args, **kwargs: None
-
-        if first_engine_rank:
-            for param in model.parameters():
-                param.data = param.data.pin_memory()
-        else:
-            for name, param in model.named_parameters():
-                assert name in self._shared_params_dict, f"[P2P-Shared] Parameter {name} not found in shared buffers"
-                param.data = self._shared_params_dict[name]
-
-        return model
-
-    def _get_transfer_ready_params(
-        self, converted_named_tensors: list[tuple[str, torch.Tensor]]
-    ) -> tuple[list[str], list[tuple[str, torch.Tensor]]]:
-        """Determine which sglang params have all shards present, returning their accumulated tensors.
-
-        Some parameters are trained separately on the training side but fused into a
-        single tensor on the rollout side (e.g., Q/K/V projections are separate in
-        Megatron but merged into one qkv_proj in sglang). This function stages
-        incoming HF tensors in self._staged_tensors until all shards for a
-        sglang param are collected. Only returns tensors for fully-ready params,
-        preventing partial load_weights() calls that would corrupt the shared buffer.
-
-        Return:
-            transfer_ready_params: tensors' names for the ones ready to be transferred.
-            ready_hf_tensor: corresponding complete tensors ready to be transferred.
-        """
-        transfer_ready_params = []
-        params_dict = self._shared_params_dict
-
-        for name, tensor in converted_named_tensors:
-            # map the tensor name of huggingface to the one of sglang.
-            mapped_result = self._shared_param_mapper.map(name)
-            mapped, num_shards, num_experts = (
-                mapped_result.sglang_name,
-                mapped_result.num_shards,
-                mapped_result.num_local_experts,
+        runner_role: str,
+        configs_by_rollout_engine_rank: dict[int, RolloutEngineRankConfig],
+        remote_shards_by_rollout_engine_rank: dict[int, list[RemoteShard]],
+    ) -> _RunnerSender:
+        if runner_role not in self._model_replicas_by_runner_role:
+            self._model_replicas_by_runner_role[runner_role] = ModelReplicas(
+                model_path=self.args.hf_checkpoint, transfer_buffer_device=self._transport.transfer_buffer_device
             )
-            if mapped not in params_dict:
-                logger.warning(f"Parameter {mapped} not found in shared model replica.")
-                continue
+        model_replicas = self._model_replicas_by_runner_role[runner_role]
+        replica_targets = []
+        for rollout_engine_rank, remote_shards in remote_shards_by_rollout_engine_rank.items():
+            model_replica = model_replicas.get_or_build(configs_by_rollout_engine_rank[rollout_engine_rank])
+            for remote_shard in remote_shards:
+                assert_replica_matches_shard(
+                    model_replica,
+                    remote_shard.published_nbytes_by_name,
+                    published_by=(
+                        f"the {runner_role} of rollout engine {remote_shard.rollout_engine_ind} "
+                        f"rank {rollout_engine_rank}"
+                    ),
+                )
+            replica_targets.append(_ReplicaTarget(model_replica, remote_shards))
+        return _RunnerSender(model_replicas, replica_targets)
 
-            if num_experts is not None and num_experts > 0:
-                total_expected = num_experts * num_shards
-            else:
-                total_expected = num_shards
-
-            self._staged_tensors.setdefault(mapped, []).append((name, tensor))
-
-            if total_expected == 1:
-                transfer_ready_params.append(mapped)
-            else:
-                if mapped not in self._tensor_update_pending:
-                    self._tensor_update_pending[mapped] = total_expected - 1
-                else:
-                    self._tensor_update_pending[mapped] -= 1
-                if self._tensor_update_pending[mapped] == 0:
-                    transfer_ready_params.append(mapped)
-
-        ready_hf_tensors: list[tuple[str, torch.Tensor]] = []
-        for param_name in transfer_ready_params:
-            staged = self._staged_tensors.pop(param_name, [])
-            ready_hf_tensors.extend(staged)
-            self._tensor_update_pending.pop(param_name, None)
-
-        return transfer_ready_params, ready_hf_tensors
-
-    def _do_p2p_write_one_session(self, remote_session: RemoteWeightInfo, names: list[str]) -> None:
-        """P2P write from shared CPU pinned buffers to a single remote session.
-
-        Used by the parallelized submission path where each session within an
-        engine rank is submitted as a separate task to P2PTransferManager.
-        """
-        source_ptrs, source_lens = [], []
-        valid_names = []
-
-        for name in names:
-            cpu_reg = self._weight_memory_registry.get(name)
-            assert cpu_reg, f"the _weight_memory_registry of {name} failed"
-
-            data_ptr, numel, ele_size = cpu_reg
-            source_ptrs.append(data_ptr)
-            source_lens.append(numel * ele_size)
-            valid_names.append(name)
-
-        if not source_ptrs:
-            return
-
-        session_id = remote_session.session_id
-        target_ptrs = []
-        for name in valid_names:
-            if name in remote_session.weights_info:
-                target_ptrs.append(remote_session.weights_info[name][0])
-
-        assert len(target_ptrs) == len(source_ptrs), (
-            f"[P2P-Shared] Pointer count mismatch for session {session_id}, "
-            f"source: {len(source_ptrs)}, target: {len(target_ptrs)}"
+    def _log_hf_names_no_runner_loads(self) -> None:
+        hf_names_no_runner_loads = sorted(
+            hf_name
+            for hf_name in self._hf_tensor_specs
+            if not any(runner_sender.loads_hf_tensor(hf_name) for runner_sender in self._runner_senders)
         )
+        if hf_names_no_runner_loads:
+            logger.info(
+                f"p2p skips {len(hf_names_no_runner_loads)} HF tensors the rollout engines' loaders ignore, e.g. "
+                f"{hf_names_no_runner_loads[:5]}"
+            )
 
-        ret = self._transfer_engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
-        if ret < 0:
-            raise RuntimeError(f"[P2P-Shared] Transfer failed for session {session_id}, error: {ret}")
+    def _compute_transfer_buffer_nbytes(self) -> int:
+        largest_param_group_nbytes = max(
+            compute_param_group_nbytes(param_group, runner_sender.model_replicas.transfer_buffer_param_layouts)
+            for runner_sender in self._runner_senders
+            for param_group in runner_sender.model_param_stager.param_groups
+        )
+        return max(self.args.update_weight_buffer_size, largest_param_group_nbytes)
+
+    def _create_transfer_buffers(self, buffer_nbytes: int) -> TransferBuffers:
+        return TransferBuffers(
+            _NUM_TRANSFER_BUFFERS,
+            buffer_nbytes,
+            device=self._transport.transfer_buffer_device,
+            register_memory=self._transport.register_memory,
+            unregister_memory=self._transport.unregister_memory,
+            write_timeout=self.args.p2p_transfer_timeout,
+        )

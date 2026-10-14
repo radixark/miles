@@ -46,6 +46,7 @@ def make_args(**overrides: Any) -> Namespace:
         update_weights_interval=1,
         check_weight_update_equal=False,
         check_weight_update_skip_list=None,
+        check_weight_update_selector="all",
         # batch / training
         global_batch_size=8,
         use_dynamic_global_batch_size=False,

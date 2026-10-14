@@ -100,7 +100,7 @@ def _object_store_args(config: command_utils.ExecuteTrainConfig) -> str:
 
 
 def _train_args(engine_addrs: list[str], *, object_store_args: str) -> str:
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist/ "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist/ "
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "

@@ -87,7 +87,7 @@ def test_empty_suite_never_requests_a_gpu(tmp_path, hw, cadence):
 
 @pytest.mark.parametrize("hw", ["cuda", "rocm"])
 @pytest.mark.parametrize("cadence", ["regular", "nightly", "weekly", "release"])
-@pytest.mark.parametrize("partition", [0, 1, 2])
+@pytest.mark.parametrize("partition", [0, 1, 8])
 def test_plan_checks_each_shard_after_partitioning(tmp_path, hw, cadence, partition):
     result, output = _plan(
         tmp_path,
@@ -99,7 +99,7 @@ def test_plan_checks_each_shard_after_partitioning(tmp_path, hw, cadence, partit
             "--auto-partition-id",
             str(partition),
             "--auto-partition-size",
-            "3",
+            "9",
         ],
     )
 

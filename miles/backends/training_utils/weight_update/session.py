@@ -27,6 +27,14 @@ def resume_engines(rollout_engines: Sequence[SGLangApiClient]) -> None:
     async_utils.wait_futures([async_utils.submit(client.continue_generation()) for client in rollout_engines])
 
 
+def weight_update_selector(args: Namespace) -> str:
+    """Engine runners a weight sync covers. A speculative draft is synced only when the
+    trainer trains its MTP layers (--enable-mtp-training); any other draft keeps its startup weights."""
+    if args.sglang_speculative_algorithm and not args.enable_mtp_training:
+        return "target"
+    return "all"
+
+
 def begin_weight_update(
     rollout_engines: Sequence[SGLangApiClient], selector: str = "all", *, sync_base: bool = True
 ) -> None:

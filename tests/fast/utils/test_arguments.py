@@ -29,6 +29,7 @@ from miles.utils.arguments import (
     miles_validate_args,
     resolve_rollout_function_paths,
     validate_async_off_policy_correction,
+    validate_log_probs_backend_args,
     validate_skip_actor_forward_only,
 )
 from miles.utils.env_report.redaction import _SECRET_ARG_NAMES, _SECRET_ENV_VAR_PATTERN
@@ -481,6 +482,7 @@ def _fully_async_candidate_args(**overrides) -> SimpleNamespace:
         recompute_logprobs_via_prefill=False,
         rollout_all_samples_process_path=None,
         eval_num_gpus=0,
+        over_sampling_batch_size=None,
     )
     return SimpleNamespace(**(defaults | overrides))
 
@@ -545,6 +547,7 @@ def test_fully_async_rejects_abort_pause_mode():
         recompute_logprobs_via_prefill=False,
         rollout_all_samples_process_path=None,
         eval_num_gpus=0,
+        over_sampling_batch_size=None,
     )
 
     with pytest.raises(AssertionError, match="pause-generation-mode abort"):
@@ -859,6 +862,26 @@ def test_sampling_support_arguments_fail_closed(extra, message):
 
     with pytest.raises(ValueError, match=message):
         miles_validate_args(args)
+
+
+@pytest.mark.parametrize(
+    ("extra", "vocab_size", "message"),
+    [
+        (["--true-on-policy-mode"], 151_936, "does not support --true-on-policy-mode"),
+        (["--rollout-top-k", "32"], 151_936, "does not support sampling-support replay"),
+        ([], None, "needs --vocab-size"),
+    ],
+    ids=["true_on_policy", "sampling_support_replay", "no_vocab_size"],
+)
+def test_fused_log_probs_backend_rejects_what_it_does_not_cover(extra, vocab_size, message):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--log-probs-backend", "fused", "--num-rollout", "1"] + extra + REQUIRED_ARGS)
+    args.vocab_size = vocab_size  # a Megatron flag, absent from this parser
+    args.use_sampling_support_replay = "--rollout-top-k" in extra  # derived by miles_validate_args
+
+    with pytest.raises(ValueError, match=message):
+        validate_log_probs_backend_args(args)
 
 
 @pytest.mark.parametrize(
@@ -1683,6 +1706,48 @@ def test_stream_optimizer_state_to_disk_rejects_reading_grads_outside_the_step(m
         miles_validate_args(args)
 
 
+class TestMtpTrainingValidation:
+    """--mtp-num-layers describes the model; only --enable-mtp-training builds and trains the MTP layers."""
+
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        return args
+
+    @pytest.mark.parametrize("backend", ["megatron", "fsdp", "torchtitan"])
+    def test_a_run_that_does_not_train_mtp_builds_no_mtp_layer(self, backend):
+        """Megatron trains every MTP layer it builds, so the model script's layer count alone builds none."""
+        assert self._validate(["--train-backend", backend, "--mtp-num-layers", "1"]).mtp_num_layers is None
+
+    def test_an_explicit_zero_becomes_megatrons_no_mtp_value(self):
+        """Megatron treats any non-None mtp_num_layers as an MTP model, so 0 must not reach it."""
+        assert self._validate(["--mtp-num-layers", "0"]).mtp_num_layers is None
+
+    def test_mtp_training_keeps_the_layers(self):
+        assert self._validate(["--enable-mtp-training", "--mtp-num-layers", "1"]).mtp_num_layers == 1
+
+    def test_mtp_training_needs_layers_to_train(self):
+        with pytest.raises(AssertionError, match="needs --mtp-num-layers > 0"):
+            self._validate(["--enable-mtp-training"])
+
+    @pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
+    def test_backends_that_build_no_mtp_layers_reject_mtp_training(self, backend):
+        with pytest.raises(AssertionError, match=f"the {backend} backend builds no MTP layers"):
+            self._validate(["--train-backend", backend, "--enable-mtp-training", "--mtp-num-layers", "1"])
+
+    @pytest.mark.parametrize(("extra", "expect_warning"), [([], False), (["--no-mtp-detach-heads"], True)])
+    def test_mtp_heads_are_detached_unless_the_user_opts_out(self, caplog, extra, expect_warning):
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            args = self._validate(["--enable-mtp-training", "--mtp-num-layers", "1"] + extra)
+
+        assert args.mtp_detach_heads is not expect_warning
+        warned = any("MTP loss gradients flow back" in record.message for record in caplog.records)
+        assert warned is expect_warning
+
+
 class TestCriticSaveDerivation:
     def _validate(self, extra):
         parser = argparse.ArgumentParser()
@@ -2077,6 +2142,27 @@ def test_bridge_mode_accepts_critic(tmp_path):
 
     miles_validate_args(args)
     assert args.use_critic is True
+
+
+def test_p2p_accepts_megatron_bridge(tmp_path):
+    """Bridge gathers PP and p2p assigns senders over the gathered placement, so each rollout engine rank is written once."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--update-weight-transfer-mode",
+            "p2p",
+            "--megatron-to-hf-mode",
+            "bridge",
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    miles_validate_args(args)
 
 
 def test_critic_is_accepted_on_the_only_trainer(tmp_path):
@@ -2998,3 +3084,47 @@ class TestWeightTransferModeSelection:
         args = self._parse(["--custom-config-path", str(config), *extra])
         with pytest.raises(ValueError, match=error):
             miles_validate_args(args)
+
+
+def test_fully_async_warns_that_over_sampling_batch_size_is_ignored(caplog):
+    """Fully-async never reads --over-sampling-batch-size; passing it silently does nothing."""
+    args = _fully_async_candidate_args(fully_async=True, over_sampling_batch_size=32)
+
+    with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+        _resolve_rollout_functions(args)
+
+    assert "--over-sampling-batch-size has no effect under --fully-async" in caplog.text
+
+
+def test_fully_async_without_over_sampling_batch_size_does_not_warn(caplog):
+    args = _fully_async_candidate_args(fully_async=True)
+
+    with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+        _resolve_rollout_functions(args)
+
+    assert "over-sampling-batch-size" not in caplog.text
+
+
+class TestCheckWeightUpdateSelectorDefault:
+    """reset_tensors scrambles every tensor the checker covers, so by default it covers what the sync rewrites."""
+
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        return args
+
+    @pytest.mark.parametrize(
+        ("extra", "selector"),
+        [
+            ([], "all"),
+            (["--sglang-speculative-algorithm", "EAGLE"], "target"),
+            (["--sglang-speculative-algorithm", "EAGLE", "--enable-mtp-training", "--mtp-num-layers", "1"], "all"),
+            (["--sglang-speculative-algorithm", "EAGLE", "--check-weight-update-selector", "draft"], "draft"),
+        ],
+        ids=["no_draft", "frozen_draft", "trained_draft", "explicit"],
+    )
+    def test_the_checker_covers_what_the_sync_rewrites_unless_narrowed(self, extra, selector):
+        assert self._validate(extra).check_weight_update_selector == selector

@@ -32,6 +32,8 @@ def validate_torchtitan_args(args) -> None:
         raise ValueError(f"the torchtitan backend needs torch>=2.13; this environment runs {torch.__version__}")
     if args.context_parallel_size != 1 and args.titan_model_name == "qwen3_5":
         raise ValueError("torchtitan does not support context parallelism for qwen3_5")
+    if args.context_parallel_size != 1:
+        _reject_flags_without_cp_local_log_probs(args)
 
     if args.rollout_max_context_len is not None:
         if args.seq_length < args.rollout_max_context_len:
@@ -73,3 +75,15 @@ def validate_torchtitan_args(args) -> None:
                 "torchtitan keeps the moments in the dtype AdamW steps them in; "
                 f"--stream-optimizer-state-moment-dtype {args.stream_optimizer_state_moment_dtype} is unsupported"
             )
+
+
+def _reject_flags_without_cp_local_log_probs(args) -> None:
+    """Under CP the loss sees only each rank's logit shard (ContextParallelLogits); these need full
+    logit rows per response token."""
+    unsupported = {
+        "--use-sampling-support-replay": getattr(args, "use_sampling_support_replay", False),
+        "--loss-type score_centering": getattr(args, "loss_type", None) == "score_centering",
+    }
+    flags = [flag for flag, is_set in unsupported.items() if is_set]
+    if flags:
+        raise ValueError(f"the torchtitan backend does not support {', '.join(flags)} with context parallelism")

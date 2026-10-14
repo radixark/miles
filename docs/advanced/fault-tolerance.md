@@ -70,13 +70,13 @@ the new engines and the next weight transfer proceeds normally.
 
 ## P2P weight transfer timeouts
 
-When `--update-weight-transfer-mode p2p` is on, every P2P transfer is
-bounded by `--p2p-transfer-timeout` (default `30.0`s, defined in
-`miles/utils/arguments.py`; consumed at
-`miles/backends/megatron_utils/update_weight/update_weight_from_distributed/p2p.py`).
-On timeout the failed transfer is logged (`[P2P] Transfer future failed: ...`)
-in `p2p_transfer_utils.py`. There is no automatic retry or automatic
-broadcast-mode fallback in the source today.
+When `--update-weight-transfer-mode p2p` is on, each write is bounded by
+Mooncake's own timeout (`MC_TRANSFER_TIMEOUT`, default 30 s, plus 1 ns per byte
+written). At the end of the update the sender waits up to `--p2p-transfer-timeout`
+(default `30.0`s) for writes still in flight; a write that failed or is still
+running fails the update, and the error names each such rollout engine rank and
+its session (`miles/backends/training_utils/weight_update/protocols/p2p.py`).
+There is no automatic retry or broadcast-mode fallback.
 
 ## Dumper-mode interaction
 

@@ -4,7 +4,7 @@ from argparse import Namespace
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["weight-update"])
 
 import pytest
 import torch
@@ -58,11 +58,13 @@ def _install_import_stubs(monkeypatch):
     for name in [
         "megatron",
         "megatron.core",
+        "megatron.core.utils",
         "megatron.core.transformer",
         "megatron.core.transformer.transformer_layer",
     ]:
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     sys.modules["megatron.core.transformer.transformer_layer"].get_transformer_layer_offset = lambda *args: 0
+    sys.modules["megatron.core.utils"].unwrap_model = lambda model: model
 
 
 @pytest.fixture

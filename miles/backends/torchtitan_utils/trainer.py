@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed.pipelining.schedules import PipelineScheduleSingle
 from torch.distributed.tensor import DTensor
+from torchtitan.config import TORCH_DTYPE_MAP
 from torchtitan.distributed import utils as titan_dist_utils
 from torchtitan.distributed.context_parallel import cp_shard
 from torchtitan.trainer import Trainer
@@ -16,9 +17,18 @@ from miles.utils.hf_utils.config import load_hf_config
 
 _FLEX_BLOCK = 128
 _CP_LENGTH_BUCKET = 1024
+# the multimodal_train_inputs keys a vision model's forward takes: pixel tensors, or PNG bytes rebuilt per microbatch
+_IMAGE_INPUT_KEYS = ("pixel_values", "image_grid_thw", "image_png", "image_png_lengths")
 
 
 class TitanTrainer(Trainer):
+    def __init__(self, config: Trainer.Config):
+        super().__init__(config)
+        dtype = TORCH_DTYPE_MAP[config.training.mixed_precision_param]
+        for part in self.model_parts:
+            if hasattr(part, "attach_vision_tower"):
+                part.attach_vision_tower(config.hf_assets_path, device=self.device, dtype=dtype)
+
     @functools.cached_property
     def _family_forward_kwargs(self) -> dict:
         kwargs = {}
@@ -29,6 +39,21 @@ class TitanTrainer(Trainer):
                 "video_id": getattr(hf_config, "video_token_id", -2),
             }
         return kwargs
+
+    @functools.cached_property
+    def _image_input_keys(self) -> frozenset[str]:
+        parameters = inspect.signature(self.model_parts[0].forward).parameters
+        return frozenset(key for key in _IMAGE_INPUT_KEYS if key in parameters)
+
+    def _image_inputs(self, batch: dict) -> dict[str, torch.Tensor]:
+        images = batch.get("multimodal_train_inputs") or {}
+        unsupported = sorted(set(images) - self._image_input_keys)
+        if unsupported:
+            raise ValueError(
+                f"the batch carries multimodal inputs {unsupported} that "
+                f"{type(self.model_parts[0]).__name__}.forward does not take"
+            )
+        return dict(images)
 
     def padded_length(self, n_tokens: int) -> int:
         if self.parallel_dims.pp_enabled:
@@ -90,7 +115,9 @@ class TitanTrainer(Trainer):
         input_dicts = []
         for batch in batches:
             tokens, positions = _model_inputs(batch)
-            input_dicts.append({"input": tokens, "positions": positions, **self._family_forward_kwargs})
+            input_dicts.append(
+                {"input": tokens, "positions": positions, **self._image_inputs(batch), **self._family_forward_kwargs}
+            )
         labels = [torch.full_like(input_dicts[i]["input"], i, dtype=torch.long) for i in range(len(batches))]
         return input_dicts, labels
 

@@ -57,6 +57,8 @@ def _make_args(**overrides):
         actor_num_nodes=1,
         actor_num_gpus_per_node=1,
         pause_generation_mode="retract",
+        sglang_speculative_algorithm=None,
+        enable_mtp_training=False,
     )
     defaults.update(overrides)
     return Namespace(**defaults)

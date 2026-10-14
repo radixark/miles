@@ -377,3 +377,37 @@ def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
 
     adapter = spec.state_dict_adapter(model, None)
     assert set(_GLM47_FLASH_CHECKPOINT_KEYS) <= set(adapter.from_hf_map)
+
+
+def test_the_trainer_hands_image_inputs_only_to_a_forward_that_takes_them():
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.trainer import TitanTrainer
+
+    class _VisionModel(torch.nn.Module):
+        def forward(self, tokens, positions=None, pixel_values=None, image_grid_thw=None):
+            return tokens
+
+    class _TextModel(torch.nn.Module):
+        def forward(self, tokens, positions=None):
+            return tokens
+
+    def _trainer(model):
+        trainer = TitanTrainer.__new__(TitanTrainer)
+        trainer.model_parts = [model]
+        return trainer
+
+    images = {"pixel_values": torch.zeros(4, 3), "image_grid_thw": torch.tensor([[1, 2, 2]])}
+    handed = _trainer(_VisionModel())._image_inputs({"multimodal_train_inputs": images})
+    assert handed.keys() == images.keys() and all(handed[k] is images[k] for k in images)
+    assert _trainer(_VisionModel())._image_inputs({"multimodal_train_inputs": None}) == {}
+    with pytest.raises(ValueError, match=r"\['image_grid_thw', 'pixel_values'\].*_TextModel"):
+        _trainer(_TextModel())._image_inputs({"multimodal_train_inputs": images})
+
+
+def test_flags_that_need_full_logits_are_rejected_under_context_parallelism():
+    validate_torchtitan_args(_args(context_parallel_size=2))
+    validate_torchtitan_args(_args(use_sampling_support_replay=True))
+    with pytest.raises(ValueError, match="--use-sampling-support-replay, --loss-type score_centering"):
+        validate_torchtitan_args(
+            _args(context_parallel_size=2, use_sampling_support_replay=True, loss_type="score_centering")
+        )

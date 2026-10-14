@@ -554,6 +554,19 @@ class TestTick:
         assert [kwargs["action"] for kwargs in checker_calls] == ["snapshot", "reset_tensors"]
         assert checker_calls[1]["skip_list"] == ["a"]
 
+    async def test_the_checker_snapshots_and_resets_only_the_runners_it_compares(self, cell_env):
+        """A draft the sync leaves out would stay scrambled for the rest of the run."""
+        cell = _make_cell(args_overrides=dict(check_weight_update_equal=True, check_weight_update_selector="target"))
+        await cell.init()
+
+        await cell.tick()
+
+        checker_calls = [kwargs for name, kwargs in cell_env["memory_calls"] if name == "check_weights"]
+        assert [(kwargs["action"], kwargs["selector"]) for kwargs in checker_calls] == [
+            ("snapshot", "target"),
+            ("reset_tensors", "target"),
+        ]
+
     async def test_the_weight_update_checker_stays_out_of_the_way_when_it_is_disabled(self, cell_env):
         """The checker is a ci-only tool and must not touch engines in a normal run."""
         cell = _make_cell()

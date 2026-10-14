@@ -149,6 +149,8 @@ def execute(args: ScriptArgs):
         sglang_args += "--sglang-flashinfer-mla-disable-ragged "
 
     misc_args = (
+        # train the model script's MTP layer, which serves as the EAGLE draft
+        "--enable-mtp-training "
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "

@@ -49,9 +49,8 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     provider.calculate_per_token_loss = args.calculate_per_token_loss  # CP>1 VL models assert this
     provider.variable_seq_lengths = args.variable_seq_lengths
 
-    # Match the non-bridge path: MTP must only train its own draft parameters.
-    if getattr(args, "enable_mtp_training", False):
-        provider.mtp_detach_heads = True
+    # The non-bridge path reads it from args through core_transformer_config_from_args.
+    provider.mtp_detach_heads = args.mtp_detach_heads
 
     # numerics (training infra, not model-defining)
     provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
@@ -237,13 +236,6 @@ def get_model_provider_func(
         # Experimental loading arguments from yaml
         assert config is None, "miles builds the config from args, so it expects config to be None"
         config = core_transformer_config_from_args(args)
-
-        # `enable_mtp_training` comes from miles' arg parser; megatron-only arg contexts
-        # (e.g. the run_megatron debug worker) won't have it, so default to False.
-        if getattr(args, "enable_mtp_training", False):
-            # Detach the MTP heads so RL MTP gradients do not flow into the shared
-            # output layer / embedding.
-            config.mtp_detach_heads = True
 
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)

@@ -1,12 +1,11 @@
 """AST-time validation tests for register_cuda_ci / register_cpu_ci.
 
-Covers the AST-collection behavior of the suite-as-runner-class refactor:
-`labels` is optional (default None ≡ []); a non-empty list of canonical
-domain labels gates the test on the resolved domain scope, while None / [] /
-omitted means always-on within an eligible cadence; `nightly=True` excludes a
-registration from regular cadence while nightly and weekly admit it;
-`num_gpus` declares the minimum CUDA allocation; `labels` must be passed by
-keyword (not as a positional third argument).
+CPU estimates above 30 seconds require `stage-b-cpu` and non-empty domain labels;
+only CPU registrations at or below that budget may omit `labels`. Non-empty
+labels gate selection on the resolved domain scope; omitted/None/[] labels
+are always-on within an eligible cadence. `nightly=True` excludes regular
+cadence; `num_gpus` declares the minimum CUDA allocation; `labels` is
+keyword-only.
 """
 
 import ast
@@ -99,6 +98,11 @@ class TestRegisterPositive:
         )
         assert ut_parse_one_file(path)[0].labels == ["megatron", "sglang"]
 
+    def test_slow_cpu_with_domain_label_uses_stage_b(self, tmp_path):
+        path = _make_fixture('register_cpu_ci(est_time=31, suite="stage-b-cpu", labels=["precision"])', tmp_path)
+        r = ut_parse_one_file(path)[0]
+        assert (r.suite, r.est_time, r.labels) == ("stage-b-cpu", 31, ["precision"])
+
     def test_disabled_string_passthrough(self, tmp_path):
         path = _make_fixture(
             """
@@ -137,6 +141,22 @@ class TestRegisterPositive:
 
 
 class TestRegisterNegative:
+    @pytest.mark.parametrize("est_time", [30.01, 60])
+    @pytest.mark.parametrize("suite", ["stage-a-cpu", "stage-c-cpu"])
+    @pytest.mark.parametrize("extra", ["", ", nightly=True", ', disabled="tracked in #123"'])
+    def test_slow_cpu_requires_stage_b(self, tmp_path, est_time, suite, extra):
+        path = _make_fixture(
+            f'register_cpu_ci(est_time={est_time}, suite="{suite}", labels=["precision"]{extra})', tmp_path
+        )
+        with pytest.raises(ValueError, match="CPU est_time > 30 seconds requires suite='stage-b-cpu'"):
+            ut_parse_one_file(path)
+
+    @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]"])
+    def test_slow_cpu_requires_domain_label(self, tmp_path, labels_arg):
+        path = _make_fixture(f'register_cpu_ci(est_time=31, suite="stage-b-cpu"{labels_arg})', tmp_path)
+        with pytest.raises(ValueError, match="labels.*must contain at least one domain label"):
+            ut_parse_one_file(path)
+
     @pytest.mark.parametrize("func_name", ["register_cuda_ci", "register_rocm_ci"])
     @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]"])
     def test_gpu_labels_must_be_non_empty(self, tmp_path, func_name, labels_arg):
@@ -243,7 +263,7 @@ class TestRegisterNegative:
 
     @pytest.mark.parametrize("func_name", ["register_cpu_ci", "register_rocm_ci"])
     def test_hardware_rejected_outside_cuda(self, tmp_path, func_name):
-        suite = "stage-a-cpu" if func_name == "register_cpu_ci" else "stage-c-4-gpu-mi350"
+        suite = "stage-b-cpu" if func_name == "register_cpu_ci" else "stage-c-4-gpu-mi350"
         path = _make_fixture(
             f"""
             from tests.ci.ci_register import {func_name}

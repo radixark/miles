@@ -74,6 +74,8 @@ class TorchNativeTrainRayActor(TrainRayActor):
     tokenizer: PreTrainedTokenizerBase
     ref_runner: StepRunner | None = None
     align_token_side_channel: Callable[[torch.Tensor, int], torch.Tensor] | None = None
+    # True when the model moves multimodal inputs to the GPU itself
+    multimodal_on_host: ClassVar[bool] = False
 
     def _step_runner(self) -> StepRunner:
         raise NotImplementedError
@@ -279,6 +281,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 self.args.data_pad_size_multiplier,
                 self.args.qkv_format,
                 get_position_ids=True,
+                multimodal_on_host=self.multimodal_on_host,
             )
 
     @timer

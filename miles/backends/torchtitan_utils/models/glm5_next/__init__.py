@@ -255,6 +255,7 @@ def build_model_config(hf_config) -> Glm5NextModel.Config:
         vocab_size=arch.vocab_size,
         num_streams=arch.num_streams,
         max_position_embeddings=arch.max_position_embeddings,
+        image_token_id=getattr(hf_config, "image_token_id", None),
         tok_embeddings=Embedding.Config(num_embeddings=arch.vocab_size, embedding_dim=arch.dim),
         norm=Glm5NextRMSNorm.Config(dim=arch.dim, eps=arch.norm_eps),
         lm_head=_linear(arch.dim, arch.vocab_size),

@@ -1,3 +1,4 @@
+import functools
 from dataclasses import dataclass
 
 import spmd_types as spmd
@@ -11,6 +12,7 @@ from torchtitan.models.common.token_dispatcher import update_ep_token_dispatcher
 from torchtitan.models.utils import get_moe_model_nparams_and_flops
 from torchtitan.protocols.module import Module
 
+from miles.backends.torchtitan_utils.image_embeddings import ImageInputs, image_token_counts, write_image_features
 from miles.backends.torchtitan_utils.models.glm5_next.layers import (
     ClampedFeedForward,
     DSAAttention,
@@ -24,6 +26,8 @@ from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import (
     PackedSequence,
     build_packed_sequence,
 )
+from miles.backends.torchtitan_utils.models.glm5_next.vision import Glm5NextImageEncoder
+from miles_plugins.models.glm5_next.vision import has_visual_weights
 
 _GROUPED_EXPERTS_PARAM_LAYOUT: dict[str, spmd.PerMeshAxisSpmdType] = {
     "w1_EFD": spmd.S(1),
@@ -80,6 +84,7 @@ class Glm5NextModel(Decoder):
     class Config(Decoder.Config):
         num_streams: int
         max_position_embeddings: int
+        image_token_id: int | None = None
 
         @property
         def max_seq_len(self) -> int:
@@ -126,6 +131,15 @@ class Glm5NextModel(Decoder):
         self._cp_mesh: DeviceMesh | None = None
         self._cp_load_balancer: str | None = None
         self._cp_layouts: dict[int, ContextParallelLayout] = {}
+        self.image_token_id = config.image_token_id
+
+    def attach_vision_tower(self, hf_checkpoint: str, *, device: torch.device, dtype: torch.dtype) -> None:
+        """Load the frozen tower on the stage that embeds tokens, if the checkpoint has one. It goes into
+        ``__dict__``, not a submodule, so FSDP, the optimizer, the state-dict adapter and DCP checkpoints
+        never see it."""
+        if self.image_token_id is None or self.tok_embeddings is None or not has_visual_weights(hf_checkpoint):
+            return
+        self.__dict__["_image_encoder"] = Glm5NextImageEncoder(hf_checkpoint, device=device, dtype=dtype)
 
     def enable_context_parallel(self, mesh: DeviceMesh, *, load_balancer: str) -> None:
         self._cp_mesh = mesh
@@ -149,6 +163,10 @@ class Glm5NextModel(Decoder):
         tokens: torch.Tensor,
         positions: torch.Tensor | None = None,
         attention_masks=None,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+        image_png: torch.Tensor | None = None,
+        image_png_lengths: torch.Tensor | None = None,
     ) -> torch.Tensor:
         assert positions is not None and positions.shape[0] == 1, "GLM-5.3-Flash trains on one packed sequence"
         sequence = build_packed_sequence(
@@ -160,6 +178,14 @@ class Glm5NextModel(Decoder):
             x_BLND = tokens
         else:
             h_BLD = self.tok_embeddings(tokens)
+            if image_grid_thw is not None:
+                images = ImageInputs(
+                    grid_thw=image_grid_thw,
+                    pixel_values=pixel_values,
+                    image_png=image_png,
+                    image_png_lengths=image_png_lengths,
+                )
+                h_BLD = self._write_image_features(h_BLD, tokens, images, sequence.cp_layout)
             x_BLND = h_BLD.unsqueeze(-2).expand(*h_BLD.shape[:-1], self.num_streams, h_BLD.shape[-1]).contiguous()
         for layer in self.layers.values():
             x_BLND = layer(x_BLND, sequence, positions)
@@ -169,3 +195,23 @@ class Glm5NextModel(Decoder):
         if self._skip_lm_head or self.lm_head is None:
             return h_BLD
         return self.lm_head(h_BLD)
+
+    def _write_image_features(
+        self, h_BLD: torch.Tensor, tokens: torch.Tensor, images: ImageInputs, cp_layout: ContextParallelLayout | None
+    ) -> torch.Tensor:
+        encoder = self.__dict__.get("_image_encoder")
+        if encoder is None:
+            raise RuntimeError(
+                "the batch carries images but no vision tower is attached: the checkpoint has no "
+                "model.visual.* weights, or attach_vision_tower was not called"
+            )
+        return write_image_features(
+            h_BLD,
+            tokens,
+            image_token_id=self.image_token_id,
+            tokens_per_image=image_token_counts(images.grid_thw, encoder.merge_size),
+            encode=functools.partial(encoder.encode, images),
+            cp_group=None if cp_layout is None else cp_layout.group,
+            local_indices=None if cp_layout is None else cp_layout.local_indices,
+            restore_indices=None if cp_layout is None else cp_layout.restore_indices,
+        )

@@ -1,3 +1,4 @@
+import functools
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -6,6 +7,8 @@ from torch.distributed._functional_collectives import all_gather_single_autograd
 from torch.distributed.tensor import DTensor
 from torchtitan.components.loss import BaseLoss
 from torchtitan.distributed.context_parallel import cp_shard
+
+from miles.backends.training_utils.loss.hub.context_parallel_logits import ContextParallelLogits
 
 
 def _gather_over_mesh(tensor: torch.Tensor, mesh) -> torch.Tensor:
@@ -56,11 +59,23 @@ class RLLossAdapter(BaseLoss):
             raise RuntimeError(f"the schedule never ran microbatch(es) {missing}")
         return [self._results[i] for i in range(len(self._batches))]
 
-    def _gather_context_parallel(self, pred: torch.Tensor) -> torch.Tensor:
-        gathered = _gather_over_mesh(pred.transpose(0, 1).contiguous(), self._cp_mesh)
-        gathered = gathered.transpose(0, 1)
-        restore = self._restore_indices(gathered.shape[1], gathered.device)
-        return gathered.index_select(1, restore)
+    def _context_parallel_logits(self, pred: torch.Tensor, tokens: torch.Tensor) -> ContextParallelLogits:
+        """The local shard and the token each of its rows predicts. The loss gathers only per-token
+        vectors, not the ``[T, V]`` logits."""
+        seq_len = pred.shape[1] * self._cp_mesh.size()
+        flat = tokens.flatten()
+        targets = flat.new_zeros(seq_len)
+        targets[: flat.numel() - 1] = flat[1:]
+        (local_targets,), _ = cp_shard(self._cp_mesh, (targets.unsqueeze(0),), None, self._cp_balancer)
+        restore = self._restore_indices(seq_len, pred.device)
+        return ContextParallelLogits(
+            local=pred,
+            targets=local_targets.flatten(),
+            gather_rows=functools.partial(self._gather_rows, restore=restore),
+        )
+
+    def _gather_rows(self, rows: torch.Tensor, *, restore: torch.Tensor) -> torch.Tensor:
+        return _gather_over_mesh(rows.contiguous(), self._cp_mesh).index_select(0, restore)
 
     def __call__(self, pred, target, global_valid_tokens=None, **kwargs):
         if isinstance(pred, DTensor):
@@ -71,11 +86,10 @@ class RLLossAdapter(BaseLoss):
                     )
             pred = pred.to_local()
 
-        if self._cp_mesh is not None:
-            pred = self._gather_context_parallel(pred)
-
         index = int(target.flatten()[0])
         batch = self._batches[index]
+        if self._cp_mesh is not None:
+            pred = self._context_parallel_logits(pred, batch["tokens"])
         if self._is_training:
             loss, log_dict = self._closure(pred, batch)
             self._results[index] = log_dict

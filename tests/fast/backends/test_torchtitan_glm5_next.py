@@ -203,3 +203,13 @@ def test_a_checkpoint_without_linear_attention_layers_builds_without_their_confi
         linear_attn_config=None,
     )
     assert [layer.kda for layer in spec.model.layers] == [None, None]
+
+
+def test_the_forward_takes_images_as_optional_keywords():
+    import inspect
+
+    from miles.backends.torchtitan_utils.models.glm5_next.model import Glm5NextModel
+
+    parameters = inspect.signature(Glm5NextModel.forward).parameters
+    for name in ("pixel_values", "image_grid_thw", "image_png", "image_png_lengths"):
+        assert parameters[name].default is None
