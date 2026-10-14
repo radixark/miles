@@ -26,7 +26,7 @@ Three modes are validated end to end on 4x B300 (Beaker `ai2/holmes`):
 | `tmax_sandbox.py` | Per-episode container on a Docker-API socket (Podman), ported from open-instruct |
 | `generate.py` | Reward function (`None` drops the group) and `agent/*` metrics |
 | `tmax_prompts.py` | open-instruct's system prompt |
-| `configs/` | Experiment configs: `prod_1node.yaml` (open-instruct's production recipe on one node) and 4-GPU smoke tests |
+| `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes) |
 | `beaker/` | `submit.py` (config -> Beaker job, pinned to a commit), the job's entrypoint, and open-instruct's vendored podman bring-up |
 
 ## How an episode runs
@@ -82,6 +82,14 @@ runs. Commit the config before submitting. The task runs `beaker/tmax_beaker_ent
 (apt) and runs open-instruct's own bring-up, vendored in `beaker/podman/`: `sandbox_shards` daemons with their
 own storage, the docker.io mirror (`mirror_url`), the image janitor and Docker Hub credentials. It also keeps the
 newest `keep_last_n_checkpoints` training checkpoints, then runs `prepare` + `execute`.
+
+With `nodes: N` (and the launcher's `num_nodes: N`), the task gets N replicas as mason's `--num_nodes` makes them:
+leader selection, host networking, failure and preemption propagated to every replica, and NCCL over InfiniBand
+(`NCCL_SOCKET_IFNAME=ib`, `NCCL_IB_HCA=^=mlx5_bond_0`). Replica 0 does everything above and starts the Ray head;
+the other replicas join it as GPU workers and exit with it, as open-instruct's `ray_node_setup.sh` workers do.
+Fully async on several nodes gives training and SGLang whole nodes, training first: `prod_4node.yaml` trains on
+2 nodes (TP 2 x CP 2 x DP 4) and generates with 16 engines on the other 2, open-instruct's 16 learners + 16 vLLM
+engines.
 
 ### Checkpoints, resume and logging
 
@@ -221,3 +229,6 @@ above 1 nat).
 - Podman comes from Ubuntu's apt (4.9) at job start; open-instruct's image builds 5.6.2 and crun 1.14.3 from
   source. Bake them into a Miles image for production.
 - Group-granular dropping: one infra failure discards its whole group.
+- Multi-node runs every sandbox on the head node, where the RolloutExecutor is pinned
+  (`--pin-rollout-manager-to-head`); open-instruct spreads its 512 sandboxes over all 4 nodes. One node holds 256
+  reliably, so `prod_4node.yaml` keeps 256 trajectories in flight instead of 512.

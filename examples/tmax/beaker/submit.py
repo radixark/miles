@@ -9,9 +9,13 @@ weka mounts and the user's secrets. The job is pinned to the current git commit:
 at that commit and runs ``beaker/tmax_beaker_entry.sh <config>``, so a preempted job's retries, and edits made to
 the checkout while it runs, cannot change what it trains. Arguments after ``--`` are launcher overrides.
 
-``beaker:`` keys: cluster, workspace, budget, priority, preemptible, min_runtime, retries, gpus, shared_memory,
-image, sandbox_shards, mirror_url, keep_last_n_checkpoints, weka (list of buckets, mounted at /weka/<bucket>),
-dockerhub_username, secrets (env var -> Beaker secret), env (extra env vars).
+With ``nodes: N > 1`` the task gets N replicas the way mason's ``--num_nodes`` does (leader selection, host
+networking, failure and preemption propagated to every replica, NCCL over InfiniBand); the entrypoint makes
+replica 0 the Ray head and joins the others to it.
+
+``beaker:`` keys: cluster, workspace, budget, priority, preemptible, min_runtime, retries, nodes, gpus (per node),
+shared_memory, image, sandbox_shards, mirror_url, keep_last_n_checkpoints, weka (list of buckets, mounted at
+/weka/<bucket>), dockerhub_username, secrets (env var -> Beaker secret), env (extra env vars).
 """
 
 import argparse
@@ -81,7 +85,9 @@ def _build_spec(*, beaker: dict, config_rel: str, commit: str, overrides: list[s
         "HF_TOKEN": f"{user}_HF_TOKEN",
         "WANDB_API_KEY": f"{user}_WANDB_API_KEY",
     }
+    nodes = int(beaker.get("nodes", 1))
     env = {
+        "NUM_NODES": str(nodes),
         "BEAKER_ALLOW_SUBCONTAINERS": "1",
         "BEAKER_SKIP_DOCKER_SOCKET": "1",
         "PYTORCH_ALLOC_CONF": "expandable_segments:True",
@@ -90,6 +96,8 @@ def _build_spec(*, beaker: dict, config_rel: str, commit: str, overrides: list[s
         "MIRROR_URL": beaker.get("mirror_url", ""),
         "KEEP_LAST_N_CHECKPOINTS": str(beaker.get("keep_last_n_checkpoints", 0)),
         "EXTRA_ARGS": shlex.join(overrides),
+        # mason's multi-node defaults on the weka clusters: NCCL over the InfiniBand NICs, not the bonded Ethernet.
+        **({"NCCL_SOCKET_IFNAME": "ib", "NCCL_IB_HCA": "^=mlx5_bond_0"} if nodes > 1 else {}),
         **{key: str(value) for key, value in (beaker.get("env") or {}).items()},
     }
     git_dir = _git("rev-parse", "--path-format=absolute", "--git-common-dir")
@@ -106,6 +114,19 @@ def _build_spec(*, beaker: dict, config_rel: str, commit: str, overrides: list[s
         context |= {"minRuntime": beaker["min_runtime"], "autoResume": True}
     elif beaker.get("preemptible"):
         context |= {"preemptible": True}
+    # mason --num_nodes: replica 0 is the leader (the Ray head), and one replica failing or being preempted stops
+    # them all, so a retry restarts the whole cluster.
+    replicas = (
+        {
+            "replicas": nodes,
+            "leaderSelection": True,
+            "hostNetworking": True,
+            "propagateFailure": True,
+            "propagatePreemption": True,
+        }
+        if nodes > 1
+        else {}
+    )
     return {
         "version": "v2",
         "description": description,
@@ -113,6 +134,7 @@ def _build_spec(*, beaker: dict, config_rel: str, commit: str, overrides: list[s
         "tasks": [
             {
                 "name": "miles-tmax",
+                **replicas,
                 "image": {"docker": beaker.get("image", "docker.io/radixark/miles:latest")},
                 "command": ["bash", "-c", command],
                 "datasets": [

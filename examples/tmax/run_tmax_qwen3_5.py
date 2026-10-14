@@ -50,7 +50,10 @@ Args:
       from its last checkpoint (default: unset, a fresh directory per run id).
   --filter-zero-std: drop all-pass / all-fail groups, open-instruct's --active_sampling (default: on;
       turn off for smoke tests, where small groups are almost always zero-variance).
-  --async-rollout-gpus: 0 = synchronous and colocated (default); N = --fully-async with N rollout GPUs.
+  --async-rollout-gpus: 0 = synchronous and colocated (default); N = --fully-async with N rollout GPUs in total.
+      On one node training gets the rest of the node; on several nodes both sides get whole nodes, training
+      first (open-instruct's 16 learners + 16 vLLM engines on 4 nodes is --num-nodes 4 --async-rollout-gpus 16).
+  --num-nodes: nodes in the Ray cluster (default: 1; set by beaker/tmax_beaker_entry.sh on multi-node jobs).
   --max-weight-staleness: fully-async only; drop groups more than this many weight versions old (default: 4).
   --async-max-concurrent-samples: fully-async only; trajectories generating at once (default: one batch). open-instruct's
       equivalent is --pool_size: 512 sandboxes against a 256-trajectory batch keep 2 batches in flight.
@@ -203,6 +206,21 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     @property
     def fully_async(self) -> bool:
         return self.async_rollout_gpus > 0
+
+    @property
+    def train_layout(self) -> tuple[int, int]:
+        """(actor nodes, actor GPUs per node). Fully async splits one node, or gives each side whole nodes."""
+        if not self.fully_async:
+            return self.num_nodes, self.num_gpus_per_node
+        train_gpus = self.num_nodes * self.num_gpus_per_node - self.async_rollout_gpus
+        assert train_gpus > 0, f"async_rollout_gpus={self.async_rollout_gpus} leaves no GPU for training"
+        if self.num_nodes == 1:
+            return 1, train_gpus
+        # Like open-instruct's learner and vLLM nodes: training first, then rollout, each on whole nodes.
+        assert (
+            train_gpus % self.num_gpus_per_node == 0
+        ), f"on {self.num_nodes} nodes, async_rollout_gpus must be whole nodes of {self.num_gpus_per_node} GPUs"
+        return train_gpus // self.num_gpus_per_node, self.num_gpus_per_node
 
     @property
     def dataset_dir(self) -> str:
@@ -359,7 +377,8 @@ def execute(args: ScriptArgs):
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
-        f"--actor-num-nodes {args.num_nodes} "
+        f"--actor-num-nodes {args.train_layout[0]} "
+        f"--actor-num-gpus-per-node {args.train_layout[1]} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
     )
     if args.fully_async:
@@ -371,13 +390,16 @@ def execute(args: ScriptArgs):
             f"--async-data-buffer-capacity-factor {args.async_data_buffer_capacity_factor} "
             "--pause-generation-mode in_place "
             "--update-weight-transfer-mode broadcast "
-            f"--actor-num-gpus-per-node {args.num_gpus_per_node - args.async_rollout_gpus} "
             f"--rollout-num-gpus {args.async_rollout_gpus} "
         )
         if args.async_max_concurrent_samples:
             misc_args += f"--async-max-concurrent-samples {args.async_max_concurrent_samples} "
     else:
-        misc_args += "--colocate " f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        misc_args += "--colocate "
+    if args.num_nodes > 1:
+        # The sandboxes run where the RolloutExecutor does, and the Beaker entrypoint brings podman up on the
+        # head (replica 0) only.
+        misc_args += "--pin-rollout-manager-to-head "
 
     train_args = (
         f"{ckpt_args} "
