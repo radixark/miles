@@ -1,14 +1,21 @@
-import pytest
-from pydantic import ValidationError
+import math
 
+import pytest
+from pydantic import TypeAdapter, ValidationError
+
+from miles.utils.audit_utils.event_logger.models import Event, FaultHookEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
+from miles.utils.test_utils.fault_injector.actions.cell import StopCellAction
 from miles.utils.test_utils.fault_injector.actions.process import ObserveAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
 from miles.utils.test_utils.fault_injector.models import (
     DeclaredFaultHookTarget,
     FaultHookName,
     FaultHookOwner,
     FaultHookRecord,
     FaultHookRequest,
+    FaultHookStatus,
     ObservedFaultHookTarget,
 )
 
@@ -101,6 +108,10 @@ class TestFaultHookRequestValidation:
     @pytest.mark.parametrize(
         "change",
         [
+            {"delay_ms": -1},
+            {"delay_ms": 300_001},
+            {"delay_ms": math.inf},
+            {"delay_ms": math.nan},
             {"attempt": -1},
             {"weight_version": -1},
             {"hook_name": "not_a_hook"},
@@ -110,6 +121,11 @@ class TestFaultHookRequestValidation:
         """Filters and timing fields outside their bounds must fail validation."""
         with pytest.raises(ValidationError):
             _request(**change)
+
+    @pytest.mark.parametrize("change", [{"delay_ms": 0}, {"delay_ms": 300_000}])
+    def test_the_inclusive_timing_bounds_are_accepted(self, change: dict[str, object]) -> None:
+        """The smallest and the largest delay must be valid."""
+        _request(**change)
 
     @pytest.mark.parametrize(
         "hook_name", [FaultHookName.TRAINER_CONTROLLER_STEP_END, FaultHookName.ORCHESTRATOR_STEP_END]
@@ -194,6 +210,33 @@ class TestFaultHookRequestConflicts:
 
 
 class TestFaultHookWireFormats:
+    def test_a_command_round_trips_with_an_observed_target(self) -> None:
+        """The HTTP command body must carry operation, action and observed identity intact."""
+        command = FaultHookCommand(
+            operation=FaultHookOperation.CLEAR,
+            request=_request(hook_name=None, rollout_id=None, delay_ms=5, target=_OBSERVED.model_dump(mode="json")),
+        )
+        assert FaultHookCommand.model_validate_json(command.model_dump_json()) == command
+
+    @pytest.mark.parametrize("status", list(FaultHookStatus))
+    def test_a_fault_hook_event_round_trips_through_the_event_union(self, status: FaultHookStatus) -> None:
+        """A logged record must parse back as a fault hook event with every field."""
+        record = FaultHookRecord(
+            request=_request(action=StopCellAction(cell_id="c").model_dump(), weight_version=2, delay_ms=10),
+            status=status,
+            set_at=1.0,
+            changed_at=2.0,
+            reached_at=1.5,
+            due_at=1.51,
+            context=FaultHookContext(rollout_id=3, weight_version=2),
+        )
+        event = FaultHookEvent(
+            timestamp="2026-09-26T00:00:00Z", source=SimpleProcessIdentity(component="main"), record=record
+        )
+        restored = TypeAdapter(Event).validate_json(event.model_dump_json())
+        assert isinstance(restored, FaultHookEvent)
+        assert restored.record == record
+
     def test_a_record_rejects_unknown_fields(self) -> None:
         """Records must stay strict so a renamed field cannot vanish silently."""
         with pytest.raises(ValidationError):
