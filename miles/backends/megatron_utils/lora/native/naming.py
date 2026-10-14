@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
 import torch
@@ -26,10 +26,11 @@ class ConverterNaming:
     names depend on shapes, never on values.
     """
 
-    def __init__(self, args, model_name: str, tp_size: int):
+    def __init__(self, args, model_name: str, tp_size: int, in_hf_namespace: Callable[[str], bool]):
         self.args = args
         self.model_name = model_name
         self.tp_size = tp_size
+        self.in_hf_namespace = in_hf_namespace
 
     def block_prefix(self, layer: nn.Module, host_weight: nn.Parameter, leaves: Sequence[str]) -> str:
         from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf_names
@@ -37,11 +38,15 @@ class ConverterNaming:
         relative = next(name for name, param in layer.named_parameters() if param is host_weight)
         global_name = f"module.module.decoder.layers.{layer.layer_number - 1}.{relative}"
         probe = torch.empty(self._global_shape(host_weight), dtype=host_weight.dtype, device="meta")
+        hf_weights = convert_to_hf_names(self.args, self.model_name, global_name, probe)
+        # target selectors match HF names; a converter name outside that namespace is never selected
+        outside = [name for name in hf_weights if not self.in_hf_namespace(name)]
+        assert not outside, (
+            f"the {self.model_name} converter names host {global_name} {outside}, which the HF model of "
+            f"{self.args.hf_checkpoint} does not have, so no --target-modules selector can reach its adapter"
+        )
         # shared-outer expert adapters are expert-agnostic: one name for the whole grouped host
-        names = [
-            _EXPERT_INDEX.sub(".experts.", name.removesuffix(".weight"))
-            for name in convert_to_hf_names(self.args, self.model_name, global_name, probe)
-        ]
+        names = [_EXPERT_INDEX.sub(".experts.", name.removesuffix(".weight")) for name in hf_weights]
         prefixes = {name.rpartition(".")[0] for name in names}
         assert len(prefixes) == 1 and [name.rpartition(".")[2] for name in names] == list(leaves), (
             f"the {self.model_name} converter names host {global_name} {names}, but the native LoRA spec "

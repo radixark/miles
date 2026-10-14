@@ -14,6 +14,7 @@ from miles.backends.megatron_utils.lora.native.sglang_adapter import export_lora
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, LoRAArchSpec
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
 from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.hf_utils.weight_mapping import hf_namespace_contains
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,10 @@ def _resolve_attach_context(args, transformer_config, arch_spec: LoRAArchSpec) -
 
     tp_size = ps.get_tensor_model_parallel_world_size()
     naming = arch_spec.declared_naming or ConverterNaming(
-        args, converter_model_name(args, load_hf_config(args.hf_checkpoint)), tp_size
+        args,
+        converter_model_name(args, load_hf_config(args.hf_checkpoint)),
+        tp_size,
+        hf_namespace_contains(args.hf_checkpoint),
     )
     return AttachContext(
         lora=LoRAConfig.from_args(

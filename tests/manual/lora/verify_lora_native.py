@@ -179,13 +179,17 @@ class Args:
 
 
 def _write_config_only_checkpoint(model_type: str) -> str:
-    """The registry resolves the spec from config.json; no weights are needed here."""
+    """The registry resolves the spec, and adapter names are checked against the HF model, from config.json."""
     import json
     import tempfile
 
+    config = {"model_type": model_type}
+    if model_type == "qwen3_5":
+        # build() makes every layer full attention; HF's default hybrid starts with linear attention
+        config["text_config"] = {"num_hidden_layers": 2, "layer_types": ["full_attention"] * 2}
     checkpoint = tempfile.mkdtemp(prefix="verify_lora_native_")
     with open(os.path.join(checkpoint, "config.json"), "w") as handle:
-        json.dump({"model_type": model_type}, handle)
+        json.dump(config, handle)
     return checkpoint
 
 

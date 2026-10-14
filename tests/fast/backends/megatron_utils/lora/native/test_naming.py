@@ -37,7 +37,13 @@ def _weight(layer, path):
     return owner
 
 
-_GQA_ARGS = SimpleNamespace(hidden_size=8, num_attention_heads=4, num_query_groups=2, kv_channels=2)
+_GQA_ARGS = SimpleNamespace(
+    hidden_size=8, num_attention_heads=4, num_query_groups=2, kv_channels=2, hf_checkpoint="/ckpt"
+)
+
+
+def _ANY(name):
+    return True
 
 
 def test_fused_qkv_and_gate_up_are_named_per_projection_from_their_global_shape():
@@ -48,7 +54,7 @@ def test_fused_qkv_and_gate_up_are_named_per_projection_from_their_global_shape(
         self_attention__linear_proj__weight=((8, 4), 1, False),
         mlp__linear_fc1__weight=((6, 8), 0, False),
     )
-    naming = ConverterNaming(_GQA_ARGS, "qwen3config", tp_size=2)
+    naming = ConverterNaming(_GQA_ARGS, "qwen3config", tp_size=2, in_hf_namespace=_ANY)
 
     qkv = _weight(layer, "self_attention__linear_qkv__weight")
     assert naming.block_prefix(layer, qkv, ["q_proj", "k_proj", "v_proj"]) == "model.layers.3.self_attn."
@@ -61,7 +67,7 @@ def test_fused_qkv_and_gate_up_are_named_per_projection_from_their_global_shape(
 def test_a_spec_that_disagrees_with_the_converter_fails():
     """GLM-4 keeps gate/up fused in HF: split adapters would be saved under names HF GLM-4 has no module for."""
     layer = _layer(1, mlp__linear_fc1__weight=((12, 8), 0, False))
-    naming = ConverterNaming(_GQA_ARGS, "glm4config", tp_size=1)
+    naming = ConverterNaming(_GQA_ARGS, "glm4config", tp_size=1, in_hf_namespace=_ANY)
     fc1 = _weight(layer, "mlp__linear_fc1__weight")
 
     with pytest.raises(AssertionError, match=r"\['model.layers.0.mlp.gate_up_proj'\].*\['gate_proj', 'up_proj'\]"):
@@ -81,7 +87,7 @@ def test_kimi_k3_names_kda_experts_and_shared_experts():
         mlp__experts__linear_fc2__weight0=((4, 5), 1, True),
         mlp__shared_experts__linear_fc1__weight=((10, 8), 0, False),
     )
-    naming = ConverterNaming(SimpleNamespace(), "kimi_k3", tp_size=4)
+    naming = ConverterNaming(SimpleNamespace(), "kimi_k3", tp_size=4, in_hf_namespace=_ANY)
     prefix = "language_model.model.layers.4."
 
     out_proj = _weight(layer, "self_attention__linear_attn__out_proj__weight")
@@ -113,3 +119,16 @@ def test_inkling_declares_sglang_module_names():
         ("mlp__shared_experts__experts__0__linear_fc1__weight", "mlp.shared_experts."),
     ]:
         assert naming.block_prefix(layer, _weight(layer, path), []) == f"model.llm.layers.2.{block}"
+
+
+def test_a_converter_name_outside_the_hf_namespace_fails_instead_of_never_being_selected():
+    """Selectors are matched against the HF model's names: an adapter named outside them is silently
+    never attached. Here the qwen3_5 converter's "model.language_model." prefix is not the model's."""
+    hf_names = {f"model.layers.0.self_attn.{leaf}.weight" for leaf in ("q_proj", "k_proj", "v_proj")}
+    # gated q: 2 groups x (2 q heads x 2 (gate) + k + v) x head_dim 2 = 24 rows
+    layer = _layer(1, self_attention__linear_qkv__weight=((24, 8), 0, False))
+    naming = ConverterNaming(_GQA_ARGS, "qwen3_5config", tp_size=1, in_hf_namespace=hf_names.__contains__)
+    qkv = _weight(layer, "self_attention__linear_qkv__weight")
+
+    with pytest.raises(AssertionError, match=r"model.language_model.layers.0.self_attn.q_proj.weight"):
+        naming.block_prefix(layer, qkv, ["q_proj", "k_proj", "v_proj"])
