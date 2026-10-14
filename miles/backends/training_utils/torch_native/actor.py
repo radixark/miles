@@ -302,6 +302,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         if self.weight_updater.update_weights(weight_version=next_version):
             self._published_weight_version = next_version
         print_memory("after update_weights")
+
         if self.args.ci_test and self._published_weight_version > 0:
             self.weight_updater.verify_engine_version(
                 info.rollout_engines, weight_version=self._published_weight_version

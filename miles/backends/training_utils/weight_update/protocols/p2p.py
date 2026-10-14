@@ -141,7 +141,13 @@ class UpdateWeightP2P(WeightTransferProtocol):
             ]
             for target in runner_sender.replica_targets:
                 buffer = self._transfer_buffers.acquire()
-                remote_shards = target.remote_shards
+                remote_shards = [
+                    shard
+                    for shard in target.remote_shards
+                    if not self.cell_updaters_of_cell_id[self._engine_cell_ids[shard.rollout_engine_ind]].is_errored
+                ]
+                if not remote_shards:
+                    continue
                 param_bytes_by_name = target.model_replica.load_into(buffer, param_names, hf_tensors)
                 writes = self._transport.write(
                     remote_shards,
@@ -178,7 +184,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.rollout_engines = rollout_engines
         self._engine_cell_ids = tuple(engine_cell_ids)
         self.cell_updaters_of_cell_id = {
-            cell_id: _P2PRolloutCellUpdater(cell_id=cell_id, api_client=api_client)
+            cell_id: _P2PRolloutCellUpdater(args=self.args, cell_id=cell_id, api_client=api_client)
             for api_client, cell_id in zip(rollout_engines, engine_cell_ids, strict=True)
         }
         self._runner_senders = []
@@ -227,7 +233,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
         model_replicas = self._model_replicas_by_runner_role[runner_role]
         replica_targets = []
         for rollout_engine_rank, all_remote_shards in remote_shards_by_rollout_engine_rank.items():
-            remote_shards = [shard for shard in all_remote_shards]
+            remote_shards = [
+                shard
+                for shard in all_remote_shards
+                if not self.cell_updaters_of_cell_id[engine_cell_ids[shard.rollout_engine_ind]].is_errored
+            ]
             if not remote_shards:
                 continue
             model_replica = model_replicas.get_or_build(configs_by_rollout_engine_rank[rollout_engine_rank])

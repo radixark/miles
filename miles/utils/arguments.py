@@ -77,6 +77,10 @@ def driver_owns_generation_pause(args) -> bool:
     return args.fully_async and args.colocate
 
 
+def supports_partial_target_weight_update(args) -> bool:
+    return not args.colocate and args.update_weight_transfer_mode == "p2p"
+
+
 def _resolve_rollout_functions(args) -> None:
     if args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH:
         # The selection --fully-async makes, so enable the mode: as a plugin path it would
@@ -169,7 +173,7 @@ def reset_arg(parser, name, **kwargs):
         parser.add_argument(name, **kwargs)
 
 
-_FT_CHOICES = ["rollout", "train"]
+_FT_CHOICES = ["rollout", "train", "weight_update"]
 _DEFAULT_FT_API_SERVER_PORT = 18080
 
 
@@ -1204,7 +1208,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 choices=_FT_CHOICES,
                 help="FT components to enable (requires --use-fault-tolerance). "
-                "Choices: rollout, train. Default when omitted: rollout.",
+                "Choices: rollout, train, weight_update. Default when omitted: rollout, weight_update.",
             )
             SimpleHealthCheckerConfig.add_arguments(
                 parser,
@@ -3210,7 +3214,7 @@ def _validate_single_engine_source(args: argparse.Namespace, *, component: Deplo
 
 def _validate_watched_cells_deployed_locally(args: argparse.Namespace, *, component: DeployComponent) -> None:
     if not component.deploys_orchestration_script():
-        unservable = sorted(set(args.ft_components) - {"train"})
+        unservable = sorted(set(args.ft_components) - {"train", "weight_update"})
         assert not unservable, (
             f"--deploy-component {component.value} installs no inference engines, and {unservable} cells are "
             f"suspended and resumed through the controller of the deployment that owns them, so this launch cannot "
@@ -3244,7 +3248,7 @@ def _validate_shared_object_store(args: argparse.Namespace, *, component: Deploy
     )
 
 
-_FT_DEFAULT_COMPONENTS: list[str] = ["rollout"]
+_FT_DEFAULT_COMPONENTS: list[str] = ["rollout", "weight_update"]
 
 
 def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
@@ -3421,6 +3425,9 @@ def miles_validate_args(args):
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
+    assert "weight_update" not in args.ft_components or (
+        args.train_backend == "megatron" and supports_partial_target_weight_update(args)
+    ), "weight_update FT requires Megatron, --update-weight-transfer-mode p2p, and no --colocate"
     assert not ("rollout" in args.ft_components and args.eval_num_gpus > 0), (
         "rollout fault tolerance does not support a dedicated eval fleet (--eval-num-gpus > 0): "
         "the eval fleet pins engine addresses once at startup, so a healed eval cell would make "

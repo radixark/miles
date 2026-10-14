@@ -298,3 +298,33 @@ class TestPublishedWeightVersion:
 
         assert actor._published_weight_version == 3
         actor.weight_updater.verify_engine_version.assert_not_called()
+
+
+class TestFailedTargetStopsTraining:
+    @pytest.mark.parametrize("ci_test", [False, True])
+    @pytest.mark.parametrize("failed_cell_ids", [("cell-b",), ("cell-a", "cell-b")])
+    def test_any_failed_target_raises_before_verification(
+        self, monkeypatch: pytest.MonkeyPatch, ci_test: bool, failed_cell_ids: tuple[str, ...]
+    ) -> None:
+        """TorchNative must stop on target failures even when another target succeeds."""
+        actor = _Provider()
+        actor.args.debug_train_only = False
+        actor.args.ci_test = ci_test
+        actor._published_weight_version = 3
+        actor.weight_updater = MagicMock()
+        actor.weight_updater.update_weights.return_value = True
+        actor.weight_updater.protocol.cell_updaters_of_cell_id = {
+            cell_id: SimpleNamespace(is_errored=cell_id in failed_cell_ids) for cell_id in ("cell-a", "cell-b")
+        }
+        monkeypatch.setattr(base_module, "print_memory", lambda message: None)
+
+        with pytest.raises(RuntimeError, match="TorchNative weight update failed") as raised:
+            TorchNativeTrainRayActor.update_weights.__wrapped__(
+                actor,
+                SimpleNamespace(rollout_engines=[object(), object()]),
+                debug_weight_update_id="update-4",
+                rollout_id=1,
+            )
+
+        assert all(cell_id in str(raised.value) for cell_id in failed_cell_ids)
+        actor.weight_updater.verify_engine_version.assert_not_called()
