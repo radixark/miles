@@ -21,7 +21,7 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-a-cpu` | GitHub-hosted CPU | — (`ubuntu-latest`) | 4 | `resolve-ci-policy` |
 | `stage-b-cpu` | GitHub-hosted CPU | — (`ubuntu-latest`) | 4 | `resolve-ci-policy`, `stage-a-cpu` |
 | `stage-b-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 | both resolvers, `stage-a-cpu` |
-| `stage-c-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 regular / 4 otherwise | both resolvers, `stage-a-cpu` |
+| `stage-c-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 4 | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 9 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 1 regular / 2 otherwise | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 4 | both resolvers, `stage-a-cpu` |

@@ -3,7 +3,7 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_both_versions
 
 register_cuda_ci(
-    est_time=1800, suite="stage-c-4-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=4
+    est_time=1800, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=2
 )
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text")
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v2/assistant_text")
@@ -14,9 +14,10 @@ CONFIG = ModelConfig(
     reasoning_parser="inkling",
     tool_call_parser="inkling",
     tito_model="inkling",
-    tp_size=4,
+    num_gpus=2,
+    tp_size=2,
     # The official 1M-context H200 recipe needs TP8. This short-session lane
-    # caps the context to make TP4 viable for this bounded session test.
+    # caps the context to make TP2 viable for this bounded session test.
     context_length=32768,
     rollout_max_response_len=4096,
     cuda_graph_backend_prefill="disabled",
