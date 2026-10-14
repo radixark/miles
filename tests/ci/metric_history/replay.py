@@ -246,8 +246,8 @@ def replay(rows: list[dict], specs: dict[tuple[str, str], CiGateSpec]) -> dict:
                 )
             )
         if stats["failed"] and 0 in values and any(values):
-            # Exact zeros beside nonzero values may leave no band to tune, so
-            # enforce=False may fit better than a history reset.
+            # Exact zeros beside nonzero values may leave no tight band, so a
+            # wider band may fit better than a history reset.
             zero_flips.append(
                 dict(**coordinate, zero_values=values.count(0), nonzero_values=len(values) - values.count(0))
             )
