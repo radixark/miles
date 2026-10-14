@@ -45,6 +45,7 @@ def build_args(bench, prompt_path, backend_port):
         "--train-backend",
         "fsdp",
         "--ci-test",
+        "--no-enable-sample-ownership-checker",
         "--hf-checkpoint",
         bench.hf_checkpoint,
         "--prompt-data",
@@ -132,7 +133,6 @@ def run_benchmark(bench):
     import psutil
 
     from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
-    from miles.rollout.data_source import RolloutDataSourceWithBuffer
     from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
     from miles.rollout.session.config import compute_session_server_config
     from miles.rollout.session.server import run_session_server
@@ -140,6 +140,7 @@ def run_benchmark(bench):
     from miles.utils import http_utils
     from miles.utils.async_utils import run, submit
     from miles.utils.chat_template_utils import get_tito_tokenizer, resolve_fixed_chat_template
+    from miles.utils.function_registry import load_function
     from miles.utils.http_utils import find_available_port, wait_for_server_ready
     from miles.utils.processing_utils import load_tokenizer
 
@@ -199,7 +200,7 @@ def run_benchmark(bench):
                 SessionServerInstance(addr=f"127.0.0.1:{server_port}", instance_id="bench-0")
             ]
             rollout = load_rollout_function(
-                RolloutFnConstructorInput(args=args, data_source=RolloutDataSourceWithBuffer(args)),
+                RolloutFnConstructorInput(args=args, data_source=load_function(args.data_source_path)(args)),
                 args.rollout_function_path,
             )
             manager = psutil.Process()
@@ -272,9 +273,9 @@ def run_benchmark(bench):
     finally:
         try:
             run(agent.close_client())
-            if http_utils._http_client is not None:
-                run(http_utils._http_client.aclose())
-                http_utils._http_client = None
+            for client in http_utils._http_clients.values():
+                run(client.aclose())
+            http_utils._http_clients.clear()
         finally:
             for process in reversed(processes):
                 _terminate_proc(process)

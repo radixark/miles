@@ -15,11 +15,11 @@ from tests.manual.session.bench_agentic_rollout import NUM_LAYERS, TOPK, build_a
 from tests.manual.session.bench_session_server_overhead import _completion_token_ids
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
-from miles.rollout.data_source import RolloutDataSourceWithBuffer
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import http_utils
 from miles.utils.async_utils import run
 from miles.utils.chat_template_utils import get_tito_tokenizer, resolve_fixed_chat_template
+from miles.utils.function_registry import load_function
 from miles.utils.misc import SingletonMeta
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
@@ -140,7 +140,7 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
         http_utils.init_http_client(args)
         with with_session_server(backend.url, args, port=http_utils.find_available_port(33000)):
             rollout = load_rollout_function(
-                RolloutFnConstructorInput(args=args, data_source=RolloutDataSourceWithBuffer(args)),
+                RolloutFnConstructorInput(args=args, data_source=load_function(args.data_source_path)(args)),
                 args.rollout_function_path,
             )
             output = run(asyncio.wait_for(rollout(RolloutFnTrainInput(rollout_id=0)), timeout=30))
@@ -163,8 +163,8 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
             assert sample.rollout_routed_experts.dtype == np.int32
             np.testing.assert_array_equal(sample.rollout_routed_experts, expected["r3"])
     finally:
-        if http_utils._http_client is not None:
-            run(http_utils._http_client.aclose())
-            http_utils._http_client = None
+        for client in http_utils._http_clients.values():
+            run(client.aclose())
+        http_utils._http_clients.clear()
         backend.stop()
         SingletonMeta.clear_all_instances()
