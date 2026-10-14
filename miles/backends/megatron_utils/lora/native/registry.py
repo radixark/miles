@@ -163,7 +163,8 @@ def resolve_adapter_targets(
         f"{' ...' if len(unattachable) > 8 else ''}. Select supported projections (e.g. "
         f"--target-modules {attention_target_modules_csv(hf_config)}) or use --megatron-to-hf-mode bridge."
     )
-    return _expand_fused_families(hf_targets, spec.serving_fused_families())
+    _assert_up_proj_has_gate_proj(hf_targets)
+    return hf_targets
 
 
 def validate_native_lora_args(args) -> None:
@@ -201,15 +202,21 @@ def _assert_fixed_target_layout(spec: LoRAArchSpec, hf_config: dict, hf_targets:
     )
 
 
-def _expand_fused_families(targets: list[str], families: list[frozenset[str]]) -> list[str]:
-    """Add every sibling of a selected fused-buffer member, which the serving export zero-fills."""
-    expanded = list(targets)
-    for target in targets:
-        block, dot, leaf = target.rpartition(".")
-        for family in families:
-            if leaf in family:
-                expanded.extend(f"{block}{dot}{member}" for member in sorted(family))
-    return list(dict.fromkeys(expanded))
+def _assert_up_proj_has_gate_proj(hf_targets: list[str]) -> None:
+    """SGLang zero-fills an untrained up_proj next to gate_proj, but serves a lone up_proj only for
+    non-gated MLPs, so a gated MLP's up_proj adapter needs its gate_proj selected too."""
+    leaves_by_block: dict[str, set[str]] = {}
+    for target in hf_targets:
+        block, _, leaf = target.rpartition(".")
+        leaves_by_block.setdefault(block, set()).add(leaf)
+    lone_up_projs = sorted(
+        f"{block}.up_proj" if block else "up_proj"
+        for block, leaves in leaves_by_block.items()
+        if "up_proj" in leaves and "gate_proj" not in leaves
+    )
+    assert (
+        not lone_up_projs
+    ), f"native LoRA needs gate_proj selected with {lone_up_projs}: SGLang drops a gated MLP's lone up_proj"
 
 
 def attention_target_modules_csv(hf_config: dict) -> str:

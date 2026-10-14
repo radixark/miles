@@ -21,7 +21,6 @@ from miles.backends.megatron_utils.lora.native.spec.layout import (
     FusedAttach,
     ModuleLayout,
     ProjectionBinding,
-    ServingGroup,
     attach_layout,
 )
 
@@ -31,14 +30,12 @@ def _build_split_qkv(
     hf_prefix: str,
     context: AttachContext,
     active: tuple[ProjectionSpec, ...],
-    members: tuple[ProjectionSpec, ...],
 ) -> LoRASplitQKV:
     return LoRASplitQKV(
         hf_prefix=hf_prefix,
         reference=attention.linear_qkv.weight,
         context=context,
         projections=active,
-        member_projections=members,
         num_q=attention.num_attention_heads_per_partition,
         num_kv=attention.num_query_groups_per_partition,
         head_dim=attention.hidden_size_per_attention_head,
@@ -100,13 +97,6 @@ class MLAAttentionSpec(AttentionSpecBase):
     name = "mla"
     family = AttentionFamily.MLA
 
-    _MLA_A_SERVING_GROUP = ServingGroup(
-        member_rows=(
-            ("q_a_proj", L.config_dim("q_lora_rank")),
-            ("kv_a_proj_with_mqa", L.mla_kv_down_out),
-        ),
-    )
-
     layout = ModuleLayout(
         name="mla",
         singles=(
@@ -117,7 +107,6 @@ class MLAAttentionSpec(AttentionSpecBase):
                 out_dim=L.config_dim("q_lora_rank"),
                 adapter_attr="lora_mla_q_a_adapter",
                 guard=_replicated_guard,
-                serving_group=_MLA_A_SERVING_GROUP,
             ),
             ProjectionBinding(
                 projection=ProjectionSpec("q_b_proj", "b", ShardLayout.COLUMN),
@@ -133,7 +122,6 @@ class MLAAttentionSpec(AttentionSpecBase):
                 out_dim=L.mla_kv_down_out,
                 adapter_attr="lora_mla_kv_a_adapter",
                 guard=_replicated_guard,
-                serving_group=_MLA_A_SERVING_GROUP,
             ),
             ProjectionBinding(
                 projection=ProjectionSpec("kv_b_proj", "b", ShardLayout.COLUMN),
@@ -240,14 +228,12 @@ def _build_split_qkvr(
     hf_prefix: str,
     context: AttachContext,
     active: tuple[ProjectionSpec, ...],
-    members: tuple[ProjectionSpec, ...],
 ) -> _InklingSplitQKVR:
     return _InklingSplitQKVR(
         hf_prefix=hf_prefix,
         reference=attention.linear_qkv.weight,
         context=context,
         projections=active,
-        member_projections=members,
         rows_by_param_prefix={
             "q": attention.nh_l * attention.hd,
             "k": attention.nkv_l * attention.hd,

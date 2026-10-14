@@ -75,21 +75,18 @@ class TestResolveAdapterTargets:
         targets = ["q_proj", "k_proj", "v_proj", "o_proj"]
         assert resolve_adapter_targets({"model_type": "qwen3"}, targets, hf_modules=_qwen3_modules()) == targets
 
-    def test_partial_fused_family_adds_zero_filled_serving_siblings(self):
-        targets = ["model.layers.*.self_attn.q_proj", "model.layers.*.mlp.up_proj"]
-        assert resolve_adapter_targets({"model_type": "qwen3"}, targets, hf_modules=_qwen3_modules()) == [
-            *targets,
-            "model.layers.*.self_attn.k_proj",
-            "model.layers.*.self_attn.v_proj",
-            "model.layers.*.mlp.gate_proj",
-        ]
+    def test_a_partial_fused_selection_is_served_as_selected(self):
+        """SGLang zero-fills the absent members of a fused qkv / MLA qkv_a buffer itself."""
+        for model_type, targets in [
+            ("qwen3", ["model.layers.*.self_attn.q_proj", "model.layers.*.mlp.gate_proj"]),
+            ("deepseek_v3", ["model.layers.*.self_attn.q_a_proj"]),
+        ]:
+            assert resolve_adapter_targets({"model_type": model_type}, targets, hf_modules=[]) == targets
 
-    def test_mla_compressed_projections_share_a_serving_family(self):
-        targets = ["model.layers.*.self_attn.q_a_proj"]
-        assert resolve_adapter_targets({"model_type": "deepseek_v3"}, targets, hf_modules=[]) == [
-            *targets,
-            "model.layers.*.self_attn.kv_a_proj_with_mqa",
-        ]
+    def test_a_lone_up_proj_is_rejected(self):
+        """SGLang drops a gated MLP's up_proj adapter that has no gate_proj next to it."""
+        with pytest.raises(AssertionError, match=r"gate_proj selected with \['model.layers.\*.mlp.up_proj'\]"):
+            resolve_adapter_targets({"model_type": "qwen3"}, ["model.layers.*.mlp.up_proj"], hf_modules=[])
 
     def test_shared_experts_are_attachable(self):
         targets = [f"model.layers.*.mlp.shared_experts.{leaf}" for leaf in ("gate_proj", "up_proj", "down_proj")]

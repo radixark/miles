@@ -68,8 +68,8 @@ K3 may omit the routed-expert down projection), so omit `--target-modules` for t
 Selecting a projection the spec does not implement
 (for example routed experts or GDN input projections) fails at startup; use
 `--megatron-to-hf-mode bridge` for those. A partial fused selection (for example
-only `q_proj`) trains only the selected projection; its fused-buffer siblings are
-served as zero adapters.
+only `q_proj`) trains only the selected projection; SGLang serves its fused-buffer
+siblings as zero adapters. A gated MLP's `up_proj` needs `gate_proj` selected too.
 
 ## Validated models and recipes
 
@@ -209,8 +209,8 @@ For Bridge, SGLang receives the selected HF paths and normalizes them into buffe
 (for example, Q/K/V become `qkv_proj`); it does not own the selection policy.
 Adapter checkpoints derive their concrete `target_modules` from exported tensor
 keys rather than a separate Megatron-to-HF name table. Online adapter registration
-uses the resolved HF selection for Bridge, the selection plus zero-filled fused
-siblings for native LoRA, and `all-linear` for native Inkling, without an extra
+uses the resolved HF selection for Bridge and native LoRA, and `all-linear` for
+native Inkling, without an extra
 tensor export.
 This requires [SGLang's HF-path normalization support](https://github.com/sgl-project/sglang/pull/40242),
 including GDN split names. FSDP LoRA injection remains

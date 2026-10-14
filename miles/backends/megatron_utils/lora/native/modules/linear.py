@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 import math
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -16,18 +16,6 @@ from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, P
 
 
 @dataclass(frozen=True)
-class SGLangFusedGroup:
-    """A serving-side fused buffer this projection belongs to.
-
-    ``member_rows`` maps every member's HF leaf name to its FULL (TP-gathered)
-    ``lora_B`` row count, so the serving exporter can zero-fill absent siblings
-    with the architecture's true widths.
-    """
-
-    member_rows: Mapping[str, int]
-
-
-@dataclass(frozen=True)
 class ProjectionExport:
     """Public per-projection descriptor consumed by the exporters."""
 
@@ -36,7 +24,6 @@ class ProjectionExport:
     a: torch.Tensor  # local lora_A parameter
     b: torch.Tensor  # local lora_B parameter
     b_rows_full: int  # TP-gathered lora_B rows
-    fused_group: SGLangFusedGroup | None = None
 
 
 # kaiming/normal follow Megatron-Bridge's tensor-derived inits so --lora-A-init-method means the same on both paths.
@@ -144,7 +131,7 @@ class NativeLoRAAdapter(nn.Module):
         """
         raise NotImplementedError(f"{type(self).__name__} does not implement weight merging")
 
-    def _export_projections(self, fused_group: SGLangFusedGroup | None) -> Iterator[ProjectionExport]:
+    def _export_projections(self) -> Iterator[ProjectionExport]:
         tp = self.context.tp_size
         for projection in self.projection_specs:
             b = getattr(self, f"{projection.param_prefix}_B")
@@ -154,7 +141,6 @@ class NativeLoRAAdapter(nn.Module):
                 a=getattr(self, f"{projection.param_prefix}_A"),
                 b=b,
                 b_rows_full=b.shape[0] * (tp if projection.layout == ShardLayout.COLUMN else 1),
-                fused_group=fused_group,
             )
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
@@ -175,13 +161,11 @@ class LoRALinear(NativeLoRAAdapter):
         context: AttachContext,
         in_features: int,
         out_features: int,
-        sglang_group: SGLangFusedGroup | None = None,
     ):
         super().__init__(hf_prefix, (projection,), context.tp_rank)
         self.context = context
         self.param_prefix = projection.param_prefix
         self.layout = projection.layout
-        self.sglang_group = sglang_group
 
         a_grad_group = "tp" if self.layout == ShardLayout.COLUMN else None
         b_grad_group = (
@@ -226,7 +210,7 @@ class LoRALinear(NativeLoRAAdapter):
         return F.linear(F.linear(x, a), b)
 
     def exports(self) -> Iterator[ProjectionExport]:
-        yield from self._export_projections(self.sglang_group)
+        yield from self._export_projections()
 
     def weight_deltas(self):
         (host,) = self._hosts
@@ -271,10 +255,8 @@ class LoRASplitAdapter(NativeLoRAAdapter):
         context: AttachContext,
         projections: Sequence[ProjectionSpec],
         rows_by_param_prefix: dict[str, int],
-        member_projections: Sequence[ProjectionSpec] | None = None,
     ):
         projections = tuple(projections)
-        self._member_projections = tuple(member_projections) if member_projections is not None else projections
         param_prefixes = [projection.param_prefix for projection in projections]
         cls = type(self).__name__
         assert len(set(param_prefixes)) == len(param_prefixes), f"{cls} projection parameter prefixes must be unique"
@@ -352,13 +334,7 @@ class LoRASplitAdapter(NativeLoRAAdapter):
         return self._pack(torch.cat(full_delta, dim=-1))
 
     def exports(self) -> Iterator[ProjectionExport]:
-        group = SGLangFusedGroup(
-            member_rows={
-                projection.hf_leaf: self._rows_by_param_prefix[projection.param_prefix] * self.context.tp_size
-                for projection in self._member_projections
-            },
-        )
-        yield from self._export_projections(group)
+        yield from self._export_projections()
 
 
 class LoRASplitQKV(LoRASplitAdapter):
@@ -374,7 +350,6 @@ class LoRASplitQKV(LoRASplitAdapter):
         num_q: int,
         num_kv: int,
         head_dim: int,
-        member_projections: Sequence[ProjectionSpec] | None = None,
     ):
         q_rows = num_q * head_dim * (2 if context.output_gate else 1)
         super().__init__(
@@ -383,7 +358,6 @@ class LoRASplitQKV(LoRASplitAdapter):
             context=context,
             projections=projections,
             rows_by_param_prefix={"q": q_rows, "k": num_kv * head_dim, "v": num_kv * head_dim},
-            member_projections=member_projections,
         )
         self.register_buffer(
             "out_perm",
@@ -406,7 +380,6 @@ class LoRASplitFC1(LoRASplitAdapter):
         context: AttachContext,
         projections: Sequence[ProjectionSpec],
         inter_local: int,
-        member_projections: Sequence[ProjectionSpec] | None = None,
     ):
         super().__init__(
             hf_prefix=hf_prefix,
@@ -414,7 +387,6 @@ class LoRASplitFC1(LoRASplitAdapter):
             context=context,
             projections=projections,
             rows_by_param_prefix={"gate": inter_local, "up": inter_local},
-            member_projections=member_projections,
         )
         self.inter_local = inter_local
 

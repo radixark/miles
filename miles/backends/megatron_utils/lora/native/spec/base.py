@@ -139,10 +139,6 @@ class LoRAArchSpec:
             return re.search(rf"{_HF_LAYER}mlp(?:\.shared_experts?)?$", block) is not None
         return False
 
-    def serving_fused_families(self) -> list[frozenset[str]]:
-        """Projection families SGLang stores in one fused buffer."""
-        return [*self.attention.serving_fused_families(), *self.mlp.serving_fused_families()]
-
     def validate(self, context: AttachContext) -> None:
         assert context.transformer_config.gated_linear_unit, "native LoRA's MLP specs assume a gated (SwiGLU) MLP"
         self.attention.validate(context.transformer_config, tp_size=context.tp_size)
