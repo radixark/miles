@@ -3437,6 +3437,10 @@ def miles_validate_args(args):
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
+    assert "rollout" not in args.ft_components or supports_partial_target_weight_update(args), (
+        "rollout fault tolerance needs a partial-target weight update (--update-weight-transfer-mode p2p, no "
+        "--colocate): a rollout cell may be stopped during a weight update"
+    )
     assert "weight_update" not in args.ft_components or (
         args.train_backend == "megatron" and supports_partial_target_weight_update(args)
     ), "weight_update FT requires Megatron, --update-weight-transfer-mode p2p, and no --colocate"

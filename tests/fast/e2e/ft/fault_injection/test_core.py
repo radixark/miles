@@ -532,9 +532,9 @@ def _do_nothing(cell: dict, rng: random.Random) -> None:
     return None
 
 
-class TestRolloutQuiescence:
-    def test_an_engine_that_is_not_in_the_router_blocks_its_kind(self) -> None:
-        """A relaunched engine reads Healthy long before it can answer, so its kind is still recovering."""
+class TestQuiescenceIsJudgedByLivenessAlone:
+    def test_a_healthy_rollout_replica_that_is_not_serving_no_longer_blocks_its_kind(self) -> None:
+        """A fault may land mid weight update by design, so a not-yet-serving replica must not gate the kind."""
         injected = _run_typed_injection_loop(
             [
                 typed_cell("rollout-engine-0", "rollout"),
@@ -543,17 +543,114 @@ class TestRolloutQuiescence:
             cell_types=("rollout",),
         )
 
-        assert injected == []
+        assert injected
 
-    def test_two_serving_engines_still_leave_one_of_them_injectable(self) -> None:
-        """The quiescence rule must not block the case it was never meant to block."""
+    def test_an_unhealthy_rollout_replica_still_blocks_its_kind(self) -> None:
+        """Liveness is all that is left of the gate, so it has to keep doing the job it was kept for."""
         injected = _run_typed_injection_loop(
-            [typed_cell("rollout-engine-0", "rollout"), typed_cell("rollout-engine-1", "rollout")],
+            [
+                typed_cell("rollout-engine-0", "rollout"),
+                typed_cell("rollout-engine-1", "rollout", healthy=False),
+            ],
             cell_types=("rollout",),
         )
 
-        assert injected
+        assert injected == []
 
     def test_a_trainer_cell_is_judged_by_liveness_alone(self) -> None:
         """Trainer cells carry no Serving condition, so requiring one would stop every trainer soak."""
-        assert core._cell_can_serve(typed_cell("actor-0", "actor"))
+        assert core._kind_is_quiescent([typed_cell("actor-0", "actor")], expected_num_cells=1)
+
+    def test_the_serving_only_quiescence_helper_is_gone(self) -> None:
+        """A surviving Serving check would silently reinstate the window the guards used to protect."""
+        assert not hasattr(core, "_cell_can_serve")
+
+    def test_a_kind_of_serving_and_non_serving_rollout_replicas_is_quiescent(self) -> None:
+        """The whole kind reads quiescent on liveness, whatever the router currently lists."""
+        kind_cells = [
+            typed_cell("rollout-engine-0", "rollout"),
+            typed_cell("rollout-engine-1", "rollout", serving=False),
+        ]
+
+        assert core._kind_is_quiescent(kind_cells, expected_num_cells=2)
+
+    def test_an_empty_kind_is_never_quiescent(self) -> None:
+        """A listing that returned nothing says the kind vanished, not that it settled."""
+        assert not core._kind_is_quiescent([], expected_num_cells=0)
+
+    def test_a_kind_missing_a_replica_is_not_quiescent(self) -> None:
+        """A deleted pod leaves the listing entirely, and only the absent replica says it is still healing."""
+        kind_cells = [typed_cell("rollout-engine-0", "rollout")]
+
+        assert not core._kind_is_quiescent(kind_cells, expected_num_cells=2)
+
+    def test_a_kind_that_grew_past_the_expected_count_is_quiescent(self) -> None:
+        """A replacement joining before its predecessor is reaped must not read as a permanent failure."""
+        kind_cells = [typed_cell(f"rollout-engine-{index}", "rollout") for index in range(3)]
+
+        assert core._kind_is_quiescent(kind_cells, expected_num_cells=2)
+
+    def test_one_dead_replica_among_many_costs_the_whole_kind_its_quiescence(self) -> None:
+        """Injecting while one replica is down risks killing the last survivor of the kind."""
+        kind_cells = [
+            typed_cell("actor-0", "actor"),
+            typed_cell("actor-1", "actor", healthy=False),
+            typed_cell("actor-2", "actor"),
+        ]
+
+        assert not core._kind_is_quiescent(kind_cells, expected_num_cells=3)
+
+
+class TestQuiescenceStreakBoundaries:
+    def test_a_streak_one_poll_short_of_the_threshold_buys_no_injection(self) -> None:
+        """The gate is what keeps the injector from acting on readings that may all be stale."""
+        injected = _run_counted_injection_loop(num_effective_polls=4, quiescent_polls_required=5)
+
+        assert injected == []
+
+    def test_a_streak_that_exactly_reaches_the_threshold_injects(self) -> None:
+        """An off-by-one the other way would stall a soak behind a gate it can never clear."""
+        injected = _run_counted_injection_loop(num_effective_polls=5, quiescent_polls_required=5)
+
+        assert len(injected) == 1, injected
+
+    def test_an_unhealthy_poll_in_the_middle_restarts_the_count(self) -> None:
+        """A blip means the earlier readings no longer prove the kind is settled, so the count starts over."""
+        injected = _run_counted_injection_loop(num_effective_polls=5, quiescent_polls_required=4, unhealthy_polls=(3,))
+
+        assert injected == []
+
+    def test_the_count_restarted_by_a_blip_can_still_be_cleared_later(self) -> None:
+        """The reset delays the kill rather than blocking the kind forever."""
+        injected = _run_counted_injection_loop(num_effective_polls=8, quiescent_polls_required=4, unhealthy_polls=(3,))
+
+        assert len(injected) == 1, injected
+
+
+def _run_counted_injection_loop(
+    *, num_effective_polls: int, quiescent_polls_required: int, unhealthy_polls: tuple[int, ...] = ()
+) -> list[str]:
+    injected: list[str] = []
+    stop_event = threading.Event()
+    polls = {"n": 0}
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if polls["n"] > num_effective_polls:
+            stop_event.set()
+        healthy = polls["n"] not in unhealthy_polls
+        return mock_response({"items": [cell("actor-0", healthy=True), cell("actor-1", healthy=healthy)]})
+
+    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+        injected.append(url.rsplit("/cells/", 1)[1].split("/")[0])
+        return mock_response({})
+
+    _run_injection_loop(
+        fake_get=fake_get,
+        fake_post=fake_post,
+        cell_types=("actor",),
+        quiescent_polls_required=quiescent_polls_required,
+        stop_event=stop_event,
+    )
+
+    return injected
