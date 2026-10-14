@@ -60,7 +60,7 @@ def main() -> None:
     parser.add_argument("--hf-token-secret", default=f"{getpass.getuser().lower()}_HF_TOKEN")
     parser.add_argument("--image", default="docker.io/radixark/miles:dev-202610131159", help="for test / warm jobs")
     parser.add_argument("--warm-workers", type=int, default=8)
-    parser.add_argument("--warm-args", default="", help="extra warm_tmax_registry_mirror.py flags")
+    parser.add_argument("--warm-args", default="", help="extra warm_tmax_registry_mirror.py flags (--warm-args=...)")
     args = parser.parse_args()
     {"launch": _launch, "urls": _print_urls, "probe": _probe, "test": _test, "warm": _warm}[args.command](args)
 
@@ -156,6 +156,8 @@ def _test(args: argparse.Namespace) -> None:
 
 def _warm(args: argparse.Namespace) -> None:
     for port, url in _mirrors(args):
+        if port not in args.ports:
+            continue
         script = (
             f"pip install -q tqdm && python {_SNAPSHOT}/{_HERE}/warm_tmax_registry_mirror.py "
             f"--dataset allenai/tmax-15k-open-instruct --mirror {url} --workers {args.warm_workers} {args.warm_args}"
