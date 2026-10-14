@@ -25,25 +25,43 @@ PYTHONPATH=. python3 .claude/skills/pr-ci-targeted/affected_tests.py --base orig
 
 It prints:
 - every registered test the diff reaches, with backend, suite, labels, hardware,
-  `est_time`, disabled reason, and the changed file it was reached from;
+  whether it is nightly, `est_time`, disabled reason, and the first file it was
+  reached from (one of possibly several; see step 4);
 - one ready-to-post `/rerun-test <file>` line per enabled CUDA test and per
   labeled CPU test;
-- the domain labels of those tests, as "reached / all tests with that label";
+- the domain labels that select those tests on a PR, as "reached / all tests
+  the label selects". A PR label runs at regular cadence, so it never selects a
+  nightly registration; nightly-only targets are listed apart and keep their
+  `/rerun-test` lines, which bypass the cadence gate.
 - hubs: files whose dependents reach more than `--hub-limit` (40) enabled CUDA
-  tests, such as shared arguments or launcher utils. They are not followed. A
-  changed hub means the change is broad, unless the diff there only adds
-  something new (a flag read by the files already listed); judge it by what
-  changed.
-- changed non-Python paths outside the no-GPU allowlist of
-  `tests/ci/stage_selection.py` (Docker, workflow, config files): these affect
-  GPU runtime outside the import trace and need label-based CI, even when a CPU
-  test mentions them.
+  tests within `--depth` (3) hops, such as shared arguments or launcher utils,
+  each with where the trace met it ("changed", or the hop and file it came
+  from). They are not followed. A hub the change touches or meets within a hop
+  or two means the change is broad, unless the diff there only adds something
+  new (a flag read by the files already listed), or CI never takes the path to
+  it: GPU e2e tests launch through the Ray backend (the CI default), so the Helm
+  launcher under `command_utils/helm_backend/` is exercised by the chart and
+  `k8s` CPU tests, not by GPU runs.
+- the importers left unfollowed at the depth bound. The bound keeps the trace
+  local: miles' import graph is dense enough (model plugins register their
+  arguments in `miles/utils/arguments.py`, which nearly everything imports)
+  that every training-side file reaches every e2e test at a fixpoint. If these
+  lead somewhere that matters, re-run with a larger `--depth`.
+- changed paths outside the no-GPU allowlist of `tests/ci/stage_selection.py`
+  that the import graph does not cover: non-Python files (Docker, workflow,
+  config) and Python outside `miles/`, `miles_plugins/`, `scripts/`,
+  `examples/`, `tests/` and the entry points (`docker/*.py`, `tools/*.py`,
+  `.github/` scripts). These affect GPU runtime outside the trace and need
+  label-based CI, even when a CPU test mentions them.
 - changed files that `train.py`, `train_async.py`, `train_multi_policy.py` or
   `serve_tinker.py` load: every e2e training run executes them, but e2e tests
   start those entry points through the launcher hub, so the trace cannot list
   them. Add the domain labels of the training paths the change touches.
 - changed Python files nothing imports or names: entry points, or code loaded
   some other way.
+- test files whose CI registration cannot be read (none, a syntax error, or an
+  invalid declaration), with the reason. They are left out of the trace instead
+  of aborting it; fix them before spending runners.
 
 The trace builds the import graph with `ast`: absolute, relative and
 `from pkg import module` imports, bare imports of a sibling file put on
@@ -76,8 +94,12 @@ so it is listed with the `/rerun-test` lines.
 - **Many files from one domain, a changed hub, a changed file on the training
   entry path, or a path outside the import trace** (arguments, launcher utils,
   Docker or workflow files) → the smallest set of domain labels that covers
-  them. Prefer a label whose "reached / all" ratio is high. Add `run-on-blackwell`
-  only when Blackwell-specific code changed.
+  them. Prefer a label whose "reached / all" ratio is high. Labels cover regular
+  registrations only: keep `/rerun-test` for the nightly-only targets.
+- **Blackwell-specific code changed** → `/rerun-test` runs only on a test's home
+  suite, which is Hopper for most tests that also list `blackwell` in
+  `hardware`, so a file run reports green without executing the changed path.
+  Use the reached tests' domain labels plus `run-on-blackwell`.
 - **Don't add labels that are not needed.** Skip `bypass-fastfail` unless you
   need every failure from one run.
 
@@ -127,9 +149,13 @@ For each ❌:
 5. If it is infra or a flake: re-run the file once. If it fails the same way,
    report it as the triage rule says.
 
-Each push makes earlier results stale for files the push touches. Before calling
-the PR green, re-run any file whose reached-from source changed after its last
-pass.
+A fix can reach files that already passed, through a path the "first reached
+via" column does not show. After each fix push, run
+`affected_tests.py --base <head SHA the passing runs used>` and re-run every file
+it lists; if it reports a hub or a path outside the trace, use labels. On an
+append-only branch the merge base of `<sha>...HEAD` is that SHA, so the output
+is exactly the fix's reach. After a merge or rebase from main, use
+`--base origin/main` and re-run everything.
 
 ## 5. Record timing for new tests
 

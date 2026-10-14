@@ -29,6 +29,18 @@ def _cpu(path, labels=()):
     return CIRegistry(backend=HWBackend.CPU, filename=path, est_time=1, suite="stage-b-cpu", labels=list(labels))
 
 
+def _nightly(path, labels):
+    return CIRegistry(
+        backend=HWBackend.CUDA,
+        filename=path,
+        est_time=60,
+        suite="stage-c-2-gpu-h200",
+        labels=list(labels),
+        hardware=["hopper"],
+        nightly=True,
+    )
+
+
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     """Write files into a scratch repo root and trace a change there."""
@@ -179,8 +191,44 @@ def test_a_file_reaching_too_many_gpu_tests_is_a_hub_and_is_not_followed(repo):
 
     result = _trace(["miles/arguments.py"], [_gpu(path) for path in tests], hub_limit=2)
 
-    assert result.hubs == {"miles/arguments.py": 3}
+    assert result.hubs == {"miles/arguments.py": TRACER.Hub(gpu_tests=3, reached_from="changed")}
     assert result.reached == {}
+
+
+def test_a_hub_met_downstream_records_where_the_trace_reached_it(repo):
+    tests = {f"tests/fast-gpu/test_{i}.py": "import miles.entry\n" for i in range(3)}
+    repo(
+        {
+            "miles/__init__.py": "",
+            "miles/builder.py": "",
+            "miles/launcher.py": "import miles.builder\n",
+            "miles/entry.py": "import miles.launcher\n",
+            **tests,
+        }
+    )
+
+    result = _trace(["miles/builder.py"], [_gpu(path) for path in tests], depth=1, hub_limit=2)
+
+    assert result.hubs == {"miles/launcher.py": TRACER.Hub(gpu_tests=3, reached_from="hop 1 from miles/builder.py")}
+    assert result.reached == {}
+
+
+def test_the_depth_bound_reports_what_it_left_unfollowed(repo):
+    chain = ["miles/a.py", "miles/b.py", "miles/c.py", "miles/d.py", "miles/e.py"]
+    files = {"miles/__init__.py": "", chain[0]: ""}
+    for importer, imported in zip(chain[1:], chain, strict=False):
+        files[importer] = f"import {imported[:-3].replace('/', '.')}\n"
+    files["tests/fast-gpu/test_e.py"] = "import miles.e\n"
+    repo(files)
+    registrations = [_gpu("tests/fast-gpu/test_e.py")]
+
+    shallow = _trace(["miles/a.py"], registrations, depth=2)
+    deep = _trace(["miles/a.py"], registrations, depth=5)
+
+    assert shallow.reached == {}
+    assert shallow.unfollowed == ["miles/d.py"]
+    assert deep.reached == {"tests/fast-gpu/test_e.py": "miles/e.py (hop 4)"}
+    assert deep.unfollowed == []
 
 
 def test_disabled_and_cpu_tests_do_not_make_a_hub(repo):
@@ -224,6 +272,25 @@ def test_non_python_changes_outside_the_no_gpu_allowlist_need_label_ci_even_when
     assert set(result.reached) == {"tests/fast/test_image.py"}
 
 
+def test_python_outside_the_import_graph_needs_label_ci_but_is_still_traced(repo):
+    repo(
+        {
+            "miles/__init__.py": "",
+            "miles/core.py": "",
+            "tests/fast/test_build.py": 'BUILD = "docker/build.py"\n',
+            "tests/ci/test/test_skill.py": 'SCRIPT = ".claude/skills/s/tool.py"\n',
+        }
+    )
+    registrations = [_cpu("tests/fast/test_build.py"), _cpu("tests/ci/test/test_skill.py")]
+
+    result = _trace(
+        ["docker/build.py", "tools/convert.py", ".claude/skills/s/tool.py", "miles/core.py"], registrations
+    )
+
+    assert result.outside_trace == ["docker/build.py", "tools/convert.py"]
+    assert set(result.reached) == {"tests/fast/test_build.py", "tests/ci/test/test_skill.py"}
+
+
 def test_a_deleted_module_still_reaches_its_importers(repo):
     repo({"miles/__init__.py": "", "tests/fast/test_uses_gone.py": "from miles.gone import thing\n"})
 
@@ -244,6 +311,7 @@ def test_rerun_targets_are_enabled_cuda_and_labeled_cpu_tests():
     }
     result = TRACER.Trace(
         reached=dict.fromkeys(registrations, "changed"),
+        unfollowed=[],
         hubs={},
         outside_trace=[],
         on_training_path=[],
@@ -251,3 +319,45 @@ def test_rerun_targets_are_enabled_cuda_and_labeled_cpu_tests():
     )
 
     assert TRACER.rerun_targets(result, registrations) == ["tests/fast-gpu/test_gpu.py", "tests/fast/test_labeled.py"]
+
+
+def test_label_coverage_counts_only_what_a_pr_label_selects():
+    registrations = {
+        r.filename: [r]
+        for r in (
+            _gpu("tests/e2e/test_regular.py", labels=["short"]),
+            _gpu("tests/e2e/test_other.py", labels=["short"]),
+            _nightly("tests/e2e/test_nightly.py", labels=["short"]),
+            _gpu("tests/e2e/test_off.py", labels=["short"], disabled="flaky"),
+        )
+    }
+    registrations["tests/e2e/test_mixed.py"] = [
+        _gpu("tests/e2e/test_mixed.py", labels=["long"]),
+        _nightly("tests/e2e/test_mixed.py", labels=["long"]),
+    ]
+    targets = ["tests/e2e/test_regular.py", "tests/e2e/test_nightly.py", "tests/e2e/test_mixed.py"]
+
+    assert TRACER.label_coverage(targets, registrations) == [("short", 1, 2), ("long", 1, 1)]
+    assert TRACER.nightly_only(targets, registrations) == ["tests/e2e/test_nightly.py"]
+
+
+def test_unreadable_registrations_are_reported_instead_of_aborting(repo):
+    repo(
+        {
+            "tests/e2e/test_ok.py": 'from tests.ci.ci_register import register_cpu_ci\nregister_cpu_ci(est_time=1, suite="stage-b-cpu")\n',
+            "tests/e2e/test_unregistered.py": "def test_x(): ...\n",
+            "tests/e2e/test_broken.py": "def test_x(:\n",
+            "tests/fast/test_gpu_in_fast.py": (
+                "from tests.ci.ci_register import register_cuda_ci\n"
+                'register_cuda_ci(est_time=1, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper"])\n'
+            ),
+        }
+    )
+    files = ["tests/e2e/test_ok.py", "tests/e2e/test_unregistered.py", "tests/e2e/test_broken.py"]
+
+    registrations, unreadable = TRACER.load_registrations([*files, "tests/fast/test_gpu_in_fast.py"])
+
+    assert set(registrations) == {"tests/e2e/test_ok.py"}
+    assert set(unreadable) == {*files[1:], "tests/fast/test_gpu_in_fast.py"}
+    assert unreadable["tests/e2e/test_unregistered.py"] == "no CI registration"
+    assert unreadable["tests/fast/test_gpu_in_fast.py"].startswith("register_cuda_ci is forbidden in tests/fast/")

@@ -7,9 +7,12 @@ imports of a sibling file put on sys.path, and dotted module paths or file paths
 (--custom-loss-function-path, `python tools/x.py` subprocesses). A model definition under scripts/models/ is
 referenced by its name in a string literal (launchers load it by --model-name), a conftest.py by every test under
 its directory, and any other changed file by its path. Dependents are followed up to --depth hops, and every
-registered test found is reported. A file whose dependents reach more than --hub-limit GPU tests (arguments,
-launcher utils) is a hub and is not followed: a change there needs domain labels, not a file list. Other dynamic
-loading is not seen; read the list.
+registered test found is reported. A file whose dependents reach more than --hub-limit GPU tests within --depth hops
+(arguments, launcher utils) is a hub and is not followed: a change there needs domain labels, not a file list. The
+depth is a locality bound, not a completeness one: the import graph is dense enough (model plugins register their
+arguments in miles/utils/arguments.py, which nearly everything imports) that every training-side file reaches
+every e2e test at a fixpoint. Files left unfollowed at the bound are reported. Other dynamic loading is not seen;
+read the list.
 """
 
 import argparse
@@ -19,14 +22,17 @@ import re
 import subprocess
 import warnings
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from tests.ci.ci_policy import registration_matches_selection
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.stage_selection import known_no_gpu_path
 
 SOURCE_ROOTS = ("miles", "miles_plugins", "scripts", "examples", "tests")
 ENTRY_POINTS = ("train.py", "train_async.py", "train_multi_policy.py", "serve_tinker.py")
+MAX_UNFOLLOWED_LISTED = 20
 DOTTED_NAME = re.compile(r"(?<![\w./-])[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
 
 
@@ -36,6 +42,28 @@ def changed_files(base: str) -> list[str]:
         ["git", "diff", "--name-only", "--no-renames", f"{base}...HEAD"], check=True, capture_output=True, text=True
     ).stdout
     return [line for line in out.splitlines() if line]
+
+
+def in_import_graph(path: str) -> bool:
+    return path in ENTRY_POINTS or path.startswith(tuple(f"{root}/" for root in SOURCE_ROOTS))
+
+
+def load_registrations(files: list[str]) -> tuple[dict[str, list[CIRegistry]], dict[str, str]]:
+    """Registrations per test file, and the files whose registration cannot be read, with the reason."""
+    registrations, unreadable = {}, {}
+    for path in files:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                registries = collect_tests([path], sanity_check=False)
+            except (SyntaxError, ValueError) as error:
+                unreadable[path] = str(error).splitlines()[0].removeprefix(f"{path}: ")
+                continue
+        if registries:
+            registrations[path] = registries
+        else:
+            unreadable[path] = "no CI registration"
+    return registrations, unreadable
 
 
 def python_files(roots: tuple[str, ...]) -> list[str]:
@@ -120,9 +148,16 @@ def source_graph(changed: list[str]) -> tuple[dict[str, set[str]], dict[str, str
 
 
 @dataclass(frozen=True)
+class Hub:
+    gpu_tests: int  # enabled CUDA tests its dependents reach within the depth bound
+    reached_from: str  # "changed", or the hop and file the trace met it from
+
+
+@dataclass(frozen=True)
 class Trace:
-    reached: dict[str, str]  # registered test -> the changed or intermediate file it was reached from
-    hubs: dict[str, int]  # file -> enabled CUDA tests its dependents reach
+    reached: dict[str, str]  # registered test -> the first changed or intermediate file it was reached from
+    hubs: dict[str, Hub]
+    unfollowed: list[str]  # importers of the last hop, left at the depth bound
     outside_trace: list[str]
     on_training_path: list[str]
     unreferenced: list[str]
@@ -167,37 +202,50 @@ def trace(changed: list[str], registrations: dict[str, list[CIRegistry]], *, dep
             frontier = {ref for node in frontier for ref in referrers(node)} - seen
             seen |= frontier
             found |= frontier & gpu_tests
-            frontier -= set(registrations)
+            frontier -= registrations.keys()
         return len(found)
 
     reached = {path: "changed" for path in changed if path in registrations}
-    frontier = [path for path in changed if path not in registrations and not known_no_gpu_path(path)]
+    frontier = [
+        path for path in changed if path not in registrations and (path.endswith(".py") or not known_no_gpu_path(path))
+    ]
     seen = set(frontier)
-    hubs: dict[str, int] = {}
+    parents: dict[str, str] = {}
+    hubs: dict[str, Hub] = {}
+    unfollowed: set[str] = set()
     unreferenced = []
     for hop in range(depth + 1):
         next_frontier = []
         for path in frontier:
             if hop == 0 and path.endswith(".py") and not referrers(path):
                 unreferenced.append(path)
-            if gpu_reach(path) > hub_limit:
-                hubs[path] = gpu_reach(path)
+            reach = gpu_reach(path)
+            if reach > hub_limit:
+                hubs[path] = Hub(reach, f"hop {hop} from {parents[path]}" if path in parents else "changed")
                 continue
             for ref in sorted(referrers(path)):
                 if ref in registrations:
                     reached.setdefault(ref, f"{path} (hop {hop})")
-                elif hop < depth and ref not in seen:
+                elif ref in seen:
+                    continue
+                elif hop < depth:
                     seen.add(ref)
+                    parents[ref] = path
                     next_frontier.append(ref)
+                else:
+                    unfollowed.add(ref)
         frontier = next_frontier
 
     return Trace(
         reached=reached,
         hubs=hubs,
+        unfollowed=sorted(unfollowed),
         outside_trace=sorted(
             path
             for path in changed
-            if not path.endswith(".py") and path not in registrations and not known_no_gpu_path(path)
+            if path not in registrations
+            and not known_no_gpu_path(path)
+            and not (path.endswith(".py") and in_import_graph(path))
         ),
         on_training_path=sorted(set(changed) & run_by_training),
         unreferenced=sorted(unreferenced),
@@ -216,17 +264,56 @@ def rerun_targets(result: Trace, registrations: dict[str, list[CIRegistry]]) -> 
     )
 
 
+def selected_by_label(registration: CIRegistry, label: str) -> bool:
+    """Whether `run-ci-<label>` selects this registration on a PR (regular cadence, so never a nightly one)."""
+    return label in registration.labels and registration_matches_selection(
+        registration.labels, registration.nightly, admit_nightly_tests=False, include_labels={label}
+    )
+
+
+def label_coverage(targets: list[str], registrations: dict[str, list[CIRegistry]]) -> list[tuple[str, int, int]]:
+    """(label, reached tests it selects, all tests it selects) for each label that selects a target."""
+
+    def selected(tests: Iterable[str]) -> Counter:
+        return Counter(
+            label
+            for test in tests
+            for r in registrations[test]
+            if not r.disabled and r.backend != HWBackend.ROCM
+            for label in r.labels
+            if selected_by_label(r, label)
+        )
+
+    reached, total = selected(targets), selected(registrations)
+    return [(label, count, total[label]) for label, count in reached.most_common()]
+
+
+def nightly_only(targets: list[str], registrations: dict[str, list[CIRegistry]]) -> list[str]:
+    return [
+        test
+        for test in targets
+        if all(r.nightly for r in registrations[test] if not r.disabled and r.backend != HWBackend.ROCM)
+    ]
+
+
 def print_report(
-    result: Trace, registrations: dict[str, list[CIRegistry]], *, base: str, n_changed: int, hub_limit: int
+    result: Trace,
+    registrations: dict[str, list[CIRegistry]],
+    unreadable: dict[str, str],
+    *,
+    base: str,
+    n_changed: int,
+    depth: int,
+    hub_limit: int,
 ) -> None:
     rows = [(test, r) for test in sorted(result.reached) for r in registrations[test]]
     print(f"{n_changed} changed files vs {base}; {len(rows)} registered tests reached\n")
-    print("| test | backend | suite | labels | hardware | est_time | disabled | reached via |")
-    print("|---|---|---|---|---|---|---|---|")
+    print("| test | backend | suite | labels | hardware | nightly | est_time | disabled | first reached via |")
+    print("|---|---|---|---|---|---|---|---|---|")
     for test, r in rows:
         print(
             f"| {test} | {r.backend.name} | {r.suite} | {','.join(r.labels)} | {','.join(r.hardware)} "
-            f"| {r.est_time:.0f} | {r.disabled or ''} | {result.reached[test]} |"
+            f"| {'yes' if r.nightly else ''} | {r.est_time:.0f} | {r.disabled or ''} | {result.reached[test]} |"
         )
 
     targets = rerun_targets(result, registrations)
@@ -234,19 +321,31 @@ def print_report(
     for test in targets:
         print(f"/rerun-test {test}")
 
-    enabled = [r for rs in registrations.values() for r in rs if not r.disabled and r.backend != HWBackend.ROCM]
-    label_cost = Counter(label for r in enabled for label in r.labels)
-    needed = Counter(
-        label for test in targets for r in registrations[test] if r.backend != HWBackend.ROCM for label in r.labels
-    )
-    print("\nDomain labels of those tests (reached / all enabled tests carrying the label):")
-    for label, count in needed.most_common():
-        print(f"  run-ci-{label}: {count} / {label_cost[label]}")
+    print("\nDomain labels that select those tests on a PR (reached / all tests the label selects):")
+    for label, reached, total in label_coverage(targets, registrations):
+        print(f"  run-ci-{label}: {reached} / {total}")
 
+    unfollowed = result.unfollowed
+    if len(unfollowed) > MAX_UNFOLLOWED_LISTED:
+        unfollowed = [*unfollowed[:MAX_UNFOLLOWED_LISTED], f"... {len(unfollowed) - MAX_UNFOLLOWED_LISTED} more"]
     sections = [
         (
-            f"Hubs not followed (each reaches more than {hub_limit} GPU tests; needs domain labels)",
-            [f"{path}: reaches {count} GPU tests" for path, count in sorted(result.hubs.items(), key=lambda i: -i[1])],
+            "Nightly-only targets (no PR label selects them; keep their /rerun-test lines, which bypass the cadence"
+            " gate)",
+            nightly_only(targets, registrations),
+        ),
+        (
+            f"Hubs not followed (each reaches more than {hub_limit} GPU tests within {depth} hops; needs domain labels"
+            " unless CI does not run the path to it)",
+            [
+                f"{path}: reaches {hub.gpu_tests} GPU tests ({hub.reached_from})"
+                for path, hub in sorted(result.hubs.items())
+            ],
+        ),
+        (
+            f"Trace stopped at --depth {depth}; these importers of the last hop were not followed (rerun with a larger"
+            " --depth to see where they lead)",
+            unfollowed,
         ),
         ("Changed paths that affect GPU runtime outside the import trace (need label-based CI)", result.outside_trace),
         (
@@ -257,6 +356,10 @@ def print_report(
         (
             "Changed Python files nothing imports or names (entry points, or loaded some other way; check)",
             result.unreferenced,
+        ),
+        (
+            "Test files whose CI registration cannot be read (not traced as tests; fix before running CI)",
+            [f"{path}: {reason}" for path, reason in sorted(unreadable.items())],
         ),
     ]
     for title, lines in sections:
@@ -277,9 +380,17 @@ def main() -> None:
     warnings.filterwarnings("ignore", category=SyntaxWarning)
 
     changed = changed_files(args.base)
-    registrations = {path: collect_tests([path]) for path in discover_ci_files()}
+    registrations, unreadable = load_registrations(discover_ci_files())
     result = trace(changed, registrations, depth=args.depth, hub_limit=args.hub_limit)
-    print_report(result, registrations, base=args.base, n_changed=len(changed), hub_limit=args.hub_limit)
+    print_report(
+        result,
+        registrations,
+        unreadable,
+        base=args.base,
+        n_changed=len(changed),
+        depth=args.depth,
+        hub_limit=args.hub_limit,
+    )
 
 
 if __name__ == "__main__":
