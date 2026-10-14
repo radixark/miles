@@ -1,10 +1,27 @@
+import dataclasses
 from typing import Any
 
+import msgspec
 import pytest
-
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     RolloutEngineRankAssignment,
 )
+
+
+@pytest.mark.parametrize(
+    "record_factory", [dataclasses.make_dataclass, msgspec.defstruct], ids=["dataclass", "msgspec"]
+)
+def test_server_args_from_remote_info_filters_unknown_fields(
+    model_replica_module: Any, monkeypatch: pytest.MonkeyPatch, record_factory: Any
+) -> None:
+    """Remote metadata must construct both supported record types while ignoring unrelated server fields."""
+    server_args_type = record_factory("ServerArgs", [("model_path", str)])
+    monkeypatch.setattr(model_replica_module, "ServerArgs", server_args_type)
+
+    result = model_replica_module.create_server_args_from_dict({"model_path": "/model", "unknown_field": True})
+
+    assert isinstance(result, server_args_type)
+    assert result.model_path == "/model"
 
 
 class TestQueriesGiveUpOnBrokenCells:
@@ -18,7 +35,7 @@ class TestQueriesGiveUpOnBrokenCells:
             "get_remote_instance_transfer_engine_info draft",
         ],
     )
-    @pytest.mark.parametrize("failure", ["error"])
+    @pytest.mark.parametrize("failure", ["error", "timeout"])
     def test_each_query_failure_excludes_the_cell_from_both_runner_roles(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any, query_name: str, failure: str
     ) -> None:

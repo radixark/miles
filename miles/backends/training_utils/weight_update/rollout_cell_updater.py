@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from argparse import Namespace
 from collections.abc import Coroutine, Sequence
@@ -40,7 +41,7 @@ class _RolloutCellUpdater:
 
     async def _run_guarded(self, request: Coroutine[Any, Any, Any]) -> object | None:
         try:
-            return await request
+            return await asyncio.wait_for(request, timeout=self._args.update_weight_engine_request_timeout)
         except Exception as error:
             self.mark_errored(error)
             return None

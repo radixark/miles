@@ -1,6 +1,7 @@
 """A transfer buffer stays unchanged for healthy cells and registered for every unfinished write."""
 
 import threading
+from argparse import Namespace
 from concurrent.futures import Future
 
 import pytest
@@ -43,7 +44,9 @@ def make_transfer_buffers(monkeypatch: pytest.MonkeyPatch):
 def _pending_write(session_id: str, future: Future[None]) -> PendingWrite:
     return PendingWrite(
         future=future,
-        cell_updater=_RolloutCellUpdater(cell_id=session_id, api_client=None),
+        cell_updater=_RolloutCellUpdater(
+            args=Namespace(update_weight_engine_request_timeout=1), cell_id=session_id, api_client=None
+        ),
     )
 
 
