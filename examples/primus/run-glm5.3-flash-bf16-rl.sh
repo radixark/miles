@@ -36,20 +36,36 @@ export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 # SGLang on ROCm: no DeepGEMM / CUDA tilelang mHC kernels, and keep short-sequence
 # prefill off the dense-MHA path (it assumes a RoPE key part; GLM-5 DSA is NoPE).
 export SGLANG_USE_AITER=1
-export SGLANG_OPT_DEEPGEMM_HC_PRENORM=0
-export SGLANG_OPT_USE_TILELANG_MHC_PRE=0
-export SGLANG_OPT_USE_TILELANG_MHC_POST=0
-export SGLANG_OPT_FUSE_MHC_POST_PRE=0
-export SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD=0
+# SGLANG_PROFILE=rocm: glm53-flash-rl-rocm-miles branch (set SGLANG_DIR to it) with TileLang
+# DSA, AITER MoE and decode CUDA graphs; legacy: the image build plus our patches.
+SGLANG_PROFILE=${SGLANG_PROFILE:-legacy}
+if [ "${SGLANG_PROFILE}" = rocm ]; then
+  export AITER_ONLINE_TUNE=0 HIP_FORCE_DEV_KERNARG=1
+  SGLANG_PROFILE_ARGS=(--sglang-dsa-prefill-backend tilelang --sglang-dsa-decode-backend tilelang
+    --sglang-moe-runner-backend aiter --sglang-cuda-graph-max-bs-decode 128)
+else
+  export SGLANG_OPT_DEEPGEMM_HC_PRENORM=0
+  export SGLANG_OPT_USE_TILELANG_MHC_PRE=0
+  export SGLANG_OPT_USE_TILELANG_MHC_POST=0
+  export SGLANG_OPT_FUSE_MHC_POST_PRE=0
+  export SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD=0
+  SGLANG_PROFILE_ARGS=()
+fi
 
 # One pipeline stage per training node; EP=8 stays within a node's data-parallel ranks.
 case "${TRAIN_NODES}" in
   3) PP_ARGS=(--pipeline-model-parallel-size 3) ;;
   4) PP_ARGS=(--pipeline-model-parallel-size 4 --decoder-first-pipeline-num-layers 12 --decoder-last-pipeline-num-layers 11) ;;
-  *) echo "TRAIN_NODES must be 3 or 4 (45 layers, one pipeline stage per node)" >&2; exit 1 ;;
+  # 5 + 6x6 + 4 layers; the last stage also holds the LM head.
+  8) PP_ARGS=(--pipeline-model-parallel-size 8 --decoder-first-pipeline-num-layers 5 --decoder-last-pipeline-num-layers 4) ;;
+  *) echo "TRAIN_NODES must be 3, 4 or 8 (45 layers, one pipeline stage per node)" >&2; exit 1 ;;
 esac
 
 cd "${MILES_DIR}"
+
+# SGLANG_CUDA_GRAPH=1 lets the rollout engines capture decode CUDA graphs.
+CUDA_GRAPH_ARGS=(--sglang-disable-cuda-graph)
+[ "${SGLANG_CUDA_GRAPH:-0}" = 1 ] || [ "${SGLANG_PROFILE}" = rocm ] && CUDA_GRAPH_ARGS=()
 
 export HSA_NO_SCRATCH_RECLAIM=1
 
@@ -57,17 +73,26 @@ export HSA_NO_SCRATCH_RECLAIM=1
 # trainers see TURBO_PYTHONPATH (a `pip install --target` of flydsl==0.2.4).
 TRAIN_ENV_VARS=$(python3 - <<'EOF'
 import json, os
-env = {"PYTORCH_ALLOC_CONF": "expandable_segments:True"}
+# expandable_segments breaks lazily-initialized RCCL communicators on ROCm 10 / gfx942:
+# the first collective on each new communicator returns its output buffer unwritten.
+env = {}
+if os.environ.get("TRAIN_PYTORCH_ALLOC_CONF"):
+    env["PYTORCH_ALLOC_CONF"] = os.environ["TRAIN_PYTORCH_ALLOC_CONF"]
+# The rollout engines keep HSA_NO_SCRATCH_RECLAIM=1; trainers can override it (0 = let ROCr reclaim scratch).
+if os.environ.get("TRAIN_HSA_NO_SCRATCH_RECLAIM"):
+    env["HSA_NO_SCRATCH_RECLAIM"] = os.environ["TRAIN_HSA_NO_SCRATCH_RECLAIM"]
 if os.environ.get("TURBO_PYTHONPATH"):
     env["PYTHONPATH"] = os.environ["TURBO_PYTHONPATH"] + ":" + os.environ["PYTHONPATH"]
+env.update({k: v for k, v in os.environ.items() if k.startswith(("TORCH_DISTRIBUTED_", "TORCH_NCCL_"))})
 print(json.dumps(env))
 EOF
 )
 
 RUNTIME_ENV_JSON=$(python3 - <<'EOF'
 import json, os
-prefixes = ("SGLANG_", "NCCL_", "GLOO_", "TP_SOCKET_", "RAY_EXPERIMENTAL_", "PRIMUS_")
+prefixes = ("SGLANG_", "NCCL_", "GLOO_", "TP_SOCKET_", "RAY_EXPERIMENTAL_", "PRIMUS_", "MILES_", "AITER_")
 keys = ["PYTHONPATH", "LD_LIBRARY_PATH", "PATH", "GLM5_TOKENIZER", "CUDA_DEVICE_MAX_CONNECTIONS", "HSA_NO_SCRATCH_RECLAIM",
+        "HIP_FORCE_DEV_KERNARG",
         "MASTER_ADDR", "no_proxy", "PYTHONUNBUFFERED", "TRITON_CACHE_DIR"]
 env = {k: v for k, v in os.environ.items() if k in keys or k.startswith(prefixes)}
 print(json.dumps({"env_vars": env}))
@@ -137,7 +162,8 @@ ray job submit --address="http://127.0.0.1:8265" \
   --rollout-num-gpus-per-engine 8 \
   --sglang-router-policy round_robin \
   --sglang-mem-fraction-static 0.8 \
-  --sglang-disable-cuda-graph \
+  "${CUDA_GRAPH_ARGS[@]}" \
+  "${SGLANG_PROFILE_ARGS[@]}" \
   --sglang-disable-radix-cache \
   --sglang-max-running-requests 128 \
   --sglang-chunked-prefill-size 16384 \
