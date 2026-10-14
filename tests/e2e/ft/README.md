@@ -363,7 +363,11 @@ CLI: --mode, --seed (42), --num-steps (60), --trainer-crash-interval-seconds (12
      --rollout-crash-interval-seconds (240), --fully-async (off)
 
 Targeting and assertions follow the mode's ft_components:
-  ("train",)          -> inject into "actor" cells, assert trainer healing
+  ("train",)          -> inject into "actor" cells, assert trainer healing; with real engines the
+                         run also enables rollout ft (extra_ft_components), since an engine a
+                         faulted trainer never finished sending to is marked errored and only
+                         rollout ft replaces it; no rollout fault is injected, so the mode name
+                         still says the run crashes only trainers
   ("rollout",)        -> inject into "rollout" cells, assert the recovery cycle
   ("train","rollout") -> inject into both kinds, assert both
   A mode declaring rollout ft without real engines would schedule injections into a cell kind
