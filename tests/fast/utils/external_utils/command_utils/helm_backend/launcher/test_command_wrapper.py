@@ -154,7 +154,7 @@ class TestUninstallIfPresent:
         """A comparison handoff must tear down the release that still owns the previous side's GPUs."""
         calls: list[tuple[str, ...]] = []
 
-        def run_raw(*arguments: str) -> subprocess.CompletedProcess[str]:
+        def run_raw(*arguments: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
             calls.append(arguments)
             return subprocess.CompletedProcess(arguments, returncode=0, stdout="", stderr="")
 
@@ -169,7 +169,7 @@ class TestUninstallIfPresent:
         monkeypatch.setattr(
             Helm,
             "run_raw",
-            lambda *_arguments: subprocess.CompletedProcess(
+            lambda *_arguments, timeout=None: subprocess.CompletedProcess(
                 [],
                 returncode=1,
                 stdout="",
@@ -184,7 +184,9 @@ class TestUninstallIfPresent:
         monkeypatch.setattr(
             Helm,
             "run_raw",
-            lambda *_arguments: subprocess.CompletedProcess([], returncode=1, stdout="", stderr="forbidden"),
+            lambda *_arguments, timeout=None: subprocess.CompletedProcess(
+                [], returncode=1, stdout="", stderr="forbidden"
+            ),
         )
 
         with pytest.raises(RuntimeError, match="forbidden"):
