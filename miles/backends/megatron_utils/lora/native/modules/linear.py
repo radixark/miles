@@ -24,7 +24,6 @@ class SGLangFusedGroup:
     with the architecture's true widths.
     """
 
-    name: str
     member_rows: Mapping[str, int]
 
 
@@ -260,11 +259,9 @@ class LoRASplitAdapter(NativeLoRAAdapter):
 
     Shared machinery for every fused physical linear: parameter layout, the
     down/up drain, absent-slot zero-fill, and the export descriptor. Subclasses
-    supply the physical slot widths (``rows_by_param_prefix``, in slot order), the serving
-    group name, and an optional output packing.
+    supply the physical slot widths (``rows_by_param_prefix``, in slot order) and an
+    optional output packing.
     """
-
-    _group_name = ""
 
     def __init__(
         self,
@@ -356,7 +353,6 @@ class LoRASplitAdapter(NativeLoRAAdapter):
 
     def exports(self) -> Iterator[ProjectionExport]:
         group = SGLangFusedGroup(
-            name=self._group_name,
             member_rows={
                 projection.hf_leaf: self._rows_by_param_prefix[projection.param_prefix] * self.context.tp_size
                 for projection in self._member_projections
@@ -367,8 +363,6 @@ class LoRASplitAdapter(NativeLoRAAdapter):
 
 class LoRASplitQKV(LoRASplitAdapter):
     """Independent Q/K/V adapters whose delta is packed into one fused QKV output."""
-
-    _group_name = "qkv"
 
     def __init__(
         self,
@@ -403,8 +397,6 @@ class LoRASplitQKV(LoRASplitAdapter):
 
 class LoRASplitFC1(LoRASplitAdapter):
     """Independent gate/up adapters whose delta is packed into one fused FC1 output."""
-
-    _group_name = "gate_up"
 
     def __init__(
         self,

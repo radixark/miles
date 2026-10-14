@@ -90,12 +90,10 @@ class ServingGroup:
     the serving exporter.
     """
 
-    name: str
     member_rows: tuple[tuple[str, DimFn], ...]
 
     def materialize(self, block: nn.Module, context: AttachContext) -> SGLangFusedGroup:
         return SGLangFusedGroup(
-            name=self.name,
             member_rows={hf_name: resolve(block, context) for hf_name, resolve in self.member_rows},
         )
 

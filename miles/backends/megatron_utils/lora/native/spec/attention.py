@@ -101,7 +101,6 @@ class MLAAttentionSpec(AttentionSpecBase):
     family = AttentionFamily.MLA
 
     _MLA_A_SERVING_GROUP = ServingGroup(
-        name="mla_a",
         member_rows=(
             ("q_a_proj", L.config_dim("q_lora_rank")),
             ("kv_a_proj_with_mqa", L.mla_kv_down_out),
@@ -234,8 +233,6 @@ class HybridGQAGDNAttentionSpec(GQAAttentionSpec):
 
 class _InklingSplitQKVR(LoRASplitAdapter):
     """Four independent adapters over Inkling's plain-concat fused [q;k;v;r]."""
-
-    _group_name = "qkvr"
 
 
 def _build_split_qkvr(
