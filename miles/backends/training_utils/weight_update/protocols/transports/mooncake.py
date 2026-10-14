@@ -11,6 +11,8 @@ from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_
     RolloutEngineRankAssignment,
 )
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 
 
 class RemoteWeightLocation(NamedTuple):
@@ -128,6 +130,7 @@ class MooncakeTransport:
 
     def _write_shard(self, remote_shard: RemoteShard, tensors_by_name: dict[str, torch.Tensor]) -> None:
         names = list(tensors_by_name)
+        reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
         ret = self._transfer_engine.batch_transfer_sync_write(
             remote_shard.session_id,
             [tensors_by_name[name].data_ptr() for name in names],
