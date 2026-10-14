@@ -19,6 +19,7 @@ class BaseEvent(FrozenStrictBaseModel):
 
 class SoakObservationEvent(BaseEvent):
     kind: Literal["observation"] = "observation"
+    completed_at: datetime | None = None
     targets: list[SoakTarget] | None
     details: SoakObservationDetails | None = None
     errors: dict[str, str] = Field(default_factory=dict)

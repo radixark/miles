@@ -44,6 +44,7 @@ class CellObserver(SoakObserver):
 
         return SoakObservationEvent(
             timestamp=observed_at,
+            completed_at=datetime.now(timezone.utc),
             targets=(
                 None
                 if cells is None
