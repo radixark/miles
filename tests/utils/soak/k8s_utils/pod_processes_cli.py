@@ -22,6 +22,11 @@ def kill(request_id: str) -> None:
     _print_receipt(request_id=request_id, operation=ProcessSignal.KILL)
 
 
+@app.command()
+def stop(request_id: str) -> None:
+    _print_receipt(request_id=request_id, operation=ProcessSignal.STOP)
+
+
 def _print_receipt(*, request_id: str, operation: ProcessSignal) -> None:
     target = ProcessTarget.model_validate_json(sys.stdin.read())
     receipt = ProcessSignalReceipt(

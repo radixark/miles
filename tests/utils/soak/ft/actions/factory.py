@@ -1,6 +1,6 @@
 from tests.utils.soak.ft.actions.base import BaseCellFaultForm, CellFaultForms
 from tests.utils.soak.ft.actions.inject_fault import InjectFaultForm
-from tests.utils.soak.ft.actions.pod import DeletePodFaultForm, ExecSigkillFaultForm
+from tests.utils.soak.ft.actions.pod import DeletePodFaultForm, ExecSigkillFaultForm, ExecSigstopFaultForm
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
 
 from miles.utils.external_utils import command_utils
@@ -29,6 +29,7 @@ def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrain
                 ACTOR_CELL_TYPE: [*actor_inject_fault_forms, delete_pod_form],
                 ROLLOUT_CELL_TYPE: [
                     ExecSigkillFaultForm(**pod_form_kwargs),
+                    ExecSigstopFaultForm(**pod_form_kwargs),
                     delete_pod_form,
                 ],
             }
