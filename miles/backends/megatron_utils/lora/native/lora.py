@@ -10,7 +10,6 @@ from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named, load_lora_adapter_hf
 from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import resolve_checkpoint_spec
-from miles.backends.megatron_utils.lora.native.sglang_adapter import export_lora_sglang_named
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, LoRAArchSpec
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
 from miles.utils.hf_utils.config import load_hf_config
@@ -119,7 +118,6 @@ def _require_grad_on_first_activation(model) -> nn.Module | None:
 __all__ = [
     "apply_native_lora",
     "export_lora_hf_named",
-    "export_lora_sglang_named",
     "load_lora_adapter_hf",
     "wrap_model_provider_with_lora",
 ]

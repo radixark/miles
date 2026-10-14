@@ -26,14 +26,12 @@ def _build_split_fc1(
     hf_prefix: str,
     context: AttachContext,
     active: tuple[ProjectionSpec, ...],
-    members: tuple[ProjectionSpec, ...],
 ) -> LoRASplitFC1:
     return LoRASplitFC1(
         hf_prefix=hf_prefix,
         reference=mlp.linear_fc1.weight,
         context=context,
         projections=active,
-        member_projections=members,
         inter_local=_fc1_inter_local(mlp, context),
     )
 

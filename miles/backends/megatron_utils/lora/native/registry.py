@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 from miles.backends.megatron_utils.lora.native.naming import DeclaredNaming
@@ -24,6 +25,8 @@ from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import lora_rollout_enabled, matches_lora_target
 
 logger = logging.getLogger(__name__)
+
+_SHARED_EXPERT_BLOCK = re.compile(r"(?:^|\.)shared_experts?$")
 
 
 def _arch_spec(attention: AttentionSpecBase, *, mlp=None, has_linear_attention_layers: bool = False) -> LoRAArchSpec:
@@ -163,7 +166,8 @@ def resolve_adapter_targets(
         f"{' ...' if len(unattachable) > 8 else ''}. Select supported projections (e.g. "
         f"--target-modules {attention_target_modules_csv(hf_config)}) or use --megatron-to-hf-mode bridge."
     )
-    return _expand_fused_families(hf_targets, spec.serving_fused_families())
+    _assert_shared_expert_up_proj_has_gate_proj(selected or hf_targets)
+    return hf_targets
 
 
 def validate_native_lora_args(args) -> None:
@@ -201,15 +205,22 @@ def _assert_fixed_target_layout(spec: LoRAArchSpec, hf_config: dict, hf_targets:
     )
 
 
-def _expand_fused_families(targets: list[str], families: list[frozenset[str]]) -> list[str]:
-    """Add every sibling of a selected fused-buffer member, which the serving export zero-fills."""
-    expanded = list(targets)
-    for target in targets:
-        block, dot, leaf = target.rpartition(".")
-        for family in families:
-            if leaf in family:
-                expanded.extend(f"{block}{dot}{member}" for member in sorted(family))
-    return list(dict.fromkeys(expanded))
+def _assert_shared_expert_up_proj_has_gate_proj(hf_targets: list[str]) -> None:
+    """SGLang stacks a shared expert's gate/up adapter and zero-fills only a missing up_proj,
+    so a shared expert's up_proj adapter needs its gate_proj selected too."""
+    leaves_by_block: dict[str, set[str]] = {}
+    for target in hf_targets:
+        block, _, leaf = target.rpartition(".")
+        leaves_by_block.setdefault(block, set()).add(leaf)
+    lone_up_projs = sorted(
+        f"{block}.up_proj" if block else "up_proj"
+        for block, leaves in leaves_by_block.items()
+        # a bare leaf selector may reach a shared expert
+        if (not block or _SHARED_EXPERT_BLOCK.search(block)) and "up_proj" in leaves and "gate_proj" not in leaves
+    )
+    assert (
+        not lone_up_projs
+    ), f"native LoRA needs gate_proj selected with {lone_up_projs}: SGLang drops a shared expert's lone up_proj"
 
 
 def attention_target_modules_csv(hf_config: dict) -> str:

@@ -11,7 +11,6 @@ import torch.nn as nn
 from miles.backends.megatron_utils.lora.native.modules.linear import (
     LoRALinear,
     NativeLoRAAdapter,
-    SGLangFusedGroup,
     attach_adapter_forward,
 )
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, AttentionFamily, ProjectionSpec
@@ -76,26 +75,7 @@ def inkling_o_in_local(module: nn.Module, _context: AttachContext) -> int:
 
 
 GuardFn = Callable[[nn.Module, AttachContext, ProjectionSpec, int], None]
-FusedBuildFn = Callable[
-    [nn.Module, str, AttachContext, tuple[ProjectionSpec, ...], tuple[ProjectionSpec, ...]], NativeLoRAAdapter
-]
-
-
-@dataclass(frozen=True)
-class ServingGroup:
-    """Declares that several single projections share one SGLang fused buffer.
-
-    ``member_rows`` resolves every member's full ``lora_B`` row count from the
-    architecture config, keeping those facts in the spec table rather than in
-    the serving exporter.
-    """
-
-    member_rows: tuple[tuple[str, DimFn], ...]
-
-    def materialize(self, block: nn.Module, context: AttachContext) -> SGLangFusedGroup:
-        return SGLangFusedGroup(
-            member_rows={hf_name: resolve(block, context) for hf_name, resolve in self.member_rows},
-        )
+FusedBuildFn = Callable[[nn.Module, str, AttachContext, tuple[ProjectionSpec, ...]], NativeLoRAAdapter]
 
 
 @dataclass(frozen=True)
@@ -114,7 +94,6 @@ class ProjectionBinding:
     out_dim: DimFn
     adapter_attr: str
     guard: GuardFn | None = None
-    serving_group: ServingGroup | None = None
     adapter_class: type[LoRALinear] = LoRALinear
 
 
@@ -190,7 +169,7 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
         )
         if not active:
             continue
-        adapter = group.build(block, hf_prefix, context, active, group.projections)
+        adapter = group.build(block, hf_prefix, context, active)
         setattr(block, group.adapter_attr, adapter)
         attach_adapter_forward(host, adapter, context.lora.scale)
         count += 1
@@ -210,9 +189,6 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
             context=context,
             in_features=binding.in_dim(block, context),
             out_features=out_features,
-            sglang_group=(
-                binding.serving_group.materialize(block, context) if binding.serving_group is not None else None
-            ),
         )
         setattr(block, binding.adapter_attr, adapter)
         attach_adapter_forward(host, adapter, context.lora.scale)
@@ -249,19 +225,6 @@ class LayoutSpec:
 
     def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
         return attach_layout(block, self.layout, layer, context)
-
-    def serving_fused_families(self) -> list[frozenset[str]]:
-        """Projection families SGLang stores in one fused buffer for this layout."""
-        families = [frozenset(projection.hf_leaf for projection in group.projections) for group in self.layout.fused]
-        seen: set[frozenset[str]] = set(families)
-        for binding in self.layout.singles:
-            if binding.serving_group is None:
-                continue
-            family = frozenset(name for name, _resolve in binding.serving_group.member_rows)
-            if family not in seen:
-                seen.add(family)
-                families.append(family)
-        return families
 
 
 class AttentionSpecBase(LayoutSpec):
