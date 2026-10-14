@@ -5,7 +5,7 @@ Hierarchy
 SessionError (base)
 ├── SessionNotFoundError       → 404  session does not exist
 ├── MessageValidationError     → 400  messages structure/content invalid
-├── TruncatedGenerationError   → 409  extending a length-truncated generation (v2)
+├── TruncatedGenerationError   → 409  extending a length-truncated generation the family cannot close
 ├── TokenizationError          → 500  TITO tokenizer / prefix mismatch
 ├── UpstreamResponseError      → 502  SGLang response invalid or unexpected
 └── UpstreamGenerationAbortedError → 503  SGLang aborted the generation
@@ -36,8 +36,8 @@ class MessageValidationError(SessionError):
 
 class TruncatedGenerationError(SessionError):
     """Raised when a request extends a generation that ended with
-    finish_reason='length'; only the v2 tree server raises it (v1 never
-    branches)."""
+    finish_reason='length' and the TITO family declares no truncation
+    grammar to close it."""
 
     status_code: int = 409
 

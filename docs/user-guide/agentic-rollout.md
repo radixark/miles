@@ -176,11 +176,16 @@ History handling depends on the selected server version:
   rollback is rejected.
 - **v2 (Experimental) is an append-only tree.** A request attaches to the deepest checkpoint
   whose complete message path prefixes the request. Any unmatched suffix creates
-  a branch, and existing branches are never deleted. A path whose last generation
-  ended with `finish_reason=length` cannot be extended. By default, a leaf becomes
+  a branch, and existing branches are never deleted. By default, a leaf becomes
   no sample when a later request re-sent its exact prompt tokens; a later request
   that differs is a separate branch and its own sample
   (`--session-sample-picker-path`).
+
+Both versions can extend a turn that ended with `finish_reason=length`. The
+server first appends tokens that close the turn's open reasoning and tool-call
+blocks and end the turn; they train with loss mask 0, and partial tool-call
+arguments stay as sampled. `inkling` and `default` cannot close a cut turn and
+return HTTP 409.
 
 Whether a replayed message counts as "the same" as the stored one is decided by
 `--session-message-matcher` (default `strict`); see

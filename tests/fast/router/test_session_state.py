@@ -1025,5 +1025,7 @@ def test_mismatch_does_not_resolve_defaults_for_an_empty_committed_record(regist
     registry.tito_tokenizer.chat_template_kwargs = {"enable_thinking": True}
     registry.tito_tokenizer.apply_chat_template = MagicMock(return_value=[1, 2])
     registry.comparator = MagicMock(compare_sequences=MagicMock(return_value=[]))
-    assert registry.compute_mismatch([SYS_MSG, USER_MSG, ASSISTANT_MSG_1], [1, 2], turn_args={}) == []
+    session = registry.get_session(registry.create_session())
+    node = _commit(session, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1], [2])
+    assert registry.compute_mismatch(node) == []
     assert registry.tito_tokenizer.apply_chat_template.call_args.kwargs["template_args"] == {}

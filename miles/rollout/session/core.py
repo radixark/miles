@@ -402,6 +402,7 @@ class SessionCore:
                 completion_token_ids=completion_token_ids,
                 max_trim_tokens=self.registry.tito_tokenizer.max_trim_tokens,
                 turn_args=request_body,
+                finish_reason=choice.get("finish_reason") or "",
             )
 
             record = SessionRecord(

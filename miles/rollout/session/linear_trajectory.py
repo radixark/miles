@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session.errors import (
+    MessageValidationError,
+    SessionNotFoundError,
+    TokenizationError,
+    TruncatedGenerationError,
+)
 from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
@@ -56,6 +61,24 @@ def assert_pretokenized_prefix(
         )
 
 
+def close_truncated_checkpoint(
+    token_ids: list[int], *, completion_start: int, tito_tokenizer: TITOTokenizer
+) -> list[int]:
+    """*token_ids* followed by the tokens that close its last turn, cut by ``finish_reason='length'``.
+
+    The closer becomes the head of the next prompt, so the next turn sees closed
+    reasoning and tool-call structures; the stored checkpoint keeps only its
+    sampled tokens. Shared by the v1 checkpoint render and the v2 node render.
+    Raises 409 when the TITO family declares no truncation grammar.
+    """
+    if tito_tokenizer.TRUNCATION_GRAMMAR is None:
+        raise TruncatedGenerationError(
+            f"truncated generation cannot be extended: {type(tito_tokenizer).__name__} cannot close a turn "
+            "cut by finish_reason='length'; branch before the cut instead"
+        )
+    return token_ids + tito_tokenizer.close_truncated_turn(token_ids, completion_start)
+
+
 @dataclass
 class LinearTrajectory:
     """State for a linear trajectory.
@@ -74,6 +97,10 @@ class LinearTrajectory:
     Rollback slices it with the token checkpoints. Model rules decide which of
     these fields a continuation inherits or must keep unchanged.
 
+    ``completion_starts`` and ``finish_reasons`` record where each checkpoint's
+    sampled tokens start and why sampling stopped; a continuation closes a
+    checkpoint cut by ``finish_reason='length'`` before appending to it.
+
     ``prepare_token_ids_and_request_args`` resolves arguments and renders from
     the selected checkpoint before applying rollback.
 
@@ -88,6 +115,8 @@ class LinearTrajectory:
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
     turn_args_history: list[dict[str, Any]] = field(default_factory=list)
+    completion_starts: list[int] = field(default_factory=list)
+    finish_reasons: list[str] = field(default_factory=list)
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
@@ -194,6 +223,13 @@ class LinearTrajectory:
                 f"{e}; the selected TITO fixed template does not support appending this role"
             ) from e
 
+        if self.finish_reasons[checkpoint_index] == "length":
+            token_ids = close_truncated_checkpoint(
+                token_ids,
+                completion_start=self.completion_starts[checkpoint_index],
+                tito_tokenizer=tito_tokenizer,
+            )
+
         effective_messages = stored_messages + request_messages[len(stored_messages) :]
         return tito_tokenizer.merge_tokens(
             old_messages=stored_messages,
@@ -210,11 +246,13 @@ class LinearTrajectory:
         completion_token_ids: list[int],
         max_trim_tokens: int,
         turn_args: dict[str, Any] | None = None,
+        finish_reason: str = "stop",
     ) -> None:
         """Store raw token IDs after a successful response.
 
         Appends ``prompt_token_ids + completion_token_ids`` as a new checkpoint,
-        recording the full resolved request in ``turn_args`` alongside.
+        recording the full resolved request in ``turn_args`` and the upstream
+        ``finish_reason`` alongside.
         Validates that the previously stored token_ids are a prefix of the new
         checkpoint (tolerating up to ``max_trim_tokens`` trailing differences).
         Must be called under ``self.lock``.
@@ -236,6 +274,8 @@ class LinearTrajectory:
         self.messages = self.messages + request_messages[len(self.messages) :] + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
         self.turn_args_history.append(deepcopy(turn_args or {}))
+        self.completion_starts.append(len(prompt_token_ids))
+        self.finish_reasons.append(finish_reason)
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
@@ -356,6 +396,8 @@ class LinearTrajectory:
         self.messages = self.messages[:rollback_msg_end]
         self.trajectory_token_ids = self.trajectory_token_ids[: checkpoint_index + 1]
         self.turn_args_history = self.turn_args_history[: checkpoint_index + 1]
+        self.completion_starts = self.completion_starts[: checkpoint_index + 1]
+        self.finish_reasons = self.finish_reasons[: checkpoint_index + 1]
         self.records = self.records[: checkpoint_index + 1]
         self.generated_checkpoint_message_ends = self.generated_checkpoint_message_ends[: checkpoint_index + 1]
         self.num_assistant = len(self.generated_checkpoint_message_ends)
@@ -424,7 +466,24 @@ class SessionRegistry:
                 tokenize=True,
                 template_args=extract_template_args(session.turn_args),
             )
-            mismatches = self.comparator.compare_sequences(expected_ids, session.token_ids)
+            token_ids = self._comparable_token_ids(
+                session.token_ids,
+                truncated=session.finish_reasons[-1] == "length",
+                completion_start=session.completion_starts[-1],
+            )
+            mismatches = self.comparator.compare_sequences(expected_ids, token_ids)
             return [m.to_dict() for m in mismatches]
         except Exception as e:
             raise TokenizationError(f"failed to compute tito_session_mismatch: {e}") from e
+
+    def _comparable_token_ids(self, token_ids: list[int], *, truncated: bool, completion_start: int) -> list[int]:
+        """The accumulated tokens that the mismatch check compares with the template render.
+
+        The render ends every turn, so a final turn cut by ``finish_reason='length'``
+        is compared closed, as a continuation extends it; its missing end-of-turn
+        token is then not reported as a special-token mismatch. A family that
+        cannot close the turn compares the cut tokens as they are.
+        """
+        if truncated and self.tito_tokenizer.TRUNCATION_GRAMMAR is not None:
+            return token_ids + self.tito_tokenizer.close_truncated_turn(token_ids, completion_start)
+        return token_ids

@@ -851,8 +851,9 @@ class TestAdditionR3Assembly:
         with pytest.raises(ValueError, match="record 1 starts at row 4; expected 5"):
             _merge_addition(records, accumulated, max_trim_tokens=2)
 
-    def test_intermediate_truncated_turn_bounds_materialization(self):
-        """A non-COMPLETED turn bounds required rows before later patches."""
+    def test_intermediate_truncated_turn_merges_through(self):
+        """A length turn continued by a later turn merges like a completed one,
+        so the later turn's patch is required too."""
         records = [
             _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(4, 0)), routed_experts_start_len=0),
             _make_record(
@@ -862,15 +863,20 @@ class TestAdditionR3Assembly:
                 routed_experts=_r3_patch(_r3_rows(3, 16)),
                 routed_experts_start_len=4,
             ),
-            _make_record([1, 2, 3, 10, 11, 4, 20, 21, 5], [30, 31]),
+            _make_record(
+                [1, 2, 3, 10, 11, 4, 20, 21, 5],
+                [30, 31],
+                routed_experts=_r3_patch(_r3_rows(3, 28)),
+                routed_experts_start_len=7,
+            ),
         ]
         accumulated = [1, 2, 3, 10, 11, 4, 20, 21, 5, 30, 31]
 
         merged = _merge_addition(records, accumulated)
 
-        assert merged.status == Sample.Status.TRUNCATED
-        assert merged.tokens == accumulated[:8]
-        expected = np.concatenate([_r3_rows(4, 0), _r3_rows(3, 16)])
+        assert merged.status == Sample.Status.COMPLETED
+        assert merged.tokens == accumulated
+        expected = np.concatenate([_r3_rows(4, 0), _r3_rows(3, 16), _r3_rows(3, 28)])
         assert np.array_equal(merged.rollout_routed_experts, expected)
 
     def test_missing_required_patch_raises(self):

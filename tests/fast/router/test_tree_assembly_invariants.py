@@ -139,9 +139,9 @@ def _assert_sample_legality(sample: Sample, leaf, owner: dict[int, int]) -> None
             continue
         lo, hi = node.completion_span
         expected |= set(range(lo, min(hi, len(sample.tokens))))
-    # Mid-path early-stop (a non-COMPLETED turn ends the fold) may keep the
-    # sample shorter than the snapshot; trained positions must then be the
-    # owned completions clipped to the kept range.
+    # Truncation by max_seq_len may keep the sample shorter than the snapshot;
+    # trained positions must then be the owned completions clipped to the kept
+    # range.
     expected = {p for p in expected if response_start <= p < len(sample.tokens)}
     assert trained == expected, f"exactly-once violated: trained={sorted(trained)} expected={sorted(expected)}"
 
@@ -298,10 +298,10 @@ class TestTargetedEdges:
         surviving_nodes = {node.seq for leaf in kept for node in leaf.path_nodes()}
         assert span_train_count == {seq: 1 for seq in surviving_nodes}
 
-    async def test_midpath_length_turn_early_stops_but_stays_legal(self, core):
-        """A non-COMPLETED mid-path turn ends the fold (documented early-stop):
-        the sample stops at that turn and every trained position still lies in
-        an owned completion span."""
+    async def test_midpath_length_turn_merges_through(self, core):
+        """A mid-path length turn folds like a completed one: its child's
+        prompt continues it, so the sample reaches the leaf and every owned
+        completion span is trained exactly once."""
         sid, state, grower = await _fresh_grower(core)
         root = grower.grow(None, env_len=2, completion_len=2)
         cut = grower.grow(root, env_len=1, completion_len=2, finish_reason="length")
@@ -311,5 +311,5 @@ class TestTargetedEdges:
         assert status == 200
         reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
         (sample,) = reply.samples
-        assert len(sample.tokens) == len(cut.token_ids)  # fold stopped at the length turn
+        assert sample.tokens == leaf.token_ids
         _assert_sample_legality(sample, leaf, _oracle_owner([leaf]))
