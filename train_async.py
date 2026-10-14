@@ -60,6 +60,17 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
     # always update weight first so that sglang has the loaded weights from training.
     await update_weights(args, actor_model, rollout_executor, inference_controller)
 
+    export_dir = os.environ.get("MILES_EXPORT_HF_DIR", "")
+    if os.environ.get("MILES_EXPORT_HF_ONLY") == "1":
+        if not export_dir:
+            raise RuntimeError("MILES_EXPORT_HF_ONLY=1 requires MILES_EXPORT_HF_DIR")
+        # start_rollout_id is the next step, so the loaded checkpoint is one behind it.
+        loaded_iteration = max(args.start_rollout_id - 1, 0)
+        logger.info("exporting HF checkpoint for iteration %s to %s", loaded_iteration, export_dir)
+        await actor_model.export_hf(loaded_iteration, export_dir)
+        logger.info("HF export complete: %s", export_dir)
+        return
+
     if args.check_weight_update_equal:
         await inference_controller.check_weights(
             action="compare",
