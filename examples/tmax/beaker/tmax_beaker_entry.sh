@@ -69,11 +69,18 @@ podman --url "${TMAX_DOCKER_HOST%%,*}" run --rm docker.io/library/alpine:latest 
 
 # ---- 2. Ray worker replicas: serve podman to the head, join its Ray cluster and stay until it goes away ----
 if [ "$NUM_NODES" -gt 1 ] && [ "$RANK" != 0 ]; then
-    # The Docker API is root on this node, so only the head's address may connect.
+    # The Docker API is root on this node, so only the head's address may connect (socat 1.8 takes range=a/n
+    # only on an IPv4 listener). A forward that does not stay up fails the job rather than leaving its node idle.
     shard=0
+    forwards=()
     for host in ${SWERL_PODMAN_DOCKER_HOSTS//,/ }; do
-        socat TCP-LISTEN:$((PODMAN_TCP_PORT + shard)),fork,reuseaddr,range="$HEAD_IP/32" "UNIX-CONNECT:${host#unix://}" &
+        socat TCP4-LISTEN:$((PODMAN_TCP_PORT + shard)),fork,reuseaddr,range="$HEAD_IP/32" "UNIX-CONNECT:${host#unix://}" &
+        forwards+=($!)
         shard=$((shard + 1))
+    done
+    sleep 2
+    for pid in "${forwards[@]}"; do
+        kill -0 "$pid" || { echo "podman TCP forward (pid $pid) exited"; exit 1; }
     done
     # The head starts after prepare, which converts the checkpoint on a first run, hence the long wait.
     deadline=$((SECONDS + 7200))
