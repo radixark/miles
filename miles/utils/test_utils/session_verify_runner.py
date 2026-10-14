@@ -28,6 +28,7 @@ import logging
 import os
 import shutil
 import tempfile
+from collections import Counter
 from typing import Any, Literal
 
 from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
@@ -77,6 +78,15 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
     "train_backend": "fsdp",
     "sglang_ep_size": 1,
     "enable_spec": False,
+}
+
+
+# SGLang server args for models verified with speculative decoding (``enable_spec``).
+SPECULATIVE_SERVER_ARGS: dict[str, str | int] = {
+    "speculative-algorithm": "EAGLE",
+    "speculative-num-steps": 2,
+    "speculative-eagle-topk": 1,
+    "speculative-num-draft-tokens": 3,
 }
 
 
@@ -186,14 +196,7 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
     if ns.sglang_ep_size > 1:
         parts.append(f"--sglang-expert-parallel-size {ns.sglang_ep_size}")
     if ns.enable_spec:
-        parts.extend(
-            [
-                "--sglang-speculative-algorithm EAGLE",
-                "--sglang-speculative-num-steps 2",
-                "--sglang-speculative-eagle-topk 1",
-                "--sglang-speculative-num-draft-tokens 3",
-            ]
-        )
+        parts.extend(f"--sglang-{name} {value}" for name, value in SPECULATIVE_SERVER_ARGS.items())
     if getattr(ns, "anthropic_intermediate_system_expectation", None) is not None:
         parts.append("--anthropic-intermediate-system-expectation " f"{ns.anthropic_intermediate_system_expectation}")
     if ns.use_session_server:
@@ -303,8 +306,12 @@ def assert_session_verify_metrics(
     assistant_text_threshold: float,
     special_token_count_threshold: float = 0.0,
     require_append_tool: bool = True,
+    required_cut_kinds: tuple[str, ...] = (),
 ) -> None:
     """Read per-sample JSONL metrics and assert cross-sample verifier gates.
+
+    ``required_cut_kinds`` (truncate mode) lists the places where some sample
+    must have cut a reply and continued it.
 
     Forbidden mismatch types (special_*, non_assistant_text) are recorded by
     the agent wrapper and hard-failed here so the rollout loop cannot discard
@@ -324,6 +331,9 @@ def assert_session_verify_metrics(
     verification_error_count = 0
     verification_error_stages = set()
     verification_error_example = None
+    continued_cut_kinds: set[str] = set()
+    cut_turns: Counter[str] = Counter()
+    cut_turn_mismatches: Counter[str] = Counter()
     with open(metrics_path) as f:
         for line in f:
             line = line.strip()
@@ -348,6 +358,9 @@ def assert_session_verify_metrics(
                 continue
             total_samples += 1
             has_append_tool = has_append_tool or "append_tool" in entry.get("driver_events", [])
+            continued_cut_kinds.update(entry.get("continued_cut_kinds", []))
+            cut_turns.update(entry.get("cut_turns", {}))
+            cut_turn_mismatches.update(entry.get("cut_turn_assistant_mismatches", {}))
             if entry.get("had_assistant_mismatch"):
                 samples_with_mismatch += 1
             entry_hard_types = entry.get("hard_mismatch_types", [])
@@ -412,6 +425,18 @@ def assert_session_verify_metrics(
             "Session multi-role e2e: no sample produced an append_tool action — "
             "the model may not be tool-calling.  Check sampling temperature, "
             "the tool spec, or parser configuration."
+        )
+
+    if cut_turns:
+        logger.info(
+            "Truncation cut turns with an assistant_text mismatch (metric only): %s",
+            {kind: f"{cut_turn_mismatches[kind]}/{count}" for kind, count in sorted(cut_turns.items())},
+        )
+    missing_cut_kinds = sorted(set(required_cut_kinds) - continued_cut_kinds)
+    if missing_cut_kinds:
+        raise AssertionError(
+            f"Session truncation e2e: no sample cut a reply in {missing_cut_kinds} and continued it "
+            f"(continued kinds: {sorted(continued_cut_kinds)})."
         )
 
     if ratio > assistant_text_threshold:

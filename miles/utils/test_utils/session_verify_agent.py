@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections import Counter
 from enum import Enum
 from functools import wraps
 
@@ -23,8 +24,17 @@ import httpx
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.agentic_tool_call import generate as _base_generate
-from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, TITOTokenizerType
+from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, TITOTokenizer, TITOTokenizerType
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
+from miles.utils.test_utils.session_truncation import (
+    CUT_KINDS,
+    check_continued_cuts,
+    completion_ids,
+    cut_length,
+    cut_segments,
+    load_tito_tokenizer,
+    record_cut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +176,8 @@ ASSISTANT_INPUT_TEXTS = (
 )
 ASSISTANT_INPUT_FOLLOWUP_TEXT = "Summarize the two weather results above in one sentence without calling a tool."
 FORCE_FINAL_TEXT = "Please summarize all results inside <final_answer>...</final_answer> tags."
+# Truncate mode: the TOOL_RESULT step after a reply cut inside its tool call continues it with this.
+CUT_CONTINUE_TEXT = "Your previous reply was cut off. Continue from where it stopped."
 
 TOOLS = [
     {
@@ -248,6 +260,67 @@ async def _chat(client, base_url, messages, request_kwargs, *, label):
     return resp.json()
 
 
+class _Cutter:
+    """Truncate mode: re-sends a probed turn with ``max_tokens`` ending in reasoning, a tool call or the answer.
+
+    By default targets rotate over ``CUT_KINDS`` from a per-sample offset; a turn
+    without the next target falls through to the following kind, and a turn with
+    none of them stays uncut.
+    """
+
+    def __init__(self, tito: TITOTokenizer, *, seed: int):
+        self.tito = tito
+        self.next_kind = seed % len(CUT_KINDS)
+        self.cuts: list[dict] = []
+
+    async def cut(self, client, base_url, messages, request_kwargs, *, label, kind: str | None = None) -> dict | None:
+        """Cut the probed turn in *kind*, or in the next applicable kind of the rotation."""
+        probe_ids = completion_ids((await client.get(base_url)).json()["records"][-1])
+        if kind is not None:
+            length = cut_length(self.tito, probe_ids, kind)
+            if length is None:
+                return None
+        else:
+            for offset in range(len(CUT_KINDS)):
+                kind_index = (self.next_kind + offset) % len(CUT_KINDS)
+                length = cut_length(self.tito, probe_ids, CUT_KINDS[kind_index])
+                if length is not None:
+                    break
+            else:
+                return None
+            self.next_kind = (kind_index + 1) % len(CUT_KINDS)
+        response = await _chat(
+            client, base_url, messages, {**request_kwargs, "max_tokens": length}, label=f"{label} cut"
+        )
+        if response["choices"][0].get("finish_reason") == "length":
+            self.cuts.append(record_cut(self.tito, (await client.get(base_url)).json()["records"][-1]))
+        return response
+
+
+# Actions that append messages after the turn before them, whatever it holds. Other
+# turns before TOOL_RESULT stay complete so their tool calls get results; a
+# rolled-back or final turn would never be continued.
+_CUT_BEFORE_ACTIONS = frozenset({_U, _S, _F, _A})
+
+
+async def _chat_turn(client, base_url, messages, request_kwargs, *, label, cutter, schedule, next_step):
+    """One assistant turn: complete, or in truncate mode probed and then cut if the schedule continues it.
+
+    The first reply, a call for the weather, is cut inside its tool call; the
+    TOOL_RESULT step after it continues the cut with ``CUT_CONTINUE_TEXT``.
+    """
+    response = await _chat_complete(client, base_url, messages, request_kwargs, label=label)
+    if cutter is None or next_step >= len(schedule):
+        return response
+    if next_step == 0 and schedule[0] is DriverAction.TOOL_RESULT:
+        kind = "tool_call"
+    elif schedule[next_step] in _CUT_BEFORE_ACTIONS:
+        kind = None
+    else:
+        return response
+    return await cutter.cut(client, base_url, messages, request_kwargs, label=label, kind=kind) or response
+
+
 async def _chat_complete(client, base_url, messages, request_kwargs, *, label):
     for retry in range(_MAX_INCOMPLETE_TURN_RETRIES + 1):
         attempt_kwargs = request_kwargs
@@ -289,6 +362,12 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             "(lenient-template) for tool-only surfaces."
         )
 
+    cutter = None
+    if metadata.get("session_verify_truncate"):
+        cutter = _Cutter(
+            load_tito_tokenizer(metadata["hf_checkpoint"], tito_model), seed=request_kwargs.get("seed") or 0
+        )
+
     rk = {k: v for k, v in request_kwargs.items() if k not in ("tools",)}
     messages = build_initial_messages()
     events: list[str] = []
@@ -308,7 +387,9 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 
     async with httpx.AsyncClient(timeout=180) as client:
         # Initial completion — no driver action yet.
-        resp = await _chat_complete(client, base_url, messages, rk, label="Initial")
+        resp = await _chat_turn(
+            client, base_url, messages, rk, label="Initial", cutter=cutter, schedule=schedule, next_step=0
+        )
         assistant = resp["choices"][0]["message"]
         messages.append(assistant)
         events.append("initial")
@@ -319,7 +400,10 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 
             if action is DriverAction.TOOL_RESULT:
                 tool_calls = assistant.get("tool_calls") or []
-                if tool_calls:
+                if not tool_calls and resp["choices"][0].get("finish_reason") == "length":
+                    messages.append({"role": "user", "content": CUT_CONTINUE_TEXT})
+                    events.append("continue_cut")
+                elif tool_calls:
                     consecutive_failure_rollbacks = 0
                     for i, tc in enumerate(tool_calls):
                         result_idx = (counters["tool_result_count"] + i) % len(MOCK_TOOL_RESULTS)
@@ -416,23 +500,35 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             else:
                 raise AssertionError(f"Unknown DriverAction {action!r}")
 
-            resp = await _chat_complete(client, base_url, messages, rk, label=label)
+            resp = await _chat_turn(
+                client, base_url, messages, rk, label=label, cutter=cutter, schedule=schedule, next_step=step_idx + 1
+            )
             assistant = resp["choices"][0]["message"]
             messages.append(assistant)
             counters["tool_call_count"] += len(assistant.get("tool_calls") or [])
 
+        result = {"driver_events": events, **counters}
+        if cutter is not None:
+            records = (await client.get(base_url)).json()["records"]
+            result["truncation_cuts"] = cutter.cuts
+            result["continued_cut_kinds"] = check_continued_cuts(cutter.tito, records)
+
     logger.info("Agent done: events=%s counters=%s", events, counters)
 
-    return {"driver_events": events, **counters}
+    return result
 
 
-def _verify_tito_samples(samples, events_per_sample, *, allowed_roles) -> None:
+def _verify_tito_samples(samples, events_per_sample, *, allowed_roles, tito: TITOTokenizer | None = None) -> None:
     """Record every sample and defer hard failures to the run-level gate.
 
     The rollout loop treats custom-generate exceptions as retryable sample
     failures.  With a metrics sidecar, hard TITO mismatches must therefore be
     persisted instead of raised here and discarded with the sample.  Direct
     callers without a sidecar retain the immediate-failure behavior.
+
+    In truncate mode (*tito* given), a cut turn's assistant_text mismatch is
+    expected (see ``cut_segments``): it is counted per cut kind and kept out of
+    the soft ratio, which then covers the complete turns only.
     """
     metrics_path = os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
     for i, sample in enumerate(samples):
@@ -446,6 +542,13 @@ def _verify_tito_samples(samples, events_per_sample, *, allowed_roles) -> None:
             )
         forbidden = [m for m in mismatches if m.get("type") in _FORBIDDEN_MISMATCH_TYPES]
         assistant_mismatches = [m for m in mismatches if m.get("type") == "assistant_text"]
+        cut_kinds = (
+            cut_segments(tito, sample.tokens, sample.metadata.get("truncation_cuts", [])) if tito is not None else {}
+        )
+        cut_mismatches = Counter(
+            cut_kinds[m["segment_index"]] for m in assistant_mismatches if m["segment_index"] in cut_kinds
+        )
+        assistant_mismatches = [m for m in assistant_mismatches if m.get("segment_index") not in cut_kinds]
         if metrics_path:
             had_assistant_mismatch = bool(assistant_mismatches)
             assistant_example = None
@@ -474,6 +577,9 @@ def _verify_tito_samples(samples, events_per_sample, *, allowed_roles) -> None:
                 "hard_mismatch_count": len(forbidden),
                 "hard_mismatch_types": sorted({m.get("type") for m in forbidden}),
                 "hard_mismatch_example": hard_example,
+                "continued_cut_kinds": sample.metadata.get("continued_cut_kinds", []),
+                "cut_turns": dict(Counter(cut_kinds.values())),
+                "cut_turn_assistant_mismatches": dict(cut_mismatches),
             }
             _append_session_verify_record(entry)
         elif forbidden:
@@ -497,10 +603,14 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     allowed_roles = list(fixed_template_append_roles(tito_model))
     cycles = getattr(input.args, "session_verify_cycles", DEFAULT_CYCLES)
     failure_mode = getattr(input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE)
+    truncate = getattr(input.args, "session_verify_truncate", False)
     # Sample.metadata is mutable even when the outer dataclass is frozen.
     input.sample.metadata["tito_model"] = tito_model
     input.sample.metadata["session_verify_cycles"] = cycles
     input.sample.metadata["tool_call_failure_mode"] = failure_mode
+    input.sample.metadata["session_verify_truncate"] = truncate
+    if truncate:
+        input.sample.metadata["hf_checkpoint"] = input.args.hf_checkpoint
 
     output = await _base_generate(input)
 
@@ -510,7 +620,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     if not samples:
         raise AssertionError("Session multi-role e2e: generate returned no samples")
-    _verify_tito_samples(samples, events_per_sample, allowed_roles=allowed_roles)
+    _verify_tito_samples(
+        samples,
+        events_per_sample,
+        allowed_roles=allowed_roles,
+        tito=load_tito_tokenizer(input.args.hf_checkpoint, tito_model) if truncate else None,
+    )
 
     required_per_sample = ["rollback"]
     if "user" in allowed_roles:
@@ -566,6 +681,12 @@ def _add_arguments(parser):
         "re-inferences.  'append_tool' splices a sentinel tool message (only "
         "works on lenient templates).  'append_user' splices a user message "
         "with the same failure text — requires the fixed template to support 'user'.",
+    )
+    parser.add_argument(
+        "--session-verify-truncate",
+        action="store_true",
+        help="Cut assistant replies with max_tokens inside reasoning, a tool call or the "
+        "answer, continue them, and check how the session server closed each cut.",
     )
 
 
