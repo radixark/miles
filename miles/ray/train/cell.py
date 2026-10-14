@@ -174,6 +174,10 @@ class TrainerCell:
             StateAllocatedAlive(worker_handles=self._state.worker_handles, indep_dp_info=indep_dp_info),
         )
 
+    async def mark_errored_and_kill(self) -> None:
+        self._mark_as_errored()
+        await self._kill_workers_and_confirm_dead()
+
     def _mark_as_errored(self) -> None:
         assert isinstance(
             self._state, (StateAllocatedUninitialized, StateAllocatedAlive, StateAllocatedErrored)
@@ -264,8 +268,7 @@ class TrainerCell:
                 exc_info=True,
             )
             if kill_on_failure:
-                self._mark_as_errored()
-                await self._kill_workers_and_confirm_dead()
+                await self.mark_errored_and_kill()
             raise
 
     # ------------------------ state and misc queries ------------------------
