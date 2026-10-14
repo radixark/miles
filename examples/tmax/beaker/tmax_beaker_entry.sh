@@ -25,6 +25,7 @@ SANDBOX_SHARDS=${SANDBOX_SHARDS:-1}
 NUM_NODES=${NUM_NODES:-1}
 RANK=${BEAKER_REPLICA_RANK:-0}
 RAY_PORT=6379
+HEAD_DONE=/tmp/miles-tmax-head-done  # the head marks every node once training succeeded
 PODMAN_TCP_PORT=23750  # worker replicas forward <port + shard> to their podman shard sockets
 cd "$REPO"
 git log -1 --format='running miles @ %H (%s)' || true
@@ -81,15 +82,23 @@ if [ "$NUM_NODES" -gt 1 ] && [ "$RANK" != 0 ]; then
         sleep 15
     done
     ray start --address="$HEAD_IP:$RAY_PORT" --num-gpus "$(nvidia-smi -L | wc -l)" --disable-usage-stats
-    # A worker never reports success: the job's outcome is the head's (open-instruct's ray_node_setup.sh).
+    # As open-instruct's ray_node_setup.sh, a worker that loses the head fails the job, so propagateFailure stops
+    # a run that would otherwise hang on the missing node; unlike it, a worker leaves with 0 after the head marked
+    # the run successful, so a finished experiment is not failed and retried.
     trap 'ray stop --force >/dev/null 2>&1 || true; exit 1' TERM INT HUP EXIT
     set +x
     misses=0
     while sleep 5; do
-        if ray status --address="$HEAD_IP:$RAY_PORT" >/dev/null 2>&1; then
+        if timeout 10 ray status --address="$HEAD_IP:$RAY_PORT" >/dev/null 2>&1; then
             misses=0
         elif [ $((misses += 1)) -ge 6 ]; then
-            echo "Ray head $HEAD_IP:$RAY_PORT unreachable for 30 s; leaving"
+            if [ -f "$HEAD_DONE" ]; then
+                echo "Ray head $HEAD_IP:$RAY_PORT finished training; leaving"
+                trap - TERM INT HUP EXIT
+                ray stop --force >/dev/null 2>&1 || true
+                exit 0
+            fi
+            echo "Ray head $HEAD_IP:$RAY_PORT unreachable 6 times in a row; leaving"
             exit 1
         fi
     done
@@ -157,3 +166,14 @@ PY
     export MILES_SCRIPT_EXTERNAL_RAY=1 MILES_SCRIPT_NUM_NODES=$NUM_NODES
 fi
 eval python examples/tmax/run_tmax_qwen3_5.py execute "$CONFIG" "${EXTRA_ARGS:-}"
+if [ "$NUM_NODES" -gt 1 ]; then
+    python - "$HEAD_DONE" <<'PY'
+import sys, ray
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+ray.init(address="auto", logging_level="ERROR")
+mark = ray.remote(num_cpus=0)(lambda path: open(path, "w").close())
+nodes = [n["NodeID"] for n in ray.nodes() if n["Alive"]]
+ray.get([mark.options(scheduling_strategy=NodeAffinitySchedulingStrategy(n, soft=False)).remote(sys.argv[1]) for n in nodes])
+print(f"marked {len(nodes)} nodes done", flush=True)
+PY
+fi
