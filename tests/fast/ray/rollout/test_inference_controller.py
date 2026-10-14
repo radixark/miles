@@ -120,10 +120,16 @@ class _RecordingServer:
     async def dispose(self):
         self.dispose_count += 1
 
-    async def check_weights(self, action, allow_quant_error=False, selector="all", skip_list=None):
+    async def check_weights(self, action, allow_quant_error=False, selector="all", skip_list=None, cell_ids=None):
         self.calls.append(("check_weights", action))
         self.check_weights_kwargs.append(
-            dict(action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list)
+            dict(
+                action=action,
+                allow_quant_error=allow_quant_error,
+                selector=selector,
+                skip_list=skip_list,
+                cell_ids=cell_ids,
+            )
         )
         return [self.model_name]
 
@@ -903,11 +909,11 @@ class TestUpdatableModelSelection:
         actor = _RecordingServer(model_name="actor", update_weights=True)
 
         await self._controller(actor).check_weights(
-            action="compare", allow_quant_error=True, selector="first", skip_list=["lm_head"]
+            action="compare", allow_quant_error=True, selector="first", skip_list=["lm_head"], cell_ids=["c0"]
         )
 
         assert actor.check_weights_kwargs == [
-            dict(action="compare", allow_quant_error=True, selector="first", skip_list=["lm_head"])
+            dict(action="compare", allow_quant_error=True, selector="first", skip_list=["lm_head"], cell_ids=["c0"])
         ]
 
 
