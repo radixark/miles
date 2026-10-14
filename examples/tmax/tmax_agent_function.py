@@ -37,6 +37,8 @@ Env vars:
   TMAX_MAX_STEPS           max bash calls per episode (default: 64).
   TMAX_START_FAILURE       zero | drop: what a sandbox that never starts does (default: zero).
   TMAX_EPISODE_TIMEOUT_S   wall-clock cap per episode, 0 for none (default: 0, as open-instruct).
+  TMAX_TOOL_CALL_TIMEOUT_S outer cap on one step, a submit's test run included (default: 120, open-instruct's
+                           tool_call_timeout); an overrun is an error observation, so it also bounds a hung podman.
   TMAX_TRACE_DIR           if set, one JSONL line per episode (messages, reward, metrics) is
                            appended under this directory (open-instruct's --save_traces).
   AGENT_MODEL_NAME         model name sent to the policy (default: "model").
@@ -268,14 +270,19 @@ async def _run_tool_call(episode: _Episode, box: TmaxSandbox, tool_call: Any) ->
         return _FORMAT_ERROR.format(error="Tool call arguments are not a JSON object."), False
     if not command:
         return _FORMAT_ERROR.format(error="'command' parameter is required."), False
+    timeout_s = float(os.getenv("TMAX_TOOL_CALL_TIMEOUT_S", "120"))
     t0 = time.monotonic()
     try:
-        observation, submitted = await _race_abort(episode, box.bash(command))
-        if not submitted:
+        observation, reward = await _race_abort(episode, asyncio.wait_for(_step(box, command), timeout=timeout_s))
+        if reward is None:
             return observation, False
-        episode.reward = await _race_abort(episode, box.run_tests())
-        episode.end_reason = "submitted"
+        episode.reward, episode.end_reason = reward, "submitted"
         return observation, True
+    except TimeoutError:
+        # open-instruct's outer tool_call_timeout (120 s, never overridden in its prod script) wraps the whole
+        # env step, including a submit's test run: an overrun is reported to the policy and the episode goes on.
+        episode.tool_errors += 1
+        return f"Step 'bash' timed out after {timeout_s:g}s. Args: {{'command': {command!r}}}", False
     except SandboxInfraError as e:
         if _abort_generation() != episode.abort_generation:  # the abort hook removed the container
             raise _Aborted() from e
@@ -284,6 +291,14 @@ async def _run_tool_call(episode: _Episode, box: TmaxSandbox, tool_call: Any) ->
         return f"Step 'bash' failed: {e}. Args: {{'command': {command!r}}}", False
     finally:
         episode.tool_times.append(time.monotonic() - t0)
+
+
+async def _step(box: TmaxSandbox, command: str) -> tuple[str, float | None]:
+    """One env step: run the command; on the submit marker run the tests. Returns (observation, reward or None)."""
+    observation, submitted = await box.bash(command)
+    if not submitted:
+        return observation, None
+    return observation, await box.run_tests()
 
 
 async def _race_abort(episode: _Episode, coro: Any) -> Any:

@@ -41,7 +41,10 @@ production script (`--tool_call_format_error_feedback` off, `SWERL_RESET_FAILURE
    each command run with a 120 s timeout, output truncated head/tail at 10k characters and followed by
    `(exit_code=N)`. Calls to other tools are ignored; a turn without a bash call ends the episode. A command that
    fails for infra reasons is reported as `Step 'bash' failed: ...` and the episode goes on; a vanished container
-   is recreated once.
+   is recreated once. Each step, a submit's test run included, is capped by `tool_call_timeout_s` (120 s, open-instruct's
+   `tool_call_timeout`): an overrun is reported as `Step 'bash' timed out ...` and the episode goes on, which also
+   bounds a hung podman call. As in open-instruct's production runs, a test run longer than 120 s therefore cannot
+   earn the reward; raise `tool_call_timeout_s` to stop reproducing that.
 4. The episode ends on the submit marker (`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`), which uploads `tests/`,
    runs `test.sh` (600 s) and reads `/logs/verifier/reward.txt`; or with reward 0 on no tool call, a
    length-truncated turn, a full context, the step limit, an OOM-killed sandbox, or `episode_timeout_s` (off).

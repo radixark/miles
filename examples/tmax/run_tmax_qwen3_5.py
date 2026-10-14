@@ -60,6 +60,7 @@ Args:
   --num-prompts: keep only the first N prompts, for smoke tests (default: all).
   --start-failure: zero | drop, for a sandbox that never starts (default: zero, open-instruct's behavior).
   --episode-timeout-s: wall-clock cap per episode, 0 for none (default: 0).
+  --tool-call-timeout-s: cap on one step, tests included (default: 120, open-instruct's tool_call_timeout).
   --sandbox-start-concurrency / --sandbox-exec-concurrency: per rollout process (default: 16 / 128).
   --trace-dir: append one JSONL record per episode under <trace-dir>/<exp-name> (default: off).
   --wandb-project: wandb project (default: miles-run_tmax_qwen3_5); with --exp-name restarts share one run.
@@ -167,6 +168,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # SWERL_RESET_FAILURE_ZERO_REWARD=1); drop: its group is dropped.
     start_failure: Literal["zero", "drop"] = "zero"
     episode_timeout_s: int = 0
+    # open-instruct's tool_call_timeout: caps a whole step, a submit's test run included.
+    tool_call_timeout_s: int = 120
     # Per-episode JSONL traces go to <trace_dir>/<exp_name or run_id> (open-instruct's --save_traces).
     trace_dir: str = ""
     wandb_project: str = ""
@@ -404,6 +407,7 @@ def execute(args: ScriptArgs):
             "TMAX_EXEC_CONCURRENCY": str(args.sandbox_exec_concurrency),
             "TMAX_START_FAILURE": args.start_failure,
             "TMAX_EPISODE_TIMEOUT_S": str(args.episode_timeout_s),
+            "TMAX_TOOL_CALL_TIMEOUT_S": str(args.tool_call_timeout_s),
             "TMAX_TRACE_DIR": f"{args.trace_dir}/{args.exp_name or args.run_id}" if args.trace_dir else "",
         },
     )
