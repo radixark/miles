@@ -283,10 +283,14 @@ async def _run_tool_call(episode: _Episode, box: TmaxSandbox, tool_call: Any) ->
         # env step, including a submit's test run: an overrun is reported to the policy and the episode goes on.
         episode.tool_errors += 1
         return f"Step 'bash' timed out after {timeout_s:g}s. Args: {{'command': {command!r}}}", False
-    except SandboxInfraError as e:
+    except (SandboxOOMError, _Aborted):
+        raise
+    except Exception as e:
         if _abort_generation() != episode.abort_generation:  # the abort hook removed the container
             raise _Aborted() from e
-        # open-instruct process_request: a failed step is reported to the policy and the episode goes on.
+        # open-instruct process_request catches any exception from the env step (its OOM is handled inside the
+        # step): it is reported to the policy and the episode goes on. docker-py raises plain ValueErrors too,
+        # such as "97 is not a valid stream" when podman's exec framing breaks.
         episode.tool_errors += 1
         return f"Step 'bash' failed: {e}. Args: {{'command': {command!r}}}", False
     finally:
