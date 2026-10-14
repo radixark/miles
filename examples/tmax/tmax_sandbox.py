@@ -39,9 +39,11 @@ Env vars:
   TMAX_TEST_TIMEOUT_S       verifier timeout (default: 600, open-instruct's floor).
   TMAX_START_CONCURRENCY    concurrent container starts per node (default: 16).
   TMAX_EXEC_CONCURRENCY     concurrent execs per node (default: 128).
-  TMAX_REGISTRY_USERNAME /  optional pull credentials. Always sent explicitly, so the
+  TMAX_REGISTRY_USERNAME /  Docker Hub pull credentials. Always sent explicitly, so the
   TMAX_REGISTRY_PASSWORD    client's ~/.docker/config.json credential helper is never
-                            consulted; without them Podman uses its own auth.json.
+                            consulted; without them the pull is anonymous: podman takes the
+                            credentials from the request's X-Registry-Auth alone, and an empty
+                            one overrides `podman login` and ~/.docker/config.json alike.
 """
 
 import asyncio
@@ -386,7 +388,8 @@ class TmaxSandbox:
             try:
                 await asyncio.to_thread(client.images.get, self._image)
             except docker.errors.ImageNotFound:
-                logger.info(f"pulling sandbox image {self._image} on {self._docker_host}")
+                user = _settings().registry_auth.get("username", "anonymous")
+                logger.info(f"pulling sandbox image {self._image} on {self._docker_host} as {user}")
                 await asyncio.to_thread(client.images.pull, self._image, auth_config=_settings().registry_auth)
 
     async def _prepare_runtime(self) -> None:

@@ -64,6 +64,9 @@ set +xu  # docker_login.sh also reads unset variables
 source "$PODMAN_DIR/docker_login.sh"
 if [ -n "${DOCKER_PAT:-}" ]; then
     printf '%s' "$DOCKER_PAT" | podman login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+    # tmax_sandbox sends these with every pull: podman pulls with whatever X-Registry-Auth carries, so without them
+    # the pulls go out anonymous whatever the logins above stored. The agent processes inherit them through Ray.
+    export TMAX_REGISTRY_USERNAME="$DOCKERHUB_USERNAME" TMAX_REGISTRY_PASSWORD="$DOCKER_PAT"
 fi
 set -xu
 export TMAX_DOCKER_HOST="$SWERL_PODMAN_DOCKER_HOSTS"
