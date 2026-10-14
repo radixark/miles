@@ -35,7 +35,7 @@ beaker:
   workspace: ai2/oe-agents-holmes
   budget: ai2/oe-omai
   priority: urgent
-  preemptible: true
+  preemptible: true                           # only used without min_runtime (Beaker allows one)
   min_runtime: 8h
   retries: 5                                  # mason --max_retries 5; a retry resumes from exp_name's checkpoint
   gpus: 8

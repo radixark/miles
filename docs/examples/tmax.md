@@ -73,7 +73,7 @@ python examples/tmax/beaker/submit.py examples/tmax/configs/prod_1node.yaml [--d
 ```
 
 `submit.py` plays mason's role. From the config's `beaker:` section it writes the spec (cluster, GPUs, image,
-weka mounts, secrets, and `preemptible` + `autoResume` + task retries) and pins the job to the current commit:
+weka mounts, secrets, and `minRuntime` + `autoResume` + task retries) and pins the job to the current commit:
 the task clones this repository at that commit, so retries and later edits to the checkout cannot change what it
 runs. Commit the config before submitting. The task runs `beaker/tmax_beaker_entry.sh`, which installs podman
 (apt) and runs open-instruct's own bring-up, vendored in `beaker/podman/`: `sandbox_shards` daemons with their

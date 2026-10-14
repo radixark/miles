@@ -3,8 +3,8 @@
     python examples/tmax/beaker/submit.py examples/tmax/configs/prod_1node.yaml
     python examples/tmax/beaker/submit.py examples/tmax/configs/smoke_sync.yaml --dry-run -- --num-rollout 1
 
-Reads the config's ``beaker:`` section and writes a Beaker v2 spec: ``preemptible`` + ``autoResume`` + task
-retries (mason's ``--preemptible --auto_resume --max_retries``), the radixark/miles image, GPUs, shared memory,
+Reads the config's ``beaker:`` section and writes a Beaker v2 spec: ``minRuntime`` + ``autoResume`` + task
+retries (mason's ``--min_runtime --auto_resume --max_retries``; ``preemptible`` only without ``min_runtime``), the radixark/miles image, GPUs, shared memory,
 weka mounts and the user's secrets. The job is pinned to the current git commit: the task clones this repository
 at that commit and runs ``beaker/tmax_beaker_entry.sh <config>``, so a preempted job's retries, and edits made to
 the checkout while it runs, cannot change what it trains. Arguments after ``--`` are launcher overrides.
@@ -99,9 +99,13 @@ def _build_spec(*, beaker: dict, config_rel: str, commit: str, overrides: list[s
         f"git -C {_SNAPSHOT} checkout -q {commit} && "
         f"exec bash {_SNAPSHOT}/{_ENTRY} {config_rel}"
     )
-    context = {"priority": beaker.get("priority", "normal"), "preemptible": bool(beaker.get("preemptible", False))}
+    # Beaker rejects preemptible together with minRuntime / autoResume: a min-runtime job is preemptible once that
+    # time has passed and resumes automatically, which is mason's --min_runtime --auto_resume.
+    context = {"priority": beaker.get("priority", "normal")}
     if beaker.get("min_runtime"):
         context |= {"minRuntime": beaker["min_runtime"], "autoResume": True}
+    elif beaker.get("preemptible"):
+        context |= {"preemptible": True}
     return {
         "version": "v2",
         "description": description,
