@@ -366,11 +366,13 @@ def _make_runner(
     *,
     observer: SoakObserver,
     forms: SoakForms | None = None,
+    scheduler: _ScriptedScheduler | None = None,
     config: SoakRunnerConfig | None = None,
     sut_events: _ScriptedSutFeed | None = None,
 ) -> SoakRunner:
     return SoakRunner(
         observer=observer,
+        scheduler=scheduler or _ScriptedScheduler(),
         forms={"actor": [_FakeForm()]} if forms is None else forms,
         event_log=EventLog(tmp_path / "evidence" / "events.jsonl"),
         config=config or _runner_config(),
