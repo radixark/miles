@@ -3,7 +3,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
-from tests.utils.deploy.hot_restart.evidence import HotRestartRecord, read_discarded_event_dirs, read_step_events
+from tests.utils.deploy.hot_restart.evidence import (
+    HotRestartRecord,
+    read_discarded_event_dirs,
+    read_finished_steps_once,
+)
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 
@@ -41,7 +45,7 @@ def assert_only_post_checkpoint_steps_redone(
         f"every take-over leaves the log it rolled back behind, and {len(records)} restart(s) left "
         f"{[one.name for one in discarded_dirs]}"
     )
-    discarded_logs = [_read_finished_steps(one) for one in discarded_dirs]
+    discarded_logs = [read_finished_steps_once(one, what=one.name) for one in discarded_dirs]
     for discarded_dir, log in zip(discarded_dirs, discarded_logs, strict=True):
         assert log, (
             f"{discarded_dir.name} describes no finished step, so the take-over that left it behind rolled back "
@@ -49,7 +53,7 @@ def assert_only_post_checkpoint_steps_redone(
         )
 
     discarded_logs.sort(key=max)
-    surviving_log = _read_finished_steps(Path(dump_dir) / EVENTS_DIRNAME)
+    surviving_log = read_finished_steps_once(Path(dump_dir) / EVENTS_DIRNAME, what="the surviving event log")
     logs = [*discarded_logs, surviving_log]
 
     frozen_rollout_ids = [max(one) for one in discarded_logs]
@@ -153,7 +157,9 @@ def _assert_resume_points_are_checkpoints(*, checkpoint_dir: str, resume_rollout
         f"not a checkpoint of this run"
     )
 
-    steps_of_snapshot = {one.parent.name: sorted(_read_finished_steps(one)) for one in snapshot_dirs}
+    steps_of_snapshot = {
+        one.parent.name: sorted(read_finished_steps_once(one, what=one.name)) for one in snapshot_dirs
+    }
     for index, resume in enumerate(resume_rollout_ids):
         matching = sorted(name for name, steps in steps_of_snapshot.items() if steps == list(range(resume + 1)))
         assert matching, (
@@ -164,17 +170,6 @@ def _assert_resume_points_are_checkpoints(*, checkpoint_dir: str, resume_rollout
 
 
 # =========================== reading the event logs ===========================
-
-
-def _read_finished_steps(events_dir: Path) -> dict[int, str]:
-    events_of_rollout_id = read_step_events(events_dir)
-
-    repeated = {rollout_id: len(logged) for rollout_id, logged in events_of_rollout_id.items() if len(logged) > 1}
-    assert not repeated, (
-        f"{events_dir} describes the steps {repeated} more than once each; a take-over rolls the log back before "
-        f"redoing anything, so one log covers each step exactly once"
-    )
-    return {rollout_id: logged[0] for rollout_id, logged in events_of_rollout_id.items()}
 
 
 def read_checkpoint_snapshot_dirs(checkpoint_dir: str) -> list[Path]:
