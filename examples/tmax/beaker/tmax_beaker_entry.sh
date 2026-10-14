@@ -58,13 +58,15 @@ export SWERL_PODMAN_SERVICE_COUNT=$SANDBOX_SHARDS PODMAN_NUM_LOCKS=${PODMAN_NUM_
 export SWERL_PODMAN_IMAGE_JANITOR_ENABLED=${SWERL_PODMAN_IMAGE_JANITOR_ENABLED:-1}
 export SWERL_PODMAN_IMAGE_JANITOR_INTERVAL_S=${SWERL_PODMAN_IMAGE_JANITOR_INTERVAL_S:-60}
 export SWERL_PODMAN_IMAGE_JANITOR_UNTIL=${SWERL_PODMAN_IMAGE_JANITOR_UNTIL:-10m}
-set +u  # docker_login.sh reads unset variables
+# No xtrace while DOCKER_PAT is in play: a traced `[ -n "$DOCKER_PAT" ]` or `echo "$DOCKER_PAT"` prints the token
+# into the job log.
+set +xu  # docker_login.sh also reads unset variables
 source "$PODMAN_DIR/docker_login.sh"
-set -u
-export TMAX_DOCKER_HOST="$SWERL_PODMAN_DOCKER_HOSTS"
 if [ -n "${DOCKER_PAT:-}" ]; then
-    echo "$DOCKER_PAT" | podman login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+    printf '%s' "$DOCKER_PAT" | podman login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
 fi
+set -xu
+export TMAX_DOCKER_HOST="$SWERL_PODMAN_DOCKER_HOSTS"
 podman --url "${TMAX_DOCKER_HOST%%,*}" run --rm docker.io/library/alpine:latest echo podman-sandbox-ok
 
 # ---- 2. Ray worker replicas: serve podman to the head, join its Ray cluster and stay until it goes away ----
