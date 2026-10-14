@@ -14,11 +14,7 @@ from tests.e2e.fsdp.r3._common import CaseConfig, main
 register_cuda_ci(est_time=800, suite="stage-c-8-gpu-h200", labels=["fsdp", "replay"], hardware=["hopper"], num_gpus=8)
 register_rocm_ci(est_time=800, suite="nightly-stage-c-8-gpu-mi350", labels=["fsdp", "replay"])
 
-register_ci_gate(
-    metric_key="train/grad_norm",
-    enforce=False,
-    allowlist_reason="Exact-zero steps (every GRPO group's rewards uniform) make per-step grad_norm bimodal.",
-)
+register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
 # raw_reward averages 64 samples, so it moves in 1/64 steps and healthy runs land up to 0.11 from the mean.
 register_ci_gate(

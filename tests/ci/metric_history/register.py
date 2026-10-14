@@ -91,9 +91,11 @@ _FIELDS: dict[str, tuple[bool, object]] = {
 # stay within the capture whitelist (miles.utils.tracking_utils
 # TARGET_METRIC_KEYS; test-enforced, not imported here).
 GATE_DEFAULTS: dict[str, dict] = {
+    # grad_norm jitters and is exactly 0 on steps where every GRPO group's rewards
+    # are uniform, so its band only rejects an order-of-magnitude jump.
     "train/grad_norm": {
         "steps": "all",
-        "constraint": {"rel_up": 0.5, "abs_floor_up": 0.1, "rel_down": 0.8, "abs_floor_down": 0.1},
+        "constraint": {"rel_up": 9.0, "abs_floor_up": 1.0, "rel_down": 1.0},
     },
     "train/ppo_kl": {
         "steps": "all",

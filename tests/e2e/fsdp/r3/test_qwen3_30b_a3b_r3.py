@@ -6,11 +6,7 @@ from tests.e2e.fsdp.r3._common import CaseConfig, main
 
 register_cuda_ci(est_time=700, suite="stage-c-8-gpu-h200", labels=["fsdp", "replay"], hardware=["hopper"], num_gpus=8)
 
-register_ci_gate(
-    metric_key="train/grad_norm",
-    enforce=False,
-    allowlist_reason="Exact-zero steps (every GRPO group's rewards uniform) make per-step grad_norm bimodal.",
-)
+register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 

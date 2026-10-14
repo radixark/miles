@@ -608,6 +608,28 @@ def test_reward_corridor_flags_drop_and_suspicious_jump(tmp_path, store):
     )
 
 
+def test_grad_norm_default_flags_only_an_order_of_magnitude_jump(tmp_path, store):
+    # grad_norm jitters and is exactly 0 on steps where every GRPO group's
+    # rewards are uniform, so the default band only rejects a ~10x jump.
+    test_file = _write_test_file(tmp_path, 'register_ci_gate(metric_key="train/grad_norm")')
+    for step, values in ((0, [0.2, 0.2]), (1, [0.0, 0.0])):
+        _seed_baseline(
+            store,
+            test_file,
+            metric_key="train/grad_norm",
+            steps_key=_key("all"),
+            constraint_key="{}",
+            step=step,
+            values=values,
+        )
+    for current, status in ((0.0, GateStatus.PASS), (1.9, GateStatus.PASS), (2.5, GateStatus.FAIL)):
+        record = _write_record(tmp_path, {"train/grad_norm": [[0, current], [1, 0.5]]}, name=f"{current}.jsonl")
+        zero, one = evaluate_gate(test_file, record, store, executing_suite="stage-c-8-gpu-h100").metrics
+        assert (zero.baseline_n, zero.historical_status) == (2, status)
+        # A step whose trusted history is all zeros falls back to the 1.0 floor.
+        assert one.historical_status == GateStatus.PASS
+
+
 # --- multiple specs, no specs ------------------------------------------------
 
 
