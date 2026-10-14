@@ -89,13 +89,16 @@ so it is listed with the `/rerun-test` lines.
 
 ## 2. Choose files or labels
 
-- **A few GPU files (roughly ≤ 10), no changed hub** → `/rerun-test`, one
-  comment per file. This is the default.
-- **Many files from one domain, a changed hub, a changed file on the training
-  entry path, or a path outside the import trace** (arguments, launcher utils,
-  Docker or workflow files) → the smallest set of domain labels that covers
-  them. Prefer a label whose "reached / all" ratio is high. Labels cover regular
-  registrations only: keep `/rerun-test` for the nightly-only targets.
+- **A few GPU files (roughly ≤ 10), no hub the change touches or meets within
+  two hops, and nothing relevant left unfollowed at the depth bound** →
+  `/rerun-test`, one comment per file. This is the default.
+- **Many files from one domain, a hub the change touches or meets within two
+  hops, a changed file on the training entry path, or a path outside the import
+  trace** (arguments, launcher utils, Docker or workflow files) → the smallest
+  set of domain labels that covers them. A nearby hub does not count when CI
+  never takes the path to it (the Helm launcher; see step 1). Prefer a label
+  whose "reached / all" ratio is high. Labels cover regular registrations only:
+  keep `/rerun-test` for the nightly-only targets.
 - **Blackwell-specific code changed** → `/rerun-test` runs only on a test's home
   suite, which is Hopper for most tests that also list `blackwell` in
   `hardware`, so a file run reports green without executing the changed path.
