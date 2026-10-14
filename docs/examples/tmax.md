@@ -85,8 +85,12 @@ newest `keep_last_n_checkpoints` training checkpoints, then runs `prepare` + `ex
 
 With `nodes: N` (and the launcher's `num_nodes: N`), the task gets N replicas as mason's `--num_nodes` makes them:
 leader selection, host networking, failure and preemption propagated to every replica, and NCCL over InfiniBand
-(`NCCL_SOCKET_IFNAME=ib`, `NCCL_IB_HCA=^=mlx5_bond_0`). Replica 0 does everything above and starts the Ray head;
-the other replicas join it as GPU workers and exit with it, as open-instruct's `ray_node_setup.sh` workers do.
+(`NCCL_SOCKET_IFNAME=ib`, `NCCL_IB_HCA=^=mlx5_bond_0`). Every replica brings podman up; replica 0 does
+everything else and starts the Ray head, and the other replicas join it as GPU workers and exit with it, as
+open-instruct's `ray_node_setup.sh` workers do. The agent processes run on the head and reach each worker's
+podman shards through `socat` TCP forwards that accept only the head's address; `sandboxes_per_node` caps the
+live sandboxes on each node, as open-instruct's `--pool_size` actors spread over its nodes (512 on 4 nodes: 128),
+and the start and exec limits apply per node, as open-instruct's file semaphores do.
 Fully async on several nodes gives training and SGLang whole nodes, training first: `prod_4node.yaml` trains on
 2 nodes (TP 2 x CP 2 x DP 4) and generates with 16 engines on the other 2, open-instruct's 16 learners + 16 vLLM
 engines.
@@ -229,6 +233,6 @@ above 1 nat).
 - Podman comes from Ubuntu's apt (4.9) at job start; open-instruct's image builds 5.6.2 and crun 1.14.3 from
   source. Bake them into a Miles image for production.
 - Group-granular dropping: one infra failure discards its whole group.
-- Multi-node runs every sandbox on the head node, where the RolloutExecutor is pinned
-  (`--pin-rollout-manager-to-head`); open-instruct spreads its 512 sandboxes over all 4 nodes. One node holds 256
-  reliably, so `prod_4node.yaml` keeps 256 trajectories in flight instead of 512.
+- Multi-node runs every agent process on the head, where the RolloutExecutor is pinned
+  (`--pin-rollout-manager-to-head`); open-instruct's environment actors run on all nodes. The sandboxes still
+  spread like open-instruct's: the head drives the other nodes' podman over TCP.

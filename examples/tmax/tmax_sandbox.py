@@ -20,25 +20,32 @@ Behavior kept identical to open-instruct, since it shapes the reward:
 
 Under ``--custom-agent-function-mode subproc`` (the default) each episode runs in
 a process of its own, so the limits shared across episodes (start and exec
-concurrency, one pull per image) are ``rollout_limits`` file locks scoped to the
+concurrency, one pull per image, sandboxes per node) are file locks scoped to the
 rollout process, and containers are labelled with that scope rather than a pid.
+
+Daemons on other nodes are reached over TCP (``tcp://<node ip>:<port>``); the endpoints with one host part
+are one node, and every ``unix://`` socket is the rollout's own node. As open-instruct's per-node
+``_FileSlotSemaphore``s, the start and exec limits apply to each node separately.
 
 Env vars:
   TMAX_DOCKER_HOST          Docker API endpoint(s), comma-separated (default: $DOCKER_HOST,
                             else unix:///run/podman/podman.sock). One podman daemon serializes
                             on its lock database at high concurrency, so open-instruct runs
                             several per node; each episode picks one at random and keeps it.
+  TMAX_SANDBOXES_PER_NODE   live sandboxes per node, 0 for no cap (default: 0). open-instruct's
+                            --pool_size actors spread over its nodes, so pool_size / nodes.
   TMAX_SANDBOX_MEM_LIMIT    per-container memory limit (default: 4g).
   TMAX_COMMAND_TIMEOUT_S    per-bash-command timeout (default: 120).
   TMAX_TEST_TIMEOUT_S       verifier timeout (default: 600, open-instruct's floor).
-  TMAX_START_CONCURRENCY    concurrent container starts per rollout process (default: 16).
-  TMAX_EXEC_CONCURRENCY     concurrent execs per rollout process (default: 128).
+  TMAX_START_CONCURRENCY    concurrent container starts per node (default: 16).
+  TMAX_EXEC_CONCURRENCY     concurrent execs per node (default: 128).
   TMAX_REGISTRY_USERNAME /  optional pull credentials. Always sent explicitly, so the
   TMAX_REGISTRY_PASSWORD    client's ~/.docker/config.json credential helper is never
                             consulted; without them Podman uses its own auth.json.
 """
 
 import asyncio
+import fcntl
 import io
 import logging
 import os
@@ -51,6 +58,7 @@ import time
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from urllib.parse import urlparse
 
 import docker
 
@@ -93,6 +101,7 @@ _START_RETRY_MAX_S = 16.0
 _START_RETRY_JITTER_S = 2.0
 _HOST_COOLDOWN_S = 300.0
 _HOST_COOLDOWN_JITTER_S = 30.0
+_NODE_SLOT_POLL_S = 0.5
 
 _BASH_WRAPPER_PATH = "/tmp/.swerl_vanillux_bash_wrapper.sh"
 _BASH_CWD_PATH = "/tmp/.swerl_vanillux_cwd"
@@ -129,6 +138,7 @@ class ExecResult:
 @dataclass(frozen=True)
 class _Settings:
     docker_hosts: tuple[str, ...]
+    sandboxes_per_node: int
     mem_limit: str
     command_timeout_s: int
     test_timeout_s: int
@@ -147,6 +157,7 @@ def _settings() -> _Settings:
             ).split(",")
             if host.strip()
         ),
+        sandboxes_per_node=int(os.getenv("TMAX_SANDBOXES_PER_NODE", "0")),
         mem_limit=os.getenv("TMAX_SANDBOX_MEM_LIMIT", "4g"),
         command_timeout_s=int(os.getenv("TMAX_COMMAND_TIMEOUT_S", "120")),
         test_timeout_s=int(os.getenv("TMAX_TEST_TIMEOUT_S", "600")),
@@ -182,18 +193,49 @@ def _bench(docker_host: str, error: BaseException) -> None:
     logger.warning(f"benching sandbox daemon {docker_host} for {cooldown:.0f}s after: {error!r}")
 
 
-def _pick_host() -> str:
-    """A random daemon that is not benched; any daemon if all of them are."""
-    hosts = _settings().docker_hosts
-    now = time.time()
+def _benched(docker_host: str) -> bool:
+    try:
+        return float(_bench_path(docker_host).read_text()) > time.time()
+    except (FileNotFoundError, ValueError):
+        return False
 
-    def benched(host: str) -> bool:
+
+def _node_of(docker_host: str) -> str:
+    """The node a daemon runs on: its TCP host, or this node for a unix socket."""
+    return urlparse(docker_host).hostname or "local"
+
+
+async def _acquire_host() -> tuple[str, int | None]:
+    """A random daemon that is not benched (any daemon if all of them are), on a node below its sandbox cap.
+
+    Returns the daemon and the descriptor whose lock holds the node slot (None without a cap); closing it
+    frees the slot, as does the holder's death.
+    """
+    while True:
+        hosts = [host for host in _settings().docker_hosts if not _benched(host)] or list(_settings().docker_hosts)
+        cap = _settings().sandboxes_per_node
+        if cap < 1:
+            return random.choice(hosts), None
+        by_node: dict[str, list[str]] = {}
+        for host in hosts:
+            by_node.setdefault(_node_of(host), []).append(host)
+        for node in random.sample(list(by_node), len(by_node)):
+            if (fd := _try_node_slot(node=node, cap=cap)) is not None:
+                return random.choice(by_node[node]), fd
+        await asyncio.sleep(_NODE_SLOT_POLL_S * (0.5 + random.random()))
+
+
+def _try_node_slot(*, node: str, cap: int) -> int | None:
+    slot_dir = Path(tempfile.gettempdir()) / f"miles-tmax-node-slots-{current_scope()}"
+    slot_dir.mkdir(exist_ok=True)
+    for slot in random.sample(range(cap), cap):
+        fd = os.open(slot_dir / f"{''.join(c if c.isalnum() else '_' for c in node)}.{slot}", os.O_CREAT | os.O_RDWR)
         try:
-            return float(_bench_path(host).read_text()) > now
-        except (FileNotFoundError, ValueError):
-            return False
-
-    return random.choice([host for host in hosts if not benched(host)] or list(hosts))
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            os.close(fd)
+    return None
 
 
 def owner() -> str:
@@ -242,7 +284,8 @@ class TmaxSandbox:
         self._image = image
         self._task_dir = task_dir
         self._tests_dir = os.path.join(task_dir, "tests")
-        self._docker_host = _pick_host()
+        self._docker_host = ""
+        self._node_slot: int | None = None
         self._container = None
         self._ready = False  # set once the episode's container is up; a restart is only allowed after that
         self._restarted = False
@@ -251,28 +294,28 @@ class TmaxSandbox:
         last_error: Exception | None = None
         for attempt in range(_START_ATTEMPTS):
             try:
+                self._docker_host, self._node_slot = await _acquire_host()
                 await self._start()
                 await self._prepare_runtime()
                 self._ready = True
                 return self
             except asyncio.CancelledError:
-                await asyncio.shield(self.close())
+                await asyncio.shield(self._release())
                 raise
             except Exception as e:
                 last_error = e
-                await self.close()
+                await self._release()
                 if any(marker in str(e).lower() for marker in _CONNECTIVITY_MARKERS):
                     _bench(self._docker_host, e)
                 if attempt + 1 < _START_ATTEMPTS:
                     delay = min(_START_RETRY_BASE_S * 2**attempt, _START_RETRY_MAX_S)
                     await asyncio.sleep(delay + random.uniform(0.0, _START_RETRY_JITTER_S))
-                    self._docker_host = _pick_host()
         raise SandboxInfraError(
             f"sandbox start failed {_START_ATTEMPTS}x for image={self._image}: {last_error!r}"
         ) from last_error
 
     async def __aexit__(self, *exc) -> None:
-        await self.close()
+        await self._release()
 
     async def bash(self, command: str) -> tuple[str, bool]:
         """Run one agent command. Returns (observation, submitted)."""
@@ -303,6 +346,15 @@ class TmaxSandbox:
         except ValueError:
             return 0.0
 
+    async def _release(self) -> None:
+        """Remove the container and give its node slot back."""
+        try:
+            await self.close()
+        finally:
+            slot, self._node_slot = self._node_slot, None
+            if slot is not None:
+                os.close(slot)
+
     async def close(self) -> None:
         container, self._container = self._container, None
         if container is not None:
@@ -314,7 +366,7 @@ class TmaxSandbox:
                 logger.warning(f"failed to remove sandbox {container.short_id}: {e!r}")
 
     async def _start(self) -> None:
-        async with rollout_semaphore("tmax-start", _settings().start_concurrency):
+        async with rollout_semaphore(f"tmax-start-{_node_of(self._docker_host)}", _settings().start_concurrency):
             await self._ensure_image()
             self._container = await asyncio.to_thread(
                 _client(self._docker_host).containers.create,
@@ -358,7 +410,7 @@ class TmaxSandbox:
     async def _exec(self, command: str, timeout_s: int | None = None) -> ExecResult:
         timeout_s = timeout_s or _settings().command_timeout_s
         wrapped = f"timeout --signal=TERM --kill-after=10 {timeout_s} bash -c {shlex.quote(command)}"
-        async with rollout_semaphore("tmax-exec", _settings().exec_concurrency):
+        async with rollout_semaphore(f"tmax-exec-{_node_of(self._docker_host)}", _settings().exec_concurrency):
             exit_code, output = await self._exec_with_retries(wrapped)
         stdout = ((output[0] or b"") if output else b"")[:_MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
         stderr = ((output[1] or b"") if output else b"")[:_MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")

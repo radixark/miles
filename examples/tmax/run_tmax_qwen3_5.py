@@ -64,7 +64,9 @@ Args:
   --start-failure: zero | drop, for a sandbox that never starts (default: zero, open-instruct's behavior).
   --episode-timeout-s: wall-clock cap per episode, 0 for none (default: 0).
   --tool-call-timeout-s: cap on one step, tests included (default: 120, open-instruct's tool_call_timeout).
-  --sandbox-start-concurrency / --sandbox-exec-concurrency: per rollout process (default: 16 / 128).
+  --sandbox-start-concurrency / --sandbox-exec-concurrency: per node (default: 16 / 128).
+  --sandboxes-per-node: live sandboxes per node, 0 for no cap (default: 0). open-instruct's --pool_size actors
+      spread over its nodes, so --pool_size 512 on 4 nodes is 128.
   --trace-dir: append one JSONL record per episode under <trace-dir>/<exp-name> (default: off).
   --wandb-project: wandb project (default: miles-run_tmax_qwen3_5); with --exp-name restarts share one run.
   --docker-host: Docker API endpoint(s) of the podman daemons (default: inherit TMAX_DOCKER_HOST / DOCKER_HOST).
@@ -167,6 +169,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     docker_host: str = ""
     sandbox_start_concurrency: int = 16
     sandbox_exec_concurrency: int = 128
+    sandboxes_per_node: int = 0
     # zero: a sandbox that never starts scores 0 and stays in its group (open-instruct's
     # SWERL_RESET_FAILURE_ZERO_REWARD=1); drop: its group is dropped.
     start_failure: Literal["zero", "drop"] = "zero"
@@ -397,8 +400,8 @@ def execute(args: ScriptArgs):
     else:
         misc_args += "--colocate "
     if args.num_nodes > 1:
-        # The sandboxes run where the RolloutExecutor does, and the Beaker entrypoint brings podman up on the
-        # head (replica 0) only.
+        # The agent processes run where the RolloutExecutor does: on the head, whose podman sockets are the unix://
+        # endpoints in TMAX_DOCKER_HOST and the only address the other nodes' podman forwards accept.
         misc_args += "--pin-rollout-manager-to-head "
 
     train_args = (
@@ -427,6 +430,7 @@ def execute(args: ScriptArgs):
             "TMAX_MAX_STEPS": str(args.max_steps),
             "TMAX_START_CONCURRENCY": str(args.sandbox_start_concurrency),
             "TMAX_EXEC_CONCURRENCY": str(args.sandbox_exec_concurrency),
+            "TMAX_SANDBOXES_PER_NODE": str(args.sandboxes_per_node),
             "TMAX_START_FAILURE": args.start_failure,
             "TMAX_EPISODE_TIMEOUT_S": str(args.episode_timeout_s),
             "TMAX_TOOL_CALL_TIMEOUT_S": str(args.tool_call_timeout_s),
