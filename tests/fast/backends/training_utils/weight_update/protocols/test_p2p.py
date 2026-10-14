@@ -95,6 +95,27 @@ class TestSendBucket:
         with pytest.raises(AssertionError, match=r"\('qk',\) lacks \['hf.k'\]"):
             protocol.after_base_weights()
 
+    def test_a_failed_write_gives_up_its_cell_and_the_other_cell_still_gets_every_rank(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """One broken cell must not abort the update of the cells that share its rollout engine ranks."""
+        protocol = p2p_sender.make_protocol()
+        broken, healthy = make_rollout_api("cell-a", gpu_count=2), make_rollout_api("cell-b", gpu_count=2)
+        p2p_sender.connect(protocol, [broken, healthy])
+        p2p_sender.begin_sync(protocol, weight_version=1)
+        p2p_sender.transfer_engine.failing_sessions.add(broken.session_id(0))
+
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert not protocol.cell_updaters_of_cell_id["cell-b"].is_errored
+        assert sorted(p2p_sender.transfer_engine.written_sessions()) == [
+            broken.session_id(0),
+            healthy.session_id(0),
+            healthy.session_id(1),
+        ]
+
 
 class TestTransferBuffers:
     def test_a_transfer_buffer_is_not_loaded_again_while_a_write_still_reads_it(
@@ -430,3 +451,27 @@ class TestHfNames:
         assert p2p_sender.transfer_engine.payload_of(api.session_id(0)) == {
             api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0]
         }
+
+
+class TestWriteOrdering:
+    def test_buckets_reach_an_engine_in_submission_order(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A later bucket must not overtake an earlier native write on the same engine."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1)
+        p2p_sender.connect(protocol, [api])
+        p2p_sender.begin_sync(protocol, weight_version=1)
+        hold = p2p_sender.transfer_engine.hold(api.session_id(0))
+        protocol.send_bucket(make_bucket("hf.w"))
+        assert hold.entered.wait(timeout=10)
+        protocol.send_bucket(make_bucket("hf.q", "hf.k"))
+        assert p2p_sender.transfer_engine.writes == []
+
+        hold.release.set()
+        protocol.after_base_weights()
+
+        assert p2p_sender.transfer_engine.writes == [
+            (api.session_id(0), {api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0]}),
+            (api.session_id(0), {api.target_address(0, "qk"): [5.0, 6.0, 7.0, 8.0]}),
+        ]
