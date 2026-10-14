@@ -612,7 +612,8 @@ def plan_segments(
     the exact per-sequence chunk counts) it prices the tables that will actually run.  The cheapest split
     (:func:`_best_split`) is taken when it beats ``0.95 x`` the serial scan's own makespan (:func:`_serial_cost`), both
     at the configuration's ``step_factor``.  Balanced packed layouts whose sequences are all shorter than ``L`` keep one
-    segment per sequence (the pre-scan and stitch then launch on the device route and exit immediately).
+    segment per sequence (the pre-scan -- and, for the backward scan, the stitch -- then launch on the device route and
+    exit immediately).
     """
     chunks = tuple(int(c) for c in seq_chunks) if seq_chunks is not None else bound_layout_chunks(chunks_bound, num_seqs)
     serial = _serial_cost(chunks, per_segment, sm_count, residency, step_factor)
@@ -869,13 +870,24 @@ def _scan_stages(kind: str, config: tuple[int, int], device_index: int, arch: st
     return stage, vb, pre, int(MODULES[pre][arch]["block"][0])
 
 
+@cache
+def _split_scan_stage(stage: str, arch: str) -> str | None:
+    """The split-plan instantiation ``<stage>_split`` of a forward scan stage (the forward stitch folded into its prologue;
+    exported for every forward configuration), or ``None`` when this architecture's registry carries none."""
+    split = f"{stage}_split"
+    return split if split in MODULES and arch in MODULES[split] else None
+
+
 # Positional launch orders = the exported plan order of every stage (registry ``arg_plan`` without the trailing grid
 # entries; identical on sm_100a and sm_103a).  ``_jit.NativeKernel.launcher`` verifies the name set against the plan at
 # first use and permutes if an export ever reorders a plan; the values at every call site follow these tuples one to one.
 _PREP_ARGS = ("q", "k", "g", "beta", "beta32_out", "qn", "kn", "rstd_q", "rstd_k", "g_cs", "chunk_start", "chunk_len", "num_heads", "num_v_heads", "normalize_qk")
 _WY_ARGS = ("kn", "v", "g_cs", "beta", "A_out", "w_out", "u_out", "chunk_start", "chunk_len", "num_heads", "num_v_heads", "recompute")
 _FWD_H_ARGS = ("kn", "w", "u", "g_cs", "h0", "h_out", "v_new", "final_state", "seg_state", "chunk_start", "chunk_len", "seg_chunk_start", "seg_seq", "seq_chunk_start", "num_heads", "num_v_heads", "use_initial_state", "store_final_state")
-_FWD_H_PRE_ARGS = _FWD_H_ARGS + ("seg_flag", "warmup_thresh_log2")
+# the split-plan instantiation of the forward scan reads the per-segment flags too (its prologue folds the forward
+# stitch); the pre-scan adds the warm-up threshold on top
+_FWD_H_SPLIT_ARGS = _FWD_H_ARGS + ("seg_flag",)
+_FWD_H_PRE_ARGS = _FWD_H_SPLIT_ARGS + ("warmup_thresh_log2",)
 _STITCH_ARGS = ("seg_state", "init_state", "state_out", "seq_seg_start", "seg_flag", "num_v_heads", "use_init", "reverse")
 _FWD_O_ARGS = ("qn", "kn", "v_new", "h", "g_cs", "o_out", "chunk_start", "chunk_len", "num_heads", "num_v_heads", "scale")
 _DV_LOCAL_ARGS = ("qn", "kn", "do", "g_cs", "dv_local", "chunk_start", "chunk_len", "num_heads", "num_v_heads", "scale")
@@ -890,6 +902,7 @@ LAUNCH_ARGS = {
     "dv_local": _DV_LOCAL_ARGS, "dqkwg": _DQKWG_ARGS, "wy_bwd": _WY_BWD_ARGS, "wy_bwd_bf16": _WY_BWD_ARGS, "finalize": _FINALIZE_ARGS,
     "finalize_mlp": _FINALIZE_ARGS,  # same plan as finalize; the host picks the stage per layout / device (finalize_stage)
     **{f"fwd_h_r{vb}k{ks}": _FWD_H_ARGS for vb, ks in REG_SCAN_CONFIGS},
+    **{f"fwd_h_r{vb}k{ks}_split": _FWD_H_SPLIT_ARGS for vb, ks in REG_SCAN_CONFIGS},
     **{f"fwd_h_pre_r{vb}k{ks}": _FWD_H_PRE_ARGS for vb, ks in PRESCAN_CONFIGS},
     **{f"dhu_r{vb}k{ks}": _DHU_ARGS for vb, ks in REG_SCAN_CONFIGS},
     **{f"dhu_pre_r{vb}k{ks}": _DHU_PRE_ARGS for vb, ks in PRESCAN_CONFIGS},
@@ -932,28 +945,30 @@ def _launch_fwd_h(
     segs = meta.fwd_segments
     stage, vb, pre, pre_threads = _scan_stages("fwd_h", segs.scan_config, device.index, arch)  # the planned configuration
     if segs.segment_len > 0 and segs.num_segments > meta.num_seqs:
-        # Segment-parallel scan: every segment's affine map in parallel (value and identity column blocks of
-        # the augmented state), the serial stitch of the start states, then the ordinary scan per segment
-        # from its FP32 start state.  ``seg_state`` / ``seg_flag`` (pre-scan -> stitch) and ``h_start`` (stitch -> scan)
-        # live only inside this call: pooled.
-        if pre is None:
-            raise NotImplementedError(f"the segmented fwd_h scan needs the pre-scan stage {stage.replace('fwd_h_r', 'fwd_h_pre_r')} for {arch}")
+        # Segment-parallel scan: every segment's affine map in parallel (value and identity column blocks of the
+        # augmented state), then the split instantiation of the scan per segment, whose prologue derives the segment's
+        # FP32 start state from the maps and flags (the forward stitch folded into pass 2: no stitch launch, no
+        # start-state scratch).  ``seg_state`` / ``seg_flag`` (pre-scan -> scan) live only inside this call: pooled.
+        # The serial plan launches the plain scan below.
+        split_stage = _split_scan_stage(stage, arch)
+        if pre is None or split_stage is None:
+            raise NotImplementedError(f"the segmented fwd_h scan needs the stages {stage.replace('fwd_h_r', 'fwd_h_pre_r')} and {stage}_split for {arch}")
         if segs.segment_len > pre_threads:
             raise ValueError(f"segment_len {segs.segment_len} exceeds the {pre_threads} chunks per segment the {pre} warm-up prologue scans")
         seg_state = WORKSPACES.take(table, "f_seg_state", (segs.num_segments, num_v_heads, HEAD_DIM, 2 * HEAD_DIM), torch.float32, device)
-        # per-segment flags written by the pre-scan (1: exact fallback, map block present) and read by the stitch
+        # per-segment flags written by the pre-scan (1: exact fallback, map block present) and read by the scan's prologue
         seg_flag = WORKSPACES.take(table, "f_seg_flag", (segs.num_segments, num_v_heads), torch.int32, device)
         launcher(pre, arch, _FWD_H_PRE_ARGS)(
             segs.num_segments, num_v_heads, 2 * HEAD_DIM // vb,
             kn, w, u, g_cs, h0, h, v_new, final_state, seg_state, meta.chunk_start, meta.chunk_len, segs.seg_chunk_start, segs.seg_seq,
             meta.seq_chunk_start, num_heads, num_v_heads, use_init, 0, seg_flag, warmup_thresh_log2(),
         )
-        h_start = WORKSPACES.take(table, "f_h_start", (segs.num_segments, num_v_heads, HEAD_DIM, HEAD_DIM), torch.float32, device)
-        launcher("stitch", arch, _STITCH_ARGS)(
-            meta.num_seqs, num_v_heads, STITCH_VSPLIT,
-            seg_state, h0, h_start, segs.seq_seg_start, seg_flag, num_v_heads, use_init, 0,
+        launcher(split_stage, arch, _FWD_H_SPLIT_ARGS)(
+            segs.num_segments, num_v_heads, HEAD_DIM // vb,
+            kn, w, u, g_cs, h0, h, v_new, final_state, seg_state, meta.chunk_start, meta.chunk_len, segs.seg_chunk_start, segs.seg_seq,
+            meta.seq_chunk_start, num_heads, num_v_heads, use_init, 1 if store_final_state else 0, seg_flag,
         )
-        h0, use_init = h_start, 1
+        return h, v_new, final_state
     launcher(stage, arch, _FWD_H_ARGS)(
         segs.num_segments, num_v_heads, HEAD_DIM // vb,
         kn, w, u, g_cs, h0, h, v_new, final_state, final_state, meta.chunk_start, meta.chunk_len, segs.seg_chunk_start, segs.seg_seq,

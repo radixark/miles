@@ -187,9 +187,52 @@ def test_wiring_has_no_host_sync_and_fixed_launches_per_layer(monkeypatch):
     copies = [n for n in runtime if "Memcpy" in n]
     meta = ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE, 4)
     split = [s.segment_len > 0 and s.num_segments > meta.num_seqs for s in (meta.fwd_segments, meta.bwd_segments)]
-    per_layer = 9 + 2 * sum(split)  # 4 forward + 5 backward kernels, plus pre-scan + stitch per segmented scan
+    # 4 forward + 5 backward kernels, plus the pre-scan of a segmented forward scan (its stitch is folded into the split
+    # scan's prologue) and pre-scan + stitch of a segmented backward scan
+    per_layer = 9 + int(split[0]) + 2 * int(split[1])
     assert len(launches) == layers * per_layer, (len(launches), per_layer, sorted(set(runtime)))
     assert not syncs and not copies, sorted(set(runtime))
+
+
+def test_forward_launches_the_split_scan_on_split_plans_and_the_plain_scan_on_serial_plans(monkeypatch):
+    """A split forward plan launches ``fwd_h_pre_*`` then ``fwd_h_r*_split`` and no forward stitch; a serial plan launches
+    the plain ``fwd_h_r*`` alone.  The backward keeps its stitch on split plans (``reverse = 1``)."""
+    _require_blackwell()
+    arch = ops.device_arch(DEVICE)
+    for vb, ks in ops.REG_SCAN_CONFIGS:
+        stage = f"fwd_h_r{vb}k{ks}"
+        assert ops._split_scan_stage(stage, arch) == f"{stage}_split"
+        base, split = ops.MODULES[stage][arch], ops.MODULES[f"{stage}_split"][arch]
+        assert base["kernel_symbol"] != split["kernel_symbol"] and base["block"] == split["block"]
+        assert [tuple(a) for a in split["arg_plan"]][:-4] == [tuple(a) for a in base["arg_plan"]][:-3]
+        assert tuple(split["arg_plan"][-4]) == ("buffer", "seg_flag")
+    assert ops._split_scan_stage("dhu_r32k2", arch) is None
+    launched = []
+    real_launcher = ops.launcher
+
+    def spy(stage, arch_, names):
+        launched.append(stage)
+        return real_launcher(stage, arch_, names)
+
+    monkeypatch.setattr(ops, "launcher", spy)
+    inputs = _inputs(LAYOUT, seed=6)
+    cu = torch.tensor(_cu(LAYOUT), device="cuda", dtype=torch.int32)
+    results = {}
+    for forced in (0, 4):  # serial scans, forced four-chunk segments
+        monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", forced)
+        ops._host_chunk_meta.cache_clear()
+        launched.clear()
+        results[forced] = _step(inputs, cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
+        fwd_scans = [s for s in launched if s.startswith("fwd_h_")]
+        stitches = launched.count("stitch")
+        if forced:
+            assert len(fwd_scans) == 2 and fwd_scans[0].startswith("fwd_h_pre_r") and fwd_scans[1].endswith("_split"), fwd_scans
+            assert fwd_scans[1] == fwd_scans[0].replace("fwd_h_pre_r", "fwd_h_r") + "_split", fwd_scans
+            assert stitches == 1, launched  # the backward's stitch only
+        else:
+            assert len(fwd_scans) == 1 and fwd_scans[0].startswith("fwd_h_r") and not fwd_scans[0].endswith("_split"), fwd_scans
+            assert stitches == 0, launched
+    _allclose(results[4], results[0])
 
 
 # --------------------------------------------------------------------------- #
@@ -644,7 +687,7 @@ def test_per_arch_stages_launch_the_kernel_selected_for_this_architecture():
 # --------------------------------------------------------------------------- #
 # host-side caches (round R6-7): workspace pool, chunk-table front cache, positional launchers
 # --------------------------------------------------------------------------- #
-FORWARD_ROLES = {"f_zero_state", "f_seg_state", "f_seg_flag", "f_h_start"}
+FORWARD_ROLES = {"f_zero_state", "f_seg_state", "f_seg_flag"}
 BACKWARD_ROLES = {"b_dv_local", "b_dh", "b_dv2", "b_zero_state", "b_seg_state", "b_seg_flag", "b_dh_end", "b_dq_hv", "b_dk_hv", "b_dw", "b_dg1", "b_dk2", "b_dg2"}
 
 
@@ -665,10 +708,11 @@ def _overlaps(a, b):
 
 
 def _expected_pool_misses(meta):
-    # fwd: 0-element final_state placeholder (+ seg_state, seg_flag, h_start when the forward scan splits);
-    # bwd: dv_local, dh, dv2, 0-element dh0 placeholder, dq_hv, dk_hv, dw, dg1, dk2, dg2 (+ seg_state, seg_flag, dh_end when the backward scan splits)
+    # fwd: 0-element final_state placeholder (+ seg_state, seg_flag when the forward scan splits; the stitch's start-state
+    # scratch is gone, the split scan's prologue reads the maps); bwd: dv_local, dh, dv2, 0-element dh0 placeholder, dq_hv,
+    # dk_hv, dw, dg1, dk2, dg2 (+ seg_state, seg_flag, dh_end when the backward scan splits)
     split = [s.segment_len > 0 and s.num_segments > meta.num_seqs for s in (meta.fwd_segments, meta.bwd_segments)]
-    return (1 + 3 * split[0]) + (10 + 3 * split[1])
+    return (1 + 2 * split[0]) + (10 + 3 * split[1])
 
 
 def test_workspace_pool_keys_separate_role_shape_dtype_and_stream():
