@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Annotated
 
 import typer
+
 from tests.e2e.ft.conftest_ft.cli_options import (
     DumpDirOption,
     EnableDumperOption,
@@ -14,6 +15,7 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     OptionalModeOption,
     PhaseOption,
 )
+
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, prepare, run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.utils.deploy.hot_restart.release import remove_release_and_wait
@@ -22,10 +24,9 @@ from tests.utils.soak.core.utils import compute_release_of_config, resolve_dump_
 from miles.utils.external_utils import command_utils
 from miles.utils.workers.types import ClusterBackend
 
+
 BASELINE_SIDE: str = "baseline"
 TARGET_SIDE: str = "target"
-
-_DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
 
 BuildArgsFn = Callable[[FTTestMode, str, bool, command_utils.ExecuteTrainConfig], str]
 ConfigForSideFn = Callable[[str, command_utils.ExecuteTrainConfig], command_utils.ExecuteTrainConfig]
