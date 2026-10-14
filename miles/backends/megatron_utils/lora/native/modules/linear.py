@@ -289,7 +289,9 @@ class LoRASplitAdapter(NativeLoRAAdapter):
         ), f"{cls} projections must be column parallel"
         projections_by_param_prefix = {projection.param_prefix: projection for projection in projections}
         ordered = tuple(
-            projections_by_param_prefix[prefix] for prefix in rows_by_param_prefix if prefix in projections_by_param_prefix
+            projections_by_param_prefix[prefix]
+            for prefix in rows_by_param_prefix
+            if prefix in projections_by_param_prefix
         )
         super().__init__(hf_prefix, ordered, context.tp_rank)
         self.context = context

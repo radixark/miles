@@ -14,7 +14,7 @@ from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutput
 from miles.backends.megatron_utils.lora.native.modules.moe import LoRAGroupedFC1, LoRAGroupedFC2, _grouped_linear
 from miles.backends.megatron_utils.lora.native.spec.attention import GQAAttentionSpec, MLAAttentionSpec
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
-from miles.backends.megatron_utils.lora.native.spec.mlp import SplitGateUpMLPSpec, FusedGateUpMLPSpec
+from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGateUpMLPSpec, SplitGateUpMLPSpec
 from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
 
 HIDDEN = 8

@@ -18,7 +18,7 @@ from miles.backends.megatron_utils.lora.native.spec.attention import (
 from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, LoRAArchSpec
 from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
 from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec
-from miles.backends.megatron_utils.lora.native.spec.mlp import SplitGateUpMLPSpec, FusedGateUpMLPSpec
+from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGateUpMLPSpec, SplitGateUpMLPSpec
 from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import lora_rollout_enabled, matches_lora_target
@@ -26,9 +26,7 @@ from miles.utils.lora.utils import lora_rollout_enabled, matches_lora_target
 logger = logging.getLogger(__name__)
 
 
-def _arch_spec(
-    attention: AttentionSpecBase, *, mlp=None, has_linear_attention_layers: bool = False
-) -> LoRAArchSpec:
+def _arch_spec(attention: AttentionSpecBase, *, mlp=None, has_linear_attention_layers: bool = False) -> LoRAArchSpec:
     return LoRAArchSpec(
         name=attention.name,
         attention=attention,

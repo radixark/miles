@@ -80,7 +80,9 @@ class DeclaredNaming:
         name_in_layer = next(name for name, param in layer.named_parameters() if param is host_weight)
         hf_block = next(
             hf_block
-            for param_prefix, hf_block in sorted(self.hf_blocks_by_param_prefix.items(), key=lambda item: -len(item[0]))
+            for param_prefix, hf_block in sorted(
+                self.hf_blocks_by_param_prefix.items(), key=lambda item: -len(item[0])
+            )
             if name_in_layer.startswith(param_prefix)
         )
         return f"{self.layer_prefix}{layer.layer_number - 1}.{hf_block}"

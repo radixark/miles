@@ -30,7 +30,12 @@ class LoRAOutputHead(NativeLoRAAdapter):
         self.unpadded_vocab_size = unpadded_vocab_size
         self.register_parameter(
             "head_A",
-            new_lora_parameter(reference, (context.lora.rank, context.transformer_config.hidden_size), init=context.lora.a_init_method, grad_sum_group="tp"),
+            new_lora_parameter(
+                reference,
+                (context.lora.rank, context.transformer_config.hidden_size),
+                init=context.lora.a_init_method,
+                grad_sum_group="tp",
+            ),
         )
         self.register_parameter("head_B", new_lora_parameter(reference, (vocab_local, context.lora.rank), init="zero"))
 

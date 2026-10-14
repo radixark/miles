@@ -140,13 +140,17 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
         self.register_parameter(
             "w2_A",
             _mark_expert_param(
-                new_lora_parameter(reference, (num_local_experts, rank, moe_intermediate), init=context.lora.a_init_method),
+                new_lora_parameter(
+                    reference, (num_local_experts, rank, moe_intermediate), init=context.lora.a_init_method
+                ),
                 is_ep,
             ),
         )
         self.register_parameter(
             "w2_B",
-            _mark_expert_param(new_lora_parameter(reference, (width, rank), init="zero", grad_sum_group=ep_group), is_ep),
+            _mark_expert_param(
+                new_lora_parameter(reference, (width, rank), init="zero", grad_sum_group=ep_group), is_ep
+            ),
         )
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *host_args) -> torch.Tensor:
@@ -202,10 +206,22 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
         rank = context.lora.rank
         sp_group = "tp" if context.sequence_parallel else None
         self.register_parameter(
-            "w1_A", new_lora_parameter(fc1_reference, (rank, context.transformer_config.hidden_size), init=context.lora.a_init_method, grad_sum_group="tp")
+            "w1_A",
+            new_lora_parameter(
+                fc1_reference,
+                (rank, context.transformer_config.hidden_size),
+                init=context.lora.a_init_method,
+                grad_sum_group="tp",
+            ),
         )
         self.register_parameter(
-            "w3_A", new_lora_parameter(fc1_reference, (rank, context.transformer_config.hidden_size), init=context.lora.a_init_method, grad_sum_group="tp")
+            "w3_A",
+            new_lora_parameter(
+                fc1_reference,
+                (rank, context.transformer_config.hidden_size),
+                init=context.lora.a_init_method,
+                grad_sum_group="tp",
+            ),
         )
         self.register_parameter(
             "w1_B", new_lora_parameter(fc1_reference, (num_shared, local_intermediate, rank), init="zero")
@@ -214,10 +230,14 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
             "w3_B", new_lora_parameter(fc1_reference, (num_shared, local_intermediate, rank), init="zero")
         )
         self.register_parameter(
-            "w2_A", new_lora_parameter(fc2_reference, (num_shared, rank, local_intermediate), init=context.lora.a_init_method)
+            "w2_A",
+            new_lora_parameter(fc2_reference, (num_shared, rank, local_intermediate), init=context.lora.a_init_method),
         )
         self.register_parameter(
-            "w2_B", new_lora_parameter(fc2_reference, (context.transformer_config.hidden_size, rank), init="zero", grad_sum_group=sp_group)
+            "w2_B",
+            new_lora_parameter(
+                fc2_reference, (context.transformer_config.hidden_size, rank), init="zero", grad_sum_group=sp_group
+            ),
         )
 
     def fc1_delta(self, x: torch.Tensor, host: nn.Module, index: int) -> torch.Tensor:
