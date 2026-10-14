@@ -610,7 +610,7 @@ def test_reward_corridor_flags_drop_and_suspicious_jump(tmp_path, store):
 
 def test_grad_norm_default_is_a_sanity_band(tmp_path, store):
     # grad_norm jitters and is exactly 0 on steps where every GRPO group's rewards
-    # are uniform, so a value passes up to max(10x the mean, mean + 1.0), down to 0.
+    # are uniform, so a value passes up to max(4x the mean, mean + 1.0), down to 0.
     test_file = _write_test_file(tmp_path, 'register_ci_gate(metric_key="train/grad_norm")')
     for step, values in ((0, [0.2, 0.2]), (1, [2.0, 2.0]), (2, [0.0, 0.0])):
         _seed_baseline(
@@ -624,8 +624,8 @@ def test_grad_norm_default_is_a_sanity_band(tmp_path, store):
         )
     cases = [
         ((0.0, 0.0, 0.0), GateStatus.PASS),
-        ((1.9, 19.0, 0.9), GateStatus.PASS),
-        ((2.5, 21.0, 1.1), GateStatus.FAIL),
+        ((1.1, 7.9, 0.9), GateStatus.PASS),
+        ((1.3, 8.1, 1.1), GateStatus.FAIL),
     ]
     for currents, status in cases:
         series = [[step, value] for step, value in enumerate(currents)]
