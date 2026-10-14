@@ -8,15 +8,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
+from tests.e2e.ft.conftest_ft.execution import run_training
+from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.deploy.hot_restart.cluster_observer import ClusterObserver
+from tests.utils.deploy.hot_restart.evidence import (
     HotRestartEvidence,
     HotRestartRecord,
     RunProgress,
     read_run_progress,
 )
-from tests.e2e.ft.conftest_ft.execution import run_training
-from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
@@ -24,7 +24,6 @@ from miles.utils.external_utils.command_utils.helm_backend.naming import Release
 from miles.utils.test_utils.ft_test_actions import SLEEP_FOREVER_AT_END_ACTION, read_frozen_rollout_id
 from miles.utils.test_utils.polling_worker import PollingWorker
 from miles.utils.workers.types import HOT_RESTART_SEPARATOR, HotRestartComponent
-
 
 # ================================= constants ==================================
 

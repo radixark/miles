@@ -25,7 +25,6 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint 
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_scratch import (
     assert_unsaved_run_redone_from_scratch,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import assert_take_overs_replaced_only_script
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     HotRestartDriver,
     ScheduledFreeze,
@@ -34,7 +33,6 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     driving_hot_restarts,
     relaunch_with_hot_restart,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, HotRestartEvidence
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
     arm_first_freeze,
     compute_freeze_plan_path,
@@ -43,6 +41,8 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
 from tests.e2e.ft.conftest_ft.modes import DENSE_MODEL_HF_REPO, DENSE_MODEL_NAME, DENSE_MODEL_TYPE, FTTestMode
+from tests.utils.deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, HotRestartEvidence
+from tests.utils.soak.deploy.checkers.takeover_scope import assert_take_overs_replaced_only_script
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils

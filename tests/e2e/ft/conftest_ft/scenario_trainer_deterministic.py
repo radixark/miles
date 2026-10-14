@@ -6,6 +6,7 @@ from pathlib import Path
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.soak.ft.checkers.reconfigure import ReconfigureInfo, assert_reconfigure_events
 
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
@@ -17,7 +18,6 @@ from miles.utils.test_utils.comparisons.dumps import (
 from miles.utils.test_utils.comparisons.inference_engine_checksums import compare_inference_engine_checksums
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
 from miles.utils.test_utils.ft_test_actions import compute_ft_test_actions_arg
-from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
 from miles.utils.workers.naming import compute_cell_id
 
 # --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS); --debug-exit-after-rollout counts rollouts within the current run.

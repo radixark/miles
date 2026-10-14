@@ -10,10 +10,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint 
     read_discarded_event_dirs,
     read_step_events,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import assert_take_overs_replaced_only_script
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver, observing_cluster
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_checkpoint_dir, compute_release_of_config
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HOT_RESTART_FORM_NAME, HotRestartFaultForm
 from tests.e2e.ft.conftest_ft.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
@@ -26,6 +23,9 @@ from tests.e2e.ft.conftest_ft.scenario_realistic_gsm8k import (
     Gsm8kRun,
     run_realistic_gsm8k,
 )
+from tests.utils.deploy.hot_restart.cluster_observer import ClusterObserver, observing_cluster
+from tests.utils.deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
+from tests.utils.soak.deploy.checkers.takeover_scope import assert_take_overs_replaced_only_script
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils

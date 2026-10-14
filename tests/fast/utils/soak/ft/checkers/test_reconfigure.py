@@ -2,11 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from miles.utils.audit_utils.event_logger.logger import EventLogger
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
-from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
-from miles.utils.test_utils.reconfigure_assertions import (
+from tests.utils.soak.ft.checkers.reconfigure import (
     MIN_SOAK_INJECTIONS,
     ReconfigureInfo,
     assert_min_soak_injections,
@@ -14,6 +10,10 @@ from miles.utils.test_utils.reconfigure_assertions import (
     assert_soak_reconfigure_events,
     load_reconfigure_events,
 )
+
+from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 
 _SHRINK_PARTIAL: dict[str, Any] = dict(
     rollout_id=2,
