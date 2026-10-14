@@ -95,6 +95,28 @@ Fully async on several nodes gives training and SGLang whole nodes, training fir
 2 nodes (TP 2 x CP 2 x DP 4) and generates with 16 engines on the other 2, open-instruct's 16 learners + 16 vLLM
 engines.
 
+### Sandbox images: credentials and mirrors
+
+Every task has its own image (`hamishi740/swerl-tmax-v3:<tag>`, 14,490 of them, ~300 MB each), pulled by each
+podman shard that runs it. The pulls carry the Docker Hub login from the `<user>_DOCKER_PAT` Beaker secret: podman
+takes pull credentials from the API request alone, so the entrypoint hands them to `tmax_sandbox` (an empty one
+pulls anonymously, at 100 pulls per hour per IP), and the pull log line names the account.
+
+`beaker/registry_mirror/registry_mirror.py` runs open-instruct's Docker Hub pull-through caches (`registry:3`,
+host-networked on `ai2/neptune`, login from the same secret):
+
+```bash
+python examples/tmax/beaker/registry_mirror/registry_mirror.py launch   # 3 mirrors, ports 5000 / 5010 / 5020
+python examples/tmax/beaker/registry_mirror/registry_mirror.py probe    # /v2/ and a real task manifest per mirror
+python examples/tmax/beaker/registry_mirror/registry_mirror.py test     # pull-through and fallback, on podman 4.9
+python examples/tmax/beaker/registry_mirror/registry_mirror.py warm     # open-instruct's warmer, one job per mirror
+```
+
+`mirror_url: auto` in a config resolves the running mirrors at submit time; the entrypoint shuffles them per node.
+podman tries them in order and then docker.io, so a dead mirror costs a refused connection per pull, not the job. A
+mirror's address moves, with an empty cache, whenever Beaker reschedules it: relaunch or resubmit to pick up the
+new one.
+
 ### Checkpoints, resume and logging
 
 | | open-instruct production | Here |

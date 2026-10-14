@@ -46,5 +46,5 @@ beaker:
   image: docker.io/radixark/miles:dev-202610131159
   sandbox_shards: 4                           # SWERL_PODMAN_SERVICE_COUNT=4
   dockerhub_username: shashankg209
-  mirror_url: neptune-cs-aus-262.reviz.ai2.in:38048
+  mirror_url: auto                            # the registry_mirror.py mirrors running at submit time
   keep_last_n_checkpoints: 3                  # --keep_last_n_checkpoints 3
