@@ -14,7 +14,7 @@ networking, failure and preemption propagated to every replica, NCCL over Infini
 replica 0 the Ray head and joins the others to it.
 
 ``beaker:`` keys: cluster, workspace, budget, priority, preemptible, min_runtime, retries, nodes, gpus (per node),
-shared_memory, image, sandbox_shards, mirror_url, keep_last_n_checkpoints, weka (list of buckets, mounted at
+shared_memory, image, sandbox_shards, mirror_url (``auto``: the running registry_mirror.py mirrors), keep_last_n_checkpoints, weka (list of buckets, mounted at
 /weka/<bucket>), dockerhub_username, secrets (env var -> Beaker secret), env (extra env vars).
 """
 
@@ -93,7 +93,7 @@ def _build_spec(*, beaker: dict, config_rel: str, commit: str, overrides: list[s
         "PYTORCH_ALLOC_CONF": "expandable_segments:True",
         "DOCKERHUB_USERNAME": beaker.get("dockerhub_username", os.environ.get("DOCKERHUB_USERNAME", "")),
         "SANDBOX_SHARDS": str(beaker.get("sandbox_shards", 1)),
-        "MIRROR_URL": beaker.get("mirror_url", ""),
+        "MIRROR_URL": _mirror_url(beaker.get("mirror_url", "")),
         "KEEP_LAST_N_CHECKPOINTS": str(beaker.get("keep_last_n_checkpoints", 0)),
         "EXTRA_ARGS": shlex.join(overrides),
         # mason's multi-node defaults on the weka clusters: NCCL over the InfiniBand NICs, not the bonded Ethernet.
@@ -153,6 +153,18 @@ def _build_spec(*, beaker: dict, config_rel: str, commit: str, overrides: list[s
         ],
         "retry": {"allowedTaskRetries": int(beaker.get("retries", 0))},
     }
+
+
+def _mirror_url(configured: str) -> str:
+    """``auto``: the mirrors running now (registry_mirror.py urls), resolved at submit time like open-instruct's
+    hand-copied MIRROR_URL, so a retry keeps them even after they move; podman then falls back to docker.io."""
+    if configured != "auto":
+        return configured
+    script = _REPO / "examples/tmax/beaker/registry_mirror/registry_mirror.py"
+    urls = subprocess.run([sys.executable, str(script), "urls"], check=True, capture_output=True, text=True)
+    if not urls.stdout.strip():
+        print("warning: no registry mirror is running; sandbox images will come from docker.io", file=sys.stderr)
+    return urls.stdout.strip()
 
 
 def _git(*args: str) -> str:

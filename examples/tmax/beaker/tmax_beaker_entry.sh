@@ -13,7 +13,8 @@
 # Env (set by submit.py from the config's beaker: section):
 #   NUM_NODES                 Beaker replicas, one Ray node each                           (default: 1)
 #   SANDBOX_SHARDS            podman daemons, each with its own storage                    (default: 1)
-#   MIRROR_URL                docker.io pull-through mirror(s), as in open-instruct        (optional)
+#   MIRROR_URL                docker.io pull-through mirror(s), as in open-instruct; see   (optional)
+#                             registry_mirror/registry_mirror.py
 #   KEEP_LAST_N_CHECKPOINTS   keep only the newest N training checkpoints, 0 keeps all     (default: 0)
 #   EXTRA_ARGS                launcher flags that override the config
 #   DOCKER_PAT, DOCKERHUB_USERNAME   Docker Hub login for the sandbox image pulls
@@ -58,6 +59,11 @@ export SWERL_PODMAN_SERVICE_COUNT=$SANDBOX_SHARDS PODMAN_NUM_LOCKS=${PODMAN_NUM_
 export SWERL_PODMAN_IMAGE_JANITOR_ENABLED=${SWERL_PODMAN_IMAGE_JANITOR_ENABLED:-1}
 export SWERL_PODMAN_IMAGE_JANITOR_INTERVAL_S=${SWERL_PODMAN_IMAGE_JANITOR_INTERVAL_S:-60}
 export SWERL_PODMAN_IMAGE_JANITOR_UNTIL=${SWERL_PODMAN_IMAGE_JANITOR_UNTIL:-10m}
+# podman tries the mirrors in order, then docker.io: each node starts at a different one to spread the pulls.
+if [ -n "${MIRROR_URL:-}" ]; then
+    MIRROR_URL=$(python -c 'import os, random; m = os.environ["MIRROR_URL"].split(","); random.shuffle(m); print(",".join(m))')
+    export MIRROR_URL
+fi
 # No xtrace while DOCKER_PAT is in play: a traced `[ -n "$DOCKER_PAT" ]` or `echo "$DOCKER_PAT"` prints the token
 # into the job log.
 set +xu  # docker_login.sh also reads unset variables
