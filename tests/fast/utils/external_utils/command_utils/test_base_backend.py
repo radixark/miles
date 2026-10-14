@@ -2,20 +2,25 @@ import dataclasses
 import inspect
 import logging
 import os
+import subprocess
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 import pytest
 import typer
+from tests.fast.utils.external_utils.command_utils.fake_launch_guard import RecordingLaunchGuard
 
 from miles.utils.external_utils.command_utils import CommandUtilConfig, base_backend
 from miles.utils.external_utils.command_utils.base_backend import (
     ExecuteTrainConfig,
     ExecuteTrainRequest,
+    LaunchGuard,
     default_config,
     resolve_extra_env_vars,
     resolve_hardware,
 )
+from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper
 from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX, dataclass_cli
 from miles.utils.workers.types import ClusterBackend, DeployComponent
@@ -227,7 +232,7 @@ class TestExecuteTrainConfigSelection:
         monkeypatch.setattr(
             RayCommandBackend,
             "_execute_train_inner",
-            lambda self, *, request, config: recorded.append((request, config)),
+            lambda self, *, request, config, guard: recorded.append((request, config)),
         )
         backend_config = ExecuteTrainConfig()
         launch_config = ExecuteTrainConfig(deploy_component=DeployComponent.TRAINER)
@@ -247,7 +252,7 @@ class TestExecuteTrainConfigSelection:
         monkeypatch.setattr(
             RayCommandBackend,
             "_execute_train_inner",
-            lambda self, *, request, config: recorded.append((request, config)),
+            lambda self, *, request, config, guard: recorded.append((request, config)),
         )
         config = ExecuteTrainConfig(deploy_component=DeployComponent.TRAINER)
 
@@ -268,7 +273,7 @@ class TestExecuteTrainConfigSelection:
 def _launched_train_argv(monkeypatch, *, train_args: str, config: ExecuteTrainConfig) -> list[str]:
     recorded: list[ExecuteTrainRequest] = []
     monkeypatch.setattr(
-        RayCommandBackend, "_execute_train_inner", lambda self, *, request, config: recorded.append(request)
+        RayCommandBackend, "_execute_train_inner", lambda self, *, request, config, guard: recorded.append(request)
     )
 
     config.create_backend().execute_train(train_args=train_args, num_gpus_per_node=8, megatron_model_type=None)
@@ -333,3 +338,134 @@ class TestApiServerHost:
         config = ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY)
 
         assert config.create_backend().api_server_host(config) == "localhost"
+
+
+class TestTheDefaultLaunchGuard:
+    def test_before_defuse_performs_no_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unguarded launch must not gain a cluster call at the point a guard may intervene."""
+        commands = _record_cluster_commands(monkeypatch)
+
+        LaunchGuard().before_defuse(
+            "run-a", namespace="rl", superseded_state_file=Path("/s/old.state"), state_file=Path("/s/new.state")
+        )
+
+        assert commands == []
+
+    def test_deleting_the_uninstall_job_runs_the_same_kubectl_delete_the_launcher_ran(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default guard must delete in the foreground, tolerate absence and honour check exactly."""
+        commands = _record_cluster_commands(monkeypatch)
+
+        LaunchGuard().delete_uninstall_job("run-a-uninstall", namespace="rl", check=True)
+
+        assert commands == [
+            (
+                [
+                    "kubectl",
+                    "delete",
+                    "job",
+                    "run-a-uninstall",
+                    "--namespace",
+                    "rl",
+                    "--ignore-not-found",
+                    "--cascade",
+                    "foreground",
+                ],
+                {"capture_output": True, "check": True, "input": None, "timeout": None},
+            )
+        ]
+
+    def test_upgrading_runs_the_unbounded_helm_upgrade_with_every_values_file_in_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unguarded install keeps its old unbounded wait, CI label and values-file precedence."""
+        commands = _record_cluster_commands(monkeypatch)
+
+        LaunchGuard().upgrade(
+            release="run-a",
+            namespace="rl",
+            chart=Path("/chart"),
+            values_files=["/infra.yaml", Path("/v.yaml")],
+            ci_run=True,
+        )
+
+        assert commands == [
+            (
+                [
+                    "helm",
+                    "upgrade",
+                    "--install",
+                    "run-a",
+                    "/chart",
+                    "--namespace",
+                    "rl",
+                    "--labels",
+                    f"{command_wrapper.CI_LABEL}=true",
+                    "--values",
+                    "/infra.yaml",
+                    "--values",
+                    "/v.yaml",
+                ],
+                {"capture_output": False, "check": True},
+            )
+        ]
+
+    def test_reading_the_manifest_asks_helm_for_the_named_release(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The default guard must read the release it is named, and report a missing one as absent."""
+        commands = _record_cluster_commands(monkeypatch, returncode=1, stdout="Error: release: not found")
+
+        assert LaunchGuard().get_manifest("run-a", "rl") is None
+        assert [argv for argv, _ in commands] == [["helm", "get", "manifest", "run-a", "--namespace", "rl"]]
+
+
+class TestExecuteTrainHandsTheGuardDown:
+    @pytest.mark.parametrize("guard", [None, RecordingLaunchGuard()])
+    def test_the_backend_receives_exactly_the_guard_the_caller_passed(
+        self, monkeypatch: pytest.MonkeyPatch, guard: LaunchGuard | None
+    ) -> None:
+        """Dropping or replacing the guard on the way down would let a guarded launch touch the cluster unchecked."""
+        received: list[LaunchGuard | None] = []
+        monkeypatch.setattr(
+            RayCommandBackend,
+            "_execute_train_inner",
+            lambda self, *, request, config, guard: received.append(guard),
+        )
+
+        ExecuteTrainConfig().create_backend().execute_train(
+            train_args="--train-backend fsdp", num_gpus_per_node=8, megatron_model_type=None, guard=guard
+        )
+
+        assert len(received) == 1
+        assert received[0] is guard
+
+    def test_a_launch_refused_before_the_backend_never_consults_the_guard(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A validation failure must happen before any guarded side effect, so the guard sees no call."""
+        guard = RecordingLaunchGuard()
+        monkeypatch.setattr(
+            RayCommandBackend,
+            "_execute_train_inner",
+            lambda self, *, request, config, guard: pytest.fail("an invalid launch reached the backend"),
+        )
+
+        with pytest.raises(AssertionError):
+            ExecuteTrainConfig().create_backend().execute_train(
+                train_args="--train-backend fsdp", num_gpus_per_node=8, megatron_model_type="qwen", guard=guard
+            )
+
+        assert guard.calls == []
+
+
+def _record_cluster_commands(
+    monkeypatch: pytest.MonkeyPatch, *, returncode: int = 0, stdout: str = ""
+) -> list[tuple[list[str], dict[str, Any]]]:
+    commands: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run_process(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        commands.append((argv, kwargs))
+        return subprocess.CompletedProcess(args=argv, returncode=returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(command_wrapper, "run_process", fake_run_process)
+    return commands
