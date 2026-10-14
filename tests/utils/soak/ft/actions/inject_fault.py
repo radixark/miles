@@ -5,15 +5,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
-from tests.utils.soak.core.events import SoakEvent, SoakObservationEvent
+from tests.utils.soak.core.events import SoakEvent, SoakObservationEvent, SoakRunContextEvent
 from tests.utils.soak.core.types import SoakActionEvidence, SoakActionRequest
 from tests.utils.soak.ft.actions.base import BaseCellFaultForm
 from tests.utils.soak.ft.cells import cell_is_alive
 from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, ObservedCellFault, ObservedCellFaultKind
 
-from miles.utils.ft_utils.api_server.models import Cell, FaultInjection
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
-from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
+from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.models import Event, FaultHookEvent
+from miles.utils.ft_utils.api_server.models import Cell
+from miles.utils.test_utils.fault_injector.actions.union import FaultAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import FaultHookRequest, FaultHookStatus, ObservedFaultHookTarget
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +26,11 @@ EFFECT_TIMEOUT_SECONDS: float = 120.0
 @dataclass(frozen=True, kw_only=True)
 class InjectFaultForm(BaseCellFaultForm):
     base_url: str
-    failure_mode: FailureMode
+    action: FaultAction
 
     @property
     def name(self) -> str:
-        return f"inject_fault:{self.failure_mode.value}"
+        return f"inject_fault:{self.action.kind}"
 
     @property
     def needs_fault_target(self) -> bool:
@@ -44,7 +47,20 @@ class InjectFaultForm(BaseCellFaultForm):
         identity = target.fault_target
         if identity is None or identity.workers_hash != target.incarnation:
             return None
-        return self._create_request(target=target, details=InjectFaultDetails(fault_target=identity))
+        return self._create_request(
+            target=target,
+            details=InjectFaultDetails(
+                fault_target=identity,
+                training_events_dir=next(
+                    (
+                        event.sources.get("training_events")
+                        for event in reversed(events)
+                        if isinstance(event, SoakRunContextEvent)
+                    ),
+                    None,
+                ),
+            ),
+        )
 
     async def execute(
         self, request: SoakActionRequest, *, report_applied: Callable[[SoakActionEvidence], None]
@@ -53,16 +69,38 @@ class InjectFaultForm(BaseCellFaultForm):
         fault_target = request.details.fault_target
         assert fault_target.cell_id == request.target.identity
         assert fault_target.workers_hash == request.target.incarnation
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(
-                f"{self.base_url}/api/v1/cells/{request.target.identity}/inject-fault",
-                content=FaultInjection(
-                    mode=self.failure_mode, sub_index=fault_target.rank, expected_target=fault_target
-                ).model_dump_json(),
-                headers={"Content-Type": "application/json"},
-            )
-            response.raise_for_status()
-            report_applied(await self._read_effect(client=client, request=request, fault_target=fault_target))
+        command = FaultHookCommand(
+            operation=FaultHookOperation.SET,
+            request=FaultHookRequest(request_id=request.request_id, action=self.action, target=fault_target),
+        )
+        async with (
+            httpx.AsyncClient(timeout=5.0) as client,
+            asyncio.timeout(EFFECT_TIMEOUT_SECONDS),
+        ):
+            reader = None
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/v1/cells/{request.target.identity}/fault-hook",
+                    content=command.model_dump_json(),
+                    headers={"Content-Type": "application/json"},
+                )
+                response.raise_for_status()
+            except (httpx.TransportError, httpx.HTTPStatusError) as error:
+                if isinstance(error, httpx.HTTPStatusError) and not error.response.is_server_error:
+                    raise
+                if request.details.training_events_dir is None:
+                    raise
+                logger.warning(
+                    "Fault response was lost; checking dispatch evidence for %s", request.request_id, exc_info=True
+                )
+                reader = request.details.training_events_dir
+                while not _dispatch_confirmed(await asyncio.to_thread(read_events, reader), request=command.request):
+                    await asyncio.sleep(0.2)
+
+            effect = await self._read_effect(client=client, request=request, fault_target=fault_target)
+            if reader is not None:
+                assert _dispatch_confirmed(await asyncio.to_thread(read_events, reader), request=command.request)
+            report_applied(effect)
 
     async def _read_effect(
         self,
@@ -71,15 +109,14 @@ class InjectFaultForm(BaseCellFaultForm):
         request: SoakActionRequest,
         fault_target: ObservedFaultHookTarget,
     ) -> ObservedCellFault:
-        async with asyncio.timeout(EFFECT_TIMEOUT_SECONDS):
-            while (effect := await self._observe_effect_once(client=client, fault_target=fault_target)) is None:
-                await asyncio.sleep(0.2)
+        while (effect := await self._observe_effect_once(client=client, fault_target=fault_target)) is None:
+            await asyncio.sleep(0.2)
 
         observed, observed_workers_hash = effect
         return ObservedCellFault(
             request_id=request.request_id,
             target=fault_target,
-            mode=self.failure_mode,
+            action=self.action,
             observed=observed,
             observed_workers_hash=observed_workers_hash,
         )
@@ -111,3 +148,16 @@ class InjectFaultForm(BaseCellFaultForm):
         if not cell_is_alive(cell):
             return ObservedCellFaultKind.UNHEALTHY, cell.status.workers_hash
         return None
+
+
+def _dispatch_confirmed(events: list[Event], *, request: FaultHookRequest) -> bool:
+    records = [
+        event.record
+        for event in events
+        if isinstance(event, FaultHookEvent) and event.record.request.request_id == request.request_id
+    ]
+    assert all(record.request == request for record in records), "Dispatch evidence names another fault request"
+    assert not any(record.status == FaultHookStatus.FAILED for record in records), "Fault dispatch failed"
+    fired = [record for record in records if record.status == FaultHookStatus.FIRED]
+    assert len(fired) <= 1, "Fault request was dispatched more than once"
+    return len(fired) == 1

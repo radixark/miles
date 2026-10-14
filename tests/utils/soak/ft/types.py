@@ -1,4 +1,5 @@
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -6,7 +7,7 @@ from tests.utils.soak.k8s_utils.pod_manipulation import SoakPodTarget
 
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
+from miles.utils.test_utils.fault_injector.actions.union import FaultAction
 from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
 
 ACTOR_CELL_TYPE: str = ACTOR_ROLE
@@ -26,6 +27,7 @@ class CellTarget(FrozenStrictBaseModel):
 class InjectFaultDetails(FrozenStrictBaseModel):
     form: Literal["inject_fault"] = "inject_fault"
     fault_target: ObservedFaultHookTarget
+    training_events_dir: Path | None = None
 
 
 class PodDetails(FrozenStrictBaseModel):
@@ -43,6 +45,6 @@ class ObservedCellFault(FrozenStrictBaseModel):
     kind: Literal["cell_fault"] = "cell_fault"
     request_id: str
     target: ObservedFaultHookTarget
-    mode: FailureMode
+    action: FaultAction
     observed: ObservedCellFaultKind
     observed_workers_hash: str | None = None

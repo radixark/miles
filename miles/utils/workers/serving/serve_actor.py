@@ -9,7 +9,6 @@ from typing import Any
 import uvicorn
 
 from miles.utils.misc import NodeProbeMixin
-from miles.utils.test_utils.fault_injector.actions.process import inject_fault as _inject_fault
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord
 from miles.utils.workers.rpc.server.app import create_rpc_app
@@ -37,9 +36,6 @@ class ServeActor(NodeProbeMixin):
             daemon=True,
         )
         self._server_thread.start()
-
-    def inject_fault(self, mode: str) -> None:
-        _inject_fault(mode=mode)
 
     def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
         return fault_hook_controller.apply(command)

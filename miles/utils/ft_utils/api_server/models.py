@@ -8,8 +8,6 @@ except ImportError:
 from typing import Literal
 
 from miles.utils.pydantic_utils import StrictBaseModel
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
-from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
 
 CELL_TYPE_LABEL: str = "miles.io/cell-type"
 
@@ -91,12 +89,6 @@ class CellPatchSpec(StrictBaseModel):
 
 class CellPatch(StrictBaseModel):
     spec: CellPatchSpec | None = None
-
-
-class FaultInjection(StrictBaseModel):
-    mode: FailureMode
-    sub_index: int = 0
-    expected_target: ObservedFaultHookTarget | None = None
 
 
 class K8sStatus(StrictBaseModel):

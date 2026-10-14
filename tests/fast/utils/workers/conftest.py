@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from tests.fast.utils.workers.fake_ray import FakeRayCluster, FakeRayModule
 from tests.fast.utils.workers.k8s_client_fakes import kubernetes_client_probe
 
