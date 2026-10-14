@@ -4,11 +4,13 @@ from argparse import Namespace
 import pytest
 from tests.ci.ci_register import register_cpu_ci
 
+from miles.rollout import on_policy_distillation as opd
 from miles.rollout.on_policy_distillation import (
     _compute_topk_reverse_kl,
     _per_position_ids,
     _score_payload,
-    _teacher_url_for_sample,
+    _teacher_target_for_sample,
+    parse_teacher_adapters,
     parse_teacher_urls,
 )
 from miles.utils.types import Sample
@@ -132,12 +134,17 @@ def test_score_payload_routes_per_position_vs_flat():
 
 
 # ---------------------------------------------------------------------------
-# Multi-teacher routing (--opd-teacher-urls)
+# Multi-teacher routing (--opd-teacher-urls / --opd-teacher-adapters)
 # ---------------------------------------------------------------------------
 
 
-def _routing_args(urls=None, key="opd_teacher", rm_url="http://single-teacher/generate"):
-    return Namespace(opd_teacher_urls=urls, opd_teacher_key=key, rm_url=rm_url)
+def _routing_args(urls=None, adapters=None, key="opd_teacher", rm_url="http://single-teacher/generate"):
+    return Namespace(
+        opd_teacher_urls=urls,
+        opd_teacher_adapters=adapters,
+        opd_teacher_key=key,
+        rm_url=rm_url,
+    )
 
 
 def _tagged_sample(metadata=None):
@@ -168,40 +175,130 @@ def test_parse_teacher_urls_rejects_duplicate_names():
         parse_teacher_urls(["math=http://h1/generate", "math=http://h2/generate"])
 
 
-def test_routing_unset_map_falls_back_to_rm_url():
-    args = _routing_args(urls=None)
+def test_parse_teacher_adapters_parses_names():
+    assert parse_teacher_adapters(["math=math_lora", "code=code_lora"]) == {
+        "math": "math_lora",
+        "code": "code_lora",
+    }
+    assert parse_teacher_adapters(None) == {}
+
+
+@pytest.mark.parametrize("bad", ["math", "=math_lora", "math=", "  =  "])
+def test_parse_teacher_adapters_rejects_malformed_entries(bad):
+    with pytest.raises(ValueError, match="expected NAME=ADAPTER"):
+        parse_teacher_adapters([bad])
+
+
+def test_routing_unset_maps_fall_back_to_rm_url_on_base_weights():
+    args = _routing_args()
     sample = _tagged_sample({"opd_teacher": "math"})
-    assert _teacher_url_for_sample(args, sample) == "http://single-teacher/generate"
+    assert _teacher_target_for_sample(args, sample) == ("http://single-teacher/generate", None)
 
 
-def test_routing_by_metadata_name():
+def test_routing_by_url_only_selects_endpoint_without_adapter():
     args = _routing_args(urls=["math=http://h1/generate", "code=http://h2/generate"])
-    assert _teacher_url_for_sample(args, _tagged_sample({"opd_teacher": "math"})) == "http://h1/generate"
-    assert _teacher_url_for_sample(args, _tagged_sample({"opd_teacher": "code"})) == "http://h2/generate"
+    assert _teacher_target_for_sample(args, _tagged_sample({"opd_teacher": "math"})) == ("http://h1/generate", None)
+    assert _teacher_target_for_sample(args, _tagged_sample({"opd_teacher": "code"})) == ("http://h2/generate", None)
+
+
+def test_routing_by_adapter_only_shares_one_endpoint():
+    """The multi-LoRA topology: one server, one frozen base, one adapter per teacher."""
+    args = _routing_args(adapters=["math=math_lora", "code=code_lora"])
+    assert _teacher_target_for_sample(args, _tagged_sample({"opd_teacher": "math"})) == (
+        "http://single-teacher/generate",
+        "math_lora",
+    )
+    assert _teacher_target_for_sample(args, _tagged_sample({"opd_teacher": "code"})) == (
+        "http://single-teacher/generate",
+        "code_lora",
+    )
+
+
+def test_routing_combines_url_and_adapter_maps():
+    """A dedicated server and a shared-base adapter can coexist as sibling teachers."""
+    args = _routing_args(urls=["math=http://h1/generate"], adapters=["code=code_lora"])
+    assert _teacher_target_for_sample(args, _tagged_sample({"opd_teacher": "math"})) == ("http://h1/generate", None)
+    assert _teacher_target_for_sample(args, _tagged_sample({"opd_teacher": "code"})) == (
+        "http://single-teacher/generate",
+        "code_lora",
+    )
+
+
+def test_routing_applies_adapter_to_its_own_endpoint():
+    args = _routing_args(urls=["math=http://h1/generate"], adapters=["math=math_lora"])
+    assert _teacher_target_for_sample(args, _tagged_sample({"opd_teacher": "math"})) == (
+        "http://h1/generate",
+        "math_lora",
+    )
 
 
 def test_routing_respects_custom_metadata_key():
     args = _routing_args(urls=["math=http://h1/generate"], key="task")
-    assert _teacher_url_for_sample(args, _tagged_sample({"task": "math"})) == "http://h1/generate"
+    assert _teacher_target_for_sample(args, _tagged_sample({"task": "math"})) == ("http://h1/generate", None)
 
 
 def test_routing_missing_name_uses_default_entry():
     args = _routing_args(urls=["math=http://h1/generate", "default=http://h3/generate"])
-    assert _teacher_url_for_sample(args, _tagged_sample({})) == "http://h3/generate"
+    assert _teacher_target_for_sample(args, _tagged_sample({})) == ("http://h3/generate", None)
 
 
 def test_routing_unknown_name_uses_default_entry():
     args = _routing_args(urls=["math=http://h1/generate", "default=http://h3/generate"])
-    assert _teacher_url_for_sample(args, _tagged_sample({"opd_teacher": "physics"})) == "http://h3/generate"
+    assert _teacher_target_for_sample(args, _tagged_sample({"opd_teacher": "physics"})) == ("http://h3/generate", None)
+
+
+def test_routing_default_may_come_from_the_adapter_map_alone():
+    args = _routing_args(adapters=["math=math_lora", "default=math_lora"])
+    assert _teacher_target_for_sample(args, _tagged_sample({"opd_teacher": "physics"})) == (
+        "http://single-teacher/generate",
+        "math_lora",
+    )
 
 
 def test_routing_unknown_name_without_default_raises():
-    args = _routing_args(urls=["math=http://h1/generate"])
-    with pytest.raises(ValueError, match="matches no --opd-teacher-urls name"):
-        _teacher_url_for_sample(args, _tagged_sample({"opd_teacher": "physics"}))
+    args = _routing_args(adapters=["math=math_lora"])
+    with pytest.raises(ValueError, match="matches no teacher name configured"):
+        _teacher_target_for_sample(args, _tagged_sample({"opd_teacher": "physics"}))
 
 
 def test_routing_missing_name_without_default_raises():
     args = _routing_args(urls=["math=http://h1/generate"])
     with pytest.raises(ValueError, match="missing teacher key"):
-        _teacher_url_for_sample(args, _tagged_sample({}))
+        _teacher_target_for_sample(args, _tagged_sample({}))
+
+
+def test_score_payload_carries_lora_path_only_when_routed_to_an_adapter():
+    assert "lora_path" not in _score_payload([1, 2, 3])
+    assert _score_payload([1, 2, 3], lora_path="math_lora")["lora_path"] == "math_lora"
+
+
+async def test_only_the_teacher_request_carries_the_adapter(monkeypatch):
+    """The student is scored on its own weights, so handing it the teacher's adapter
+    would distil the student against the teacher and report nothing."""
+    posted: list[tuple[str, dict]] = []
+
+    async def fake_post(url, payload, timeout_secs=None):
+        posted.append((url, payload))
+        return {"meta_info": {"input_top_logprobs": [[_entry(1.0, 9)], [_entry(0.9, 5)], [_entry(0.8, 7)]]}}
+
+    monkeypatch.setattr(opd, "_post_json", fake_post)
+    args = Namespace(
+        opd_log_prob_top_k=2,
+        opd_top_k_strategy="only-teacher",
+        opd_reward_weight_mode="student_p",
+        opd_topk_per_position=False,
+        opd_teacher_urls=None,
+        opd_teacher_adapters=["math=math_lora"],
+        opd_teacher_key="opd_teacher",
+        rm_url="http://teacher/generate",
+        sglang_router_ip="10.0.0.1",
+        sglang_router_port=8000,
+        sglang_router_request_timeout_secs=None,
+    )
+    await opd.reward_func(args, _tagged_sample({"opd_teacher": "math"}))
+
+    (teacher_url, teacher_payload), (student_url, student_payload) = posted
+    assert teacher_url == "http://teacher/generate"
+    assert teacher_payload["lora_path"] == "math_lora"
+    assert student_url == "http://10.0.0.1:8000/generate"
+    assert "lora_path" not in student_payload
