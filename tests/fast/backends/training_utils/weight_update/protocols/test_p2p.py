@@ -475,3 +475,53 @@ class TestWriteOrdering:
             (api.session_id(0), {api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0]}),
             (api.session_id(0), {api.target_address(0, "qk"): [5.0, 6.0, 7.0, 8.0]}),
         ]
+
+
+class TestReconnectionWithOutstandingWrites:
+    @pytest.mark.parametrize("late_failure", [False, True])
+    def test_a_new_generation_reuses_bounded_buffers_without_inheriting_old_failures(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any, late_failure: bool
+    ) -> None:
+        """A timed-out reader can see reused bytes only in its removed cell and cannot blame its replacement."""
+        protocol = p2p_sender.make_protocol(p2p_transfer_timeout=0.02)
+        old_api = make_rollout_api("cell-a", gpu_count=1)
+        p2p_sender.connect(protocol, [old_api])
+        p2p_sender.begin_sync(protocol, weight_version=1)
+        hold = p2p_sender.transfer_engine.hold(old_api.session_id(0))
+        if late_failure:
+            p2p_sender.transfer_engine.failing_sessions.add(old_api.session_id(0))
+        protocol.send_bucket(make_bucket("hf.w"))
+        assert hold.entered.wait(timeout=10)
+        old_cell = protocol.cell_updaters_of_cell_id["cell-a"]
+        (old_future,) = [
+            write.future
+            for writes in protocol._transfer_buffers._pending_writes_by_buffer_index
+            for write in writes
+            if write.cell_updater is old_cell
+        ]
+        protocol.after_base_weights()
+        assert isinstance(old_cell._error, TimeoutError)
+        registrations = list(p2p_sender.transfer_engine.registered)
+
+        new_api = make_rollout_api("cell-a", gpu_count=1, generation=2)
+        p2p_sender.connect(protocol, [new_api])
+        p2p_sender.begin_sync(protocol, weight_version=2)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.send_bucket(make_bucket("hf.q", "hf.k"))
+        protocol.after_base_weights()
+        assert p2p_sender.transfer_engine.registered == registrations
+        assert not protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert [session for session, _ in p2p_sender.transfer_engine.writes] == [new_api.session_id(0)] * 2
+
+        hold.release.set()
+        if late_failure:
+            with pytest.raises(RuntimeError, match="returned -1"):
+                old_future.result(timeout=10)
+        else:
+            old_future.result(timeout=10)
+        assert p2p_sender.transfer_engine.payload_of(old_api.session_id(0)) == {
+            old_api.target_address(0, "w"): [5.0, 6.0, 7.0, 8.0]
+        }
+        assert not protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert isinstance(old_cell._error, TimeoutError)
+        assert ("unregistered read", old_api.session_id(0)) not in p2p_sender.log

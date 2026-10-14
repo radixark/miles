@@ -96,7 +96,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         return True
 
     def after_base_weights(self) -> None:
-        """Wait for every write of this update; fail the update if any write failed or is still running."""
+        """Wait for healthy cells and isolate cells with failed or timed-out writes."""
         if not self.is_sender:
             return
         self._transfer_buffers.wait_for_all_writes()

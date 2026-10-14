@@ -152,3 +152,66 @@ def test_cancelled_queued_writes_do_not_prevent_releasing_memory(make_transfer_b
 
     buffers.release()
     assert registered == []
+
+
+def test_failed_cell_writes_stay_registered_without_affecting_healthy_replacements(make_transfer_buffers) -> None:
+    """Failed-cell writes must retain memory while a healthy replacement keeps its own state."""
+    buffers, registered = make_transfer_buffers(num_buffers=2, write_timeout=0)
+    first, second = buffers.acquire(), buffers.acquire()
+    running, queued, healthy = Future(), Future(), Future()
+    running.set_running_or_notify_cancel()
+    old = _pending_write("cell-a", running)
+    replacement = _pending_write("cell-a", healthy)
+    buffers.release_after(first, [old])
+    buffers.release_after(second, [PendingWrite(future=queued, cell_updater=old.cell_updater), replacement])
+    first_error = RuntimeError("first")
+    old.cell_updater.mark_errored(first_error)
+    old.cell_updater.mark_errored(RuntimeError("second"))
+
+    assert buffers.acquire() is first
+
+    assert not running.done()
+    assert not healthy.cancelled()
+    assert not replacement.cell_updater.is_errored
+    assert old.cell_updater._error is first_error
+    with pytest.raises(RuntimeError, match="still running"):
+        buffers.release()
+    assert len(registered) == 2
+    running.set_result(None)
+    queued.set_result(None)
+    healthy.set_result(None)
+    buffers.wait_for_all_writes()
+    buffers.release()
+    assert registered == []
+
+
+def test_failure_before_registration_does_not_hide_an_unfinished_write(make_transfer_buffers) -> None:
+    """A failed cell must not hide unfinished readers registered after its failure."""
+    buffers, registered = make_transfer_buffers(num_buffers=1, write_timeout=0)
+    buffer = buffers.acquire()
+    queued = Future()
+    pending = _pending_write("cell-a", queued)
+    pending.cell_updater.mark_errored(RuntimeError("already failed"))
+    buffers.release_after(buffer, [pending])
+
+    assert buffers.acquire() is buffer
+
+    with pytest.raises(RuntimeError, match="still running"):
+        buffers.release()
+    assert registered == [(buffer.data_ptr(), buffer.numel())]
+    queued.set_result(None)
+    buffers.release()
+    assert registered == []
+
+
+def test_completion_before_tracking_does_not_retain_the_future(make_transfer_buffers) -> None:
+    """An already completed write must allow buffer reuse and allocation release."""
+    buffers, registered = make_transfer_buffers(num_buffers=1, write_timeout=0)
+    buffer = buffers.acquire()
+    done = Future()
+    done.set_result(None)
+    buffers.release_after(buffer, [_pending_write("cell-a", done)])
+
+    assert buffers.acquire() is buffer
+    buffers.release()
+    assert registered == []
