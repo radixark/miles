@@ -1,17 +1,18 @@
 import concurrent.futures
+import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
 
 import torch
 
-from miles.backends.training_utils.weight_update.protocols.transports.mooncake import RemoteShard
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 
 
 @dataclass(frozen=True)
 class PendingWrite:
-    remote_shard: RemoteShard
     future: Future[None]
+    cell_updater: _RolloutCellUpdater
 
 
 class TransferBuffers:
@@ -19,9 +20,8 @@ class TransferBuffers:
 
     The protocol creates it once per process on the device the transport reads from and registers each buffer with
     the transport. For each load it calls `acquire`, loads into the buffer, starts the writes that read it, and hands
-    them to `release_after`. A buffer is handed out again only after every write reading it has returned; a write
-    that failed or is still running after `write_timeout` fails the update when its buffer is next acquired or when
-    the protocol waits for all writes.
+    them to `release_after`. A buffer is handed out again once healthy cells have finished reading it. Failed or
+    timed-out cells stop participating, but their unfinished writes still keep the buffers registered until release.
     """
 
     def __init__(
@@ -44,19 +44,19 @@ class TransferBuffers:
         self._next_buffer_index = 0
 
     def acquire(self) -> torch.Tensor:
-        """Returns the next buffer once every write reading it has returned."""
+        """Returns the next buffer once every healthy cell has finished reading it."""
         buffer_index = self._next_buffer_index
         self._next_buffer_index = (buffer_index + 1) % len(self._buffers)
         self._wait_for_writes_reading([buffer_index])
         return self._buffers[buffer_index]
 
     def release_after(self, buffer: torch.Tensor, pending_writes: Sequence[PendingWrite]) -> None:
-        """Records the writes that read `buffer`; `acquire` hands it out again only after they return."""
+        """Records the writes and their connection-specific cells that read `buffer`."""
         (buffer_index,) = [index for index, candidate in enumerate(self._buffers) if candidate is buffer]
         self._pending_writes_by_buffer_index[buffer_index] += pending_writes
 
     def wait_for_all_writes(self) -> None:
-        """Waits for every write still reading a buffer."""
+        """Waits for healthy cells and marks cells with failed or timed-out writes."""
         self._wait_for_writes_reading(range(len(self._buffers)))
 
     def release(self) -> None:
@@ -71,7 +71,7 @@ class TransferBuffers:
     def _wait_for_writes_reading(self, buffer_indices: Sequence[int]) -> None:
         pending_writes = [write for index in buffer_indices for write in self._pending_writes_by_buffer_index[index]]
         try:
-            _raise_if_any_write_failed(pending_writes, timeout=self._write_timeout)
+            _wait_for_healthy_cells(pending_writes, timeout=self._write_timeout)
         finally:
             for index in buffer_indices:
                 self._pending_writes_by_buffer_index[index] = [
@@ -79,24 +79,13 @@ class TransferBuffers:
                 ]
 
 
-def _raise_if_any_write_failed(pending_writes: list[PendingWrite], timeout: float) -> None:
-    _, unfinished_writes = concurrent.futures.wait([write.future for write in pending_writes], timeout=timeout)
-    failures = []
-    for pending_write in pending_writes:
-        remote_shard = pending_write.remote_shard
-        write = pending_write.future
-        if write in unfinished_writes:
-            reason = f"still running after {timeout}s"
-        elif write.exception() is not None:
-            reason = repr(write.exception())
-        else:
-            continue
-        failures.append(
-            f"the {remote_shard.runner_role} of rollout engine {remote_shard.rollout_engine_ind} rank "
-            f"{remote_shard.rollout_engine_rank} (session {remote_shard.session_id}): {reason}"
-        )
-    if failures:
-        raise RuntimeError(f"{len(failures)} of {len(pending_writes)} p2p writes failed:\n" + "\n".join(failures))
+def _wait_for_healthy_cells(pending_writes: list[PendingWrite], timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    for write in pending_writes:
+        try:
+            write.future.result(timeout=max(0, deadline - time.monotonic()))
+        except Exception as error:
+            write.cell_updater.mark_errored(error)
 
 
 def _allocate_transfer_buffer(buffer_nbytes: int, device: torch.device) -> torch.Tensor:
