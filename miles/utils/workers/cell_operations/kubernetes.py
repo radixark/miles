@@ -4,10 +4,11 @@ import asyncio
 import logging
 
 from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesWorkerProvider
+from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,32 @@ class KubernetesCellOperations(BaseCellOperations):
     async def resume(self, *, cell_id: str) -> None:
         raise NotImplementedError(
             "a deleted cell comes back when its workload recreates it, so resume has no moment to return at"
+        )
+
+    async def observe_fault_target(self, *, cell_id: str, sub_index: int) -> FaultTarget:
+        await self._ensure_watching()
+
+        (infos,) = self._provider.get_worker_infos(cell_ids=[cell_id])
+        if not 0 <= sub_index < len(infos):
+            raise StaleFaultTargetError(f"Cell {cell_id} has no worker at index {sub_index}")
+        info = infos[sub_index]
+        if info.worker_class is None:
+            raise NotImplementedError(f"Worker {info.name} is not served over RPC")
+
+        health = await build_rpc_handle_of_worker_info(info).read_health()
+        if not health.boot_uuid or not health.pod_uid:
+            raise StaleFaultTargetError(f"Worker {info.name} reports no boot or pod identity")
+
+        if (incarnation := self._provider.debug_cell_incarnation(cell_id)) is None:
+            raise StaleFaultTargetError(f"Cell {cell_id} has disappeared")
+        if health.pod_uid not in {pod.uid for pod in incarnation.pods}:
+            raise StaleFaultTargetError(f"Worker {info.name} answered from a pod that cell {cell_id} no longer lists")
+        return FaultTarget(
+            cell_id=cell_id,
+            sub_index=sub_index,
+            workers_hash=incarnation.workers_hash,
+            boot_uuid=health.boot_uuid,
+            pod_uid=health.pod_uid,
         )
 
     async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None:
