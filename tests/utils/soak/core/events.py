@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -135,7 +136,11 @@ def read_events(path: Path, *, require_closed: bool = True) -> list[SoakEvent]:
 
 
 def file_sha256(path: Path) -> str:
-    raise NotImplementedError
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _assert_archived_files_unchanged(path: Path, events: list[SoakEvent]) -> None:
