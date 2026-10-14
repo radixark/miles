@@ -104,13 +104,16 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
-            # fill padding tokens with arange to avoid invalid reading
+            # Fill padding tokens with valid experts. Spread them round-robin over all experts:
+            # bshd pads every sample to the batch max length, and sending all of that padding to
+            # experts 0..topk-1 overloads EP rank 0 (memory spikes, RCCL allocation failures).
             all_invalid = (top_indices == -1).all(dim=-1)
             if all_invalid.any():
+                n_tokens, k = top_indices.shape
                 ar = (
-                    torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
-                    % scores.shape[1]
-                )
+                    torch.arange(n_tokens, device=top_indices.device, dtype=top_indices.dtype).unsqueeze(-1) * k
+                    + torch.arange(k, device=top_indices.device, dtype=top_indices.dtype)
+                ) % scores.shape[1]
                 top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
 
             if return_probs:
