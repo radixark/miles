@@ -157,6 +157,9 @@ class _Scheduler:
     def step(self, *, increment: int) -> None:
         self.num_steps += increment
 
+    def load_state_dict(self, state_dict: dict[str, int]) -> None:
+        self.step(increment=state_dict["num_steps"])
+
 
 class TestLoadStateScheduler:
     @pytest.mark.parametrize("saved_checkpoint", [True, False])
