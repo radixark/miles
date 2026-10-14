@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import with_session_server
 from tests.manual.session import _rollout_benchmark_agent as agent
-from tests.manual.session.bench_agentic_rollout import NUM_LAYERS, TOPK, build_args
+from tests.manual.session.bench_agentic_rollout import NUM_LAYERS, TOPK, build_args, close_http_client
 from tests.manual.session.bench_session_server_overhead import _completion_token_ids
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
@@ -163,8 +163,8 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
             assert sample.rollout_routed_experts.dtype == np.int32
             np.testing.assert_array_equal(sample.rollout_routed_experts, expected["r3"])
     finally:
-        for client in http_utils._http_clients.values():
-            run(client.aclose())
-        http_utils._http_clients.clear()
-        backend.stop()
-        SingletonMeta.clear_all_instances()
+        try:
+            close_http_client()
+        finally:
+            backend.stop()
+            SingletonMeta.clear_all_instances()

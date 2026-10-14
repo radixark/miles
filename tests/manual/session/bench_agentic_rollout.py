@@ -129,6 +129,18 @@ def validate_samples(samples, specs, sessions):
     return sum(sample.rollout_routed_experts.nbytes for sample in samples)
 
 
+def close_http_client():
+    """Close the rollout HTTP client of `run`'s loop; a client is bound to the loop that made it."""
+    from miles.utils import http_utils
+    from miles.utils.async_utils import run
+
+    async def close():
+        if (client := http_utils._http_clients.pop(asyncio.get_running_loop(), None)) is not None:
+            await client.aclose()
+
+    run(close())
+
+
 def run_benchmark(bench):
     import psutil
 
@@ -273,9 +285,7 @@ def run_benchmark(bench):
     finally:
         try:
             run(agent.close_client())
-            for client in http_utils._http_clients.values():
-                run(client.aclose())
-            http_utils._http_clients.clear()
+            close_http_client()
         finally:
             for process in reversed(processes):
                 _terminate_proc(process)
