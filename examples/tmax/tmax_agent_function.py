@@ -5,24 +5,26 @@ tmax_agent_function.run``. The policy is reached through the session server at
 ``base_url/v1``, so token ids, logprobs and loss masks are recorded server-side
 on every turn; this module only owns the loop and the sandbox.
 
-The loop mirrors open-instruct's Terminal-RL rollout (``vllm_utils.process_request``
-with the ``swerl_vanillux_sandbox`` env and ``--tool_call_format_error_feedback``
-off):
+The loop follows open-instruct's Terminal-RL rollout (``vllm_utils.process_request``
+with the ``swerl_vanillux_sandbox`` env, ``--tool_call_format_error_feedback`` off,
+``SWERL_RESET_FAILURE_ZERO_REWARD=1``):
 
-  start a fresh container for the task
+  start a fresh container for the task (5 attempts)
   repeat up to TMAX_MAX_STEPS tool calls:
       chat completion with the single `bash` tool
-      no tool call / length-truncated turn / context full  -> stop, reward 0
-      run each bash call; the submit marker runs the tests  -> reward, stop
+      no call to a known tool / length-truncated turn / context full  -> stop, reward 0
+      run each bash call; a failed call becomes its observation         -> continue
+      the submit marker runs the tests                                  -> reward, stop
 
-Failure semantics (see docs/deep-dive/agentic-rollout-internals.md section 4.5):
+Failure semantics:
 
-* sandbox cannot be started: raised before the first model call, so the
-  session has no records, the sample is ABORTED and the group is dropped;
-* sandbox infra failure after the first model call: ``reward=None``, which the
-  missing-reward filter turns into a dropped group (open-instruct instead
-  scores these 0 under SWERL_RESET_FAILURE_ZERO_REWARD=1);
-* sandbox OOM or episode wall-clock cap: reward 0, as in open-instruct;
+* sandbox cannot be started after 5 attempts: with ``TMAX_START_FAILURE=zero`` (the
+  default, as open-instruct) the episode scores 0 and stays in its group, through a
+  minimal one-token turn so the session has a sample; ``drop`` makes no model call,
+  so the sample is ABORTED and the whole group is dropped;
+* a bash command or the tests failing for infra reasons: the error is the
+  observation and the episode continues (a vanished container is recreated once);
+* sandbox OOM or the optional episode wall-clock cap: reward 0;
 * over-sampling abort: ``reward=None``; the group is discarded anyway.
 
 Each call runs in its own process under ``--custom-agent-function-mode subproc``
@@ -33,15 +35,20 @@ process, plus removal of the rollout's containers to cut long commands short.
 Env vars:
   TMAX_TASK_DATA_DIR       directory holding one sub-directory per task_id (required).
   TMAX_MAX_STEPS           max bash calls per episode (default: 64).
-  TMAX_EPISODE_TIMEOUT_S   wall-clock cap per episode (default: 3600).
+  TMAX_START_FAILURE       zero | drop: what a sandbox that never starts does (default: zero).
+  TMAX_EPISODE_TIMEOUT_S   wall-clock cap per episode, 0 for none (default: 0, as open-instruct).
+  TMAX_TRACE_DIR           if set, one JSONL line per episode (messages, reward, metrics) is
+                           appended under this directory (open-instruct's --save_traces).
   AGENT_MODEL_NAME         model name sent to the policy (default: "model").
   plus the sandbox knobs documented in tmax_sandbox.py.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
+import socket
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -51,7 +58,7 @@ from typing import Any
 from openai import AsyncOpenAI
 from tmax_sandbox import SandboxInfraError, SandboxOOMError, TmaxSandbox, remove_owned_sandboxes
 
-from miles.rollout.agentic.rollout_limits import current_scope
+from miles.rollout.agentic.rollout_limits import current_scope, rollout_lock
 from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
@@ -79,12 +86,11 @@ _FORMAT_ERROR = (
     "via the `bash` tool, with no other content in the command.\n"
 )
 
+_ABORT_POLL_S = 1.0
+
 
 class _Aborted(Exception):
     """The rollout step aborted this episode (over-sampling); its group is discarded."""
-
-
-_ABORT_POLL_S = 1.0
 
 
 def _abort_generation_file() -> Path:
@@ -107,9 +113,11 @@ class _Episode:
     abort_generation: int
     turns: int = 0
     tool_calls: int = 0
+    tool_errors: int = 0
     end_reason: str = "max_steps"
     reward: float | None = 0.0
     last_total_tokens: int = 0
+    messages: list[dict] = field(default_factory=list)
     gen_times: list[float] = field(default_factory=list)
     tool_times: list[float] = field(default_factory=list)
 
@@ -124,38 +132,31 @@ async def run(
     metadata = metadata or {}
     task_id = metadata["task_id"]
     episode = _Episode(
-        task_id=task_id, max_seq_len=metadata.get("max_seq_len"), abort_generation=_abort_generation()
+        task_id=task_id,
+        max_seq_len=metadata.get("max_seq_len"),
+        abort_generation=_abort_generation(),
+        messages=list(prompt),
     )
     policy = AsyncOpenAI(base_url=openai_session_url(base_url), api_key="EMPTY", timeout=3600)
-    task_dir = os.path.join(os.environ["TMAX_TASK_DATA_DIR"], task_id)
+    request_kwargs = dict(request_kwargs or {})
     t_start = time.monotonic()
 
-    # Started outside the try: a sandbox that never comes up leaves no model call recorded,
-    # so the sample is ABORTED and the group dropped instead of training on a fake 0.
-    async with TmaxSandbox(image=metadata["image"], task_dir=task_dir) as box:
-        try:
-            await asyncio.wait_for(
-                _loop(episode, policy, box, list(prompt), dict(request_kwargs or {})),
-                timeout=float(os.getenv("TMAX_EPISODE_TIMEOUT_S", "3600")),
-            )
-        except TimeoutError:
-            episode.end_reason, episode.reward = "episode_timeout", 0.0
-        except SandboxOOMError:
-            episode.end_reason, episode.reward = "oom", 0.0
-        except _Aborted:
-            episode.end_reason, episode.reward = "aborted", None
-        except SandboxInfraError as e:
-            if _abort_generation() != episode.abort_generation:  # the abort hook removed the container
-                episode.end_reason, episode.reward = "aborted", None
-            else:
-                logger.warning(f"[{task_id}] sandbox infra failure, dropping group: {e}")
-                episode.end_reason, episode.reward = "infra_error", None
+    try:
+        sandbox = TmaxSandbox(
+            image=metadata["image"], task_dir=os.path.join(os.environ["TMAX_TASK_DATA_DIR"], task_id)
+        )
+        async with sandbox as box:
+            await _run_episode(episode, policy, box, request_kwargs)
+    except SandboxInfraError as e:
+        # Only the start can raise here: failures after it are observations inside the loop.
+        await _handle_start_failure(episode, policy, request_kwargs, e)
 
     metrics = _metrics(episode, time.monotonic() - t_start)
     logger.info(
         f"[{task_id}] episode done: reward={episode.reward} end={episode.end_reason} turns={episode.turns} "
         f"tool_calls={episode.tool_calls} tokens={episode.last_total_tokens} time={metrics['total_time']:.0f}s"
     )
+    _write_trace(episode, metadata, metrics)
     return {"reward": episode.reward, "agent_metrics": metrics}
 
 
@@ -169,12 +170,41 @@ async def abort(args) -> None:
     logger.info(f"TMax abort: signalled in-flight episodes, removed {removed} sandboxes")
 
 
-async def _loop(
-    episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox, messages: list[dict], request_kwargs: dict
-) -> None:
+async def _run_episode(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox, request_kwargs: dict) -> None:
+    timeout_s = float(os.getenv("TMAX_EPISODE_TIMEOUT_S", "0")) or None
+    try:
+        await asyncio.wait_for(_loop(episode, policy, box, request_kwargs), timeout=timeout_s)
+    except TimeoutError:
+        episode.end_reason, episode.reward = "episode_timeout", 0.0
+    except SandboxOOMError:
+        episode.end_reason, episode.reward = "oom", 0.0
+    except _Aborted:
+        episode.end_reason, episode.reward = "aborted", None
+
+
+async def _handle_start_failure(episode: _Episode, policy: AsyncOpenAI, request_kwargs: dict, error: Exception):
+    if os.getenv("TMAX_START_FAILURE", "zero") == "drop":
+        logger.warning(f"[{episode.task_id}] sandbox never started, dropping the group: {error}")
+        raise error
+    # open-instruct SWERL_RESET_FAILURE_ZERO_REWARD=1: the rollout scores 0 and stays in its group. Miles
+    # needs a recorded model call to build the sample, so make the smallest one: a single generated token.
+    logger.warning(f"[{episode.task_id}] sandbox never started, scoring the episode 0: {error}")
+    await policy.chat.completions.create(
+        model=os.getenv("AGENT_MODEL_NAME", "model"),
+        messages=episode.messages,
+        tools=[BASH_TOOL],
+        max_tokens=1,
+        extra_body={k: v for k, v in request_kwargs.items() if k != "max_tokens"},
+    )
+    episode.turns = 1
+    episode.end_reason, episode.reward = "start_failed", 0.0
+
+
+async def _loop(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox, request_kwargs: dict) -> None:
     max_steps = int(os.getenv("TMAX_MAX_STEPS", "64"))
     model_name = os.getenv("AGENT_MODEL_NAME", "model")
     per_turn_cap = request_kwargs.pop("max_tokens", None)
+    messages = episode.messages
     while episode.tool_calls < max_steps:
         max_tokens = _turn_budget(episode, per_turn_cap)
         if max_tokens is not None and max_tokens <= 0:
@@ -198,18 +228,26 @@ async def _loop(
         choice = completion.choices[0]
         # Echo the assistant turn verbatim: the session server prefix-matches the next request against it.
         messages.append(choice.message.model_dump(exclude_none=True))
+        if episode.max_seq_len is not None and episode.last_total_tokens > episode.max_seq_len:
+            # The last observation overflowed the budget; open-instruct truncates it and stops there.
+            episode.end_reason = "context_full"
+            return
         if choice.finish_reason == "length":
             episode.end_reason = "length"
             return
-        if not choice.message.tool_calls:
+        # open-instruct drops calls to tools it does not serve; a turn left without one ends the episode.
+        tool_calls = [
+            tc for tc in (choice.message.tool_calls or []) if tc.function.name == BASH_TOOL["function"]["name"]
+        ]
+        if not tool_calls:
             episode.end_reason = "no_tool_call"
             return
-        for tool_call in choice.message.tool_calls:
+        for tool_call in tool_calls:
+            if episode.tool_calls >= max_steps:
+                break
             episode.tool_calls += 1
-            observation, submitted = await _run_tool_call(episode, box, tool_call)
-            if submitted:
-                episode.reward = await _race_abort(episode, box.run_tests())
-                episode.end_reason = "submitted"
+            observation, done = await _run_tool_call(episode, box, tool_call)
+            if done:
                 return
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": observation})
 
@@ -223,8 +261,7 @@ def _turn_budget(episode: _Episode, per_turn_cap: int | None) -> int | None:
 
 
 async def _run_tool_call(episode: _Episode, box: TmaxSandbox, tool_call: Any) -> tuple[str, bool]:
-    if tool_call.function.name != "bash":
-        return _FORMAT_ERROR.format(error=f"Unknown tool '{tool_call.function.name}'. The only tool is `bash`."), False
+    """Run one bash call. Returns (observation, done); a submit runs the tests and sets the reward."""
     try:
         command = json.loads(tool_call.function.arguments or "{}").get("command", "")
     except (json.JSONDecodeError, AttributeError):
@@ -233,7 +270,18 @@ async def _run_tool_call(episode: _Episode, box: TmaxSandbox, tool_call: Any) ->
         return _FORMAT_ERROR.format(error="'command' parameter is required."), False
     t0 = time.monotonic()
     try:
-        return await _race_abort(episode, box.bash(command))
+        observation, submitted = await _race_abort(episode, box.bash(command))
+        if not submitted:
+            return observation, False
+        episode.reward = await _race_abort(episode, box.run_tests())
+        episode.end_reason = "submitted"
+        return observation, True
+    except SandboxInfraError as e:
+        if _abort_generation() != episode.abort_generation:  # the abort hook removed the container
+            raise _Aborted() from e
+        # open-instruct process_request: a failed step is reported to the policy and the episode goes on.
+        episode.tool_errors += 1
+        return f"Step 'bash' failed: {e}. Args: {{'command': {command!r}}}", False
     finally:
         episode.tool_times.append(time.monotonic() - t0)
 
@@ -261,6 +309,7 @@ def _metrics(episode: _Episode, total_time: float) -> dict[str, Any]:
     return {
         "turns": episode.turns,
         "tool_calls": episode.tool_calls,
+        "tool_errors": episode.tool_errors,
         "end_reason": episode.end_reason,
         "submitted": float(episode.end_reason == "submitted"),
         "model_query_time_sum": sum(episode.gen_times),
@@ -268,3 +317,24 @@ def _metrics(episode: _Episode, total_time: float) -> dict[str, Any]:
         "total_tool_time": sum(episode.tool_times),
         "total_time": total_time,
     }
+
+
+def _write_trace(episode: _Episode, metadata: dict, metrics: dict) -> None:
+    """Append the episode to TMAX_TRACE_DIR/traces-<host>.jsonl; tracing never fails the episode."""
+    trace_dir = os.getenv("TMAX_TRACE_DIR")
+    if not trace_dir:
+        return
+    record = {
+        "time": time.time(),
+        "task_id": episode.task_id,
+        "image": metadata.get("image"),
+        "reward": episode.reward,
+        "metrics": metrics,
+        "messages": episode.messages,
+    }
+    with contextlib.suppress(Exception):
+        path = Path(trace_dir) / f"traces-{socket.gethostname()}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record, default=str) + "\n"
+        with rollout_lock(f"tmax-trace-{path.name}"), open(path, "a") as f:
+            f.write(line)

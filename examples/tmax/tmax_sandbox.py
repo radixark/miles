@@ -14,7 +14,9 @@ Behavior kept identical to open-instruct, since it shapes the reward:
 * reward = ``/logs/verifier/reward.txt`` clamped to [0, 1], 0 when missing,
 * an OOM-killed sandbox ends the episode with reward 0,
 * a failed start is retried 5 times with 1-16 s backoff, and a daemon that fails with a connectivity
-  error is benched for 300-330 s (open-instruct's SWERLVanilluxSandboxEnv.reset and EnvironmentPool).
+  error is benched for 300-330 s (open-instruct's SWERLVanilluxSandboxEnv.reset and EnvironmentPool),
+* a container that vanished or stopped (not OOM) mid-episode is recreated once and the command retried,
+  losing its state, as DockerBackend._restart_and_retry_exec does.
 
 Under ``--custom-agent-function-mode subproc`` (the default) each episode runs in
 a process of its own, so the limits shared across episodes (start and exec
@@ -242,6 +244,8 @@ class TmaxSandbox:
         self._tests_dir = os.path.join(task_dir, "tests")
         self._docker_host = _pick_host()
         self._container = None
+        self._ready = False  # set once the episode's container is up; a restart is only allowed after that
+        self._restarted = False
 
     async def __aenter__(self) -> "TmaxSandbox":
         last_error: Exception | None = None
@@ -249,6 +253,7 @@ class TmaxSandbox:
             try:
                 await self._start()
                 await self._prepare_runtime()
+                self._ready = True
                 return self
             except asyncio.CancelledError:
                 await asyncio.shield(self.close())
@@ -366,12 +371,26 @@ class TmaxSandbox:
             try:
                 return await asyncio.to_thread(self._container.exec_run, ["bash", "-c", wrapped], demux=True)
             except docker.errors.APIError as e:
+                gone = isinstance(e, docker.errors.NotFound) or getattr(e, "status_code", None) == 409
                 if getattr(e, "status_code", None) == 409 and await self._was_oom_killed():
                     raise SandboxOOMError(f"sandbox {self._container.short_id} was OOM-killed") from e
+                if gone and self._ready and not self._restarted:
+                    await self._restart(e)
+                    continue
                 transient = any(marker in str(e).lower() for marker in _TRANSIENT_EXEC_MARKERS)
                 if not transient or attempt + 1 == _TRANSIENT_EXEC_RETRIES:
                     raise SandboxInfraError(f"exec failed: {e!r}") from e
                 await asyncio.sleep(min(0.5 * 2**attempt, 8.0))
+
+    async def _restart(self, error: BaseException) -> None:
+        logger.warning(f"sandbox for {self._image} is gone ({error!r}); recreating it once, state is lost")
+        self._restarted = True
+        await self.close()
+        try:
+            await self._start()
+            await self._prepare_runtime()
+        except Exception as e:
+            raise SandboxInfraError(f"sandbox restart failed: {e!r}") from e
 
     async def _was_oom_killed(self) -> bool:
         try:

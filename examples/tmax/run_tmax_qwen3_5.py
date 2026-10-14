@@ -54,10 +54,19 @@ Args:
   --max-weight-staleness: fully-async only; drop groups more than this many weight versions old (default: 4).
   --optimizer-cpu-offload: keep Adam state in host RAM (default: on; turn off on 80GB+ GPUs).
   --num-prompts: keep only the first N prompts, for smoke tests (default: all).
-  --docker-host: Docker API endpoint of the Podman service.
+  --start-failure: zero | drop, for a sandbox that never starts (default: zero, open-instruct's behavior).
+  --episode-timeout-s: wall-clock cap per episode, 0 for none (default: 0).
+  --sandbox-start-concurrency / --sandbox-exec-concurrency: per rollout process (default: 16 / 128).
+  --trace-dir: append one JSONL record per episode under <trace-dir>/<exp-name> (default: off).
+  --wandb-project: wandb project (default: miles-run_tmax_qwen3_5); with --exp-name restarts share one run.
+  --docker-host: Docker API endpoint(s) of the podman daemons (default: inherit TMAX_DOCKER_HOST / DOCKER_HOST).
   --model-dir / --data-dir / --output-dir: checkpoint / dataset / output directories.
 
 =====================
+
+Any of these can come from an experiment config, as open-instruct's YAML configs (flags override it):
+
+  python examples/tmax/run_tmax_qwen3_5.py execute examples/tmax/configs/prod_1node.yaml --num-rollout 10
 
   python examples/tmax/run_tmax_qwen3_5.py prepare --num-gpus-per-node 4
   python examples/tmax/run_tmax_qwen3_5.py execute --num-gpus-per-node 4
@@ -74,16 +83,23 @@ Smoke test on four 80GB+ GPUs:
       --rollout-batch-size 2 --n-samples-per-prompt 4 --num-rollout 2 --max-seq-len 16384
 """
 
+import dataclasses
 import json
+import os
+import re
+import shlex
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import pandas as pd
 import typer
+import yaml
+from tmax_prompts import TMAX_SYSTEM_PROMPT
 
 from miles.utils.external_utils import command_utils
-from tmax_prompts import TMAX_SYSTEM_PROMPT
+from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _DATASET = "allenai/tmax-15k-open-instruct"
@@ -136,7 +152,18 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     sglang_mem_fraction_static: float = 0.7
     num_prompts: int = 0
     max_steps: int = 64
-    docker_host: str = "unix:///run/podman/podman.sock"
+    # Comma-separated Docker API endpoints of the sandbox daemons; empty inherits TMAX_DOCKER_HOST / DOCKER_HOST
+    # from the launching environment (the Beaker entrypoint exports the shard sockets it started).
+    docker_host: str = ""
+    sandbox_start_concurrency: int = 16
+    sandbox_exec_concurrency: int = 128
+    # zero: a sandbox that never starts scores 0 and stays in its group (open-instruct's
+    # SWERL_RESET_FAILURE_ZERO_REWARD=1); drop: its group is dropped.
+    start_failure: Literal["zero", "drop"] = "zero"
+    episode_timeout_s: int = 0
+    # Per-episode JSONL traces go to <trace_dir>/<exp_name or run_id> (open-instruct's --save_traces).
+    trace_dir: str = ""
+    wandb_project: str = ""
     save_interval: int = 20
     exp_name: str = ""
     extra_args: str = ""
@@ -155,6 +182,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     @property
     def recipe(self) -> _Recipe:
         return _RECIPES[self.model_name]
+
+    @property
+    def sandbox_docker_host(self) -> str:
+        return self.docker_host or os.environ.get("TMAX_DOCKER_HOST") or os.environ.get("DOCKER_HOST", "")
 
     @property
     def checkpoint_dir(self) -> str:
@@ -342,7 +373,7 @@ def execute(args: ScriptArgs):
         f"{agent_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{_wandb_args(args)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{misc_args} "
@@ -358,11 +389,64 @@ def execute(args: ScriptArgs):
         extra_env_vars={
             "PYTHONPATH": f"{args.megatron_path}:{_SCRIPT_DIR}:{command_utils.repo_base_dir}",
             "TMAX_TASK_DATA_DIR": args.task_data_dir,
-            "TMAX_DOCKER_HOST": args.docker_host,
+            "TMAX_DOCKER_HOST": args.sandbox_docker_host,
             "TMAX_MAX_STEPS": str(args.max_steps),
+            "TMAX_START_CONCURRENCY": str(args.sandbox_start_concurrency),
+            "TMAX_EXEC_CONCURRENCY": str(args.sandbox_exec_concurrency),
+            "TMAX_START_FAILURE": args.start_failure,
+            "TMAX_EPISODE_TIMEOUT_S": str(args.episode_timeout_s),
+            "TMAX_TRACE_DIR": f"{args.trace_dir}/{args.exp_name or args.run_id}" if args.trace_dir else "",
         },
     )
 
 
+def _wandb_args(args: ScriptArgs) -> str:
+    """Default wandb flags (on when WANDB_API_KEY is set) with this experiment's overrides applied in place.
+
+    A named experiment logs all its restarts into one run (group and run id from exp_name), which a resume then
+    continues, instead of one run per Beaker retry.
+    """
+    tokens = shlex.split(command_utils.get_default_wandb_args(__file__, run_id=args.run_id))
+    if not tokens:
+        return ""
+    overrides = {"--wandb-project": args.wandb_project}
+    if args.exp_name:
+        overrides |= {
+            "--wandb-group": args.exp_name,
+            "--wandb-run-id": re.sub(r"[^A-Za-z0-9_-]", "_", args.exp_name)[:64],
+        }
+    for flag, value in overrides.items():
+        if not value:
+            continue
+        if flag in tokens:
+            tokens[tokens.index(flag) + 1] = value
+        else:
+            tokens += [flag, value]
+    return shlex.join(tokens) + " "
+
+
+def _apply_yaml_config(argv: list[str]) -> list[str]:
+    """Accept ``<command> <experiment>.yaml [--flag value ...]``, as open-instruct's ArgumentParserPlus does.
+
+    The YAML's keys (ScriptArgs fields) become MILES_SCRIPT_* env vars, which dataclass_cli reads as defaults, so
+    flags on the command line still override them, and an already-exported env var wins over the file. A top-level
+    ``beaker:`` section is for beaker/submit.py and ignored here.
+    """
+    configs = [arg for arg in argv[1:] if arg.endswith((".yaml", ".yml"))]
+    if not configs:
+        return argv
+    assert len(configs) == 1, f"pass at most one experiment config, got {configs}"
+    config = yaml.safe_load(Path(configs[0]).read_text()) or {}
+    config.pop("beaker", None)
+    unknown = set(config) - {f.name for f in dataclasses.fields(ScriptArgs)}
+    assert not unknown, f"{configs[0]} sets unknown fields: {sorted(unknown)}"
+    for key, value in config.items():
+        if value is not None:
+            env_value = str(value).lower() if isinstance(value, bool) else str(value)
+            os.environ.setdefault(f"{SCRIPT_ENV_VAR_PREFIX}{key.upper()}", env_value)
+    return [arg for arg in argv if arg != configs[0]]
+
+
 if __name__ == "__main__":
+    sys.argv = _apply_yaml_config(sys.argv)
     app()

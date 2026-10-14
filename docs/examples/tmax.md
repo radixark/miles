@@ -26,74 +26,69 @@ Three modes are validated end to end on 4x B300 (Beaker `ai2/holmes`):
 | `tmax_sandbox.py` | Per-episode container on a Docker-API socket (Podman), ported from open-instruct |
 | `generate.py` | Reward function (`None` drops the group) and `agent/*` metrics |
 | `tmax_prompts.py` | open-instruct's system prompt |
-| `beaker/` | Beaker spec and entrypoint that install Podman in the task and run any of the modes |
+| `configs/` | Experiment configs: `prod_1node.yaml` (open-instruct's production recipe on one node) and 4-GPU smoke tests |
+| `beaker/` | `submit.py` (config -> Beaker job, pinned to a commit), the job's entrypoint, and open-instruct's vendored podman bring-up |
 
 ## How an episode runs
 
-1. `agentic_tool_call.generate` opens a TITO session and calls `tmax_agent_function.run`.
-2. `run` starts a container from `metadata.image` (`sleep infinity`, 4 GB memory limit), uploads the task's
-   `environment/seeds`, and installs a wrapper that keeps `cwd` and exported variables across commands.
-   A container that cannot start raises before the first model call, so the sample is `ABORTED` and the
-   group is dropped instead of training on a fake 0.
-3. Up to `TMAX_MAX_STEPS` (64) bash calls: a chat completion with the single `bash` tool through the session
-   server, each tool call run with a 120 s timeout, output truncated head/tail at 10k characters and
-   followed by `(exit_code=N)`.
-4. The episode ends on the submit marker (`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`), which uploads
-   `tests/`, runs `test.sh` (600 s) and reads `/logs/verifier/reward.txt`; or with reward 0 on no tool call,
-   a length-truncated turn, a full context, the step limit, an OOM-killed sandbox, or `TMAX_EPISODE_TIMEOUT_S`.
-5. Sandbox failures after the first model call return `reward=None`, which the missing-reward filter turns
-   into a dropped group. open-instruct scores these 0 (`SWERL_RESET_FAILURE_ZERO_REWARD=1`).
+The loop follows open-instruct's `vllm_utils.process_request` with the `swerl_vanillux_sandbox` env as run in its
+production script (`--tool_call_format_error_feedback` off, `SWERL_RESET_FAILURE_ZERO_REWARD=1`):
 
-Each finished episode logs one line: `episode done: reward=... end=... turns=... tool_calls=... tokens=...`.
+1. `agentic_tool_call.generate` opens a TITO session and calls `tmax_agent_function.run` in a process of its own.
+2. `run` starts a container from `metadata.image` (`sleep infinity`, 4 GB memory limit) on one of the podman
+   daemons, uploads the task's `environment/seeds`, and installs a wrapper that keeps `cwd` and exported variables
+   across commands. A failed start is retried 5 times (1-16 s backoff); a daemon that fails to connect is benched
+   for 300-330 s. If it never starts, the episode scores 0 and stays in its group, through a one-token turn
+   (`start_failure: drop` drops the group instead).
+3. Up to `max_steps` (64) bash calls: a chat completion with the single `bash` tool through the session server,
+   each command run with a 120 s timeout, output truncated head/tail at 10k characters and followed by
+   `(exit_code=N)`. Calls to other tools are ignored; a turn without a bash call ends the episode. A command that
+   fails for infra reasons is reported as `Step 'bash' failed: ...` and the episode goes on; a vanished container
+   is recreated once.
+4. The episode ends on the submit marker (`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`), which uploads `tests/`,
+   runs `test.sh` (600 s) and reads `/logs/verifier/reward.txt`; or with reward 0 on no tool call, a
+   length-truncated turn, a full context, the step limit, an OOM-killed sandbox, or `episode_timeout_s` (off).
+
+Each finished episode logs `episode done: reward=... end=... turns=...`, and with `trace_dir` set appends a JSONL
+record (messages, reward, metrics) to `<trace_dir>/<exp_name>/` (open-instruct's `--save_traces`).
 
 ## Run
 
-Requirements:
-
-- A Docker-compatible API socket, normally `podman system service --time=0 unix:///run/podman/podman.sock`,
-  whose containers can pull `docker.io/hamishi740/swerl-tmax-v3:*` (~400 MB each). Log in, or pass
-  `TMAX_REGISTRY_USERNAME` / `TMAX_REGISTRY_PASSWORD`; unauthenticated Docker Hub pulls rate-limit at scale.
-- `pip install docker` in the training image; the SDK is not shipped.
+Experiments are YAML configs of the launcher's fields, as open-instruct's `configs/train_configs/`: pass one to
+`prepare` / `execute`, and command-line flags override it.
 
 ```bash
-# download, extract, write prompts, convert checkpoints (pass the same --model-name / --opd-teacher as execute)
-python examples/tmax/run_tmax_qwen3_5.py prepare --num-gpus-per-node 4
-# synchronous, training and rollout colocated on every GPU
-python examples/tmax/run_tmax_qwen3_5.py execute --num-gpus-per-node 4
-# fully async: 2 GPUs for SGLang, the rest for Megatron, groups at most 4 weight versions stale
-python examples/tmax/run_tmax_qwen3_5.py execute --num-gpus-per-node 4 --async-rollout-gpus 2
-# on-policy distillation from allenai/tmax-4b (combines with --async-rollout-gpus)
-python examples/tmax/run_tmax_qwen3_5.py execute --num-gpus-per-node 4 \
-    --model-name Qwen3.5-4B-tmax-template --opd-teacher tmax-4b --no-filter-zero-std
+python examples/tmax/run_tmax_qwen3_5.py prepare examples/tmax/configs/smoke_sync.yaml   # download, convert
+python examples/tmax/run_tmax_qwen3_5.py execute examples/tmax/configs/smoke_sync.yaml --num-rollout 1
 ```
 
-On 80 GB+ GPUs add `--tensor-model-parallel-size 1 --no-optimizer-cpu-offload`. For a smoke test add
-`--num-prompts 64 --rollout-batch-size 4 --n-samples-per-prompt 4 --num-rollout 3 --max-seq-len 16384
---no-filter-zero-std` (see "Zero-variance filter" below for why the filter has to be off).
+The sandboxes need a Docker-compatible API socket (podman), whose containers can pull
+`docker.io/hamishi740/swerl-tmax-v3:*`, and `pip install docker`. The launcher hands the sockets in
+`TMAX_DOCKER_HOST` (comma-separated) to the rollout; `docker_host` overrides them.
 
 ### Beaker
 
-`beaker/tmax_smoke.sh` is the entrypoint for `docker.io/radixark/miles:latest`. It installs Podman from apt and
-then runs open-instruct's own Terminal-RL bring-up, vendored unchanged in `beaker/podman/` (see `SOURCE.txt`):
-container config (host network, cgroups disabled, `/proc` bind), `SANDBOX_SHARDS` podman daemons with their own
-storage, the docker.io mirror when `MIRROR_URL` is set, the image janitor and Docker Hub credentials. It then
-runs `prepare` + `execute` for:
-
-| `MODE` | GPUs | What |
-|---|---|---|
-| `sync`, `async`, `opd`, `opd-async` | 4 | 3-4 step smoke tests on a 64-prompt subset |
-| `prod-1node` | 8 | open-instruct's production recipe on one node: `hamishivi/Qwen3.5-9B`, 8 x 32, 64k per episode / 16k per turn, fully async (4 + 4 GPUs, TP 2 x CP 2), active sampling, checkpoints every 5 steps under `EXP_NAME` (a restarted job resumes), 4 sandbox daemons |
-
-Models, datasets and outputs are cached under `TMAX_CACHE_DIR`. Edit the paths, budget and secret names in
-`beaker/tmax_smoke.yaml`, then:
-
 ```bash
-beaker experiment create --workspace ai2/oe-agents-holmes examples/tmax/beaker/tmax_smoke.yaml
+python examples/tmax/beaker/submit.py examples/tmax/configs/prod_1node.yaml [--dry-run] [-- --num-rollout 10]
 ```
 
-The task needs `BEAKER_ALLOW_SUBCONTAINERS=1`; the sandboxes are nested containers inside it. `tmax_sandbox`
-spreads episodes over the daemons in `TMAX_DOCKER_HOST` (comma-separated), retries a failed start 5 times with
-1-16 s backoff, and benches a daemon that fails to connect for 300-330 s, as open-instruct's environment pool does.
+`submit.py` plays mason's role. From the config's `beaker:` section it writes the spec (cluster, GPUs, image,
+weka mounts, secrets, and `preemptible` + `autoResume` + task retries) and pins the job to the current commit:
+the task clones this repository at that commit, so retries and later edits to the checkout cannot change what it
+runs. Commit the config before submitting. The task runs `beaker/tmax_beaker_entry.sh`, which installs podman
+(apt) and runs open-instruct's own bring-up, vendored in `beaker/podman/`: `sandbox_shards` daemons with their
+own storage, the docker.io mirror (`mirror_url`), the image janitor and Docker Hub credentials. It also keeps the
+newest `keep_last_n_checkpoints` training checkpoints, then runs `prepare` + `execute`.
+
+### Checkpoints, resume and logging
+
+| | open-instruct production | Here |
+|---|---|---|
+| Training state | DeepSpeed state + dataloader + data-prep state every 5-10 steps in `--checkpoint_state_dir`, keep 3 | Megatron `torch_dist` (model, optimizer, RNG) + dataset position every `save_interval` steps in `<output_dir>/<exp_name>/checkpoints`, newest `keep_last_n_checkpoints` kept |
+| Resume | mason `--auto_resume --max_retries 5`; reloads `--checkpoint_state_dir` | `autoResume` + `retries`; the same `exp_name` loads its checkpoint dir; in-flight rollouts are lost and regenerated |
+| HF checkpoints | every 20 steps (`--save_freq`) | not exported during training; `--save-hf` would write one at every checkpoint |
+| Rollouts | `--save_traces` JSONL with advantages and trainer logprobs | per-episode JSONL with messages, reward and metrics (no advantages or trainer logprobs) |
+| W&B | `oe-general-agents`, one run per restart | `wandb_project`; with `exp_name`, all restarts log into one run |
 
 ## Mapping from open-instruct
 
@@ -216,6 +211,9 @@ above 1 nat).
 
 - No DPPO in Miles; add it as a custom loss (`--loss-type custom_loss`) if the ablation matters.
 - No warm container pool: every episode pulls (cached per daemon), creates and removes its own container.
+- Tool observations differ from open-instruct's `vllm_qwen3_xml` framing by two newline tokens per tool turn
+  (Qwen3.5's chat template puts `\n` after the assistant's `<|im_end|>` and none before the tool's); the first-turn
+  prompt is token-identical.
 - Podman comes from Ubuntu's apt (4.9) at job start; open-instruct's image builds 5.6.2 and crun 1.14.3 from
   source. Bake them into a Miles image for production.
 - Group-granular dropping: one infra failure discards its whole group.
