@@ -13,6 +13,7 @@ from miles.utils.context_lock import ContextLock
 class _FakeCell:
     def __init__(self, *, state: str = "uninitialized", init_gate: asyncio.Event | None = None):
         self.state = state
+        self.is_errored = False
         self.init_count = 0
         self.init_started = asyncio.Event()
         self._init_gate = init_gate
@@ -40,6 +41,10 @@ class _FakeCell:
 class _StubServer:
     def __init__(self, all_server_cells: dict):
         self.all_server_cells = all_server_cells
+
+    @property
+    def normal_server_cells(self) -> dict:
+        return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
 
 
 def _make_controller(servers: dict, *, colocate: bool) -> InferenceController:

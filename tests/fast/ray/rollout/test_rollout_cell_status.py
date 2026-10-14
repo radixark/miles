@@ -9,6 +9,7 @@ from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     CellState,
     StateDisposed,
+    StateErrored,
     StateInitializing,
     StatePendingWeights,
     StateServing,
@@ -137,6 +138,36 @@ class TestServerCellStatus:
             ("Serving", TriState.TRUE),
         ]
 
+    def test_an_errored_cell_is_running_but_neither_healthy_nor_serving(self):
+        """A cell whose weight update failed still owns its gpus, so it must be reported allocated yet unusable."""
+        status = _make_cell(StateErrored(addr_info=_ADDR_INFO)).cell_status()
+
+        assert status.phase == "Running"
+        assert _conditions(status) == [
+            ("Allocated", TriState.TRUE),
+            ("Healthy", TriState.FALSE),
+            ("Serving", TriState.FALSE),
+        ]
+
+    def test_an_errored_cell_names_the_reason_the_ft_controller_heals_on(self):
+        """A generic unhealthy verdict would not tell a crashed engine from one taken out of service."""
+        status = _make_cell(StateErrored(addr_info=_ADDR_INFO)).cell_status()
+
+        (healthy,) = [condition for condition in status.conditions if condition.type == "Healthy"]
+        assert healthy.reason == "CellErrored"
+
+    def test_an_errored_cell_ignores_a_still_passing_probe(self):
+        """Its health checker is stopped, so a stale passing verdict must not advertise the cell as healthy."""
+        status = _make_cell(StateErrored(addr_info=_ADDR_INFO), health=TriState.TRUE).cell_status()
+
+        assert ("Healthy", TriState.FALSE) in _conditions(status)
+
+    def test_an_errored_cell_still_names_its_generation(self):
+        """Healing replaces the cell, so the verdict must say which processes it is about."""
+        status = _make_cell(StateErrored(addr_info=_ADDR_INFO), workers_hash="hash-7").cell_status()
+
+        assert status.workers_hash == "hash-7"
+
     def test_a_disposed_cell_is_suspended(self):
         """Nothing is left to probe once the cell has been torn down."""
         status = _make_cell(StateDisposed()).cell_status()
@@ -153,6 +184,7 @@ class TestServerCellStatusGeneration:
             StateInitializing(addr_info=_ADDR_INFO, start_time=time.monotonic()),
             StatePendingWeights(addr_info=_ADDR_INFO),
             StateServing(addr_info=_ADDR_INFO),
+            StateErrored(addr_info=_ADDR_INFO),
             StateDisposed(),
         ],
     )
