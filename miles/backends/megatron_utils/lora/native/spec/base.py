@@ -121,7 +121,6 @@ class LoRAArchSpec:
     """
 
     name: str
-    model_family: str
     attention: AttentionLoRASpec
     mlp: MLPLoRASpec
     experts: ExpertsLoRASpec | None = None

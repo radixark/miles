@@ -31,7 +31,6 @@ def _arch_spec(
 ) -> LoRAArchSpec:
     return LoRAArchSpec(
         name=attention.name,
-        model_family=attention.family,
         attention=attention,
         mlp=mlp or SplitGateUpMLPSpec(),
         has_linear_attention_layers=has_linear_attention_layers,
@@ -42,7 +41,6 @@ def _inkling_arch_spec() -> LoRAArchSpec:
     attention = InklingAttentionSpec()
     return LoRAArchSpec(
         name=attention.name,
-        model_family=attention.family,
         attention=attention,
         mlp=FusedGateUpMLPSpec(),
         experts=GroupedExpertsSpec(),
@@ -66,7 +64,6 @@ def _kimi_k3_arch_spec() -> LoRAArchSpec:
     attention = KimiK3AttentionSpec()
     return LoRAArchSpec(
         name=attention.name,
-        model_family=attention.family,
         attention=attention,
         mlp=SplitGateUpMLPSpec(),
         experts=GroupedExpertsSpec(),
