@@ -9,19 +9,19 @@ from dataclasses import dataclass
 
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import lora_rollout_enabled, matches_lora_target
-from miles_plugins.lora.naming import DeclaredNaming
-from miles_plugins.lora.spec.attention import (
+from miles.backends.megatron_utils.lora.native.naming import DeclaredNaming
+from miles.backends.megatron_utils.lora.native.spec.attention import (
     GQAAttentionSpec,
     HybridGQAGDNAttentionSpec,
     InklingAttentionSpec,
     KimiK3AttentionSpec,
     MLAAttentionSpec,
 )
-from miles_plugins.lora.spec.base import FixedTargets, LoRAArchSpec
-from miles_plugins.lora.spec.layout import AttentionSpecBase
-from miles_plugins.lora.spec.lm_head import InklingLMHeadSpec
-from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec, FusedGateUpMLPSpec
-from miles_plugins.lora.spec.moe import GroupedExpertsSpec
+from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, LoRAArchSpec
+from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
+from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec
+from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGatedMLPSpec, FusedGateUpMLPSpec
+from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ def resolve_config_spec(hf_config: dict) -> tuple[str, LoRAArchSpec]:
     assert model_type is not None, (
         f"native LoRA has no spec registered for model_type {candidates}. Registered architectures: "
         f"{sorted(MODEL_SPECS)}. Verify the adapter math for this architecture and register it in "
-        "miles_plugins.lora.registry.MODEL_SPECS, or use --megatron-to-hf-mode bridge."
+        "miles.backends.megatron_utils.lora.native.registry.MODEL_SPECS, or use --megatron-to-hf-mode bridge."
     )
     return model_type, MODEL_SPECS[model_type]
 

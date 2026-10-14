@@ -7,9 +7,9 @@ import functools
 import torch
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import attach_adapter_forward, attach_delta_forward
-from miles_plugins.lora.modules.moe import LoRAGroupedFC1, LoRAGroupedFC2, LoRASharedExpertsAdapter
-from miles_plugins.lora.spec.base import AttachContext
+from miles.backends.megatron_utils.lora.native.modules.linear import attach_adapter_forward, attach_delta_forward
+from miles.backends.megatron_utils.lora.native.modules.moe import LoRAGroupedFC1, LoRAGroupedFC2, LoRASharedExpertsAdapter
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
 class GroupedExpertsSpec:

@@ -8,13 +8,13 @@ import torch
 import torch.nn as nn
 
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
-from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.registry import MODEL_SPECS
-from miles_plugins.lora.registry import resolve_adapter_targets as _resolve_adapter_targets
-from miles_plugins.lora.registry import validate_native_lora_args
-from miles_plugins.lora.spec.attention import GQAAttentionSpec, MLAAttentionSpec
-from miles_plugins.lora.spec.base import AttachContext
-from tests.fast.miles_plugins.lora.naming_stub import named
+from miles.backends.megatron_utils.lora.native.config import LoRAConfig
+from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
+from miles.backends.megatron_utils.lora.native.registry import resolve_adapter_targets as _resolve_adapter_targets
+from miles.backends.megatron_utils.lora.native.registry import validate_native_lora_args
+from miles.backends.megatron_utils.lora.native.spec.attention import GQAAttentionSpec, MLAAttentionSpec
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
+from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
 
 
 def _assert_supported_architecture(config, tp_size: int = 1) -> None:
@@ -265,7 +265,7 @@ def test_native_run_contract_accepts_its_validated_configs(tmp_path):
 
 def test_inkling_head_export_rows_follow_sglangs_served_vocab(tmp_path):
     """A missing or unreadable config must fail, not export the padded head SGLang cannot load."""
-    from miles_plugins.lora.spec.lm_head import _served_vocab_size
+    from miles.backends.megatron_utils.lora.native.spec.lm_head import _served_vocab_size
 
     (tmp_path / "config.json").write_text(json.dumps({"text_config": {"vocab_size": 16, "unpadded_vocab_size": 12}}))
     assert _served_vocab_size(str(tmp_path)) == 12

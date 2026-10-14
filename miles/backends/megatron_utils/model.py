@@ -51,8 +51,8 @@ from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
 from miles.utils.types import SampleLineage
-from miles_plugins.lora import wrap_model_provider_with_lora
 
 from ...utils.misc import filter_keys
 from ..training_utils.parallel import get_parallel_state

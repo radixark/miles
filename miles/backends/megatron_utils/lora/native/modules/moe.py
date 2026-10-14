@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from miles_plugins.lora.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
-from miles_plugins.lora.modules.linear import NativeLoRAAdapter, new_lora_parameter
-from miles_plugins.lora.spec.base import AttachContext
+from miles.backends.megatron_utils.lora.native.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter, new_lora_parameter
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
 def _grouped_linear(inputs: torch.Tensor, weights: torch.Tensor, tokens_per_expert) -> torch.Tensor:

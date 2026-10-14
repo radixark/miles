@@ -20,7 +20,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
-from miles_plugins.lora import export_lora_sglang_named
+from miles.backends.megatron_utils.lora.native import export_lora_sglang_named
 
 
 @dataclass(frozen=True)

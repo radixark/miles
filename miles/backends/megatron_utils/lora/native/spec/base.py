@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 import torch.nn as nn
 
-from miles_plugins.lora.config import LoRAConfig
+from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 
 
 class ShardLayout(str, enum.Enum):

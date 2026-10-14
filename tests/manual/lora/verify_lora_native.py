@@ -47,10 +47,10 @@ from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.transformer_config import MLATransformerConfig, TransformerConfig
 
 from miles.backends.megatron_utils.lora.utils import reduce_marked_lora_grads
-from miles_plugins.lora.distributed import rmsnorm
-from miles_plugins.lora.lora import apply_native_lora, export_lora_hf_named, load_lora_adapter_hf
-from miles_plugins.lora.merge import merge_lora_into_weights
-from miles_plugins.lora.modules.linear import NativeLoRAAdapter
+from miles.backends.megatron_utils.lora.native.distributed import rmsnorm
+from miles.backends.megatron_utils.lora.native.lora import apply_native_lora, export_lora_hf_named, load_lora_adapter_hf
+from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False

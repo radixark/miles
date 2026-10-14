@@ -10,15 +10,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from miles.utils.lora.arguments import add_lora_arguments
-from miles_plugins.lora.lora import _require_grad_on_first_activation
-from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.modules.linear import (
+from miles.backends.megatron_utils.lora.native.lora import _require_grad_on_first_activation
+from miles.backends.megatron_utils.lora.native.config import LoRAConfig
+from miles.backends.megatron_utils.lora.native.modules.linear import (
     LoRALinear,
     attach_adapter_forward,
     build_qkv_permutation,
     new_lora_parameter,
 )
-from miles_plugins.lora.spec.base import AttachContext, ProjectionSpec, ShardLayout
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec, ShardLayout
 
 
 class TestBuildQkvPerm:

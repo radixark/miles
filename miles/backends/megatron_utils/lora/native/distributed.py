@@ -9,7 +9,7 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
-from miles_plugins.lora.spec.base import AttachContext
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
 def apply_lora_dropout(x: torch.Tensor, context: AttachContext, training: bool) -> torch.Tensor:

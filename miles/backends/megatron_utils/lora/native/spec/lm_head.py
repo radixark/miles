@@ -7,9 +7,9 @@ import os
 
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import attach_adapter_forward
-from miles_plugins.lora.modules.lm_head import LoRAOutputHead
-from miles_plugins.lora.spec.base import AttachContext
+from miles.backends.megatron_utils.lora.native.modules.linear import attach_adapter_forward
+from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
 class InklingLMHeadSpec:

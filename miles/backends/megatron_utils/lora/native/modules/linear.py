@@ -11,8 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from miles_plugins.lora.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
-from miles_plugins.lora.spec.base import AttachContext, ProjectionSpec, ShardLayout
+from miles.backends.megatron_utils.lora.native.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec, ShardLayout
 
 
 @dataclass(frozen=True)

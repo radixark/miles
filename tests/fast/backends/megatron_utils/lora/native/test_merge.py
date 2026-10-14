@@ -6,16 +6,16 @@ import pytest
 import torch
 import torch.nn as nn
 
-from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.merge import merge_lora_into_weights
-from miles_plugins.lora.modules.linear import attach_adapter_forward
-from miles_plugins.lora.modules.lm_head import LoRAOutputHead
-from miles_plugins.lora.modules.moe import LoRAGroupedFC1, LoRAGroupedFC2, _grouped_linear
-from miles_plugins.lora.spec.attention import GQAAttentionSpec, MLAAttentionSpec
-from miles_plugins.lora.spec.base import AttachContext
-from tests.fast.miles_plugins.lora.naming_stub import named
-from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec, FusedGateUpMLPSpec
-from miles_plugins.lora.spec.moe import GroupedExpertsSpec
+from miles.backends.megatron_utils.lora.native.config import LoRAConfig
+from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
+from miles.backends.megatron_utils.lora.native.modules.linear import attach_adapter_forward
+from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
+from miles.backends.megatron_utils.lora.native.modules.moe import LoRAGroupedFC1, LoRAGroupedFC2, _grouped_linear
+from miles.backends.megatron_utils.lora.native.spec.attention import GQAAttentionSpec, MLAAttentionSpec
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
+from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
+from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGatedMLPSpec, FusedGateUpMLPSpec
+from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
 
 HIDDEN = 8
 

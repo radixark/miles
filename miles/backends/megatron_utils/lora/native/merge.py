@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 import torch
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import iter_adapters
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 
 
 class MergedWeights(Mapping[str, torch.Tensor]):

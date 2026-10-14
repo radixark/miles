@@ -1,6 +1,6 @@
 """Qwen3 dense GRPO LoRA training through the native (raw-mode) LoRA path.
 
-This is the reference / validation recipe for ``miles_plugins.lora``:
+This is the reference / validation recipe for ``miles.backends.megatron_utils.lora.native``:
 LoRA is applied directly to the mcore model built by miles' own model provider
 (``--megatron-to-hf-mode raw``) instead of going through Megatron-Bridge. Adapters
 are exported under HF/PEFT names and shipped to SGLang with the same adapter sync

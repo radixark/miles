@@ -13,7 +13,7 @@ from miles.backends.megatron_utils.lora.utils import (
     save_lora_checkpoint,
 )
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_weight_name
-from miles_plugins.lora.modules.linear import NativeLoRAAdapter
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
 
 # ---------------------------------------------------------------------------
 # is_lora_enabled

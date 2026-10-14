@@ -10,9 +10,9 @@ import time
 import torch
 import torch.distributed as dist
 
-from miles_plugins.lora.distributed import ParallelGather
-from miles_plugins.lora.modules.linear import NativeLoRAAdapter, iter_adapters
-from miles_plugins.lora.spec.base import ShardLayout
+from miles.backends.megatron_utils.lora.native.distributed import ParallelGather
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter, iter_adapters
+from miles.backends.megatron_utils.lora.native.spec.base import ShardLayout
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@
 Companion to ``examples/lora/run_qwen3_lora_native.py``, which covers the dense GQA
 reference recipe. This one drives the shipped MoE registries whose attention is
 either multi-latent (GLM / DeepSeek / Kimi) or a gated GQA hybrid (Qwen3.5), i.e.
-exactly the layouts ``miles_plugins.lora`` grew beyond the plain fused-qkv case
+exactly the layouts ``miles.backends.megatron_utils.lora.native`` grew beyond the plain fused-qkv case
 for.
 
 Coverage is attention-only on purpose. Routed-expert adapters need a serving-side
@@ -222,7 +222,7 @@ def _prepare(args: ScriptArgs):
 def _preflight(args: ScriptArgs) -> None:
     """Audit registry/mbridge/model-args coverage before any GPU work."""
     try:
-        from miles_plugins.lora import preflight_native_lora
+        from miles.backends.megatron_utils.lora.native import preflight_native_lora
     except ImportError:  # older plugin without the helper
         return
     report = preflight_native_lora(args.hf_checkpoint, args.megatron_model_type, strict=True)

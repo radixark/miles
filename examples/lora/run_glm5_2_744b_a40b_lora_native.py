@@ -2,7 +2,7 @@
 
 Native-path companion to ``scripts/run_glm5_2_744b_a40b_lora.py`` (bridge). The
 model is built by miles' own glm5 provider (``--spec miles_plugins.models.glm5``)
-and ``miles_plugins.lora`` attaches the adapters (model_type ``glm_moe_dsa`` ->
+and ``miles.backends.megatron_utils.lora.native`` attaches the adapters (model_type ``glm_moe_dsa`` ->
 MLA arch spec). Coverage is attention-only, matching the other MLA registries in
 ``examples/lora/run_lora_native.py``: routed-expert adapters stay out of scope for the
 native provider.
@@ -128,7 +128,7 @@ def _download(args: ScriptArgs):
 def _preflight(args: ScriptArgs) -> None:
     """Audit registry/mbridge/model-args coverage before any GPU work."""
     try:
-        from miles_plugins.lora import preflight_native_lora
+        from miles.backends.megatron_utils.lora.native import preflight_native_lora
     except ImportError:  # older plugin without the helper
         return
     report = preflight_native_lora(args.hf_checkpoint, args.megatron_model_type, strict=True)

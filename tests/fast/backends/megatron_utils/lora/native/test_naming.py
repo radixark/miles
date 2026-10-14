@@ -6,8 +6,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from miles_plugins.lora.naming import ConverterNaming, DeclaredNaming
-from miles_plugins.lora.registry import MODEL_SPECS
+from miles.backends.megatron_utils.lora.native.naming import ConverterNaming, DeclaredNaming
+from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
 
 
 def _layer(layer_number, **weights):

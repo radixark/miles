@@ -2,7 +2,7 @@
 
 import dataclasses
 
-from miles_plugins.lora.spec.base import AttachContext
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
 class FixedPrefixNaming:

@@ -8,8 +8,8 @@ from dataclasses import dataclass
 
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import LoRALinear, NativeLoRAAdapter, SGLangFusedGroup, attach_adapter_forward
-from miles_plugins.lora.spec.base import AttachContext, AttentionFamily, ProjectionSpec
+from miles.backends.megatron_utils.lora.native.modules.linear import LoRALinear, NativeLoRAAdapter, SGLangFusedGroup, attach_adapter_forward
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, AttentionFamily, ProjectionSpec
 
 DimFn = Callable[[nn.Module, AttachContext], int]
 

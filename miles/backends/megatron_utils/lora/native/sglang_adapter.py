@@ -7,8 +7,8 @@ from collections.abc import Sequence
 import torch
 import torch.nn as nn
 
-from miles_plugins.lora.hf_adapter import export_lora_hf_named
-from miles_plugins.lora.modules.linear import iter_adapters
+from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 
 
 def export_lora_sglang_named(model_chunks: Sequence[nn.Module]) -> list[tuple[str, torch.Tensor]]:

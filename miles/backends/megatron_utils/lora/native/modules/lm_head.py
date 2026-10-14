@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from miles_plugins.lora.distributed import branch_input
-from miles_plugins.lora.modules.linear import NativeLoRAAdapter, new_lora_parameter
-from miles_plugins.lora.spec.base import AttachContext
+from miles.backends.megatron_utils.lora.native.distributed import branch_input
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter, new_lora_parameter
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
 class LoRAOutputHead(NativeLoRAAdapter):

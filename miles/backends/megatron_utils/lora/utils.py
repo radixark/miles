@@ -13,8 +13,8 @@ import torch.distributed as dist
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
-from miles_plugins.lora import load_lora_adapter_hf
-from miles_plugins.lora.modules.linear import NativeLoRAAdapter
+from miles.backends.megatron_utils.lora.native import load_lora_adapter_hf
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
 from miles.utils.lora.utils import (  # noqa: F401  (re-exported)
     build_lora_config,
     is_lora_enabled,

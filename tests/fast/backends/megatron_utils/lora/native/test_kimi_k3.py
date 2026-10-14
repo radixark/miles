@@ -9,14 +9,14 @@ from safetensors.torch import save_file
 
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import get_adapter_target_modules, matches_lora_target
-from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.hf_adapter import export_lora_hf_named, load_lora_adapter_hf
-from miles_plugins.lora.merge import merge_lora_into_weights
-from miles_plugins.lora.modules.moe import _grouped_linear
-from miles_plugins.lora.registry import MODEL_SPECS, resolve_adapter_targets
-from miles_plugins.lora.sglang_adapter import export_lora_sglang_named
-from miles_plugins.lora.spec.base import AttachContext
-from tests.fast.miles_plugins.lora.naming_stub import named
+from miles.backends.megatron_utils.lora.native.config import LoRAConfig
+from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named, load_lora_adapter_hf
+from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
+from miles.backends.megatron_utils.lora.native.modules.moe import _grouped_linear
+from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
+from miles.backends.megatron_utils.lora.native.sglang_adapter import export_lora_sglang_named
+from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
+from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
 
 HIDDEN, LATENT, RANK = 8, 6, 2
 PREFIX = "language_model.model.layers."
