@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import torch.nn as nn
 
-from miles.backends.megatron_utils.lora.native.modules.linear import LoRASplitAdapter, LoRASplitQKV, LoRAUnreducedRowLinear
+from miles.backends.megatron_utils.lora.native.modules.linear import (
+    LoRASplitAdapter,
+    LoRASplitQKV,
+    LoRAUnreducedRowLinear,
+)
 from miles.backends.megatron_utils.lora.native.spec import layout as L
-from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, AttentionFamily, ProjectionSpec, ShardLayout
+from miles.backends.megatron_utils.lora.native.spec.base import (
+    AttachContext,
+    AttentionFamily,
+    ProjectionSpec,
+    ShardLayout,
+)
 from miles.backends.megatron_utils.lora.native.spec.layout import (
     AttentionSpecBase,
     FusedAttach,

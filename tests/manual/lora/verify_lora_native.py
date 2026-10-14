@@ -46,11 +46,14 @@ from megatron.core.models.gpt.gpt_model import GPTModel
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.transformer_config import MLATransformerConfig, TransformerConfig
 
-from miles.backends.megatron_utils.lora.utils import reduce_marked_lora_grads
-from miles.backends.megatron_utils.lora.native.distributed import rmsnorm
-from miles.backends.megatron_utils.lora.native.lora import apply_native_lora, export_lora_hf_named, load_lora_adapter_hf
+from miles.backends.megatron_utils.lora.native.lora import (
+    apply_native_lora,
+    export_lora_hf_named,
+    load_lora_adapter_hf,
+)
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
+from miles.backends.megatron_utils.lora.utils import reduce_marked_lora_grads
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
@@ -184,6 +187,12 @@ def _write_config_only_checkpoint(model_type: str) -> str:
     with open(os.path.join(checkpoint, "config.json"), "w") as handle:
         json.dump({"model_type": model_type}, handle)
     return checkpoint
+
+
+def rmsnorm(x, gamma, eps):
+    """Independent RMSNorm reference for the TE-fused norm the adapters read."""
+    xf = x.float()
+    return (xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + eps) * gamma.float()).to(x.dtype)
 
 
 def fwd(model, tokens, pos, mask):

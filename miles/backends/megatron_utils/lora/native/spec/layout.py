@@ -8,7 +8,12 @@ from dataclasses import dataclass
 
 import torch.nn as nn
 
-from miles.backends.megatron_utils.lora.native.modules.linear import LoRALinear, NativeLoRAAdapter, SGLangFusedGroup, attach_adapter_forward
+from miles.backends.megatron_utils.lora.native.modules.linear import (
+    LoRALinear,
+    NativeLoRAAdapter,
+    SGLangFusedGroup,
+    attach_adapter_forward,
+)
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, AttentionFamily, ProjectionSpec
 
 DimFn = Callable[[nn.Module, AttachContext], int]
@@ -179,7 +184,9 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
     count = 0
     for group in layout.fused:
         host = getattr(block, group.module_attr)
-        hf_prefix = context.naming.block_prefix(layer, host.weight, [projection.hf for projection in group.projections])
+        hf_prefix = context.naming.block_prefix(
+            layer, host.weight, [projection.hf for projection in group.projections]
+        )
         active = tuple(
             projection for projection in group.projections if context.selects(f"{hf_prefix}{projection.hf}")
         )

@@ -27,6 +27,7 @@ from megatron.training.training import get_model
 
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
+from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
@@ -51,7 +52,6 @@ from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
-from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
 from miles.utils.types import SampleLineage
 
 from ...utils.misc import filter_keys

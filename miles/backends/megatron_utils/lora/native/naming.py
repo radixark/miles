@@ -72,6 +72,8 @@ class DeclaredNaming:
         del leaves
         relative = next(name for name, param in layer.named_parameters() if param is host_weight)
         block = next(
-            block for path, block in sorted(self.blocks.items(), key=lambda item: -len(item[0])) if relative.startswith(path)
+            block
+            for path, block in sorted(self.blocks.items(), key=lambda item: -len(item[0]))
+            if relative.startswith(path)
         )
         return f"{self.layer_prefix}{layer.layer_number - 1}.{block}"

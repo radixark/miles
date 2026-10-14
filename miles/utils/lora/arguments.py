@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+from miles.backends.megatron_utils.lora.native import resolve_adapter_targets, validate_native_lora_args
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
@@ -13,7 +14,6 @@ from miles.utils.lora.hf_lora_targets import (
     resolve_hf_lora_targets,
 )
 from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, targets_expert_leaves
-from miles.backends.megatron_utils.lora.native import resolve_adapter_targets, validate_native_lora_args
 
 logger = logging.getLogger(__name__)
 

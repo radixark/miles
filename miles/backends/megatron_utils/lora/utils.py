@@ -10,11 +10,11 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from miles.backends.megatron_utils.lora.native import load_lora_adapter_hf
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
-from miles.backends.megatron_utils.lora.native import load_lora_adapter_hf
-from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
 from miles.utils.lora.utils import (  # noqa: F401  (re-exported)
     build_lora_config,
     is_lora_enabled,
@@ -262,9 +262,9 @@ def restore_lora_adapter(
         # the fp32 masters were built before the adapter load; without this the first step() reverts it
         optimizer.reload_model_params()
     else:
-        assert training_state is not None and training_state["optimizer"] is not None, (
-            f"{adapter_dir} has no optimizer state to resume; pass --no-load-optim to start a fresh optimizer"
-        )
+        assert (
+            training_state is not None and training_state["optimizer"] is not None
+        ), f"{adapter_dir} has no optimizer state to resume; pass --no-load-optim to start a fresh optimizer"
         assert "parameter_state" in training_state, (
             f"{adapter_dir} predates saving DistributedOptimizer parameter state (fp32 masters, moments); "
             "pass --no-load-optim to resume its adapter with a fresh optimizer"

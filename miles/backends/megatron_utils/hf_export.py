@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
+from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
@@ -16,7 +17,6 @@ from miles.backends.training_utils.weight_update.snapshot_publisher import Snaps
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
 from miles.utils.megatron_bridge_utils import patch_megatron_model
-from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 
 logger = logging.getLogger(__name__)
 

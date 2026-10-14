@@ -67,7 +67,10 @@ def test_a_spec_that_disagrees_with_the_converter_fails():
     with pytest.raises(AssertionError, match=r"\['model.layers.0.mlp.gate_up_proj'\].*\['gate_proj', 'up_proj'\]"):
         naming.block_prefix(layer, fc1, ["gate_proj", "up_proj"])
     assert naming.block_prefix(layer, fc1, ["gate_up_proj"]) == "model.layers.0.mlp."
-    assert [binding.projection.hf for binding in MODEL_SPECS["glm4"].mlp.layout.singles] == ["gate_up_proj", "down_proj"]
+    assert [binding.projection.hf for binding in MODEL_SPECS["glm4"].mlp.layout.singles] == [
+        "gate_up_proj",
+        "down_proj",
+    ]
 
 
 def test_kimi_k3_names_kda_experts_and_shared_experts():

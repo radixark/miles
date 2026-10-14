@@ -6,15 +6,15 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
+from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
 
-from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
 from miles.backends.megatron_utils.lora.native.registry import resolve_adapter_targets as _resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.registry import validate_native_lora_args
 from miles.backends.megatron_utils.lora.native.spec.attention import GQAAttentionSpec, MLAAttentionSpec
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
-from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
+from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 
 
 def _assert_supported_architecture(config, tp_size: int = 1) -> None:

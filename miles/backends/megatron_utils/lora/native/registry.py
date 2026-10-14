@@ -7,8 +7,6 @@ import logging
 import os
 from dataclasses import dataclass
 
-from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
-from miles.utils.lora.utils import lora_rollout_enabled, matches_lora_target
 from miles.backends.megatron_utils.lora.native.naming import DeclaredNaming
 from miles.backends.megatron_utils.lora.native.spec.attention import (
     GQAAttentionSpec,
@@ -22,6 +20,8 @@ from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecB
 from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec
 from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGatedMLPSpec, FusedGateUpMLPSpec
 from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
+from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
+from miles.utils.lora.utils import lora_rollout_enabled, matches_lora_target
 
 logger = logging.getLogger(__name__)
 

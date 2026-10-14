@@ -6,9 +6,8 @@ import pytest
 import torch
 import torch.nn as nn
 from safetensors.torch import save_file
+from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
 
-from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
-from miles.utils.lora.utils import get_adapter_target_modules, matches_lora_target
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named, load_lora_adapter_hf
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
@@ -16,7 +15,8 @@ from miles.backends.megatron_utils.lora.native.modules.moe import _grouped_linea
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.sglang_adapter import export_lora_sglang_named
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
-from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
+from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
+from miles.utils.lora.utils import get_adapter_target_modules, matches_lora_target
 
 HIDDEN, LATENT, RANK = 8, 6, 2
 PREFIX = "language_model.model.layers."

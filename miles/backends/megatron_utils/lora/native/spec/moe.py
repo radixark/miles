@@ -8,7 +8,11 @@ import torch
 import torch.nn as nn
 
 from miles.backends.megatron_utils.lora.native.modules.linear import attach_adapter_forward, attach_delta_forward
-from miles.backends.megatron_utils.lora.native.modules.moe import LoRAGroupedFC1, LoRAGroupedFC2, LoRASharedExpertsAdapter
+from miles.backends.megatron_utils.lora.native.modules.moe import (
+    LoRAGroupedFC1,
+    LoRAGroupedFC2,
+    LoRASharedExpertsAdapter,
+)
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 

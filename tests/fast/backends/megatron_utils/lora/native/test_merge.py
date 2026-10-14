@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
+from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
 
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
@@ -13,7 +14,6 @@ from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutput
 from miles.backends.megatron_utils.lora.native.modules.moe import LoRAGroupedFC1, LoRAGroupedFC2, _grouped_linear
 from miles.backends.megatron_utils.lora.native.spec.attention import GQAAttentionSpec, MLAAttentionSpec
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
-from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
 from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGatedMLPSpec, FusedGateUpMLPSpec
 from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
 
@@ -115,7 +115,9 @@ def _gqa_attention(heads=4, groups=2, head_dim=2, output_gate=False):
 def test_gqa_fused_qkv_and_row_parallel_o(output_gate, targets):
     module = nn.Module()
     module.attn = _gqa_attention(output_gate=output_gate)
-    GQAAttentionSpec().attach(module.attn, None, named(_context(targets, output_gate=output_gate), "model.layers.0.self_attn."))
+    GQAAttentionSpec().attach(
+        module.attn, None, named(_context(targets, output_gate=output_gate), "model.layers.0.self_attn.")
+    )
     hosts = [("attn.linear_qkv", module.attn.linear_qkv)]
     if targets is None:
         hosts.append(("attn.linear_proj", module.attn.linear_proj))
@@ -134,7 +136,9 @@ def test_mla_replicated_and_column_projections():
     module = nn.Module()
     module.attn = attention
     MLAAttentionSpec().attach(attention, None, named(_context(**config), "model.layers.0.self_attn."))
-    _assert_merge_matches_forward(module, [(f"attn.{name}", getattr(attention, name)) for name in ("linear_q_down_proj", "linear_kv_up_proj")])
+    _assert_merge_matches_forward(
+        module, [(f"attn.{name}", getattr(attention, name)) for name in ("linear_q_down_proj", "linear_kv_up_proj")]
+    )
 
 
 @pytest.mark.parametrize("spec", [FusedGatedMLPSpec(), FusedGateUpMLPSpec()], ids=["split-gate-up", "fused-gate-up"])
@@ -158,7 +162,9 @@ def test_grouped_routed_experts():
     attach_adapter_forward(experts.linear_fc2, experts.lora_fc2_adapter, context.scale)
     module = nn.Module()
     module.experts = experts
-    _assert_merge_matches_forward(module, [("experts.linear_fc1", experts.linear_fc1), ("experts.linear_fc2", experts.linear_fc2)], [2, 2, 1])
+    _assert_merge_matches_forward(
+        module, [("experts.linear_fc1", experts.linear_fc1), ("experts.linear_fc2", experts.linear_fc2)], [2, 2, 1]
+    )
 
 
 def test_inkling_shared_sub_experts():
@@ -173,7 +179,11 @@ def test_inkling_shared_sub_experts():
     module.shared = shared
     _assert_merge_matches_forward(
         module,
-        [(f"shared.experts.{index}.{name}", getattr(shared.experts[index], name)) for index in range(2) for name in ("linear_fc1", "linear_fc2")],
+        [
+            (f"shared.experts.{index}.{name}", getattr(shared.experts[index], name))
+            for index in range(2)
+            for name in ("linear_fc1", "linear_fc2")
+        ],
     )
 
 

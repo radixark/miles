@@ -8,7 +8,12 @@ import torch.nn as nn
 from miles.backends.megatron_utils.lora.native.modules.linear import LoRALinear, LoRASplitFC1
 from miles.backends.megatron_utils.lora.native.spec import layout as L
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec, ShardLayout
-from miles.backends.megatron_utils.lora.native.spec.layout import FusedAttach, LayoutSpec, ModuleLayout, ProjectionBinding
+from miles.backends.megatron_utils.lora.native.spec.layout import (
+    FusedAttach,
+    LayoutSpec,
+    ModuleLayout,
+    ProjectionBinding,
+)
 
 
 def _fc1_inter_local(mlp: nn.Module, _context: AttachContext) -> int:

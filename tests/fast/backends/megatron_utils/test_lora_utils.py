@@ -7,13 +7,9 @@ import pytest
 import torch
 
 import miles.backends.megatron_utils.lora.utils as lora_utils
-from miles.backends.megatron_utils.lora.utils import (
-    adapter_named_parameters,
-    is_lora_enabled,
-    save_lora_checkpoint,
-)
-from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_weight_name
 from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
+from miles.backends.megatron_utils.lora.utils import adapter_named_parameters, is_lora_enabled, save_lora_checkpoint
+from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_weight_name
 
 # ---------------------------------------------------------------------------
 # is_lora_enabled
@@ -295,7 +291,9 @@ class TestRestoreLoraAdapter:
         ],
         ids=["no-training-state", "saved-with-no-save-optim", "pre-parameter-state-format"],
     )
-    def test_an_unrestorable_optimizer_fails_unless_no_load_optim(self, tmp_path, monkeypatch, training_state, message):
+    def test_an_unrestorable_optimizer_fails_unless_no_load_optim(
+        self, tmp_path, monkeypatch, training_state, message
+    ):
         _single_rank(monkeypatch)
         self._write_native(tmp_path, **training_state)
 
