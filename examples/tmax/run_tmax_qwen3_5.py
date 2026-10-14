@@ -52,6 +52,10 @@ Args:
       turn off for smoke tests, where small groups are almost always zero-variance).
   --async-rollout-gpus: 0 = synchronous and colocated (default); N = --fully-async with N rollout GPUs.
   --max-weight-staleness: fully-async only; drop groups more than this many weight versions old (default: 4).
+  --async-max-concurrent-samples: fully-async only; trajectories generating at once (default: one batch). open-instruct's
+      equivalent is --pool_size: 512 sandboxes against a 256-trajectory batch keep 2 batches in flight.
+  --async-data-buffer-capacity-factor: fully-async only; finished groups buffered ahead of training, in batches
+      (default: 2). open-instruct's --async_steps 4 lets generation run 4 steps ahead.
   --optimizer-cpu-offload: keep Adam state in host RAM (default: on; turn off on 80GB+ GPUs).
   --num-prompts: keep only the first N prompts, for smoke tests (default: all).
   --start-failure: zero | drop, for a sandbox that never starts (default: zero, open-instruct's behavior).
@@ -149,6 +153,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # --fully-async with N GPUs for SGLang and the rest for Megatron.
     async_rollout_gpus: int = 0
     max_weight_staleness: int = 4
+    async_max_concurrent_samples: int = 0  # 0 keeps Miles' default of one training batch
+    async_data_buffer_capacity_factor: float = 2.0
     sglang_mem_fraction_static: float = 0.7
     num_prompts: int = 0
     max_steps: int = 64
@@ -359,11 +365,14 @@ def execute(args: ScriptArgs):
         misc_args += (
             "--fully-async "
             f"--max-weight-staleness {args.max_weight_staleness} "
+            f"--async-data-buffer-capacity-factor {args.async_data_buffer_capacity_factor} "
             "--pause-generation-mode in_place "
             "--update-weight-transfer-mode broadcast "
             f"--actor-num-gpus-per-node {args.num_gpus_per_node - args.async_rollout_gpus} "
             f"--rollout-num-gpus {args.async_rollout_gpus} "
         )
+        if args.async_max_concurrent_samples:
+            misc_args += f"--async-max-concurrent-samples {args.async_max_concurrent_samples} "
     else:
         misc_args += "--colocate " f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
 

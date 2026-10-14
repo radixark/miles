@@ -98,7 +98,8 @@ newest `keep_last_n_checkpoints` training checkpoints, then runs `prepare` + `ex
 | `--per_turn_max_tokens 8192` | `--rollout-max-response-len 8192` |
 | `--response_length 32768` | `--max-seq-len 34816` (Miles counts the prompt) |
 | `--max_steps 64` | `--max-steps 64` (`TMAX_MAX_STEPS`) |
-| `--async_steps 4`, `--inflight_updates true` | `--async-rollout-gpus N --max-weight-staleness 4`, `--pause-generation-mode in_place` |
+| `--async_steps 4`, `--inflight_updates true` | `--async-rollout-gpus N --max-weight-staleness 4 --async-data-buffer-capacity-factor 4`, `--pause-generation-mode in_place` |
+| `--pool_size 512` (caps concurrent trajectories: 2 batches of 256 in flight) | `--async-max-concurrent-samples 512` |
 | `--system_prompt_override_file swerl_vanillux_sandbox_system_prompt.txt` | `tmax_prompts.TMAX_SYSTEM_PROMPT` (byte-identical) |
 | `--loss_fn dppo` | not available in Miles; PPO clip (0.2 / 0.28) around the rollout log-probs instead |
 | `EnvironmentPool` of 512 warm actors, sharded Podman daemons | one container per episode on one socket; no warm pool |
