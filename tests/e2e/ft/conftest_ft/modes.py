@@ -31,7 +31,6 @@ class FTTestMode:
     train_gpus_per_node: int = 8
     rollout_num_engines: int = 0
     rollout_gpus_per_engine: int = 0
-    colocate: bool = False
     ft_components: tuple[str, ...] = ("train",)
     num_steps: int = 10
 
@@ -39,10 +38,6 @@ class FTTestMode:
         assert "rollout" not in self.ft_components or self.has_real_rollout, (
             f"Mode declares ft components {self.ft_components} but has no real rollout engines, so a rollout "
             f"injection would have nothing to crash and the soak would silently prove nothing about rollout ft"
-        )
-        assert not self.colocate or self.total_rollout_gpus <= self.train_gpus_per_node, (
-            f"Colocated mode oversubscribes its node: {self.total_rollout_gpus} rollout gpus "
-            f"do not fit in {self.train_gpus_per_node} train gpus"
         )
 
     @property
@@ -55,8 +50,6 @@ class FTTestMode:
 
     @property
     def total_node_gpus(self) -> int:
-        if self.colocate:
-            return self.train_gpus_per_node
         return self.train_gpus_per_node + self.total_rollout_gpus
 
 
@@ -88,9 +81,6 @@ def compute_mode_name(mode: FTTestMode) -> str:
         segments.append("fake_rollout")
     if (model_segment := MODEL_SEGMENT_OF_MODEL_NAME[mode.model_name]) is not None:
         segments.append(model_segment)
-    if mode.colocate:
-        segments.append("colocate")
-
     return "__".join(segments)
 
 

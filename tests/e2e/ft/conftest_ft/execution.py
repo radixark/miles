@@ -119,7 +119,7 @@ def get_common_train_args(
             # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
             + DETERMINISTIC_ROLLOUT_ARGS + f"--save-debug-rollout-data {dump_dir}/rollout_data/{{rollout_id}}.pt "
             f"--rollout-num-gpus {mode.total_rollout_gpus} "
-            f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} " + ("--colocate " if mode.colocate else "")
+            f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} "
         )
 
     misc_args = (
@@ -196,7 +196,7 @@ def get_train_env_vars_arg(
     env_vars: dict[str, str] = {}
     if deterministic:
         env_vars.update(_DETERMINISTIC_ENV_VARS)
-    if mode.has_real_rollout and not mode.colocate:
+    if mode.has_real_rollout:
         env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     if extra_env_vars is not None:
         env_vars.update(extra_env_vars)
