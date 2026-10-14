@@ -448,6 +448,10 @@ def _wandb_args(args: ScriptArgs) -> str:
     tokens = shlex.split(command_utils.get_default_wandb_args(__file__, run_id=args.run_id))
     if not tokens:
         return ""
+    # The launcher logs this command line (and prints it again if the job fails), so the API key stays off it:
+    # without --wandb-key, wandb reads WANDB_API_KEY, which every process of the job inherits.
+    if "--wandb-key" in tokens:
+        del tokens[tokens.index("--wandb-key") : tokens.index("--wandb-key") + 2]
     overrides = {"--wandb-project": args.wandb_project}
     if args.exp_name:
         overrides |= {
