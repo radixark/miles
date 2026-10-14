@@ -5,11 +5,8 @@ from pathlib import Path
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_freeze_plan
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
 
-from miles.utils.test_utils.ft_test_actions import (
-    CI_FT_TEST_ACTIONS_PATH_FLAG,
-    compute_frozen_sentinel_path,
-    write_ft_test_actions,
-)
+from miles.utils.test_utils.fault_injector.actions.frozen import compute_frozen_sentinel_path
+from miles.utils.test_utils.fault_injector.static_source import CI_FT_TEST_ACTIONS_PATH_FLAG, write_ft_test_actions
 
 # TODO ad hoc hack: this whole module goes away with the args refactor. Reverting it means
 logger = logging.getLogger(__name__)

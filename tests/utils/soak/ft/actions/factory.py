@@ -4,7 +4,7 @@ from tests.utils.soak.ft.actions.pod import DeletePodFaultForm, ExecSigkillFault
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
 
 from miles.utils.external_utils import command_utils
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.workers.types import ClusterBackend
 
 ACTOR_FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]

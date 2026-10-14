@@ -6,7 +6,7 @@ from tests.utils.soak.k8s_utils.pod_manipulation import SoakPodTarget
 
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.workers.cell_operations.base import FaultTarget
 
 ACTOR_CELL_TYPE: str = ACTOR_ROLE

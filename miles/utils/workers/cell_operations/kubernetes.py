@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
 from miles.utils.workers.k8s_client import core_v1_api
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
