@@ -69,7 +69,7 @@ Selecting a projection the spec does not implement
 (for example routed experts or GDN input projections) fails at startup; use
 `--megatron-to-hf-mode bridge` for those. A partial fused selection (for example
 only `q_proj`) trains only the selected projection; SGLang serves its fused-buffer
-siblings as zero adapters. A gated MLP's `up_proj` needs `gate_proj` selected too.
+siblings as zero adapters. A shared expert's `up_proj` needs `gate_proj` selected too.
 
 ## Validated models and recipes
 

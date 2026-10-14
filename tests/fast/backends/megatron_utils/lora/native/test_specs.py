@@ -83,10 +83,16 @@ class TestResolveAdapterTargets:
         ]:
             assert resolve_adapter_targets({"model_type": model_type}, targets, hf_modules=[]) == targets
 
-    def test_a_lone_up_proj_is_rejected(self):
-        """SGLang drops a gated MLP's up_proj adapter that has no gate_proj next to it."""
-        with pytest.raises(AssertionError, match=r"gate_proj selected with \['model.layers.\*.mlp.up_proj'\]"):
-            resolve_adapter_targets({"model_type": "qwen3"}, ["model.layers.*.mlp.up_proj"], hf_modules=[])
+    def test_a_dense_lone_up_proj_is_served_as_selected(self):
+        """SGLang loads a dense MLP's up_proj into its own slot of the fused gate_up buffer."""
+        targets = ["up_proj"]
+        assert resolve_adapter_targets({"model_type": "qwen3"}, targets, hf_modules=_qwen3_modules()) == targets
+
+    def test_a_shared_expert_lone_up_proj_is_rejected(self):
+        """SGLang stacks a shared expert's gate/up adapter and drops an up_proj without its gate_proj."""
+        modules = ["model.layers.1.mlp.shared_experts.gate_proj", "model.layers.1.mlp.shared_experts.up_proj"]
+        with pytest.raises(AssertionError, match=r"\['model.layers.1.mlp.shared_experts.up_proj'\]"):
+            resolve_adapter_targets({"model_type": "glm4_moe"}, ["up_proj"], hf_modules=modules)
 
     def test_shared_experts_are_attachable(self):
         targets = [f"model.layers.*.mlp.shared_experts.{leaf}" for leaf in ("gate_proj", "up_proj", "down_proj")]

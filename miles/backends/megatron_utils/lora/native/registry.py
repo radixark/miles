@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 from miles.backends.megatron_utils.lora.native.naming import DeclaredNaming
@@ -24,6 +25,8 @@ from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import lora_rollout_enabled, matches_lora_target
 
 logger = logging.getLogger(__name__)
+
+_SHARED_EXPERT_BLOCK = re.compile(r"(?:^|\.)shared_experts?$")
 
 
 def _arch_spec(attention: AttentionSpecBase, *, mlp=None, has_linear_attention_layers: bool = False) -> LoRAArchSpec:
@@ -163,7 +166,7 @@ def resolve_adapter_targets(
         f"{' ...' if len(unattachable) > 8 else ''}. Select supported projections (e.g. "
         f"--target-modules {attention_target_modules_csv(hf_config)}) or use --megatron-to-hf-mode bridge."
     )
-    _assert_up_proj_has_gate_proj(hf_targets)
+    _assert_shared_expert_up_proj_has_gate_proj(selected or hf_targets)
     return hf_targets
 
 
@@ -202,9 +205,9 @@ def _assert_fixed_target_layout(spec: LoRAArchSpec, hf_config: dict, hf_targets:
     )
 
 
-def _assert_up_proj_has_gate_proj(hf_targets: list[str]) -> None:
-    """SGLang zero-fills an untrained up_proj next to gate_proj, but serves a lone up_proj only for
-    non-gated MLPs, so a gated MLP's up_proj adapter needs its gate_proj selected too."""
+def _assert_shared_expert_up_proj_has_gate_proj(hf_targets: list[str]) -> None:
+    """SGLang stacks a shared expert's gate/up adapter and zero-fills only a missing up_proj,
+    so a shared expert's up_proj adapter needs its gate_proj selected too."""
     leaves_by_block: dict[str, set[str]] = {}
     for target in hf_targets:
         block, _, leaf = target.rpartition(".")
@@ -212,11 +215,12 @@ def _assert_up_proj_has_gate_proj(hf_targets: list[str]) -> None:
     lone_up_projs = sorted(
         f"{block}.up_proj" if block else "up_proj"
         for block, leaves in leaves_by_block.items()
-        if "up_proj" in leaves and "gate_proj" not in leaves
+        # a bare leaf selector may reach a shared expert
+        if (not block or _SHARED_EXPERT_BLOCK.search(block)) and "up_proj" in leaves and "gate_proj" not in leaves
     )
     assert (
         not lone_up_projs
-    ), f"native LoRA needs gate_proj selected with {lone_up_projs}: SGLang drops a gated MLP's lone up_proj"
+    ), f"native LoRA needs gate_proj selected with {lone_up_projs}: SGLang drops a shared expert's lone up_proj"
 
 
 def attention_target_modules_csv(hf_config: dict) -> str:
