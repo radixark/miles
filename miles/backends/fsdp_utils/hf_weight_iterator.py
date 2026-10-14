@@ -4,7 +4,7 @@ from collections.abc import Iterator
 import torch
 from torch.distributed._functional_collectives import AsyncCollectiveTensor
 
-from miles.backends.fsdp_utils.adaptations.weight_bridge import get_param_transform
+from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
 from miles.backends.fsdp_utils.dtensor import gather_full_param
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
@@ -16,6 +16,7 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._sync_dtypes: dict[str, torch.dtype] = getattr(self.model, "_fsdp_sync_dtypes", None) or {}
+        self._arch_adapter = resolve_arch_adapter(self.model.config)
 
     def _iter_hf_param_units(self, weights, *, materialize):
         pending: deque[tuple[str, torch.Tensor, torch.Tensor]] = deque()
@@ -29,7 +30,6 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
         yield from self._drain(pending, materialize=materialize)
 
     def _drain(self, pending: deque, *, materialize: bool) -> Iterator[list[tuple[str, torch.Tensor]]]:
-        model_type = self.model.config.model_type
         while pending:
             name, param, full = pending.popleft()
             if isinstance(full, AsyncCollectiveTensor):
@@ -37,7 +37,7 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
             if not materialize:
                 continue
             full = self._to_sync_dtype(name, full)
-            expand = get_param_transform(name, param, model_type)
+            expand = self._arch_adapter.param_transform(name, param)
             if expand is None:
                 yield [(name, full)]
             else:

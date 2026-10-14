@@ -9,7 +9,7 @@
 # container mounts the wrong (or empty) tree.
 #
 # Every CI host is expected to provide /data/miles_ci as a real directory or
-# as a symlink to the host's big disk; tests/ci/skills/setup-ci-host/setup-host.sh
+# as a symlink to the host's big disk; .claude/skills/setup-ci-host/setup-host.sh
 # automates this (df probe + symlink). Concrete per-runner services live in
 # a host-local docker-compose.override.yml (gitignored): each host defines
 # its own runners there with stable names, labels, and CUDA_VISIBLE_DEVICES

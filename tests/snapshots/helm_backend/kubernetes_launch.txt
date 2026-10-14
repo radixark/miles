@@ -61,6 +61,8 @@ run:
     - 'kubernetes'
     - '--run-uuid'
     - 'f52ecf8e9d7d4889'
+    - '--ci-event-root'
+    - '<SANDBOX>/cluster-storage/miles_data'
   stateFile: '<SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/state/orchestrator-260101-000000-000001.state'
   staticWorkers:
   - command:
@@ -100,6 +102,8 @@ run:
     - 'kubernetes'
     - '--run-uuid'
     - 'f52ecf8e9d7d4889'
+    - '--ci-event-root'
+    - '<SANDBOX>/cluster-storage/miles_data'
     meta:
       gpu_ids: '0,1,2,3,4,5,6,7'
     name: 'trainer-engine-actor'

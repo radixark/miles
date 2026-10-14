@@ -396,7 +396,7 @@ async def test_train_parallel_config_travels_from_trainer_to_rollout_executor(mo
     )
 
     assert rollout_executor.train_parallel_config == {"dp_size": 2}
-    assert rollout_executor.loaded_rollout_id == -1
+    assert rollout_executor.loaded_rollout_id is None
 
 
 async def test_train_parallel_config_comes_from_the_actor_not_the_critic(monkeypatch):

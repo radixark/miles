@@ -166,7 +166,7 @@ def test_parse_single_spec_with_defaults(tmp_path):
     assert s.metric_key == "train/grad_norm"
     assert s.steps == "all"
     assert s.constraint == {"rel_up": 0.20, "abs_floor_up": 0.0, "rel_down": 0.20, "abs_floor_down": 0.0}
-    assert s.enforce is False
+    assert s.enforce is True
     assert s.allowlist_reason is None
     assert s.filename == path
 
@@ -179,7 +179,7 @@ def test_parse_all_fields(tmp_path):
             metric_key="train/ppo_kl",
             steps=[0, 1],
             constraint={"abs_floor_up": 1e-6, "rel_up": 0.5, "rel_down": 0.8},
-            enforce=True,
+            enforce=False,
             allowlist_reason="known noisy",
         )
         """,
@@ -188,7 +188,7 @@ def test_parse_all_fields(tmp_path):
     s = parse_ci_gate_specs(path)[0]
     assert s.steps == [0, 1]
     assert s.constraint == {"rel_up": 0.5, "abs_floor_up": 1e-6, "rel_down": 0.8, "abs_floor_down": 0.0}
-    assert s.enforce is True
+    assert s.enforce is False
     assert s.allowlist_reason == "known noisy"
 
 

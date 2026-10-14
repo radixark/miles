@@ -5,6 +5,7 @@ import time
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import (
     CellAddrInfo,
@@ -554,6 +555,19 @@ class TestTick:
         assert [kwargs["action"] for kwargs in checker_calls] == ["snapshot", "reset_tensors"]
         assert checker_calls[1]["skip_list"] == ["a"]
 
+    async def test_the_checker_snapshots_and_resets_only_the_runners_it_compares(self, cell_env):
+        """A draft the sync leaves out would stay scrambled for the rest of the run."""
+        cell = _make_cell(args_overrides=dict(check_weight_update_equal=True, check_weight_update_selector="target"))
+        await cell.init()
+
+        await cell.tick()
+
+        checker_calls = [kwargs for name, kwargs in cell_env["memory_calls"] if name == "check_weights"]
+        assert [(kwargs["action"], kwargs["selector"]) for kwargs in checker_calls] == [
+            ("snapshot", "target"),
+            ("reset_tensors", "target"),
+        ]
+
     async def test_the_weight_update_checker_stays_out_of_the_way_when_it_is_disabled(self, cell_env):
         """The checker is a ci-only tool and must not touch engines in a normal run."""
         cell = _make_cell()
@@ -691,7 +705,7 @@ class TestMarkWeightsReady:
                 "add_worker",
                 dict(
                     worker_url="http://10.0.0.1:30000",
-                    worker_type="regular",
+                    worker_type=WorkerType.REGULAR,
                     use_legacy_api=False,
                     bootstrap_port=None,
                 ),

@@ -93,7 +93,16 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     installed_manifest = Helm.get_manifest(release, namespace)
     run_uuid = _resolve_run_uuid(config, installed_manifest=installed_manifest, release=release)
     env = train_env_vars(request, {}, config=config)
-    pod_argv, args = _compute_train_argv(request, run_uuid=run_uuid, release=release, namespace=namespace, env=env)
+    chart = chart_dir(repo_base_dir=repo_base_dir)
+    shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(config.helm_values)), namespace=namespace)
+    pod_argv, args = _compute_train_argv(
+        request,
+        run_uuid=run_uuid,
+        release=release,
+        namespace=namespace,
+        env=env,
+        ci_event_root=Path(shared_root),
+    )
     deploy_component = DeployComponent(args.deploy_component)
     assert (deploy_component, args.deploy_instance_id) == (config.deploy_component, config.deploy_instance_id), (
         f"the run's pods are told {deploy_component.value}/{args.deploy_instance_id!r}, the release is named "
@@ -101,11 +110,10 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     )
     deploys_orchestration_script = deploy_component.deploys_orchestration_script()
 
+    run_directory = RunFiles.run_dir(shared_root=shared_root, run_id=run_id)
+
     with override_env(env):
         specs = compute_specs(args)
-    chart = chart_dir(repo_base_dir=repo_base_dir)
-    shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(config.helm_values)), namespace=namespace)
-    run_directory = RunFiles.run_dir(shared_root=shared_root, run_id=run_id)
 
     if config.ci_run:
         _uninstall_leftover_ci_releases(namespace, keep_run_id=run_id)
@@ -297,7 +305,13 @@ def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_manifest: Manifes
 
 
 def _compute_train_argv(
-    request: ExecuteTrainRequest, *, run_uuid: str, release: str, namespace: str, env: dict[str, str]
+    request: ExecuteTrainRequest,
+    *,
+    run_uuid: str,
+    release: str,
+    namespace: str,
+    env: dict[str, str],
+    ci_event_root: Path | None = None,
 ) -> tuple[list[str], Any]:
     argv = [*shlex.split(shell_safe_model_args(request.megatron_model_type)), *shlex.split(request.train_args)]
     assert not ArgvManipulator.is_defined(argv, _ENV_REPORT_FLAG), (
@@ -308,6 +322,8 @@ def _compute_train_argv(
         argv = ArgvManipulator.set(argv, CLUSTER_BACKEND_FLAG, ClusterBackend.KUBERNETES.value)
     if not ArgvManipulator.is_defined(argv, _RUN_UUID_FLAG):
         argv = ArgvManipulator.set(argv, _RUN_UUID_FLAG, run_uuid)
+    if ci_event_root is not None and not ArgvManipulator.is_defined(argv, "--ci-event-root"):
+        argv = ArgvManipulator.set(argv, "--ci-event-root", str(ci_event_root))
 
     with override_argv(argv), override_env(env):
         args = parse_args()

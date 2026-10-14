@@ -172,6 +172,39 @@ class TestOpenAIEndpointTracerCreate:
         assert tracer.base_url == "http://10.0.0.2:5005/sessions/session-abc"
         assert tracer.session_server_instance_id == "instance-b"
 
+    @staticmethod
+    def _capture_session_posts(monkeypatch) -> list[dict]:
+        bodies: list[dict] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            bodies.append(payload)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        return bodies
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extra_key", "expected_body"),
+        [(None, {"evaluation": False}), ("train:-:7", {"evaluation": False, "extra_key": "train:-:7"})],
+        ids=["unkeyed", "keyed"],
+    )
+    async def test_create_posts_the_extra_key_for_the_server_to_lock_on_the_session(
+        self, monkeypatch, extra_key, expected_body
+    ):
+        """The extra key travels in the POST /sessions body, and no key posts {} so the server stores none."""
+        bodies = self._capture_session_posts(monkeypatch)
+
+        await OpenAIEndpointTracer.create(
+            SimpleNamespace(
+                session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
+                use_sampling_support_replay=False,
+            ),
+            extra_key=extra_key,
+        )
+
+        assert bodies == [expected_body]
+
     @pytest.mark.asyncio
     async def test_agent_url_names_the_same_instance_from_outside_the_cluster(self, monkeypatch):
         """The agent's URL and the driver's URL are the chosen record's two views of one
@@ -398,7 +431,8 @@ class _FakeClient:
 @pytest.mark.asyncio
 async def test_post_bytes_no_retry_returns_raw_bytes(monkeypatch):
     client = _FakeClient([_FakeResponse(200, content=b"\x00\x01binary")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
+    monkeypatch.setattr(http_utils, "_client_concurrency", 1)
+    monkeypatch.setattr(http_utils, "_http_clients", {asyncio.get_running_loop(): client})
     assert await post_bytes_no_retry("http://x/samples", {}, timeout=5) == b"\x00\x01binary"
     assert client.post_count == 1
 
@@ -407,7 +441,8 @@ async def test_post_bytes_no_retry_returns_raw_bytes(monkeypatch):
 async def test_post_bytes_no_retry_does_not_retry_and_carries_body(monkeypatch):
     # Two queued outcomes; a retrying client would consume both. It must not.
     client = _FakeClient([_FakeResponse(422, text="cursor 3 != len(accumulated_token_ids) 4"), RuntimeError("late")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
+    monkeypatch.setattr(http_utils, "_client_concurrency", 1)
+    monkeypatch.setattr(http_utils, "_http_clients", {asyncio.get_running_loop(): client})
     with pytest.raises(RuntimeError, match="422.*cursor 3"):
         await post_bytes_no_retry("http://x/samples", {}, timeout=5)
     assert client.post_count == 1
@@ -416,7 +451,8 @@ async def test_post_bytes_no_retry_does_not_retry_and_carries_body(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_bytes_no_retry_transport_error_propagates_once(monkeypatch):
     client = _FakeClient([ConnectionError("boom"), RuntimeError("late")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
+    monkeypatch.setattr(http_utils, "_client_concurrency", 1)
+    monkeypatch.setattr(http_utils, "_http_clients", {asyncio.get_running_loop(): client})
     with pytest.raises(ConnectionError, match="boom"):
         await post_bytes_no_retry("http://x/samples", {}, timeout=5)
     assert client.post_count == 1

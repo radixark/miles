@@ -8,6 +8,7 @@ import httpx
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray.rollout import external_engine_provider as external_engine_provider_module
 from miles.ray.rollout.external_engine_provider import (
     _EXTERNAL_ENGINE_POOL_ID,
@@ -138,7 +139,7 @@ class TestDiscoverExternalEngine:
 
         engine = await _discover_external_engine("http://host1:8000", api_key=None)
 
-        assert (engine.num_gpus, engine.worker_type) == (8, "regular")
+        assert (engine.num_gpus, engine.worker_type) == (8, WorkerType.REGULAR)
         assert (engine.host, engine.port) == ("host1", 8000)
 
     async def test_a_prefill_engine_reports_its_type_and_bootstrap_port(self, monkeypatch):
@@ -150,7 +151,7 @@ class TestDiscoverExternalEngine:
 
         engine = await _discover_external_engine("http://host1:8000", api_key=None)
 
-        assert (engine.worker_type, engine.disaggregation_bootstrap_port) == ("prefill", 12090)
+        assert (engine.worker_type, engine.disaggregation_bootstrap_port) == (WorkerType.PREFILL, 12090)
 
     async def test_a_decode_engine_reports_its_type_without_a_bootstrap_port(self, monkeypatch):
         """Only prefill engines own a bootstrap port; decode must come back None."""
@@ -158,7 +159,7 @@ class TestDiscoverExternalEngine:
 
         engine = await _discover_external_engine("http://host1:8000", api_key=None)
 
-        assert (engine.worker_type, engine.disaggregation_bootstrap_port) == ("decode", None)
+        assert (engine.worker_type, engine.disaggregation_bootstrap_port) == (WorkerType.DECODE, None)
 
 
 class _FakeApiClient:
@@ -425,7 +426,7 @@ class TestStaticInferenceEngineWorkerProvider:
         meta = _compute_server_cell_meta_from_info(info)
 
         assert (meta.worker_type, meta.num_gpus_per_engine, meta.workers_hash) == (
-            "decode",
+            WorkerType.DECODE,
             2,
             "http://host1:8000",
         )
@@ -437,7 +438,7 @@ def _engine(*, url: str, num_gpus: int) -> _ExternalEngineInfo:
         url=url,
         host=url.removeprefix("http://").split(":")[0],
         port=8000,
-        worker_type="regular",
+        worker_type=WorkerType.REGULAR,
         num_gpus=num_gpus,
         disaggregation_bootstrap_port=None,
     )
@@ -468,8 +469,15 @@ class TestARaggedExternalFleet:
 
 
 class TestAPdFleetRoles:
-    @pytest.mark.parametrize("worker_types", [["prefill"], ["decode"], ["prefill", "decode", "regular"]])
-    def test_a_pd_fleet_without_exactly_both_roles_is_refused(self, worker_types: list[str]) -> None:
+    @pytest.mark.parametrize(
+        "worker_types",
+        [
+            [WorkerType.PREFILL],
+            [WorkerType.DECODE],
+            [WorkerType.PREFILL, WorkerType.DECODE, WorkerType.REGULAR],
+        ],
+    )
+    def test_a_pd_fleet_without_exactly_both_roles_is_refused(self, worker_types: list[WorkerType]) -> None:
         """A PD router requires prefill and decode engines without regular-engine contamination."""
         args = _make_args(
             [f"host{index}:8000" for index in range(len(worker_types))],
@@ -482,7 +490,7 @@ class TestAPdFleetRoles:
                 port=8000,
                 worker_type=worker_type,
                 num_gpus=1,
-                disaggregation_bootstrap_port=12090 if worker_type == "prefill" else None,
+                disaggregation_bootstrap_port=12090 if worker_type == WorkerType.PREFILL else None,
             )
             for index, worker_type in enumerate(worker_types)
         ]

@@ -101,7 +101,10 @@ async def _run_and_collect(
     input_samples: list[Sample],
 ) -> list[tuple[dict[str, Any], SamplesReply, list[Sample]]]:
     async with httpx.AsyncClient(timeout=None) as client:
-        with patch.object(http_utils, "_http_client", client):
+        with (
+            patch.dict(http_utils._http_clients, {asyncio.get_running_loop(): client}),
+            patch.object(http_utils, "_client_concurrency", 1),
+        ):
             original_collect = OpenAIEndpointTracer.collect_samples
             collected: dict[int, tuple[dict[str, Any], SamplesReply]] = {}
 

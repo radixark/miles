@@ -148,8 +148,10 @@ fits.
    ```
 
 Repeat steps 2–5 when a test moves to another stage or its runtime clearly
-changes. A new `register_ci_gate(...)` stays inactive until nightly runs seed
-its history; `/rerun-test` never writes it.
+changes. A new `register_ci_gate(...)` fails CI at once on a missing or invalid
+metric, but on numerical drift only after nightly runs seed enough trusted
+history ("Rollout" in `docs/developer/ci/03-metric-history-gate.md`);
+`/rerun-test` never writes it.
 
 ## `disabled=`
 

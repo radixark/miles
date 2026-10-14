@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 from contextlib import ExitStack, nullcontext
+from functools import partial
 
 import torch
 import torch.distributed as dist
@@ -28,6 +29,10 @@ from miles.backends.training_utils.loss.objective import (
 )
 from miles.backends.training_utils.metrics import train_dump
 from miles.backends.training_utils.metrics.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
+from miles.backends.training_utils.model_companion import (
+    ModelCompanionInstallationUtils,
+    ModelCompanionWeightVersionUtils,
+)
 from miles.backends.training_utils.replay.data import fill_replay_data, register_replay_list_sequential
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
@@ -40,6 +45,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import object_store
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
@@ -65,7 +71,7 @@ from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
-from .initialize import RandomState, init, is_first_replica_megatron_main_rank
+from .initialize import RandomState, init, is_first_replica_megatron_main_rank, is_local_replica_megatron_main_rank
 from .model import (
     LoadCheckpointOutput,
     TrainStepOutcome,
@@ -121,6 +127,7 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         self._last_rollout_id: int | None = None
+        self._cell_index = indep_dp_info.cell_index
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
@@ -232,7 +239,7 @@ class MegatronTrainRayActor(TrainRayActor):
             main_cast_ctx = build_main_cast_context(args, model=self.model, optimizer=self.optimizer)
 
         self.weights_backuper = TensorBackuper.create(
-            source_getter=self._named_actor_weights,
+            source_getter=partial(self._named_actor_weights, include_model_companion=True),
             main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
@@ -608,6 +615,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
+            self._publish_model_companion_info(rollout_id=rollout_id, attempt=attempt, result=result)
             return result
 
     @with_logs
@@ -811,6 +819,22 @@ class MegatronTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         return TrainStepOutput(outcome=train_step_outcome)
 
+    def _publish_model_companion_info(self, *, rollout_id: int, attempt: int, result: TrainStepOutput) -> None:
+        if (
+            not self.args.enable_sample_ownership_checker
+            or self.role != "actor"
+            or result.outcome != TrainStepOutcome.NORMAL
+            or not is_local_replica_megatron_main_rank()
+        ):
+            return
+
+        SampleOwnershipRecorder.publish_model_companion_info(
+            self.model,
+            rollout_id=rollout_id,
+            attempt=attempt,
+            cell_index=self._cell_index,
+        )
+
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         self._heartbeat.bump()
@@ -866,21 +890,33 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args, rollout_id, self.model, publisher=self.snapshot_publisher, path=path, raise_on_error=True
         )
 
-    def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False):
+    def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False, include_model_companion: bool = False):
         return named_params_and_buffers(
             self.args,
             self.model,
             convert_to_global_name=self.args.megatron_to_hf_mode == "raw",
             translate_gpu_to_cpu=translate_gpu_to_cpu,
+            include_model_companion=include_model_companion,
         )
 
-    def _get_actor_weights(self):
+    def _get_actor_weights(self, *, include_model_companion: bool = False) -> dict[str, torch.Tensor]:
         if self._weight_sync_reads_tms_backup:
-            return dict(self._named_actor_weights(translate_gpu_to_cpu=True))
+            return dict(
+                self._named_actor_weights(translate_gpu_to_cpu=True, include_model_companion=include_model_companion)
+            )
         # use cpu backup only when weight is not live on gpu
         if self.args.colocate or self._asleep or self._active_model_tag != "actor":
-            return self.weights_backuper.get("actor")
-        return dict(self._named_actor_weights())
+            return {
+                name: tensor
+                for name, tensor in self.weights_backuper.get("actor").items()
+                if include_model_companion or not ModelCompanionInstallationUtils.is_companion_parameter(name)
+            }
+        return dict(self._named_actor_weights(include_model_companion=include_model_companion))
+
+    def _get_actor_weight_version(self) -> int:
+        return ModelCompanionWeightVersionUtils.from_params(
+            self._get_actor_weights(include_model_companion=True).items()
+        )
 
     @with_logs
     @timer
@@ -914,11 +950,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
+            weight_version = self._get_actor_weight_version()
+            self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
 
             if self.args.ci_test and not is_lora_enabled(self.args):
-                self.weight_updater.verify_engine_version(rollout_engines)
+                self.weight_updater.verify_engine_version(rollout_engines, weight_version=weight_version)
 
             if getattr(self.args, "keep_old_actor", False):
                 if self.args.update_weights_interval == 1:
@@ -936,7 +973,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             destroy_process_groups()
 
-        return self.weight_updater.weight_version
+        return weight_version
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:

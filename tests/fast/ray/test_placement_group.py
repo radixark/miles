@@ -18,6 +18,7 @@ from miles.ray.placement_group import (
     take_over_trainers,
 )
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils.init_once import InitState
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_spec import HostAndPort
@@ -62,8 +63,7 @@ def fake_components():
         # the real one returns before touching anything when the run asked for no session server
         if provider is None:
             return
-        args.session_server_addrs = ["10.0.0.2:5000"]
-        args.session_server_instance_ids = ["session-0"]
+        args.session_server_instances = [SessionServerInstance(addr="10.0.0.2:5000", instance_id="session-0")]
         events.append("session_servers_ready")
 
     async def fake_executor_get_init_state() -> str:
@@ -105,7 +105,10 @@ class TestFrozenInferenceChecksums:
         controller = SimpleNamespace(check_weights=AsyncMock(return_value=[]))
 
         await placement_group_module._maybe_log_inference_engine_weight_checksums(
-            _make_args(), inference_controller=controller, rollout_id=None, trainer_model_id=None
+            _make_args(log_inference_engine_weight_checksums=True),
+            inference_controller=controller,
+            rollout_id=None,
+            trainer_model_id=None,
         )
 
         controller.check_weights.assert_awaited_once()
@@ -119,8 +122,7 @@ class TestCreateRolloutComponents:
 
         await create_rollout_components(args)
 
-        assert args.session_server_addrs == ["10.0.0.2:5000"]
-        assert args.session_server_instance_ids == ["session-0"]
+        assert args.session_server_instances == [SessionServerInstance(addr="10.0.0.2:5000", instance_id="session-0")]
 
     async def test_the_executor_is_inited_after_the_session_servers_are_known(self, fake_components):
         """The executor reads the session contract off args, so it must be written before init() runs."""
@@ -134,8 +136,7 @@ class TestCreateRolloutComponents:
             "controller_init",
             "executor_init",
         ]
-        assert args.session_server_addrs == ["10.0.0.2:5000"]
-        assert args.session_server_instance_ids == ["session-0"]
+        assert args.session_server_instances == [SessionServerInstance(addr="10.0.0.2:5000", instance_id="session-0")]
 
     async def test_the_executor_is_waited_out_before_anything_is_initialized(self, fake_components):
         """A hot restart finds the previous script's executor up, and initializing anything against it is the bug."""
@@ -399,9 +400,13 @@ class TestUpdateWeights:
     @staticmethod
     def _checksum_args(*, start_rollout_id: int = 0):
         return Namespace(
-            debug_train_only=False,
-            debug_rollout_only=False,
-            start_rollout_id=start_rollout_id,
+            **{
+                **parser_defaults(),
+                "debug_train_only": False,
+                "debug_rollout_only": False,
+                "start_rollout_id": start_rollout_id,
+                "log_inference_engine_weight_checksums": True,
+            }
         )
 
     def _record_checksum_events(self, monkeypatch) -> list[dict]:
@@ -572,14 +577,14 @@ class TestCreateTrainingModels:
         called = [name for name, _args, _kwargs in handle.mock_calls]
         assert called.index("is_initialized") < called.index("init")
 
-    async def test_the_executor_is_loaded_at_the_position_the_trainers_start_from(self, tmp_path, monkeypatch):
-        """The dataset has to stand where the trainers do, whether the run was built or taken over."""
+    async def test_a_run_that_trained_no_step_leaves_the_executor_unloaded(self, tmp_path, monkeypatch):
+        """A freshly built run stands before rollout 0, so there is no rollout state for the executor to restore."""
         self._patched(monkeypatch, [], initialized=False)
         rollout_executor = self._rollout_executor()
 
         await create_training_models(self._args(tmp_path), rollout_executor)
 
-        rollout_executor.load.assert_awaited_once_with(-1)
+        rollout_executor.load.assert_not_awaited()
 
     async def test_an_external_trainer_is_identified_and_driven_through_one_handle(self, tmp_path, monkeypatch):
         """A second handle would identify one connection and drive another, so the check would guard nothing."""

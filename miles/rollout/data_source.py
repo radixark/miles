@@ -1,21 +1,15 @@
 import abc
 import copy
 import logging
-import os
 from pathlib import Path
-
-import torch
 
 from miles.utils.data import Dataset
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
+from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
-
-
-def compute_global_dataset_state_path(directory: str, *, rollout_id: int | None) -> str:
-    return os.path.join(directory, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
 
 
 class DataSource(abc.ABC):
@@ -26,19 +20,13 @@ class DataSource(abc.ABC):
         """
 
     @abc.abstractmethod
-    def add_samples(self, samples: list[list[Sample]]):
-        """
-        Add samples to the data source
-        """
-
-    @abc.abstractmethod
-    def save(self, rollout_id):
+    def save(self, directory: Path) -> None:
         """
         Save the state of the data source
         """
 
     @abc.abstractmethod
-    def load(self, rollout_id=None):
+    def load(self, directory: Path) -> None:
         """
         Load the state of the data source
         """
@@ -122,10 +110,7 @@ class RolloutDataSource(DataSource):
             samples.append(group)
         return samples
 
-    def add_samples(self, samples: list[list[Sample]]):
-        raise RuntimeError(f"Cannot add samples to {self.__class__.__name__}. This is a read-only data source.")
-
-    def save(self, rollout_id):
+    def save(self, directory: Path) -> None:
         if not self.args.rollout_global_dataset:
             return
 
@@ -136,27 +121,14 @@ class RolloutDataSource(DataSource):
             "sample_index": self.sample_index,
             "metadata": self.metadata,
         }
-        path = compute_global_dataset_state_path(self.args.save, rollout_id=rollout_id)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(state_dict, path)
+        save_simple_checkpoint(directory=directory, data=state_dict)
 
-    def load(self, rollout_id=None):
+    def load(self, directory: Path) -> None:
         if not self.args.rollout_global_dataset:
             logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
             return
 
-        if self.args.load is None:
-            logger.warning("no --load: the dataset starts where a fresh run's would")
-            return
-
-        path = compute_global_dataset_state_path(self.args.load, rollout_id=rollout_id)
-        if not os.path.exists(path):
-            logger.warning(f"no dataset state under {path}: the dataset starts where a fresh run's would")
-            return
-
-        logger.info(f"load metadata from {path}")
-        logger.info(f"load metadata: {self.metadata}")
-        state_dict = torch.load(path)
+        state_dict = load_simple_checkpoint(directory=directory)
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)
@@ -167,7 +139,7 @@ class RolloutDataSource(DataSource):
             self.dataset.shuffle(self.epoch_id)
 
 
-class RolloutDataSourceWithBuffer(RolloutDataSource):
+class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):
     def __init__(self, args):
         super().__init__(args)
         self.buffer = []
@@ -222,6 +194,9 @@ class RolloutDataSourceWithBuffer(RolloutDataSource):
 
     def get_buffer_length(self):
         return len(self.buffer)
+
+    def load(self, directory: Path) -> None:
+        raise NotImplementedError("LegacyRolloutDataSourceWithBuffer does not support checkpoint loading")
 
 
 def pop_first(args, rollout_id, buffer: list[list[Sample]], num_samples: int) -> list[list[Sample]]:

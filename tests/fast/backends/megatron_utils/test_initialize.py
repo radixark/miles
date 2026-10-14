@@ -15,12 +15,14 @@ def _parallel_state(
     tp_rank: int = 0,
     pp_rank: int = 0,
     pp_size: int = 1,
+    intra_dp_rank: int = 0,
+    intra_dp_size: int = 1,
     intra_dp_cp_rank: int = 0,
     intra_dp_cp_size: int = 1,
     indep_dp_rank: int = 0,
     indep_dp_size: int = 1,
 ) -> ParallelState:
-    intra_dp = GroupInfo(rank=0, size=1, group=None)
+    intra_dp = GroupInfo(rank=intra_dp_rank, size=intra_dp_size, group=None)
     indep_dp = GroupInfo(rank=indep_dp_rank, size=indep_dp_size, group=None)
     return ParallelState(
         intra_dp=intra_dp,
@@ -36,6 +38,20 @@ def _parallel_state(
 
 def _patch_state(monkeypatch, state: ParallelState) -> None:
     monkeypatch.setattr(initialize, "get_parallel_state", lambda: state)
+
+
+class TestLocalReplicaMainRank:
+    def test_each_ft_cell_has_one_local_representative(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Independent-DP alive rank does not suppress another cell's local representative."""
+        _patch_state(monkeypatch, _parallel_state(indep_dp_rank=2, indep_dp_size=3))
+
+        assert initialize.is_local_replica_megatron_main_rank()
+
+    def test_nonzero_intra_dp_rank_is_not_a_local_representative(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ordinary data-parallel copies emit only one snapshot per cell."""
+        _patch_state(monkeypatch, _parallel_state(intra_dp_rank=1, intra_dp_size=2))
+
+        assert not initialize.is_local_replica_megatron_main_rank()
 
 
 class TestSetRandomSeedFromArgs:

@@ -4,11 +4,11 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, probe_server_healthy
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, probe_server_healthy
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.cell_state import (
@@ -42,7 +42,7 @@ ABORT_REQUEST_TIMEOUT_SECONDS = 30.0
 
 class ServerCellMetadata(FrozenStrictBaseModel):
     model_id: str
-    worker_type: Literal["regular", "prefill", "decode"]
+    worker_type: WorkerType
     cell_id: str
     num_gpus_per_engine: int
     gpu_offset: int
@@ -179,7 +179,12 @@ class ServerCell:
             return
 
         if self.args.check_weight_update_equal and self.meta.update_weights:
-            await self.check_weights(action="snapshot", allow_quant_error=False, selector="all", skip_list=None)
+            await self.check_weights(
+                action="snapshot",
+                allow_quant_error=False,
+                selector=self.args.check_weight_update_selector,
+                skip_list=None,
+            )
 
         if self.meta.needs_offload:
             api_client = SGLangApiClient(server_url=addr_info.server_url)
@@ -191,7 +196,7 @@ class ServerCell:
             await self.check_weights(
                 action="reset_tensors",
                 allow_quant_error=False,
-                selector="all",
+                selector=self.args.check_weight_update_selector,
                 skip_list=self.args.check_weight_update_skip_list,
             )
 
@@ -275,6 +280,15 @@ class ServerCell:
 
     async def onload(self, tags: list[str] | None):
         return await self.api_client.resume_memory_occupation(tags=tags)
+
+    async def pause_generation(self, mode: str):
+        return await self.api_client.pause_generation(mode=mode)
+
+    async def continue_generation(self):
+        return await self.api_client.continue_generation()
+
+    async def flush_cache(self):
+        return await self.api_client.flush_cache()
 
     async def abort_all(self):
         return await self.api_client.abort_all_requests(timeout=ABORT_REQUEST_TIMEOUT_SECONDS)

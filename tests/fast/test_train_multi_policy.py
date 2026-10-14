@@ -335,10 +335,11 @@ class TestSaving:
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
         trainers["b"].train = _slow_train
 
-        await _run(_make_args(num_rollout=2, save=str(tmp_path), save_interval=1), trainers=trainers)
+        context = await _run(_make_args(num_rollout=2, save=str(tmp_path), save_interval=1), trainers=trainers)
 
         state = MultiPolicyCheckpointState.load(tmp_path, leader_rollout_id=1)
         assert state.leader_model_id == "a"
+        assert context["rollout_executor"].save.await_args.kwargs["completed_rollout_ids"] == state.rollout_ids
         assert state.rollout_ids["a"] == 1
         assert state.rollout_ids["b"] == [call.args[0] for call in trainers["b"].save_model.await_args_list][-1]
 

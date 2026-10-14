@@ -129,12 +129,15 @@ jobs:
         shell: bash
         run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
 
-      - name: Keep NVSHMEM on NVLink (4-GPU H200)
-        # Single-node stage whose pool can include RoCE runners: a NIC name that
-        # matches nothing keeps NVSHMEM off RDMA. See docs/developer/ci/00-stage.md.
-        if: contains(fromJSON(inputs.runs_on), 'h200') && contains(fromJSON(inputs.runs_on), '4gpu')
+      - name: Keep NVSHMEM on NVLink (RoCE-only runners)
+        # NVSHMEM cannot connect over RoCE from this bridge-network container: a NIC
+        # name that matches nothing keeps it off RDMA. See docs/developer/ci/00-stage.md.
         shell: bash
-        run: echo "NVSHMEM_HCA_LIST=none_single_node_nvlink_only" >> "$GITHUB_ENV"
+        run: |
+          if [ "$(cat /sys/class/infiniband/*/ports/*/link_layer 2>/dev/null | sort -u)" = Ethernet ]; then
+            echo "Every HCA is RoCE: setting NVSHMEM_HCA_LIST"
+            echo "NVSHMEM_HCA_LIST=none_single_node_nvlink_only" >> "$GITHUB_ENV"
+          fi
 
       - name: Cleanup Ray processes
         shell: bash

@@ -3,6 +3,7 @@ import os
 import shlex
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
@@ -281,7 +282,7 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
         )
         for model_idx, model_cfg in enumerate(config.models)
         for group_index, server_group_config in enumerate(model_cfg.server_groups)
-        if server_group_config.worker_type != "placeholder"
+        if server_group_config.worker_type != WorkerType.PLACEHOLDER
     ]
 
 
@@ -329,7 +330,7 @@ def _compute_spec_inference_engine(
 
     num_gpus_per_engine = server_group_config.num_gpus_per_engine
     assert num_gpus_per_engine <= args.num_gpus_per_node or num_gpus_per_engine % args.num_gpus_per_node == 0, (
-        f"group '{server_group_config.worker_type}' wants {num_gpus_per_engine=} which neither fits in one node of "
+        f"group '{server_group_config.worker_type.value}' wants {num_gpus_per_engine=} which neither fits in one node of "
         f"{args.num_gpus_per_node} gpus nor tiles whole nodes, so its ranks would never all be launched"
     )
 
@@ -347,7 +348,7 @@ def _compute_spec_inference_engine(
 
     num_workers_total = server_group_config.num_gpus // scheduling.num_gpu_slots_per_worker
     assert num_workers_total % scheduling.num_workers_per_cell == 0, (
-        f"group '{server_group_config.worker_type}' has {num_workers_total=} which is not a whole number of "
+        f"group '{server_group_config.worker_type.value}' has {num_workers_total=} which is not a whole number of "
         f"{scheduling.num_workers_per_cell}-worker engines; the trailing engine would have no node to run its "
         f"remaining ranks"
     )
@@ -368,7 +369,7 @@ def _compute_spec_inference_engine(
             PortInfo(name="nccl", static_port=10000, allow_dynamic=True),
             *(
                 [PortInfo(name="disaggregation_bootstrap", static_port=11000, allow_dynamic=True)]
-                if server_group_config.worker_type == "prefill"
+                if server_group_config.worker_type == WorkerType.PREFILL
                 else []
             ),
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
@@ -380,7 +381,7 @@ def _compute_spec_inference_engine(
         # TODO: reduce complexity around passing around configs later during arguments refactor
         meta=lambda ctx: dict(
             model_id=model_cfg.name,
-            worker_type=server_group_config.worker_type,
+            worker_type=server_group_config.worker_type.value,
             num_gpus_per_engine=server_group_config.num_gpus_per_engine,
             gpu_offset=server_group_config.gpu_offset
             + ctx.cell_index * scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker,

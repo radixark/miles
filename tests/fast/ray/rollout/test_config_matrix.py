@@ -4,6 +4,7 @@ import pydantic
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 
 # ----------------------------- resolve_sglang_config matrix -----------------------------
@@ -21,7 +22,7 @@ class TestResolveSglangConfigPaths:
         cfg = resolve_sglang_config(args)
         assert len(cfg.models) == 1
         assert cfg.models[0].name == "default"
-        assert cfg.models[0].server_groups[0].worker_type == "regular"
+        assert cfg.models[0].server_groups[0].worker_type == WorkerType.REGULAR
         assert sum(g.num_gpus for m in cfg.models for g in m.server_groups) == 8
 
     def test_prefill_num_servers_path(self):
@@ -35,7 +36,7 @@ class TestResolveSglangConfigPaths:
         # Two groups: prefill + decode
         groups = cfg.models[0].server_groups
         assert len(groups) == 2
-        worker_types = sorted(g.worker_type for g in groups)
+        worker_types = sorted(g.worker_type.value for g in groups)
         assert worker_types == ["decode", "prefill"]
 
     def test_yaml_path_actor_only(self, tmp_path):
@@ -95,7 +96,7 @@ class TestServerGroupValidation:
             f"sglang:\n  - name: actor\n    server_groups:\n      - worker_type: {wt}\n        num_gpus: 8\n",
             rollout_num_gpus=8,
         )
-        assert cfg.models[0].server_groups[0].worker_type == wt
+        assert cfg.models[0].server_groups[0].worker_type == WorkerType(wt)
 
 
 class TestResolveDefaults:

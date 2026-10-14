@@ -6,16 +6,16 @@ from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=400,
-    suite="stage-c-4-gpu-h200",
+    suite="stage-c-2-gpu-h200",
     labels=["short", "mooncake"],
     hardware=["hopper", "blackwell"],
-    num_gpus=4,
+    num_gpus=2,
 )
-register_rocm_ci(est_time=300, suite="nightly-stage-c-4-gpu-mi350", labels=["short", "mooncake"])
+register_rocm_ci(est_time=300, suite="nightly-stage-c-2-gpu-mi350", labels=["short", "mooncake"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 4
+NUM_GPUS = 2
 
 
 def prepare():
@@ -48,6 +48,8 @@ def execute():
         "--over-sampling-batch-size 16 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--global-batch-size 32 "
+        "--pause-generation-mode in_place "
+        "--namespaced-radix-cache "
     )
 
     eval_args = (
@@ -90,7 +92,7 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --sglang-enable-prefill-weight-versions --ci-assert-prefill-lag-max 3 "
 
     fault_tolerance_args = (
         "--use-fault-tolerance "
@@ -106,8 +108,8 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 2 "
-        "--rollout-num-gpus 2 "
+        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
+        f"--rollout-num-gpus {NUM_GPUS // 2} "
         "--megatron-to-hf-mode bridge "
     )
 

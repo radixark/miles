@@ -89,6 +89,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         return {"dp_size": get_parallel_state().intra_dp.size}
 
     def _build_weight_updater(self, model, iterator_factory: Callable) -> WeightUpdater:
+        self._published_weight_version = 0
         model_name = self.args.model_name
         if model_name is None:
             model_name = type(self.hf_config).__name__.lower()
@@ -287,12 +288,16 @@ class TorchNativeTrainRayActor(TrainRayActor):
             return None
         self.weight_updater.reconnect_if_needed(info)
         print_memory("before update_weights")
-        self.weight_updater.update_weights()
+        next_version = self._published_weight_version + 1
+        if self.weight_updater.update_weights(weight_version=next_version):
+            self._published_weight_version = next_version
         print_memory("after update_weights")
-        if self.args.ci_test:
-            self.weight_updater.verify_engine_version(info.rollout_engines)
+        if self.args.ci_test and self._published_weight_version > 0:
+            self.weight_updater.verify_engine_version(
+                info.rollout_engines, weight_version=self._published_weight_version
+            )
         clear_memory()
-        return self.weight_updater.weight_version
+        return self._published_weight_version
 
 
 def _step_loss(args, num_microbatches: int, logits: torch.Tensor, batch: dict) -> tuple[torch.Tensor, dict]:

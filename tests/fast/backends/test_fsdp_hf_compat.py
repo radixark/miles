@@ -9,15 +9,31 @@ Covers:
     per-tensor revert semantics turns them red.
 """
 
-import logging
-import subprocess
+import itertools
 import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 from miles.backends.fsdp_utils import hf_weight_iterator
-from miles.backends.fsdp_utils.adaptations.weight_bridge import _hf_unfuse_experts_expand, get_param_transform
+from miles.backends.fsdp_utils.adaptations.arch_adapter import ArchAdapter
+from miles.backends.fsdp_utils.adaptations.specs import _ADAPTERS, resolve_arch_adapter
+from miles.backends.fsdp_utils.adaptations.weight_bridge import unfuse_batched_experts
+
+
+def _adapter(model_type):
+    return resolve_arch_adapter(SimpleNamespace(model_type=model_type))
+
+
+def _packed_boundaries(*lengths):
+    """The boundary fields `get_batch` records for documents of these lengths."""
+    cu_seqlens_host = tuple(itertools.accumulate(lengths, initial=0))
+    return dict(
+        cu_seqlens=torch.tensor(cu_seqlens_host, dtype=torch.int32),
+        cu_seqlens_host=cu_seqlens_host,
+        max_seqlen=max(lengths),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -45,7 +61,7 @@ def test_unfuse_gate_up_proj_rows_and_names(tiny_qwen3_moe):
     # [E=2, 2*inter=6, H=4]: fused rows are [gate(:3) | up(3:)]
     E, inter, H = 2, 3, 4
     full = torch.arange(E * 2 * inter * H, dtype=torch.float32).reshape(E, 2 * inter, H)
-    out = dict(_hf_unfuse_experts_expand("model.layers.0.mlp.experts.gate_up_proj", full, tiny_qwen3_moe))
+    out = dict(unfuse_batched_experts("model.layers.0.mlp.experts.gate_up_proj", full, tiny_qwen3_moe))
 
     assert set(out) == {
         "model.layers.0.mlp.experts.0.gate_proj.weight",
@@ -65,7 +81,7 @@ def test_unfuse_gate_up_proj_rows_and_names(tiny_qwen3_moe):
 def test_unfuse_down_proj(tiny_qwen3_moe):
     E, H, inter = 2, 4, 3
     full = torch.arange(E * H * inter, dtype=torch.float32).reshape(E, H, inter)
-    out = dict(_hf_unfuse_experts_expand("model.layers.5.mlp.experts.down_proj", full, tiny_qwen3_moe))
+    out = dict(unfuse_batched_experts("model.layers.5.mlp.experts.down_proj", full, tiny_qwen3_moe))
     assert set(out) == {
         "model.layers.5.mlp.experts.0.down_proj.weight",
         "model.layers.5.mlp.experts.1.down_proj.weight",
@@ -101,7 +117,7 @@ def test_unfuse_glm4_moe_lite_same_family():
     name = "model.layers.1.mlp.experts.gate_up_proj"
     full = model.state_dict()[name]
     E, two_inter = full.shape[0], full.shape[1]
-    out = dict(_hf_unfuse_experts_expand(name, full, model))
+    out = dict(unfuse_batched_experts(name, full, model))
     assert set(out) == {
         f"model.layers.1.mlp.experts.{e}.{proj}.weight" for e in range(E) for proj in ("gate_proj", "up_proj")
     }
@@ -114,7 +130,7 @@ def test_unfuse_glm4_moe_lite_same_family():
 
 def test_param_transform_gating():
     def applies(name, param, model_type):
-        return get_param_transform(name, param, model_type) is not None
+        return _adapter(model_type).param_transform(name, param) is not None
 
     gate_up = torch.zeros(2, 6, 4)
     name = "model.layers.0.mlp.experts.gate_up_proj"
@@ -142,6 +158,7 @@ def test_the_iterator_streams_params_without_a_transform_unchanged():
     iterator.model = model
     iterator.args = SimpleNamespace(update_weight_buffer_size=1 << 30)
     iterator._sync_dtypes = {}
+    iterator._arch_adapter = _adapter("qwen3_5_moe")
     with patch.object(hf_weight_iterator, "gather_full_param", lambda t, async_op=False: t):
         units = list(iterator._iter_hf_param_units(None, materialize=True))
     assert [[name for name, _ in unit] for unit in units] == [
@@ -151,190 +168,65 @@ def test_the_iterator_streams_params_without_a_transform_unchanged():
     assert units[0][0][1] is embed and units[1][0][1] is experts
 
 
-def test_nemotron_h_post_load_fixup_gating():
-    from types import SimpleNamespace
-
-    from miles.backends.fsdp_utils.adaptations.post_load_fixups import _FIXUPS
-
-    by_name = {f.name: f for f in _FIXUPS}
-    fixup = by_name["nemotron_h_clobber_reload"]
-    assert fixup.applies_to(SimpleNamespace(model_type="nemotron_h"))
-    assert not fixup.applies_to(SimpleNamespace(model_type="mamba2"))
-    assert not fixup.applies_to(SimpleNamespace(model_type="hybrid", layer_types=["mamba", "attention"]))
-    assert not fixup.applies_to(SimpleNamespace(model_type="qwen3_moe"))
+def test_every_model_type_has_one_adapter():
+    model_types = [model_type for adapter in _ADAPTERS for model_type in adapter.model_types]
+    assert len(model_types) == len(set(model_types))
 
 
-def test_post_load_fixup_lazily_loads_model_implementation():
-    script = """
-import sys
-import tempfile
-from types import SimpleNamespace
-
-from miles.backends.fsdp_utils.adaptations.post_load_fixups import (
-    _FIXUPS,
-    apply_post_load_fixups,
-)
-
-module_name = "miles.backends.fsdp_utils.models.nemotron_h"
-assert [fixup.name for fixup in _FIXUPS].count("nemotron_h_clobber_reload") == 1
-assert module_name not in sys.modules
-apply_post_load_fixups(object(), SimpleNamespace(model_type="mamba2"), ".")
-assert module_name not in sys.modules
-with tempfile.TemporaryDirectory() as ckpt_path:
-    apply_post_load_fixups(object(), SimpleNamespace(model_type="nemotron_h"), ckpt_path)
-assert module_name in sys.modules
-"""
-    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
+def test_unknown_model_type_runs_the_stock_hf_path():
+    adapter = _adapter("some_remote_lm")
+    assert type(adapter) is ArchAdapter
+    assert not adapter.verified and adapter.routing_replay is None
 
 
-def test_reload_nemotron_h_clobbered_weights_behavior(tmp_path, caplog):
-    from safetensors.torch import save_file
-
-    from miles.backends.fsdp_utils.models.nemotron_h import reload_nemotron_h_clobbered_weights
-
-    class Mixer(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.dt_bias = torch.nn.Parameter(torch.tensor([1.0005]))
-            self.out_proj = torch.nn.Linear(1, 1, bias=False)
-            self.in_proj = torch.nn.Linear(1, 1, bias=False)
-            self.out_proj.weight.data.fill_(2.0)
-            self.in_proj.weight.data.fill_(3.0)
-
-    class Model(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            layer = torch.nn.Module()
-            layer.mixer = Mixer()
-            self.backbone = torch.nn.ModuleList([layer])
-
-    model = Model()
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    assert reload_nemotron_h_clobbered_weights(model, empty) == 0
-
-    disk = {
-        "backbone.0.mixer.dt_bias": torch.ones(1),
-        "backbone.0.mixer.out_proj.weight": torch.ones(1, 1),
-        "backbone.0.mixer.in_proj.weight": torch.ones(1, 1),
-    }
-    save_file(disk, tmp_path / "model.safetensors")
-    assert reload_nemotron_h_clobbered_weights(model, tmp_path) == 1
-    torch.testing.assert_close(model.backbone[0].mixer.dt_bias, torch.tensor([1.0005]))
-    torch.testing.assert_close(model.backbone[0].mixer.out_proj.weight, torch.ones(1, 1))
-    torch.testing.assert_close(model.backbone[0].mixer.in_proj.weight, torch.tensor([[3.0]]))
-
-    with caplog.at_level(
-        logging.INFO,
-        logger="miles.backends.fsdp_utils.models.nemotron_h",
-    ):
-        assert reload_nemotron_h_clobbered_weights(model, tmp_path, tol=1e-4) == 1
-    torch.testing.assert_close(model.backbone[0].mixer.dt_bias, torch.ones(1))
-    torch.testing.assert_close(model.backbone[0].mixer.in_proj.weight, torch.tensor([[3.0]]))
-    assert any(
-        record.name == "miles.backends.fsdp_utils.models.nemotron_h"
-        and "restored 1 NemotronH mixer parameter(s)" in record.getMessage()
-        for record in caplog.records
-    )
-
-
-def test_weight_bridge_registry():
-    # The WeightBridge registry is the train->rollout param-name/shape contract: a model type with
-    # a registered transform gets its params rewritten; unregistered types stream verbatim.
-    import torch
-
-    from miles.backends.fsdp_utils.adaptations.weight_bridge import get_param_transform, register_param_transform
-
-    # qwen3_moe is registered (batched experts -> per-expert); a 3D experts param matches.
-    g = torch.zeros(2, 6, 4)
-    assert get_param_transform("model.layers.0.mlp.experts.gate_up_proj", g, "qwen3_moe") is not None
-    # unregistered model type -> no transform (passthrough)
-    assert get_param_transform("model.layers.0.mlp.experts.gate_up_proj", g, "qwen3_5_moe") is None
-    # registering a new transform routes matching params through it
-    register_param_transform(
-        "_test_arch",
-        matches=lambda name, p: name.endswith(".foo"),
-        expand=lambda name, full: [(name.replace(".foo", ".bar"), full)],
-    )
-    fn = get_param_transform("x.foo", g, "_test_arch")
-    assert fn is not None and list(fn("x.foo", g))[0][0] == "x.bar"
-    assert get_param_transform("x.baz", g, "_test_arch") is None
-
-
-def test_model_patch_registry_gating():
-    # The ModelPatchHook registry replaces the hardcoded per-arch dispatch in apply_class_patches.
-    # Verify the config-check predicates gate correctly. Packed-sequence layout patches (GDN, ...) moved
-    # out of this registry into the unified packing registry (test_packing_registry below);
-    # apply_class_patches now dispatches them via apply_packing.
-    from miles.backends.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
-
-    by_name = {h.name: h for h in _MODEL_PATCH_HOOKS}
-    # the expected generic hooks are registered in order (GDN packing is not a ModelPatchHook)
-    assert [h.name for h in _MODEL_PATCH_HOOKS][:3] == [
-        "fp8_checkpoint_guard",
-        "dsa_train_infer_warn",
-        "model_type_verified",
-    ]
-    assert [h.name for h in _MODEL_PATCH_HOOKS].count("model_type_verified") == 1
-    assert "gated_deltanet_packing" not in by_name
-    assert not by_name["fp8_checkpoint_guard"].applies_to(None)
-    # the qwen3_moe MoE-block patch is a hook now (moved out of _enable_true_on_policy_optimizations),
-    # gated on model_type; the backend-level enable_batch_invariant_mode stays in the actor.
-    from types import SimpleNamespace
-
-    assert "qwen3_moe_moe_patch" in by_name
-    assert by_name["qwen3_moe_moe_patch"].applies_to(SimpleNamespace(model_type="qwen3_moe"))
-    assert not by_name["qwen3_moe_moe_patch"].applies_to(SimpleNamespace(model_type="qwen3"))
+def test_qwen3_moe_class_patch_is_inert_outside_true_on_policy():
     # Batched experts need no off-mode patch under the pinned transformers version.
-    by_name["qwen3_moe_moe_patch"].apply(
-        SimpleNamespace(model_type="qwen3_moe"), SimpleNamespace(true_on_policy_mode=False)
-    )
+    _adapter("qwen3_moe").patch_classes(SimpleNamespace(true_on_policy_mode=False))
+
+
+def test_validate_hf_config_rejects_fp8_checkpoints():
+    from miles.backends.fsdp_utils.adaptations.config_checks import validate_hf_config
+
+    cfg = SimpleNamespace(model_type="qwen3", quantization_config={"quant_method": "fp8"})
+    with pytest.raises(ValueError, match="fp8-quantized checkpoint"):
+        validate_hf_config(cfg, verified=True, rank=0)
 
 
 @pytest.mark.parametrize("model_type", ["glm4_moe_lite", "nemotron_h", "qwen3", "qwen3_moe", "qwen3_vl"])
-def test_model_type_verified_accepts_recorded_models(model_type, caplog):
-    from types import SimpleNamespace
+def test_verified_model_types_validate_silently(model_type, caplog):
+    from miles.backends.fsdp_utils.adaptations.config_checks import validate_hf_config
 
-    from miles.backends.fsdp_utils.adaptations.class_patches import check_model_type_verified
-
-    check_model_type_verified(SimpleNamespace(model_type=model_type), SimpleNamespace(rank=0))
+    cfg = SimpleNamespace(model_type=model_type)
+    validate_hf_config(cfg, verified=_adapter(model_type).verified, rank=0)
 
     assert not caplog.records
 
 
 def test_verified_model_types_match_recorded_validation():
-    from miles.backends.fsdp_utils.adaptations.class_patches import VERIFIED_MODEL_TYPES
+    verified = {model_type for adapter in _ADAPTERS if adapter.verified for model_type in adapter.model_types}
+    assert verified == {"glm4_moe_lite", "nemotron_h", "qwen3", "qwen3_moe", "qwen3_vl"}
 
-    assert VERIFIED_MODEL_TYPES == frozenset({"glm4_moe_lite", "nemotron_h", "qwen3", "qwen3_moe", "qwen3_vl"})
 
+def test_unverified_model_type_warns_once_on_rank_zero(caplog):
+    from miles.backends.fsdp_utils.adaptations.config_checks import validate_hf_config
 
-def test_model_type_verified_warns_once_on_rank_zero(caplog):
-    from types import SimpleNamespace
-
-    from miles.backends.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
-
-    hook = next(h for h in _MODEL_PATCH_HOOKS if h.name == "model_type_verified")
-    hook.apply(SimpleNamespace(model_type="qwen3_5_moe"), SimpleNamespace(rank=0))
+    validate_hf_config(SimpleNamespace(model_type="qwen3_5_moe"), verified=False, rank=0)
 
     assert len(caplog.records) == 1
     assert "model_type='qwen3_5_moe' has no recorded FSDP validation" in caplog.text
 
 
-def test_model_type_verified_is_silent_on_nonzero_rank(caplog):
-    from types import SimpleNamespace
+def test_unverified_model_type_is_silent_on_nonzero_rank(caplog):
+    from miles.backends.fsdp_utils.adaptations.config_checks import validate_hf_config
 
-    from miles.backends.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
-
-    hook = next(h for h in _MODEL_PATCH_HOOKS if h.name == "model_type_verified")
-    hook.apply(SimpleNamespace(model_type="qwen3_5_moe"), SimpleNamespace(rank=1))
+    validate_hf_config(SimpleNamespace(model_type="qwen3_5_moe"), verified=False, rank=1)
 
     assert not caplog.records
 
 
 def test_packed_seq_context_boundaries():
     # The shared boundary derivation (formerly duplicated verbatim in nemotron_h.py + qwen3_5_moe.py).
-    from miles.backends.fsdp_utils.adaptations.packing.boundaries import packed_seq_context
+    from miles.backends.fsdp_utils.adaptations.packing import packed_seq_context
 
     # single document / non-packed / wrong shape -> None (packing is a no-op)
     assert packed_seq_context(None) is None
@@ -355,7 +247,6 @@ def test_packed_seq_context_boundaries():
 
 
 def test_nemotron_attention_reuses_precomputed_max_seqlen(monkeypatch):
-    import sys
     from types import ModuleType, SimpleNamespace
 
     from miles.backends.fsdp_utils.models import nemotron_h
@@ -417,13 +308,10 @@ def test_nemotron_pattern_to_list_repair():
     # sglang's import monkeypatches NemotronHConfig._pattern_to_list to drop unmapped chars, deleting
     # every '-' (MLP) layer; the config-time repair must restore the full mapping, and must leave a
     # healthy implementation untouched.
-    from types import SimpleNamespace
-
     from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
 
     from miles.backends.fsdp_utils.adaptations.specs.nemotron_h import _repair_pattern_to_list
 
-    hf_config = SimpleNamespace(model_type="nemotron_h")
     original = NemotronHConfig.__dict__["_pattern_to_list"]
     healthy = staticmethod(
         lambda pattern: [{"M": "mamba", "E": "moe", "*": "attention", "-": "mlp"}[c] for c in pattern]
@@ -433,44 +321,152 @@ def test_nemotron_pattern_to_list_repair():
     )
     try:
         NemotronHConfig._pattern_to_list = healthy
-        _repair_pattern_to_list(hf_config, None)
+        _repair_pattern_to_list()
         assert NemotronHConfig.__dict__["_pattern_to_list"] is healthy
 
         NemotronHConfig._pattern_to_list = broken
-        _repair_pattern_to_list(hf_config, None)
+        _repair_pattern_to_list()
         assert NemotronHConfig._pattern_to_list("M-*E") == ["mamba", "mlp", "attention", "moe"]
     finally:
         NemotronHConfig._pattern_to_list = original
 
 
-def test_packing_registry():
-    # The unified packing registry dispatches per (model_type, lifetime); GDN is config-lifetime,
-    # NemotronH is post-load-lifetime, and archs that pack natively / don't pack match nothing.
-    from types import SimpleNamespace
+def test_hf_packing_kwargs_match_the_padding_free_collator():
+    from transformers import DataCollatorWithFlattening
 
-    from miles.backends.fsdp_utils.adaptations.packing import get_packing_patches
+    from miles.backends.fsdp_utils.adaptations.packing import HF_PACKING_KWARG_NAMES, hf_packing_kwargs
 
-    gdn = SimpleNamespace(model_type="qwen3_5_moe", layer_types=["linear_attention", "full_attention"])
-    nemo = SimpleNamespace(model_type="nemotron_h")
-    glm = SimpleNamespace(model_type="glm4_moe_lite", layer_types=["full_attention"])
-    dense = SimpleNamespace(model_type="qwen3", layer_types=["full_attention"])
+    collator = DataCollatorWithFlattening(return_tensors="pt", return_flash_attn_kwargs=True, return_seq_idx=True)
+    flattened = collator([{"input_ids": [1, 2, 3]}, {"input_ids": [4, 5]}, {"input_ids": [6, 7, 8, 9]}])
+    kwargs = hf_packing_kwargs(**_packed_boundaries(3, 2, 4))
 
-    def names(cfg, lifetime):
-        return {p.name for p in get_packing_patches(cfg, lifetime)}
-
-    # GatedDeltaNet: config lifetime only
-    assert names(gdn, "config") == {"gated_deltanet_packing"}
-    assert names(gdn, "post_load") == set()
-    # NemotronH: post-load lifetime only
-    assert names(nemo, "post_load") == {"nemotron_h_packing"}
-    assert names(nemo, "config") == set()
-    # glm4_moe_lite (native MLA varlen) and dense qwen3: no packing patch at either lifetime
-    for cfg in (glm, dense, None):
-        assert names(cfg, "config") == set()
-        assert names(cfg, "post_load") == set()
+    assert set(kwargs) == HF_PACKING_KWARG_NAMES
+    for name, value in kwargs.items():
+        expected = flattened[name]
+        if isinstance(expected, torch.Tensor):
+            assert value.dtype == expected.dtype and torch.equal(value, expected), name
+        else:
+            assert value == expected, name
 
 
-from types import SimpleNamespace
+def test_only_gated_deltanet_archs_pass_packing_kwargs():
+    boundaries = _packed_boundaries(2, 3)
+    for model_type in ("qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen3_next"):
+        assert "seq_idx" in _adapter(model_type).packing_kwargs(**boundaries), model_type
+    # NemotronH resets through its own patch; other archs (including remote code) keep their stock inputs.
+    for model_type in ("nemotron_h", "glm4_moe_lite", "qwen3", "qwen3_vl", "some_remote_lm"):
+        assert _adapter(model_type).packing_kwargs(**boundaries) == {}, model_type
+
+
+_TINY_QWEN3_5_TEXT = dict(
+    vocab_size=64,
+    hidden_size=16,
+    intermediate_size=32,
+    num_hidden_layers=2,
+    layer_types=["linear_attention", "full_attention"],
+    num_attention_heads=2,
+    num_key_value_heads=1,
+    head_dim=8,
+    linear_num_key_heads=2,
+    linear_num_value_heads=2,
+    linear_key_head_dim=4,
+    linear_value_head_dim=4,
+)
+
+
+def test_gated_deltanet_kernels_receive_packed_boundaries():
+    # HF's Qwen3.5 forwards the padding-free kwargs to its GatedDeltaNet kernels; no patch in between.
+    import torch.nn.functional as F
+    from transformers import Qwen3_5TextConfig
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
+
+    cfg = Qwen3_5TextConfig(**_TINY_QWEN3_5_TEXT)
+    cfg._attn_implementation = "eager"
+    model = Qwen3_5ForCausalLM(cfg).eval()
+    _adapter("qwen3_5_text").patch_model(model, None)  # text-only: no vision tower to guard
+    gdn = model.model.layers[0].linear_attn
+    seen = {}
+
+    def conv(x, weight, bias, activation, seq_idx=None):
+        seen["seq_idx"] = seq_idx
+        return F.silu(F.conv1d(F.pad(x, (weight.shape[-1] - 1, 0)), weight.unsqueeze(1), bias, groups=x.shape[1]))
+
+    chunk = gdn.chunk_gated_delta_rule
+
+    def chunk_rule(*args, cu_seqlens=None, **kwargs):
+        seen["cu_seqlens"] = cu_seqlens
+        return chunk(*args, **kwargs)
+
+    gdn.causal_conv1d_fn = conv
+    gdn.chunk_gated_delta_rule = chunk_rule
+
+    packing_kwargs = _adapter("qwen3_5_text").packing_kwargs(**_packed_boundaries(3, 2))
+    with torch.no_grad():
+        model(input_ids=torch.arange(5).view(1, 5), position_ids=torch.tensor([[0, 1, 2, 0, 1]]), **packing_kwargs)
+
+    assert seen["cu_seqlens"].tolist() == [0, 3, 5]
+    assert seen["seq_idx"].tolist() == [[0, 0, 0, 1, 1]]
+
+
+def test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs(monkeypatch):
+    """HF hands the language model's kwargs to the vision tower, whose flash attention sets its own
+    `cu_seq_lens_q`; without the guard a packed batch with an image raises."""
+    import torch.nn.functional as F
+    from transformers import AttentionInterface, Qwen3_5Config
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
+
+    vision_cu_seqlens = []
+
+    def flash_stand_in(module, query, key, value, attention_mask, scaling=None, cu_seq_lens_q=None, **kwargs):
+        vision_cu_seqlens.append(cu_seq_lens_q.tolist())
+        return F.scaled_dot_product_attention(query, key, value, scale=scaling).transpose(1, 2), None
+
+    # a "flash" name sends the vision tower down its varlen branch without needing flash-attn on CPU
+    monkeypatch.setitem(AttentionInterface._global_mapping, "flash_stand_in", flash_stand_in)
+    cfg = Qwen3_5Config(
+        text_config=_TINY_QWEN3_5_TEXT,
+        vision_config=dict(
+            depth=1,
+            hidden_size=16,
+            intermediate_size=32,
+            num_heads=2,
+            patch_size=2,
+            temporal_patch_size=2,
+            spatial_merge_size=2,
+            in_channels=3,
+            out_hidden_size=16,
+            num_position_embeddings=16,
+        ),
+        image_token_id=60,
+        video_token_id=61,
+        vision_start_token_id=62,
+        vision_end_token_id=63,
+    )
+    model = Qwen3_5ForConditionalGeneration(cfg).eval()
+    model.config.text_config._attn_implementation = "eager"
+    model.config.vision_config._attn_implementation = "flash_stand_in"
+
+    # doc 0 is text; doc 1 holds one image whose 2x2 patch grid merges into one token
+    adapter = _adapter("qwen3_5")
+    inputs = dict(
+        input_ids=torch.tensor([[1, 2, 3, 62, 60, 63, 4]]),
+        position_ids=torch.tensor([[0, 1, 2, 0, 1, 2, 3]]),
+        pixel_values=torch.randn(4, 3 * 2 * 2 * 2),
+        image_grid_thw=torch.tensor([[1, 2, 2]]),
+        **adapter.packing_kwargs(**_packed_boundaries(3, 4)),
+    )
+    with torch.no_grad():
+        with pytest.raises(TypeError, match="multiple values for keyword argument 'cu_seq_lens_q'"):
+            model(**inputs)
+
+        adapter.patch_model(model, None)
+        wrapped = model.model.visual.forward
+        adapter.patch_model(model, None)
+        assert model.model.visual.forward is wrapped  # idempotent across the actor and ref model
+        model(**inputs)
+
+    assert vision_cu_seqlens == [[0, 4]]  # the image's own patch boundaries, not the packed text rows
+
 
 import transformers
 from transformers import AutoModelForCausalLM, AutoModelForImageTextToText

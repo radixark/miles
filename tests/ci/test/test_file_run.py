@@ -204,7 +204,10 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "checkout_ref" not in workflow
     assert "secrets: inherit" not in workflow
     assert "CI_APP_PRIVATE_KEY" not in workflow
-    assert "NEON_DATABASE_URL" not in workflow
+    assert (
+        "NEON_DATABASE_URL: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.NEON_DATABASE_URL || '' }}"
+    ) in workflow
+    assert "NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}" not in workflow
     # Fork-ness comes from the live PR, and fork heads run without repository
     # secrets, matching the pr-test fork policy.
     assert "head_is_fork: ${{ steps.head-repo.outputs.head_is_fork }}" in workflow
@@ -233,11 +236,16 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "actions: read" in report_job
     assert "needs: [announce-file-run, resolve-file-run, run-cuda-file, run-cpu-file]" in report_job
     assert "if: always()" in report_job
-    assert "tests.ci.run_suite" not in workflow
+    assert "python3 tests/ci/run_suite.py --hw cuda" in workflow
     assert "pytest '${{ inputs.test_file }}' -v -x" in workflow
-    assert "python3 '${{ inputs.test_file }}'" in workflow
-    assert workflow.count("timeout --signal=TERM --kill-after=30s") == 2
-    assert workflow.count("'${{ needs.resolve-file-run.outputs.timeout_seconds }}s'") == 2
+    assert "--test-file '${{ inputs.test_file }}'" in workflow
+    # CPU wraps pytest in the file timeout; CUDA hands it to run_suite, whose
+    # per-file timer covers only the test, as in stage runs.
+    cuda_job = workflow.split("  run-cuda-file:", 1)[1].split("  run-cpu-file:", 1)[0]
+    assert "timeout --signal" not in cuda_job
+    assert "--timeout-per-file '${{ needs.resolve-file-run.outputs.timeout_seconds }}'" in cuda_job
+    assert workflow.count("timeout --signal=TERM --kill-after=30s") == 1
+    assert workflow.count("'${{ needs.resolve-file-run.outputs.timeout_seconds }}s'") == 1
     for reusable in (gpu_workflow, cpu_workflow):
         assert "plan_already_resolved:" in reusable
         assert "if: ${{ !inputs.plan_already_resolved }}" in reusable

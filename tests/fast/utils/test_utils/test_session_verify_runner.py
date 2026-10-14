@@ -66,6 +66,7 @@ def test_namespace_to_train_args_keeps_ci_test_enabled_for_fsdp_debug_rollout():
 
     assert "--train-backend fsdp" in train_args
     assert "--ci-test" in train_args
+    assert "--no-enable-sample-ownership-checker" in train_args
 
 
 def test_namespace_to_train_args_preserves_resolved_rollout_gpu_count():

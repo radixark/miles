@@ -780,12 +780,18 @@ class TestInitHttpClientConcurrency:
         return SimpleNamespace(**defaults)
 
     def _init(self, monkeypatch, args):
-        monkeypatch.setattr(http_utils, "_http_client", None)
+        monkeypatch.setattr(http_utils, "_http_clients", {})
         monkeypatch.setattr(http_utils, "_client_concurrency", 0)
         http_utils.init_http_client(args)
-        if http_utils._http_client is not None:
-            asyncio.run(http_utils._http_client.aclose())
-        return http_utils._client_concurrency, http_utils._http_client
+
+        async def _create_client() -> httpx.AsyncClient | None:
+            if http_utils._client_concurrency == 0:
+                return None
+            client = http_utils._rollout_client()
+            await client.aclose()
+            return client
+
+        return http_utils._client_concurrency, asyncio.run(_create_client())
 
     def test_external_snapshot_eval_without_in_job_gpus_gets_one_engine_of_connections(self, monkeypatch):
         concurrency, client = self._init(monkeypatch, self._args())

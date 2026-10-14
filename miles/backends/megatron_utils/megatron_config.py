@@ -342,6 +342,22 @@ def _apply_critical_derived_overrides(ans: Namespace, *, base: Namespace, traine
     # TODO: most derived defaults are still computed from the base args; revisit after the arguments refactor
     if "hf_checkpoint" in trainer.overrides and base.tokenizer_model == base.hf_checkpoint:
         ans.tokenizer_model = ans.hf_checkpoint
+    if "mtp_num_layers" in trainer.overrides:
+        resolve_mtp_num_layers(ans)
+
+
+def resolve_mtp_num_layers(args: Namespace) -> None:
+    """Keep the model's MTP layers only under --enable-mtp-training, since Megatron trains every MTP layer it builds."""
+    if args.enable_mtp_training:
+        assert args.mtp_num_layers, "--enable-mtp-training needs --mtp-num-layers > 0 to build the MTP layers"
+        return
+    if args.mtp_num_layers:
+        logger.info(
+            f"--mtp-num-layers {args.mtp_num_layers} without --enable-mtp-training: building no MTP layers, "
+            "so exported checkpoints carry no MTP weights"
+        )
+    # None, not 0: Megatron treats any non-None value as an MTP model, e.g. in its overlap_moe_expert_parallel_comm check
+    args.mtp_num_layers = None
 
 
 # ---------------------------- checkpoint dirs -----------------------------
@@ -362,11 +378,11 @@ def resolve_args_checkpoint_load(args: Namespace) -> None:
         # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
         # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
         # Mirrors the non-bridge branch below.
-        if not _has_megatron_checkpoint(args.load):
+        if not has_megatron_checkpoint(args.load):
             args.load = args.ref_load or args.hf_checkpoint
             args.start_rollout_id = 0
     else:
-        if not _has_megatron_checkpoint(args.load):
+        if not has_megatron_checkpoint(args.load):
             args.no_load_optim = True
             args.no_load_rng = True
             args.finetune = True
@@ -376,7 +392,7 @@ def resolve_args_checkpoint_load(args: Namespace) -> None:
             args.start_rollout_id = 0
 
 
-def _has_megatron_checkpoint(load_dir: str | None) -> bool:
+def has_megatron_checkpoint(load_dir: str | None) -> bool:
     return (
         load_dir is not None
         and os.path.exists(load_dir)

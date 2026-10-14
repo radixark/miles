@@ -23,10 +23,11 @@ from miles.backends.training_utils.weight_update.protocol import get_weight_tran
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
-    pause_engines,
+    maybe_pause_engines,
+    maybe_resume_engines,
     register_lora_adapter,
-    resume_engines,
     set_weight_version,
+    weight_update_selector,
 )
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.utils import async_utils
@@ -69,7 +70,6 @@ class WeightUpdater:
             quantization_config=quantization_config,
         )
         self.weights_getter = weights_getter
-        self.weight_version = 0
         self.is_lora = is_lora
         if is_lora:
             assert lora_sync_config is not None
@@ -88,7 +88,7 @@ class WeightUpdater:
             engine_gpu_offsets,
             self.parallel_state,
             self._hf_weight_iterator.placement,
-            self._hf_weight_iterator.weight_update_selector,
+            weight_update_selector(self.args),
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
@@ -108,36 +108,33 @@ class WeightUpdater:
         self.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
         dist.barrier(group=get_gloo_group())
 
-    def verify_engine_version(self, rollout_engines: Sequence[SGLangApiClient]) -> None:
-        if not rollout_engines or self.weight_version == 0:
+    def verify_engine_version(self, rollout_engines: Sequence[SGLangApiClient], *, weight_version: int) -> None:
+        if not rollout_engines:
             return
         engine = random.choice(list(rollout_engines))
         engine_version = async_utils.run(engine.get_weight_version())
-        if str(engine_version) != str(self.weight_version):
-            raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_version}")
+        if str(engine_version) != str(weight_version):
+            raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {weight_version}")
 
     def pop_metrics(self) -> dict[str, float]:
         """Return and clear the protocol's metrics; the actor drains them onto the step log."""
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self) -> None:
+    def update_weights(self, weight_version: int) -> bool:
         """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
-        if not protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets):
-            return
-        self.weight_version += 1
+        if not protocol.begin_sync(weight_version, self._iter_base_buckets):
+            return False
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
         adapters = self._get_updated_adapters()
 
         driver = dist.get_rank() == 0
         if protocol.use_weight_update_session and driver:
-            pause_engines(self.args, protocol.rollout_engines)
+            maybe_pause_engines(self.args, protocol.rollout_engines)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
-            begin_weight_update(
-                protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
-            )
+            begin_weight_update(protocol.rollout_engines, weight_update_selector(self.args), sync_base=sync_base)
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
@@ -162,13 +159,14 @@ class WeightUpdater:
             dist.barrier(group=get_gloo_group())
 
         with timer("finalize_and_resume_engines"):
-            protocol.finalize(self.weight_version)
+            protocol.finalize(weight_version)
             if protocol.use_weight_update_session and driver:
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                set_weight_version(protocol.rollout_engines, self.weight_version)
-                resume_engines(protocol.rollout_engines)
+                set_weight_version(protocol.rollout_engines, weight_version)
+                maybe_resume_engines(self.args, protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
+        return True
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)

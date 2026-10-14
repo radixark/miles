@@ -15,7 +15,11 @@ register_cuda_ci(
     est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper"], num_gpus=4
 )
 
-register_ci_gate(metric_key="train/grad_norm")
+register_ci_gate(
+    metric_key="train/grad_norm",
+    enforce=False,
+    allowlist_reason="Exact-zero steps (every GRPO group's rewards uniform) make per-step grad_norm bimodal.",
+)
 register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
@@ -42,7 +46,6 @@ CASE = CaseConfig(
     use_spec=False,
     enable_mtp_training=False,
     use_r3=False,
-    check_weight_update_selector="target",
     # miles has no VLM/vision implementation on the training side, so vision weights are
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),

@@ -50,7 +50,9 @@ class TestLoadReconfigureEvents:
         """Only CellReconfigureEvents are returned, in file (emission) order."""
         event_logger = EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main"))
         event_logger.log(CellReconfigureEvent, _SHRINK_PARTIAL, print_log=False)
-        event_logger.log(TrainGroupStepEndEvent, dict(rollout_id=2, cell_outcomes={}), print_log=False)
+        event_logger.log(
+            TrainGroupStepEndEvent, dict(rollout_id=2, attempt=0, role="actor", cell_outcomes={}), print_log=False
+        )
         event_logger.log(CellReconfigureEvent, _HEALING_PARTIAL, print_log=False)
         event_logger.close()
 

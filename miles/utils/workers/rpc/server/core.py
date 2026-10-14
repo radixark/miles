@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
+import threading
 import uuid
 from typing import NoReturn
 
@@ -21,6 +23,7 @@ from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 from miles.utils.workers.rpc.server.store import CallStore, DuplicateCallError
 
 logger = logging.getLogger(__name__)
+_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 
 
 class RpcServer:
@@ -39,6 +42,18 @@ class RpcServer:
             methods=len(self._specs),
             groups=self._executor.concurrency_groups,
         )
+
+    async def close(self) -> None:
+        watchdog = threading.Timer(_SHUTDOWN_TIMEOUT_SECONDS, _exit_on_shutdown_timeout)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            await self._executor.close()
+        except BaseException:
+            logger.error("RPC shutdown failed; exiting the worker process", exc_info=True)
+            os._exit(1)
+        finally:
+            watchdog.cancel()
 
     def submit_call(self, *, method_name: str, request: SubmitRequest) -> SubmitResponse:
         def reject(*, status_code: int, reason: str, detail: str) -> NoReturn:
@@ -89,3 +104,10 @@ class RpcServer:
         if outcome is None:
             return CallStatusResponse(status="pending")
         return CallStatusResponse(status=outcome.status, result=outcome.result, error=outcome.error)
+
+
+def _exit_on_shutdown_timeout() -> None:
+    try:
+        logger.critical("RPC shutdown exceeded %s seconds; exiting the worker process", _SHUTDOWN_TIMEOUT_SECONDS)
+    finally:
+        os._exit(1)

@@ -314,7 +314,7 @@ def test_binding_uses_the_mapping_agreed_in_prepare(monkeypatch):
 
 
 class FakeGatedDeltaNet(nn.Module):
-    """Mirrors the parts of Qwen3NextGatedDeltaNet the binder and the packing wrapper touch.
+    """Mirrors the parts of Qwen3NextGatedDeltaNet the binder and the packing kwargs touch.
 
     `native_chunk` defaults to a stand-in for transformers' `torch_chunk_gated_delta_rule`: it
     accepts `cu_seqlens` into `**kwargs` and ignores it, which is exactly the silent degradation
@@ -328,12 +328,12 @@ class FakeGatedDeltaNet(nn.Module):
         self.chunk_gated_delta_rule = native_chunk or _torch_chunk_stand_in
         self.recurrent_gated_delta_rule = native_chunk or _torch_chunk_stand_in
 
-    def forward(self, x):
-        self.chunk_gated_delta_rule(x, g=None, beta=None, cu_seqlens=None)
+    def forward(self, x, **kwargs):
+        self.chunk_gated_delta_rule(x, g=None, beta=None, cu_seqlens=kwargs.get("cu_seq_lens_q"))
         if self.causal_conv1d_fn is None:
             # transformers' fallback: no seq_idx, so packed documents bleed into each other.
             return x
-        return self.causal_conv1d_fn(x=x, weight=None, bias=None, activation="silu", seq_idx=None)
+        return self.causal_conv1d_fn(x=x, weight=None, bias=None, activation="silu", seq_idx=kwargs.get("seq_idx"))
 
 
 def _torch_chunk_stand_in(query, g=None, beta=None, **kwargs):
@@ -399,13 +399,11 @@ def test_binder_leaves_the_native_kernels_when_every_hub_repo_fails(monkeypatch)
 def test_hub_kernels_still_receive_the_packed_document_boundaries(monkeypatch):
     """The reason this feature exists.
 
-    `_patch_gdn_forward` injects `cu_seqlens` into the recurrence and `seq_idx` into the conv. The
+    HF's forward passes the actor's `cu_seq_lens_q` to the recurrence and `seq_idx` to the conv. The
     native fallbacks defeat that -- the torch GDN kernel swallows `cu_seqlens` into `**kwargs`, and
-    a missing conv wheel leaves nothing to wrap. Bind both from the Hub and the boundaries must
-    arrive at the kernels unchanged.
+    a missing conv wheel takes the path without `seq_idx`. Bind both from the Hub and the boundaries
+    must arrive at the kernels unchanged.
     """
-    from miles.backends.fsdp_utils.models.qwen3_5 import _patch_gdn_forward
-
     seen = {}
 
     def hub_chunk(query, g=None, beta=None, **kwargs):
@@ -430,25 +428,16 @@ def test_hub_kernels_still_receive_the_packed_document_boundaries(monkeypatch):
         ),
     )
 
-    # Patch a throwaway subclass: _patch_gdn_forward rewrites the class forward permanently.
-    gdn_cls = type("PackedGatedDeltaNet", (FakeGatedDeltaNet,), {})
-    _patch_gdn_forward(gdn_cls)
-
-    model = nn.Module()
-    model.layers = nn.ModuleList([gdn_cls()])
+    model = _build_gdn_model(n_layers=1)
     assert HubKernels.prepare(_make_args()).bind(model) == {"gated_deltanet": 1}
 
     layer = model.layers[0]
     cu_seqlens = torch.tensor([0, 2, 4], dtype=torch.int32)
     seq_idx = torch.tensor([[0, 0, 1, 1]], dtype=torch.int32)
-    layer._gdn_cu_seqlens = cu_seqlens
-    layer._gdn_seq_idx = seq_idx
-    layer(torch.zeros(1, 4))
+    layer(torch.zeros(1, 4), cu_seq_lens_q=cu_seqlens, seq_idx=seq_idx)
 
     assert torch.equal(seen["cu_seqlens"], cu_seqlens)
     assert torch.equal(seen["seq_idx"], seq_idx)
-    # The wrapper restores the handles it swapped, so the next forward starts from the Hub kernels
-    # again rather than from a stack of boundary-injecting wrappers.
     assert layer.chunk_gated_delta_rule is hub_chunk
     assert layer.causal_conv1d_fn is hub_conv
 

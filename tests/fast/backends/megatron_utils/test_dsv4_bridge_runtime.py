@@ -31,6 +31,7 @@ def _runtime_args(**overrides):
         "attention_backend": "auto",
         "dsa_kernel_backend": "cudnn",
         "mtp_num_layers": None,
+        "mtp_detach_heads": True,
         "moe_token_dispatcher_type": "alltoall",
         "decoder_first_pipeline_num_layers": 4,
         "decoder_last_pipeline_num_layers": 3,

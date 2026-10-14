@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from argparse import Namespace
+from contextlib import AsyncExitStack
 from types import SimpleNamespace
 from typing import Any
 
@@ -375,10 +376,10 @@ class TestKubernetesDriverAssembly:
         transport = _PerHostTransport(apps)
 
         async def scenario():
-            async with httpx.AsyncClient(transport=transport) as client:
+            async with AsyncExitStack() as stack, httpx.AsyncClient(transport=transport) as client:
                 monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", classmethod(lambda cls: client))
                 for app in apps.values():
-                    await app.router.lifespan_context(app).__aenter__()
+                    await stack.enter_async_context(app.router.lifespan_context(app))
                 stop = await provider.watch_cells(_ignore_cell)
                 try:
                     cell = TrainerCell(
@@ -422,9 +423,9 @@ class TestKubernetesDriverAssembly:
         transport = _PerHostTransport({host: app})
 
         async def scenario():
-            async with httpx.AsyncClient(transport=transport) as client:
+            async with AsyncExitStack() as stack, httpx.AsyncClient(transport=transport) as client:
                 monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", classmethod(lambda cls: client))
-                await app.router.lifespan_context(app).__aenter__()
+                await stack.enter_async_context(app.router.lifespan_context(app))
                 handle = specs_rollout.create_rollout_executor_handle(capability=capability)
                 await handle.set_train_parallel_config(config={"dp_size": 4})
                 await handle.load(rollout_id=11)
@@ -466,10 +467,10 @@ class TestKubernetesDriverAssembly:
         monkeypatch.setattr(placement_group, "get_backend_capability", lambda _args: capability)
 
         async def scenario():
-            async with httpx.AsyncClient(transport=transport) as client:
+            async with AsyncExitStack() as stack, httpx.AsyncClient(transport=transport) as client:
                 monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", classmethod(lambda cls: client))
                 for app in apps.values():
-                    await app.router.lifespan_context(app).__aenter__()
+                    await stack.enter_async_context(app.router.lifespan_context(app))
                 return await create_rollout_components(args)
 
         result = asyncio.run(scenario())
@@ -493,9 +494,9 @@ class TestKubernetesDriverAssembly:
         transport = _PerHostTransport({host: app})
 
         async def scenario():
-            async with httpx.AsyncClient(transport=transport) as client:
+            async with AsyncExitStack() as stack, httpx.AsyncClient(transport=transport) as client:
                 monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", classmethod(lambda cls: client))
-                await app.router.lifespan_context(app).__aenter__()
+                await stack.enter_async_context(app.router.lifespan_context(app))
                 handle = specs_train.create_trainer_controller_handle(
                     Namespace(trainer_controller_addrs=None, megatron_config=None),
                     capability=capability,

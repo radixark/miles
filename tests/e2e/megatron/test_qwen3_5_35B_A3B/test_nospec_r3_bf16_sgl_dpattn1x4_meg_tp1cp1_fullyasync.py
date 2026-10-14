@@ -27,7 +27,11 @@ register_rocm_ci(
     labels=["megatron", "qwen35", "weight-update", "fully-async", "replay"],
 )
 
-register_ci_gate(metric_key="train/grad_norm")
+register_ci_gate(
+    metric_key="train/grad_norm",
+    enforce=False,
+    allowlist_reason="Exact-zero steps (every GRPO group's rewards uniform) make per-step grad_norm bimodal.",
+)
 register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
@@ -50,7 +54,6 @@ CASE = CaseConfig(
     use_spec=False,
     enable_mtp_training=False,
     use_r3=True,
-    check_weight_update_selector="target",
     # miles has no VLM/vision implementation on the training side, so vision weights are
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),

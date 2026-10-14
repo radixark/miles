@@ -9,22 +9,35 @@ from collections.abc import Mapping, Sequence
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.utils import async_utils
+from miles.utils.arguments import driver_owns_generation_pause
 
 
-def pause_engines(args: Namespace, rollout_engines: Sequence[SGLangApiClient]) -> None:
+def maybe_pause_engines(args: Namespace, rollout_engines: Sequence[SGLangApiClient]) -> None:
     """Quiesce the engines for a weight write.
 
     in_place pausing freezes requests and resumes them against their existing
     KV cache, so flushing would discard exactly what that mode preserves.
     """
+    if driver_owns_generation_pause(args):
+        return
     mode = args.pause_generation_mode
     async_utils.wait_futures([async_utils.submit(client.pause_generation(mode=mode)) for client in rollout_engines])
     if mode != "in_place":
         async_utils.wait_futures([async_utils.submit(client.flush_cache()) for client in rollout_engines])
 
 
-def resume_engines(rollout_engines: Sequence[SGLangApiClient]) -> None:
+def maybe_resume_engines(args: Namespace, rollout_engines: Sequence[SGLangApiClient]) -> None:
+    if driver_owns_generation_pause(args):
+        return
     async_utils.wait_futures([async_utils.submit(client.continue_generation()) for client in rollout_engines])
+
+
+def weight_update_selector(args: Namespace) -> str:
+    """Engine runners a weight sync covers. A speculative draft is synced only when the
+    trainer trains its MTP layers (--enable-mtp-training); any other draft keeps its startup weights."""
+    if args.sglang_speculative_algorithm and not args.enable_mtp_training:
+        return "target"
+    return "all"
 
 
 def begin_weight_update(

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -31,7 +32,14 @@ logger = logging.getLogger(__name__)
 def create_rpc_app(worker: object) -> FastAPI:
     server = RpcServer(worker=worker)
 
-    app = FastAPI()
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            await server.close()
+
+    app = FastAPI(lifespan=lifespan)
 
     @app.middleware("http")
     async def boot_uuid_guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:

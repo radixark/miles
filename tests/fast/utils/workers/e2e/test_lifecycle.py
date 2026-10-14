@@ -3,6 +3,8 @@ import os
 import signal
 import time
 import uuid
+from collections.abc import Callable
+from pathlib import Path
 
 import httpx
 import pytest
@@ -119,32 +121,37 @@ class TestShutdown:
         await asyncio.sleep(2.5)
         assert not (state_dir / "abandoned").exists()
 
-    @pytest.mark.parametrize("stop", ["sigterm", "sigkill"])
-    async def test_the_worker_gets_no_cancellation_callback(self, spawn, state_dir, tag, stop: str):
-        """There is no graceful shutdown, so an in-flight worker never observes cancellation."""
+    async def test_sigkill_does_not_run_the_worker_cancellation_callback(
+        self,
+        spawn: Callable[..., ServerProcess],
+        make_handle: Callable[..., RpcWorkerHandle],
+        state_dir: Path,
+        tag: str,
+    ) -> None:
+        """SIGKILL stops a running worker without executing its cancellation cleanup."""
         server = spawn()
         await _submit_and_disconnect(server, "demo_block_until_cancelled", {"tag": tag})
+        await _wait_until_started(make_handle(server), tag)
 
-        if stop == "sigterm":
-            server.signal(signal.SIGTERM)
-        else:
-            server.kill()
+        server.kill()
         assert server.wait(timeout=30.0) is not None
         assert not (state_dir / f"cancelled_{tag}").exists()
 
-    async def test_sigterm_after_the_worker_started_does_not_run_its_cancellation_callback(
-        self, spawn, make_handle, state_dir, tag
-    ):
-        """Even once the worker body is provably running, SIGTERM hands it no cancellation callback."""
+    async def test_sigterm_runs_the_started_worker_cancellation_callback(
+        self,
+        spawn: Callable[..., ServerProcess],
+        make_handle: Callable[..., RpcWorkerHandle],
+        state_dir: Path,
+        tag: str,
+    ) -> None:
+        """SIGTERM completes a running worker's cancellation cleanup before exit."""
         server = spawn()
         await _submit_and_disconnect(server, "demo_block_until_cancelled", {"tag": tag})
         await _wait_until_started(make_handle(server), tag)
 
         server.signal(signal.SIGTERM)
         assert server.wait(timeout=30.0) is not None
-
-        await asyncio.sleep(0.5)
-        assert not (state_dir / f"cancelled_{tag}").exists()
+        assert (state_dir / f"cancelled_{tag}").exists()
 
     async def test_port_is_released_for_the_next_process(self, spawn):
         """A stopped server frees its port for an immediate successor."""

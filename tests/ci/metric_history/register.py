@@ -43,7 +43,7 @@ def register_ci_gate(
     metric_key: str,
     steps: str | list[int] | None = None,
     constraint: dict | None = None,
-    enforce: bool = False,
+    enforce: bool = True,
     allowlist_reason: str | None = None,
 ):
     """Declare one history-gate spec for the test file it sits in.
@@ -58,9 +58,10 @@ def register_ci_gate(
     `rel` / `abs_floor` written. An omitted `steps` / `constraint` is filled from
     :data:`GATE_DEFAULTS` when `metric_key` has an entry there; the Python
     defaults of None exist only so a one-liner call runs as a no-op -- the
-    parser, not this signature, decides validity. `enforce` and
-    `allowlist_reason` are policy metadata the gate carries without acting on
-    (the verdict is informational this round).
+    parser, not this signature, decides validity. `enforce` defaults to True:
+    the harness automatically fails numerical regressions after ten trusted
+    baselines; explicit False disables enforcement. `allowlist_reason` is
+    optional explanatory metadata. Neither field changes the baseline coordinate.
     """
     return None
 
@@ -75,7 +76,7 @@ _FIELDS: dict[str, tuple[bool, object]] = {
     "metric_key": (True, _REQUIRED),
     "steps": (True, _REQUIRED),
     "constraint": (True, _REQUIRED),
-    "enforce": (False, False),
+    "enforce": (False, True),
     "allowlist_reason": (False, None),
 }
 
@@ -137,7 +138,7 @@ class CiGateSpec:
     constraint: dict
     steps_key: str
     constraint_key: str
-    enforce: bool = False
+    enforce: bool = True
     allowlist_reason: str | None = None
 
 

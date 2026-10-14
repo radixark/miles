@@ -194,7 +194,7 @@ class GeneralHttpClientProvider:
 # TODO: the client below is not general — it carries a rollout-specific connection limit and an
 # optional ray-distributed POST path. Rename it (or fold it into GeneralHttpClientProvider with the
 # limit as an argument) once the rollout request path is reworked.
-_http_client: httpx.AsyncClient | None = None
+_http_clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
 _client_concurrency: int = 0
 
 # Optional Ray-based distributed POST dispatch
@@ -271,10 +271,11 @@ async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, r
 
 async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> bytes:
     """Perform one raw-bytes POST with a total timeout."""
-    assert _http_client is not None, "init_http_client() must run before post_bytes_no_retry()"
+    assert _client_concurrency > 0, "init_http_client() must run before post_bytes_no_retry()"
+    client = _rollout_client()
 
     async def _do() -> bytes:
-        response = await _http_client.post(url, json=payload)
+        response = await client.post(url, json=payload)
         if not (200 <= response.status_code < 300):
             raise RuntimeError(f"POST {url} failed with {response.status_code}: {response.text}")
         return response.content
@@ -284,7 +285,7 @@ async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> byt
 
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
-    global _http_client, _client_concurrency, _distributed_post_enabled
+    global _client_concurrency, _distributed_post_enabled
     rollout_num_gpus = args.rollout_num_gpus or 0
     if rollout_num_gpus == 0 and not args.eval_uses_snapshots:
         return
@@ -293,11 +294,6 @@ def init_http_client(args):
     if args.eval_num_gpus > 0:
         _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
     _client_concurrency = max(_client_concurrency, args.sglang_server_concurrency)
-    if _http_client is None:
-        _http_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=_client_concurrency),
-            timeout=httpx.Timeout(None),
-        )
 
     # Optionally initialize distributed POST via Ray without changing interfaces
     if args.use_distributed_post:
@@ -360,7 +356,17 @@ def _init_ray_distributed_post(args):
 
 def _rollout_client() -> httpx.AsyncClient:
     # a process where init_http_client never ran, such as a subproc agent call, gets a default client
-    return _http_client if _http_client is not None else GeneralHttpClientProvider.client()
+    if _client_concurrency == 0:
+        return GeneralHttpClientProvider.client()
+
+    loop = asyncio.get_running_loop()
+    if (client := _http_clients.get(loop)) is None:
+        client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=_client_concurrency),
+            timeout=httpx.Timeout(None),
+        )
+        _http_clients[loop] = client
+    return client
 
 
 # TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)

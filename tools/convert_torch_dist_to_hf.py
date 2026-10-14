@@ -12,6 +12,7 @@ import torch.distributed.checkpoint as dist_cp
 from typing_extensions import override
 
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf, remove_padding
+from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.utils.hf_utils.config import load_hf_config
 
 
@@ -53,7 +54,7 @@ class EmptyStateDictLoadPlanner(dist_cp.default_planner.DefaultLoadPlanner):
         is_coordinator: bool = False,
     ) -> None:
         for k, v in metadata.state_dict_metadata.items():
-            if "optimizer" in k or "_state" in k:
+            if "optimizer" in k or "_state" in k or ModelCompanionInstallationUtils.is_companion_parameter(k):
                 continue
             print(f"find {k} in torch_dist ckpt")
             if isinstance(v, dist_cp.metadata.TensorStorageMetadata):

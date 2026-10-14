@@ -36,15 +36,12 @@ class CaseConfig:
     ep_size: int
     rollout_num_gpus_per_engine: int
     # Whether MTP training is enabled. On -> --enable-mtp-training --mtp-num-layers 1
-    # (+ loss factor); off -> --mtp-num-layers 0, so the trainer builds no MTP layer (note
-    # `--enable-mtp-training --mtp-num-layers 0` would fail the arguments.py assert).
+    # (+ loss factor); off -> no flag, so validation drops the model script's MTP layer and
+    # the trainer builds none.
     enable_mtp_training: bool
     # Whether to enable R3 routing replay (--use-rollout-routing-replay).
     use_r3: bool
     max_tokens_per_gpu: int = 8192
-    # Weight-check selector: "all" (target + draft) or "target" (target model only; use
-    # when MTP training is off so the un-synced draft is not checked).
-    check_weight_update_selector: str = "all"
     # Rollout weight-name substrings to exclude from the equality check (substring match;
     # mismatches become non-fatal). Cases pass ("visual",): miles has no VLM/vision
     # implementation on the training side, so those weights are never synced.
@@ -82,8 +79,8 @@ class CaseConfig:
             assert self.update_weight_transfer_mode in ("broadcast", "p2p")
         if self.update_weight_transfer_mode == "p2p" and self.colocate:
             raise ValueError("p2p weight updates require colocate=False: the engines are written from other GPUs")
-        if not self.use_spec and (self.enable_mtp_training or self.check_weight_update_selector != "target"):
-            raise ValueError("without spec there is no draft: set enable_mtp_training=False and selector 'target'")
+        if not self.use_spec and self.enable_mtp_training:
+            raise ValueError("without spec there is no draft to train: set enable_mtp_training=False")
         if self.sglang_deepep_dispatcher_output_dtype is not None and not self.use_deepep:
             raise ValueError("sglang_deepep_dispatcher_output_dtype requires use_deepep=True")
 
@@ -226,17 +223,12 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
             sglang_args += f"--sglang-deepep-dispatcher-output-dtype {case.sglang_deepep_dispatcher_output_dtype} "
 
     # When MTP training is off the rollout still runs EAGLE spec from the checkpoint
-    # draft; those draft weights just never get synced (the spec_nor3 case checks only the
-    # target through its selector).
+    # draft; the weight sync and the weight check both leave that draft out.
+    mtp_args = ""
     if case.enable_mtp_training:
         mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
-    else:
-        # The model script always passes --mtp-num-layers 1, and Megatron adds an MTP loss whenever the
-        # layer exists, even without --enable-mtp-training; this later flag overrides it.
-        mtp_args = "--mtp-num-layers 0 "
 
     ci_args = "--ci-test "
-    ci_args += f"--check-weight-update-selector {case.check_weight_update_selector} "
     if case.check_weight_update_skip_list:
         ci_args += "--check-weight-update-skip-list " + " ".join(case.check_weight_update_skip_list) + " "
     if case.use_fp8_rollout:

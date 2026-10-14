@@ -52,7 +52,7 @@ register_ci_gate(
     constraint={"abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02},
 )
 
-register_ci_gate(metric_key="rollout/raw_reward")  # standard metric: steps + constraint from GATE_DEFAULTS
+register_ci_gate(metric_key="rollout/raw_reward")  # automatically fails CI after 10 trusted baselines
 ```
 
 
@@ -87,7 +87,7 @@ flowchart TD
         evaluate_gate["register → selection → constraints → evaluate_gate"]
     end
     evaluate_gate -- "recent_trusted_values (baseline read)" --> metric_store
-    run_gate_hook -- "nightly or weekly: write_run(values + trusted)<br>non-writing run: shadow verdict → log + GITHUB_STEP_SUMMARY" --> metric_store
+    run_gate_hook -- "nightly or weekly: write_run(values + trusted)<br>non-writing run: verdict → log + GITHUB_STEP_SUMMARY" --> metric_store
     subgraph storage
         metric_store[("MetricHistoryStore<br>SQLite offline · Neon CI/prod")]
     end
@@ -209,23 +209,61 @@ Use $neon-access to show the 10 most recent metric-history runs for tests/e2e/me
 
 - A run is `trusted` iff it passed **all** active gates. A drifting run is still recorded, with `trusted = false`, so it can't drag the baseline. A test that fails then passes on **retry** is gated on its passing attempt's metrics and trusted normally — needing a retry is not itself a trust penalty.
 - **Clean a bad point**: `mark_untrusted` = `UPDATE runs SET trusted = false` on the run. The next gate read excludes it immediately — no rebaseline, no row deletion.
-- **Nightly and weekly runs write baselines** — either an explicitly mapped `schedule` cron (on `main`, post-merge) **or** a PR carrying the `nightly` label (the PR's own pre-merge code). Provenance (`event_name`, `pr_number`) records whether a writer was scheduled or PR-triggered, so a label-PR baseline can be `mark_untrusted`'d if it turns out bad. Ordinary PR runs and explicitly called release runs are read-only and only shadow; frozen release dependency SHAs must not enter the rolling baseline.
+- **Nightly and weekly runs write baselines** — either an explicitly mapped `schedule` cron (on `main`, post-merge) **or** a PR carrying the `nightly` label (the PR's own pre-merge code). Provenance (`event_name`, `pr_number`) records whether a writer was scheduled or PR-triggered, so a label-PR baseline can be `mark_untrusted`'d if it turns out bad. Ordinary PR runs and explicitly called release runs are read-only; frozen release dependency SHAs must not enter the rolling baseline.
 - **What one baseline-writing run writes** — one `runs` row plus one `metric_values` row per value coordinate: two specs sharing a coordinate (identical `steps` + `constraint` literals, differing only in policy metadata) collapse to a single row, so a duplicated declaration cannot double-weight the baseline mean; and a file that declares no gate writes nothing at all — `run_gate_hook` skips the write instead of leaving an empty `runs` row.
 
 
 
 ## Rollout
 
-**Goal:** land the gate observe-only first, so it accumulates history and proves its verdicts on real runs before any PR can be blocked; enforcement is a later, reversible switch.
+**Goal:** automatically fail CI once a coordinate has enough trusted history.
 
-Shadow-first: collect, store, and evaluate, but **never block a PR** initially — a historical-gate failure lands as an untrusted row and is surfaced, not enforced. Enforcement arrives later behind a per-test **allowlist** + a global **kill-switch**.
+Every `register_ci_gate(...)` declaration defaults to `enforce=True`; tests and PRs need no opt-in marker or allowlist. Numerical regressions fail CI once the coordinate has **10 trusted baseline values**. The existing explicit `enforce=False` override is an escape hatch, not the rollout mechanism. Policy metadata never changes the baseline key or comparison band.
+
+- Below 10 trusted values, the comparison still controls baseline trust but does not fail CI for numerical drift; the summary explicitly reports insufficient history. Each step and executing suite is counted independently.
+- Missing, empty, invalid or non-finite metrics fail tests with enforcement enabled. With a configured store, record-merge, gate-evaluation and database errors also fail instead of silently bypassing the gate.
+- The harness reports the verdict and metric details before writing a baseline. Nightly/weekly retain the original trusted/untrusted verdict, including numerical regressions that fail enforcement. Ordinary PR and release runs only read history. Gate failures affect suite exit status, honor fail-fast/continue policy, and do not retry successful child processes. Invalid declarations fail CI.
+- Without `NEON_DATABASE_URL`, local and secretless runs explicitly skip the history gate; they do not provide enforcement evidence. CPU and ROCm behavior is unchanged.
+
+CUDA [`/rerun-test`](01-label.md#manage-ci-from-pr-comments) runs use the same harness and gate, with baseline writes disabled. The default-branch command workflow must include that wiring; a PR-only workflow edit does not change the dispatched command.
+
+The gate controls executed CI job results. Test selection and repository required-status-check settings separately determine which jobs run and whether their failure blocks merging.
+
+## Replay golden history
+
+**Goal:** check stored goldens against their own earlier trusted history, offline and read-only.
+
+From the repository root, export a read-only query for the currently enabled CUDA tests with metric gate declarations (excluding explicit `enforce=False` overrides):
+
+```bash
+python -m tests.ci.metric_history.replay --export-sql > /tmp/golden-replay.sql
+```
+
+Execute that exact SQL through the existing **Neon access** workflow and decrypt its result artifact locally, then run:
+
+```bash
+python -m tests.ci.metric_history.replay --input /tmp/result.json > /tmp/golden-replay-report.json
+```
+
+The replay checks each stored value, including untrusted candidates, with the production comparison function:
+
+- **Baseline:** up to 20 strictly earlier trusted values of the identical test/backend/executing-suite/metric/steps/constraint/step coordinate. Current and future rows never enter a candidate's baseline; rows with the same timestamp cannot establish an ordering and are excluded from each other's history. A tie split by the 20-value window boundary is rejected because the production query does not specify a tie-breaker.
+- **Coverage:** zero-history values are cold starts, not passing checks. Comparisons with one to nine predecessors still check historical trust consistency, but are marked insufficient for enforcement. Each run is also checked for missing declared metrics and explicitly required steps; for `steps="all"`, the stored snapshot cannot reveal absent original steps, so only declaration presence and observed steps can be checked.
+- **Report:** passes, failures, enforcement-eligible comparisons, insufficient history, incomplete stored values, and declarations without any enforcement-eligible comparison are reported separately; failures or incomplete coverage return a nonzero exit code. A malformed, truncated, or differently scoped export is rejected.
+- **History health:** `stale_coordinates` lists coordinates whose latest three comparisons all fail on the same side of the baseline, the pattern of a trusted history that no longer matches the current level; `reset_run_ids` are that coordinate's trusted runs to `mark_untrusted` (a whole-run flag, so the run's other coordinates also lose these values and may cold-start or fall back to older trusted runs). `zero_flip_coordinates` lists failing coordinates whose values mix exact zeros with nonzero values; no band may fit them, and `enforce=False` is the usual fix. A coordinate in both lists is ambiguous: read its values before choosing a reset or `enforce=False`.
+
+Only earlier rows with the snapshot's `trusted=True` flag enter the baseline; candidate rows are never filtered by trust. The report separates trusted-candidate inconsistencies from untrusted-candidate regressions. The replay uses the snapshot's current `trusted` flags; it does not reconstruct later trust revocations or historical code versions, infer missing original metrics from stored values, rewrite trust, or change which rows enter subsequent history.
+
+All stored executing suites are kept separate. The replay checks consistency of persisted records against earlier goldens under today's declarations, not the accuracy of the underlying training run. Keep the exported values and detailed report outside the repository.
 
 ## Notes
 
 **Goal:** record accepted caveats and open questions beside the behavior they qualify; planned-but-unimplemented work lives in TODO below.
 
 - A test-file edit does not reset the series: `test_file_hash` was dropped from the run-series identity because a tiny edit to a test kept wiping its whole history. A test change that genuinely shifts a metric's expected level surfaces as gate failures instead; the reset levers are manual — `mark_untrusted` the stale runs, or edit the declaration literals (new `steps_key` / `constraint_key` ⇒ fresh coordinate).
-- Baseline writing is selected by the resolved CI policy rather than inferred from `GITHUB_EVENT_NAME`; nightly and weekly write, while regular and release runs stay shadow-only.
+- Baseline writing is selected by the resolved CI policy rather than inferred from `GITHUB_EVENT_NAME`; nightly and weekly write, while regular and release runs only read history. Enforcement follows each declaration in either mode.
+- One test attempt yields one merged record: a file that launches training more than once concatenates the runs' series, so a step repeats and a `steps="all"` selection is an ERROR. Such a file declares no gate unless each run logs distinct metric keys, as the session TITO tests do.
+- A step value that is exactly zero in some runs and not in others has no stable band. Small-batch GRPO tests log `train/grad_norm` as 0 whenever every group's rewards are uniform, so their `train/grad_norm` declarations set `enforce=False`; the check still decides baseline trust.
 - Open: should a brand-new test's first baselines need human confirmation before counting as trusted? (v1: no.)
 
 
@@ -241,4 +279,3 @@ Shadow-first: collect, store, and evaluate, but **never block a PR** initially �
 - **Finish the M4 sweep outside `tests/e2e/megatron`** — eligible Megatron CUDA RL-training tests declare the standard one-liners; extend them to the remaining CUDA e2e training tests only for metrics each test's run actually emits (a spec on a metric missing from the record is an ERROR verdict that untrusts every nightly run — a mis-swept test would never accumulate a baseline); each test owner tunes or vetoes their line in review.
 - **Capture set becomes** `TARGET_METRIC_KEYS` **∪ declared keys** — the harness parses specs pre-launch and injects the extras via env.
 - **Self-calibrating constraint** — band = k·std of the coordinate's own history, for heteroskedastic tests; and a `mean` (step-average) reduction.
-- **Enforcement** — the per-test allowlist + global kill-switch from Rollout; shadow mode is current behavior.

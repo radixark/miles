@@ -207,6 +207,7 @@ eval:
         case "fsdp":
             train_backend_args = (
                 "--train-backend fsdp "
+                "--no-enable-sample-ownership-checker "
                 "--attn-implementation flash_attention_2 "
                 "--gradient-checkpointing "
                 f"--update-weight-buffer-size {512 * 1024 * 1024} "  # 512MB

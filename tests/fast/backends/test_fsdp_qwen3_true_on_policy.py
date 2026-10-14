@@ -6,17 +6,18 @@ import torch
 from transformers.models.qwen3 import modeling_qwen3
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
-from miles.backends.fsdp_utils.adaptations.class_patches import (
-    _MODEL_INSTANCE_PATCH_HOOKS,
-    apply_model_instance_patches,
-)
-from miles.backends.fsdp_utils.adaptations.precision import apply_fp32_master, resolve_precision_policy
+from miles.backends.fsdp_utils.adaptations.precision import apply_fp32_master, default_precision_policy
+from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
 from miles.backends.fsdp_utils.models.qwen3 import (
     Qwen3FinalRMSNorm,
     apply_qwen3_dense_true_on_policy_patch,
     resolve_qwen3_dense_sync_dtype,
 )
 from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
+
+
+def resolve_precision_policy(hf_config, args):
+    return resolve_arch_adapter(hf_config).resolve_precision(default_precision_policy(args), args)
 
 
 def test_qwen3_patch_changes_only_final_norm_and_is_idempotent():
@@ -52,10 +53,9 @@ def _tiny_config():
     )
 
 
-def test_qwen3_instance_patch_registry_is_contract_gated(monkeypatch):
+def test_qwen3_model_patch_is_contract_gated(monkeypatch):
     from miles.backends.fsdp_utils.models import qwen3 as qwen3_model
 
-    hook = {hook.name: hook for hook in _MODEL_INSTANCE_PATCH_HOOKS}["qwen3_dense_true_on_policy"]
     calls = []
     monkeypatch.setattr(
         qwen3_model,
@@ -71,9 +71,8 @@ def test_qwen3_instance_patch_registry_is_contract_gated(monkeypatch):
         ("qwen3_moe", True, formal_contract, False),
         ("qwen3", True, formal_contract, True),
     ]:
-        apply_model_instance_patches(
+        resolve_arch_adapter(SimpleNamespace(model_type=model_type)).patch_model(
             model,
-            SimpleNamespace(model_type=model_type),
             SimpleNamespace(
                 true_on_policy_mode=true_on_policy_mode,
                 sglang_true_on_policy_contract=contract,
@@ -87,9 +86,7 @@ def test_qwen3_instance_patch_registry_is_contract_gated(monkeypatch):
         sglang_true_on_policy_contract=formal_contract,
         fp16=False,
     )
-    config = SimpleNamespace(model_type="qwen3")
-    assert hook.applies_to(config, args)
-    apply_model_instance_patches(model, config, args)
+    resolve_arch_adapter(SimpleNamespace(model_type="qwen3")).patch_model(model, args)
     assert calls == [model]
 
 
@@ -178,6 +175,7 @@ def test_qwen3_ref_model_uses_fp32_master_storage(monkeypatch):
     actor = object.__new__(actor_module.FSDPTrainRayActor)
     actor.args = args
     actor.hf_config = config
+    actor.arch_adapter = resolve_arch_adapter(config)
     actor.hub_kernels = actor_module.HubKernels()
     actor.precision_policy = resolve_precision_policy(config, args)
     actor._get_init_weight_context_manager = lambda: nullcontext
