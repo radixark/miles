@@ -9,9 +9,13 @@ from miles.utils.test_utils.fault_injector.models import (
     FaultHookOwner,
     FaultHookRecord,
     FaultHookRequest,
+    ObservedFaultHookTarget,
 )
 
 _SEND = FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND
+_OBSERVED = ObservedFaultHookTarget(
+    cell_id="rollout-engine-0", rank=1, workers_hash="hash-a", boot_uuid="boot-1", pod_uid="pod-1"
+)
 
 
 def _request(**change: object) -> FaultHookRequest:
@@ -62,6 +66,31 @@ class TestFaultHookTargets:
     ) -> None:
         """Only omitted target fields may match any process."""
         assert target.covers(cell_id=cell_id, rank=rank) is expected
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"kind": "observed", "rank": 0, "workers_hash": "h"},
+            {"kind": "observed", "cell_id": "c", "workers_hash": "h"},
+            {"kind": "observed", "cell_id": "c", "rank": 0},
+            {"kind": "observed", "cell_id": "c", "rank": 0, "workers_hash": ""},
+            {"kind": "observed", "cell_id": "c", "rank": -1, "workers_hash": "h"},
+            {"kind": "declared", "rank": -1},
+            {"kind": "observed", "cell_id": "c", "rank": 0, "workers_hash": "h", "bogus": 1},
+            {"kind": "unknown"},
+        ],
+    )
+    def test_an_observed_target_must_name_one_incarnation(self, raw: dict[str, object]) -> None:
+        """An observed target without its cell, rank or worker identity must be rejected."""
+        with pytest.raises(ValidationError):
+            _request(target=raw)
+
+    def test_the_observed_identity_survives_a_json_round_trip(self) -> None:
+        """Serialising an observed target must keep every identity field and its kind."""
+        request = _request(target=_OBSERVED.model_dump(mode="json"))
+        restored = FaultHookRequest.model_validate_json(request.model_dump_json())
+        assert restored.target == _OBSERVED
+        assert isinstance(restored.target, ObservedFaultHookTarget)
 
     def test_an_omitted_target_is_the_declared_wildcard(self) -> None:
         """A request without a target must be a declared wildcard, not an observed one."""
