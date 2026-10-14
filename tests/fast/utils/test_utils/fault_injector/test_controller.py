@@ -318,7 +318,7 @@ class TestWithContext:
         self, runtime_hooks: _FaultHookController, operations: _CellOperations
     ) -> None:
         """An immediate request must be recorded with the context of the update it interrupted."""
-        context = FaultHookContext(weight_version=7, rollout_id=3)
+        context = FaultHookContext(weight_version=7, rollout_id=3, debug_weight_update_id="u-1")
         with runtime_hooks.with_context(context):
             record = _set(runtime_hooks, _stop(hook_name=None))
         assert record.context == context

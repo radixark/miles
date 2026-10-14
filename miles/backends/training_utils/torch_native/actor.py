@@ -293,7 +293,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
             )
 
     @timer
-    def update_weights(self, info: UpdatableEngines) -> WeightUpdateOutput:  # type: ignore[override]
+    def update_weights(self, info: UpdatableEngines, debug_weight_update_id: str) -> WeightUpdateOutput:  # type: ignore[override]
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return WeightUpdateOutput(weight_version=None, failed_cell_ids=())
         self.weight_updater.reconnect_if_needed(info)

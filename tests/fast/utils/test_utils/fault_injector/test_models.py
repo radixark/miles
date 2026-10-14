@@ -248,7 +248,7 @@ class TestFaultHookWireFormats:
             changed_at=2.0,
             reached_at=1.5,
             due_at=1.51,
-            context=FaultHookContext(rollout_id=3, weight_version=2),
+            context=FaultHookContext(rollout_id=3, weight_version=2, debug_weight_update_id="u"),
         )
         event = FaultHookEvent(
             timestamp="2026-09-26T00:00:00Z", source=SimpleProcessIdentity(component="main"), record=record
