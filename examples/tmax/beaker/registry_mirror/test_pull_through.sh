@@ -38,7 +38,7 @@ image, label = sys.argv[1], sys.argv[2]
 client = docker.DockerClient(base_url="unix:///tmp/p.sock", timeout=900)
 try:
     client.images.remove(image, force=True)
-except docker.errors.ImageNotFound:
+except docker.errors.NotFound:  # podman 4.9 answers a missing image with a plain 404
     pass
 auth = {"username": os.environ["DOCKERHUB_USERNAME"], "password": os.environ["DOCKER_PAT"]}
 start = time.monotonic()
