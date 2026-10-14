@@ -68,6 +68,9 @@ Args:
   --sandboxes-per-node: live sandboxes per node, 0 for no cap (default: 0). open-instruct's --pool_size actors
       spread over its nodes, so --pool_size 512 on 4 nodes is 128.
   --trace-dir: append one JSONL record per episode under <trace-dir>/<exp-name> (default: off).
+  --dump-training-data: also save each step's training batch there, as Miles' --save-debug-rollout-data
+      (rollout_data/<step>.pt) and --save-debug-train-data (train_data/<step>_<rank>.pt, with advantages and
+      trainer logprobs), open-instruct's --save_traces + --save_trainer_logprobs (default: off).
   --wandb-project: wandb project (default: miles-run_tmax_qwen3_5); with --exp-name restarts share one run.
   --docker-host: Docker API endpoint(s) of the podman daemons (default: inherit TMAX_DOCKER_HOST / DOCKER_HOST).
   --model-dir / --data-dir / --output-dir: checkpoint / dataset / output directories.
@@ -178,6 +181,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     tool_call_timeout_s: int = 120
     # Per-episode JSONL traces go to <trace_dir>/<exp_name or run_id> (open-instruct's --save_traces).
     trace_dir: str = ""
+    # Also dump every step's training batch next to them: rollout_data/<step>.pt (tokens, rewards, rollout logprobs)
+    # and train_data/<step>_<rank>.pt (advantages, trainer logprobs), open-instruct's --save_trainer_logprobs.
+    dump_training_data: bool = False
     wandb_project: str = ""
     save_interval: int = 20
     exp_name: str = ""
@@ -224,6 +230,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
             train_gpus % self.num_gpus_per_node == 0
         ), f"on {self.num_nodes} nodes, async_rollout_gpus must be whole nodes of {self.num_gpus_per_node} GPUs"
         return train_gpus // self.num_gpus_per_node, self.num_gpus_per_node
+
+    @property
+    def trace_run_dir(self) -> str:
+        return f"{self.trace_dir}/{self.exp_name or self.run_id}" if self.trace_dir else ""
 
     @property
     def dataset_dir(self) -> str:
@@ -404,6 +414,13 @@ def execute(args: ScriptArgs):
         # endpoints in TMAX_DOCKER_HOST and the only address the other nodes' podman forwards accept.
         misc_args += "--pin-rollout-manager-to-head "
 
+    if args.dump_training_data:
+        assert args.trace_dir, "dump_training_data writes next to the traces: set trace_dir"
+        misc_args += (
+            f"--save-debug-rollout-data {args.trace_run_dir}/rollout_data/{{rollout_id}}.pt "
+            f"--save-debug-train-data {args.trace_run_dir}/train_data/{{rollout_id}}_{{rank}}.pt "
+        )
+
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
@@ -434,7 +451,7 @@ def execute(args: ScriptArgs):
             "TMAX_START_FAILURE": args.start_failure,
             "TMAX_EPISODE_TIMEOUT_S": str(args.episode_timeout_s),
             "TMAX_TOOL_CALL_TIMEOUT_S": str(args.tool_call_timeout_s),
-            "TMAX_TRACE_DIR": f"{args.trace_dir}/{args.exp_name or args.run_id}" if args.trace_dir else "",
+            "TMAX_TRACE_DIR": args.trace_run_dir,
         },
     )
 

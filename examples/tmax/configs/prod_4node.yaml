@@ -33,6 +33,7 @@ model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
 data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
 output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
 trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true                      # --save_traces + --save_trainer_logprobs: each step's batch, tokens on
 wandb_project: oe-general-agents
 
 beaker:

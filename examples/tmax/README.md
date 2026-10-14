@@ -121,7 +121,7 @@ new one.
 | Training state | DeepSpeed state + dataloader + data-prep state every 5-10 steps in `--checkpoint_state_dir`, keep 3 | Megatron `torch_dist` (model, optimizer, RNG) + dataset position every `save_interval` steps in `<output_dir>/<exp_name>/checkpoints`, newest `keep_last_n_checkpoints` kept |
 | Resume | mason `--auto_resume --max_retries 5`; reloads `--checkpoint_state_dir` | `autoResume` + `retries`; the same `exp_name` loads its checkpoint dir; in-flight rollouts are lost and regenerated |
 | HF checkpoints | every 20 steps (`--save_freq`) | not exported during training; `--save-hf` would write one at every checkpoint |
-| Rollouts | `--save_traces` JSONL with advantages and trainer logprobs | per-episode JSONL with messages, reward and metrics (no advantages or trainer logprobs) |
+| Rollouts | `--save_traces` JSONL with advantages and trainer logprobs | `trace_dir`: per-episode JSONL with messages, reward and metrics, every episode; `dump_training_data` adds each step's trained batch, `rollout_data/<step>.pt` (tokens, rewards, rollout logprobs) and `train_data/<step>_<rank>.pt` (advantages, trainer logprobs) |
 | W&B | `oe-general-agents`, one run per restart | `wandb_project`; with `exp_name`, all restarts log into one run |
 
 ## Mapping from open-instruct
