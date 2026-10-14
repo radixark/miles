@@ -439,6 +439,13 @@ class DataIterator:
             self.offset += self.micro_batch_size
         return batch
 
+    def peek(self, keys: Sequence[str], num_microbatches: int) -> list[dict[str, list[object] | None]]:
+        """The next `num_microbatches` micro-batches of `get_next`, leaving the offset where it was."""
+        offset = self.offset
+        batches = [self.get_next(keys) for _ in range(num_microbatches)]
+        self.offset = offset
+        return batches
+
     def reset(self) -> "DataIterator":
         """Reset internal offset to the start and return self."""
         self.offset = 0

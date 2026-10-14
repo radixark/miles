@@ -168,6 +168,9 @@ class TitanTrainer(Trainer):
 
     def configure_loss_reduction(self) -> None:
         dims = self.parallel_dims
+        # FSDP sums gradients over dp_replicate x dp_shard x cp (torchtitan sets gradient_divide_factor 1.0).
+        # Every CP rank computes its micro-batch's whole loss from the gathered per-token values, and the
+        # gather's backward sums those cp copies, so cp cancels. loss_function's * intra_dp.size cancels dp.
         self.loss_fn.set_gradient_scale(1.0 / (dims.dp_replicate * dims.dp_shard * dims.cp))
         if not dims.cp_enabled:
             return

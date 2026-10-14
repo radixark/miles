@@ -14,6 +14,7 @@ from miles.backends.training_utils.data.rollout import DataIterator, get_batch, 
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.loss.objective import (
     compute_advantages_and_returns,
+    count_loss_tokens,
     get_log_probs_and_entropy,
     loss_function,
 )
@@ -60,6 +61,9 @@ TRAIN_KEYS = FORWARD_ONLY_KEYS + [
     "rollout_topk_token_ids",
     "rollout_topk_lengths",
     "rollout_topk_log_probs",
+    # Every sample of a multi-sample rollout carries the rollout's whole loss-mask sum, so the
+    # per-sample loss adds up to one token mean per rollout (get_sum_of_sample_mean's denominators).
+    "rollout_mask_sums",
 ]
 SAMPLING_MASK_KEYS = ["rollout_sampling_mask_ids", "rollout_sampling_mask_offsets"]
 
@@ -195,7 +199,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
         log_rollout_data(rollout_id, self.args, rollout_data)
 
         with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
-            self._optimizer_steps(runner, data_iterator, num_microbatches, rollout_id)
+            self._optimizer_steps(
+                runner, data_iterator, num_microbatches, rollout_id, num_rollouts=rollout_data.get("num_rollouts")
+            )
         routing_replay.reset()
 
         self.prof.step(rollout_id=rollout_id)
@@ -236,9 +242,21 @@ class TorchNativeTrainRayActor(TrainRayActor):
         return aggregate_forward_results(forward_store, data_iterator, args, store_prefix)
 
     def _optimizer_steps(
-        self, runner: StepRunner, data_iterator: DataIterator, num_microbatches: list[int], rollout_id: int
+        self,
+        runner: StepRunner,
+        data_iterator: DataIterator,
+        num_microbatches: list[int],
+        rollout_id: int,
+        num_rollouts: list[int] | None = None,
     ) -> None:
+        """``num_rollouts`` is the rollout count of each optimizer step over all DP ranks, set when the
+        DP split stamps it (a rollout holds several samples). It replaces the global batch size as the
+        per-sample loss and metric normalizer, as in the Megatron actor. None keeps the global batch size."""
         args = self.args
+        if num_rollouts is not None:
+            assert len(num_rollouts) == len(
+                num_microbatches
+            ), f"one rollout count per optimizer step: got {len(num_rollouts)} for {len(num_microbatches)} steps"
         data_iterator.reset()
         state = get_parallel_state()
         keys = TRAIN_KEYS + SAMPLING_MASK_KEYS if args.use_sampling_support_replay else TRAIN_KEYS
@@ -246,8 +264,16 @@ class TorchNativeTrainRayActor(TrainRayActor):
         for step_id, microbatches in enumerate(num_microbatches):
             runner.zero_grad()
             progress = tqdm(range(microbatches), desc="actor_train", disable=dist.get_rank() != 0)
+            step_num_rollouts = None if num_rollouts is None else num_rollouts[step_id]
+            global_num_tokens = (
+                _global_loss_tokens(data_iterator, microbatches, group=state.intra_dp.group)
+                if args.calculate_per_token_loss
+                else None
+            )
             batches = self._fetch_batches(self.prof.iterate_train_actor(progress), data_iterator, keys)
-            losses_reduced = runner.forward_backward_step(batches, partial(_step_loss, args, microbatches))
+            losses_reduced = runner.forward_backward_step(
+                batches, partial(_step_loss, args, microbatches, global_num_tokens, num_rollouts=step_num_rollouts)
+            )
             metrics = runner.apply_step()
 
             if args.ci_test:
@@ -261,7 +287,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 )
             log_train_step(
                 args=args,
-                loss_dict=aggregate_train_losses(losses_reduced),
+                loss_dict=aggregate_train_losses(
+                    losses_reduced, num_rollouts=None if args.calculate_per_token_loss else step_num_rollouts
+                ),
                 grad_norm=metrics.grad_norm,
                 rollout_id=rollout_id,
                 step_id=step_id,
@@ -295,12 +323,34 @@ class TorchNativeTrainRayActor(TrainRayActor):
         return self.weight_updater.weight_version
 
 
-def _step_loss(args, num_microbatches: int, logits: torch.Tensor, batch: dict) -> tuple[torch.Tensor, dict]:
+def _global_loss_tokens(data_iterator: DataIterator, num_microbatches: int, *, group) -> torch.Tensor:
+    """The loss-token count of one optimizer step over all DP ranks, the divisor Megatron applies
+    when it finalizes grads under --calculate-per-token-loss. Counted once per step, before its
+    micro-batches run, so the loss needs no collective per micro-batch."""
+    loss_masks = [
+        mask for batch in data_iterator.peek(["loss_masks"], num_microbatches) for mask in batch["loss_masks"]
+    ]
+    num_tokens = count_loss_tokens(loss_masks)
+    dist.all_reduce(num_tokens, group=group)
+    return num_tokens
+
+
+def _step_loss(
+    args,
+    num_microbatches: int,
+    global_num_tokens: torch.Tensor | None,
+    logits: torch.Tensor,
+    batch: dict,
+    *,
+    num_rollouts: int | None = None,
+) -> tuple[torch.Tensor, dict]:
     loss, _normalizer, log_dict = loss_function(
         args=args,
         batch=batch,
         num_microbatches=num_microbatches,
         logits=logits,
         apply_megatron_loss_scaling=False,
+        num_rollouts=num_rollouts,
+        global_num_tokens=global_num_tokens,
     )
     return loss, log_dict
