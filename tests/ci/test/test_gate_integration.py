@@ -9,8 +9,9 @@ Covered:
 
 * passing-attempt selection: only the PASSED attempt's record feeds the gate.
 * baseline write: a policy-selected writer makes the hook persist a baseline row
-  whose `trusted` flag comes from the verdict; specs sharing a coordinate
-  collapse to one `metric_values` row; a no-spec file writes nothing.
+  whose `trusted` flag comes from the verdict; each value records its
+  declaration literals; a duplicate metric declaration or a no-spec file
+  writes nothing.
 * PR no-write: a `pull_request` event writes no row and emits a shadow
   verdict string.
 * enforcement: coordinates block numerical regressions by default after ten
