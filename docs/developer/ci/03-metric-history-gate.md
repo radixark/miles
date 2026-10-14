@@ -6,19 +6,20 @@ CI keeps each test's per-metric numbers from every run in our own store and runs
 
 ## Identity: what shares a baseline
 
-**Goal:** pin down exactly which past values a new number may be compared against — same test, same metric, same rule, same point — so baselines never mix across meanings.
+**Goal:** pin down exactly which past values a new number may be compared against — same test, same metric, same point — so baselines never mix across meanings and a rule edit never discards them.
 
 The gate compares a number only against earlier numbers of the same kind, from the same test. Two keys decide that:
 
 - **Run series** (the "same test"): `(test_path, backend, suite)`, where `suite` is the stage the run **executed on**, not the one `register_*_ci(suite=...)` declares. The two coincide whenever a test runs at its home stage; they differ once a test is dispatched to another GPU generation, and its numbers then belong to that generation's series. Runs differing on any field never share a baseline. A test-file edit does not reset the series (see Notes).
-- **Value within a run**: `(metric_key, steps_key, constraint_key, step)` — the declaring gate's literal content plus which point. `steps_key` and `step` are not redundant: a fanned-out declaration (`steps=[0, 1]` / `steps="all"`) produces several values in one run — one per selected step — and each must be judged only against its own step's history, so the literals identify the spec while `step` identifies the point:
+- **Value within a run**: `(metric_key, step)` — which metric, at which point. The declaration's rule (its `steps` selection and `constraint`) decides how a value is judged, not which history it belongs to, so editing a declaration or the defaults table keeps the coordinate's history:
   - Session TITO metrics put `/v1/` or `/v2/` directly after `tito_session_mismatch_rate` at the producer, so wandb and both runs' history coordinates stay distinct.
-  - `steps_key` / `constraint_key` are canonical JSON of the declaration's raw `steps` / `constraint` literals: no whitespace, dict keys sorted, list order kept as written, a string keyword stored with its JSON quotes — `steps=[0, 1]` → `[0,1]`, `steps="last"` → `"last"` (quotes included). Built from the raw literal, never the normalized form, so a code-side default change can never silently re-key a series; editing the declaration's literals changes these keys, so a declaration edit starts a fresh coordinate history by construction.
-  - A field the declaration omitted and the defaults table filled (see Steps & constraint) keys on the **table's** literal — the table entry is the declaration source there, so editing a table entry re-keys every declaration that relied on it: one global reset lever for that standard metric's defaulted baselines, deliberate and heavier than a per-test literal edit.
-  - `step` is the point the value came from: step `k` for a per-step value, `-1` for a whole-series reduction (e.g. `steps="last"`) — a reduced value keys on a constant, never the step it happened to land on, or its history would fragment across runs of different lengths.
+  - `step` is the point the value came from: step `k` for a per-step value, `-1` for a whole-series reduction (e.g. `steps="last"`) — a reduced value keys on a constant, never the step it happened to land on, or its history would fragment across runs of different lengths. A `steps="last"` value therefore never joins a per-step history.
   - Step-0 `ppo_kl` is compared only against past step-0 `ppo_kl` — never against step 1 or `grad_norm`.
+  - A file declares each `metric_key` once; the parser rejects a second declaration, so one run writes one value per coordinate.
+  - Each stored value also records `steps_key` / `constraint_key`, canonical JSON of the judging declaration's raw `steps` / `constraint` literals (a field filled from the defaults table records the table's literal): no whitespace, dict keys sorted, list order kept as written, a string keyword stored with its JSON quotes — `steps=[0, 1]` → `[0,1]`, `steps="last"` → `"last"` (quotes included). They are provenance, not part of the coordinate; older harness versions still filter on them, so the serialization stays byte-stable.
+  - After a rule edit, older values keep the trust verdict their own rule gave them; `mark_untrusted` removes any that should no longer count.
 
-The store's baseline query keys on exactly these (plus a `limit` for how many recent points to read): `recent_trusted_values(test_path, backend, suite, metric_key, steps_key, constraint_key, step, limit)`.
+The store's baseline query keys on exactly these (plus a `limit` for how many recent points to read): `recent_trusted_values(test_path, backend, suite, metric_key, step, limit)`.
 
 ## Steps & constraint: what is compared, and by which rule
 
@@ -29,7 +30,7 @@ A gate declaration composes a step selection and a constraint, both validated at
 - `steps` — which value(s) of the metric's series to compare: `"last"` (the series' last point, a whole-series reduction), `"all"` (every step present), or a list of step indices. `"all"` and a step list fan out to one comparison per step, judged against that step's own history.
 - **Constraint** — whether one value passes against a reference: every constraint is two-sided — the value must land in the corridor `[ref − band_down, ref + band_up]`, each side's band written independently as `band = max(rel·|ref|, abs_floor)`; a literal dict of those params (`rel_up` / `abs_floor_up` / `rel_down` / `abs_floor_down`), at least one param per side written. Bands scale from the reference only, so a deviating value cannot widen its own tolerance. There is no unbounded side — a value far from baseline in the "improving" direction is usually a broken metric, and a trusted run's values become future baselines, so admitting it would drag the mean; a side meant to be lenient gets a wide band, not no band.
 - **Defaults for standard metrics** — a per-`metric_key` table beside the parser (`GATE_DEFAULTS` in `register.py`) supplies `steps` and `constraint`, so `register_ci_gate(metric_key="train/ppo_kl")` alone is complete. The standard RL metrics use `steps="all"`, so every captured step is judged and persisted under its own coordinate. Omitted fields pass through the same parser validation; an explicit literal wins, and a metric absent from the table must provide both fields. Table keys stay within the capture whitelist (test-enforced).
-- **Default calibration and resets** — band values are shadow-calibration starting points. Changing a table literal re-keys every declaration that relies on it and cold-starts those coordinates (see Identity).
+- **Default calibration** — band values are shadow-calibration starting points. Changing a table literal changes the band every relying declaration applies and keeps their history (see Identity).
 
 The authoritative constraint params are the schema table beside the function; the doc does not duplicate them. A missing/empty series, a missing required step, or a non-finite value (`NaN` / `±Inf`) at a selected coordinate is an ERROR verdict, never a skip — non-finite is judged here, not silently dropped (capture records it faithfully as a strict-JSON string marker the gate-side reader decodes; `write_run` refuses it at the DB boundary).
 
@@ -138,7 +139,7 @@ flowchart TD
     subgraph eval_sg["evaluate — _evaluate_spec, once per spec"]
         lookup["find the spec's metric in the record<br>series = by_metric.get(spec.metric_key)"]
         pick["pick the value(s) to judge — ×N, one per selected step<br>select(series, steps) → list of Selection (value, step)"]
-        coord(["one comparison coordinate — the key this value's history<br>is stored under: (metric_key, steps_key, constraint_key, step) (see Identity)"])
+        coord(["one comparison coordinate — the key this value's history<br>is stored under: (metric_key, step) (see Identity)"])
         err["outcome: ERROR — judged, never skipped<br>coordinate untrusted"]
         histq{"does this coordinate have<br>any trusted history?<br>recent_trusted_values(run-series identity,<br>coordinate, limit = 20)"}
         inactive["outcome: HISTORICAL = INACTIVE — cold start, not a failure"]
@@ -170,7 +171,7 @@ flowchart TD
 
 
 
-Chart key: rectangle = a step or check; rounded box = a data artifact; diamond = a branch; cylinder = the store. Each check yields one status per coordinate — PASS / FAIL / ERROR / INACTIVE — where INACTIVE arises from a historical cold start. *run-series identity* = `(test_path, backend, suite)`; it and the value coordinate `(metric_key, steps_key, constraint_key, step)` are defined in the Identity section above.
+Chart key: rectangle = a step or check; rounded box = a data artifact; diamond = a branch; cylinder = the store. Each check yields one status per coordinate — PASS / FAIL / ERROR / INACTIVE — where INACTIVE arises from a historical cold start. *run-series identity* = `(test_path, backend, suite)`; it and the value coordinate `(metric_key, step)` are defined in the Identity section above.
 
 ## Storage: two backends, two tables
 
@@ -190,7 +191,7 @@ Chart key: rectangle = a step or check; rounded box = a data artifact; diamond =
 **Tables & read path**:
 
 - `runs` — one row per CI run of one series: the identity above + provenance (`commit_sha`, `pr_number`, `github_run_id`, `github_run_attempt`, `event_name`, `ref`) + `created_at` + `trusted` (run-level).
-- `metric_values` — one row per value: `run_id` FK + `(metric_key, steps_key, constraint_key, step)` + `value`.
+- `metric_values` — one row per value: `run_id` FK + `(metric_key, step)` + `value`, plus the judging declaration's `steps_key` / `constraint_key`.
 - The baseline read is served by the composite index `runs(test_path, backend, suite, trusted, created_at DESC)`.
 
 **Operations** — hosted Postgres setup is out-of-band: the two tables and application role are provisioned outside this repo, and runtime gate code stays DML-only (`NeonMetricHistoryStore` never issues DDL). Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
@@ -210,7 +211,7 @@ Use $neon-access to show the 10 most recent metric-history runs for tests/e2e/me
 - A run is `trusted` iff it passed **all** active gates. A drifting run is still recorded, with `trusted = false`, so it can't drag the baseline. A test that fails then passes on **retry** is gated on its passing attempt's metrics and trusted normally — needing a retry is not itself a trust penalty.
 - **Clean a bad point**: `mark_untrusted` = `UPDATE runs SET trusted = false` on the run. The next gate read excludes it immediately — no rebaseline, no row deletion.
 - **Nightly and weekly runs write baselines** — either an explicitly mapped `schedule` cron (on `main`, post-merge) **or** a PR carrying the `nightly` label (the PR's own pre-merge code). Provenance (`event_name`, `pr_number`) records whether a writer was scheduled or PR-triggered, so a label-PR baseline can be `mark_untrusted`'d if it turns out bad. Ordinary PR runs and explicitly called release runs are read-only; frozen release dependency SHAs must not enter the rolling baseline.
-- **What one baseline-writing run writes** — one `runs` row plus one `metric_values` row per value coordinate: two specs sharing a coordinate (identical `steps` + `constraint` literals, differing only in policy metadata) collapse to a single row, so a duplicated declaration cannot double-weight the baseline mean; and a file that declares no gate writes nothing at all — `run_gate_hook` skips the write instead of leaving an empty `runs` row.
+- **What one baseline-writing run writes** — one `runs` row plus one `metric_values` row per value coordinate (one declaration per metric, so no coordinate repeats); a file that declares no gate writes nothing at all — `run_gate_hook` skips the write instead of leaving an empty `runs` row.
 
 
 
@@ -247,8 +248,8 @@ python -m tests.ci.metric_history.replay --input /tmp/result.json > /tmp/golden-
 
 The replay checks each stored value, including untrusted candidates, with the production comparison function:
 
-- **Baseline:** up to 20 strictly earlier trusted values of the identical test/backend/executing-suite/metric/steps/constraint/step coordinate. Current and future rows never enter a candidate's baseline; rows with the same timestamp cannot establish an ordering and are excluded from each other's history. A tie split by the 20-value window boundary is rejected because the production query does not specify a tie-breaker.
-- **Coverage:** zero-history values are cold starts, not passing checks. Comparisons with one to nine predecessors still check historical trust consistency, but are marked insufficient for enforcement. Each run is also checked for missing declared metrics and explicitly required steps; for `steps="all"`, the stored snapshot cannot reveal absent original steps, so only declaration presence and observed steps can be checked.
+- **Baseline:** up to 20 strictly earlier trusted values of the identical test/backend/executing-suite/metric/step coordinate, whatever declaration literals judged them; values stored at points the current `steps` selection does not choose are not part of its history. Current and future rows never enter a candidate's baseline; rows with the same timestamp cannot establish an ordering and are excluded from each other's history. A tie split by the 20-value window boundary is rejected because the production query does not specify a tie-breaker.
+- **Coverage:** zero-history values are cold starts, not passing checks. Comparisons with one to nine predecessors still check historical trust consistency, but are marked insufficient for enforcement. Each run is also checked for missing declared metrics and explicitly required steps, starting from the coordinate's first stored value: an older run predates the declaration and is not missing it, and a coordinate with no stored value surfaces as a declaration without enforcement checks. For `steps="all"`, the stored snapshot cannot reveal absent original steps, so only declaration presence and observed steps can be checked.
 - **Report:** passes, failures, enforcement-eligible comparisons, insufficient history, incomplete stored values, and declarations without any enforcement-eligible comparison are reported separately; failures or incomplete coverage return a nonzero exit code. A malformed, truncated, or differently scoped export is rejected.
 - **History health:** `stale_coordinates` lists coordinates whose latest three comparisons all fail on the same side of the baseline, the pattern of a trusted history that no longer matches the current level; `reset_run_ids` are that coordinate's trusted runs to `mark_untrusted` (a whole-run flag, so the run's other coordinates also lose these values and may cold-start or fall back to older trusted runs). `zero_flip_coordinates` lists failing coordinates whose values mix exact zeros with nonzero values; no band may fit them, and `enforce=False` is the usual fix. A coordinate in both lists is ambiguous: read its values before choosing a reset or `enforce=False`.
 
@@ -260,7 +261,7 @@ All stored executing suites are kept separate. The replay checks consistency of 
 
 **Goal:** record accepted caveats and open questions beside the behavior they qualify; planned-but-unimplemented work lives in TODO below.
 
-- A test-file edit does not reset the series: `test_file_hash` was dropped from the run-series identity because a tiny edit to a test kept wiping its whole history. A test change that genuinely shifts a metric's expected level surfaces as gate failures instead; the reset levers are manual — `mark_untrusted` the stale runs, or edit the declaration literals (new `steps_key` / `constraint_key` ⇒ fresh coordinate).
+- A test-file edit does not reset the series: `test_file_hash` was dropped from the run-series identity because a tiny edit to a test kept wiping its whole history. A test change that genuinely shifts a metric's expected level surfaces as gate failures instead; the reset lever is manual — `mark_untrusted` the stale runs (the replay's `stale_coordinates` lists them). Editing a declaration's literals keeps the history.
 - Baseline writing is selected by the resolved CI policy rather than inferred from `GITHUB_EVENT_NAME`; nightly and weekly write, while regular and release runs only read history. Enforcement follows each declaration in either mode.
 - One test attempt yields one merged record: a file that launches training more than once concatenates the runs' series, so a step repeats and a `steps="all"` selection is an ERROR. Such a file declares no gate unless each run logs distinct metric keys, as the session TITO tests do.
 - A step value that is exactly zero in some runs and not in others has no stable band. Small-batch GRPO tests log `train/grad_norm` as 0 whenever every group's rewards are uniform, so their `train/grad_norm` declarations set `enforce=False`; the check still decides baseline trust.
@@ -278,4 +279,4 @@ All stored executing suites are kept separate. The replay checks consistency of 
   - Baselines survive both the removal and the return: `hard_ref` was policy, never part of the value coordinate, so adding or dropping the absolute flavor never resets a series.
 - **Finish the M4 sweep outside `tests/e2e/megatron`** — eligible Megatron CUDA RL-training tests declare the standard one-liners; extend them to the remaining CUDA e2e training tests only for metrics each test's run actually emits (a spec on a metric missing from the record is an ERROR verdict that untrusts every nightly run — a mis-swept test would never accumulate a baseline); each test owner tunes or vetoes their line in review.
 - **Capture set becomes** `TARGET_METRIC_KEYS` **∪ declared keys** — the harness parses specs pre-launch and injects the extras via env.
-- **Self-calibrating constraint** — band = k·std of the coordinate's own history, for heteroskedastic tests; and a `mean` (step-average) reduction.
+- **Self-calibrating constraint** — band = k·std of the coordinate's own history, for heteroskedastic tests; and a `mean` (step-average) reduction, which needs its own step sentinel because `-1` already means `"last"`.

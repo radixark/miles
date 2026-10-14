@@ -456,6 +456,20 @@ def test_unknown_steps_keyword_rejected(tmp_path):
         parse_ci_gate_specs(path)
 
 
+def test_metric_declared_twice_rejected(tmp_path):
+    # History is keyed by metric and step, so a second rule for one metric has no series of its own.
+    path = _make_fixture(
+        """
+        from tests.ci.metric_history import register_ci_gate
+        register_ci_gate(metric_key="train/x", steps="last", constraint={"rel_up": 0.2, "rel_down": 0.2})
+        register_ci_gate(metric_key="train/x", steps=[0], constraint={"rel_up": 0.5, "rel_down": 0.5})
+        """,
+        tmp_path,
+    )
+    with pytest.raises(ValueError, match="declares metric_key 'train/x' more than once"):
+        parse_ci_gate_specs(path)
+
+
 def test_constraint_name_key_is_gone(tmp_path):
     # The old name-keyed constraint registry was merged into one band family;
     # a declaration still passing "name" must fail loud, not silently drop.

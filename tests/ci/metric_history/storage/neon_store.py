@@ -7,7 +7,7 @@
   semantics exactly -- same write surface, same authoritative baseline query --
   so swapping backends changes no gate logic.
 * `recent_trusted_values` uses the authoritative baseline query verbatim
-  (plain equality on `metric_key` / `steps_key` / `constraint_key` / `step`),
+  (plain equality on `metric_key` / `step`),
   so its results match the SQLite backend's.
 * The DSN comes from the `NEON_DATABASE_URL` environment variable (a CI
   secret, provisioned out-of-band) unless one is passed explicitly. Credentials
@@ -60,8 +60,6 @@ WHERE r.test_path = %s
   AND r.backend = %s
   AND r.suite = %s
   AND mv.metric_key = %s
-  AND mv.steps_key = %s
-  AND mv.constraint_key = %s
   AND mv.step = %s
   AND r.trusted = true
 ORDER BY r.created_at DESC
@@ -148,8 +146,6 @@ class NeonMetricHistoryStore(MetricHistoryStore):
         backend: str,
         suite: str,
         metric_key: str,
-        steps_key: str,
-        constraint_key: str,
         step: int,
         limit: int,
     ) -> list[float]:
@@ -158,7 +154,7 @@ class NeonMetricHistoryStore(MetricHistoryStore):
             with conn.cursor() as cur:
                 cur.execute(
                     _BASELINE_SQL,
-                    (test_path, backend, suite, metric_key, steps_key, constraint_key, step, limit),
+                    (test_path, backend, suite, metric_key, step, limit),
                 )
                 rows = cur.fetchall()
         finally:

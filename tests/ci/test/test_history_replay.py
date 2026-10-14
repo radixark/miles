@@ -23,7 +23,7 @@ def _specs(tmp_path, *, steps="last", name="test_synthetic.py", constraint=None,
     constraint = constraint or {"rel_up": 0.3, "rel_down": 0.3}
     path.write_text(f"register_ci_gate(metric_key={metric!r}, steps={steps!r}, " f"constraint={constraint!r})\n")
     spec = parse_ci_gate_specs(str(path))[0]
-    return {(str(path), spec.metric_key, spec.steps_key, spec.constraint_key): spec}
+    return {(str(path), spec.metric_key): spec}
 
 
 def _row(specs, run_id, value, *, suite="stage-c-8-gpu-h100", step=-1, minute=None, trusted=True):
@@ -38,7 +38,7 @@ def _row(specs, run_id, value, *, suite="stage-c-8-gpu-h100", step=-1, minute=No
         github_run_id=1000 + run_id,
         github_run_attempt=1,
         trusted=trusted,
-        values=[[*declaration[1:], step, value]],
+        values=[[declaration[1], step, value]],
     )
 
 
@@ -99,8 +99,9 @@ class TestDiscoveryAndExport:
         assert "r.backend = 'cuda'" in sql
         assert "LEFT JOIN metric_values" in sql
         assert "r.test_path = s.test_path" in sql
-        for field in ("metric_key", "steps_key", "constraint_key"):
-            assert f"mv.{field} = s.{field}" in sql
+        assert "mv.metric_key = s.metric_key" in sql
+        # Values judged under any declaration literal are history of the same coordinate.
+        assert "steps_key" not in sql and "constraint_key" not in sql
         assert "test_quote''s.py" in sql
         assert "r.suite" in sql
         assert not any(command in sql.upper() for command in ("INSERT ", "UPDATE ", "DELETE "))
@@ -281,7 +282,9 @@ class TestChronologicalReplay:
         report = replay.replay(rows + [empty], specs)
         assert report["status"] == "incomplete"
         assert report["runs"] == history_length + 1
-        assert [row["run_id"] for row in report["runs_with_missing_values"]] == [history_length]
+        # With no stored value at all, nothing dates the declaration; the coverage gap still reports it.
+        assert [row["run_id"] for row in report["runs_with_missing_values"]] == [history_length][:history_length]
+        assert len(report["declarations_without_enforcement_checks"]) == int(history_length == 0)
         assert report["enforcement_checked"] == int(history_length == 11)
 
     @pytest.mark.parametrize("steps,expected_step", [("last", -1), ("all", None)])
@@ -301,12 +304,12 @@ class TestChronologicalReplay:
         assert len(missing) == 1
         assert missing[0]["run_id"] == 11
         assert missing[0]["trusted"] is False
-        key = next(iter(other))
+        spec = next(iter(other.values()))
         assert missing[0]["missing_values"] == [
             dict(
-                metric_key=key[1],
-                steps_key=key[2],
-                constraint_key=key[3],
+                metric_key=spec.metric_key,
+                steps_key=spec.steps_key,
+                constraint_key=spec.constraint_key,
                 step=expected_step,
             )
         ]
@@ -324,12 +327,12 @@ class TestChronologicalReplay:
         missing = report["runs_with_missing_values"]
         assert len(missing) == 1
         assert missing[0]["run_id"] == 11
-        key = next(iter(specs))
+        spec = next(iter(specs.values()))
         assert missing[0]["missing_values"] == [
             dict(
-                metric_key=key[1],
-                steps_key=key[2],
-                constraint_key=key[3],
+                metric_key=spec.metric_key,
+                steps_key=spec.steps_key,
+                constraint_key=spec.constraint_key,
                 step=1,
             )
         ]
@@ -340,6 +343,25 @@ class TestChronologicalReplay:
         assert report["status"] == "incomplete"
         assert report["values"] == report["insufficient_history"] == 11
         assert report["checked"] == report["passed"] == report["enforcement_checked"] == 0
+
+    def test_runs_before_a_declaration_first_value_are_not_missing(self, tmp_path, specs):
+        other = _specs(tmp_path, metric="train/grad_norm")
+        rows = [_row(specs, i, 1.0) for i in range(15)]
+        for row in rows[11:14]:
+            row["values"] += _row(other, row["run_id"], 1.0)["values"]
+        report = replay.replay(rows, specs | other)
+        assert [row["run_id"] for row in report["runs_with_missing_values"]] == [14]
+
+    @pytest.mark.parametrize("steps,stored_step", [("last", 0), ("all", -1), ([0], 1)])
+    def test_values_outside_the_current_steps_selection_are_ignored(self, tmp_path, steps, stored_step):
+        specs = _specs(tmp_path, steps=steps)
+        step = -1 if steps == "last" else 0
+        rows = [_row(specs, i, 1.0, step=step) for i in range(11)]
+        for row in rows:
+            row["values"] += _row(specs, row["run_id"], 9.0, step=stored_step)["values"]
+        report = replay.replay(rows, specs)
+        assert report["status"] == "pass"
+        assert [c["step"] for c in report["coverage"]] == [step]
 
 
 class TestHistoryHealth:
@@ -389,7 +411,6 @@ class TestInvalidRows:
             "trusted",
             "naive_time",
             "unknown_metric",
-            "wrong_step",
             "bool_step",
             "duplicate_coord",
             "bool_value",
@@ -411,12 +432,12 @@ class TestInvalidRows:
             row["created_at"] = "2026-01-01T00:01:00"
         elif fault == "unknown_metric":
             row["values"][0][0] = "unknown"
-        elif fault in ("wrong_step", "bool_step"):
-            row["values"][0][3] = 0 if fault == "wrong_step" else True
+        elif fault == "bool_step":
+            row["values"][0][1] = True
         elif fault == "duplicate_coord":
             row["values"].append(list(row["values"][0]))
         else:
-            row["values"][0][4] = {
+            row["values"][0][2] = {
                 "bool_value": True,
                 "string_value": "1.0",
                 "nan": float("nan"),

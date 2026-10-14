@@ -276,14 +276,7 @@ class TestBaselineWrite:
 
         # The persisted value feeds future baselines.
         vals = store.recent_trusted_values(
-            registry.filename,
-            "cuda",
-            "stage-c-8-gpu-h100",
-            "rollout/raw_reward",
-            LAST_KEY,
-            REL20_KEY,
-            -1,
-            20,
+            registry.filename, "cuda", "stage-c-8-gpu-h100", "rollout/raw_reward", -1, 20
         )
         assert vals == [0.81]
 
@@ -325,14 +318,7 @@ class TestBaselineWrite:
         # Untrusted rows are invisible to the baseline query: only the seeded
         # trusted baseline comes back, never the hook's 0.90 row.
         vals = store.recent_trusted_values(
-            registry.filename,
-            "cuda",
-            "stage-c-8-gpu-h100",
-            "rollout/raw_reward",
-            LAST_KEY,
-            REL20_KEY,
-            -1,
-            20,
+            registry.filename, "cuda", "stage-c-8-gpu-h100", "rollout/raw_reward", -1, 20
         )
         assert vals == [0.30]
 
@@ -385,12 +371,22 @@ class TestBaselineWrite:
         )
         assert _count_runs(store) == 0
 
-    def test_nightly_dedupes_values_by_coordinate(self, tmp_path, store, monkeypatch):
-        # Two specs with identical steps + constraint literals share one
-        # coordinate even though their policy metadata differs; the selected
-        # value is identical, so writing one row per spec would double-weight
-        # this run in the baseline mean.
+    def test_nightly_records_declaration_literals_beside_each_value(self, tmp_path, store, monkeypatch):
+        # Readers that still key on the literal columns must keep finding new rows.
         monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+        test_file = _write_test_file(
+            tmp_path,
+            'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20})',
+        )
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.81]]}, name="m.jsonl")
+        assert _run_hook(test_file, record, store, write_baseline=True) is True
+        rows = store._conn.execute(
+            "SELECT metric_key, steps_key, constraint_key, step, value FROM metric_values"
+        ).fetchall()
+        assert rows == [("rollout/raw_reward", LAST_KEY, REL20_KEY, -1, 0.81)]
+
+    def test_duplicate_metric_declaration_fails_without_writing(self, tmp_path, store):
         test_file = _write_test_file(
             tmp_path,
             """
@@ -401,23 +397,9 @@ class TestBaselineWrite:
                              enforce=False)
             """,
         )
-        registry = _registry(test_file)
         record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.81]]}, name="m.jsonl")
-
-        run_gate_hook(
-            test_file,
-            record,
-            store=store,
-            registry=registry,
-            executing_suite="stage-c-8-gpu-h100",
-            write_baseline=True,
-            provenance=PROVENANCE,
-        )
-        assert _count_runs(store) == 1
-        rows = store._conn.execute(
-            "SELECT metric_key, steps_key, constraint_key, step, value FROM metric_values"
-        ).fetchall()
-        assert rows == [("rollout/raw_reward", LAST_KEY, REL20_KEY, -1, 0.81)]
+        assert _run_hook(test_file, record, store, write_baseline=True) is False
+        assert _count_runs(store) == 0
 
 
 # --- PR no-write + shadow verdict -------------------------------------------
@@ -475,7 +457,7 @@ class TestExecutingSuiteIdentity:
                 provenance=PROVENANCE,
             )
 
-        coordinate = ("rollout/raw_reward", LAST_KEY, REL20_KEY, -1)
+        coordinate = ("rollout/raw_reward", -1)
         hopper = store.recent_trusted_values(registry.filename, "cuda", "stage-c-8-gpu-h100", *coordinate, 20)
         blackwell = store.recent_trusted_values(registry.filename, "cuda", "stage-c-8-gpu-b200", *coordinate, 20)
         # 0.42 against a 0.81 baseline would be a hard fail if the two shared a series.
@@ -726,53 +708,49 @@ class TestEnforcement:
             trusted = store._conn.execute("SELECT trusted FROM runs ORDER BY created_at DESC").fetchone()[0]
             assert bool(trusted) is (n == 0 or current == 0.30)
             history = store.recent_trusted_values(
-                registry.filename, "cuda", registry.suite, "rollout/raw_reward", LAST_KEY, REL20_KEY, -1, 20
+                registry.filename, "cuda", registry.suite, "rollout/raw_reward", -1, 20
             )
             assert len(history) == n + int(bool(trusted))
             if enforce and n == 9:
                 # The newly persisted untrusted run must not satisfy the threshold.
                 assert _run_hook(test_file, record, store) is True
 
-    @pytest.mark.parametrize("coordinate", ["metric", "steps", "constraint"])
     @pytest.mark.parametrize("enforce_failing", [False, True])
-    def test_explicit_shadow_override_applies_only_to_its_coordinate(
-        self, tmp_path, store, coordinate, enforce_failing
-    ):
-        passing = dict(metric_key="rollout/raw_reward", steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
-        failing = dict(passing)
-        by_metric = {"rollout/raw_reward": [[0, 0.30]]}
-        if coordinate == "metric":
-            failing["metric_key"] = "train/grad_norm"
-            by_metric["train/grad_norm"] = [[0, 0.90]]
-        elif coordinate == "steps":
-            passing["steps"], failing["steps"] = [0], [1]
-            by_metric["rollout/raw_reward"] = [[0, 0.30], [1, 0.90]]
-        else:
-            passing["constraint"] = {"rel_up": 3.0, "rel_down": 3.0}
-            by_metric["rollout/raw_reward"] = [[0, 0.90]]
-        declarations = []
-        samples = []
-        for spec, enforced in ((passing, not enforce_failing), (failing, enforce_failing)):
-            declarations.append(
-                "register_ci_gate("
-                + ", ".join(f"{k}={v!r}" for k, v in spec.items())
-                + ("" if enforced else ", enforce=False")
-                + ")"
-            )
-            samples.append(
-                MetricSample(
-                    spec["metric_key"],
-                    json.dumps(spec["steps"], separators=(",", ":")),
-                    json.dumps(spec["constraint"], sort_keys=True, separators=(",", ":")),
-                    spec["steps"][0] if isinstance(spec["steps"], list) else -1,
-                    0.30,
-                )
-            )
+    def test_explicit_shadow_override_applies_only_to_its_metric(self, tmp_path, store, enforce_failing):
+        declarations = [
+            'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20}' + (", enforce=False" if enforce_failing else "") + ")",
+            'register_ci_gate(metric_key="train/grad_norm", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20}' + ("" if enforce_failing else ", enforce=False") + ")",
+        ]
         test_file = _write_test_file(tmp_path, "\n".join(declarations))
+        samples = [
+            MetricSample(metric, LAST_KEY, REL20_KEY, -1, 0.30) for metric in ("rollout/raw_reward", "train/grad_norm")
+        ]
         _seed_history(store, _registry(test_file), 10, values=samples)
-        record = _write_record(tmp_path, by_metric, name="m.jsonl")
+        record = _write_record(
+            tmp_path, {"rollout/raw_reward": [[0, 0.30]], "train/grad_norm": [[0, 0.90]]}, name="m.jsonl"
+        )
         assert _run_hook(test_file, record, store) is not enforce_failing
         assert _count_runs(store) == 10
+
+    @pytest.mark.parametrize(
+        "old_steps, new_steps, step",
+        [('"last"', '"last"', -1), ('"all"', "[0]", 0), ("[0]", '"all"', 0)],
+        ids=["constraint", "all-to-list", "list-to-all"],
+    )
+    def test_declaration_literal_edit_keeps_enforced_history(self, tmp_path, store, old_steps, new_steps, step):
+        # History written under other literals still counts toward the threshold and the mean.
+        test_file = _write_test_file(
+            tmp_path,
+            f'register_ci_gate(metric_key="rollout/raw_reward", steps={new_steps}, '
+            'constraint={"rel_up": 0.50, "rel_down": 0.50})',
+        )
+        samples = [MetricSample("rollout/raw_reward", old_steps, REL20_KEY, step, 0.30)]
+        _seed_history(store, _registry(test_file), 10, values=samples)
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.90]]}, name="m.jsonl")
+        # Only the ten inherited baselines can make this drift an enforced failure.
+        assert _run_hook(test_file, record, store) is False
 
     def test_history_threshold_is_per_step(self, tmp_path, store, caplog):
         test_file = _write_test_file(

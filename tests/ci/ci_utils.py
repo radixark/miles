@@ -324,16 +324,14 @@ def run_gate_hook(
         logger.warning(message)
         write_github_step_summary(message + "\n")
         return False
-    enforced_keys = {(s.metric_key, s.steps_key, s.constraint_key) for s in specs if s.enforce}
+    enforced_keys = {s.metric_key for s in specs if s.enforce}
     try:
         if merged_record_path is None:
             raise RuntimeError("passing-attempt metric record is unavailable")
         result = evaluate_gate(
             filename, merged_record_path, store, executing_suite=executing_suite, registry=registry, specs=specs
         )
-        enforced_metrics = [
-            m for m in result.metrics if (m.metric_key, m.steps_key, m.constraint_key) in enforced_keys
-        ]
+        enforced_metrics = [m for m in result.metrics if m.metric_key in enforced_keys]
         failed = any(
             m.historical_status == GateStatus.ERROR
             or (m.historical_status == GateStatus.FAIL and m.baseline_n >= MIN_ENFORCED_BASELINES)
@@ -372,19 +370,12 @@ def run_gate_hook(
                 suite=result.suite,
             )
             created_at = now_iso or datetime.datetime.now(datetime.timezone.utc).isoformat()
-            # Specs sharing a coordinate (identical declaration literals,
-            # differing only in policy metadata) select the same value; writing
-            # one row per spec would double-weight that baseline mean.
-            seen_coords: set[tuple[str, str, str, int]] = set()
-            values: list[MetricSample] = []
-            for m in result.metrics:
-                if m.current is None:
-                    continue
-                coord = (m.metric_key, m.steps_key, m.constraint_key, m.step)
-                if coord in seen_coords:
-                    continue
-                seen_coords.add(coord)
-                values.append(MetricSample(m.metric_key, m.steps_key, m.constraint_key, m.step, m.current))
+            # The parser allows one declaration per metric, so each (metric, step) is written once.
+            values = [
+                MetricSample(m.metric_key, m.steps_key, m.constraint_key, m.step, m.current)
+                for m in result.metrics
+                if m.current is not None
+            ]
             store.write_run(
                 identity,
                 provenance,

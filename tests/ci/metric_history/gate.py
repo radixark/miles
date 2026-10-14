@@ -65,9 +65,10 @@ class GateStatus(Enum):
 class MetricGateResult:
     """Per-coordinate verdict.
 
-    `(metric_key, steps_key, constraint_key, step)` is the baseline coordinate;
-    `step` is None only when selection errored (there is no coordinate to
-    name), `-1` for a whole-series reduction like `steps="last"`. `at_step` is the
+    `(metric_key, step)` is the baseline coordinate; `steps_key` /
+    `constraint_key` name the declaration that judged it. `step` is None only
+    when selection errored (there is no coordinate to name), `-1` for a
+    whole-series reduction like `steps="last"`. `at_step` is the
     step the value actually came from, for reporting. `current` is the
     extracted scalar, or None when selection errored. `baseline_mean` is the
     mean of trusted history when the historical gate is active, else None.
@@ -195,14 +196,7 @@ def _evaluate_spec(
     results: list[MetricGateResult] = []
     for ex in selections:
         trusted_values = store.recent_trusted_values(
-            test_path,
-            backend,
-            suite,
-            spec.metric_key,
-            spec.steps_key,
-            spec.constraint_key,
-            ex.step,
-            history_limit,
+            test_path, backend, suite, spec.metric_key, ex.step, history_limit
         )
         results.append(
             evaluate_coordinate(

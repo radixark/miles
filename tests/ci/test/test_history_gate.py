@@ -332,16 +332,16 @@ def test_all_one_bad_step_untrusts_run(tmp_path, store):
     assert result.trusted is False
 
 
-def test_all_and_explicit_steps_have_separate_coordinates(tmp_path, store):
-    # The coordinate is the declaration's literal content: a steps="all" gate and
-    # a steps=[0] gate both judge step 0's value, but each owns its own series.
-    gate_lines = """
-        register_ci_gate(metric_key="train/ppo_kl",
-                         steps="all", constraint={"rel_up": 0.50, "rel_down": 0.50})
+def test_steps_literal_edit_keeps_step_history(tmp_path, store):
+    # History is keyed by metric and step: values a steps="all" gate stored at
+    # step 0 are the baseline of a later steps=[0] gate.
+    test_file = _write_test_file(
+        tmp_path,
+        """
         register_ci_gate(metric_key="train/ppo_kl",
                          steps=[0], constraint={"rel_up": 0.50, "rel_down": 0.50})
-    """
-    test_file = _write_test_file(tmp_path, gate_lines)
+        """,
+    )
     _seed_baseline(
         store,
         test_file,
@@ -353,24 +353,20 @@ def test_all_and_explicit_steps_have_separate_coordinates(tmp_path, store):
     )
     record = _write_record(tmp_path, {"train/ppo_kl": [[0, 0.1]]})
 
-    result = evaluate_gate(test_file, record, store, executing_suite="stage-c-8-gpu-h100")
-    assert len(result.metrics) == 2  # one per spec, both at step 0
-    all_m, steps_m = result.metrics
-    assert all_m.baseline_n == 2
-    assert steps_m.baseline_n == 0  # its own coordinate: cold start
-    assert steps_m.historical_status == GateStatus.INACTIVE
+    [m] = evaluate_gate(test_file, record, store, executing_suite="stage-c-8-gpu-h100").metrics
+    assert m.baseline_n == 2
+    assert m.historical_status == GateStatus.PASS
 
 
-def test_rule_is_part_of_coordinate(tmp_path, store):
-    # Two gates, same steps, different constraints: different constraint_key,
-    # so each judges against its own baseline series.
-    gate_lines = """
-        register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="last", constraint={"rel_up": 0.50, "rel_down": 0.50})
+def test_constraint_literal_edit_keeps_history(tmp_path, store):
+    # Values judged under a looser rule remain the baseline after the rule tightens.
+    test_file = _write_test_file(
+        tmp_path,
+        """
         register_ci_gate(metric_key="rollout/raw_reward",
                          steps="last", constraint={"rel_up": 0.01, "rel_down": 0.01})
-    """
-    test_file = _write_test_file(tmp_path, gate_lines)
+        """,
+    )
     _seed_baseline(
         store,
         test_file,
@@ -382,14 +378,33 @@ def test_rule_is_part_of_coordinate(tmp_path, store):
     )
     record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 1.2]]})
 
-    result = evaluate_gate(test_file, record, store, executing_suite="stage-c-8-gpu-h100")
-    loose, tight = result.metrics
-    assert loose.constraint_key != tight.constraint_key
-    assert loose.baseline_n == 3
-    assert loose.historical_status == GateStatus.PASS  # band 0.5
-    # The tight rule's own series is unseeded: cold start, not a shared read.
-    assert tight.baseline_n == 0
-    assert tight.historical_status == GateStatus.INACTIVE
+    [m] = evaluate_gate(test_file, record, store, executing_suite="stage-c-8-gpu-h100").metrics
+    assert m.baseline_n == 3
+    assert m.historical_status == GateStatus.FAIL
+
+
+def test_last_value_is_not_a_per_step_baseline(tmp_path, store):
+    # steps="last" stores step -1, which a per-step gate never reads.
+    test_file = _write_test_file(
+        tmp_path,
+        """
+        register_ci_gate(metric_key="rollout/raw_reward",
+                         steps="all", constraint={"rel_up": 0.50, "rel_down": 0.50})
+        """,
+    )
+    _seed_baseline(
+        store,
+        test_file,
+        metric_key="rollout/raw_reward",
+        steps_key=LAST_KEY,
+        constraint_key=_key({"rel_up": 0.50, "rel_down": 0.50}),
+        step=-1,
+        values=[1.0, 1.0],
+    )
+    record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 1.0]]})
+
+    [m] = evaluate_gate(test_file, record, store, executing_suite="stage-c-8-gpu-h100").metrics
+    assert (m.step, m.baseline_n, m.historical_status) == (0, 0, GateStatus.INACTIVE)
 
 
 # --- near-zero abs constraint -------------------------------------------------
