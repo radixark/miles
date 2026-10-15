@@ -59,7 +59,7 @@ class _Registry:
     tensor_model_parallel_size: int
     expert_model_parallel_size: int
     rollout_num_gpus_per_engine: int
-    dequantize: Literal["none", "fp8", "kimi-int4"] = "none"
+    dequantize: Literal["none", "kimi-int4"] = "none"
     extra_train_args: str = ""
 
 
@@ -72,15 +72,6 @@ _REGISTRIES = {
         expert_model_parallel_size=4,
         rollout_num_gpus_per_engine=2,
         extra_train_args="--attention-backend flash ",
-    ),
-    "DeepSeek-V4-Flash-FP8-4layer": _Registry(
-        megatron_model_type="deepseek-v4-flash-4layer",
-        hf_repo="Pinaster/DeepSeek-V4-Flash-FP8-4layer",
-        target_modules=_MLA_TARGET_MODULES,
-        tensor_model_parallel_size=2,
-        expert_model_parallel_size=4,
-        rollout_num_gpus_per_engine=2,
-        dequantize="fp8",
     ),
     "Kimi-K2.5-2layer": _Registry(
         megatron_model_type="kimi-k25_2layer",
@@ -188,8 +179,6 @@ def _download(args: ScriptArgs):
 def _dequantize(args: ScriptArgs):
     src = f"{args.model_dir}/{args.model_name}"
     match args.registry.dequantize:
-        case "fp8":
-            args.create_backend().fp8_cast_bf16(path_src=src, path_dst=args.hf_checkpoint)
         case "kimi-int4":
             args.create_backend().exec_command_gpu(
                 f"python {U.repo_base_dir}/tools/convert_kimi_int4_to_bf16.py "
