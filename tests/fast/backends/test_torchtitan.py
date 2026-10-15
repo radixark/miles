@@ -9,7 +9,10 @@ from tests.ci.ci_register import register_cpu_ci
 
 from miles.backends.torchtitan_utils import parallel as tp
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
-from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
+from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser, validate_torchtitan_args
+from miles.utils.arguments import get_miles_extra_args_provider
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
+from miles.utils.lora import arguments as lora_arguments
 
 register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
@@ -33,6 +36,13 @@ def _args(**overrides) -> Namespace:
         lr_warmup_fraction=None,
         lr_wsd_decay_iters=None,
         lr_decay_iters=None,
+        lora_rank=0,
+        lora_type="canonical_lora",
+        lora_A_init_method="kaiming",
+        lora_dropout=0.0,
+        lora_adapter_path=None,
+        lora_train_only=False,
+        colocate_memory_peak_device="cpu",
     )
     return Namespace(**{**base, **overrides})
 
@@ -66,6 +76,61 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
         validate_torchtitan_args(_args(ref_update_interval=4))
     with pytest.raises(ValueError, match="save-debug-train-data"):
         validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
+
+
+def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    validate_torchtitan_args(_args(lora_rank=8))
+    with pytest.raises(ValueError, match="qwen3 only"):
+        validate_torchtitan_args(_args(lora_rank=8, titan_model_name="glm5_next"))
+    with pytest.raises(ValueError, match="canonical_lora"):
+        validate_torchtitan_args(_args(lora_rank=8, lora_type="lora"))
+    with pytest.raises(ValueError, match="kaiming"):
+        validate_torchtitan_args(_args(lora_rank=8, lora_A_init_method="xavier"))
+    with pytest.raises(ValueError, match="no dropout"):
+        validate_torchtitan_args(_args(lora_rank=8, lora_dropout=0.05))
+    with pytest.raises(ValueError, match="--lora-adapter-path"):
+        validate_torchtitan_args(_args(lora_rank=8, lora_adapter_path="/adapter"))
+    with pytest.raises(ValueError, match="grad buffers"):
+        validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu"))
+    validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu", lora_train_only=True))
+
+
+def test_lora_defaults_are_the_values_torchtitan_honors():
+    """A torchtitan LoRA command without --lora-type or --lora-A-init-method must not hit the refusals."""
+    parser = build_torchtitan_parser(get_miles_extra_args_provider())
+    assert (parser.get_default("lora_type"), parser.get_default("lora_A_init_method")) == ("canonical_lora", "kaiming")
+
+
+def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
+    """torchtitan runs in the default raw mode; megatron's native adapter spec, which refuses
+    canonical_lora, must not vet its targets."""
+    hf_config = SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"})
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
+    monkeypatch.setattr(
+        lora_arguments.HfWeightMapping,
+        "from_config",
+        lambda config: HfWeightMapping(frozenset({"model.layers.0.self_attn.q_proj.weight"})),
+    )
+    monkeypatch.setattr(
+        lora_arguments,
+        "resolve_adapter_targets",
+        lambda *args, **kwargs: pytest.fail("torchtitan LoRA targets went through megatron's native spec"),
+    )
+    args = Namespace(
+        train_backend="torchtitan",
+        megatron_to_hf_mode="raw",
+        hf_checkpoint="/hf",
+        lora_rank=8,
+        lora_adapter_path=None,
+        lora_type="canonical_lora",
+        target_modules="q_proj",
+        exclude_modules=None,
+        experts_shared_outer_loras=False,
+        multi_lora_n_adapters=0,
+    )
+    lora_arguments.validate_lora_args(args)
+    assert args.lora_adapter_targets == ["q_proj"]
 
 
 def _config_args(**overrides: object) -> Namespace:

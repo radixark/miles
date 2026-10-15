@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param
+from miles.backends.torchtitan_utils import lora_names
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import (
@@ -53,8 +54,11 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
             return groups
         return [replace(group, optional=True) for group in groups]
 
-    def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
-        raise NotImplementedError("the torchtitan backend has no LoRA")
+    def _iter_hf_adapter_units(self, adapter, *, materialize):
+        assert adapter is None, "the torchtitan backend trains a single LoRA adapter"
+        for name, tensor in hf_adapter_weights(self.model, complete_across_pp=self.placement.gather_pp):
+            if materialize:
+                yield [(name, tensor)]
 
 
 def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[str, torch.Tensor]]:
@@ -75,6 +79,27 @@ def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[st
             torch.accelerator.empty_cache()
 
 
+def hf_adapter_weights(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
+    """The LoRA adapter as HF PEFT tensors, gathered like the base weights. Only the adapter
+    tensors visit the GPU, so an offloaded frozen base stays on the host."""
+    model_state = {k: v for part in trainer.model_parts for k, v in part.state_dict().items()}
+    adapter = {
+        name: tensor.to(current_platform.current_device())
+        for name, tensor in lora_names.iter_hf_adapter_tensors(_state_dict_adapter(trainer), model_state)
+    }
+    layout = _StageLayout.from_trainer(trainer, complete_across_pp=complete_across_pp)
+    yield from layout.stream(adapter)
+
+
+def _state_dict_adapter(trainer):
+    sd_adapter = getattr(
+        trainer.checkpointer, "sd_adapter", None
+    )  # config-access-exempt: TorchTitan checkpointer versions may omit the state-dict adapter
+    if sd_adapter is None:
+        sd_adapter = trainer.config.model_spec.state_dict_adapter(trainer.model_config, trainer.config.hf_assets_path)
+    return sd_adapter
+
+
 @functools.cache
 def _stage_process_groups(stage_ranks: tuple[tuple[int, ...], ...]) -> tuple:
     return tuple(dist.new_group(list(ranks)) for ranks in stage_ranks)
@@ -84,12 +109,10 @@ _GROUPED_EXPERTS = "moe.routed_experts.inner_experts"
 
 
 def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
-    sd_adapter = getattr(
-        trainer.checkpointer, "sd_adapter", None
-    )  # config-access-exempt: TorchTitan checkpointer versions may omit the state-dict adapter
-    if sd_adapter is None:
-        sd_adapter = trainer.config.model_spec.state_dict_adapter(trainer.model_config, trainer.config.hf_assets_path)
-    state = {k: v for part in trainer.model_parts for k, v in part.state_dict().items()}
+    sd_adapter = _state_dict_adapter(trainer)
+    state = {
+        k: v for part in trainer.model_parts for k, v in part.state_dict().items() if not lora_names.is_adapter_key(k)
+    }
     layout = _StageLayout.from_trainer(trainer, complete_across_pp=complete_across_pp)
 
     dense = {k: v for k, v in state.items() if _GROUPED_EXPERTS not in k}

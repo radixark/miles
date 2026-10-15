@@ -10,6 +10,7 @@ from torchtitan.distributed.activation_checkpoint import FullAC
 from torchtitan.protocols.model_spec import ModelSpec
 from torchtitan.trainer import Trainer
 
+from miles.backends.torchtitan_utils import lora
 from miles.backends.torchtitan_utils.components import EmptyDataLoader, TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.parallel import parallel_dims_from_config
@@ -59,7 +60,12 @@ def _latest_step_dir(load_root: str, dump_subdir: str) -> str | None:
 
 
 def build_trainer_config(
-    args: TrainerConfig, *, hf_assets_path: str, lr_total_steps: int, dump_subdir: str
+    args: TrainerConfig,
+    *,
+    hf_assets_path: str,
+    lr_total_steps: int,
+    dump_subdir: str,
+    with_lora: bool = False,
 ) -> Trainer.Config:
     if args.backend.optimizer != "adam":
         raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.backend.optimizer!r}")
@@ -77,6 +83,10 @@ def build_trainer_config(
     if ties_embeddings:
         config.model_spec.model.enable_weight_tying = True
         logger.info("Checkpoint ties lm_head to the embedding; excluding lm_head.weight from the HF export")
+    if with_lora:
+        config.model_spec.model = lora.convert_model_config(
+            config.model_spec, hf_targets=args.hf_lora_targets, rank=args.lora_rank, alpha=args.lora_alpha
+        )
 
     config.hf_assets_path = hf_assets_path
     config.dump_folder = os.path.join(
