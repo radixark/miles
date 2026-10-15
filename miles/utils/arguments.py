@@ -2472,6 +2472,27 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Type of the reward model",
             )
             parser.add_argument(
+                "--rm-timeout",
+                type=float,
+                default=None,
+                help=(
+                    "Positive seconds to wait for a per-sample reward call before logging a warning and returning "
+                    "{reward_key: 0.0} if --reward-key is configured, otherwise 0.0. Built-in synchronous graders "
+                    "use a dedicated pool sized by --rm-timeout-workers; timed-out threads may keep running. "
+                    "Custom per-sample coroutines are awaited under the timeout, but synchronous blocking inside "
+                    "custom code cannot be interrupted. Batch-level --custom-rm-path is not covered. Default: no limit."
+                ),
+            )
+            parser.add_argument(
+                "--rm-timeout-workers",
+                type=int,
+                default=8,
+                help=(
+                    "Maximum worker threads in the dedicated reward timeout pool per process. Must be positive. "
+                    "The pool is created on first use with --rm-timeout. Default: 8."
+                ),
+            )
+            parser.add_argument(
                 "--reward-key",
                 type=str,
                 default=None,
@@ -3421,6 +3442,12 @@ def miles_validate_args(args):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
+
+    if args.rm_timeout is not None and args.rm_timeout <= 0:
+        raise ValueError("--rm-timeout must be greater than 0")
+    if args.rm_timeout_workers <= 0:
+        raise ValueError("--rm-timeout-workers must be greater than 0")
+
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
