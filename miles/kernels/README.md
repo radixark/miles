@@ -6,8 +6,8 @@ attention/
   dense/           dense_attention_backward
   dsa/             sparse_attention · lightning_indexer · indexer_logits[_sbhd] · indexer_topk_scores · kpool · topk
     tilelang/      one indexer + sparse attention pair; RoPE tail and attention sink are compile-time parameters
-  gdn/
-    cake/          chunk_gated_delta_rule: generated deterministic chunked forward + backward (SM100a / SM103a, `--linear-attention-backend loom`)
+  gdn/             chunk_gated_delta_rule (`--linear-attention-backend loom`)
+    cake/          generated deterministic chunked forward + backward for SM100a / SM103a: one source pair per stage shared by both architectures, `registry.json` + `csrc/`
   qsa/             qsa_sparse_attention · qsa_block_sparse_attention
 embedding/         gather_ple_rows · ple_gate_conv
 hyper_connection/  hc: hc_mix_inject · hc_combine    mhc: mhc_mix · mhc_aggregate
@@ -18,7 +18,7 @@ quant/             fp8_blockwise_cast · act_quant · fake_quant_{fp8,fp4,compre
 ```
 
 - Only kernels we write (Triton, TileLang, CuTe, CUDA). A third-party kernel we merely call stays with its caller.
-- One directory per op. Names say what is computed, never the backend; a backend gets a subdirectory only when two coexist.
+- One directory per op. Names say what is computed, never the backend; a backend gets a subdirectory only when two coexist, or when it is a generated package delivered as one unit (`cake/`).
 - Callers import the entry from the op's module or package, never an implementation file.
 - No Megatron, no process groups, no env policy. Parallelism lives in `miles_plugins/models`.
 - Variants are parameters, not copies.
