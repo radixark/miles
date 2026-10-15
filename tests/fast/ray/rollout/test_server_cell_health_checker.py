@@ -137,16 +137,19 @@ class TestRolloutCellHealthCheckerGating:
 
 class TestRolloutCellHealthCheckerActiveness:
     @pytest.mark.parametrize(
-        "state, expected",
+        "state, check_weight_update_equal, expected",
         [
-            (StateUninitialized(), False),
-            (StatePendingWeights(addr_info=_addr_info()), True),
-            (StateServing(addr_info=_addr_info()), True),
+            (StateUninitialized(), False, False),
+            (StateUninitialized(), True, False),
+            (StatePendingWeights(addr_info=_addr_info()), False, True),
+            (StatePendingWeights(addr_info=_addr_info()), True, False),
+            (StateServing(addr_info=_addr_info()), False, True),
+            (StateServing(addr_info=_addr_info()), True, True),
         ],
     )
-    async def test_only_a_started_engine_is_probed(self, state, expected):
-        """An engine whose process is not up yet would fail every probe and look unhealthy."""
-        cell = _make_cell(ft_components=["rollout"])
+    async def test_generation_probes_skip_randomized_pending_weights(self, state, check_weight_update_equal, expected):
+        """Only pending engines with randomized weights need to wait for their first refit."""
+        cell = _make_cell(ft_components=["rollout"], check_weight_update_equal=check_weight_update_equal)
         cell._state = state
         assert cell._health_checker._get_activeness().active is expected
 

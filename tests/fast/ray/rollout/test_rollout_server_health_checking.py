@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
@@ -95,13 +96,26 @@ class TestHealthCheckerActiveness:
 
         assert not cell._get_health_checker_active_and_epoch().active
 
-    async def test_a_cell_holding_stale_weights_is_probed(self, monkeypatch):
-        """It answers requests with stale weights, so a crash there is a real failure."""
+    @pytest.mark.parametrize("check_weight_update_equal", [False, True])
+    async def test_generation_probes_wait_for_randomized_weights_to_be_refit(
+        self, monkeypatch, check_weight_update_equal
+    ):
+        """Pending weights are safe to probe unless the equality checker randomized them."""
         _stub_network(monkeypatch)
-        cell = _make_cell()
+        cell = _make_cell(router=SimpleNamespace(add_worker=_noop_add_worker))
+        cell.args.check_weight_update_equal = check_weight_update_equal
+        check_weights = AsyncMock()
+        monkeypatch.setattr(cell, "check_weights", check_weights)
 
         await cell.init()
         await cell.tick()
+
+        assert [call.kwargs["action"] for call in check_weights.await_args_list] == (
+            ["snapshot", "reset_tensors"] if check_weight_update_equal else []
+        )
+        assert cell._get_health_checker_active_and_epoch().active is (not check_weight_update_equal)
+
+        await cell.mark_weights_ready()
 
         assert cell._get_health_checker_active_and_epoch().active
 

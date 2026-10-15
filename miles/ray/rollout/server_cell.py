@@ -76,7 +76,9 @@ class ServerCell:
 
     def _get_health_checker_active_and_epoch(self) -> ActiveAndEpoch:
         controller_active_and_epoch = self.health_checker_activeness()
-        cell_active = isinstance(self._state, (StatePendingWeights, StateServing))
+        # Generation probes must wait for a refit if the equality checker
+        # randomized the pending weights.
+        cell_active = self.is_serving or (self.is_pending_weights and not self.args.check_weight_update_equal)
         return ActiveAndEpoch(
             active=cell_active and controller_active_and_epoch.active, epoch=controller_active_and_epoch.epoch
         )
