@@ -15,7 +15,6 @@ from safetensors.torch import save_file  # noqa: E402
 from miles_plugins.models.step5.indexer import (  # noqa: E402
     CHECKPOINT_NAMES,
     FP32_PARAMS,
-    INDEXER_ROPE,
     TP_SHARDED_PARAMS,
     Step5Indexer,
     read_checkpoint_layer,
@@ -32,6 +31,7 @@ from miles_plugins.models.step5.indexer_ops import (  # noqa: E402
     top_regions,
 )
 from miles_plugins.models.step5.region_selection import MAX_SELECTED_REGIONS, REGION_SIZE, TOP_REGIONS  # noqa: E402
+from miles_plugins.models.step5.region_selector import INDEXER_ROPE  # noqa: E402
 
 _HIDDEN = 16
 _EPS = 1e-5

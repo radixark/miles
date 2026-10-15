@@ -21,6 +21,7 @@ from mbridge import AutoBridge
 from miles.backends.megatron_utils.fp32_param_utils import enforce_marked_param_dtypes
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
+from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.utils.logging_utils import configure_logger_raw
 
 
@@ -43,7 +44,9 @@ def _load_weights(model, args) -> None:
         load_checkpoint(model, None, None, strict=True)
         return
     bridge = AutoBridge.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
-    bridge.load_weights(model, args.hf_checkpoint, memory_efficient=True)
+    # the companion state has no checkpoint tensor, so the bridge must not see it
+    with ModelCompanionInstallationUtils.hide(model):
+        bridge.load_weights(model, args.hf_checkpoint, memory_efficient=True)
 
 
 @torch.no_grad()

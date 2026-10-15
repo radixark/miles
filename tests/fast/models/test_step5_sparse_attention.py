@@ -22,12 +22,8 @@ from tests.fast.launch_scripts.model_args_harness import expand_model_args  # no
 
 from miles.backends.megatron_utils.megatron_to_hf.step5 import convert_step5_to_hf  # noqa: E402
 from miles_plugins.models.step5.indexer import CHECKPOINT_NAMES  # noqa: E402
-from miles_plugins.models.step5.layers import (  # noqa: E402
-    FULL_ATTENTION_ROPE,
-    SLIDING_WINDOW_ROPE,
-    Step5Attention,
-    Step5RMSNorm,
-)
+from miles_plugins.models.step5.layer_math import FULL_ATTENTION_ROPE, SLIDING_WINDOW_ROPE  # noqa: E402
+from miles_plugins.models.step5.layers import Step5Attention, Step5RMSNorm  # noqa: E402
 from miles_plugins.models.step5.model import build_step5_spec  # noqa: E402
 from miles_plugins.models.step5.sparse_attention import Step5SparseAttention, Step5SparseCoreAttention  # noqa: E402
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import torch.distributed.checkpoint as dcp
 from torchtitan.components import checkpoint as titan_checkpoint
 from torchtitan.components.dataloader import BaseDataLoader
+from torchtitan.components.tokenizer import BaseTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,27 @@ class EmptyDataLoader(BaseDataLoader):
 
     def load_state_dict(self, state_dict):
         pass
+
+
+class NoTokenizer(BaseTokenizer):
+    """Stands in for torchtitan's tokenizer: miles tokenizes on the rollout side, and parsing the checkpoint's
+    chat template here would fail on tags torchtitan's Jinja environment lacks (Step5's ``{% generation %}``)."""
+
+    @dataclass(kw_only=True, slots=True)
+    class Config(BaseTokenizer.Config):
+        pass
+
+    def __init__(self, config: Config, **kwargs):
+        super().__init__()
+
+    def encode(self, *args, **kwargs) -> list[int]:
+        raise NotImplementedError("the torchtitan backend never tokenizes")
+
+    def decode(self, *args, **kwargs) -> str:
+        raise NotImplementedError("the torchtitan backend never tokenizes")
+
+    def get_vocab_size(self) -> int:
+        raise NotImplementedError("the torchtitan backend never tokenizes")
 
 
 class TiedCheckpointManager(titan_checkpoint.CheckpointManager):

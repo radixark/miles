@@ -19,7 +19,8 @@ from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 
 from miles_plugins.models.step5.indexer import CHECKPOINT_NAMES
-from miles_plugins.models.step5.layers import FULL_ATTENTION_ROPE, Step5Attention, Step5RMSNorm
+from miles_plugins.models.step5.layer_math import FULL_ATTENTION_ROPE
+from miles_plugins.models.step5.layers import Step5Attention, Step5RMSNorm
 from miles_plugins.models.step5.qkv_layout import fuse_qkv_and_gate, split_qkv_and_gate
 from miles_plugins.models.step5.sparse_attention import Step5SparseAttention, Step5SparseCoreAttention
 

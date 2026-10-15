@@ -25,7 +25,7 @@ from sglang.kernels.ops.attention.step5.selection_deepselect import step5_select
 from sglang.srt.layers.attention.step5.region_selection import _prefill_scoring_plan, allocate_selection_workspace
 from sglang.srt.layers.rotary_embedding.rope_variant import Llama3RotaryEmbedding
 
-from miles_plugins.models.step5.indexer import CHECKPOINT_NAMES, INDEXER_ROPE, Step5Indexer, read_checkpoint_layer
+from miles_plugins.models.step5.indexer import CHECKPOINT_NAMES, Step5Indexer, read_checkpoint_layer
 from miles_plugins.models.step5.indexer_ops import (
     WEIGHT_SCALE,
     compress_regions,
@@ -37,6 +37,7 @@ from miles_plugins.models.step5.indexer_ops import (
     top_regions,
 )
 from miles_plugins.models.step5.region_selection import MAX_SELECTED_REGIONS, REGION_SIZE, TOP_REGIONS
+from miles_plugins.models.step5.region_selector import INDEXER_ROPE
 
 _GROUPS, _HEADS, _DIM = 4, 4, 256
 _FIRST_SCORED = (TOP_REGIONS + 1) * REGION_SIZE

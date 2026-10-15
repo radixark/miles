@@ -30,13 +30,8 @@ from megatron.core.transformer.transformer_layer import (
 from miles.kernels.activation.swiglu_fp32 import swiglu_fp32
 from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.step5.checkpoint_config import check_matches_checkpoint
-from miles_plugins.models.step5.layers import (
-    SWIGLU_LIMIT,
-    Step5Attention,
-    Step5FinalRMSNorm,
-    Step5RMSNorm,
-    is_full_attention_layer,
-)
+from miles_plugins.models.step5.layer_math import SWIGLU_LIMIT
+from miles_plugins.models.step5.layers import Step5Attention, Step5FinalRMSNorm, Step5RMSNorm, is_full_attention_layer
 from miles_plugins.models.step5.sparse_attention import Step5SparseAttention, Step5SparseCoreAttention
 
 
