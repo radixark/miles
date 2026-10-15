@@ -72,8 +72,9 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
 
 
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
-    """Check if model has LoRA layers applied."""
-    return any(adapter_named_parameters(model))
+    """Whether the model was built with LoRA; set at build so every rank agrees, including a pipeline
+    stage the target selection left without adapters."""
+    return model[0].lora_attached
 
 
 def adapter_named_parameters(model: Sequence[torch.nn.Module]) -> list[dict[str, torch.nn.Parameter]]:

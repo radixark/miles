@@ -163,20 +163,21 @@ def setup_model_and_optimizer(
     assert not args.moe_use_upcycling
     assert args.load is not None or args.pretrained_checkpoint is not None
 
+    lora_attached = is_multi_lora_enabled(args) or (is_lora_enabled(args) and role == "actor")
     # Multi-LoRA and single-LoRA (actor, bridge) both build via the bridge helper,
     # which picks the adapter type internally.
-    if is_multi_lora_enabled(args) or (
-        is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge"
-    ):
+    if is_multi_lora_enabled(args) or (lora_attached and args.megatron_to_hf_mode == "bridge"):
         model = _setup_lora_model_via_bridge(args)
         enforce_marked_param_dtypes(model)
     else:
         provider_func = get_model_provider_func(args, role)
-        if is_lora_enabled(args) and role == "actor":
+        if lora_attached:
             provider_func = wrap_model_provider_with_lora(provider_func, args)
             if args.offload_train:
                 patch_param_grad_buffer_for_colocate_mode_lora()
         model = get_model(provider_func, ModelType.encoder_or_decoder)
+    for model_chunk in model:
+        model_chunk.lora_attached = lora_attached
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
