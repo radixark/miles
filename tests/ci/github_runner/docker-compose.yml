@@ -18,8 +18,8 @@
 # silently spins up many runners.
 services:
   runner:
-    # NOTE need to use the latest, o/w the runner will want to upgrade itself
-    image: ghcr.io/actions/actions-runner:2.334.0
+    # NOTE need to use the latest, o/w the broker rejects it as deprecated
+    image: ghcr.io/actions/actions-runner:2.336.0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /data/miles_ci:/data/miles_ci
@@ -38,6 +38,8 @@ services:
     entrypoint: >
       sh -c "
       cd /data/miles_ci &&
-      /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work /data/miles_ci/runner_$(hostname) --disableupdate &&
+      if [ ! -f /home/runner/.runner ]; then
+        /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --work /data/miles_ci/runner_$(hostname) --disableupdate;
+      fi &&
       /home/runner/run.sh
       "
