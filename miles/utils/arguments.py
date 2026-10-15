@@ -1436,16 +1436,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "`max_response_len // cp_size` instead of `max_response_len`."
                 ),
             )
-            parser.add_argument(
-                "--log-probs-max-tokens-per-gpu",
-                type=int,
-                default=None,
-                help=(
-                    "The maximum number of tokens per GPU for calculating log probs. "
-                    "This is used to calculate the log probs of the responses during rollout, "
-                    "and should be set to a larger value than `max_tokens_per_gpu` if you want better performance. "
-                ),
-            )
             return parser
 
         def add_eval_arguments(parser):
@@ -3693,8 +3683,6 @@ def miles_validate_args(args):
 
     if args.use_dynamic_batch_size:
         assert args.max_tokens_per_gpu is not None, "max_tokens_per_gpu must be set when use_dynamic_batch_size is set"
-        if args.log_probs_max_tokens_per_gpu is None:
-            args.log_probs_max_tokens_per_gpu = args.max_tokens_per_gpu
 
     # --use-dynamic-global-batch-size has two motivations:
     # 1. compaction/subagent rollouts: static micro-batching cannot guarantee alignment
