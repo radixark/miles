@@ -153,6 +153,24 @@ def _resolve_rollout_functions(args) -> None:
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
+def _validate_remax_args(args) -> None:
+    if args.advantage_estimator != "remax":
+        return
+    for option in (
+        "partial_rollout",
+        "multi_lora",
+        "fully_async",
+        "group_rm",
+        "normalize_advantages",
+        "custom_reward_post_process_path",
+        "custom_convert_samples_to_train_data_path",
+    ):
+        if getattr(args, option, None):
+            raise ValueError(f"remax does not support --{option.replace('_', '-')}")
+    if getattr(args, "rollout_submission_granularity", None) == "sample":
+        raise ValueError("remax requires group-level rollout submission")
+
+
 def reset_arg(parser, name, **kwargs):
     """
     Reset the default value of a Megatron argument.
@@ -1712,6 +1730,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "gspo",
                     "reinforce_plus_plus",
                     "reinforce_plus_plus_baseline",
+                    "remax",
                     "ppo",
                 ],
                 default="grpo",
@@ -3985,6 +4004,7 @@ def miles_validate_args(args):
         )
 
     _resolve_rollout_functions(args)
+    _validate_remax_args(args)
 
     if args.namespaced_radix_cache is None:
         args.namespaced_radix_cache = args.fully_async and args.pause_generation_mode == "in_place"
