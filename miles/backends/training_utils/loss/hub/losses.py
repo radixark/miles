@@ -18,6 +18,7 @@ from miles.backends.training_utils.loss.hub.math_utils import (
     compute_gspo_kl,
     compute_opsm_mask,
     compute_policy_loss,
+    compute_top_entropy_mask,
 )
 from miles.backends.training_utils.loss.hub.score_centering_loss import score_centering_loss_function
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -112,7 +113,8 @@ def policy_loss_function(
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
     max_seq_lens = batch.get("max_seq_lens", None)
-    calculate_entropy = args.entropy_coef != 0 or args.observe_training_entropy
+    use_top_entropy_mask = args.top_entropy_quantile < 1.0
+    calculate_entropy = args.entropy_coef != 0 or args.observe_training_entropy or use_top_entropy_mask
     rollout_sampling_mask = get_rollout_sampling_masks(batch) if args.use_sampling_support_replay else None
 
     log_probs_and_entropy = get_log_probs_and_entropy(
@@ -230,6 +232,17 @@ def policy_loss_function(
     if args.use_opsm:
         pg_loss = pg_loss * opsm_mask
 
+    if use_top_entropy_mask:
+        # Beyond the 80/20 rule: only the highest-entropy tokens get a policy
+        # gradient. Like the OPSM mask, this scales the loss without changing
+        # the reducer's denominators.
+        top_entropy_mask = compute_top_entropy_mask(
+            torch.cat(log_probs_and_entropy["entropy"], dim=0),
+            local_loss_masks,
+            args.top_entropy_quantile,
+        )
+        pg_loss = pg_loss * top_entropy_mask
+
     # Apply off-policy correction using importance sampling if enabled
     if args.get_mismatch_metrics or args.use_tis:
         # NOTE:
@@ -309,6 +322,9 @@ def policy_loss_function(
     if calculate_entropy:
         entropy = log_probs_and_entropy["entropy"]
         entropy = torch.cat(entropy, dim=0)
+        if use_top_entropy_mask:
+            # Keep the entropy bonus on the same tokens as the policy gradient.
+            entropy = entropy * top_entropy_mask
         entropy_loss = sum_of_sample_mean(entropy)
         if args.entropy_coef != 0:
             loss = pg_loss - args.entropy_coef * entropy_loss
