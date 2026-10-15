@@ -1,16 +1,16 @@
 """E2E: Qwen3.5-4B full-parameter GRPO with the deterministic GDN backend under head-sharded TP.
 
-Runs ``--linear-attention-backend loom`` (the generated deterministic chunked GDN kernels in
+Runs ``--linear-attention-backend cake`` (the generated deterministic chunked GDN kernels in
 ``miles/kernels/attention/gdn/cake``) with ``--tensor-model-parallel-size 2 --sequence-parallel``,
 so the head-sharded linear-attention layer (``miles_plugins/models/linear_attn.py``) runs each rank's
 key-head groups through the deterministic kernels, and the Megatron -> HF weight update goes through the
 group-major ``in_proj_qkv`` / ``conv1d`` converters.  ``MILES_GDN_BACKEND=fla`` runs the same recipe on the
-FLA backend for an A/B reference.  Needs Blackwell (SM100a/SM103a) GPUs for the loom backend.
+FLA backend for an A/B reference.  Needs Blackwell (SM100a/SM103a) GPUs for the cake backend.
 
 ``MILES_E2E_MODE`` selects ``live`` (default: rollouts + training), ``record`` (live, additionally dumps every
 rollout batch to ``MILES_E2E_DEBUG_DIR``) or ``replay`` (``--debug-train-only`` on the recorded batches, saving
 the per-step grad norm and the per-rank train data, incl. the trainer log-probs, under ``MILES_E2E_RUN_TAG``).
-Two ``replay`` runs of the loom backend on the same recorded batches must produce bit-identical grad norms and
+Two ``replay`` runs of the cake backend on the same recorded batches must produce bit-identical grad norms and
 log-probs; ``fla`` replays give the non-deterministic reference.
 
 Paths default to the CI layout (``/root/models``, ``/root/datasets``, ``/root``); set
@@ -34,7 +34,7 @@ register_cuda_ci(
 MODEL_NAME = "Qwen3.5-4B"
 MODEL_TYPE = "qwen3.5-4B"
 NUM_GPUS = 4
-BACKEND = os.environ.get("MILES_GDN_BACKEND", "loom")
+BACKEND = os.environ.get("MILES_GDN_BACKEND", "cake")
 ROOT = os.environ.get("MILES_E2E_ROOT")
 MODEL_DIR = f"{ROOT}/models" if ROOT else "/root/models"
 DATA_DIR = f"{ROOT}/datasets" if ROOT else "/root/datasets"

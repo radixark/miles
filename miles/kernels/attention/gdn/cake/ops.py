@@ -16,8 +16,8 @@ state scan, output; backward: dv_local, adjoint state scan, dq/dk/dw/dg, WY pull
 recompute the transient WY/state tensors exactly in the backward, as FLA does.  ``K = V = 128``,
 ``HV % H == 0`` (grouped value heads without materialised ``repeat_interleave``), BF16 q/k/v.
 
-Host-side wiring (see ``design_doc/active/MILES_GDN_CHUNKED_BACKWARD.md`` in the kernel repository, section
-"Host wiring"): the chunk table is a pure function of the micro-batch's segment lengths, so it is built once per
+Host-side wiring (the generator's design note, section "Host wiring", has the rationale): the chunk table is a
+pure function of the micro-batch's segment lengths, so it is built once per
 distinct layout from the host copy of ``cu_seqlens`` that Megatron's ``packed_seq_params`` already carries
 (``cu_seqlens_cpu``; no device-to-host synchronisation, no launch) and shared by every layer and by the
 activation-recompute forward; a device-only ``cu_seqlens`` falls back to the on-device table kernel.  The forward
@@ -343,7 +343,7 @@ def _scan_record(kind: str, vb: int, ks: int, arch: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# finalize kernel selection (a pure function of shape and device; mirrors loom's gdn_chunk_training.finalize_stage)
+# finalize kernel selection: a pure function of shape and device, mirroring the generator's finalize_stage
 # --------------------------------------------------------------------------- #
 FINALIZE_MLP_GROUP = (
     3  # value-head group the one-wave finalize is unrolled for (HV = 3 H at every Qwen3.8-27B TP degree)
@@ -437,7 +437,7 @@ def _scan_stage(kind: str, config: tuple[int, int], device: torch.device, arch: 
 # --------------------------------------------------------------------------- #
 # segment-parallel state scans (a pure function of the layout bound and the device)
 # --------------------------------------------------------------------------- #
-PRESCAN_CONFIGS = ((32, 2), (64, 1))  # the register-scan configurations with pre-scan stages (loom: PRESCAN_CONFIGS)
+PRESCAN_CONFIGS = ((32, 2), (64, 1))  # the register-scan configurations with pre-scan stages (generator: same name)
 MIN_SEGMENT_CHUNKS = 4  # 256 tokens: shorter segments pay more in pre-scan + stitch than they save
 # Cost model of the split, in chunk steps of the (32,2) register scan at one CTA per SM, re-fit on the round-R3 GB300
 # forced-L sweep (1x8192 and 1x16384 tokens at HV 12, L = 13/22/26/43/64/86, CUPTI per kernel; fwd_h 1.23 us and dhu
@@ -456,7 +456,7 @@ MIN_SEGMENT_CHUNKS = 4  # 256 tokens: shorter segments pay more in pre-scan + st
 # directions, both lengths) = STITCH_FIXED_CHUNKS + STITCH_COPY_CHUNKS x (max k - 1) fwd_h steps; a boundary without a
 # map is a copy of ``B``.  The exact fallback (weak gating: full-segment pre-scan, identity blocks, 3xBF16 128^3 product
 # + tile rebuild) is not priced.
-# Mirror of ``loom/examples/weave/gdn_chunk_training.py`` (same constants, same functions): both sides must agree so the
+# Mirror of the generator's ``gdn_chunk_training.py`` (same constants, same functions): both sides must agree so the
 # host table and the device table split identically.
 SCAN_CO_RESIDENT_FACTOR = 1.60
 PRESCAN_STEP_FACTOR = 1.16
@@ -781,7 +781,7 @@ def scan_plans(
 ) -> tuple[ScanPlan, ScanPlan]:
     """``(forward scan, backward scan)`` plans of a layout (see :func:`choose_scan_plan`).
 
-    Memoised per layout, device (index and properties) and pin state, like loom's ``scan_plans``: the host route
+    Memoised per layout, device (index, properties) and pin state, like the generator's ``scan_plans``: the host route
     (``chunk_meta_from_host``) plans on every call and the joint search costs ~60 us of host time per call; a
     repeated layout is a dictionary hit, a pin change always re-plans.
     """

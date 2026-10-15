@@ -1,6 +1,6 @@
-"""Linear-attention kernel selection, and fla vs flashqla / fla vs loom numerical equivalence for GDN.
+"""Linear-attention kernel selection, and fla vs flashqla / fla vs cake numerical equivalence for GDN.
 
-The flashqla equivalence tests need a Hopper (SM90+) GPU with both `fla` and `flash_qla`; the loom ones a
+The flashqla equivalence tests need a Hopper (SM90+) GPU with both `fla` and `flash_qla`; the cake ones a
 Blackwell (SM100a / SM103a) GPU with `fla`; they skip otherwise.
 """
 
@@ -18,9 +18,9 @@ def test_unknown_backend_raises_value_error():
         linear_attn.gdn_kernel("nope")
 
 
-def test_loom_backend_routes_to_the_generated_kernels():
+def test_cake_backend_routes_to_the_generated_kernels():
     pytest.importorskip("torch")
-    fn = linear_attn.gdn_kernel("loom")
+    fn = linear_attn.gdn_kernel("cake")
     assert fn.__module__ == "miles.kernels.attention.gdn.cake.ops"
     assert fn.__name__ == "chunk_gated_delta_rule"
 
@@ -45,11 +45,11 @@ def test_short_conv_backend_respects_fla_conv_backend(monkeypatch):
     assert linear_attn.short_conv_backend.__wrapped__() == "cuda"
 
 
-def test_loom_short_conv_defaults_to_triton_unless_set(monkeypatch):
+def test_cake_short_conv_defaults_to_triton_unless_set(monkeypatch):
     monkeypatch.delenv("FLA_CONV_BACKEND", raising=False)
-    assert linear_attn.loom_conv_backend.__wrapped__() == "triton"
+    assert linear_attn.cake_conv_backend.__wrapped__() == "triton"
     monkeypatch.setenv("FLA_CONV_BACKEND", "cuda")
-    assert linear_attn.loom_conv_backend.__wrapped__() == "cuda"
+    assert linear_attn.cake_conv_backend.__wrapped__() == "cuda"
 
 
 NUM_HEADS = 4
@@ -134,7 +134,7 @@ def test_fla_flashqla_equivalence(dtype_name, atol, rtol):
     torch.testing.assert_close(flashqla_out, fla_out, atol=atol, rtol=rtol)
 
 
-def _require_loom():
+def _require_cake():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA device required to compare GDN kernels")
@@ -188,17 +188,17 @@ def _autograd_step(torch, kernel, inputs, cu_seqlens):
 
 @pytest.mark.parametrize("v_per_k", [1, 2])
 @pytest.mark.parametrize("use_cu", [True, False])
-def test_fla_loom_equivalence_and_determinism(use_cu, v_per_k):
-    torch = _require_loom()
+def test_fla_cake_equivalence_and_determinism(use_cu, v_per_k):
+    torch = _require_cake()
     fla_kernel = linear_attn.gdn_kernel("fla")
-    loom_kernel = linear_attn.gdn_kernel("loom")
+    cake_kernel = linear_attn.gdn_kernel("cake")
     inputs, cu_seqlens = _grouped_inputs(torch, v_per_k, use_cu)
 
     ref = _autograd_step(torch, fla_kernel, inputs, cu_seqlens)
-    first = _autograd_step(torch, loom_kernel, inputs, cu_seqlens)
-    second = _autograd_step(torch, loom_kernel, inputs, cu_seqlens)
+    first = _autograd_step(torch, cake_kernel, inputs, cu_seqlens)
+    second = _autograd_step(torch, cake_kernel, inputs, cu_seqlens)
     for name in ref:
-        assert torch.equal(first[name], second[name]), f"loom {name} is not bit-deterministic"
+        assert torch.equal(first[name], second[name]), f"cake {name} is not bit-deterministic"
         actual, expected = first[name].float(), ref[name].float()
         scale = max(1.0, expected.abs().max().item()) if name == "dg" else 1.0
         torch.testing.assert_close(

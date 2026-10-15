@@ -5,7 +5,7 @@
 zigzag relayout, and the row-parallel ``out_proj`` collective out. :class:`LinearAttention` runs this
 rank's heads: the model's input projections, the short conv(s) over q/k/v (one over group-major rows
 for GDN, see ``megatron_to_hf.linear_attn_layout``; one per tensor for KDA), the family's recurrence
-through fla (GDN also through FlashQLA or the generated deterministic ``loom`` kernels), and a gated RMSNorm whose
+through fla (GDN also through FlashQLA or the generated deterministic ``cake`` kernels), and a gated RMSNorm whose
 replicated weight has its gradient summed across TP. A family subclass supplies the recurrence; a model
 subclass declares the projections under the HF names, plain bf16 linears on sharded parameters, so
 ``--fp8`` training leaves this layer in bf16.
@@ -70,12 +70,12 @@ def gdn_kernel(backend: str):
             ) from exc
         return chunk_gated_delta_rule
 
-    if backend == "loom":
+    if backend == "cake":
         try:
             from miles.kernels.attention.gdn.cake import chunk_gated_delta_rule
         except ImportError as exc:
             raise ImportError(
-                "GDN backend 'loom' requires the generated deterministic kernels in "
+                "GDN backend 'cake' requires the generated deterministic kernels in "
                 "miles/kernels/attention/gdn/cake."
             ) from exc
         return chunk_gated_delta_rule
@@ -100,15 +100,15 @@ def kda_kernel():
 def gdn_recurrence(
     q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context, cu_seqlens_host=None
 ):
-    """q/k ``[b, s, G, hk]``, v ``[b, s, H, hv]`` (fla and the loom kernels group value heads per key head),
+    """q/k ``[b, s, G, hk]``, v ``[b, s, H, hv]`` (fla and the cake kernels group value heads per key head),
     decay ``[b, s, H]`` -> ``[b, s, H, hv]``.
 
     ``cu_seqlens_host`` (the packed boundaries as host ints, from ``packed_seq_params.cu_seqlens_host``) lets the
-    ``loom`` backend take its exact per-layout chunk table from a cache shared by every layer of the micro-batch
+    ``cake`` backend take its exact per-layout chunk table from a cache shared by every layer of the micro-batch
     instead of rebuilding it on the device per layer; it is not passed under context parallelism, where the CP
     context carries this rank's local boundaries."""
-    if cp_context is not None and backend not in ("fla", "loom"):
-        raise NotImplementedError(f"GDN context parallelism requires the 'fla' or 'loom' backend, got {backend!r}.")
+    if cp_context is not None and backend not in ("fla", "cake"):
+        raise NotImplementedError(f"GDN context parallelism requires the 'fla' or 'cake' backend, got {backend!r}.")
     beta = beta_logits.sigmoid()
     g = -A_log.float().exp() * F.softplus(decay.float() + dt_bias)
     if backend == "flashqla":
@@ -116,7 +116,7 @@ def gdn_recurrence(
     extra = {}
     if cp_context is not None:
         extra["cp_context"] = cp_context
-    elif backend == "loom" and cu_seqlens_host is not None and cu_seqlens is not None:
+    elif backend == "cake" and cu_seqlens_host is not None and cu_seqlens is not None:
         extra["cu_seqlens_cpu"] = cu_seqlens_host
     out, _ = gdn_kernel(backend)(
         q,
@@ -174,12 +174,12 @@ def short_conv_backend() -> str:
 
 
 @functools.cache
-def loom_conv_backend() -> str:
-    """Short conv backend under the ``loom`` GDN backend: fla's Triton kernels, whose backward reproduces the weight
+def cake_conv_backend() -> str:
+    """Short conv backend under the ``cake`` GDN backend: fla's Triton kernels, whose backward reproduces the weight
     gradient bit for bit, instead of :func:`short_conv_backend`'s ``mix`` (causal-conv1d's CUDA backward accumulates
     ``dweight`` with atomics, so repeated passes differ in the last bits). An explicit ``FLA_CONV_BACKEND`` wins."""
     backend = os.environ.get("FLA_CONV_BACKEND", "triton")
-    logger.info(f"Linear-attention short conv backend under loom: {backend}")
+    logger.info(f"Linear-attention short conv backend under cake: {backend}")
     return backend
 
 
@@ -415,13 +415,13 @@ class LinearAttention(MegatronModule, ABC):
 
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
-    kernel, or the bit-deterministic generated one (``loom``, Blackwell SM100a / SM103a, K = V = 128,
-    see ``miles/kernels/attention/gdn/cake``; its short conv runs on :func:`loom_conv_backend` so the
+    kernel, or the bit-deterministic generated one (``cake``, Blackwell SM100a / SM103a, K = V = 128,
+    see ``miles/kernels/attention/gdn/cake``; its short conv runs on :func:`cake_conv_backend` so the
     whole layer's gradients are reproducible). Models subclass it with their projections."""
 
     def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu"):
         gdn_kernel(backend)
-        conv_backend = loom_conv_backend() if backend == "loom" else None
+        conv_backend = cake_conv_backend() if backend == "cake" else None
         super().__init__(
             config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation, conv_backend=conv_backend
         )

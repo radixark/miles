@@ -6,7 +6,7 @@ attention/
   dense/           dense_attention_backward
   dsa/             sparse_attention · lightning_indexer · indexer_logits[_sbhd] · indexer_topk_scores · kpool · topk
     tilelang/      one indexer + sparse attention pair; RoPE tail and attention sink are compile-time parameters
-  gdn/             chunk_gated_delta_rule (`--linear-attention-backend loom`)
+  gdn/             chunk_gated_delta_rule (`--linear-attention-backend cake`)
     cake/          generated deterministic chunked forward + backward for SM100a / SM103a: one source pair per stage shared by both architectures, `registry.json` + `csrc/`
   qsa/             qsa_sparse_attention · qsa_block_sparse_attention
 embedding/         gather_ple_rows · ple_gate_conv

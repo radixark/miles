@@ -322,7 +322,7 @@ def test_segmented_scans_are_bit_deterministic(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# segment planner (round R2b): the calibrated cost model is a pure function shared with loom's
+# segment planner (round R2b): the calibrated cost model is a pure function shared with the generator's
 # ``gdn_chunk_training.plan_segments`` (same constants, same table below), so both tables split identically.
 # --------------------------------------------------------------------------- #
 B200_SMS, GB300_SMS = 148, 152  # SM counts the gates run on (the GB300 node reports 152 SMs; the full die has 160)
@@ -360,8 +360,8 @@ def test_scan_makespan_prices_dispatch_order_co_residency_and_slot_release():
     )
 
 
-def test_planner_constants_mirror_loom_verbatim():
-    # the same literals as loom's gdn_chunk_training.py (its loom/tests/infra/test_gdn_chunk_segment_planner.py pins them)
+def test_planner_constants_mirror_generator_verbatim():
+    # the same literals as the generator's gdn_chunk_training.py (its test_gdn_chunk_segment_planner.py pins them)
     assert (ops.MIN_SEGMENT_CHUNKS, ops.SCAN_CO_RESIDENT_FACTOR, ops.PRESCAN_STEP_FACTOR) == (4, 1.60, 1.16)
     assert (ops.PRESCAN_WARMUP_CHUNKS, ops.STITCH_FIXED_CHUNKS, ops.STITCH_COPY_CHUNKS) == (3.3, 2.75, 2.3)
     assert (ops.SPLIT_GAIN_THRESHOLD, ops.MAX_SCAN_ROUNDS, ops.MAX_SCAN_WAVES_SERIAL) == (0.95, 2, 4)
@@ -371,7 +371,7 @@ def test_planner_constants_mirror_loom_verbatim():
     # R3 (C6): per-configuration step factors and the configurations with pre-scan stages
     assert ops.SCAN_STEP_FACTOR == {(32, 2): 1.0, (32, 1): 1.18, (64, 1): 1.27}
     assert ops.PRESCAN_CONFIGS == ((32, 2), (64, 1))
-    # R7: the one-wave finalize's group and launch-bound residency (loom's FINALIZE_MLP_GROUP / FINALIZE_MLP_MIN_BLOCKS)
+    # R7: the one-wave finalize's group and launch-bound residency (generator: FINALIZE_MLP_GROUP / FINALIZE_MLP_MIN_BLOCKS)
     assert (ops.FINALIZE_MLP_GROUP, ops.FINALIZE_MLP_MIN_BLOCKS) == (3, 4)
     assert (
         ops.FINALIZE_MLP_MIN_BLOCKS * 128 * 128 <= 65536
@@ -401,7 +401,7 @@ def _chunks(seq_lens):
         ((96, 40), 2, 6, 148, "finalize_mlp"),  # group 3 on a 6-CTA grid
     ],
 )
-def test_finalize_stage_mirrors_loom(seq_lens, num_heads, num_v_heads, sm_count, expected):
+def test_finalize_stage_mirrors_generator(seq_lens, num_heads, num_v_heads, sm_count, expected):
     assert ops.finalize_stage(_chunks(seq_lens), num_heads, num_v_heads, sm_count) == expected
     assert expected in ops.LAUNCH_ARGS and ops.LAUNCH_ARGS[expected] == ops._FINALIZE_ARGS
 
@@ -642,7 +642,7 @@ def test_host_route_prices_the_exact_layout():
     index = DEVICE.index
     # two long sequences + the 512-alignment pseudo-sequence: the device route (chunk bound only) prices one 129-chunk
     # chain (22 / 43), the host route the exact 69 + 55 + 6 layout (fwd_h 23: 3 + 3 + 1 segments; dhu serial)
-    # (R3, C6: the joint plan moves both scans onto the (64,1) block, see tools/planner_mirror_v6.py and loom's
+    # (R3, C6: the joint plan moves both scans onto the (64,1) block, see the generator's
     # test_scan_plan_prices_configuration_switches_and_splits; the exact layout and the bound differ in L)
     P = ops.ScanPlan
     pack = (4360, 3491, 341)
@@ -691,7 +691,7 @@ def test_host_route_prices_the_exact_layout():
 
 
 def test_scan_plans_are_memoised_per_layout_and_pins(monkeypatch):
-    # mirror of loom's test: the memo key carries the layout, the device and the pins (a pin change re-plans)
+    # mirror of the generator's test: the memo key carries the layout, the device and the pins (a pin change re-plans)
     arch = ops.device_arch(DEVICE)
     P = ops.ScanPlan
     first = ops.scan_plans(8192, 1, 12, DEVICE.index, arch)
@@ -749,7 +749,7 @@ PER_ARCH_STAGES = {
 
 def test_per_arch_stages_launch_the_kernel_selected_for_this_architecture():
     """``dqkwg`` / ``wy_bwd`` / ``wy_bwd_bf16`` are the stages whose kernel is selected per architecture: the registry
-    the host loads names the Weave schedule it was rendered from and carries that kernel's block / dynamic shared
+    the host loads names the schedule it was rendered from and carries that kernel's block / dynamic shared
     memory, and ``kernel()`` launches exactly that record on the current device (eight-warp dqkwg on SM103a only,
     eight-warp WY pullback on both Blackwell parts)."""
     _require_blackwell()

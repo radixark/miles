@@ -1,6 +1,6 @@
-"""Head-sharded GDN with the deterministic ``loom`` backend under TP, CP and TP x CP against the replicated fla
+"""Head-sharded GDN with the deterministic ``cake`` backend under TP, CP and TP x CP against the replicated fla
 reference of ``tests/fast-gpu/linear_attn_reference.py``: forward output, input gradient and every parameter
-gradient (gathered across TP, summed across CP), plus bit determinism of the loom path (a second identical pass
+gradient (gathered across TP, summed across CP), plus bit determinism of the cake path (a second identical pass
 reproduces the output and all gradients exactly).  Needs Blackwell (SM100a / SM103a) GPUs.
 
     torchrun --nproc_per_node=4 tests/e2e/precision/test_qwen_gdn_tp_cp_parity.py
@@ -38,7 +38,7 @@ from linear_attn_reference import (  # noqa: E402
 register_cuda_ci(est_time=600, suite="stage-c-4-gpu-b200", labels=["precision"], hardware=["blackwell"], num_gpus=4)
 
 HIDDEN = 512
-# The loom kernels take K = V = 128; two value heads per key head exercise the grouped-head path.
+# The cake kernels take K = V = 128; two value heads per key head exercise the grouped-head path.
 HEADS = LinearAttnHeads(num_k_heads=4, num_v_heads=8, head_k_dim=128, head_v_dim=128)
 SEQLENS = [304, 720]  # multiples of 2 * cp for cp <= 4, so the zigzag chunks are exact
 TOLERANCE = 2e-2
@@ -102,7 +102,7 @@ def run_case(tp: int, cp: int, family: str, backend: str) -> dict[str, float]:
 
     out, dx, grads = forward_backward()
     errors = {}
-    if backend == "loom":
+    if backend == "cake":
         for p in core.parameters():
             p.grad = None
         out_again, dx_again, grads_again = forward_backward()
@@ -134,18 +134,18 @@ def main() -> int:
     parser.add_argument("--tp", type=int, default=None)
     parser.add_argument("--cp", type=int, default=None)
     parser.add_argument("--family", choices=["qwen3_5", "qwen3_next"], default=None)
-    parser.add_argument("--backend", default="loom")
+    parser.add_argument("--backend", default="cake")
     args = parser.parse_args()
 
     rank, world = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("nccl", timeout=timedelta(seconds=600))
-    if args.backend == "loom":
+    if args.backend == "cake":
         from miles.kernels.attention.gdn.cake import SUPPORTED_CAPABILITIES
 
         if torch.cuda.get_device_capability() not in SUPPORTED_CAPABILITIES:
             if rank == 0:
-                print(f"SKIPPED: the loom GDN kernels need an SM100a / SM103a GPU, got {torch.cuda.get_device_name()}")
+                print(f"SKIPPED: the cake GDN kernels need an SM100a / SM103a GPU, got {torch.cuda.get_device_name()}")
             dist.destroy_process_group()
             return 0
     if args.tp is not None:
