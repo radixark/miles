@@ -2,9 +2,8 @@
 
 Each live slot owns an independent LayerWiseDistributedOptimizer over exactly
 its adapter parameters, built at load and destroyed with the slot, so a fresh
-tenant never inherits optimizer state. Requires plain DDP all-reduce
-(use_distributed_optimizer OFF) so cross-batch gradient retention stays
-idempotent."""
+tenant never inherits optimizer state. Plain DDP all-reduce keeps full gradients
+available to each slot's optimizer."""
 
 import logging
 import math
@@ -27,8 +26,7 @@ def validate_multi_lora_optimizer_args(args: Namespace) -> None:
     """Reject launch options the per-slot optimizers cannot honor."""
     assert not args.use_distributed_optimizer, (
         "multi-LoRA per-slot optimizers require use_distributed_optimizer=False: "
-        "gradient retention relies on all-reduce idempotency, and LayerWise "
-        "sharding replaces byte-level ZeRO"
+        "LayerWise sharding requires full parameter gradients instead of byte-level ZeRO shards"
     )
     assert args.bf16 and not args.fp16, "multi-LoRA per-slot optimizers require bf16 (no dynamic loss scaler)"
     assert (
@@ -186,14 +184,22 @@ class SlotOptimizer:
                 main_param.grad = None
 
 
-def reset_grad_metadata_keep_grads(model_chunks) -> None:
-    """Reset DDP bookkeeping while retaining each slot's gradient accumulation window."""
-    for model_chunk in model_chunks:
-        if getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine":
-            for param in model_chunk.params_with_grad:
-                param.grad_added_to_main_grad = False
-        for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
-            bucket_group.reset()
+@contextmanager
+def accumulate_gradients(model_chunks):
+    # Synchronizing retained expert gradients would scale earlier requests again.
+    buffers = [buffer for chunk in model_chunks for buffer in chunk.buffers + chunk.expert_parallel_buffers]
+    accumulated = [buffer.grad_data.clone() for buffer in buffers]
+    for chunk in model_chunks:
+        chunk.zero_grad_buffer()
+    try:
+        yield
+    except BaseException:
+        for buffer, previous in zip(buffers, accumulated, strict=True):
+            buffer.grad_data.copy_(previous)
+        raise
+    else:
+        for buffer, previous in zip(buffers, accumulated, strict=True):
+            buffer.grad_data.add_(previous)
 
 
 def step_slot_optimizers(

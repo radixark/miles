@@ -60,6 +60,7 @@ def build_lora_config(args, *, target_modules):
         "lora_dropout": args.lora_dropout,
         "bias": "none",
         "task_type": "CAUSAL_LM",
+        "experts_shared_outer_loras": args.experts_shared_outer_loras,
     }
 
 

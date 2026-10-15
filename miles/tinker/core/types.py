@@ -57,6 +57,7 @@ class GatewayConfig:
     max_samples_per_request: int = 64
     max_lora_rank: int = 32  # the slot capacity the server was built with (--lora-rank)
     lora_alpha: float | None = None  # None: 2 * rank
+    experts_shared_outer_loras: bool = False
     # what the server-wide adapter layout trains; create_model rejects deviations
     trains_attn: bool = True
     trains_mlp: bool = True
