@@ -21,7 +21,7 @@ def test_unknown_backend_raises_value_error():
 def test_loom_backend_routes_to_the_generated_kernels():
     pytest.importorskip("torch")
     fn = linear_attn.gdn_kernel("loom")
-    assert fn.__module__ == "miles_plugins.models.gdn_chunk_train.ops"
+    assert fn.__module__ == "miles.kernels.attention.gdn.cake.ops"
     assert fn.__name__ == "chunk_gated_delta_rule"
 
 
@@ -138,7 +138,7 @@ def _require_loom():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA device required to compare GDN kernels")
-    from miles_plugins.models.gdn_chunk_train import SUPPORTED_CAPABILITIES
+    from miles.kernels.attention.gdn.cake import SUPPORTED_CAPABILITIES
 
     if torch.cuda.get_device_capability() not in SUPPORTED_CAPABILITIES:
         pytest.skip("the deterministic GDN kernels need an SM100a / SM103a GPU")

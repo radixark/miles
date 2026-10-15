@@ -1,7 +1,7 @@
 """E2E: Qwen3.5-4B full-parameter GRPO with the deterministic GDN backend under head-sharded TP.
 
 Runs ``--linear-attention-backend loom`` (the generated deterministic chunked GDN kernels in
-``miles_plugins/models/gdn_chunk_train``) with ``--tensor-model-parallel-size 2 --sequence-parallel``,
+``miles/kernels/attention/gdn/cake``) with ``--tensor-model-parallel-size 2 --sequence-parallel``,
 so the head-sharded linear-attention layer (``miles_plugins/models/linear_attn.py``) runs each rank's
 key-head groups through the deterministic kernels, and the Megatron -> HF weight update goes through the
 group-major ``in_proj_qkv`` / ``conv1d`` converters.  ``MILES_GDN_BACKEND=fla`` runs the same recipe on the

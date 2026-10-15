@@ -5,10 +5,14 @@ https://www.apache.org/licenses/LICENSE-2.0
 
 Native loading for the generated deterministic chunked GDN training kernels (SM100a / SM103a).
 
-``registry_<arch>.json`` next to this file is written mechanically by the kernel generator: one
-record per stage with the argument plan, launch block, dynamic shared memory, the device/launcher
-source pair under ``csrc/<arch>/`` and the compile flags. Each stage builds on first use as a torch
-CUDA extension (``nvcc`` + ``ninja``; cached under ``TORCH_EXTENSIONS_DIR``).
+``registry.json`` next to this file is written mechanically by the kernel generator: one record per
+stage with the argument plan, launch block, dynamic shared memory, the device/launcher source pair
+under ``csrc/`` and the compile flags. The generated device code is the same text for SM100a and
+SM103a (``__CUDA_ARCH__`` guards where they differ), so one source pair serves both architectures
+(``arches``); a stage exported with a different schedule per architecture carries its pairs under
+``per_arch`` (``dqkwg``: eight warps on SM103a). Each stage builds on first use as a torch CUDA
+extension for the current device's architecture (``nvcc`` + ``ninja``; cached per architecture under
+``TORCH_EXTENSIONS_DIR``).
 """
 
 import json
@@ -34,19 +38,21 @@ _CONVERSION_FLAGS = (
 )
 
 
-def _load_registries() -> dict:
+def _load_registry() -> dict:
     modules: dict = {}
-    for arch in _ARCH_FLAGS:
-        path = _PACKAGE / f"registry_{arch}.json"
-        if not path.is_file():
-            continue
-        for stage, record in json.loads(path.read_text()).items():
-            modules.setdefault(stage, {})[arch] = record
+    path = _PACKAGE / "registry.json"
+    if not path.is_file():
+        return modules
+    for stage, record in json.loads(path.read_text()).items():
+        per_arch = record.pop("per_arch", None)
+        for arch in record["arches"]:
+            modules.setdefault(stage, {})[arch] = record if per_arch is None else {**record, **per_arch[arch]}
     return modules
 
 
-# MODULES[stage][arch] -> generated module record (from registry_<arch>.json).
-MODULES = _load_registries()
+# MODULES[stage][arch] -> generated module record (from registry.json); a stage exported once for every
+# architecture shares one record object across them.
+MODULES = _load_registry()
 
 
 def device_arch(device=None):
@@ -67,7 +73,7 @@ def load(stage, arch):
 
     record = MODULES[stage][arch]
     return load_extension(
-        name=record["cache_name"],
+        name=f"{record['name']}_{arch}",
         sources=[str(_CSRC / relative) for relative in record["sources"]],
         extra_include_paths=[str(_CSRC)],
         extra_cuda_cflags=[_ARCH_FLAGS[arch], "-O3", *_CONVERSION_FLAGS, *record["compile_flags"]],

@@ -1,4 +1,4 @@
-"""Host wiring of the deterministic chunked GDN kernels (``miles_plugins/models/gdn_chunk_train``).
+"""Host wiring of the deterministic chunked GDN kernels (``miles/kernels/attention/gdn/cake``).
 
 One exact chunk table per micro-batch layout (shared by every layer, no device-to-host synchronisation), launch
 counts, and the bit-identical tape / recompute backward.  Needs a CUDA device; the kernel tests need Blackwell
@@ -11,11 +11,15 @@ import warnings
 
 import pytest
 
+from tests.ci.ci_register import register_cuda_ci
+
+register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-b200", labels=["precision"], hardware=["blackwell"], num_gpus=1)
+
 torch = pytest.importorskip("torch")
 if not torch.cuda.is_available():
     pytest.skip("CUDA device required", allow_module_level=True)
 
-from miles_plugins.models.gdn_chunk_train import ops  # noqa: E402
+from miles.kernels.attention.gdn.cake import ops  # noqa: E402
 
 # A real Qwen3.8-27B TP4 micro-batch: three sequences plus the 512-token alignment pad as its own segment.
 LAYOUT = (3339, 2802, 1340, 263)
@@ -79,7 +83,7 @@ def test_host_boundaries_are_validated():
 
 
 def _require_blackwell():
-    from miles_plugins.models.gdn_chunk_train import SUPPORTED_CAPABILITIES
+    from miles.kernels.attention.gdn.cake import SUPPORTED_CAPABILITIES
 
     if torch.cuda.get_device_capability() not in SUPPORTED_CAPABILITIES:
         pytest.skip("the deterministic GDN kernels need SM100a / SM103a")
@@ -846,7 +850,7 @@ def test_chunk_meta_front_cache_hits_per_layer_and_keys_on_layout_heads_device_a
 
 def test_positional_launchers_match_every_exported_plan():
     _require_blackwell()
-    from miles_plugins.models.gdn_chunk_train import _jit
+    from miles.kernels.attention.gdn.cake import _jit
 
     arch = ops.device_arch(DEVICE)
     stages = sorted(stage for stage, per_arch in ops.MODULES.items() if arch in per_arch and stage != "meta")

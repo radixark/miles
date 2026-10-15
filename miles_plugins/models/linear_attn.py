@@ -72,11 +72,11 @@ def gdn_kernel(backend: str):
 
     if backend == "loom":
         try:
-            from miles_plugins.models.gdn_chunk_train import chunk_gated_delta_rule
+            from miles.kernels.attention.gdn.cake import chunk_gated_delta_rule
         except ImportError as exc:
             raise ImportError(
                 "GDN backend 'loom' requires the generated deterministic kernels in "
-                "miles_plugins/models/gdn_chunk_train."
+                "miles/kernels/attention/gdn/cake."
             ) from exc
         return chunk_gated_delta_rule
 
@@ -416,7 +416,7 @@ class LinearAttention(MegatronModule, ABC):
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
     kernel, or the bit-deterministic generated one (``loom``, Blackwell SM100a / SM103a, K = V = 128,
-    see ``miles_plugins/models/gdn_chunk_train``; its short conv runs on :func:`loom_conv_backend` so the
+    see ``miles/kernels/attention/gdn/cake``; its short conv runs on :func:`loom_conv_backend` so the
     whole layer's gradients are reproducible). Models subclass it with their projections."""
 
     def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu"):

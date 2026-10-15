@@ -141,7 +141,7 @@ def main() -> int:
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("nccl", timeout=timedelta(seconds=600))
     if args.backend == "loom":
-        from miles_plugins.models.gdn_chunk_train import SUPPORTED_CAPABILITIES
+        from miles.kernels.attention.gdn.cake import SUPPORTED_CAPABILITIES
 
         if torch.cuda.get_device_capability() not in SUPPORTED_CAPABILITIES:
             if rank == 0:
