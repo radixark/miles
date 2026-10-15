@@ -88,7 +88,7 @@ class TestAdapterNamedParameters:
         model.anything = _NativeAdapter()
         model.anything.register_parameter("magnitude", torch.nn.Parameter(torch.ones(2)))
 
-        assert sorted(adapter_named_parameters([model])) == [
+        assert sorted(adapter_named_parameters([model])[0]) == [
             "anything.lora_A",
             "anything.lora_B",
             "anything.magnitude",
@@ -102,14 +102,14 @@ class TestAdapterNamedParameters:
         model = torch.nn.Module()
         model.linear_qkv = AdapterWrapper(torch.nn.Linear(2, 2), adapter)
 
-        assert sorted(adapter_named_parameters([model])) == ["linear_qkv.adapter.linear_in.weight"]
+        assert sorted(adapter_named_parameters([model])[0]) == ["linear_qkv.adapter.linear_in.weight"]
 
     def test_base_parameters_named_like_adapters_are_not_adapters(self):
         model = torch.nn.Module()
         model.mm_adapter = torch.nn.Linear(2, 2)
         model.register_parameter("lora_scale", torch.nn.Parameter(torch.ones(1)))
 
-        assert adapter_named_parameters([model]) == {}
+        assert adapter_named_parameters([model]) == [{}]
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +248,21 @@ class TestRestoreLoraAdapter:
             optimizer=self._optimizer(calls),
             opt_param_scheduler=scheduler,
         )
+
+    def test_virtual_pipeline_chunks_round_trip_their_own_adapters(self, tmp_path, monkeypatch):
+        _single_rank(monkeypatch)
+        saved = [_AdapterModel(), _AdapterModel()]
+        for value, chunk in enumerate(saved, start=1):
+            chunk.adapter.lora_A.data.fill_(value)
+        publisher = SimpleNamespace(write_adapter=lambda *_: None)
+        save_lora_checkpoint(saved, Namespace(megatron_to_hf_mode="bridge"), str(tmp_path), publisher=publisher)
+        restored = [_AdapterModel(), _AdapterModel()]
+
+        lora_utils.restore_lora_adapter(
+            restored, self._args(tmp_path, no_load_optim=True), optimizer=None, opt_param_scheduler=None
+        )
+
+        assert [chunk.adapter.lora_A.flatten().tolist() for chunk in restored] == [[1.0, 1.0], [2.0, 2.0]]
 
     def test_a_full_checkpoint_restores_the_optimizer_scheduler_and_step(self, tmp_path, monkeypatch):
         _single_rank(monkeypatch)

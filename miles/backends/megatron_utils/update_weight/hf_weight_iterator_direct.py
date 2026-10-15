@@ -287,7 +287,7 @@ def _get_megatron_local_param_infos(
 
     from ..lora.utils import adapter_named_parameters
 
-    adapter_ids = {id(param) for param in adapter_named_parameters(model).values()}
+    adapter_ids = {id(param) for params in adapter_named_parameters(model) for param in params.values()}
     param_infos: dict[str, ParamInfo] = {}
     rank = dist.get_rank()
     for name, param in named_params_and_buffers(args, model):

@@ -73,12 +73,15 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
 
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
     """Check if model has LoRA layers applied."""
-    return bool(adapter_named_parameters(model))
+    return any(adapter_named_parameters(model))
 
 
-def adapter_named_parameters(model: Sequence[torch.nn.Module]) -> dict[str, torch.nn.Parameter]:
-    """Every adapter parameter, found by the module that owns it: a native adapter, or what a Bridge
-    ``AdapterWrapper`` holds besides the base module it wraps."""
+def adapter_named_parameters(model: Sequence[torch.nn.Module]) -> list[dict[str, torch.nn.Parameter]]:
+    """Every adapter parameter of each model chunk, found by the module that owns it: a native adapter,
+    or what a Bridge ``AdapterWrapper`` holds besides the base module it wraps.
+
+    Virtual pipeline chunks reuse local parameter names, so the parameters stay keyed per chunk.
+    """
     try:
         from megatron.bridge.peft.adapter_wrapper import AdapterWrapper
     except ImportError:
@@ -92,11 +95,22 @@ def adapter_named_parameters(model: Sequence[torch.nn.Module]) -> dict[str, torc
             elif AdapterWrapper is not None and isinstance(module, AdapterWrapper):
                 base_param_ids = {id(param) for param in module.to_wrap.parameters()}
                 adapter_param_ids.update(id(param) for param in module.parameters() if id(param) not in base_param_ids)
-    return {
-        name: param
+    return [
+        {name: param for name, param in model_chunk.named_parameters() if id(param) in adapter_param_ids}
         for model_chunk in model
-        for name, param in model_chunk.named_parameters()
-        if id(param) in adapter_param_ids
+    ]
+
+
+def _adapter_shard_params(model: Sequence[torch.nn.Module]) -> dict[str, torch.nn.Parameter]:
+    """A rank's adapter parameters under their native-shard names."""
+    params_by_chunk = adapter_named_parameters(model)
+    if len(params_by_chunk) == 1:
+        return params_by_chunk[0]
+    # virtual pipeline chunks are prefixed model{i}, as Megatron's own checkpoints key them
+    return {
+        f"model{chunk_index}.{name}": param
+        for chunk_index, params in enumerate(params_by_chunk)
+        for name, param in params.items()
     }
 
 
@@ -196,7 +210,7 @@ def save_lora_checkpoint(
     global_rank = dist.get_rank() if dist.is_initialized() else 0
 
     def write_shards(checkpoint_dir: Path):
-        adapter_state = {name: param.detach().cpu() for name, param in adapter_named_parameters(model).items()}
+        adapter_state = {name: param.detach().cpu() for name, param in _adapter_shard_params(model).items()}
         training_state = None
         if optimizer is not None:
             save_optimizer = not getattr(args, "no_save_optim", False)
@@ -304,7 +318,7 @@ def _native_adapter_shard(adapter_dir: Path) -> Path | None:
 
 def _load_native_adapter_shard(model: Sequence[torch.nn.Module], shard: Path) -> None:
     state_dict = torch.load(shard, map_location="cpu", weights_only=True)
-    adapter_params = adapter_named_parameters(model)
+    adapter_params = _adapter_shard_params(model)
     missing = adapter_params.keys() - state_dict.keys()
     unexpected = state_dict.keys() - adapter_params.keys()
     if missing or unexpected:
