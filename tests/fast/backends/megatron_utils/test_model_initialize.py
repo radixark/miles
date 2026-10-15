@@ -180,9 +180,7 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
                 return_value=(model, optimizer, opt_param_scheduler),
             )
         )
-        stack.enter_context(
-            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True, False))
-        )
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True)))
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args)
 
@@ -210,9 +208,7 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
                 return_value=(model, optimizer, opt_param_scheduler),
             )
         )
-        stack.enter_context(
-            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True, False))
-        )
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True)))
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args)
 
@@ -230,8 +226,9 @@ def _load_model_state_with(
     tmp_path: Path,
     finetune: bool,
     iteration: int,
-    lora_rank: int = 0,
     restored_trained_iteration: bool | None = None,
+    adapter_iteration: int | None = None,
+    lora_adapter_path: str | None = None,
 ) -> "LoadCheckpointOutput":
     from miles.backends.megatron_utils.model import load_model_state
 
@@ -245,8 +242,11 @@ def _load_model_state_with(
         stack.enter_context(
             patch(
                 "miles.backends.megatron_utils.model.load_checkpoint",
-                return_value=(iteration, restored_trained_iteration, False),
+                return_value=(iteration, restored_trained_iteration),
             )
+        )
+        stack.enter_context(
+            patch("miles.backends.megatron_utils.model.restore_lora_adapter", return_value=adapter_iteration)
         )
         _patch_initialize_side_effects(stack)
         return load_model_state(
@@ -254,9 +254,9 @@ def _load_model_state_with(
                 use_checkpoint_opt_param_scheduler=True,
                 global_batch_size=8,
                 finetune=finetune,
-                lora_rank=lora_rank,
+                lora_rank=0 if lora_adapter_path is None else 8,
                 megatron_to_hf_mode="core",
-                lora_adapter_path=None,
+                lora_adapter_path=lora_adapter_path,
                 load=str(load_dir),
             ),
             model=[_FakeModelChunk()],
@@ -289,32 +289,27 @@ class TestWhereALoadSaysTheRunStarts:
 
 
 class TestALoraAdapterThatCarriesItsOwnIteration:
-    def test_a_lora_resume_at_iteration_zero_preserves_the_restored_training_state(self, tmp_path: Path) -> None:
-        """An adapter's saved iteration zero must restore the rollout state just like later iterations."""
-        output = _load_model_state_with(
-            tmp_path=tmp_path, finetune=True, iteration=0, lora_rank=8, restored_trained_iteration=True
+    """LoRA saves write no tracker, so a LoRA resume loads the base under --finetune (iteration 0, nothing
+    trained) and the adapter checkpoint alone says whether, and where, training stopped."""
+
+    def _start(self, tmp_path: Path, adapter_iteration: int | None) -> "LoadCheckpointOutput":
+        return _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=True,
+            iteration=0,
+            adapter_iteration=adapter_iteration,
+            lora_adapter_path=str(tmp_path / "adapter"),
         )
 
-        assert output.start_rollout_id == 1
+    def test_a_resume_at_iteration_zero_continues_after_it(self, tmp_path: Path) -> None:
+        """An adapter's saved iteration zero is a trained iteration, not a missing training state."""
+        assert self._start(tmp_path, adapter_iteration=0).start_rollout_id == 1
 
-    def test_a_lora_resume_under_finetune_continues_after_the_iteration_the_adapter_names(self, tmp_path: Path):
-        """LoRA saves write no tracker, so a lora resume always arrives here with --finetune set."""
-        output = _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100, lora_rank=8)
+    def test_a_resume_continues_after_the_iteration_the_adapter_names(self, tmp_path: Path) -> None:
+        output = self._start(tmp_path, adapter_iteration=100)
 
-        assert output.start_rollout_id == 101
+        assert (output.loaded_rollout_id, output.start_rollout_id) == (100, 101)
 
-    def test_a_lora_run_that_really_starts_from_scratch_starts_at_rollout_zero(self, tmp_path: Path):
-        """An adapter with no training state starts a new run at rollout zero."""
-        assert _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=0, lora_rank=8).start_rollout_id == 0
-
-    def test_a_lora_run_that_really_starts_from_scratch_restored_no_trained_iteration(self, tmp_path: Path):
-        """Nothing was trained, so no rollout state was ever saved for the rollout side to restore."""
-        output = _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=0, lora_rank=8)
-
-        assert output.start_rollout_id == 0
-
-    def test_a_lora_resume_restored_a_trained_iteration(self, tmp_path: Path):
-        """The adapter carries a trained iteration, so the rollout state saved beside it must be restored."""
-        output = _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100, lora_rank=8)
-
-        assert output.start_rollout_id == output.loaded_rollout_id + 1
+    def test_adapter_weights_without_training_state_start_at_rollout_zero(self, tmp_path: Path) -> None:
+        """An HF adapter or shards saved without training state carry no iteration to continue from."""
+        assert self._start(tmp_path, adapter_iteration=None).start_rollout_id == 0

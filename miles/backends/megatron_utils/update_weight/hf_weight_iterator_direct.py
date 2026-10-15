@@ -8,6 +8,7 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.megatron_utils.lora.native import export_lora_hf_named
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
@@ -126,16 +127,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
-        # TODO: will rewrite in native lora refactor
-        if "kimi_k3" in self.model_name.lower():
-            from miles_plugins.models.kimi_k3.lora import export_kimi_k3_lora_hf_chunks
-
-            return [named_tensor for chunk in export_kimi_k3_lora_hf_chunks(self.model) for named_tensor in chunk]
-        if "inkling" in (self.args.custom_model_provider_path or ""):
-            from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
-
-            return export_inkling_lora_hf_named(self.model)
-        raise NotImplementedError(f"Raw LoRA export is not implemented for model {self.model_name!r}")
+        return export_lora_hf_named(self.model)
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
         for name, param in named_params:
@@ -293,12 +285,13 @@ def _get_megatron_local_param_infos(
     """
     pp_size = get_parallel_state().pp.size
 
-    from ..lora.utils import _is_adapter_param_name
+    from ..lora.utils import adapter_named_parameters
 
+    adapter_ids = {id(param) for params in adapter_named_parameters(model) for param in params.values()}
     param_infos: dict[str, ParamInfo] = {}
     rank = dist.get_rank()
     for name, param in named_params_and_buffers(args, model):
-        if _is_adapter_param_name(name):
+        if id(param) in adapter_ids:
             continue
         param_infos[name] = ParamInfo(
             name=name,

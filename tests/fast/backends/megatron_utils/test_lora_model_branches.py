@@ -7,7 +7,6 @@ route to LoRA-specific code paths depending on configuration — without GPU.
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # _ensure_model_list
@@ -153,8 +152,12 @@ class TestSetupModelAndOptimizerLoraBranch:
     @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")
     @patch(f"{_MODEL_MODULE}.get_megatron_optimizer")
     @patch(f"{_MODEL_MODULE}.get_model")
+    @patch(f"{_MODEL_MODULE}.get_model_provider_func")
+    @patch(f"{_MODEL_MODULE}.wrap_model_provider_with_lora")
     @patch(f"{_MODEL_MODULE}._setup_lora_model_via_bridge")
-    def test_non_inkling_lora_raw_mode_is_rejected(self, mock_lora_setup, mock_get_model, mock_opt, mock_sched):
+    def test_raw_mode_lora_wraps_the_provider_with_native_lora(
+        self, mock_lora_setup, mock_wrap, mock_provider, mock_get_model, mock_opt, mock_sched
+    ):
         from miles.backends.megatron_utils.model import setup_model_and_optimizer
 
         mock_get_model.return_value = [MagicMock()]
@@ -162,11 +165,12 @@ class TestSetupModelAndOptimizerLoraBranch:
         mock_sched.return_value = MagicMock()
 
         args = self._make_args(lora_rank=32, role="actor", mode="raw")
-        with pytest.raises(AssertionError, match="Native LoRA injection is only implemented for Inkling"):
-            setup_model_and_optimizer(args, role="actor")
+        args.offload_train = False
+        setup_model_and_optimizer(args, role="actor")
 
         mock_lora_setup.assert_not_called()
-        mock_get_model.assert_not_called()
+        mock_wrap.assert_called_once_with(mock_provider.return_value, args)
+        assert mock_get_model.call_args.args[0] is mock_wrap.return_value
 
 
 # ---------------------------------------------------------------------------
@@ -208,3 +212,35 @@ class TestSaveLoRaBranch:
         save(42, model, MagicMock(), MagicMock())
 
         mock_save_ckpt.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# save_hf_model — raw-mode LoRA merges natively instead of going through Bridge
+# ---------------------------------------------------------------------------
+
+_HF_EXPORT_MODULE = "miles.backends.megatron_utils.hf_export"
+
+
+class TestSaveHfModelRawLoRA:
+    @patch(f"{_HF_EXPORT_MODULE}._get_hf_bridge")
+    @patch(f"{_HF_EXPORT_MODULE}.merge_lora_into_weights")
+    @patch(f"{_HF_EXPORT_MODULE}.named_params_and_buffers")
+    @patch(f"{_HF_EXPORT_MODULE}.is_lora_model", return_value=True)
+    @patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
+    @patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
+    def test_raw_lora_writes_merged_weights_and_the_adapter(
+        self, _parallel_state, _write_dir, _is_lora, named_weights, merge, get_bridge, tmp_path
+    ):
+        from miles.backends.megatron_utils.hf_export import save_hf_model
+
+        named_weights.return_value = [("decoder.w", MagicMock())]
+        publisher = MagicMock()
+        model = [MagicMock()]
+        args = Namespace(megatron_to_hf_mode="raw", hf_checkpoint="/hf", save_hf=None)
+
+        save_hf_model(args, 0, model, publisher=publisher, path=tmp_path, raise_on_error=True)
+
+        merge.assert_called_once_with(model, dict(named_weights.return_value))
+        publisher.write_model.assert_called_once_with(tmp_path, weights=merge.return_value, hf_checkpoint="/hf")
+        publisher.write_adapter.assert_called_once_with(None, tmp_path / "adapter")
+        get_bridge.assert_not_called()

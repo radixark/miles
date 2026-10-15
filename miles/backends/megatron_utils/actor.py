@@ -12,6 +12,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.hf_export import save_hf_model
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
+from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
@@ -279,18 +280,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def _init_weight_updater_and_publisher(self, *, update_weights: bool, publish_snapshots: bool) -> None:
         args = self.args
-        model_name = type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name
+        model_name = converter_model_name(args, self.hf_config)
         quantization_config = getattr(self.hf_config, "quantization_config", None)
         self.weight_updater = None
         self.snapshot_publisher = None
 
         if update_weights:
             is_lora = lora_rollout_enabled(args)
-            if is_lora and not args.colocate:
-                assert args.megatron_to_hf_mode == "bridge", (
-                    "LoRA weight sync over distributed engines requires "
-                    f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
-                )
             self.weight_updater = WeightUpdater(
                 args,
                 self.model,

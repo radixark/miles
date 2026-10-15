@@ -137,7 +137,6 @@ def _watch_load(actor_module, monkeypatch, *, args: Namespace, iteration: int) -
         return _CheckpointLoadResult(
             iteration=iteration,
             restored_trained_iteration=not args.finetune or iteration > 0,
-            native_optimizer_restored=False,
         )
 
     monkeypatch.setattr(model_module, "load_checkpoint", fake_load_checkpoint)

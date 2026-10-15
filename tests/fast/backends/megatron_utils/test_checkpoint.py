@@ -58,7 +58,7 @@ class TestCheckpointTrainingProvenance:
             skip_load_to_model_and_opt=False,
         )
 
-        assert result == (0, expected, False)
+        assert result == (0, expected)
 
     def test_loading_hf_weights_preserves_non_finetune_rollout_numbering(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -77,47 +77,7 @@ class TestCheckpointTrainingProvenance:
             skip_load_to_model_and_opt=False,
         )
 
-        assert result == (0, True, False)
-
-    @pytest.mark.parametrize(
-        ("adapter_result", "expected"),
-        [
-            ((True, 0, True), True),
-            ((True, 0, False), True),
-            ((True, None, False), False),
-            ((False, None, False), False),
-        ],
-    )
-    def test_lora_restore_preserves_the_difference_between_zero_and_missing_training_state(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        adapter_result: tuple[bool, int | None, bool],
-        expected: bool,
-    ) -> None:
-        """Adapter weights alone cannot be mistaken for a saved iteration-zero training state."""
-        (tmp_path / "latest_checkpointed_iteration.txt").write_text("release")
-        args = Namespace(
-            load=str(tmp_path),
-            finetune=True,
-            ckpt_step=None,
-            lora_rank=8,
-            lora_adapter_path=str(tmp_path / "adapter"),
-            no_load_optim=False,
-        )
-        monkeypatch.setattr(checkpoint, "get_args", lambda: args)
-        monkeypatch.setattr(checkpoint, "_load_checkpoint_megatron", lambda **_kwargs: (0, 123))
-        monkeypatch.setattr(checkpoint, "load_lora_adapter", lambda *_args, **_kwargs: adapter_result)
-
-        result = checkpoint.load_checkpoint(
-            ddp_model=[],
-            optimizer=None,
-            opt_param_scheduler=None,
-            checkpointing_context=None,
-            skip_load_to_model_and_opt=False,
-        )
-
-        assert result == (0, expected, adapter_result[2])
+        assert result == (0, True)
 
 
 class TestRawMbridgeCompanionIsolation:

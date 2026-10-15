@@ -34,7 +34,7 @@ from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
-from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args
+from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args, validate_lora_args_after_megatron
 from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
@@ -2968,6 +2968,7 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
 
     if backend == "megatron":
         megatron_validate_args(args)
+        validate_lora_args_after_megatron(args)
 
         # always use varlen
         args.variable_seq_lengths = True

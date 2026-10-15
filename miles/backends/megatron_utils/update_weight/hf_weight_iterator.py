@@ -42,8 +42,8 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
         """Both megatron exporters are PP-local after gathering TP/EP; the PP
         gather runs only where the resolved placement asks for it."""
         named_tensors = self._export_pp_local_lora(adapter)
-        # TODO: the PP-local branch is unreachable until actor.py lifts its bridge-only guard
-        # for distributed LoRA; add an e2e for native-LoRA disaggregate when it does
+        # TODO: the PP-local branch is unreachable until validate_native_lora_args lifts its
+        # colocate-only guard; add an e2e for native-LoRA disaggregate when it does
         if self.placement.gather_pp:
             named_tensors = _gather_pp_full_adapter(named_tensors)
         if not materialize:
