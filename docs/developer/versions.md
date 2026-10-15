@@ -37,13 +37,13 @@ The default build-args are the version surface:
 
 | Build-arg | Default | What it selects |
 |---|---|---|
-| `SGLANG_IMAGE_TAG` | `v0.5.21` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
-| `SGLANG_BRANCH` | `sglang-miles` | The branch fetched into the base image's SGLang checkout |
+| `SGLANG_IMAGE_TAG` | `v0.5.22` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
+| `SGLANG_BRANCH` | `sglang-miles-v0.5.22` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
 | `MILES_COMMIT` | `main` | The Miles checkout baked into the image |
 | `WHEELS_REPO` | `radixark/miles-wheels` | The prebuilt-wheels repository |
-| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-torch213-x86_64` / `cu130-torch213-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
+| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-torch214-x86_64` / `cu130-torch214-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
 
 Two design choices are worth naming. The Dockerfile holds the defaults and `build.py` owns
 the per-variant deltas, so there is exactly one place to look for what a variant changes.
@@ -60,8 +60,8 @@ Mooncake object-store backend needs 0.3.12.post1 or newer, the first release who
 `mooncake.structured_object_store` has the API Miles imports.
 
 `requirements.txt` is Miles' own dependency list, and the convention there is that **a pin
-carries its reason inline**: `transformers==5.12.1` names the HF-native weight conversion and
-an SGLang collision, `blake3` / `xxhash` / `zstandard` name the disk-delta weight sync,
+carries its reason inline**: `transformers==5.19.0` names the HF-native weight conversion and
+the SGLang release it matches, `blake3` / `xxhash` / `zstandard` name the disk-delta weight sync,
 `onnxscript` records that TE 2.17 imports it at import time. Follow that when you add one.
 
 ## Release identities and source ownership

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,8 @@ register_cpu_ci(est_time=2, suite="stage-a-cpu", labels=[])
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/build-wheels.yml").read_text())
+# The check job reads its release tags from the Dockerfile.
+WHEELS_TAG_X86 = re.search(r"^ARG WHEELS_TAG_X86=(\S+)$", (ROOT / "docker/Dockerfile").read_text(), re.M).group(1)
 SOURCES = {
     "sgl-router": ("repos/radixark/sgl-router-for-miles/commits/main", "a" * 40),
     "int4_qat": (
@@ -101,7 +104,7 @@ def test_router_builds_only_when_manifest_is_missing_or_stale(tmp_path, built):
 
 @pytest.mark.parametrize(
     "failure",
-    [SOURCES["sgl-router"][0], "repos/radixark/miles-wheels/releases/tags/cu130-torch213-x86_64"],
+    [SOURCES["sgl-router"][0], f"repos/radixark/miles-wheels/releases/tags/{WHEELS_TAG_X86}"],
 )
 def test_selected_lookup_failure_stops_the_run(tmp_path, failure):
     result, outputs = run_check(tmp_path, "sgl-router", ["sgl-router"], force="false", failure=failure)

@@ -10,12 +10,12 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64.
 
-ARG SGLANG_IMAGE_TAG=v0.5.21
+ARG SGLANG_IMAGE_TAG=v0.5.22
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
 
-ARG SGLANG_BRANCH=sglang-miles
+ARG SGLANG_BRANCH=sglang-miles-v0.5.22
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
@@ -29,8 +29,8 @@ ARG WHEELS_REPO=radixark/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
-ARG WHEELS_TAG_X86=cu130-torch213-x86_64
-ARG WHEELS_TAG_ARM64=cu130-torch213-aarch64
+ARG WHEELS_TAG_X86=cu130-torch214-x86_64
+ARG WHEELS_TAG_ARM64=cu130-torch214-aarch64
 
 # ======================================== Setup =============================================
 
