@@ -86,12 +86,12 @@ Time per step:
 
 ### 5.1 Parallelism
 
-| `--training-layout` | TP | PP | CP | EP | expert-TP | first/last stage layers |
+| Launcher | TP | PP | CP | EP | expert-TP | first/last stage layers |
 |---|---|---|---|---|---|---|
-| `tp8_pp8_cp1` (H200 default) | 8 | 8 | 1 | 8 | 1 | 7 |
-| `tp8_pp4_cp1` (B300) | 8 | 4 | 1 | 8 | 1 | 15 |
+| `run_muse_spark_64xh200.py` | 8 | 8 | 1 | 8 | 1 | 7 |
+| `run_muse_spark_32xb300.py` | 8 | 4 | 1 | 8 | 1 | 15 |
 
-`--sequence-parallel`, THD packing with `--use-dynamic-batch-size --max-tokens-per-gpu 4096` (8192 on B300), and full recomputation are on. On H200 the launcher also accepts `tp4_pp8_cp2` and `tp4_pp4_cp4_ep16`; the numbers above use the defaults.
+`--sequence-parallel`, THD packing with `--use-dynamic-batch-size --max-tokens-per-gpu 4096` (8192 on B300), and full recomputation are on. Each launcher sets these as the defaults of `--tensor-model-parallel-size`, `--pipeline-model-parallel-size`, `--context-parallel-size`, `--expert-model-parallel-size` and `--decoder-first-last-pipeline-num-layers`, together with its node count, engine size and engine memory settings; the shared recipe is `scripts/muse_spark/common.py`. On H200, TP4/PP8/CP2 (7 edge-stage layers) and TP4/PP4/CP4/EP16 (15) also fit; the numbers above use the defaults.
 
 Rollout runs on 4 colocated SGLang engines with a BF16 KV cache: on H200, 16 GPUs each (`--sglang-ep-size 16`) with up to 64 concurrent requests; on B300, one node each (`--sglang-ep-size 8`) with up to 128.
 
@@ -137,7 +137,6 @@ Save directories count steps from 0, so the save after step 10 is `iter_0000009`
 
 - **BF16 KV cache**: the launcher passes `--sglang-kv-cache-dtype bfloat16`; the FP8 KV cache SGLang would otherwise pick widens the gap between rollout and training log-probabilities.
 - **Muon cannot save its optimizer state**: Megatron requires `--no-load-optim --no-save-optim` with `--chunked-muon-master-weights`.
-- **Fixed cluster size**: each launcher raises unless it gets its node count (8 on H200, 4 on B300) with 8 GPUs each.
 
 ## 6. Pairs Well With
 
