@@ -8,6 +8,7 @@ from functools import partial
 import torch
 import torch.distributed as dist
 from megatron.training.async_utils import maybe_finalize_async_save
+from megatron.training.checkpointing import get_checkpoint_name
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.hf_export import save_hf_model
@@ -441,10 +442,10 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.weights_backuper.backup("rollout_actor")
 
     def _finalize_pending_async_save(self) -> None:
-        if not self.args.async_save:
-            return
-
-        maybe_finalize_async_save(blocking=True)
+        if self.args.async_save:
+            maybe_finalize_async_save(blocking=True)
+        if self.weight_updater is not None:
+            self.weight_updater.finish_checkpoint_delta()
 
     @with_logs
     @timer
@@ -841,38 +842,48 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_rollout_only:
             return
 
-        self._finalize_pending_async_save()
-
-        save(
-            rollout_id,
-            self.model,
-            self.optimizer,
-            self.opt_param_scheduler,
-            snapshot_publisher=self.snapshot_publisher,
+        delta_companion = (
+            self.role == "actor"
+            and self.weight_updater is not None
+            and self.args.update_weight_transfer_mode == "gpu-delta"
         )
+        with ExitStack() as stack:
+            if delta_companion and self.args.offload_train:
+                stack.enter_context(torch_memory_saver.disable())
+                if self._asleep:
+                    reload_process_groups()
+                    stack.callback(destroy_process_groups)
 
-        if self.args.save_hf is not None and self.role == "actor":
-            assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
-            save_hf_model(self.args, rollout_id, self.model, publisher=self.snapshot_publisher)
-
-        if force_sync:
             self._finalize_pending_async_save()
-
-        if self.args.custom_megatron_post_save_hook_path is not None and dist.get_rank() == 0:
-            self._finalize_pending_async_save()
-
-            from megatron.training.checkpointing import get_checkpoint_name
-
-            from miles.utils.function_registry import load_function
-
-            checkpoint_dir = get_checkpoint_name(self.args.save, rollout_id, return_base_dir=True)
-            hf_checkpoint_dir = (
-                self.args.save_hf.format(rollout_id=rollout_id)
-                if self.args.save_hf is not None and self.role == "actor"
-                else None
+            save(
+                rollout_id,
+                self.model,
+                self.optimizer,
+                self.opt_param_scheduler,
+                snapshot_publisher=self.snapshot_publisher,
             )
-            post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
-            post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
+            if delta_companion:
+                checkpoint_dir = get_checkpoint_name(self.args.save, rollout_id, return_base_dir=True)
+                self.weight_updater.save_checkpoint_delta(checkpoint_dir, rollout_id, self._get_actor_weight_version())
+
+            if self.args.save_hf is not None and self.role == "actor":
+                assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
+                save_hf_model(self.args, rollout_id, self.model, publisher=self.snapshot_publisher)
+
+            if force_sync or not self.args.async_save or self.args.custom_megatron_post_save_hook_path is not None:
+                self._finalize_pending_async_save()
+
+            if self.args.custom_megatron_post_save_hook_path is not None and dist.get_rank() == 0:
+                from miles.utils.function_registry import load_function
+
+                checkpoint_dir = get_checkpoint_name(self.args.save, rollout_id, return_base_dir=True)
+                hf_checkpoint_dir = (
+                    self.args.save_hf.format(rollout_id=rollout_id)
+                    if self.args.save_hf is not None and self.role == "actor"
+                    else None
+                )
+                post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
+                post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
 
     @with_logs
     @timer
@@ -926,6 +937,10 @@ class MegatronTrainRayActor(TrainRayActor):
             return None
 
         assert self.weight_updater is not None, "weight update requires a weight updater"
+        with self.weight_updater.receiver_pool(info.receiver_pool):
+            return self._update_receiver_weights(info)
+
+    def _update_receiver_weights(self, info: UpdatableEngines) -> int | None:
         rollout_engines = info.rollout_engines
 
         process_groups_are_temporary = self.args.offload_train and self._asleep
@@ -951,13 +966,13 @@ class MegatronTrainRayActor(TrainRayActor):
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             weight_version = self._get_actor_weight_version()
-            self.weight_updater.update_weights(weight_version=weight_version)
+            self.weight_updater.update_weights(weight_version=weight_version, rollout_id=self._last_rollout_id)
             print_memory("after update_weights")
 
             if self.args.ci_test and not is_lora_enabled(self.args):
                 self.weight_updater.verify_engine_version(rollout_engines, weight_version=weight_version)
 
-            if getattr(self.args, "keep_old_actor", False):
+            if info.receiver_pool == "rollout" and getattr(self.args, "keep_old_actor", False):
                 if self.args.update_weights_interval == 1:
                     logger.info("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
                     # Queue-style update: rollout_actor params -> old_actor, actor params -> rollout_actor
@@ -1036,7 +1051,7 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_world_size=dist.get_world_size(),
         )
         if self.weight_updater is not None:
-            self.weight_updater.conn_status.mark_trainer_stale()
+            self.weight_updater.mark_trainer_stale()
 
 
 def _materialize_critic_values(

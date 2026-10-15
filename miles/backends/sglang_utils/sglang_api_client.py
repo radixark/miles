@@ -419,6 +419,48 @@ class SGLangApiClient:
         response.raise_for_status()
         return response
 
+    async def get_gpu_delta_info(self, engine_id):
+        return await self._make_request("get_gpu_delta_info", {"engine_id": engine_id})
+
+    async def update_weights_from_gpu_delta(
+        self,
+        manifest_path,
+        release_state=True,
+        flush_cache=True,
+        abort_all_requests=False,
+        weight_version: str | None = None,
+    ):
+        payload = {
+            "manifest_path": manifest_path,
+            "release_state": release_state,
+            "flush_cache": flush_cache,
+            "abort_all_requests": abort_all_requests,
+        }
+        if weight_version is not None:
+            payload["weight_version"] = weight_version
+        return await self._make_request("update_weights_from_gpu_delta", payload)
+
+    async def prepare_gpu_delta(self, **payload):
+        return await self._make_request("prepare_gpu_delta", payload)
+
+    async def get_gpu_delta_status(self, session_id):
+        return await self._make_request("get_gpu_delta_status", {"session_id": session_id})
+
+    async def apply_gpu_delta(self, session_id, flush_cache=True, abort_all_requests=False):
+        return await self._make_request(
+            "apply_gpu_delta",
+            {"session_id": session_id, "flush_cache": flush_cache, "abort_all_requests": abort_all_requests},
+        )
+
+    async def resume_gpu_delta(self, session_id, weight_version: str | None = None):
+        payload = {"session_id": session_id}
+        if weight_version is not None:
+            payload["weight_version"] = weight_version
+        return await self._make_request("resume_gpu_delta", payload)
+
+    async def abort_gpu_delta(self, session_id):
+        return await self._make_request("abort_gpu_delta", {"session_id": session_id})
+
     async def abort_all_requests(self, timeout: float | None = None):
         return await self._make_request("abort_request", {"abort_all": True}, timeout=timeout)
 

@@ -874,6 +874,7 @@ class TestUpdatableModelSelection:
 
         assert updatable.rollout_engines == []
         assert updatable.snapshot_cell_id_to_hashes == {}
+        assert updatable.receiver_pool == "rollout"
 
     @pytest.mark.asyncio
     async def test_two_updatable_models_are_refused_by_name(self):

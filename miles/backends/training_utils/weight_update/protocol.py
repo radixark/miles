@@ -9,6 +9,7 @@ import torch
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.capabilities import supports_receiver_pools
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
 
@@ -70,9 +71,11 @@ class WeightTransferProtocol(ABC):
         return metrics
 
 
-def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
+def get_weight_transfer_protocol(args: Namespace, receiver_pool: str = "rollout") -> WeightTransferProtocol:
     mode = getattr(args, "update_weight_transfer_mode", "broadcast")
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if receiver_pool != "rollout" and (receiver_pool != "eval" or not supports_receiver_pools(mode)):
+        raise ValueError(f"{mode!r} does not support receiver pool {receiver_pool!r}")
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "gpu-delta"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (getattr(args, "train_backend", None) != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -84,6 +87,10 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
         from miles.backends.training_utils.weight_update.protocols.broadcast import UpdateWeightFromDistributed
 
         return UpdateWeightFromDistributed(args)
+    if mode == "gpu-delta":
+        from miles.backends.training_utils.weight_update.protocols.gpu_delta.protocol import UpdateWeightFromGpuDelta
+
+        return UpdateWeightFromGpuDelta(args)
     if mode == "disk-delta":
         from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
 

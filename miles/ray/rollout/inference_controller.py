@@ -24,6 +24,7 @@ from miles.utils.context_lock import (
     requires_lock,
     with_lock,
 )
+from miles.utils.eval_config import uses_synced_eval
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
@@ -230,18 +231,29 @@ class InferenceController:
     # -------------------------- engine management -----------------------------
 
     @acquires_lock
-    async def start_update_weights(self, model_id: str | None = None) -> "UpdatableEngines":
+    async def start_update_weights(
+        self, model_id: str | None = None, receiver_pool: str = "rollout"
+    ) -> "UpdatableEngines":
         """Return engines eligible for weight updates."""
+        if receiver_pool not in {"rollout", "eval"}:
+            raise ValueError(f"Unknown receiver pool: {receiver_pool!r}")
+        if receiver_pool == "eval":
+            if not uses_synced_eval(self.args) or self._eval_fleet is None:
+                raise ValueError("Separate eval synchronization requires a supported eval fleet")
+            if model_id is not None:
+                raise ValueError("Dedicated eval synchronization does not select a training model")
+            model_id = "eval"
         await self._health_monitoring_pause(model_id)
         await self._ensure_cells_ready(model_id=model_id)
 
-        srv = self._get_updatable_server(model_id=model_id)
+        srv = self._get_updatable_server(model_id=model_id, receiver_pool=receiver_pool)
         if not srv:
             return UpdatableEngines(
                 rollout_engines=[],
                 engine_gpu_counts=[],
                 engine_gpu_offsets=[],
                 snapshot_cell_id_to_hashes={},
+                receiver_pool=receiver_pool,
             )
 
         return UpdatableEngines(
@@ -249,6 +261,7 @@ class InferenceController:
             engine_gpu_counts=srv.engine_gpu_counts,
             engine_gpu_offsets=srv.engine_gpu_offsets,
             snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
+            receiver_pool=receiver_pool,
         )
 
     @releases_lock
@@ -296,10 +309,15 @@ class InferenceController:
         return [srv]
 
     @requires_lock
-    def _get_updatable_server(self, model_id: str | None = None) -> RolloutServer | None:
+    def _get_updatable_server(
+        self, model_id: str | None = None, receiver_pool: str = "rollout"
+    ) -> RolloutServer | None:
         if model_id is not None:
             [srv] = self._get_servers_of_model_id(model_id)
-            assert srv.update_weights, f"Server for model_id {model_id!r} is frozen (update_weights=False)"
+            # Explicit synchronized eval is admitted above; ordinary broadcasts keep eval frozen.
+            assert (
+                srv.update_weights or receiver_pool == "eval"
+            ), f"Server for model_id {model_id!r} is frozen (update_weights=False)"
             return srv
 
         updatable = [srv for srv in self.servers.values() if srv.update_weights]
@@ -326,6 +344,13 @@ class InferenceController:
             self._eval_fleet is not None
         ), "this run deploys no eval fleet, so nothing asked this controller to pin one"
         return await self._eval_fleet.pin(checkpoint_dir=checkpoint_dir, weight_version=weight_version)
+
+    @lock_exempt
+    async def check_eval_fleet_version(self, weight_version: str) -> EvalFleetPin:
+        """Check the already-synchronized eval pool without loading a checkpoint."""
+        if self._eval_fleet is None:
+            raise ValueError("This run has no dedicated eval fleet")
+        return await self._eval_fleet.check_version(weight_version)
 
     # -------------------------- misc APIs -----------------------------
 
@@ -412,6 +437,7 @@ class UpdatableEngines:
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
     snapshot_cell_id_to_hashes: dict[str, str]
+    receiver_pool: str = "rollout"
 
 
 # TODO may move and generalize later
