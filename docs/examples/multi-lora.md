@@ -43,6 +43,16 @@ Checkpoints default to `<output_dir>/checkpoints/<run_id>`; use `--save-dir` to 
 The gateway defaults to `--log-probs-chunk-size 1024` to bound FP32 cross-entropy
 temporaries for full-sequence targets. Override it through `--extra-args` when needed.
 
+For throughput experiments, pass
+`--extra-args "--tinker-batch-token-budget 4000000 --tinker-pack-before-dp"`.
+The gateway budget bounds each scheduled work unit; `--max-tokens-per-gpu`
+separately bounds each dynamic microbatch. Pack-before-DP packs the whole work
+unit before distributing microbatches, retaining adapter-slot ordering and
+padding only work units with fewer datums than DP ranks. It requires dynamic
+batching and does not support independent DP or FLOPs-based balancing.
+Both options preserve optimizer barriers. Larger work units can increase
+latency for other tenants; measure the throughput/latency tradeoff for your data.
+
 Install `tinker` on the client, then run the marker checks:
 
 ```bash

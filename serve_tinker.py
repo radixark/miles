@@ -1,12 +1,14 @@
 import asyncio
 import logging
 from contextlib import suppress
+from functools import partial
 
 import uvicorn
 
 from miles.backends.megatron_utils.megatron_config import compute_trainer_args
 from miles.ray.placement_group import create_trainer_handles
 from miles.ray.rollout.router_manager import resolve_router_addrs
+from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_scheduled_raw
 from miles.ray.specs.inference import compute_router_providers, create_inference_controller_handle
 from miles.ray.specs.train import ACTOR_ROLE, compute_trainer_configs
 from miles.ray.wiring import get_backend_capability
@@ -63,6 +65,7 @@ async def serve(args, *, disposer: Disposer):
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=checkpoint_root,
+        batch_token_budget=args.tinker_batch_token_budget,
         vocab_size=hf_config.vocab_size,
         max_tokens_per_datum=max_tokens_per_datum,
         max_tokens_per_sample=max_tokens_per_sample,
@@ -77,7 +80,16 @@ async def serve(args, *, disposer: Disposer):
     dp_size = actor_world_size // (
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
-    service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
+    schedule_train_data = None
+    if args.tinker_pack_before_dp:
+        schedule_train_data = partial(
+            split_train_data_by_dp_scheduled_raw,
+            args,
+            train_parallel_config=await trainer.get_train_parallel_config(),
+        )
+    service = TinkerService(
+        MilesBackend(trainer, router_url, dp_size=dp_size, schedule_train_data=schedule_train_data), config
+    )
 
     server = uvicorn.Server(
         uvicorn.Config(
@@ -104,5 +116,5 @@ if __name__ == "__main__":
     args = parse_args(add_tinker_arguments, entry="serve", preprocess_args=configure_tinker_args)
     # commands ship one work unit at a time; its size is the batch size
     args.use_dynamic_global_batch_size = True
-    args.delay_split_train_data_by_dp = True
+    args.delay_split_train_data_by_dp = not args.tinker_pack_before_dp
     asyncio.run(with_disposer(serve, args))

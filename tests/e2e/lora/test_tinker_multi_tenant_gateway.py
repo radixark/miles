@@ -10,7 +10,7 @@ register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["multi-lora"]
 
 def execute():
     U = command_utils.default_config().create_backend()
-    with running_gateway() as base_url:
+    with running_gateway(extra_args="--tinker-pack-before-dp --tinker-batch-token-budget 4000000") as base_url:
         U.exec_command_cpu(
             "python examples/multi_lora/run_multi_tenant_example.py "
             f"--base-url {base_url} --base-model {BASE_MODEL} "

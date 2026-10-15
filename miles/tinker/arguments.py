@@ -1,3 +1,4 @@
+from miles.tinker.core.types import GatewayConfig
 from miles.utils.lora.hf_lora_targets import LORA_TARGET_GROUPS, parse_lora_targets
 
 
@@ -12,6 +13,17 @@ def add_tinker_arguments(parser):
     add_argument("server-host", default="0.0.0.0")
     add_argument("server-port", type=int, default=10613)
     add_argument(
+        "batch-token-budget",
+        type=int,
+        default=GatewayConfig.batch_token_budget,
+        help="Token budget per gateway work unit; independent of --max-tokens-per-gpu.",
+    )
+    add_argument(
+        "pack-before-dp",
+        action="store_true",
+        help="Pack dynamic microbatches before distributing them across DP ranks.",
+    )
+    add_argument(
         "base-model",
         help="Model name advertised by the gateway (default: --hf-checkpoint)",
     )
@@ -23,6 +35,14 @@ def add_tinker_arguments(parser):
 
 
 def configure_tinker_args(args):
+    if args.tinker_batch_token_budget <= 0:
+        raise ValueError("--tinker-batch-token-budget must be positive")
+    if args.tinker_pack_before_dp:
+        if not args.use_dynamic_batch_size or args.indep_dp or args.balance_by_flops:
+            raise ValueError(
+                "--tinker-pack-before-dp requires --use-dynamic-batch-size and does not support "
+                "--indep-dp or --balance-by-flops"
+            )
     assert args.train_backend == "megatron", "Tinker requires the Megatron backend"
     assert args.exclude_modules is None, "Tinker selects complete training groups; --exclude-modules is not supported"
     groups = parse_lora_targets(args.target_modules)

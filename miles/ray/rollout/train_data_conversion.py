@@ -411,6 +411,10 @@ def split_train_data_by_dp_scheduled_raw(
 
     shards = _package_shards(args, data, partitions)
     for rank, shard in enumerate(shards):
+        if "adapter_slots" in shard:
+            # Grouped LoRA GEMMs consume contiguous token ranges per slot.
+            for micro_batch in micro_batch_indices[rank]:
+                micro_batch.sort(key=lambda i: shard["adapter_slots"][i])
         shard["num_microbatches"] = num_microbatches
         shard["micro_batch_indices"] = micro_batch_indices[rank]
         shard["num_rollouts"] = num_rollouts

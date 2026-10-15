@@ -1,6 +1,7 @@
 """Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
+from collections.abc import Callable
 
 import httpx
 
@@ -44,10 +45,18 @@ def _build_train_data(slot_datums: list) -> dict:
 
 
 class MilesBackend:
-    def __init__(self, trainer, router_url: str, dp_size: int = 1) -> None:
+    def __init__(
+        self,
+        trainer,
+        router_url: str,
+        dp_size: int = 1,
+        *,
+        schedule_train_data: Callable[[dict], list[dict]] | None = None,
+    ) -> None:
         self.trainer = trainer
         self.router_url = router_url
         self.dp_size = dp_size
+        self.schedule_train_data = schedule_train_data
 
     async def trainer_dead(self) -> bool:
         return await self.trainer.has_errored_cell()
@@ -75,7 +84,11 @@ class MilesBackend:
     async def _execute_batch(
         self, method: str, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
     ) -> list[dict] | dict:
-        train_data = _build_train_data(_pad_to_dp_multiple(slot_datums, self.dp_size))
+        real_datum_count = len(slot_datums)
+        # Pack-first needs one datum per rank, not equal datum counts across ranks.
+        if self.schedule_train_data is None or len(slot_datums) < self.dp_size:
+            slot_datums = _pad_to_dp_multiple(slot_datums, self.dp_size)
+        train_data = _build_train_data(slot_datums)
         train_data["loss_fn"] = loss_fn
         train_data["loss_fn_config"] = loss_fn_config
         worker_results = await self._call_trainer(method, batch_id, train_data)
@@ -90,15 +103,23 @@ class MilesBackend:
                         "loss": float(datum_output["loss"]),
                         "logprobs": datum_output["logprobs"].tolist(),
                     }
-        return [by_index[index] for index in range(len(slot_datums))]
+        return [by_index[index] for index in range(real_datum_count)]
 
     async def _call_trainer(self, method: str, batch_id: int, train_data: dict) -> list:
         store = object_store.get_instance()
-        data_ref = store.put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+        if self.schedule_train_data is None:
+            shards = [train_data]
+        else:
+            shards = self.schedule_train_data(train_data | {"rollout_ids": train_data["sample_indices"]})
+        data_refs = []
         try:
+            for shard in shards:
+                data_refs.append(store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC))
+            data_ref = data_refs[0] if self.schedule_train_data is None else data_refs
             return await getattr(self.trainer, method)(batch_id=batch_id, data_ref=data_ref)
         finally:
-            store.remove(data_ref)
+            for data_ref in data_refs:
+                store.remove(data_ref)
 
     async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
         worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)
