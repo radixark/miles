@@ -23,6 +23,7 @@ Each model name links to its recipe page.
 | **JoyAI** | [JoyAI-LLM-Flash](https://github.com/radixark/miles/blob/main/scripts/run_joy_ai_llm_flash.py) |
 | **GPT-OSS** | [gpt-oss-20b](/models/gpt-oss/gpt-oss) |
 | **MiMo** | [MiMo-V2.6-Flash](/models/mimo/mimo-v2-6-flash) |
+| **StepFun** | [Step-5-Preview](/models/stepfun/step5) |
 
 ## Diffusion
 
