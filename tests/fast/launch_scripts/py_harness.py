@@ -3,6 +3,7 @@ import inspect
 import os
 import re
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -146,7 +147,12 @@ def install_command_recorder(monkeypatch) -> Recording:
 
 def import_launch_script(path: Path) -> ModuleType:
     name = "miles_launch_script_" + path.relative_to(REPO_ROOT).with_suffix("").as_posix().replace("/", "_")
-    return _import_module_from_path(path, name)
+    # Run as `python scripts/<launcher>.py`, a launcher imports its helpers (scripts/muse_spark) from its own directory.
+    sys.path.insert(0, str(path.parent))
+    try:
+        return _import_module_from_path(path, name)
+    finally:
+        sys.path.remove(str(path.parent))
 
 
 @contextmanager

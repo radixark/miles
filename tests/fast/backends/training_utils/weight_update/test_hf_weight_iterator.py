@@ -151,6 +151,24 @@ def test_only_tower_keys_stream_with_or_without_an_index(tmp_path):
         )
 
 
+def test_prefixes_select_the_towers_by_name(tmp_path):
+    tensors = {
+        "model.language_model.embed_tokens.weight": torch.ones(2),
+        "model.vision_tower.ln_pre.weight": torch.full((3,), 2.0),
+        "model.vision_projection.weight": torch.full((1,), 3.0),
+        "model.audio_tower.proj.weight": torch.full((2,), 4.0),
+    }
+    save_file(tensors, str(tmp_path / "model.safetensors"))
+    prefixes = ("model.vision_tower.", "model.vision_projection.", "model.audio_tower.")
+    with patch(f"{_TOWERS_MODULE}.torch.cuda.current_device", return_value="cpu"):
+        units = list(checkpoint_towers.iter_checkpoint_tower_units(str(tmp_path), materialize=True, prefixes=prefixes))
+    assert _tower_names(units) == [
+        "model.audio_tower.proj.weight",
+        "model.vision_projection.weight",
+        "model.vision_tower.ln_pre.weight",
+    ]
+
+
 def test_non_materializing_ranks_yield_nothing_and_read_nothing(tmp_path):
     ckpt = _tower_checkpoint(tmp_path, indexed=True)
     with patch(f"{_TOWERS_MODULE}.safe_open") as opened:

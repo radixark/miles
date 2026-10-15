@@ -989,6 +989,28 @@ class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):
         }
 
 
+class MuseSparkTITOTokenizer(TITOTokenizer):
+    FIXED_TEMPLATE = FixedTemplate(template="muse_spark_fixed.jinja")
+    reasoning_parser = "muse"
+    tool_call_parser = "muse"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+    ):
+        # Keep the recipient header and body in one comparator segment; the
+        # message separator is internal to a turn, not a role boundary.
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs=chat_template_kwargs,
+            assistant_start_str=assistant_start_str or "<|start|>assistant",
+            special_token_ids=TokenSeqComparator.collect_special_ids(tokenizer)
+            - {tokenizer.convert_tokens_to_ids("<|message|>")},
+        )
+
+
 class InklingTITOTokenizer(TITOTokenizer):
     """Inkling family (Inkling / Inkling-Small).
 
@@ -1088,6 +1110,7 @@ class TITOTokenizerType(StrEnum):
     DEEPSEEKV4 = "deepseekv4"
     DEEPSEEKV41 = "deepseekv41"
     INKLING = "inkling"
+    MUSE_SPARK = "muse_spark"
 
     @classmethod
     def get_tokenizer_class(cls, t: TITOTokenizerType) -> type[TITOTokenizer]:
@@ -1127,6 +1150,8 @@ class TITOTokenizerType(StrEnum):
                 return DeepSeekV41TITOTokenizer
             case cls.INKLING:
                 return InklingTITOTokenizer
+            case cls.MUSE_SPARK:
+                return MuseSparkTITOTokenizer
             case _:
                 raise ValueError(f"Unknown TITOTokenizerType: {t!r}")
 

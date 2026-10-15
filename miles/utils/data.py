@@ -113,11 +113,12 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
                 if len(input_ids) <= max_length:
                     filtered_samples.append(sample)
         if multimodal:
-            from miles.utils.processing_utils import process_vision_info
+            from miles.utils.processing_utils import call_processor
 
             for sample in multimodal:
-                multimodal_inputs = process_vision_info(sample.prompt, processor)
-                processor_output = processor(text=sample.prompt, **multimodal_inputs)
+                # sample.prompt is the rendered template string, so its media cannot be re-extracted from it; use
+                # what Dataset extracted from the message list.
+                processor_output = call_processor(processor, sample.prompt, sample.multimodal_inputs)
                 input_ids = processor_output["input_ids"][0]
                 if len(input_ids) <= max_length:
                     filtered_samples.append(sample)

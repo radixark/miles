@@ -4187,6 +4187,14 @@ def miles_validate_args(args):
     _validate_deploy_component(args)
 
 
+# Custom providers whose training forward is deterministic, so its detached log-probs equal the ones a separate
+# forward-only pass would compute.
+_SKIP_ACTOR_FORWARD_ONLY_MODEL_PROVIDERS = (
+    "miles_plugins.models.muse_spark.muse_spark_1x_model_provider",
+    "miles_plugins.models.muse_spark.provider.muse_spark_1x_omni_model_provider",
+)
+
+
 def validate_skip_actor_forward_only(args) -> None:
     option = "--skip-actor-forward-only"
     assert args.train_backend == "megatron", f"{option} only supports --train-backend megatron"
@@ -4221,7 +4229,10 @@ def validate_skip_actor_forward_only(args) -> None:
                 "--custom-megatron-before-train-step-hook-path",
                 args.custom_megatron_before_train_step_hook_path is not None,
             ),
-            ("--custom-model-provider-path", args.custom_model_provider_path is not None),
+            (
+                "--custom-model-provider-path",
+                args.custom_model_provider_path not in (None, *_SKIP_ACTOR_FORWARD_ONLY_MODEL_PROVIDERS),
+            ),
             (
                 "--dumper-source-patcher-config-train",
                 args.dumper_source_patcher_config_train is not None,

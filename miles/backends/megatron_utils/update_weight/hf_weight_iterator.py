@@ -135,6 +135,18 @@ def _gather_pp_full_adapter(
 
 
 def _iter_mm_tower_units(args, *, materialize):
-    if "inkling_mm_model_provider" not in (args.custom_model_provider_path or ""):
+    provider = args.custom_model_provider_path or ""
+    if "inkling_mm_model_provider" in provider:
+        prefixes = None
+    elif "muse_spark_1x_omni_model_provider" in provider:
+        # The trainer never owns the Muse Spark towers (the NaViT is frozen and unregistered), so every non-text
+        # tensor comes from the boot checkpoint, like any weight a colocated engine drops across offload.
+        from miles_plugins.models.muse_spark.weight_mapping import NON_TEXT_PREFIXES
+
+        prefixes = NON_TEXT_PREFIXES
+    else:
+        # TODO(guapisolo): decide whether to fix. The Muse Spark text provider lands here, so an engine serving the
+        # omni checkpoint keeps zeroed vision/audio towers after the colocated startup offload (no weights CPU
+        # backup); text rollouts are unaffected, image requests are not.
         return
-    yield from iter_checkpoint_tower_units(args.hf_checkpoint, materialize=materialize)
+    yield from iter_checkpoint_tower_units(args.hf_checkpoint, materialize=materialize, prefixes=prefixes)

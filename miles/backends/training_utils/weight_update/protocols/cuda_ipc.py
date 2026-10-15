@@ -192,6 +192,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         if self._ipc_gather_group is not None:
             dist.barrier(group=self._ipc_gather_group)
         del long_lived_tensors
+        bucket.clear()
 
     def after_engines_resumed(self) -> None:
         torch.cuda.ipc_collect()

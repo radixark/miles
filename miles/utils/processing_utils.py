@@ -152,6 +152,13 @@ def load_processor(name_or_path: str, **kwargs):
 
         return InklingTrainProcessor(name_or_path)
 
+    from miles.utils.chat_template_utils.muse_spark_omni import is_muse_spark_omni_checkpoint
+
+    if is_muse_spark_omni_checkpoint(name_or_path):
+        from miles_plugins.models.muse_spark.vision.processor import MuseSparkTrainProcessor
+
+        return MuseSparkTrainProcessor(name_or_path)
+
     try:
         proc = AutoProcessor.from_pretrained(name_or_path, **kwargs)
     except (OSError, ValueError) as e:

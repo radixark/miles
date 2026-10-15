@@ -411,7 +411,7 @@ def all_gather_params_async(
     """
     Parallel TP all-gather for multiple params. Loop 1: for each TP param, allocate buffers +
     dist.all_gather(async_op=True) on expert-TP/regular-TP group (skip expert_bias/non-TP/duplicated).
-    Loop 2: wait all NCCL handles (enables overlap). Loop 3: concat partitions + apply GLU rechunk/MoE dim fix.
+    Loop 2: wait all NCCL handles (enables overlap). Loop 3: concat partitions when not already in the final layout.
     """
     # Phase 1: Start all async all_gather operations
     gather_tasks = []
@@ -441,9 +441,18 @@ def all_gather_params_async(
                 handles.append(None)
                 continue
 
-            param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
+            partition_stride, partition_dim = _check_and_fix_partition(
+                args, info.name, param.partition_stride, param.partition_dim
+            )
+            if partition_dim == 0 and partition_stride == 1:
+                gathered = torch.empty((tp_size, *param.shape), dtype=param.dtype, device=param.device)
+                param_partitions = list(gathered.unbind(0))
+                direct_param = gathered.flatten(0, 1)
+            else:
+                param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
+                direct_param = None
             handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
-            gather_tasks.append((info, None, handle, param_partitions, param.partition_dim, param.partition_stride))
+            gather_tasks.append((info, direct_param, handle, param_partitions, partition_dim, partition_stride))
             handles.append(handle)
 
     # Phase 2: Wait for ALL async operations to complete at once
@@ -454,14 +463,11 @@ def all_gather_params_async(
 
     # Phase 3: Process all results after all communications are done
     gathered_params = []
-    for info, direct_param, handle, param_partitions, partition_dim, partition_stride in gather_tasks:
-        if handle is None:
-            # No all_gather needed
+    for _info, direct_param, handle, param_partitions, partition_dim, partition_stride in gather_tasks:
+        if handle is None or direct_param is not None:
+            # Unsharded, or gathered directly into the final dim-0 layout.
             param = direct_param
         else:
-            partition_stride, partition_dim = _check_and_fix_partition(
-                args, info.name, partition_stride, partition_dim
-            )
             param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
 
         gathered_params.append(param)

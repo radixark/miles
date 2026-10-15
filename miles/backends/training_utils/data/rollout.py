@@ -359,9 +359,14 @@ def get_batch(
     # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
     if multimodal_train_inputs is not None:
+        # `*_positions` are sample-local indices; shift them into the natural packed row.
+        # Zigzag THD CP pads every sample to a multiple of 2*cp before slicing, so the
+        # natural row (what cu_seqlens describes) advances by the padded length.
+        cp_pad_unit = 2 * cp_size if (qkv_format == "thd" and cp_size > 1 and not allgather_cp) else 1
         sample_offsets = [0]
         for t in batch["unconcat_tokens"]:
-            sample_offsets.append(sample_offsets[-1] + t.size(0))
+            natural_len = -(-t.size(0) // cp_pad_unit) * cp_pad_unit
+            sample_offsets.append(sample_offsets[-1] + natural_len)
         multimodal_data = {}  # key -> concatenated tensor
         multimodal_num_items = {}  # key -> list of item counts per sequence
         for i, mm_input_dict in enumerate(multimodal_train_inputs):

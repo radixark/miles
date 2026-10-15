@@ -9,6 +9,7 @@ from .kimi_k3 import convert_kimi_k3_to_hf
 from .kimi_vl import convert_kimi_k25_to_hf, convert_kimivl_to_hf
 from .llama import convert_llama_to_hf
 from .mimo import convert_mimo_to_hf
+from .muse_spark import convert_muse_spark_1x_to_hf
 from .processors import quantize_params, remove_padding
 from .qwen2 import convert_qwen2_to_hf
 from .qwen3_5 import convert_qwen3_5_to_hf
@@ -46,7 +47,9 @@ def convert_to_hf_names(args, model_name, name, param) -> list[str]:
 
 def _convert_to_hf_core(args, model_name, name, param):
     model_name = model_name.lower()
-    if "glm5_next" in model_name or "glm5next" in model_name:
+    if model_name in {"musesparkhfconfig", "muse_spark"}:
+        converted_named_tensors = convert_muse_spark_1x_to_hf(args, name, param)
+    elif "glm5_next" in model_name or "glm5next" in model_name:
         converted_named_tensors = convert_glm5_next_to_hf(args, name, param)
     elif (
         "glm4moelite" in model_name

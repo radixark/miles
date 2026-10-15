@@ -18,6 +18,8 @@ from pathlib import Path
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 
+from miles_plugins.models.muse_spark.hf_config import register_muse_spark_config
+
 
 @dataclass(frozen=True)
 class _HFConfigAlias:
@@ -131,6 +133,8 @@ def register_hf_config_aliases() -> None:
         import sglang.srt.configs.inkling  # noqa: F401
     except ImportError:
         pass
+
+    register_muse_spark_config()
 
 
 def load_hf_config(
