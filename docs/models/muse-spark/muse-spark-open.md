@@ -93,7 +93,7 @@ Time per step:
 
 `--sequence-parallel`, THD packing with `--use-dynamic-batch-size --max-tokens-per-gpu 4096` (8192 on B300), and full recomputation are on. Each launcher sets these as the defaults of `--tensor-model-parallel-size`, `--pipeline-model-parallel-size`, `--context-parallel-size`, `--expert-model-parallel-size` and `--decoder-first-last-pipeline-num-layers`, together with its node count, engine size and engine memory settings; the shared recipe is `scripts/muse_spark/common.py`. On H200, TP4/PP8/CP2 (7 edge-stage layers) and TP4/PP4/CP4/EP16 (15) also fit; the numbers above use the defaults.
 
-Rollout runs on 4 colocated SGLang engines with a BF16 KV cache: on H200, 16 GPUs each (`--sglang-ep-size 16`) with up to 64 concurrent requests; on B300, one node each (`--sglang-ep-size 8`) with up to 128.
+Rollout runs on 4 colocated SGLang engines with a BF16 KV cache: on H200, 16 GPUs each (`--sglang-ep-size 16`) with up to 64 concurrent requests; on B300, one node each (`--sglang-ep-size 8`) with up to 128. The B300 launcher also runs the rollout executor, router and session servers on the Ray head node (`--pin-rollout-manager-to-head`), as the validated B300 run did.
 
 ### 5.2 Algorithm
 
