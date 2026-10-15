@@ -24,6 +24,7 @@ Each model name links to its recipe page.
 | **GPT-OSS** | [gpt-oss-20b](/models/gpt-oss/gpt-oss) |
 | **MiMo** | [MiMo-V2.6-Flash](/models/mimo/mimo-v2-6-flash) |
 | **StepFun** | [Step-5-Preview](/models/stepfun/step5) |
+| **Muse Spark** | [Muse Spark Open](/models/muse-spark/muse-spark-open) |
 
 ## Diffusion
 
