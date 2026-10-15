@@ -1,6 +1,6 @@
 ---
 title: Muse Spark Open
-description: Launch recipe for Muse Spark Open (816B omni MoE) — full-parameter GRPO on 64 H200 GPUs, on math or on image-grounded math.
+description: Launch recipe for Muse Spark Open (816B omni MoE) — full-parameter GRPO on 64 H200 or 32 B300 GPUs, on math or on image-grounded math.
 ---
 ## 1. Model Introduction
 
@@ -23,11 +23,11 @@ description: Launch recipe for Muse Spark Open (816B omni MoE) — full-paramete
 
 ### 3.1 Container and storage
 
-Run the `radixark/miles:muse-spark-open` image on 8 nodes with 8 H200 GPUs each, connected by InfiniBand. Every node needs:
+Run the `radixark/miles:muse-spark-open` image on 8 nodes with 8 H200 GPUs each, or on 4 nodes with 8 B300 GPUs each, connected by InfiniBand. Every node needs:
 
 - shared storage at `/root/models` (`--model-dir`) and `/root/datasets` (`--data-dir`);
 - shared storage at `/root/shared_data` (`--output-dir`) to save weights;
-- node-local NVMe at `/scratch` (`--offload-train-disk-dir`) with about 1.2 TB free for the streamed Adam state.
+- node-local NVMe at `/scratch` (`--offload-train-disk-dir`) with about 1.2 TB free (2.5 TB on B300) for the streamed Adam state.
 
 ```bash
 docker run -d --name miles --gpus all --network host --ipc host --shm-size 512g \
@@ -41,15 +41,15 @@ docker run -d --name miles --gpus all --network host --ipc host --shm-size 512g 
 
 ### 3.2 Download + `torch_dist` conversion
 
-`prepare` (run by the launcher before training) downloads the checkpoint to `<model-dir>/Muse-Spark-Open-816B-A42B` and converts it on all eight nodes into `<model-dir>/Muse-Spark-Open-816B-A42B_torch_dist`, skipping a finished conversion. The `torch_dist` release is about 1.6 TB and loads into any training layout. It also downloads `zhuzilin/dapo-math-17k`, or with `--vlm` prepares `hiyouga/geometry3k` with `scripts/muse_spark_vlm/prepare_geo3k.py`.
+`prepare` (run by the launcher before training) downloads the checkpoint to `<model-dir>/Muse-Spark-Open-816B-A42B` and converts it on all nodes into `<model-dir>/Muse-Spark-Open-816B-A42B_torch_dist`, skipping a finished conversion. The `torch_dist` release is about 1.6 TB and loads into any training layout. It also downloads `zhuzilin/dapo-math-17k`, or with `--vlm` prepares `hiyouga/geometry3k` with `scripts/muse_spark/prepare_geo3k.py`.
 
 ### 3.3 SGLang
 
-The engine runs the omni checkpoint natively from the [`sglang-miles-muse-spark-open`](https://github.com/sgl-project/sglang/tree/sglang-miles-muse-spark-open) branch, which the image contains. The recipe is validated on H200. On Blackwell, a math reasoning run on 32 B300 GPUs (4 nodes; TP8/PP4 training, one 8-GPU engine per node) completed 30 steps with `train/train_rollout_logprob_abs_diff` at 0.004–0.007 and bit-identical weights across all engines after every sync. The launcher's training layouts are sized for 64 H200 GPUs, and B200 is untested.
+The engine runs the omni checkpoint natively from the [`sglang-miles-muse-spark-open`](https://github.com/sgl-project/sglang/tree/sglang-miles-muse-spark-open) branch, which the image contains. Math reasoning is validated on H200 and B300, image-grounded math on H200 only; B200 is untested.
 
 ## 4. Launch
 
-Start one Ray cluster across the 8 nodes, then launch from node 0:
+Start one Ray cluster across the nodes, then launch from node 0. On 8 nodes with 8 H200 GPUs each:
 
 ```bash
 # node 0
@@ -66,14 +66,21 @@ MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_muse_spark_64xh200.py \
   --vlm --use-dynamic-sampling-filter --reasoning-effort medium --eval-interval 5
 ```
 
-Time per step on 64 H200 GPUs:
+On 4 nodes with 8 B300 GPUs each, run `scripts/run_muse_spark_32xb300.py`, which takes the same options:
 
-| Mode | Rollout | Training | Weight sync |
-|---|---|---|---|
-| Math reasoning | 2–5.5 min | 3–5.5 min | about 50 s |
-| Image-grounded math | 8–14 min | about 5 min | about 50 s |
+```bash
+MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_muse_spark_32xb300.py
+```
 
-`train/train_rollout_logprob_abs_diff` stays around 0.007 for math reasoning and 0.013 for image-grounded math. The reward starts at about 0.65–0.75; for math reasoning it reached 0.8–0.95 within 10 steps in our runs.
+Time per step:
+
+| Mode | GPUs | Rollout | Training | Weight sync |
+|---|---|---|---|---|
+| Math reasoning | 64 H200 | 2–5.5 min | 3–5.5 min | about 50 s |
+| Image-grounded math | 64 H200 | 8–14 min | about 5 min | about 50 s |
+| Math reasoning | 32 B300 | 1.7–3.5 min | 8.5–12.5 min (18.5 min at step 0) | about 90 s |
+
+`train/train_rollout_logprob_abs_diff` stays around 0.007 for math reasoning (0.004–0.007 on B300) and 0.013 for image-grounded math. Every engine holds bit-identical weights after every sync. The reward starts at about 0.65–0.75; for math reasoning it reached 0.8–0.95 within 10 steps in our runs.
 
 ## 5. Recipe Configuration
 
@@ -81,11 +88,12 @@ Time per step on 64 H200 GPUs:
 
 | `--training-layout` | TP | PP | CP | EP | expert-TP | first/last stage layers |
 |---|---|---|---|---|---|---|
-| `tp8_pp8_cp1` (default) | 8 | 8 | 1 | 8 | 1 | 7 |
+| `tp8_pp8_cp1` (H200 default) | 8 | 8 | 1 | 8 | 1 | 7 |
+| `tp8_pp4_cp1` (B300) | 8 | 4 | 1 | 8 | 1 | 15 |
 
-`--sequence-parallel`, THD packing with `--use-dynamic-batch-size --max-tokens-per-gpu 4096`, and full recomputation are on. The launcher also accepts `tp4_pp8_cp2` and `tp4_pp4_cp4_ep16`; the numbers above use the default.
+`--sequence-parallel`, THD packing with `--use-dynamic-batch-size --max-tokens-per-gpu 4096` (8192 on B300), and full recomputation are on. On H200 the launcher also accepts `tp4_pp8_cp2` and `tp4_pp4_cp4_ep16`; the numbers above use the defaults.
 
-Rollout runs on 4 colocated SGLang engines of 16 GPUs each (`--sglang-ep-size 16`), with a BF16 KV cache and up to 64 concurrent requests per engine.
+Rollout runs on 4 colocated SGLang engines with a BF16 KV cache: on H200, 16 GPUs each (`--sglang-ep-size 16`) with up to 64 concurrent requests; on B300, one node each (`--sglang-ep-size 8`) with up to 128.
 
 ### 5.2 Algorithm
 
@@ -129,7 +137,7 @@ Save directories count steps from 0, so the save after step 10 is `iter_0000009`
 
 - **BF16 KV cache**: the launcher passes `--sglang-kv-cache-dtype bfloat16`; the FP8 KV cache SGLang would otherwise pick widens the gap between rollout and training log-probabilities.
 - **Muon cannot save its optimizer state**: Megatron requires `--no-load-optim --no-save-optim` with `--chunked-muon-master-weights`.
-- **Fixed cluster size**: the launcher raises unless it gets 8 nodes with 8 GPUs each.
+- **Fixed cluster size**: each launcher raises unless it gets its node count (8 on H200, 4 on B300) with 8 GPUs each.
 
 ## 6. Pairs Well With
 
