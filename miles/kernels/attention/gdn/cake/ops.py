@@ -35,9 +35,9 @@ from __future__ import annotations
 import math
 import os
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache, lru_cache
-from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -345,9 +345,15 @@ def _scan_record(kind: str, vb: int, ks: int, arch: str) -> dict:
 # --------------------------------------------------------------------------- #
 # finalize kernel selection (a pure function of shape and device; mirrors loom's gdn_chunk_training.finalize_stage)
 # --------------------------------------------------------------------------- #
-FINALIZE_MLP_GROUP = 3  # value-head group the one-wave finalize is unrolled for (HV = 3 H at every Qwen3.8-27B TP degree)
-FINALIZE_MLP_MIN_BLOCKS = 4  # its launch-bound residency: __launch_bounds__(128, 4) -> 128-register cap -> four CTAs per SM
-FORCED_FINALIZE: str | None = None  # tests / experiments: "finalize" or "finalize_mlp" (also MILES_GDN_CHUNK_TRAIN_FINALIZE)
+FINALIZE_MLP_GROUP = (
+    3  # value-head group the one-wave finalize is unrolled for (HV = 3 H at every Qwen3.8-27B TP degree)
+)
+FINALIZE_MLP_MIN_BLOCKS = (
+    4  # its launch-bound residency: __launch_bounds__(128, 4) -> 128-register cap -> four CTAs per SM
+)
+FORCED_FINALIZE: str | None = (
+    None  # tests / experiments: "finalize" or "finalize_mlp" (also MILES_GDN_CHUNK_TRAIN_FINALIZE)
+)
 FINALIZE_STAGES = ("finalize", "finalize_mlp")
 
 
@@ -454,12 +460,16 @@ MIN_SEGMENT_CHUNKS = 4  # 256 tokens: shorter segments pay more in pre-scan + st
 # host table and the device table split identically.
 SCAN_CO_RESIDENT_FACTOR = 1.60
 PRESCAN_STEP_FACTOR = 1.16
-PRESCAN_WARMUP_CHUNKS = 3.3  # modelled warm-up length in chunk steps (strong gating: n_w = 1 plus the prologue and launch floor)
+PRESCAN_WARMUP_CHUNKS = (
+    3.3  # modelled warm-up length in chunk steps (strong gating: n_w = 1 plus the prologue and launch floor)
+)
 STITCH_VSPLIT = 4  # stitch CTAs per (sequence, head): V-column blocks of the [K][V] start state (grid z; mirrors the kernel constant)
 STITCH_FIXED_CHUNKS = 2.75  # stitch launch floor in chunk steps
 STITCH_COPY_CHUNKS = 2.3  # one copy-only stitch step (serial over the boundaries) in chunk steps
 SPLIT_GAIN_THRESHOLD = 0.95  # split only when the modelled makespan beats the serial scan by at least 5 %
-MAX_SCAN_ROUNDS = 2  # a co-resident split may launch at most two rounds of the resident set (the R3 sweep's calibrated range)
+MAX_SCAN_ROUNDS = (
+    2  # a co-resident split may launch at most two rounds of the resident set (the R3 sweep's calibrated range)
+)
 MAX_SCAN_WAVES_SERIAL = 4  # a one-CTA-per-SM split may launch at most four sequential waves (round R6 forced-L arms)
 # Per-chunk step time of each register-scan configuration relative to the preferred (32, 2) block in the same residency
 # class (round R3, C6): the (64, 1) block halves the grid (one CTA per 64 value rows) at a longer per-chunk chain (16
@@ -507,7 +517,9 @@ def _wave_factor(ctas: int, sm_count: int, residency: int) -> float:
     return cost
 
 
-def _scan_makespan(chunks: Sequence[int], splits: Sequence[int], per_segment: int, sm_count: int, residency: int) -> float:
+def _scan_makespan(
+    chunks: Sequence[int], splits: Sequence[int], per_segment: int, sm_count: int, residency: int
+) -> float:
     """Modelled makespan, in chunk steps of one CTA per SM, of a scan grid over ``chunks`` cut into ``splits`` segments.
 
     Sequence ``i`` runs ``splits[i] x per_segment`` CTAs for ``ceil(chunks[i] / splits[i])`` steps (its segments are
@@ -521,7 +533,7 @@ def _scan_makespan(chunks: Sequence[int], splits: Sequence[int], per_segment: in
     1.6 x (4 + 23) steps, the 16 CTAs beyond the resident set starting when the pad's CTAs finished).  One sequence
     reduces to ``steps x _wave_factor(all CTAs)`` within :data:`MAX_SCAN_ROUNDS`.
     """
-    runs = sorted((-(-n // k), k * per_segment) for n, k in zip(chunks, splits))
+    runs = sorted((-(-n // k), k * per_segment) for n, k in zip(chunks, splits, strict=False))
     slots = sm_count * (2 if residency >= 2 else 1)
     longest = runs[-1][0]
     releases = []
@@ -568,7 +580,9 @@ def split_cta_limit(sm_count: int, residency: int) -> int:
     return MAX_SCAN_ROUNDS * 2 * sm_count if residency >= 2 else MAX_SCAN_WAVES_SERIAL * sm_count
 
 
-def _best_split(chunks: Sequence[int], per_segment: int, sm_count: int, residency: int, step_factor: float) -> tuple[int, float]:
+def _best_split(
+    chunks: Sequence[int], per_segment: int, sm_count: int, residency: int, step_factor: float
+) -> tuple[int, float]:
     """``(segment_len, modelled cost)`` of the cheapest admissible split of ``chunks`` (``(0, inf)`` when none is).
 
     A segment length ``L`` cuts sequence ``i`` into ``k_i = ceil(n_i / L)`` equal-sized segments (``k_i = 1``: unsplit)
@@ -589,7 +603,12 @@ def _best_split(chunks: Sequence[int], per_segment: int, sm_count: int, residenc
         if sum(splits) * per_segment > limit:
             continue
         scan = step_factor * _scan_makespan(chunks, splits, per_segment, sm_count, residency)
-        pre = PRESCAN_WARMUP_CHUNKS * PRESCAN_STEP_FACTOR * step_factor * _wave_factor(sum(k - 1 for k in splits) * per_segment, sm_count, residency)
+        pre = (
+            PRESCAN_WARMUP_CHUNKS
+            * PRESCAN_STEP_FACTOR
+            * step_factor
+            * _wave_factor(sum(k - 1 for k in splits) * per_segment, sm_count, residency)
+        )
         cost = scan + pre + STITCH_FIXED_CHUNKS + STITCH_COPY_CHUNKS * (max(splits) - 1)
         if cost < best_cost:
             best_len, best_cost = seg_len, cost
@@ -615,7 +634,9 @@ def plan_segments(
     segment per sequence (the pre-scan -- and, for the backward scan, the stitch -- then launch on the device route and
     exit immediately).
     """
-    chunks = tuple(int(c) for c in seq_chunks) if seq_chunks is not None else bound_layout_chunks(chunks_bound, num_seqs)
+    chunks = (
+        tuple(int(c) for c in seq_chunks) if seq_chunks is not None else bound_layout_chunks(chunks_bound, num_seqs)
+    )
     serial = _serial_cost(chunks, per_segment, sm_count, residency, step_factor)
     best_len, best_cost = _best_split(chunks, per_segment, sm_count, residency, step_factor)
     if best_len == 0 or best_cost >= SPLIT_GAIN_THRESHOLD * serial:
@@ -688,10 +709,24 @@ def choose_scan_plan(
         return ScanPlan(baseline, 0)  # the launch reports the unsupported device (_scan_stage)
     pinned = FORCED_SCAN_CONFIG is not None or bool(os.environ.get("MILES_GDN_CHUNK_TRAIN_SCAN_CFG"))
     chunks_bound = total_tokens // CHUNK + num_seqs
-    chunks = tuple(-(-int(x) // CHUNK) for x in seq_lens) if seq_lens is not None else bound_layout_chunks(chunks_bound, num_seqs)
+    chunks = (
+        tuple(-(-int(x) // CHUNK) for x in seq_lens)
+        if seq_lens is not None
+        else bound_layout_chunks(chunks_bound, num_seqs)
+    )
     sm_count, _smem_optin, _major = _device_props(device_index)
-    candidates = [baseline] if pinned else [config for config in REG_SCAN_CONFIGS if _scan_fits(kind, config, device_index, arch) is None]
-    baseline_cost = _serial_cost(chunks, num_v_heads * (HEAD_DIM // baseline[0]), sm_count, _scan_residency(kind, baseline[0], baseline[1], device_index, arch), SCAN_STEP_FACTOR[baseline])
+    candidates = (
+        [baseline]
+        if pinned
+        else [config for config in REG_SCAN_CONFIGS if _scan_fits(kind, config, device_index, arch) is None]
+    )
+    baseline_cost = _serial_cost(
+        chunks,
+        num_v_heads * (HEAD_DIM // baseline[0]),
+        sm_count,
+        _scan_residency(kind, baseline[0], baseline[1], device_index, arch),
+        SCAN_STEP_FACTOR[baseline],
+    )
     best = (baseline, 0, baseline_cost)
     for config in candidates:
         per_segment = num_v_heads * (HEAD_DIM // config[0])
@@ -737,7 +772,12 @@ def _scan_plans_memo(
 
 
 def scan_plans(
-    total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str, seq_lens: tuple[int, ...] | None = None
+    total_tokens: int,
+    num_seqs: int,
+    num_v_heads: int,
+    device_index: int,
+    arch: str,
+    seq_lens: tuple[int, ...] | None = None,
 ) -> tuple[ScanPlan, ScanPlan]:
     """``(forward scan, backward scan)`` plans of a layout (see :func:`choose_scan_plan`).
 
@@ -746,20 +786,38 @@ def scan_plans(
     repeated layout is a dictionary hit, a pin change always re-plans.
     """
     seq_key = None if seq_lens is None else tuple(int(x) for x in seq_lens)
-    return _scan_plans_memo(int(total_tokens), int(num_seqs), int(num_v_heads), int(device_index), str(arch), seq_key, _device_props(int(device_index)), _plan_pins())
+    return _scan_plans_memo(
+        int(total_tokens),
+        int(num_seqs),
+        int(num_v_heads),
+        int(device_index),
+        str(arch),
+        seq_key,
+        _device_props(int(device_index)),
+        _plan_pins(),
+    )
 
 
 def segment_lens(
-    total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str, seq_lens: tuple[int, ...] | None = None
+    total_tokens: int,
+    num_seqs: int,
+    num_v_heads: int,
+    device_index: int,
+    arch: str,
+    seq_lens: tuple[int, ...] | None = None,
 ) -> tuple[int, int]:
     """The two plans' segment lengths (:func:`scan_plans`); the per-case record of the benchmark and DET harnesses."""
-    return tuple(plan.segment_len for plan in scan_plans(total_tokens, num_seqs, num_v_heads, device_index, arch, seq_lens))
+    return tuple(
+        plan.segment_len for plan in scan_plans(total_tokens, num_seqs, num_v_heads, device_index, arch, seq_lens)
+    )
 
 
 # --------------------------------------------------------------------------- #
 # host-side caches (round R6-7): scratch workspaces, chunk-table front cache, device architecture
 # --------------------------------------------------------------------------- #
-WORKSPACE_SHAPES_PER_ROLE = 4  # (shape, dtype) buffers kept per role, device and stream; the oldest is released to the allocator
+WORKSPACE_SHAPES_PER_ROLE = (
+    4  # (shape, dtype) buffers kept per role, device and stream; the oldest is released to the allocator
+)
 
 
 class Workspaces:
@@ -844,7 +902,9 @@ def _arch_of(device_index: int) -> str:
     return arch
 
 
-_META_FRONT: dict = {}  # (layout key, num_v_heads, device index, total_tokens, plan pins) -> ChunkMeta (see _chunk_meta)
+_META_FRONT: dict = (
+    {}
+)  # (layout key, num_v_heads, device index, total_tokens, plan pins) -> ChunkMeta (see _chunk_meta)
 _META_FRONT_LIMIT = 256
 _META_FRONT_HITS = 0
 
@@ -862,7 +922,8 @@ def host_cache_clear():
 @cache
 def _scan_stages(kind: str, config: tuple[int, int], device_index: int, arch: str) -> tuple[str, int, str | None, int]:
     """``(scan stage, value block, pre-scan stage or None, chunks the pre-scan prologue covers)`` of the ``kind``
-    register scan in ``config`` on one device -- :func:`_scan_stage` plus the pre-scan lookups, resolved once per key."""
+    register scan in ``config`` on one device -- :func:`_scan_stage` plus the pre-scan lookups, resolved once per key.
+    """
     stage, vb = _scan_stage(kind, config, torch.device("cuda", device_index), arch)
     pre = stage.replace(f"{kind}_r", f"{kind}_pre_r")
     if pre not in MODULES or arch not in MODULES[pre]:
@@ -881,25 +942,187 @@ def _split_scan_stage(stage: str, arch: str) -> str | None:
 # Positional launch orders = the exported plan order of every stage (registry ``arg_plan`` without the trailing grid
 # entries; identical on sm_100a and sm_103a).  ``_jit.NativeKernel.launcher`` verifies the name set against the plan at
 # first use and permutes if an export ever reorders a plan; the values at every call site follow these tuples one to one.
-_PREP_ARGS = ("q", "k", "g", "beta", "beta32_out", "qn", "kn", "rstd_q", "rstd_k", "g_cs", "chunk_start", "chunk_len", "num_heads", "num_v_heads", "normalize_qk")
-_WY_ARGS = ("kn", "v", "g_cs", "beta", "A_out", "w_out", "u_out", "chunk_start", "chunk_len", "num_heads", "num_v_heads", "recompute")
-_FWD_H_ARGS = ("kn", "w", "u", "g_cs", "h0", "h_out", "v_new", "final_state", "seg_state", "chunk_start", "chunk_len", "seg_chunk_start", "seg_seq", "seq_chunk_start", "num_heads", "num_v_heads", "use_initial_state", "store_final_state")
+_PREP_ARGS = (
+    "q",
+    "k",
+    "g",
+    "beta",
+    "beta32_out",
+    "qn",
+    "kn",
+    "rstd_q",
+    "rstd_k",
+    "g_cs",
+    "chunk_start",
+    "chunk_len",
+    "num_heads",
+    "num_v_heads",
+    "normalize_qk",
+)
+_WY_ARGS = (
+    "kn",
+    "v",
+    "g_cs",
+    "beta",
+    "A_out",
+    "w_out",
+    "u_out",
+    "chunk_start",
+    "chunk_len",
+    "num_heads",
+    "num_v_heads",
+    "recompute",
+)
+_FWD_H_ARGS = (
+    "kn",
+    "w",
+    "u",
+    "g_cs",
+    "h0",
+    "h_out",
+    "v_new",
+    "final_state",
+    "seg_state",
+    "chunk_start",
+    "chunk_len",
+    "seg_chunk_start",
+    "seg_seq",
+    "seq_chunk_start",
+    "num_heads",
+    "num_v_heads",
+    "use_initial_state",
+    "store_final_state",
+)
 # the split-plan instantiation of the forward scan reads the per-segment flags too (its prologue folds the forward
 # stitch); the pre-scan adds the warm-up threshold on top
 _FWD_H_SPLIT_ARGS = _FWD_H_ARGS + ("seg_flag",)
 _FWD_H_PRE_ARGS = _FWD_H_SPLIT_ARGS + ("warmup_thresh_log2",)
-_STITCH_ARGS = ("seg_state", "init_state", "state_out", "seq_seg_start", "seg_flag", "num_v_heads", "use_init", "reverse")
-_FWD_O_ARGS = ("qn", "kn", "v_new", "h", "g_cs", "o_out", "chunk_start", "chunk_len", "num_heads", "num_v_heads", "scale")
-_DV_LOCAL_ARGS = ("qn", "kn", "do", "g_cs", "dv_local", "chunk_start", "chunk_len", "num_heads", "num_v_heads", "scale")
-_DHU_ARGS = ("qn", "kn", "w", "do", "dv_local", "g_cs", "dht", "dh_out", "dv2", "dh0", "seg_state", "chunk_start", "chunk_len", "seg_chunk_start", "seg_seq", "seq_chunk_start", "num_heads", "num_v_heads", "use_final_state_grad", "store_initial_state_grad", "scale")
+_STITCH_ARGS = (
+    "seg_state",
+    "init_state",
+    "state_out",
+    "seq_seg_start",
+    "seg_flag",
+    "num_v_heads",
+    "use_init",
+    "reverse",
+)
+_FWD_O_ARGS = (
+    "qn",
+    "kn",
+    "v_new",
+    "h",
+    "g_cs",
+    "o_out",
+    "chunk_start",
+    "chunk_len",
+    "num_heads",
+    "num_v_heads",
+    "scale",
+)
+_DV_LOCAL_ARGS = (
+    "qn",
+    "kn",
+    "do",
+    "g_cs",
+    "dv_local",
+    "chunk_start",
+    "chunk_len",
+    "num_heads",
+    "num_v_heads",
+    "scale",
+)
+_DHU_ARGS = (
+    "qn",
+    "kn",
+    "w",
+    "do",
+    "dv_local",
+    "g_cs",
+    "dht",
+    "dh_out",
+    "dv2",
+    "dh0",
+    "seg_state",
+    "chunk_start",
+    "chunk_len",
+    "seg_chunk_start",
+    "seg_seq",
+    "seq_chunk_start",
+    "num_heads",
+    "num_v_heads",
+    "use_final_state_grad",
+    "store_initial_state_grad",
+    "scale",
+)
 _DHU_PRE_ARGS = _DHU_ARGS + ("seg_flag", "warmup_thresh_log2")
-_DQKWG_ARGS = ("qn", "kn", "v_new", "do", "dv2", "h", "dh", "g_cs", "dq_out", "dk_out", "dw_out", "dg_out", "chunk_start", "chunk_len", "num_heads", "num_v_heads", "scale")
-_WY_BWD_ARGS = ("kn", "v", "A", "dw", "du", "g_cs", "beta", "dk2_out", "dv_out", "dbeta_out", "dg2_out", "chunk_start", "chunk_len", "num_heads", "num_v_heads")
-_FINALIZE_ARGS = ("qn", "kn", "rstd_q", "rstd_k", "dq_hv", "dk_hv", "dk2", "dg1", "dg2", "dq_out", "dk_out", "dg_out", "chunk_start", "chunk_len", "num_heads", "num_v_heads", "normalize_qk")
+_DQKWG_ARGS = (
+    "qn",
+    "kn",
+    "v_new",
+    "do",
+    "dv2",
+    "h",
+    "dh",
+    "g_cs",
+    "dq_out",
+    "dk_out",
+    "dw_out",
+    "dg_out",
+    "chunk_start",
+    "chunk_len",
+    "num_heads",
+    "num_v_heads",
+    "scale",
+)
+_WY_BWD_ARGS = (
+    "kn",
+    "v",
+    "A",
+    "dw",
+    "du",
+    "g_cs",
+    "beta",
+    "dk2_out",
+    "dv_out",
+    "dbeta_out",
+    "dg2_out",
+    "chunk_start",
+    "chunk_len",
+    "num_heads",
+    "num_v_heads",
+)
+_FINALIZE_ARGS = (
+    "qn",
+    "kn",
+    "rstd_q",
+    "rstd_k",
+    "dq_hv",
+    "dk_hv",
+    "dk2",
+    "dg1",
+    "dg2",
+    "dq_out",
+    "dk_out",
+    "dg_out",
+    "chunk_start",
+    "chunk_len",
+    "num_heads",
+    "num_v_heads",
+    "normalize_qk",
+)
 # stage -> call-site order, for the wiring test that pins every launcher to its exported plan
 LAUNCH_ARGS = {
-    "prep": _PREP_ARGS, "prep_bf16beta": _PREP_ARGS, "wy": _WY_ARGS, "fwd_o": _FWD_O_ARGS, "stitch": _STITCH_ARGS,
-    "dv_local": _DV_LOCAL_ARGS, "dqkwg": _DQKWG_ARGS, "wy_bwd": _WY_BWD_ARGS, "wy_bwd_bf16": _WY_BWD_ARGS, "finalize": _FINALIZE_ARGS,
+    "prep": _PREP_ARGS,
+    "prep_bf16beta": _PREP_ARGS,
+    "wy": _WY_ARGS,
+    "fwd_o": _FWD_O_ARGS,
+    "stitch": _STITCH_ARGS,
+    "dv_local": _DV_LOCAL_ARGS,
+    "dqkwg": _DQKWG_ARGS,
+    "wy_bwd": _WY_BWD_ARGS,
+    "wy_bwd_bf16": _WY_BWD_ARGS,
+    "finalize": _FINALIZE_ARGS,
     "finalize_mlp": _FINALIZE_ARGS,  # same plan as finalize; the host picks the stage per layout / device (finalize_stage)
     **{f"fwd_h_r{vb}k{ks}": _FWD_H_ARGS for vb, ks in REG_SCAN_CONFIGS},
     **{f"fwd_h_r{vb}k{ks}_split": _FWD_H_SPLIT_ARGS for vb, ks in REG_SCAN_CONFIGS},
@@ -912,19 +1135,56 @@ LAUNCH_ARGS = {
 # --------------------------------------------------------------------------- #
 # forward
 # --------------------------------------------------------------------------- #
-def _launch_wy(arch, kn, v, g_cs, beta32, A, meta: ChunkMeta, num_heads: int, num_v_heads: int, total_tokens: int, *, recompute: bool):
+def _launch_wy(
+    arch,
+    kn,
+    v,
+    g_cs,
+    beta32,
+    A,
+    meta: ChunkMeta,
+    num_heads: int,
+    num_v_heads: int,
+    total_tokens: int,
+    *,
+    recompute: bool,
+):
     # ``w`` / ``u`` go on the autograd tape (SAVE_STATE) or into the returned forward dict: fresh allocations, never pooled.
     w = torch.empty((total_tokens, num_v_heads, HEAD_DIM), dtype=kn.dtype, device=kn.device)
     u = torch.empty(v.shape, dtype=v.dtype, device=v.device)
     launcher("wy", arch, _WY_ARGS)(
-        meta.num_chunks, num_v_heads, 1,
-        kn, v, g_cs, beta32, A, w, u, meta.chunk_start, meta.chunk_len, num_heads, num_v_heads, 1 if recompute else 0,
+        meta.num_chunks,
+        num_v_heads,
+        1,
+        kn,
+        v,
+        g_cs,
+        beta32,
+        A,
+        w,
+        u,
+        meta.chunk_start,
+        meta.chunk_len,
+        num_heads,
+        num_v_heads,
+        1 if recompute else 0,
     )
     return w, u
 
 
 def _launch_fwd_h(
-    arch, kn, w, u, g_cs, initial_state, meta: ChunkMeta, num_heads: int, num_v_heads: int, *, store_final_state: bool, table: dict
+    arch,
+    kn,
+    w,
+    u,
+    g_cs,
+    initial_state,
+    meta: ChunkMeta,
+    num_heads: int,
+    num_v_heads: int,
+    *,
+    store_final_state: bool,
+    table: dict,
 ):
     device = kn.device
     # ``h`` / ``v_new`` are saved for backward (or returned): fresh.  ``final_state`` is returned when requested; otherwise
@@ -934,7 +1194,9 @@ def _launch_fwd_h(
     if store_final_state:  # the kernel writes every element of ``final_state``; no fill kernel is needed
         final_state = torch.empty((meta.num_seqs, num_v_heads, HEAD_DIM, HEAD_DIM), dtype=torch.float32, device=device)
     else:
-        final_state = WORKSPACES.take(table, "f_zero_state", (0, num_v_heads, HEAD_DIM, HEAD_DIM), torch.float32, device)
+        final_state = WORKSPACES.take(
+            table, "f_zero_state", (0, num_v_heads, HEAD_DIM, HEAD_DIM), torch.float32, device
+        )
     if initial_state is not None:
         h0 = initial_state.contiguous()
         if h0.dtype != torch.float32:
@@ -943,7 +1205,9 @@ def _launch_fwd_h(
     else:
         h0, use_init = final_state, 0
     segs = meta.fwd_segments
-    stage, vb, pre, pre_threads = _scan_stages("fwd_h", segs.scan_config, device.index, arch)  # the planned configuration
+    stage, vb, pre, pre_threads = _scan_stages(
+        "fwd_h", segs.scan_config, device.index, arch
+    )  # the planned configuration
     if segs.segment_len > 0 and segs.num_segments > meta.num_seqs:
         # Segment-parallel scan: every segment's affine map in parallel (value and identity column blocks of the
         # augmented state), then the split instantiation of the scan per segment, whose prologue derives the segment's
@@ -952,27 +1216,90 @@ def _launch_fwd_h(
         # The serial plan launches the plain scan below.
         split_stage = _split_scan_stage(stage, arch)
         if pre is None or split_stage is None:
-            raise NotImplementedError(f"the segmented fwd_h scan needs the stages {stage.replace('fwd_h_r', 'fwd_h_pre_r')} and {stage}_split for {arch}")
+            raise NotImplementedError(
+                f"the segmented fwd_h scan needs the stages {stage.replace('fwd_h_r', 'fwd_h_pre_r')} and {stage}_split for {arch}"
+            )
         if segs.segment_len > pre_threads:
-            raise ValueError(f"segment_len {segs.segment_len} exceeds the {pre_threads} chunks per segment the {pre} warm-up prologue scans")
-        seg_state = WORKSPACES.take(table, "f_seg_state", (segs.num_segments, num_v_heads, HEAD_DIM, 2 * HEAD_DIM), torch.float32, device)
+            raise ValueError(
+                f"segment_len {segs.segment_len} exceeds the {pre_threads} chunks per segment the {pre} warm-up prologue scans"
+            )
+        seg_state = WORKSPACES.take(
+            table, "f_seg_state", (segs.num_segments, num_v_heads, HEAD_DIM, 2 * HEAD_DIM), torch.float32, device
+        )
         # per-segment flags written by the pre-scan (1: exact fallback, map block present) and read by the scan's prologue
         seg_flag = WORKSPACES.take(table, "f_seg_flag", (segs.num_segments, num_v_heads), torch.int32, device)
         launcher(pre, arch, _FWD_H_PRE_ARGS)(
-            segs.num_segments, num_v_heads, 2 * HEAD_DIM // vb,
-            kn, w, u, g_cs, h0, h, v_new, final_state, seg_state, meta.chunk_start, meta.chunk_len, segs.seg_chunk_start, segs.seg_seq,
-            meta.seq_chunk_start, num_heads, num_v_heads, use_init, 0, seg_flag, warmup_thresh_log2(),
+            segs.num_segments,
+            num_v_heads,
+            2 * HEAD_DIM // vb,
+            kn,
+            w,
+            u,
+            g_cs,
+            h0,
+            h,
+            v_new,
+            final_state,
+            seg_state,
+            meta.chunk_start,
+            meta.chunk_len,
+            segs.seg_chunk_start,
+            segs.seg_seq,
+            meta.seq_chunk_start,
+            num_heads,
+            num_v_heads,
+            use_init,
+            0,
+            seg_flag,
+            warmup_thresh_log2(),
         )
         launcher(split_stage, arch, _FWD_H_SPLIT_ARGS)(
-            segs.num_segments, num_v_heads, HEAD_DIM // vb,
-            kn, w, u, g_cs, h0, h, v_new, final_state, seg_state, meta.chunk_start, meta.chunk_len, segs.seg_chunk_start, segs.seg_seq,
-            meta.seq_chunk_start, num_heads, num_v_heads, use_init, 1 if store_final_state else 0, seg_flag,
+            segs.num_segments,
+            num_v_heads,
+            HEAD_DIM // vb,
+            kn,
+            w,
+            u,
+            g_cs,
+            h0,
+            h,
+            v_new,
+            final_state,
+            seg_state,
+            meta.chunk_start,
+            meta.chunk_len,
+            segs.seg_chunk_start,
+            segs.seg_seq,
+            meta.seq_chunk_start,
+            num_heads,
+            num_v_heads,
+            use_init,
+            1 if store_final_state else 0,
+            seg_flag,
         )
         return h, v_new, final_state
     launcher(stage, arch, _FWD_H_ARGS)(
-        segs.num_segments, num_v_heads, HEAD_DIM // vb,
-        kn, w, u, g_cs, h0, h, v_new, final_state, final_state, meta.chunk_start, meta.chunk_len, segs.seg_chunk_start, segs.seg_seq,
-        meta.seq_chunk_start, num_heads, num_v_heads, use_init, 1 if store_final_state else 0,
+        segs.num_segments,
+        num_v_heads,
+        HEAD_DIM // vb,
+        kn,
+        w,
+        u,
+        g_cs,
+        h0,
+        h,
+        v_new,
+        final_state,
+        final_state,
+        meta.chunk_start,
+        meta.chunk_len,
+        segs.seg_chunk_start,
+        segs.seg_seq,
+        meta.seq_chunk_start,
+        num_heads,
+        num_v_heads,
+        use_init,
+        1 if store_final_state else 0,
     )
     return h, v_new, final_state
 
@@ -1019,8 +1346,23 @@ def gdn_chunk_forward_stage1(
     rstd_k = torch.empty((total_tokens, num_heads), dtype=torch.float32, device=device)
     g_cs = torch.empty((total_tokens, num_v_heads), dtype=torch.float32, device=device)
     launcher("prep_bf16beta" if beta_bf16 else "prep", arch, _PREP_ARGS)(
-        meta.num_chunks, num_v_heads, 1,
-        q, k, g32, beta, beta32, qn, kn, rstd_q, rstd_k, g_cs, meta.chunk_start, meta.chunk_len, num_heads, num_v_heads,
+        meta.num_chunks,
+        num_v_heads,
+        1,
+        q,
+        k,
+        g32,
+        beta,
+        beta32,
+        qn,
+        kn,
+        rstd_q,
+        rstd_k,
+        g_cs,
+        meta.chunk_start,
+        meta.chunk_len,
+        num_heads,
+        num_v_heads,
         1 if normalize_qk else 0,
     )
     A = torch.empty((total_tokens, num_v_heads, CHUNK), dtype=q.dtype, device=device)  # fully written by the WY kernel
@@ -1056,12 +1398,34 @@ def gdn_chunk_forward_stage2(
     num_heads, num_v_heads = stage1["num_heads"], stage1["num_v_heads"]
     table = WORKSPACES.table(kn.device.index)
     h, v_new, final_state = _launch_fwd_h(
-        arch, kn, w, u, g_cs, initial_state, meta, num_heads, num_v_heads, store_final_state=output_final_state, table=table
+        arch,
+        kn,
+        w,
+        u,
+        g_cs,
+        initial_state,
+        meta,
+        num_heads,
+        num_v_heads,
+        store_final_state=output_final_state,
+        table=table,
     )
     o = torch.empty(v.shape, dtype=v.dtype, device=v.device)  # returned: fresh, in v's own shape
     launcher("fwd_o", arch, _FWD_O_ARGS)(
-        meta.num_chunks, num_v_heads, 1,
-        qn, kn, v_new, h, g_cs, o, meta.chunk_start, meta.chunk_len, num_heads, num_v_heads, float(stage1["scale"]),
+        meta.num_chunks,
+        num_v_heads,
+        1,
+        qn,
+        kn,
+        v_new,
+        h,
+        g_cs,
+        o,
+        meta.chunk_start,
+        meta.chunk_len,
+        num_heads,
+        num_v_heads,
+        float(stage1["scale"]),
     )
     stage1.update(
         {
@@ -1144,8 +1508,19 @@ def gdn_chunk_backward(
     token_hv = (total_tokens, num_v_heads, HEAD_DIM)
     dv_local = WORKSPACES.take(table, "b_dv_local", token_hv, v.dtype, device)
     launcher("dv_local", arch, _DV_LOCAL_ARGS)(
-        meta.num_chunks, num_v_heads, 1,
-        qn, kn, do, g_cs, dv_local, meta.chunk_start, meta.chunk_len, num_heads, num_v_heads, scale,
+        meta.num_chunks,
+        num_v_heads,
+        1,
+        qn,
+        kn,
+        do,
+        g_cs,
+        dv_local,
+        meta.chunk_start,
+        meta.chunk_len,
+        num_heads,
+        num_v_heads,
+        scale,
     )
 
     if dht_from_dv_local is not None:
@@ -1164,31 +1539,94 @@ def gdn_chunk_backward(
     else:
         dht32, use_dht = dh0, 0
     segs = meta.bwd_segments
-    scan_stage, vb, pre, pre_threads = _scan_stages("dhu", segs.scan_config, device.index, arch)  # the planned configuration
+    scan_stage, vb, pre, pre_threads = _scan_stages(
+        "dhu", segs.scan_config, device.index, arch
+    )  # the planned configuration
     if segs.segment_len > 0 and segs.num_segments > meta.num_seqs:
         # Segment-parallel reverse scan: per-segment affine maps, reverse stitch of the segment end states,
         # then the ordinary reverse scan per segment from its FP32 end state.
         if pre is None:
-            raise NotImplementedError(f"the segmented dhu scan needs the pre-scan stage {scan_stage.replace('dhu_r', 'dhu_pre_r')} for {arch}")
+            raise NotImplementedError(
+                f"the segmented dhu scan needs the pre-scan stage {scan_stage.replace('dhu_r', 'dhu_pre_r')} for {arch}"
+            )
         if segs.segment_len > pre_threads:
-            raise ValueError(f"segment_len {segs.segment_len} exceeds the {pre_threads} chunks per segment the {pre} warm-up prologue scans")
-        seg_state = WORKSPACES.take(table, "b_seg_state", (segs.num_segments, num_v_heads, HEAD_DIM, 2 * HEAD_DIM), torch.float32, device)
+            raise ValueError(
+                f"segment_len {segs.segment_len} exceeds the {pre_threads} chunks per segment the {pre} warm-up prologue scans"
+            )
+        seg_state = WORKSPACES.take(
+            table, "b_seg_state", (segs.num_segments, num_v_heads, HEAD_DIM, 2 * HEAD_DIM), torch.float32, device
+        )
         seg_flag = WORKSPACES.take(table, "b_seg_flag", (segs.num_segments, num_v_heads), torch.int32, device)
         launcher(pre, arch, _DHU_PRE_ARGS)(
-            segs.num_segments, num_v_heads, 2 * HEAD_DIM // vb,
-            qn, kn, w, do, dv_local, g_cs, dht32, dh, dv2, dh0, seg_state, meta.chunk_start, meta.chunk_len, segs.seg_chunk_start,
-            segs.seg_seq, meta.seq_chunk_start, num_heads, num_v_heads, use_dht, 0, scale, seg_flag, warmup_thresh_log2(),
+            segs.num_segments,
+            num_v_heads,
+            2 * HEAD_DIM // vb,
+            qn,
+            kn,
+            w,
+            do,
+            dv_local,
+            g_cs,
+            dht32,
+            dh,
+            dv2,
+            dh0,
+            seg_state,
+            meta.chunk_start,
+            meta.chunk_len,
+            segs.seg_chunk_start,
+            segs.seg_seq,
+            meta.seq_chunk_start,
+            num_heads,
+            num_v_heads,
+            use_dht,
+            0,
+            scale,
+            seg_flag,
+            warmup_thresh_log2(),
         )
-        dh_end = WORKSPACES.take(table, "b_dh_end", (segs.num_segments, num_v_heads, HEAD_DIM, HEAD_DIM), torch.float32, device)
+        dh_end = WORKSPACES.take(
+            table, "b_dh_end", (segs.num_segments, num_v_heads, HEAD_DIM, HEAD_DIM), torch.float32, device
+        )
         launcher("stitch", arch, _STITCH_ARGS)(
-            meta.num_seqs, num_v_heads, STITCH_VSPLIT,
-            seg_state, dht32, dh_end, segs.seq_seg_start, seg_flag, num_v_heads, use_dht, 1,
+            meta.num_seqs,
+            num_v_heads,
+            STITCH_VSPLIT,
+            seg_state,
+            dht32,
+            dh_end,
+            segs.seq_seg_start,
+            seg_flag,
+            num_v_heads,
+            use_dht,
+            1,
         )
         dht32, use_dht = dh_end, 1
     launcher(scan_stage, arch, _DHU_ARGS)(
-        segs.num_segments, num_v_heads, HEAD_DIM // vb,
-        qn, kn, w, do, dv_local, g_cs, dht32, dh, dv2, dh0, dh0, meta.chunk_start, meta.chunk_len, segs.seg_chunk_start,
-        segs.seg_seq, meta.seq_chunk_start, num_heads, num_v_heads, use_dht, 1 if has_initial_state else 0, scale,
+        segs.num_segments,
+        num_v_heads,
+        HEAD_DIM // vb,
+        qn,
+        kn,
+        w,
+        do,
+        dv_local,
+        g_cs,
+        dht32,
+        dh,
+        dv2,
+        dh0,
+        dh0,
+        meta.chunk_start,
+        meta.chunk_len,
+        segs.seg_chunk_start,
+        segs.seg_seq,
+        meta.seq_chunk_start,
+        num_heads,
+        num_v_heads,
+        use_dht,
+        1 if has_initial_state else 0,
+        scale,
     )
 
     dq_hv = WORKSPACES.take(table, "b_dq_hv", token_hv, qn.dtype, device)
@@ -1196,8 +1634,26 @@ def gdn_chunk_backward(
     dw = WORKSPACES.take(table, "b_dw", w.shape, w.dtype, device)
     dg1 = WORKSPACES.take(table, "b_dg1", (total_tokens, num_v_heads), torch.float32, device)
     launcher("dqkwg", arch, _DQKWG_ARGS)(
-        meta.num_chunks, num_v_heads, 1,
-        qn, kn, v_new, do, dv2, h, dh, g_cs, dq_hv, dk_hv, dw, dg1, meta.chunk_start, meta.chunk_len, num_heads, num_v_heads, scale,
+        meta.num_chunks,
+        num_v_heads,
+        1,
+        qn,
+        kn,
+        v_new,
+        do,
+        dv2,
+        h,
+        dh,
+        g_cs,
+        dq_hv,
+        dk_hv,
+        dw,
+        dg1,
+        meta.chunk_start,
+        meta.chunk_len,
+        num_heads,
+        num_v_heads,
+        scale,
     )
 
     dk2 = WORKSPACES.take(table, "b_dk2", token_hv, qn.dtype, device)
@@ -1205,22 +1661,59 @@ def gdn_chunk_backward(
     # ``dbeta`` is produced directly in the caller's dtype (BF16 or FP32); no cast kernel follows.  Returned: fresh.
     dbeta_bf16 = dbeta_dtype == torch.bfloat16
     dbeta = torch.empty(
-        forward.get("beta_shape") or (total_tokens, num_v_heads), dtype=torch.bfloat16 if dbeta_bf16 else torch.float32, device=device
+        forward.get("beta_shape") or (total_tokens, num_v_heads),
+        dtype=torch.bfloat16 if dbeta_bf16 else torch.float32,
+        device=device,
     )
     dg2 = WORKSPACES.take(table, "b_dg2", (total_tokens, num_v_heads), torch.float32, device)
     launcher("wy_bwd_bf16" if dbeta_bf16 else "wy_bwd", arch, _WY_BWD_ARGS)(
-        meta.num_chunks, num_v_heads, 1,
-        kn, v, A, dw, dv2, g_cs, beta32, dk2, dv, dbeta, dg2, meta.chunk_start, meta.chunk_len, num_heads, num_v_heads,
+        meta.num_chunks,
+        num_v_heads,
+        1,
+        kn,
+        v,
+        A,
+        dw,
+        dv2,
+        g_cs,
+        beta32,
+        dk2,
+        dv,
+        dbeta,
+        dg2,
+        meta.chunk_start,
+        meta.chunk_len,
+        num_heads,
+        num_v_heads,
     )
 
     dq = torch.empty(qn.shape, dtype=qn.dtype, device=device)  # returned, in q's own shape
     dk = torch.empty(kn.shape, dtype=kn.dtype, device=device)
     dg = torch.empty(forward.get("g_shape") or (total_tokens, num_v_heads), dtype=torch.float32, device=device)
-    sm_count, _smem_optin, _major = _device_props(device.index if device.index is not None else torch.cuda.current_device())
+    sm_count, _smem_optin, _major = _device_props(
+        device.index if device.index is not None else torch.cuda.current_device()
+    )
     launcher(finalize_stage(meta.num_chunks, num_heads, num_v_heads, sm_count), arch, _FINALIZE_ARGS)(
-        meta.num_chunks, num_heads, 1,
-        qn, kn, forward["rstd_q"], forward["rstd_k"], dq_hv, dk_hv, dk2, dg1, dg2, dq, dk, dg, meta.chunk_start, meta.chunk_len,
-        num_heads, num_v_heads, 1 if forward.get("normalize_qk", True) else 0,
+        meta.num_chunks,
+        num_heads,
+        1,
+        qn,
+        kn,
+        forward["rstd_q"],
+        forward["rstd_k"],
+        dq_hv,
+        dk_hv,
+        dk2,
+        dg1,
+        dg2,
+        dq,
+        dk,
+        dg,
+        meta.chunk_start,
+        meta.chunk_len,
+        num_heads,
+        num_v_heads,
+        1 if forward.get("normalize_qk", True) else 0,
     )
     return {
         "dq": dq,
@@ -1235,7 +1728,9 @@ def gdn_chunk_backward(
 # --------------------------------------------------------------------------- #
 # autograd wrapper with FLA's signature
 # --------------------------------------------------------------------------- #
-def _chunk_meta(cu_seqlens, cu_seqlens_cpu, batch: int, seq_len: int, device, arch: str, num_v_heads: int) -> ChunkMeta:
+def _chunk_meta(
+    cu_seqlens, cu_seqlens_cpu, batch: int, seq_len: int, device, arch: str, num_v_heads: int
+) -> ChunkMeta:
     """Chunk and segment tables without a device-to-host synchronisation.
 
     Equal-length batches and a caller-supplied host copy of ``cu_seqlens`` take the exact tables from the
@@ -1256,10 +1751,15 @@ def _chunk_meta(cu_seqlens, cu_seqlens_cpu, batch: int, seq_len: int, device, ar
     elif cu_seqlens_cpu is None:
         num_seqs = int(cu_seqlens.numel()) - 1
         return build_chunk_meta_from_cu_seqlens(
-            cu_seqlens, total_tokens, arch, scan_plans=scan_plans(total_tokens, num_seqs, int(num_v_heads), int(index), arch)
+            cu_seqlens,
+            total_tokens,
+            arch,
+            scan_plans=scan_plans(total_tokens, num_seqs, int(num_v_heads), int(index), arch),
         )
     else:
-        layout = cu_seqlens_cpu if type(cu_seqlens_cpu) is tuple else None  # a CPU tensor takes the validated path below
+        layout = (
+            cu_seqlens_cpu if type(cu_seqlens_cpu) is tuple else None
+        )  # a CPU tensor takes the validated path below
     key = None
     if HOST_CACHE and layout is not None:
         key = (layout, int(num_v_heads), int(index), total_tokens, _plan_pins())
@@ -1332,7 +1832,9 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         fwd: dict[str, Any]
         if use_cp:
             fwd_h_pre, _bwd_pre, compress_h0, _expand_h0 = _cp_modules()
-            fwd = gdn_chunk_forward_stage1(q, k, v, g, beta, meta=meta, scale=scale, normalize_qk=use_qk_l2norm_in_kernel)
+            fwd = gdn_chunk_forward_stage1(
+                q, k, v, g, beta, meta=meta, scale=scale, normalize_qk=use_qk_l2norm_in_kernel
+            )
             initial_state = fwd_h_pre(
                 k=fwd["kn"].reshape(1, tokens, num_heads, key_dim),
                 w=fwd["w"].reshape(1, tokens, num_v_heads, key_dim),

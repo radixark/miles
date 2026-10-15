@@ -585,9 +585,9 @@ class LinearAttentionLayer(MegatronModule):
             cu_seqlens = cp_context.cu_seqlens
             cu_seqlens_host = None  # the CP context carries this rank's local boundaries
 
-        core = self.linear_attn(
-            x.transpose(0, 1), cu_seqlens, cp_context, cu_seqlens_host=cu_seqlens_host
-        ).transpose(0, 1)
+        core = self.linear_attn(x.transpose(0, 1), cu_seqlens, cp_context, cu_seqlens_host=cu_seqlens_host).transpose(
+            0, 1
+        )
 
         if relayout:
             core = packed_shard_to_zigzag(core, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)

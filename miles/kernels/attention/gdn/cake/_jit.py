@@ -166,8 +166,13 @@ class NativeKernel:
             raise KeyError(
                 f"{self.stage}: launcher names {sorted(set(names) - set(plan))!r} unknown / {sorted(set(plan) - set(names))!r} missing"
             )
-        if grid_names != ("grid_x", "grid_y", "grid_z") or tuple(kind for kind, _ in self._arg_plan[-3:]) != ("grid",) * 3:
-            raise ValueError(f"{self.stage}: the exported plan does not end with grid_x, grid_y, grid_z: {self._arg_plan!r}")
+        if (
+            grid_names != ("grid_x", "grid_y", "grid_z")
+            or tuple(kind for kind, _ in self._arg_plan[-3:]) != ("grid",) * 3
+        ):
+            raise ValueError(
+                f"{self.stage}: the exported plan does not end with grid_x, grid_y, grid_z: {self._arg_plan!r}"
+            )
         call, stage, count = self._call, self.stage, len(plan)
         if names == plan:
 

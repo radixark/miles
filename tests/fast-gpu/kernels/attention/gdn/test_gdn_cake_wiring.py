@@ -56,7 +56,9 @@ def _expected_table(seq_lens):
 def test_host_chunk_table_is_built_once_per_layout():
     ops._host_chunk_meta.cache_clear()
     before = ops._HOST_META_BUILDS
-    metas = [ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE, 4) for _ in range(48)]  # R3 C6: the head count is part of the plan key
+    metas = [
+        ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE, 4) for _ in range(48)
+    ]  # R3 C6: the head count is part of the plan key
     assert ops._HOST_META_BUILDS == before + 1, "48 layers of one micro-batch must share one chunk table"
     info = ops._scan_plans_memo.cache_info()  # R4: the joint scan plan is searched once per layout, not per layer
     assert (info.hits, info.misses) == (47, 1), info
@@ -147,12 +149,16 @@ def test_host_and_device_tables_give_identical_results(monkeypatch):
     a = _step(inputs, cu_seqlens=cu)
     b = _step(inputs, cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
     for name in a:
-        assert torch.equal(a[name], b[name]), f"{name} differs between the device and host chunk tables at L={host_fwd}"
+        assert torch.equal(
+            a[name], b[name]
+        ), f"{name} differs between the device and host chunk tables at L={host_fwd}"
     monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", None)
     a = _step(inputs, cu_seqlens=cu)
     b = _step(inputs, cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
     for name in a:
-        assert torch.allclose(a[name].float(), b[name].float(), atol=1e-2, rtol=1e-2), f"{name} differs between the routes' own picks"
+        assert torch.allclose(
+            a[name].float(), b[name].float(), atol=1e-2, rtol=1e-2
+        ), f"{name} differs between the routes' own picks"
 
 
 def test_tape_and_recompute_backward_are_bit_identical(monkeypatch):
@@ -230,11 +236,15 @@ def test_forward_launches_the_split_scan_on_split_plans_and_the_plain_scan_on_se
         fwd_scans = [s for s in launched if s.startswith("fwd_h_")]
         stitches = launched.count("stitch")
         if forced:
-            assert len(fwd_scans) == 2 and fwd_scans[0].startswith("fwd_h_pre_r") and fwd_scans[1].endswith("_split"), fwd_scans
+            assert (
+                len(fwd_scans) == 2 and fwd_scans[0].startswith("fwd_h_pre_r") and fwd_scans[1].endswith("_split")
+            ), fwd_scans
             assert fwd_scans[1] == fwd_scans[0].replace("fwd_h_pre_r", "fwd_h_r") + "_split", fwd_scans
             assert stitches == 1, launched  # the backward's stitch only
         else:
-            assert len(fwd_scans) == 1 and fwd_scans[0].startswith("fwd_h_r") and not fwd_scans[0].endswith("_split"), fwd_scans
+            assert (
+                len(fwd_scans) == 1 and fwd_scans[0].startswith("fwd_h_r") and not fwd_scans[0].endswith("_split")
+            ), fwd_scans
             assert stitches == 0, launched
     _allclose(results[4], results[0])
 
@@ -255,7 +265,9 @@ def test_segment_tables_host_match_device(monkeypatch):
     arch = ops.device_arch(DEVICE)
     cu = torch.tensor(_cu(LAYOUT), device="cuda", dtype=torch.int32)
     host = ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE, 4, arch=arch)
-    plans = ops.scan_plans(sum(LAYOUT), len(LAYOUT), 4, DEVICE.index, arch)  # the pinned length, planned configurations
+    plans = ops.scan_plans(
+        sum(LAYOUT), len(LAYOUT), 4, DEVICE.index, arch
+    )  # the pinned length, planned configurations
     dev = ops.build_chunk_meta_from_cu_seqlens(cu, sum(LAYOUT), arch, scan_plans=plans)
     seq_chunk_start = _expected_table(LAYOUT)[2]
     for kind in ("fwd_segments", "bwd_segments"):
@@ -336,10 +348,16 @@ def test_scan_makespan_prices_dispatch_order_co_residency_and_slot_release():
     # segments (336 CTAs) start the 16 CTAs beyond the resident set when the pad finishes (measured 1.85x over 23);
     # at one CTA per SM there is no factor and the 32 extra CTAs start after the pad's 4 steps
     assert ops._scan_makespan((129,), (3,), HV12_CTAS, GB300_SMS, 2) == 43.0
-    assert ops._scan_makespan((133, 4), (3, 1), HV12_CTAS, GB300_SMS, 2) == pytest.approx(45 * ops.SCAN_CO_RESIDENT_FACTOR)
-    assert ops._scan_makespan((133, 4), (6, 1), HV12_CTAS, GB300_SMS, 2) == pytest.approx((4 + 23) * ops.SCAN_CO_RESIDENT_FACTOR)
+    assert ops._scan_makespan((133, 4), (3, 1), HV12_CTAS, GB300_SMS, 2) == pytest.approx(
+        45 * ops.SCAN_CO_RESIDENT_FACTOR
+    )
+    assert ops._scan_makespan((133, 4), (6, 1), HV12_CTAS, GB300_SMS, 2) == pytest.approx(
+        (4 + 23) * ops.SCAN_CO_RESIDENT_FACTOR
+    )
     assert ops._scan_makespan((133, 4), (3, 1), HV12_CTAS, GB300_SMS, 1) == 49.0
-    assert ops._scan_makespan((38, 38, 38, 15, 3), (1,) * 5, HV12_CTAS, GB300_SMS, 2) == pytest.approx(38 * ops.SCAN_CO_RESIDENT_FACTOR)
+    assert ops._scan_makespan((38, 38, 38, 15, 3), (1,) * 5, HV12_CTAS, GB300_SMS, 2) == pytest.approx(
+        38 * ops.SCAN_CO_RESIDENT_FACTOR
+    )
 
 
 def test_planner_constants_mirror_loom_verbatim():
@@ -355,7 +373,9 @@ def test_planner_constants_mirror_loom_verbatim():
     assert ops.PRESCAN_CONFIGS == ((32, 2), (64, 1))
     # R7: the one-wave finalize's group and launch-bound residency (loom's FINALIZE_MLP_GROUP / FINALIZE_MLP_MIN_BLOCKS)
     assert (ops.FINALIZE_MLP_GROUP, ops.FINALIZE_MLP_MIN_BLOCKS) == (3, 4)
-    assert ops.FINALIZE_MLP_MIN_BLOCKS * 128 * 128 <= 65536  # four 128-thread CTAs at the 128-register cap fit the register file
+    assert (
+        ops.FINALIZE_MLP_MIN_BLOCKS * 128 * 128 <= 65536
+    )  # four 128-thread CTAs at the 128-register cap fit the register file
 
 
 # --------------------------------------------------------------------------- #
@@ -395,7 +415,9 @@ def test_finalize_stage_flips_at_the_launch_bound_wave_and_validates_the_contrac
     monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_FINALIZE", "finalize")
     assert ops.finalize_stage(128, 4, 12, 148) == "finalize"
     monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_FINALIZE", "finalize_mlp")
-    assert ops.finalize_stage(128, 16, 48, 160) == "finalize_mlp"  # a TP1 grid pinned to the one-wave kernel (experiments)
+    assert (
+        ops.finalize_stage(128, 16, 48, 160) == "finalize_mlp"
+    )  # a TP1 grid pinned to the one-wave kernel (experiments)
     with pytest.raises(ValueError, match="group"):
         ops.finalize_stage(3, 2, 4, 148)  # pinned outside the group contract: never launched
     monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_FINALIZE", "mlp")
@@ -474,7 +496,9 @@ def _split_cost(chunks, seg_len, per_segment, sm_count, residency):
     splits = tuple(max(1, -(-n // seg_len)) for n in chunks)
     return (
         ops._scan_makespan(chunks, splits, per_segment, sm_count, residency)
-        + ops.PRESCAN_WARMUP_CHUNKS * ops.PRESCAN_STEP_FACTOR * ops._wave_factor(sum(k - 1 for k in splits) * per_segment, sm_count, residency)
+        + ops.PRESCAN_WARMUP_CHUNKS
+        * ops.PRESCAN_STEP_FACTOR
+        * ops._wave_factor(sum(k - 1 for k in splits) * per_segment, sm_count, residency)
         + ops.STITCH_FIXED_CHUNKS
         + ops.STITCH_COPY_CHUNKS * (max(splits) - 1)
     )
@@ -504,7 +528,10 @@ def test_segment_planner_only_splits_for_a_modelled_gain(residency):
             seg_len, cost = ops.plan_segments(bound, num_seqs, per_segment, sm_count, residency)
             serial = ops._scan_makespan(chunks, (1,) * num_seqs, per_segment, sm_count, residency)
             # independent argmin over every admissible segment length (MIN_SEGMENT_CHUNKS and MAX_SCAN_ROUNDS filters)
-            admissible = {length: _split_cost(chunks, length, per_segment, sm_count, residency) for length in _admissible_segment_lens(chunks, per_segment, sm_count, residency)}
+            admissible = {
+                length: _split_cost(chunks, length, per_segment, sm_count, residency)
+                for length in _admissible_segment_lens(chunks, per_segment, sm_count, residency)
+            }
             if seg_len == 0:
                 assert cost == serial
                 # the converse of the test name: no admissible split beats the serial scan by the required 5 %
@@ -530,8 +557,14 @@ def test_segment_planner_prices_the_exact_host_layout(sm_count):
     # CTA per SM (co-resident throughout), so five segments beat three (61.3 vs 83.2 chunk steps for 8481 + 223);
     # dhu at one CTA per SM keeps three (60.2 vs 73.6 for five)
     assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(8192, 512))[0] == 26
-    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(8481, 223)) == (27, pytest.approx(61.2748))
-    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 1, seq_chunks=chunks(8481, 223)) == (45, pytest.approx(60.178))
+    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(8481, 223)) == (
+        27,
+        pytest.approx(61.2748),
+    )
+    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 1, seq_chunks=chunks(8481, 223)) == (
+        45,
+        pytest.approx(60.178),
+    )
     assert ops.segment_bounds(133, 27) == [0, 26, 53, 79, 106, 133]
     assert ops.segment_bounds(133, 45) == ops.segment_bounds(133, 46) == [0, 44, 88, 133]
     assert ops.plan_segments(260, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(16384, 512))[0] == 52
@@ -540,7 +573,10 @@ def test_segment_planner_prices_the_exact_host_layout(sm_count):
     # (3 + 3 + 1 segments, 59.9 vs 69 chunk steps) and keeps dhu serial (one CTA per SM); the bound splits 22 / 43
     assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 2)[0] == 22
     assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 1)[0] == 43
-    assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 2, seq_chunks=chunks(4360, 3491, 341)) == (23, pytest.approx(59.8748))
+    assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 2, seq_chunks=chunks(4360, 3491, 341)) == (
+        23,
+        pytest.approx(59.8748),
+    )
     assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 1, seq_chunks=chunks(4360, 3491, 341)) == (0, 69.0)
     # packs: 44 / 44 / 39 / 3 chunks (192 CTAs, co-resident even unsplit) split fwd_h at 22; the real five-sequence
     # micro-batch (38/38/38/15/3 chunks, 240 CTAs) stays serial on both scans (the R3 pre-fit planner split it at
@@ -548,23 +584,53 @@ def test_segment_planner_prices_the_exact_host_layout(sm_count):
     # vs 102.4 chunk steps for 192 co-resident CTAs); its one-CTA-per-SM dhu scan in (32,2) terms also splits at 22
     # since R6 (576 CTAs, four waves: 88 + 11.5 + 7.35 = 106.8 vs 128 serial; the joint planner takes the (64,1)
     # split, 73.0); 4 x 1024 at HV 4 stays serial
-    assert ops.plan_segments(132, 4, HV12_CTAS, sm_count, 2, seq_chunks=chunks(2802, 2771, 2476, 143)) == (22, pytest.approx(48.878))
-    assert ops.plan_segments(133, 5, HV12_CTAS, sm_count, 2, seq_chunks=chunks(2384, 2382, 2369, 902, 155)) == (0, pytest.approx(60.8))
-    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 2, seq_chunks=chunks(4096, 4096, 4096, 4096)) == (22, pytest.approx(89.9996))
-    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 1, seq_chunks=chunks(4096, 4096, 4096, 4096)) == (22, pytest.approx(106.834))
-    assert ops.plan_segments(130, 2, 24 * (ops.HEAD_DIM // 32), sm_count, 2, seq_chunks=chunks(4096, 4096)) == (22, pytest.approx(89.9996))
+    assert ops.plan_segments(132, 4, HV12_CTAS, sm_count, 2, seq_chunks=chunks(2802, 2771, 2476, 143)) == (
+        22,
+        pytest.approx(48.878),
+    )
+    assert ops.plan_segments(133, 5, HV12_CTAS, sm_count, 2, seq_chunks=chunks(2384, 2382, 2369, 902, 155)) == (
+        0,
+        pytest.approx(60.8),
+    )
+    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 2, seq_chunks=chunks(4096, 4096, 4096, 4096)) == (
+        22,
+        pytest.approx(89.9996),
+    )
+    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 1, seq_chunks=chunks(4096, 4096, 4096, 4096)) == (
+        22,
+        pytest.approx(106.834),
+    )
+    assert ops.plan_segments(130, 2, 24 * (ops.HEAD_DIM // 32), sm_count, 2, seq_chunks=chunks(4096, 4096)) == (
+        22,
+        pytest.approx(89.9996),
+    )
     assert ops.plan_segments(68, 4, 16, sm_count, 2, seq_chunks=chunks(1024, 1024, 1024, 1024)) == (0, 16.0)
     # the wiring LAYOUT at HV 4 splits both scans at 18 on the exact layout
-    assert ops.plan_segments(125, 4, 16, sm_count, 2, seq_chunks=chunks(3339, 2802, 1340, 263)) == (18, pytest.approx(29.178))
+    assert ops.plan_segments(125, 4, 16, sm_count, 2, seq_chunks=chunks(3339, 2802, 1340, 263)) == (
+        18,
+        pytest.approx(29.178),
+    )
     # R6: one-CTA-per-SM (64,1) scans priced in their own terms (per_segment = HV x 2, step factor 1.27).  Two
     # 4096-token sequences at HV 48 and four at HV 24 run 192 serial CTAs x 64 steps = two waves (the second 26-30 %
     # full, 162.6); 22-chunk segments run 576 CTAs in four waves of 22 (111.8 + 14.6 + 7.35 = 133.7).  Four 4096-token
     # sequences at HV 48 (384 CTAs, three waves) and eight 1024-token sequences at HV 12 have no split that saves a
     # wave and stay serial; the device route (bound layouts 129 + 1 / 257 + 3 at HV 48) splits at 43 / 86.
-    assert ops.plan_segments(130, 2, 96, sm_count, 1, seq_chunks=chunks(4096, 4096), step_factor=1.27) == (22, pytest.approx(133.69468))
-    assert ops.plan_segments(260, 4, 48, sm_count, 1, seq_chunks=chunks(4096, 4096, 4096, 4096), step_factor=1.27) == (22, pytest.approx(133.69468))
-    assert ops.plan_segments(260, 4, 96, sm_count, 1, seq_chunks=chunks(4096, 4096, 4096, 4096), step_factor=1.27) == (0, pytest.approx(243.84))
-    assert ops.plan_segments(136, 8, 24, sm_count, 1, seq_chunks=chunks(*([1024] * 8)), step_factor=1.27) == (0, pytest.approx(40.64))
+    assert ops.plan_segments(130, 2, 96, sm_count, 1, seq_chunks=chunks(4096, 4096), step_factor=1.27) == (
+        22,
+        pytest.approx(133.69468),
+    )
+    assert ops.plan_segments(260, 4, 48, sm_count, 1, seq_chunks=chunks(4096, 4096, 4096, 4096), step_factor=1.27) == (
+        22,
+        pytest.approx(133.69468),
+    )
+    assert ops.plan_segments(260, 4, 96, sm_count, 1, seq_chunks=chunks(4096, 4096, 4096, 4096), step_factor=1.27) == (
+        0,
+        pytest.approx(243.84),
+    )
+    assert ops.plan_segments(136, 8, 24, sm_count, 1, seq_chunks=chunks(*([1024] * 8)), step_factor=1.27) == (
+        0,
+        pytest.approx(40.64),
+    )
     assert ops.plan_segments(130, 2, 96, sm_count, 1, step_factor=1.27) == (43, pytest.approx(127.56312))
     assert ops.plan_segments(260, 4, 96, sm_count, 1, step_factor=1.27) == (86, pytest.approx(346.00312))
 
@@ -597,7 +663,15 @@ def test_host_route_prices_the_exact_layout():
     host = ops.chunk_meta_from_host(_cu(mb00), DEVICE, 12, arch=arch)
     assert host.fwd_segments.segment_len == 27 and host.fwd_segments.num_segments == 6  # 5 segments + the pad sequence
     assert host.fwd_segments.seg_chunk_start.tolist() == [0, 26, 53, 79, 106, 133, 137]
-    assert host.bwd_segments.segment_len == 27 and host.bwd_segments.seg_chunk_start.tolist() == [0, 26, 53, 79, 106, 133, 137]
+    assert host.bwd_segments.segment_len == 27 and host.bwd_segments.seg_chunk_start.tolist() == [
+        0,
+        26,
+        53,
+        79,
+        106,
+        133,
+        137,
+    ]
     # layouts whose (32,2) grid is small keep the preferred block: the wiring layout at HV 4 splits both scans at 18
     assert ops.scan_plans(sum(LAYOUT), len(LAYOUT), 4, index, arch, LAYOUT) == (P((32, 2), 18), P((32, 2), 18))
     # a pinned configuration is planned for: (64,1) at 1x8192 / HV 12 -> six 22-chunk segments on both scans
@@ -606,8 +680,14 @@ def test_host_route_prices_the_exact_layout():
         assert ops.scan_plans(8192, 1, 12, index, arch) == (P((64, 1), 22), P((64, 1), 22))
     finally:
         ops.FORCED_SCAN_CONFIG = None
-    assert ops.scan_plans(8192, 1, 12, index, arch) == (P((64, 1), 22), P((64, 1), 22))  # the joint plan picks it unpinned too
-    assert ops.scan_plans(8192, 1, 48, index, arch) == (P((64, 1), 43), P((64, 1), 43))  # TP1: 288 CTAs in three segments
+    assert ops.scan_plans(8192, 1, 12, index, arch) == (
+        P((64, 1), 22),
+        P((64, 1), 22),
+    )  # the joint plan picks it unpinned too
+    assert ops.scan_plans(8192, 1, 48, index, arch) == (
+        P((64, 1), 43),
+        P((64, 1), 43),
+    )  # TP1: 288 CTAs in three segments
 
 
 def test_scan_plans_are_memoised_per_layout_and_pins(monkeypatch):
@@ -692,7 +772,21 @@ def test_per_arch_stages_launch_the_kernel_selected_for_this_architecture():
 # host-side caches (round R6-7): workspace pool, chunk-table front cache, positional launchers
 # --------------------------------------------------------------------------- #
 FORWARD_ROLES = {"f_zero_state", "f_seg_state", "f_seg_flag"}
-BACKWARD_ROLES = {"b_dv_local", "b_dh", "b_dv2", "b_zero_state", "b_seg_state", "b_seg_flag", "b_dh_end", "b_dq_hv", "b_dk_hv", "b_dw", "b_dg1", "b_dk2", "b_dg2"}
+BACKWARD_ROLES = {
+    "b_dv_local",
+    "b_dh",
+    "b_dv2",
+    "b_zero_state",
+    "b_seg_state",
+    "b_seg_flag",
+    "b_dh_end",
+    "b_dq_hv",
+    "b_dk_hv",
+    "b_dw",
+    "b_dg1",
+    "b_dk2",
+    "b_dg2",
+}
 
 
 def _pooled_tensors(ws):
@@ -704,7 +798,9 @@ def _pooled_roles(ws):
 
 
 def _storage_ranges(tensors):
-    return [(t.data_ptr(), t.data_ptr() + t.numel() * t.element_size()) for t in tensors if t is not None and t.numel() > 0]
+    return [
+        (t.data_ptr(), t.data_ptr() + t.numel() * t.element_size()) for t in tensors if t is not None and t.numel() > 0
+    ]
 
 
 def _overlaps(a, b):
@@ -729,7 +825,9 @@ def test_workspace_pool_keys_separate_role_shape_dtype_and_stream():
     assert other is not default, "another stream gets its own table (no cross-stream reuse)"
     a = ws.take(default, "b_x", (4, 8), torch.float32, DEVICE)
     assert ws.take(default, "b_x", (4, 8), torch.float32, DEVICE) is a and (ws.hits, ws.misses) == (1, 1)
-    assert ws.take(default, "b_x", torch.Size([4, 8]), torch.float32, DEVICE) is a, "torch.Size and tuple shapes share a key"
+    assert (
+        ws.take(default, "b_x", torch.Size([4, 8]), torch.float32, DEVICE) is a
+    ), "torch.Size and tuple shapes share a key"
     assert ws.take(default, "b_x", (4, 8), torch.bfloat16, DEVICE) is not a, "dtype is part of the key"
     assert ws.take(default, "b_x", (8, 4), torch.float32, DEVICE) is not a, "exact shape is part of the key"
     assert ws.take(default, "b_y", (4, 8), torch.float32, DEVICE) is not a, "role is part of the key"
@@ -743,7 +841,9 @@ def test_workspace_pool_keys_separate_role_shape_dtype_and_stream():
     # the GDN_HOST_CACHE=0 arm never reuses
     fresh = ops.FreshWorkspaces()
     t = fresh.table(index)
-    assert fresh.take(t, "b_x", (4, 8), torch.float32, DEVICE) is not fresh.take(t, "b_x", (4, 8), torch.float32, DEVICE)
+    assert fresh.take(t, "b_x", (4, 8), torch.float32, DEVICE) is not fresh.take(
+        t, "b_x", (4, 8), torch.float32, DEVICE
+    )
     assert fresh.hits == 0 and fresh.misses == 2
     ws.clear()
     assert not ws.tables
@@ -761,8 +861,12 @@ def test_workspace_pool_hits_after_the_first_call_and_results_match_the_uncached
     meta = ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE, 4)
     expected = _expected_pool_misses(meta)
     assert (pooled.hits, pooled.misses) == (0, expected), (pooled.hits, pooled.misses, expected)
-    assert _pooled_roles(pooled) == (FORWARD_ROLES if meta.fwd_segments.num_segments > meta.num_seqs else {"f_zero_state"}) | (
-        BACKWARD_ROLES if meta.bwd_segments.num_segments > meta.num_seqs else BACKWARD_ROLES - {"b_seg_state", "b_seg_flag", "b_dh_end"}
+    assert _pooled_roles(pooled) == (
+        FORWARD_ROLES if meta.fwd_segments.num_segments > meta.num_seqs else {"f_zero_state"}
+    ) | (
+        BACKWARD_ROLES
+        if meta.bwd_segments.num_segments > meta.num_seqs
+        else BACKWARD_ROLES - {"b_seg_state", "b_seg_flag", "b_dh_end"}
     )
     for layer in range(3):  # the next layers of the micro-batch reuse every buffer: no further allocation
         again = _step(inputs, **kwargs)
@@ -791,13 +895,17 @@ def test_pooled_workspaces_never_alias_saved_returned_or_gradient_tensors(monkey
     ws = ops.Workspaces()
     monkeypatch.setattr(ops, "WORKSPACES", ws)
     leaves = _leaves(inputs)
-    out, final_state = ops.chunk_gated_delta_rule(*leaves, use_qk_l2norm_in_kernel=True, cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
+    out, final_state = ops.chunk_gated_delta_rule(
+        *leaves, use_qk_l2norm_in_kernel=True, cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT)
+    )
     assert out.shape == v.shape and out.dtype == v.dtype and final_state is None
     saved = list(out.grad_fn.saved_tensors)
     assert len(saved) >= 10 + 4 * int(ops.SAVE_STATE)
     pooled = _storage_ranges(_pooled_tensors(ws))
     assert pooled, "the forward must have pooled at least its placeholder"
-    assert not _overlaps(pooled, _storage_ranges(saved + [out])), "a pooled workspace aliases a saved or returned tensor"
+    assert not _overlaps(
+        pooled, _storage_ranges(saved + [out])
+    ), "a pooled workspace aliases a saved or returned tensor"
     assert _pooled_roles(ws) <= FORWARD_ROLES, _pooled_roles(ws)
     out.backward(do)
     grads = [t.grad for t in leaves]
@@ -822,14 +930,24 @@ def test_chunk_meta_front_cache_hits_per_layer_and_keys_on_layout_heads_device_a
     # the head count is part of the key: a miss (whether the planner then picks the same tables is the planner's business)
     hits = ops._META_FRONT_HITS
     m12 = ops._chunk_meta(cu, _cu(LAYOUT), 1, sum(LAYOUT), DEVICE, arch, 12)
-    assert ops._META_FRONT_HITS == hits and m12.fwd_segments.scan_config == ops.scan_plans(sum(LAYOUT), len(LAYOUT), 12, DEVICE.index, arch, LAYOUT)[0].config
-    assert ops._chunk_meta(cu, _cu(LAYOUT), 1, sum(LAYOUT), DEVICE, arch, 12) is m12 and ops._META_FRONT_HITS == hits + 1
+    assert (
+        ops._META_FRONT_HITS == hits
+        and m12.fwd_segments.scan_config
+        == ops.scan_plans(sum(LAYOUT), len(LAYOUT), 12, DEVICE.index, arch, LAYOUT)[0].config
+    )
+    assert (
+        ops._chunk_meta(cu, _cu(LAYOUT), 1, sum(LAYOUT), DEVICE, arch, 12) is m12 and ops._META_FRONT_HITS == hits + 1
+    )
     builds = ops._HOST_META_BUILDS
-    other = ops._chunk_meta(torch.tensor(_cu((8192, 512)), device="cuda", dtype=torch.int32), _cu((8192, 512)), 1, 8704, DEVICE, arch, 4)
+    other = ops._chunk_meta(
+        torch.tensor(_cu((8192, 512)), device="cuda", dtype=torch.int32), _cu((8192, 512)), 1, 8704, DEVICE, arch, 4
+    )
     assert other is not metas[0] and ops._HOST_META_BUILDS == builds + 1
     # a CPU tensor copy of the boundaries bypasses the front cache but resolves to the same memoised table
     hits, builds = ops._META_FRONT_HITS, ops._HOST_META_BUILDS
-    assert ops._chunk_meta(cu, torch.tensor(_cu(LAYOUT), dtype=torch.int64), 1, sum(LAYOUT), DEVICE, arch, 4) is metas[0]
+    assert (
+        ops._chunk_meta(cu, torch.tensor(_cu(LAYOUT), dtype=torch.int64), 1, sum(LAYOUT), DEVICE, arch, 4) is metas[0]
+    )
     assert ops._HOST_META_BUILDS == builds and ops._META_FRONT_HITS == hits
     # a plan pin re-plans: the pins are part of the key (det_r2.py sets FORCED_SEGMENT_LEN between arms)
     monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", 4)
@@ -862,7 +980,11 @@ def test_positional_launchers_match_every_exported_plan():
         plan = tuple(name for kind, name in ops.MODULES[stage][arch]["arg_plan"] if kind != "grid")
         assert sorted(run.plan) == sorted(names) == sorted(plan), stage
         if run.plan != names:  # still correct (the permuting path maps names to plan slots); the fast path is lost
-            warnings.warn(f"{stage}: the call-site order differs from the exported plan order {plan!r}", RuntimeWarning, stacklevel=1)
+            warnings.warn(
+                f"{stage}: the call-site order differs from the exported plan order {plan!r}",
+                RuntimeWarning,
+                stacklevel=1,
+            )
         assert tuple(kind for kind, _ in ops.MODULES[stage][arch]["arg_plan"][-3:]) == ("grid",) * 3
         assert ops.kernel(stage, arch).record is ops.MODULES[stage][arch]
     native = ops.kernel("stitch", arch)
@@ -881,15 +1003,25 @@ def test_positional_launchers_match_every_exported_plan():
 def test_forward_passes_batched_shapes_through_and_backward_returns_input_shapes():
     _require_blackwell()
     q, k, v, g, beta, do = _inputs(LAYOUT, seed=7)
-    cu = torch.tensor(_cu(LAYOUT), device="cuda", dtype=torch.int32)
     meta = ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE, 4)
     flat = ops.gdn_chunk_forward(q[0], k[0], v[0], g[0], beta[0], meta=meta, normalize_qk=True)
     batched = ops.gdn_chunk_forward(q, k, v, g, beta, meta=meta, normalize_qk=True)
     assert flat["output"].shape == v[0].shape and batched["output"].shape == v.shape
-    assert torch.equal(flat["output"], batched["output"][0]), "the [T, H, D] and [1, T, H, D] forms run the same kernels on the same bytes"
-    assert batched["total_tokens"] == sum(LAYOUT) and batched["qn"].shape == q.shape and batched["w"].shape == (sum(LAYOUT), 4, 128)
+    assert torch.equal(
+        flat["output"], batched["output"][0]
+    ), "the [T, H, D] and [1, T, H, D] forms run the same kernels on the same bytes"
+    assert (
+        batched["total_tokens"] == sum(LAYOUT)
+        and batched["qn"].shape == q.shape
+        and batched["w"].shape == (sum(LAYOUT), 4, 128)
+    )
     gf = ops.gdn_chunk_backward(flat, do[0], dbeta_dtype=beta.dtype)
     gb = ops.gdn_chunk_backward(dict(batched, g_shape=g.shape, beta_shape=beta.shape), do, dbeta_dtype=beta.dtype)
-    assert gb["dq"].shape == q.shape and gb["dv"].shape == v.shape and gb["dg"].shape == g.shape and gb["dbeta"].shape == beta.shape
+    assert (
+        gb["dq"].shape == q.shape
+        and gb["dv"].shape == v.shape
+        and gb["dg"].shape == g.shape
+        and gb["dbeta"].shape == beta.shape
+    )
     for name in ("dq", "dk", "dv", "dg", "dbeta"):
         assert torch.equal(gf[name], gb[name][0]), name
