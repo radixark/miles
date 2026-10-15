@@ -68,6 +68,8 @@ Args:
   --sandboxes-per-node: live sandboxes per node, 0 for no cap (default: 0). open-instruct's --pool_size actors
       spread over its nodes, so --pool_size 512 on 4 nodes is 128.
   --trace-dir: append one JSONL record per episode under <trace-dir>/<exp-name> (default: off).
+  --session-server: v2 (default; needed by the namespaced radix cache that fully async with in-place updates turns on)
+      or v1 (append-only linear; pair it with --extra-args --no-namespaced-radix-cache in that mode).
   --dump-training-data: also save each step's training batch there, as Miles' --save-debug-rollout-data
       (rollout_data/<step>.pt) and --save-debug-train-data (train_data/<step>_<rank>.pt, with advantages and
       trainer logprobs), open-instruct's --save_traces + --save_trainer_logprobs (default: off).
@@ -181,6 +183,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     tool_call_timeout_s: int = 120
     # Per-episode JSONL traces go to <trace_dir>/<exp_name or run_id> (open-instruct's --save_traces).
     trace_dir: str = ""
+    # v2 (tree serving) is what upstream's --namespaced-radix-cache needs; that cache partition is on by default in
+    # fully async with in-place weight updates, so prefix KV from old weights never serves a later rollout call.
+    session_server: Literal["v1", "v2"] = "v2"
     # Also dump every step's training batch next to them: rollout_data/<step>.pt (tokens, rewards, rollout logprobs)
     # and train_data/<step>_<rank>.pt (advantages, trainer logprobs), open-instruct's --save_trainer_logprobs.
     dump_training_data: bool = False
@@ -320,7 +325,7 @@ def execute(args: ScriptArgs):
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path tmax_agent_function.run "
         "--custom-rm-path generate.reward_func "
-        "--use-session-server "
+        f"--use-session-server {args.session_server} "
         "--tito-model qwen35 "
     )
     if not args.recipe.enable_thinking:
