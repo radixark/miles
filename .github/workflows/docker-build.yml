@@ -102,7 +102,7 @@ jobs:
             local sha
             sha=$(gh_api "repos/$1/commits/$2" --jq .sha) && [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
           }
-          SGLANG_SHA=$(head_sha sgl-project/sglang sglang-miles) || fail_poll "sglang sglang-miles HEAD lookup failed"
+          SGLANG_SHA=$(head_sha sgl-project/sglang codex/sglang-miles-v0.5.22) || fail_poll "sglang codex/sglang-miles-v0.5.22 HEAD lookup failed"
           MEGATRON_SHA=$(head_sha radixark/Megatron-LM miles-main) || fail_poll "Megatron-LM miles-main HEAD lookup failed"
 
           # Fingerprint both architectures' wheel assets: rolling release tags stay
@@ -113,8 +113,8 @@ jobs:
               | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')") \
               && [[ "$fp" =~ ^[0-9a-f]{64}$ ]] && echo "$fp"
           }
-          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch213-x86_64) || fail_poll "wheels cu130-torch213-x86_64 lookup failed"
-          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch213-aarch64) || fail_poll "wheels cu130-torch213-aarch64 lookup failed"
+          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch214-x86_64) || fail_poll "wheels cu130-torch214-x86_64 lookup failed"
+          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch214-aarch64) || fail_poll "wheels cu130-torch214-aarch64 lookup failed"
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"

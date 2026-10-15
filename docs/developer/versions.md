@@ -11,7 +11,7 @@ version problem or land a bump.
 | Tree | Comes from | Installed as | Lives at |
 |---|---|---|---|
 | Miles | this repository | `pip install -e . --no-deps` | `/root/miles` |
-| SGLang | the `sglang-miles` branch of [`sgl-project/sglang`](https://github.com/sgl-project/sglang), on top of the `lmsysorg/sglang:<tag>` base image | `pip install -e "python[all]" --no-deps` | `/sgl-workspace/sglang` |
+| SGLang | the branch selected by `SGLANG_BRANCH` in [`sgl-project/sglang`](https://github.com/sgl-project/sglang), on top of the `lmsysorg/sglang:<tag>` base image | `pip install -e "python[all]" --no-deps` | `/sgl-workspace/sglang` |
 | Megatron-LM | the `miles-main` branch of [`radixark/Megatron-LM`](https://github.com/radixark/Megatron-LM) | `pip install -e .` | `/root/Megatron-LM` |
 
 Two things follow from that table.
@@ -37,13 +37,13 @@ The default build-args are the version surface:
 
 | Build-arg | Default | What it selects |
 |---|---|---|
-| `SGLANG_IMAGE_TAG` | `v0.5.21` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
-| `SGLANG_BRANCH` | `sglang-miles` | The branch fetched into the base image's SGLang checkout |
+| `SGLANG_IMAGE_TAG` | `v0.5.22` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
+| `SGLANG_BRANCH` | `codex/sglang-miles-v0.5.22` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
 | `MILES_COMMIT` | `main` | The Miles checkout baked into the image |
 | `WHEELS_REPO` | `radixark/miles-wheels` | The prebuilt-wheels repository |
-| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-torch213-x86_64` / `cu130-torch213-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
+| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-torch214-x86_64` / `cu130-torch214-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
 
 Two design choices are worth naming. The Dockerfile holds the defaults and `build.py` owns
 the per-variant deltas, so there is exactly one place to look for what a variant changes.
@@ -60,8 +60,7 @@ Mooncake object-store backend needs 0.3.12.post1 or newer, the first release who
 `mooncake.structured_object_store` has the API Miles imports.
 
 `requirements.txt` is Miles' own dependency list, and the convention there is that **a pin
-carries its reason inline**: `transformers==5.12.1` names the HF-native weight conversion and
-an SGLang collision, `blake3` / `xxhash` / `zstandard` name the disk-delta weight sync,
+carries its reason inline**: `transformers==5.19.0` aligns HF-native weight conversion with SGLang v0.5.22, `blake3` / `xxhash` / `zstandard` name the disk-delta weight sync,
 `onnxscript` records that TE 2.17 imports it at import time. Follow that when you add one.
 
 ## Release identities and source ownership
@@ -132,7 +131,7 @@ The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-
 
 **Bump where the pin lives.** Python dependency requirements live in `requirements.txt`; image layers live in `docker/Dockerfile`; variant-only differences live in `docker/build.py`. A requirement change that replaces an installed GPU runtime or a package with at least 100 MiB of recorded installed files also needs an image rebuild so the dependency gate can retain the new image version.
 
-**Prefer moving the branch to pinning a commit during rolling development.** `SGLANG_COMMIT` and `MEGATRON_COMMIT` are empty by default, so ordinary images follow `sglang-miles` and `miles-main` together. A versioned release is the deliberate exception: its lockfile supplies both exact commits to CI and the final image build.
+**Prefer moving the branch to pinning a commit during rolling development.** `SGLANG_COMMIT` and `MEGATRON_COMMIT` are empty by default, so ordinary images follow `SGLANG_BRANCH` and `miles-main` together. A versioned release is the deliberate exception: its lockfile supplies both exact commits to CI and the final image build.
 
 **Validate an image-affecting bump on the PR that makes it.** A PR touching
 `docker/Dockerfile`, `docker/build.py`, `docker/verify_transformer_engine.py`,
