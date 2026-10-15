@@ -58,7 +58,7 @@ def main() -> None:
     parser.add_argument("--dockerhub-username", default="shashankg209")
     parser.add_argument("--docker-pat-secret", default=f"{getpass.getuser().lower()}_DOCKER_PAT")
     parser.add_argument("--hf-token-secret", default=f"{getpass.getuser().lower()}_HF_TOKEN")
-    parser.add_argument("--image", default="docker.io/radixark/miles:dev-202610131159", help="for test / warm jobs")
+    parser.add_argument("--image", default="docker.io/radixark/miles:dev-202610151741", help="for test / warm jobs")
     parser.add_argument("--warm-workers", type=int, default=8)
     parser.add_argument("--warm-args", default="", help="extra warm_tmax_registry_mirror.py flags (--warm-args=...)")
     args = parser.parse_args()

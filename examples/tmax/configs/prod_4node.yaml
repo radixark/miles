@@ -50,7 +50,7 @@ beaker:
   nodes: 4                                    # mason --num_nodes 4
   gpus: 8
   shared_memory: 512GiB
-  image: docker.io/radixark/miles:dev-202610131159
+  image: docker.io/radixark/miles:dev-202610151741
   sandbox_shards: 4                           # SWERL_PODMAN_SERVICE_COUNT=4
   dockerhub_username: shashankg209
   mirror_url: auto                            # the registry_mirror.py mirrors running at submit time

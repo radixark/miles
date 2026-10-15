@@ -28,6 +28,6 @@ beaker:
   retries: 0
   gpus: 4
   shared_memory: 256GiB
-  image: docker.io/radixark/miles:dev-202610131159
+  image: docker.io/radixark/miles:dev-202610151741
   sandbox_shards: 1
   dockerhub_username: shashankg209
