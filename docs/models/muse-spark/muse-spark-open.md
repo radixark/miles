@@ -45,7 +45,7 @@ docker run -d --name miles --gpus all --network host --ipc host --shm-size 512g 
 
 ### 3.3 SGLang
 
-The engine runs the omni checkpoint natively from the [`sglang-miles-muse-spark-open`](https://github.com/sgl-project/sglang/tree/sglang-miles-muse-spark-open) branch, which the image contains. Weight updates also work on Blackwell GPUs (B200, B300), which passed smoke tests; the recipe is validated on H200.
+The engine runs the omni checkpoint natively from the [`sglang-miles-muse-spark-open`](https://github.com/sgl-project/sglang/tree/sglang-miles-muse-spark-open) branch, which the image contains. The recipe is validated on H200. On Blackwell, a math reasoning run on 32 B300 GPUs (4 nodes; TP8/PP4 training, one 8-GPU engine per node) completed 30 steps with `train/train_rollout_logprob_abs_diff` at 0.004–0.007 and bit-identical weights across all engines after every sync. The launcher's training layouts are sized for 64 H200 GPUs, and B200 is untested.
 
 ## 4. Launch
 
