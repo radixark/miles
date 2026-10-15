@@ -3026,8 +3026,6 @@ def _make_skip_actor_forward_only_args(**overrides) -> SimpleNamespace:
     defaults = dict(
         compute_advantages_and_returns=True,
         custom_megatron_before_log_prob_hook_path=None,
-        custom_megatron_before_train_step_hook_path=None,
-        custom_model_provider_path=None,
         dumper_enable=False,
         dumper_fwd_only=None,
         dumper_source_patcher_config_train=None,
@@ -3049,7 +3047,6 @@ def _make_skip_actor_forward_only_args(**overrides) -> SimpleNamespace:
         n_samples_per_prompt=8,
         num_steps_per_rollout=None,
         rollout_batch_size=8,
-        rollout_data_postprocess_path=None,
         save_debug_train_data=None,
         train_backend="megatron",
         true_on_policy_mode=False,
@@ -3107,6 +3104,17 @@ class TestValidateSkipActorForwardOnly:
     @pytest.mark.parametrize(
         "overrides",
         [
+            {"rollout_data_postprocess_path": "pkg.hook"},
+            {"custom_megatron_before_train_step_hook_path": "pkg.hook"},
+            {"custom_model_provider_path": "pkg.model_provider"},
+        ],
+    )
+    def test_custom_module_configuration_passes(self, overrides):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(**overrides))
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
             {"train_backend": "fsdp"},
             {"loss_type": "custom_loss"},
             {"compute_advantages_and_returns": False},
@@ -3123,10 +3131,7 @@ class TestValidateSkipActorForwardOnly:
             {"use_rollout_entropy": True},
             {"true_on_policy_mode": True},
             {"log_correct_samples": True},
-            {"rollout_data_postprocess_path": "pkg.hook"},
             {"custom_megatron_before_log_prob_hook_path": "pkg.hook"},
-            {"custom_megatron_before_train_step_hook_path": "pkg.hook"},
-            {"custom_model_provider_path": "pkg.model_provider"},
             {"dumper_source_patcher_config_train": "patcher.yaml"},
             {"save_debug_train_data": "train-{rollout_id}.pt"},
             {"use_routing_replay": True},
