@@ -2472,6 +2472,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Type of the reward model",
             )
             parser.add_argument(
+                "--reward-funcs",
+                type=str,
+                default=None,
+                help=(
+                    "Comma-separated built-in reward names or dotted custom function paths. "
+                    "Functions run concurrently per sample and may return None to opt out. "
+                    "Mutually exclusive with --rm-type and --custom-rm-path."
+                ),
+            )
+            parser.add_argument(
+                "--reward-weights",
+                type=str,
+                default=None,
+                help="Comma-separated weights for --reward-funcs, in the same order. Defaults to 1.0 for each function.",
+            )
+            parser.add_argument(
                 "--reward-key",
                 type=str,
                 default=None,
@@ -3406,6 +3422,35 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         )
 
 
+def _validate_reward_args(args):
+    reward_funcs = getattr(args, "reward_funcs", None)
+    reward_weights = getattr(args, "reward_weights", None)
+    if reward_funcs is None:
+        if reward_weights is not None:
+            raise ValueError("--reward-weights requires --reward-funcs")
+        return
+    if args.rm_type is not None or args.custom_rm_path is not None:
+        raise ValueError("--reward-funcs is mutually exclusive with --rm-type and --custom-rm-path")
+    if isinstance(reward_funcs, str):
+        reward_funcs = [name.strip() for name in reward_funcs.split(",")]
+    if not reward_funcs or any(not name for name in reward_funcs):
+        raise ValueError("--reward-funcs must contain non-empty reward names or dotted custom function paths")
+    if reward_weights is None:
+        reward_weights = [1.0] * len(reward_funcs)
+    else:
+        if isinstance(reward_weights, str):
+            reward_weights = reward_weights.split(",")
+        reward_weights = [float(weight) for weight in reward_weights]
+    if len(reward_weights) != len(reward_funcs):
+        raise ValueError("--reward-weights must have the same number of entries as --reward-funcs")
+    eval_reward_key = getattr(args, "eval_reward_key", None)
+    if eval_reward_key and eval_reward_key != args.reward_key:
+        # The composite stores one value, under --reward-key; eval cannot read a different component.
+        raise ValueError("--eval-reward-key must equal --reward-key when --reward-funcs is set")
+    args.reward_funcs = reward_funcs
+    args.reward_weights = reward_weights
+
+
 def miles_validate_args(args):
     from miles.backends.training_utils.weight_update.session import weight_update_selector
 
@@ -3415,6 +3460,8 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
+    _validate_reward_args(args)
 
     mode = args.update_weight_transfer_mode
     if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
