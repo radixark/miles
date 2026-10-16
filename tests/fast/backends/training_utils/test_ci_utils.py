@@ -28,3 +28,15 @@ class TestCheckKl:
                 step_id=0,
                 accumulated_step_id=1,
             )
+
+    def test_mla_kl_is_bounded_on_both_sides(self) -> None:
+        """MLA's first-step KL is noise of either sign: a small positive value passes, a large negative one fails."""
+        args = Namespace(multi_latent_attention=True, trainer_model_id=None, use_rollout_routing_replay=False)
+
+        check_kl(
+            args=args, log_dict={"train/ppo_kl": 4.7e-4, "train/pg_clipfrac": 0.0}, step_id=0, accumulated_step_id=1
+        )
+        with pytest.raises(AssertionError):
+            check_kl(
+                args=args, log_dict={"train/ppo_kl": -0.1, "train/pg_clipfrac": 0.0}, step_id=0, accumulated_step_id=1
+            )
