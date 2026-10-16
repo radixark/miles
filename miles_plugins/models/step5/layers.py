@@ -4,7 +4,6 @@ Norm weights stay FP32 and outputs round once to BF16. Sliding-window layers rot
 all head channels; sparse full-attention layers use their own partial RoPE.
 """
 
-from dataclasses import dataclass
 from typing import ClassVar
 
 import torch
@@ -16,29 +15,12 @@ from megatron.core.transformer.module import mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import is_layer_window_attention
 
-SWIGLU_LIMIT = 7.0
-
-
-@dataclass(frozen=True)
-class RopeGeometry:
-    theta: float
-    rotary_percent: float
-
-
-SLIDING_WINDOW_ROPE = RopeGeometry(theta=1e4, rotary_percent=1.0)
-FULL_ATTENTION_ROPE = RopeGeometry(theta=1e7, rotary_percent=1 / 3)
+from miles_plugins.models.step5.layer_math import SLIDING_WINDOW_ROPE, RopeGeometry, zero_centered_rms_norm
 
 
 def is_full_attention_layer(config: TransformerConfig, layer_number: int) -> bool:
     """Whether the 1-indexed global ``layer_number`` is a full-attention (DSA) layer."""
     return not is_layer_window_attention(config.window_size, config.window_attn_skip_freq, layer_number)
-
-
-def zero_centered_rms_norm(hidden_states: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
-    """``x / rms(x) * (1 + w)`` in fp32; the caller rounds the result."""
-    hidden_states = hidden_states.float()
-    variance = hidden_states.pow(2).mean(-1, keepdim=True)
-    return hidden_states * torch.rsqrt(variance + eps) * (weight.float() + 1.0)
 
 
 class Step5RMSNorm(torch.nn.Module):

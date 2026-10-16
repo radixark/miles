@@ -73,6 +73,23 @@ past 4,103; the max is 0.22 vs 0.24. The Megatron model's own log-probs move by 
 of the same prompt (0.04 on 600 tokens before the sparse layers too), so compare means.
 
 
+## torchtitan trainer
+
+5b. Load the HF slice into the torchtitan model (`miles/backends/torchtitan_utils/models/step5/`) through its
+   state-dict adapter, on one GPU, and compare with goldens in the same format as step 5's:
+
+   ```bash
+   PYTHONPATH=$PWD python tests/manual/step5/titan_logprobs.py --hf-checkpoint /scratch/step5_slices/step5-5layer \
+       --golden /scratch/step5_golden/step5-5layer.pt --report /scratch/step5_golden/step5-5layer-titan.json
+   ```
+
+   Against the Megatron model's log-probs on the FP8 5-layer slice (B300), each torchtitan block fed the
+   Megatron layer's own input moves the residual stream to within 1e-4 to 9e-3 of Megatron's update, except
+   the BF16-expert MoE layer (original 88), 0.6-2.9%, as near-tied expert choices flipping on rounding noise
+   would give; the final norm and `lm_head` reproduce Megatron's log-probs exactly. Whole-model log-probs
+   drift further (mean 0.19, 0.07 and 0.04 on 32, 600 and 5,000 tokens) as such differences compound through
+   the slice, as the Megatron model's own run-to-run numbers above show.
+
 ## Vision tower and VL model
 
 6. Compare the trainer's frozen vision tower (`miles_plugins/models/step5/vision.py`) with StepFun's reference
