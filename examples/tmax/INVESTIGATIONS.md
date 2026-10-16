@@ -11,7 +11,9 @@ Runs referred to:
   commit `edf2c7ae3e`, 4× 8 B300.
   - **First attempt:** 00:23 to 04:21 UTC on 2026-10-16, steps 0–24.
   - **Retry 1:** 04:33 to 06:15, steps 25–34.
-  - **Retry 2:** from 06:45, steps 35 onward.
+  - **Retry 2:** 06:45 to 15:19, steps 35–97; died with `ENOSPC`.
+  - **Retry 3:** 15:24 to 15:26; died with `ENOSPC` at startup.
+  - **Retry 4:** from 15:30, resumed from `iter_0000094`.
 
 ## Open decisions
 
@@ -37,6 +39,22 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 ## Ideas to explore
 
 Larger directions to evaluate against the evidence below. Add yours here.
+
+## 2026-10-16: `oe-adapt` Weka volume full (retry 2 and 3 failures)
+
+- **What happened:** retry 2 died at 15:19 with `OSError: No space left on device` from the rollout executor, writing
+  `dashboard_columns/rollout_98.tmp` into the trace directory. Retry 3 died 2 minutes after starting, writing the
+  checkpoint directory's `events`. Retry 4 resumed from `iter_0000094`, so steps 95–97 are trained again.
+- **Evidence:** at 16:10 the shared `weka-aus.beaker.org/oe-adapt` volume (`/weka/oe-adapt-default`) showed 438 of
+  440 TB used, 2.1 TB free. `nora` was at 93% (3.5 TB free) and `oe-training` at 100% (13 TB free).
+- **Our share:**
+  - this run's checkpoints, 353 GB: 3 iterations of about 118 GB each, one written every 5 steps;
+  - its traces and dumps, 28 GB;
+  - two older runs' checkpoints, 351 GB each: `tmax_prod1node_qwen35_9b`, and the pre-rebase
+    `tmax_prod4node_qwen35_9b`.
+- **Reading:** the volume is filled by other users; every checkpoint we write needs about 118 GB of the little left.
+- **Options:** free our old runs' checkpoints (about 700 GB), keep fewer checkpoints per run, or put checkpoints on
+  a volume with room. Any of them still leaves the run exposed to the shared volume filling up.
 
 ## 2026-10-16: slowdown from 09:20 to 10:41 (retry 2, steps 56–59)
 
