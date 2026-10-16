@@ -32,36 +32,31 @@ The Beam bridge loads only this BF16 checkpoint; the FP8 and NVFP4 releases are 
 
 ### 3.1 Download
 
-`prepare` downloads the checkpoint into `--model-dir`, and DAPO-Math-17K and AIME25 into `--data-dir`. Put both on storage that every node mounts at the same path:
+`prepare` downloads the checkpoint into `--model-dir` and DAPO-Math-17K and AIME25 into `--data-dir`; every node must see both at the same path. `run_beam_lora.py prepare` is identical, so one run serves both recipes:
 
 ```bash
 python scripts/run_beam.py prepare --model-dir /root/models/Beam --data-dir /root/datasets
 ```
 
-The checkpoint needs no Megatron conversion: the trainer loads the HF checkpoint through Megatron-Bridge at startup (`--megatron-to-hf-mode bridge`).
-
-`prepare` also writes `aime-2025/aime-2025-answer-format.jsonl`, the AIME25 problems wrapped in the training prompts' answer-format instruction; evaluation reads this file. `run_beam_lora.py prepare` does the same.
+The checkpoint needs no Megatron conversion: the trainer reads it through the Beam bridge at startup. `prepare` also writes `aime-2025/aime-2025-answer-format.jsonl`, the AIME25 problems wrapped in the training prompts' answer-format instruction, which the evals read.
 
 ### 3.2 SGLang
 
-The engine needs the Beam support on SGLang's [`beam-miles`](https://github.com/sgl-project/sglang/tree/beam-miles) branch, pinned at `9ac1c65b`: the last Beam commit on torch 2.13, which also carries the Beam LoRA serving and streamed adapter updates `run_beam_lora.py` needs. Later Beam commits, on the [`beam`](https://github.com/sgl-project/sglang/tree/beam) branch, require torch 2.14.1.
+The engine needs the Beam support on SGLang's [`beam-miles`](https://github.com/sgl-project/sglang/tree/beam-miles) branch at `9ac1c65b`, the last Beam commit that runs on torch 2.13. It also carries the Beam LoRA serving and streamed adapter updates the LoRA recipe uses.
 
-`docker/Dockerfile.beam` on the `beam-image` branch builds the image from the repository root. It starts from `radixark/miles:v0.1.2`, replaces its SGLang with that commit, and installs the checkout:
+The `radixark/miles:beam` image (multi-arch, built on `radixark/miles:v0.1.2` by `docker/Dockerfile.beam`) carries it and the recipe code:
 
 ```bash
-git clone -b beam-image https://github.com/radixark/miles.git && cd miles
-docker build -f docker/Dockerfile.beam -t miles-beam .
+docker pull radixark/miles:beam
 ```
-
-`--build-arg BEAM_SGLANG_REF=<commit or branch>` overrides the pin. Run every node from this image.
 
 ## 4. Launch
 
-Each launcher submits to an existing Ray cluster and does not start one. From `/root/miles` inside the image, set `MASTER_ADDR` to the head node's address; `RAY_ADDRESS` defaults to `http://$MASTER_ADDR:8265`. Keep `--output-dir` on shared storage so a later job can resume from it.
+Start a Ray cluster from this image over all the nodes, with the checkpoint, the datasets and `--output-dir` on shared storage, then launch from the head node. The launchers submit to that cluster and do not start one; `RAY_ADDRESS` defaults to `http://$MASTER_ADDR:8265`.
 
-### 4.1 Full parameter, 96 GPUs
+### 4.1 Full parameter, 12 nodes
 
-`execute` runs on twelve 8×H200 nodes: eight train and four host the rollout engines. Each trainer node needs at least 2 TB free on node-local NVMe for the optimizer state, at `/scratch/beam-optimizer` by default (`--optimizer-disk-dir`):
+`execute` runs on twelve 8×H200 nodes: eight train and four host two rollout engines. Each trainer node needs at least 2 TB free on node-local NVMe for the optimizer state, at `/scratch/beam-optimizer` by default (`--optimizer-disk-dir`):
 
 ```bash
 MASTER_ADDR=<head ip> python scripts/run_beam.py execute --num-rollout 100 \
@@ -69,11 +64,11 @@ MASTER_ADDR=<head ip> python scripts/run_beam.py execute --num-rollout 100 \
     --output-dir /root/shared_data/beam-run
 ```
 
-miles evaluates on AIME25 every five rollouts and saves a checkpoint every twenty.
+The run evaluates on AIME25 every five rollouts and saves a checkpoint every twenty.
 
-### 4.2 Full parameter, colocated, 64 GPUs
+### 4.2 Full parameter, colocated, 8 nodes
 
-`execute-colocate` takes the same arguments and runs on eight 8×H200 nodes. Every GPU trains and also hosts a rollout engine, and the new weights reach the engines over CUDA IPC:
+`execute-colocate` takes the same arguments on eight 8×H200 nodes. Every GPU trains and also hosts one of four rollout engines, which receive the new weights over CUDA IPC. Each node's NVMe holds both the optimizer state and the paused trainer:
 
 ```bash
 MASTER_ADDR=<head ip> python scripts/run_beam.py execute-colocate --num-rollout 100 \
@@ -81,9 +76,9 @@ MASTER_ADDR=<head ip> python scripts/run_beam.py execute-colocate --num-rollout 
     --output-dir /root/shared_data/beam-colocate-run
 ```
 
-### 4.3 LoRA, 32 GPUs
+### 4.3 LoRA, 4 nodes
 
-`run_beam_lora.py` runs on four 8×H200 nodes: two train and two host one rollout engine:
+`run_beam_lora.py` runs on four 8×H200 nodes: two train and two host one rollout engine. It needs no NVMe, since the adapter's optimizer state stays on the GPUs:
 
 ```bash
 MASTER_ADDR=<head ip> python scripts/run_beam_lora.py execute --num-rollout 100 \
