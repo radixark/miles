@@ -8,6 +8,7 @@ import torch
 
 from miles.backends.training_utils.weight_update.protocols.cuda_ipc import (
     UpdateWeightFromTensor,
+    _ipc_ref_counter,
     _send_to_colocated_engine,
 )
 from miles.utils import async_utils
@@ -159,7 +160,7 @@ class TestColocatedBaseSend:
             dist_mock.get_rank.return_value = 0
             dist_mock.get_world_size.return_value = 1
             dist_mock.gather_object.side_effect = _gather_object_onto_source
-            futures, _long_lived_tensors = _send_to_colocated_engine(
+            futures, _long_lived_tensors, _serialized = _send_to_colocated_engine(
                 named_tensors,
                 ipc_engine=engine,
                 ipc_gather_src=0,
@@ -172,3 +173,61 @@ class TestColocatedBaseSend:
             "serialized:model.layers.0.mlp.up_proj.weight",
         ]
         assert engine.max_active == 1
+
+
+class TestIpcBucketRing:
+    def test_ref_counter_is_read_from_the_reducer_pickle(self) -> None:
+        """The debug reader finds torch's ref-counter shm name and slot offset without unpickling (no IPC open)."""
+        import base64
+        import pickle
+
+        # same positional layout as torch.multiprocessing.reductions.reduce_tensor's args tuple
+        args = (
+            torch.Tensor,
+            torch.Size([5]),
+            (1,),
+            0,
+            torch.storage.TypedStorage,
+            torch.uint8,
+            "GPU-0123",
+            b"\x01" * 64,
+            4096,
+            0,
+            False,
+            "/torch_4242_17",
+            9,
+            b"\x02" * 64,
+            False,
+        )
+        payload = {"flattened_tensor": ("rebuild", args), "metadata": [("b0.t0", "/torch_1_1 is only a name here", 3)]}
+        data = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+        assert _ipc_ref_counter(data) == ("/torch_4242_17", 9)
+        assert _ipc_ref_counter(base64.b64encode(data).decode()) == ("/torch_4242_17", 9)
+        assert _ipc_ref_counter(pickle.dumps({"metadata": []})) is None
+
+    def test_ring_handshake_broadcasts_the_engine_verdict_to_every_rank(self) -> None:
+        """With the ring, a non-source rank waits for the gather-source rank's verdict and raises on an engine error
+        instead of running ahead into the next bucket."""
+        protocol = UpdateWeightFromTensor.__new__(UpdateWeightFromTensor)
+        protocol.args = Namespace(update_weight_buffer_size=16)
+        protocol.use_distribute = False
+        protocol._ring = object()  # any ring: only the handshake path is exercised
+        protocol._ring_debug_left = 0
+        protocol._ipc_gather_src = 0
+        protocol._ipc_gather_group = MagicMock(name="gather_group")
+        protocol._ipc_engine = None
+        protocol._selector = "all"
+
+        def broadcast(obj_list, src, group):
+            assert src == 0 and group is protocol._ipc_gather_group
+            obj_list[0] = "RuntimeError: engine said no"
+
+        with (
+            patch(f"{_TENSOR_MODULE}.dist") as dist_mock,
+            patch(f"{_TENSOR_MODULE}._send_to_colocated_engine", return_value=([], [], ["payload"])),
+        ):
+            dist_mock.get_rank.return_value = 3  # not the gather source: holds no futures
+            dist_mock.broadcast_object_list.side_effect = broadcast
+            with pytest.raises(RuntimeError, match="engine said no"):
+                protocol.send_bucket([("w", torch.zeros(1))])
+            dist_mock.broadcast_object_list.assert_called_once()
