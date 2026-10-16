@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-import spmd_types as spmd
 import torch
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
@@ -8,6 +7,7 @@ from torchtitan.models.common.decoder import Decoder
 from torchtitan.models.common.moe import MoE
 from torchtitan.models.common.moe_sharding import set_moe_sharding_config
 from torchtitan.models.common.token_dispatcher import update_ep_token_dispatcher_config
+from torchtitan.models.deepseek_v3.sharding import _GROUPED_EXPERTS_PARAM_LAYOUT
 from torchtitan.models.utils import get_moe_model_nparams_and_flops
 from torchtitan.protocols.module import Module
 
@@ -17,12 +17,6 @@ from miles.backends.torchtitan_utils.models.step5.packed_sequence import (
     PackedSequence,
     build_packed_sequence,
 )
-
-_GROUPED_EXPERTS_PARAM_LAYOUT: dict[str, spmd.PerMeshAxisSpmdType] = {
-    "w1_EFD": spmd.S(1),
-    "w2_EDF": spmd.S(2),
-    "w3_EFD": spmd.S(1),
-}
 
 
 class Step5Block(Module):
