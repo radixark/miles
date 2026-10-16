@@ -11,8 +11,9 @@ Events:
   traceback, engines being killed);
 * `REPLICA EXITED ...` for every replica job that exited, and `HEAD EXITED` before the watcher stops.
 
-Every --interval seconds it reads `beaker experiment get` and the last minutes of the head job's log (replica 0). It
-remembers what it printed in --state-dir, so a restarted watcher does not repeat itself, and appends the raw log there
+Every --interval seconds it reads `beaker experiment get` and the head job's log (replica 0) since its last successful
+read. It remembers what it printed, and when it last read the log, in --state-dir, so a restarted watcher neither
+repeats itself nor skips what was logged while it was down (up to --max-gap), and appends the raw log there
 (`head.log`). It stops when the head job exits or, with --until-steps N, once N steps trained and a weight sync
 followed each. Each stdout line is one event, so it suits a monitor that turns lines into notifications.
 """
@@ -46,6 +47,7 @@ def main() -> None:
     parser.add_argument("--slow-sync", type=float, default=0, help="report only syncs that fail or exceed this (s)")
     parser.add_argument("--until-steps", type=int, default=0, help="stop once this many steps trained and synced")
     parser.add_argument("--interval", type=float, default=90)
+    parser.add_argument("--max-gap", type=float, default=3 * 3600, help="read at most this far back (s)")
     args = parser.parse_args()
 
     state = Path(args.state_dir or f"/tmp/tmax-watch-{re.sub(r'[^A-Za-z0-9_-]', '_', args.experiment)}")
@@ -53,7 +55,7 @@ def main() -> None:
     seen = _Seen(state / "seen.txt")
     steps = _Seen(state / "steps.txt")
     syncs = _Seen(state / "syncs.txt")
-    since = f"{int(args.interval * 2 + 120)}s"  # overlapping windows; `seen` drops the repeats
+    last_read = state / "last_read.txt"
     while True:
         jobs = _jobs(args.experiment)
         heads = [job for job in jobs or [] if job["rank"] == 0]
@@ -64,10 +66,16 @@ def main() -> None:
             if job["exited"]:
                 seen.emit(f"REPLICA EXITED rank={job['rank']} job={job['id']} at={job['exited']} code={job['code']}")
         head = heads[-1]  # a retry adds a new job per replica
-        log = _head_log(head["id"], since)
-        with open(state / "head.log", "a") as f:
-            f.write(log)
-        _report(log, args, seen, steps, syncs)
+        # Read from the last successful read, with a minute of overlap (`seen` drops the repeats): a slow or failed
+        # read, or a watcher restarted after a while, leaves no gap.
+        started = time.time()
+        previous = float(last_read.read_text()) if last_read.exists() else started - args.interval - 120
+        log = _head_log(head["id"], f"{int(min(started - previous, args.max_gap)) + 60}s")
+        if log is not None:
+            last_read.write_text(str(started))
+            with open(state / "head.log", "a") as f:
+                f.write(log)
+            _report(log, args, seen, steps, syncs)
         if head["exited"]:
             print(f"HEAD EXITED job={head['id']} code={head['code']}", flush=True)
             return
@@ -119,8 +127,11 @@ def _jobs(experiment: str) -> list[dict] | None:
     ]
 
 
-def _head_log(job_id: str, since: str) -> str:
+def _head_log(job_id: str, since: str) -> str | None:
     result = subprocess.run(["beaker", "job", "logs", job_id, "--since", since], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"beaker job logs failed: {result.stderr.strip()[:200]}", file=sys.stderr)
+        return None
     return _ANSI.sub("", result.stdout)
 
 
