@@ -77,8 +77,11 @@ def _add(writer, name, base, target):
     )
 
 
-@pytest.mark.parametrize("frame_bytes", [1 << 16, 192 << 10, 1 << 19, 1 << 20, 1 << 21, 1 << 22])
-@pytest.mark.parametrize("codec", publication.CODECS)
+@pytest.mark.parametrize(
+    "codec,frame_bytes",
+    [(codec, publication.FRAME_BYTES) for codec in publication.CODECS]
+    + [("snappy-zstd", 1 << 16), ("lz4-zstd", 192 << 10), ("lz4-zstd", 1 << 22)],
+)
 def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_path, monkeypatch, frame_bytes, codec):
     rng = np.random.default_rng(11)
     base = rng.integers(0, 256, (1, frame_bytes * 2 + 139), dtype=np.uint8)

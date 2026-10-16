@@ -332,6 +332,24 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
     read_baseline.assert_called_once_with("w", expected_dtype="U8", expected_shape=(4,))
 
 
+def _encoded_batch(tensors):
+    return [
+        (
+            [],
+            [],
+            current.numel(),
+            {
+                "encode_wall_s": 0.01,
+                "baseline_h2d_bytes": previous.numel(),
+                "current_h2d_bytes": current.numel(),
+                "baseline_d2h_bytes": 0,
+                "encoded_d2h_bytes": 5,
+            },
+        )
+        for previous, current in tensors
+    ]
+
+
 def _gpu_pending(monkeypatch, fail_batch=None):
     """Real worker threads with CPU copies; native tests cover CUDA ordering."""
     protocol = gpu_delta.UpdateWeightFromGpuDelta(
@@ -380,7 +398,7 @@ def _gpu_pending(monkeypatch, fail_batch=None):
         for old, current in tensors:
             assert torch.equal(old, torch.zeros_like(old))
             assert torch.equal(current, torch.full_like(current, 7))
-        return [([], [], current.numel(), {"encode_wall_s": 0.01}) for old, current in tensors]
+        return _encoded_batch(tensors)
 
     def finish(values):
         assert len(values) == 4
@@ -405,7 +423,10 @@ def _start_update(protocol):
     protocol._target_version = protocol._publication_version + 1
     protocol._seen = set()
     protocol._error = None
-    protocol._encoding_metrics = []
+    protocol._encode_wall_times = []
+    protocol._encoded_transfer_bytes = dict.fromkeys(
+        ("baseline_h2d_bytes", "current_h2d_bytes", "baseline_d2h_bytes", "encoded_d2h_bytes"), 0
+    )
     protocol._encoding_jobs = []
     protocol._encoding_started = None
     protocol._batch_remaining = [len(names) for names in protocol._gpu_batch_names]
@@ -440,6 +461,13 @@ def test_ready_batches_overlap_export_without_waiting_for_earlier_incomplete_bat
     _export(protocol, ["b", "a"])
     later_exported.set()
     protocol.after_base_weights()
+    assert sum(protocol._encode_wall_times) == sum([0.01] * 4)
+    assert protocol._encoded_transfer_bytes == {
+        "baseline_h2d_bytes": 13,
+        "current_h2d_bytes": 13,
+        "baseline_d2h_bytes": 0,
+        "encoded_d2h_bytes": 20,
+    }
     assert [event for event in events if isinstance(event, tuple) and event[0] == "encode"] == [
         ("encode", [7]),
         ("encode", [1, 3]),
@@ -508,7 +536,7 @@ def test_cached_gpu_schedule_uses_current_buffers_after_commit(monkeypatch, sing
     def encode(tensors):
         for previous, current in tensors:
             assert torch.all(previous == 7) and torch.all(current == 13)
-        return [([], [], current.numel(), {"encode_wall_s": 0.01}) for _, current in tensors]
+        return _encoded_batch(tensors)
 
     protocol._gpu_encoder.encode_device.side_effect = encode
     protocol._prepare_gpu_schedule = Mock(side_effect=AssertionError("Update rebuilt immutable owner schedule"))

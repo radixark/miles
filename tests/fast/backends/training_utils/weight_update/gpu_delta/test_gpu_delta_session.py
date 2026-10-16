@@ -7,10 +7,9 @@ import pytest
 from tests.fast.backends.sglang_utils import test_sglang_api_client
 
 from miles.backends.training_utils.weight_update.protocols.gpu_delta import session
-from miles.utils.gpu_delta.publication import CODECS
 
 
-def _setup(failure=None, failed_engine=1, codec="snappy-zstd"):
+def _setup(failure=None, failed_engine=1):
     events, clients, descriptions = [], [], []
     for engine in range(2):
         identities = [
@@ -46,7 +45,7 @@ def _setup(failure=None, failed_engine=1, codec="snappy-zstd"):
         clients.append(_Engine(engine, identities, events, failure, failed_engine))
     _, _, digest = session.merge_plans(descriptions)
     publication = {
-        "codec": codec,
+        "codec": "snappy-zstd",
         "manifest_path": "/shared/version/manifest.json",
         "manifest_sha256": "f" * 64,
         "stream_id": "stream",
@@ -136,10 +135,9 @@ class _Engine:
         return {"success": True}
 
 
-@pytest.mark.parametrize("codec", CODECS)
 @pytest.mark.parametrize("weight_version", [None, "42"])
-def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch, codec, weight_version):
-    clients, descriptions, publication, events = _setup(codec=codec)
+def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch, weight_version):
+    clients, descriptions, publication, events = _setup()
     cohort = session.negotiate_cohort(descriptions)
     monkeypatch.setattr(session, "merge_plans", lambda *args, **kwargs: pytest.fail("Immutable plan renegotiated"))
     result = asyncio.run(

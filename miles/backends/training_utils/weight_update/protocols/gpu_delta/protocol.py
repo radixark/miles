@@ -161,7 +161,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._target_version = self._publication_version + 1
         self._started = time.monotonic()
         self._version_dir = self._stream_dir / f"weight_v{self._target_version:06d}"
-        self._encoding_metrics = []
+        self._encode_wall_times = []
+        self._encoded_transfer_bytes = dict.fromkeys(
+            ("baseline_h2d_bytes", "current_h2d_bytes", "baseline_d2h_bytes", "encoded_d2h_bytes"), 0
+        )
         self._encoding_tail_wait_s = 0.0
         self._recovery_encode_s = 0.0
         self._export_staging_wait_s = self._bulk_encode_s = 0.0
@@ -355,7 +358,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             finalized = self._gpu_encoder.finish_device(encoded)
             self._bulk_encode_s = time.monotonic() - started
             for name, (frames, payload, outer, changed, metrics) in zip(names, finalized, strict=True):
-                self._encoding_metrics.append(dict(metrics, name=name))
+                self._encode_wall_times.append(metrics["encode_wall_s"])
+                for key in self._encoded_transfer_bytes:
+                    self._encoded_transfer_bytes[key] += metrics[key]
                 spec = self._plan[name]
                 self._writer.add_encoded_tensor(
                     name,
@@ -640,7 +645,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             "raw_bytes": sum(t["raw"]["encoded_bytes"] for t in shard["tensors"] if "raw" in t),
             "wire_bytes": sum(f["nbytes"] for f in shard["files"]),
             "producer_wall_s": time.monotonic() - self._started,
-            "encode_tensor_wall_sum_s": sum(item["encode_wall_s"] for item in self._encoding_metrics),
+            "encode_tensor_wall_sum_s": sum(self._encode_wall_times),
             "encoding_tail_wait_s": self._encoding_tail_wait_s,
             "export_staging_wait_s": self._export_staging_wait_s,
             "bulk_encode_s": self._bulk_encode_s,
@@ -648,10 +653,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             "encoder_batches": self._gpu_batch_count,
             "encoding_granularity": "batch",
             "owner_seal_s": time.monotonic() - seal_started,
-            **{
-                key: sum(item[key] for item in self._encoding_metrics)
-                for key in ("baseline_h2d_bytes", "current_h2d_bytes", "baseline_d2h_bytes", "encoded_d2h_bytes")
-            },
+            **self._encoded_transfer_bytes,
         }
         self.publication_metrics["raw_cpu_write_s"] = self._raw_cpu_write_s
         self.publication_metrics["raw_tail_wait_s"] = self._raw_tail_wait_s
@@ -753,9 +755,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             activation.update(
                 _on_root(lambda: async_utils.run(self._update_restarted_engines(descriptor, fresh, weight_version)))
             )
-        self._commit_activation(publication, activation, weight_version)
+        self._commit_activation(publication, activation)
 
-    def _commit_activation(self, publication, activation, weight_version):
+    def _commit_activation(self, publication, activation):
         self._commit_baseline()
         counts = publication["summary_counts"]
         wire, changed, total = (counts[key] for key in ("wire_bytes", "changed_bytes", "canonical_bytes"))

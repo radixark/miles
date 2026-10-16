@@ -10,15 +10,10 @@ The backend-neutral codec and publication modules live in `miles.utils.gpu_delta
 Training protocol, session, and metrics live in
 `miles.backends.training_utils.weight_update.protocols.gpu_delta`; Megatron export
 ownership stays in `miles.backends.megatron_utils.update_weight.gpu_delta`.
-Feature-only fast tests use matching `gpu_delta/` subdirectories, while the manual
-benchmarks remain in this directory.
-
-Fast tests are grouped by behavior: baseline/export/checkpoint ownership,
-publication validation, session/API lifecycle, metrics, and dedicated eval
-synchronization. Eval dispatch, version checks and independent receiver pools
-share `test_gpu_delta_eval.py`. Shared disk-delta engine calls and rollout
-restart actions are covered in their existing shared test suites. The manual
-encoder, nvCOMP and recovery tests remain separate GPU harnesses.
+Fast tests use matching `gpu_delta/` subdirectories, grouped by ownership,
+publication, lifecycle, metrics and eval synchronization. The manual encoder,
+nvCOMP and recovery tests here provide GPU correctness coverage separately from
+the benchmark.
 
 ## Environment
 
@@ -84,9 +79,9 @@ checkpoints with delta companions. Attention FP8 conversion remains disabled.
 GPU delta always captures HF baseline version 0, then publishes and applies the
 loaded trainer's version 1 before the first rollout. This includes a trainer
 resumed from a checkpoint that differs from the HF base.
-`--update-weight-delta-initial-sync` remains accepted for compatibility, but it is
-not required and GPU delta has no initial-sync opt-out. Disk-delta is unchanged.
-Subsequent updates start at version 2;
+`--update-weight-delta-initial-sync` is required only to opt disk-delta into an
+initial publication. GPU delta accepts the flag for compatibility but always
+performs initial synchronization. Subsequent GPU-delta updates start at version 2;
 these transfer versions are independent of restored optimizer/rollout steps.
 GPU delta defaults to LZ4-Zstd for this initial publication, then Snappy-Zstd for
 learned updates. Selection follows the initial-sync call, not transfer-version
@@ -243,9 +238,9 @@ not enqueue one unbounded future for every tensor/frame.
 The global canonical inventory must have complete, unique owner coverage. Duplicate
 exports, including overlapping PP/MTP names, are rejected rather than deduplicated.
 
-One Miles coordinator exclusively owns the original engine endpoints during an
-update; concurrent administration, other mutations and external pause/resume are
-unsupported. Each engine independently prepares while its old version serves,
+One Miles coordinator exclusively owns the engine endpoints during an update;
+concurrent administration and external pause/resume are unsupported. Each engine
+independently prepares while its old version serves,
 waits for its own original ranks to be PREPARED, then calls
 `apply_gpu_delta(session_id)`. That engine closes admission, pauses,
 fences readers, retracts requests, flushes caches and applies. A failed reader
@@ -255,15 +250,13 @@ version and resumes without waiting for other engines. Ordinary pause/continue
 APIs remain unchanged. Each engine's local TP/EP participants still synchronize
 for safe activation; independent replicas may temporarily serve different versions.
 
-The trainer settles every engine coroutine before handling failures. Preparation
-failure aborts only that engine's preparation; an uncertain reply after apply
-requires a fresh engine before any base-relative recovery. Successful peers keep
-their target version. The common sender baseline advances only after the whole
-intended cohort resumes. Miles is the sole ordered caller; these APIs do not
-support replay, reordered calls or concurrent administration.
-Successful activation does not prove full weight-content equality.
-External cancellation can leave outstanding remote work; it is incomplete and
-does not authorize automatic retry, cleanup or recovery.
+The trainer drains every engine coroutine before handling failures. Preparation
+failure aborts only that engine; uncertain apply requires a fresh engine before
+base-relative recovery. Successful peers keep their target version, and the
+sender baseline advances only after the whole cohort resumes. Replaying or
+reordering calls is unsupported. External cancellation may leave remote work
+outstanding and does not authorize retry or cleanup. Successful activation alone
+does not prove full weight-content equality.
 
 For the ordinary delta of N matrix bytes, the sender transfers N new export bytes D2H plus old/new
 snapshots H2D (3N total), followed by final encoded D2H. Raw targets avoid both
@@ -439,8 +432,8 @@ byte counts or make an oversized individual tensor fit. Wrapped codecs perform
 one owner-wide GPU Zstd finalization per version. Scalar/vector target bytes
 bypass compression.
 
-The default matrix has six arms: `snappy-zstd`, `lz4-zstd` and `lz4`, each
-with payload hashing on and off. Inner frames are 1 MiB; wrapped codecs also use
+The default six arms combine `snappy-zstd`, `lz4-zstd` and `lz4` with payload
+hashing on and off. Inner frames are 1 MiB; wrapped codecs also use
 1 MiB outer frames, while plain LZ4 has no outer stage. Every arm uses three
 cumulative versions and two EP4 receivers. `--codecs`, `--hashing`,
 `--frame-bytes`, `--versions` and `--ports` select the configuration. For a quick

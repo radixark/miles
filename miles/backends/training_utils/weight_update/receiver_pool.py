@@ -56,4 +56,5 @@ class ReceiverPools:
         """A rebuilt trainer group invalidates every pool's connection."""
         updater.conn_status.mark_trainer_stale()
         for _, connection, _ in self._states.values():
-            connection.mark_trainer_stale()
+            if connection is not updater.conn_status:
+                connection.mark_trainer_stale()

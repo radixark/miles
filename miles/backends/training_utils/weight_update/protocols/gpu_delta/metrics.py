@@ -106,7 +106,7 @@ def activation_metrics(activation):
     _distribution(metrics, "receiver_scheduler_pause_s", pauses)
     timings = [row["result"]["timings"] for row in rows]
     for name in _RANK_TIMINGS + _RANK_COUNTERS + _RANK_WORK_TOTALS:
-        # Optional profiling spans are emitted only with complete rank coverage.
+        # Receiver metrics require complete rank coverage.
         if all(name in timing for timing in timings):
             values = [timing[name] for timing in timings]
             _distribution(metrics, "receiver_" + name, values)
