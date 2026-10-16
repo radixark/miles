@@ -14,7 +14,7 @@ Runs referred to:
   - **Retry 2:** 06:45 to 15:19, steps 35–97; died with `ENOSPC`.
   - **Retry 3:** 15:24 to 15:26; died with `ENOSPC` at startup.
   - **Retry 4:** 15:30 to 22:40, steps 95–149; rollout node declared dead.
-  - **Retry 5** (the last of `retries: 5`): from 22:45, resumed from `iter_0000149`.
+  - **Retry 5** (the last of `retries: 5`): 22:45 to 23:46; failed in its first step. Retries exhausted.
 
 ## Open decisions
 
@@ -40,6 +40,21 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 ## Ideas to explore
 
 Larger directions to evaluate against the evidence below. Add yours here.
+
+## 2026-10-16: trainer rendezvous lost in retry 5; a node disk 95% full all run
+
+- **What happened:** retry 5 resumed from `iter_0000149` and started training step 150 at 23:36. At 23:45, 531 s
+  in, trainer ranks setting up an NCCL communicator for a `reduce_scatter` failed to read its id from the c10d store
+  on `10.93.1.224:20000` (`Failed to recv, got 0 bytes. Connection was likely closed`); the trainer controller gave
+  up (`all alive cells failed`) and the job exited at 23:46. With `retries: 5` used, the experiment is finished.
+- **A node disk full all run:** Ray's file-system monitor reported `/tmp/ray/session_*` over 95% full (9.5–12.6 GB
+  free of 878 GB) on `10.93.1.239` during the first attempt and on `10.93.1.224` (`holmes-cs-aus-556`) through
+  retries 2, 4 and 5, already one minute into retry 4. So it was not filled by the job's own sandbox image pulls,
+  which also land on that disk (podman's `graphroot` is in the job container), and nothing prunes them.
+- **Reading:** the store's host ran with almost no disk the whole time; whether that dropped the store is not shown.
+- **Options:** report the node per the CI-failure rules (runner name, the log line); resubmit with
+  `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` (resumes `iter_0000149`), ideally on the gateway backend (L),
+  which also takes the sandbox images off the nodes' disks.
 
 ## 2026-10-16: rollout node declared dead again (retry 4 failure)
 
