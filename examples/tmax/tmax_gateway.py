@@ -1,28 +1,30 @@
 """The gateway sandbox backend: TMax containers on a LiteRegistry podman fleet.
 
-A port of open-instruct's ``GatewayBackend`` (branch ``literegistry_podman``,
-``open_instruct/environments/backends.py``) onto asyncio. The fleet is a separate deployment
-(https://github.com/goncalorafaria/literegistry, ``literegistry_podman_beaker``): rootless podman replicas and
-Docker Hub mirrors that heartbeat into a Redis registry, behind a gateway that routes each container's requests to
-the replica that owns it. The training job runs no podman, so no sandbox shares a node with Megatron or SGLang.
+The fleet is a separate deployment (https://github.com/goncalorafaria/literegistry, ``literegistry_podman_beaker``):
+rootless podman replicas and Docker Hub mirrors that heartbeat into a Redis registry, behind a gateway that routes each
+container's requests to the replica that owns it. The training job runs no podman, so no sandbox shares a node with
+Megatron or SGLang. This follows open-instruct's ``GatewayBackend`` (branch ``literegistry_podman``) and talks to the
+gateway through literegistry's own client, ``literegistry-podman-client``, which owns the API and its error types; it
+tracks the current literegistry release, not older ones.
 
-Per episode:
+Per episode, through a ``PodmanSession``:
 
-* ``POST /affinity/handshake {service, image}``: the gateway picks a replica, which starts a container from the task
-  image (pulled through the fleet's mirrors) and binds its ``affinity_id`` to itself.
-* ``POST /affinity/podman {affinity_id, command, stdin, timeout, workdir}``: one ``podman exec`` on that replica.
-  Replicas cap an exec at 60 s and 1 MB of stdin, and abort (the gateway then retries, re-running the command)
-  rather than truncate more than 1 MB of stdout or 256 KB of stderr. So a command never runs as a bare exec: one exec
-  launches it detached with its output in files, then wait execs block in the container until it finishes and
-  return its exit code and bounded output. A ``mkdir`` lock makes a retried launch a no-op, and every upload chunk is
-  its own file, so gateway retries are safe.
-* ``POST /affinity/close {affinity_id}``: removes the container.
+* handshake: the gateway picks a replica, which starts a container from the task image (pulled through the fleet's
+  mirrors) and binds its affinity id to itself;
+* execute: one ``podman exec`` on that replica. An exec is capped at 60 s, 1 MB of stdin and 16 KB of command, so a
+  command never runs as a bare exec: one exec launches it detached with its output in files, then wait execs block
+  in the container until it finishes and return its exit code and bounded output;
+* close: removes the container.
 
-The binding expires after 15 idle minutes, so a keepalive exec runs while the container idles through a long
-generation. A binding that is lost anyway (the replica died, or the gateway expired it) is re-handshaken once and the
-command retried, losing the container's state, as the podman backend recreates a vanished container once. A
-container the replica removed or stopped under the episode (its resource watchdog, e.g. past 2048 processes, or the
-agent killing PID 1) ends the episode with reward 0 (``SandboxLostError``). Replicas set no memory limit.
+The gateway sends a pinned command once and reports a transport failure (``502``/``503``/``504``) instead of
+replaying it; every request here is safe to repeat (a ``mkdir`` lock makes a repeated launch a no-op, each upload
+chunk is its own file), so those are retried. The binding expires after 15 idle minutes, so a keepalive exec runs
+while the container idles through a long generation.
+
+A container the fleet reports lost (``PodmanContainerLostError``: the replica's watchdog removed it past its limits,
+4 GB of RSS or 2048 processes on 2026-10-16, it stopped because its init process died, or its replica left the
+roster) ends the episode with reward 0 (``SandboxLostError``, end reason ``sandbox_lost``). As literegistry
+prescribes, the episode does not continue in a replacement container.
 """
 
 import asyncio
@@ -33,9 +35,16 @@ import shlex
 import tempfile
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-import httpx
+from literegistry_podman_client import (
+    CommandResult,
+    PodmanClient,
+    PodmanContainerLostError,
+    PodmanGatewayError,
+    PodmanSession,
+)
 from tmax_sandbox import (
     _START_ATTEMPTS,
     _START_RETRY_BASE_S,
@@ -52,12 +61,11 @@ from miles.rollout.agentic.rollout_limits import current_scope, rollout_semaphor
 
 logger = logging.getLogger(__name__)
 
-_SERVICE = "podman"
-# The replica's per-exec contract (literegistry PodmanRequest / PodmanAffinityConfig).
-_SERVER_EXEC_TIMEOUT_CAP_S = 60.0
+# The replica's per-exec contract: timeout <= 60 s, stdin <= 1 MB, command <= 16 KB.
+_EXEC_TIMEOUT_CAP_S = 59.0
 # Base64 inflates by 4/3; stay well below the 1 MB stdin cap.
 _UPLOAD_CHUNK_BYTES = 512 * 1024
-# Well below the replica's 1 MB stdout / 256 KB stderr caps, which abort the exec rather than truncate.
+# Well below the replica's output caps.
 _MAX_STDOUT_BYTES = 512 * 1024
 _MAX_STDERR_BYTES = 128 * 1024
 # A wait exec blocks in the container until the command finishes or this budget runs out, so a finished command
@@ -72,32 +80,13 @@ _PENDING_MARKER = "__SWERL_GATEWAY_PENDING__"
 _WORK_DIR = "/tmp/.swerl_gateway"
 
 _HANDSHAKE_ATTEMPTS = 5
-_HANDSHAKE_TIMEOUT_S = 240.0
 _REQUEST_ATTEMPTS = 4
+_REQUEST_TIMEOUT_S = 300.0  # a handshake pulls the image; an exec returns within its own timeout
 _RETRY_BASE_S = 0.5
 _RETRY_MAX_S = 8.0
-# 503 texts for a binding whose replica is gone: "no longer registered" once it left the roster, "server is
-# unavailable" while it is still listed but refuses connections. After this many in a row the session is lost.
-_OWNER_LOST_MARKERS = ("no longer registered", "server is unavailable")
-_OWNER_LOST_ATTEMPTS = 3
-# The replica removed the container itself: its resource watchdog (e.g. ``{"code": "sandbox_lost", "reason":
-# "pids_limit", "recoverable": false}`` past 2048 tasks) or idle janitor; older literegistry says container_not_found.
-# This is the sandbox dying under the agent's own commands, so it ends the episode instead of re-handshaking.
-_CONTAINER_REMOVED_MARKERS = ("container_not_found", "sandbox_lost")
-_CONTAINER_STOPPED_MARKERS = ("container state improper", "can only create exec sessions on running containers")
-
-
-class GatewayError(RuntimeError):
-    """A gateway request failed or returned an invalid response."""
-
-    def __init__(self, message: str, status_code: int | None = None, body: str = ""):
-        super().__init__(message)
-        self.status_code = status_code
-        self.body = body
-
-
-class GatewaySessionLostError(GatewayError):
-    """The container's affinity binding no longer exists on the gateway."""
+# Transient gateway answers: a replica still starting the exec, an owner briefly unreachable, a dropped connection.
+# A request that failed without a status never reached the gateway.
+_TRANSIENT_STATUSES = frozenset({408, 500, 502, 503, 504})
 
 
 def _live_dir() -> Path:
@@ -107,6 +96,10 @@ def _live_dir() -> Path:
     return path
 
 
+def _client() -> PodmanClient:
+    return PodmanClient(_settings().gateway_url, workdir="/", request_timeout=_REQUEST_TIMEOUT_S)
+
+
 class TmaxGatewaySandbox(SandboxBase):
     """The gateway backend: a container on a LiteRegistry podman replica."""
 
@@ -114,30 +107,26 @@ class TmaxGatewaySandbox(SandboxBase):
         super().__init__(image, task_dir)
         if not _settings().gateway_url:  # a configuration error, not an infra failure to score as 0
             raise ValueError("the gateway sandbox backend needs TMAX_GATEWAY_URL")
-        self._http: httpx.AsyncClient | None = None
-        self._affinity_id: str | None = None
-        self._instance_id: str | None = None
-        self._ready = False  # the episode's container is up; a lost binding is re-handshaken only after that
-        self._restarted = False
+        self._client: PodmanClient | None = None
+        self._session: PodmanSession | None = None
         self._lock = asyncio.Lock()  # one exec at a time per container; the keepalive skips while one runs
         self._last_request = time.monotonic()
         self._keepalive: asyncio.Task | None = None
 
     async def __aenter__(self) -> "TmaxGatewaySandbox":
-        self._http = httpx.AsyncClient(timeout=None)
+        self._client = await _client().open()
         last_error: Exception | None = None
         for attempt in range(_START_ATTEMPTS):
             try:
                 await self._start()
                 await self._prepare_runtime()
-                self._ready = True
                 if _settings().gateway_keepalive_s > 0:
                     self._keepalive = asyncio.create_task(self._keepalive_loop())
                 return self
             except asyncio.CancelledError:
                 await asyncio.shield(self._release())
                 raise
-            except Exception as e:
+            except Exception as e:  # a lost or failed container before the episode started: try a fresh one
                 last_error = e
                 await self._close_container()
                 if attempt + 1 < _START_ATTEMPTS:
@@ -155,71 +144,43 @@ class TmaxGatewaySandbox(SandboxBase):
         try:
             await self._close_container()
         finally:
-            if self._http is not None:
-                await self._http.aclose()
-                self._http = None
+            if self._client is not None:
+                await self._client.aclose()
+                self._client = None
+
+    @property
+    def instance_id(self) -> str | None:
+        """The replica running the container."""
+        return self._session.instance_id if self._session is not None else None
 
     # ------------------------------------------------------------------ container lifecycle
 
     async def _start(self) -> None:
+        client, client_id = self._client, f"miles-tmax-{uuid.uuid4().hex[:12]}"
         async with rollout_semaphore("tmax-gateway-start", _settings().start_concurrency):
-            result = await _post(
-                self._http,
-                "affinity/handshake",
-                {"service": _SERVICE, "image": self._image, "client_id": f"miles-tmax-{uuid.uuid4().hex[:12]}"},
-                request_timeout=_HANDSHAKE_TIMEOUT_S,
-                attempts=_HANDSHAKE_ATTEMPTS,
+            self._session = await _retry(
+                lambda: client.handshake(image=self._image, client_id=client_id), attempts=_HANDSHAKE_ATTEMPTS
             )
-        affinity_id = result.get("affinity_id")
-        if not isinstance(affinity_id, str) or not affinity_id:
-            raise GatewayError(f"gateway handshake returned no affinity_id: {result}")
-        self._affinity_id, self._instance_id = affinity_id, result.get("instance_id")
-        (_live_dir() / affinity_id).touch()
+        (_live_dir() / self._session.affinity_id).touch()
 
     async def _close_container(self) -> None:
-        affinity_id, self._affinity_id = self._affinity_id, None
-        if affinity_id is None:
+        session, self._session = self._session, None
+        if session is None:
             return
-        (_live_dir() / affinity_id).unlink(missing_ok=True)
+        (_live_dir() / session.affinity_id).unlink(missing_ok=True)
         try:
-            await _post(
-                self._http,
-                "affinity/close",
-                {"service": _SERVICE, "affinity_id": affinity_id},
-                request_timeout=60.0,
-                attempts=2,
-            )
-        except GatewaySessionLostError:
-            pass
-        except GatewayError as e:  # the replica reaps leftover containers on restart; never fail the episode on it
-            logger.warning(f"failed to close gateway sandbox {affinity_id[:12]}: {e}")
-
-    async def _restart(self, error: BaseException) -> None:
-        logger.warning(
-            f"gateway sandbox for {self._image} lost its binding ({error}); re-handshaking once, state is lost"
-        )
-        self._restarted = True
-        await self._close_container()
-        try:
-            await self._start()
-            await self._prepare_runtime()
-        except Exception as e:
-            raise SandboxInfraError(f"sandbox restart failed: {e!r}") from e
+            await session.close()  # a container already lost counts as closed
+        except PodmanGatewayError as e:  # the replica's janitor removes it later; never fail the episode on it
+            logger.warning(f"failed to close gateway sandbox {session.affinity_id[:12]}: {e}")
 
     # ------------------------------------------------------------------ commands
 
     async def _exec(self, command: str, timeout_s: int | None = None) -> ExecResult:
-        timeout_s = timeout_s or _settings().command_timeout_s
         try:
-            return await self._run_command(command, timeout_s)
-        except GatewaySessionLostError as e:
-            if _removed_by_replica(e.body):
-                raise SandboxLostError(f"sandbox {self._image} was removed by its replica: {e.body[:300]}") from e
-            if not self._ready or self._restarted:
-                raise SandboxInfraError(f"gateway sandbox lost: {e}") from e
-            await self._restart(e)
-            return await self._run_command(command, timeout_s)
-        except GatewayError as e:
+            return await self._run_command(command, timeout_s or _settings().command_timeout_s)
+        except PodmanContainerLostError as e:
+            raise SandboxLostError(f"sandbox {self._image} lost: {_describe_loss(e)}") from e
+        except PodmanGatewayError as e:
             raise SandboxInfraError(f"gateway exec failed: {e}") from e
 
     async def _run_command(self, command: str, timeout_s: float) -> ExecResult:
@@ -231,8 +192,8 @@ class TmaxGatewaySandbox(SandboxBase):
             f"bash {job_dir}/cmd.sh > {job_dir}/out 2> {job_dir}/err < /dev/null; "
             f"echo $? > {job_dir}/rc.tmp && mv {job_dir}/rc.tmp {job_dir}/rc"
         )
-        # The job dir is the lock: a gateway retry of a launch that already ran finds it and only reports success.
-        # `{ ... & }` backgrounds just the setsid command, so `cat` still reads the request's stdin.
+        # The job dir is the lock: a repeated launch finds it and only reports success. `{ ... & }` backgrounds just
+        # the setsid command, so `cat` still reads the request's stdin, which carries the command.
         launcher = (
             f"mkdir -p {shlex.quote(_WORK_DIR)} && "
             f"if mkdir {quoted_dir} 2> /dev/null; then "
@@ -248,81 +209,55 @@ class TmaxGatewaySandbox(SandboxBase):
             f"else echo {_PENDING_MARKER}; fi"
         )
         async with self._lock:
-            launch = await self._raw_exec(launcher, stdin=command, exec_timeout=30.0)
-            if "LAUNCHED" not in launch.get("stdout", ""):
-                self._raise_if_stopped(launch)
-                raise GatewayError(
-                    f"command launcher failed (exit={launch.get('exit_code')}): {launch.get('stderr', '')[:500]}"
-                )
+            launch = await self._call(launcher, stdin=command, timeout=30.0)
+            if "LAUNCHED" not in launch.stdout:
+                raise PodmanGatewayError(f"command launcher failed (exit={launch.exit_code}): {launch.stderr[:500]}")
             # The command's own timeout, plus TERM -> KILL grace and slack for the launcher.
             deadline = time.monotonic() + timeout_s + 60.0
             markerless = 0
             while True:
-                response = await self._raw_exec(waiter, exec_timeout=_WAIT_EXEC_TIMEOUT_S)
-                stdout = response.get("stdout", "")
-                if _DONE_MARKER in stdout:
+                response = await self._call(waiter, timeout=_WAIT_EXEC_TIMEOUT_S)
+                if _DONE_MARKER in response.stdout:
                     break
-                if _PENDING_MARKER not in stdout:
+                if _PENDING_MARKER not in response.stdout:
                     markerless += 1
-                    self._raise_if_stopped(response)
                     if markerless >= _MAX_MARKERLESS_WAITS:
-                        await self._probe_alive()
-                        raise GatewayError(
-                            f"wait exec returned no marker {markerless}x (exit={response.get('exit_code')}): "
-                            f"stdout={stdout[:200]!r} stderr={response.get('stderr', '')[:200]!r}"
+                        raise PodmanGatewayError(
+                            f"wait exec returned no marker {markerless}x (exit={response.exit_code}): "
+                            f"stdout={response.stdout[:200]!r} stderr={response.stderr[:200]!r}"
                         )
                 if time.monotonic() > deadline:
                     await self._cleanup(quoted_dir)
-                    raise GatewayError(f"command did not finish within {timeout_s}s plus grace")
+                    raise PodmanGatewayError(f"command did not finish within {timeout_s}s plus grace")
             await self._cleanup(quoted_dir)
-        rc_line, _, out = stdout.split(_DONE_MARKER, 1)[1].lstrip("\n").partition("\n")
+        rc_line, _, out = response.stdout.split(_DONE_MARKER, 1)[1].lstrip("\n").partition("\n")
         try:
             exit_code = int(rc_line.removeprefix("RC=").strip())
         except ValueError:
-            raise GatewayError(f"wait exec returned an invalid rc line: {rc_line!r}") from None
-        stderr = response.get("stderr", "")
+            raise PodmanGatewayError(f"wait exec returned an invalid rc line: {rc_line!r}") from None
+        stderr = response.stderr
         if exit_code == 124:
             stderr = f"Command timed out after {timeout_s}s.\n{stderr}"
         return ExecResult(stdout=out, stderr=stderr, exit_code=exit_code)
 
-    async def _raw_exec(self, command: str, stdin: str = "", exec_timeout: float = 30.0) -> dict:
-        """One bounded ``podman exec`` on the container's replica."""
-        if self._affinity_id is None:
-            raise GatewaySessionLostError("no container")
-        exec_timeout = min(exec_timeout, _SERVER_EXEC_TIMEOUT_CAP_S - 1.0)
+    async def _call(self, command: str, stdin: str = "", timeout: float = 30.0) -> CommandResult:
+        """One bounded ``podman exec`` on the container's replica, retried while the gateway answers transiently."""
+        session = self._session
+        if session is None:
+            raise PodmanGatewayError("no container")
         self._last_request = time.monotonic()
-        return await _post(
-            self._http,
-            "affinity/podman",
-            {
-                "service": _SERVICE,
-                "affinity_id": self._affinity_id,
-                "command": command,
-                "stdin": stdin,
-                "timeout": exec_timeout,
-                "workdir": "/",
-            },
-            # The replica allows exec_timeout + 5 s; leave room for queueing in the gateway.
-            request_timeout=exec_timeout + 20.0,
+        return await _retry(
+            lambda: session.execute(command, stdin=stdin, timeout=min(timeout, _EXEC_TIMEOUT_CAP_S)),
+            attempts=_REQUEST_ATTEMPTS,
         )
-
-    def _raise_if_stopped(self, response: dict) -> None:
-        stderr = response.get("stderr", "") or ""
-        if any(marker in stderr for marker in _CONTAINER_STOPPED_MARKERS):
-            raise SandboxLostError(f"sandbox {self._image} stopped (its init process died): {stderr[:300]}")
-
-    async def _probe_alive(self) -> None:
-        try:
-            probe = await self._raw_exec("true", exec_timeout=15.0)
-        except GatewaySessionLostError as e:
-            raise SandboxLostError(f"sandbox {self._image} is gone: {e.body[:300]}") from e
-        self._raise_if_stopped(probe)
 
     async def _cleanup(self, quoted_dir: str) -> None:
         """Remove a finished command's scratch dir; the result is in hand, so a failure here is only logged."""
         try:
-            await self._raw_exec(f"rm -rf {quoted_dir}", exec_timeout=15.0)
-        except GatewayError as e:
+            await self._call(f"rm -rf {quoted_dir}", timeout=15.0)
+        except PodmanContainerLostError:
+            raise
+        except PodmanGatewayError as e:
             logger.warning(f"gateway job-dir cleanup failed (ignored): {str(e)[:200]}")
 
     async def _keepalive_loop(self) -> None:
@@ -334,9 +269,9 @@ class TmaxGatewaySandbox(SandboxBase):
                 continue  # a command is running, or ran recently, which refreshes the TTL itself
             async with self._lock:
                 try:
-                    await self._raw_exec("true", exec_timeout=15.0)
-                except GatewayError as e:
-                    logger.warning(f"gateway keepalive failed for {(self._affinity_id or '?')[:12]}: {e}")
+                    await self._call("true", timeout=15.0)
+                except PodmanGatewayError as e:  # a lost container surfaces on the episode's next command
+                    logger.warning(f"gateway keepalive failed: {e}")
 
     # ------------------------------------------------------------------ file IO
 
@@ -345,111 +280,65 @@ class TmaxGatewaySandbox(SandboxBase):
         async with self._lock:
             try:
                 if len(tar_bytes) <= _UPLOAD_CHUNK_BYTES:
-                    result = await self._raw_exec(
-                        "base64 -d | tar -xf - -C /", stdin=base64.b64encode(tar_bytes).decode(), exec_timeout=45.0
+                    result = await self._call(
+                        "base64 -d | tar -xf - -C /", stdin=base64.b64encode(tar_bytes).decode(), timeout=45.0
                     )
                     _check(result, "archive upload")
                     return
                 stage = shlex.quote(f"{_WORK_DIR}/upload_{uuid.uuid4().hex[:16]}")
-                _check(await self._raw_exec(f"mkdir -p {stage}", exec_timeout=15.0), "upload staging")
+                _check(await self._call(f"mkdir -p {stage}", timeout=15.0), "upload staging")
                 for index in range(0, len(tar_bytes), _UPLOAD_CHUNK_BYTES):
-                    chunk = tar_bytes[index : index + _UPLOAD_CHUNK_BYTES]
-                    result = await self._raw_exec(
-                        f"base64 -d > {stage}/part.{index // _UPLOAD_CHUNK_BYTES:06d}",
-                        stdin=base64.b64encode(chunk).decode(),
-                        exec_timeout=30.0,
+                    part = index // _UPLOAD_CHUNK_BYTES
+                    result = await self._call(
+                        f"base64 -d > {stage}/part.{part:06d}",
+                        stdin=base64.b64encode(tar_bytes[index : index + _UPLOAD_CHUNK_BYTES]).decode(),
+                        timeout=30.0,
                     )
-                    _check(result, f"upload chunk {index // _UPLOAD_CHUNK_BYTES}")
-                result = await self._raw_exec(
-                    f"cat {stage}/part.* | tar -xf - -C / && rm -rf {stage}", exec_timeout=_WAIT_EXEC_TIMEOUT_S
+                    _check(result, f"upload chunk {part}")
+                result = await self._call(
+                    f"cat {stage}/part.* | tar -xf - -C / && rm -rf {stage}", timeout=_WAIT_EXEC_TIMEOUT_S
                 )
                 _check(result, "upload assembly")
-            except GatewaySessionLostError as e:
-                if _removed_by_replica(e.body):
-                    raise SandboxLostError(f"sandbox {self._image} was removed by its replica: {e.body[:300]}") from e
-                raise SandboxInfraError(f"gateway sandbox lost during upload: {e}") from e
-            except GatewayError as e:
+            except PodmanContainerLostError as e:
+                raise SandboxLostError(f"sandbox {self._image} lost: {_describe_loss(e)}") from e
+            except PodmanGatewayError as e:
                 raise SandboxInfraError(f"gateway upload failed: {e}") from e
 
 
-def _removed_by_replica(body: str) -> bool:
-    return any(marker in body for marker in _CONTAINER_REMOVED_MARKERS)
+def _check(result: CommandResult, what: str) -> None:
+    if result.exit_code != 0:
+        raise PodmanGatewayError(f"{what} failed (exit={result.exit_code}): {result.stderr[:500]}")
 
 
-def _check(result: dict, what: str) -> None:
-    if result.get("exit_code") != 0:
-        raise GatewayError(f"{what} failed (exit={result.get('exit_code')}): {result.get('stderr', '')[:500]}")
+def _describe_loss(error: PodmanContainerLostError) -> str:
+    measured = f" ({error.observed} {error.unit or ''} > {error.limit})" if error.observed is not None else ""
+    return f"{error.reason}{measured}"
 
 
-async def _post(
-    http: httpx.AsyncClient | None,
-    endpoint: str,
-    payload: dict,
-    request_timeout: float,
-    attempts: int = _REQUEST_ATTEMPTS,
-) -> dict:
-    """POST to the gateway with bounded retries; every request this backend sends is safe to repeat.
-
-    Connection errors, timeouts and 408/500/502/503/504 are retried. 404 (binding expired) and 410 (the gateway
-    found the binding's owner gone) raise ``GatewaySessionLostError``, as do repeated 503s saying the owner is
-    unavailable or no longer registered: the gateway only drops a dead replica from its roster minutes later.
-    """
-    if http is None:
-        raise GatewayError("gateway client closed")
-    url = f"{_settings().gateway_url}/{endpoint}"
-    last_error: GatewayError | None = None
-    owner_lost = 0
+async def _retry(call: Callable[[], Awaitable], attempts: int):
+    """Run ``call``, retrying transient gateway failures; every request this backend sends is safe to repeat."""
     for attempt in range(1, attempts + 1):
         try:
-            response = await http.post(url, json=payload, timeout=request_timeout)
-        except httpx.HTTPError as e:
-            last_error = GatewayError(f"gateway request to {endpoint} failed: {e!r}")
-        else:
-            text = response.text
-            if response.status_code in (404, 410):
-                raise GatewaySessionLostError(
-                    f"gateway session lost ({endpoint}): {text[:500]}", status_code=response.status_code, body=text
-                )
-            if response.status_code == 503 and any(marker in text for marker in _OWNER_LOST_MARKERS):
-                owner_lost += 1
-                if owner_lost >= _OWNER_LOST_ATTEMPTS:
-                    raise GatewaySessionLostError(
-                        f"gateway owner gone ({endpoint}): {text[:500]}", status_code=503, body=text
-                    )
-            if response.status_code in (408, 500, 502, 503, 504):
-                last_error = GatewayError(
-                    f"gateway HTTP {response.status_code} for {endpoint}: {text[:500]}",
-                    status_code=response.status_code,
-                )
-            elif response.status_code >= 400:
-                raise GatewayError(
-                    f"gateway HTTP {response.status_code} for {endpoint}: {text[:500]}",
-                    status_code=response.status_code,
-                )
-            else:
-                try:
-                    result = response.json()
-                except ValueError as e:
-                    raise GatewayError(f"gateway returned non-JSON for {endpoint}: {e}") from e
-                if not isinstance(result, dict):
-                    raise GatewayError(f"gateway returned a non-object for {endpoint}")
-                return result
-        if attempt < attempts:
-            await asyncio.sleep(min(_RETRY_BASE_S * 2 ** (attempt - 1), _RETRY_MAX_S) + random.uniform(0.0, 0.5))
-    assert last_error is not None
-    raise last_error
+            return await call()
+        except PodmanContainerLostError:
+            raise
+        except PodmanGatewayError as e:
+            permanent = e.status_code is not None and e.status_code not in _TRANSIENT_STATUSES
+            if permanent or attempt == attempts:
+                raise
+            delay = min(_RETRY_BASE_S * 2 ** (attempt - 1), _RETRY_MAX_S) + random.uniform(0.0, 0.5)
+            logger.warning(f"gateway request failed ({e.status_code}); retry {attempt}/{attempts - 1} in {delay:.1f}s")
+            await asyncio.sleep(delay)
 
 
 async def close_live_sandboxes() -> int:
     """Close every container this rollout's episodes hold on the fleet (the abort hook). Returns the count."""
     ids = [path.name for path in _live_dir().iterdir()]
-    async with httpx.AsyncClient(timeout=None) as http:
+    async with _client() as client:
         for affinity_id in ids:
             (_live_dir() / affinity_id).unlink(missing_ok=True)
             try:
-                await _post(
-                    http, "affinity/close", {"service": _SERVICE, "affinity_id": affinity_id}, 60.0, attempts=2
-                )
-            except GatewayError as e:
-                logger.warning(f"cannot close gateway sandbox {affinity_id[:12]}: {e}")
+                await client.close(affinity_id)
+            except PodmanGatewayError as e:  # one already lost counts as closed too
+                logger.debug(f"closing gateway sandbox {affinity_id[:12]}: {e}")
     return len(ids)

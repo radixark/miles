@@ -91,7 +91,8 @@ Before submitting:
 | `gateway_registry` | unset | With `sandbox_backend: gateway`: the podman fleet's head registry (`head+sqlite:///weka/…/head.sqlite3`); the head starts a gateway from it. See [Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend) |
 | `gateway_url` | unset | With `sandbox_backend: gateway`: a running gateway to use instead |
 | `gateway_min_replicas` | `1` | Podman replicas the gateway must list before training starts |
-| `literegistry_version` | `1.0.49` | The literegistry release the head's gateway runs |
+| `literegistry_version` | `1.0.57` | The literegistry release the head's gateway runs (the fleet's) |
+| `literegistry_podman_client_version` | `0.1.4` | The `literegistry-podman-client` release the agents use |
 
 `submit.py` also sets `NUM_NODES`, `BEAKER_ALLOW_SUBCONTAINERS=1`, `BEAKER_SKIP_DOCKER_SOCKET=1`,
 `PYTORCH_ALLOC_CONF=expandable_segments:True`, `SANDBOX_SHARDS`, `MIRROR_URL`, `KEEP_LAST_N_CHECKPOINTS`,
@@ -182,8 +183,9 @@ beaker:
   gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-terminal-jupiter-head.sqlite3
 ```
 
-- **What the head does.** It installs literegistry into its own venv, since literegistry pins starlette and pulls
-  streamlit, which the training environment cannot take. It then starts `python -m literegistry.gateway
+- **What the head does.** It installs `literegistry-podman-client` (the agents' client) into the training
+  environment, and literegistry into a venv of its own, since literegistry pins starlette and pulls streamlit, which
+  the training environment cannot take. It then starts `python -m literegistry.gateway
   --registry=<gateway_registry> --register=False` on `127.0.0.1:24750`, restarting it if it exits; the gateway's log
   goes to `/tmp/literegistry-gateway.log`. Before training starts, the head waits up to 30 min for the gateway to
   list `gateway_min_replicas` podman replicas. The gateway finds the fleet's Redis through the head registry, so it
@@ -194,11 +196,16 @@ beaker:
 - **Episode behavior** stays as with local podman, with these differences:
   - Output is read up to 512 KB of stdout and 128 KB of stderr, rather than 1 MB each, so the tail of a huge output
     comes from an earlier position.
-  - Replicas set no memory limit, but a userspace watchdog removes a container that runs more than 2,048
-    processes (`{"code": "sandbox_lost", "reason": "pids_limit"}`). Local podman has no such limit.
-  - A container the replica removes or stops under the episode ends it with reward 0 (`end=sandbox_lost`).
-  - A binding the gateway loses (its replica died) is re-handshaken once, losing the container's state, as local
-    podman recreates a vanished container once.
+  - Replicas enforce the limits local podman only requests: 4 GB of RSS and 2,048 processes per container,
+    checked by a userspace watchdog every 5 s. They also allow 8 containers per replica and a 2 h idle timeout
+    (`session_limits` in the roster).
+  - A container the fleet reports lost ends the episode with reward 0 (`end=sandbox_lost`): `410 sandbox_lost` (a
+    watchdog breach or a stopped container) or `410 affinity_owner_lost` (its replica left the roster). As
+    literegistry prescribes, the episode never continues in a replacement container; local podman instead recreates
+    a vanished container once. See the open decision in
+    [INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet).
+  - Transient gateway answers (`408`, `5xx`, a dropped connection) are retried; every request is safe to repeat. A
+    binding that expired anyway (`404`, despite the keepalive) fails that step as a tool error.
 - **The fleet** is shared and managed outside this job. Its roster is at `<gateway>/v1/models`: on 2026-10-16, 172
   podman replicas, 8 mirrors and the fleet's own gateway.
 - **Check it from a dev box.** Start a gateway from the same registry with `python -m literegistry.gateway

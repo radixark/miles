@@ -34,7 +34,7 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | `run_tmax_qwen3_5.py` | Launcher: `prepare` (download, extract tasks, prompt JSONL, torch_dist conversion) and `execute` |
 | `tmax_agent_function.py` | Agent loop for `agentic_tool_call.generate`, plus the over-sampling `abort` hook |
 | `tmax_sandbox.py` | Per-episode container: the episode logic shared by both backends, and the podman backend (a Docker-API socket), ported from open-instruct |
-| `tmax_gateway.py` | The gateway backend: containers on a LiteRegistry podman fleet, open-instruct's `GatewayBackend` ported to asyncio |
+| `tmax_gateway.py` | The gateway backend: containers on a LiteRegistry podman fleet through literegistry's own client, after open-instruct's `GatewayBackend` |
 | `generate.py` | Reward function (`None` drops the group) |
 | `tmax_metrics.py` | Per-rollout W&B metrics open-instruct logs: episodes and tools, solve rates before the filter, trained-sample lengths and advantages |
 | `tmax_prompts.py` | open-instruct's system prompt |

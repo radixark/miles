@@ -24,7 +24,7 @@ synchronized_start_timeout (multi-node: how long replicas wait for each other to
 shared_memory, image, sandbox_shards, mirror_url (``auto``: the running registry_mirror.py mirrors), keep_last_n_checkpoints, weka (list of buckets, mounted at
 /weka/<bucket>), dockerhub_username, secrets (env var -> Beaker secret), env (extra env vars); with the config's
 ``sandbox_backend: gateway``: gateway_registry (the podman fleet's head registry, for a gateway started on the head)
-or gateway_url (a running gateway), gateway_min_replicas, literegistry_version.
+or gateway_url (a running gateway), gateway_min_replicas, literegistry_version, literegistry_podman_client_version.
 """
 
 import argparse
@@ -154,6 +154,7 @@ def _build_spec(
         "GATEWAY_URL": beaker.get("gateway_url", ""),
         "GATEWAY_MIN_REPLICAS": str(beaker.get("gateway_min_replicas", "")),
         "LITEREGISTRY_VERSION": str(beaker.get("literegistry_version", "")),
+        "LITEREGISTRY_PODMAN_CLIENT_VERSION": str(beaker.get("literegistry_podman_client_version", "")),
         "EXTRA_ARGS": shlex.join(overrides),
         # The launcher's exported settings win over the config file's, and the entrypoint's pruner reads it too.
         "MILES_SCRIPT_EXP_NAME": exp_name,
