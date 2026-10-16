@@ -50,6 +50,7 @@ def compute_engine_launch_cmd(
     dist_init_addr: str,
     nccl_port: int,
     host: str,
+    peer_host: str,
     port: int,
     disaggregation_bootstrap_port: int | None,
     engine_info_bootstrap_port: int,
@@ -64,6 +65,7 @@ def compute_engine_launch_cmd(
         dist_init_addr=dist_init_addr,
         nccl_port=nccl_port,
         host=host,
+        peer_host=peer_host,
         port=port,
         worker_type=worker_type,
         disaggregation_bootstrap_port=disaggregation_bootstrap_port,
@@ -86,6 +88,7 @@ def _compute_server_args(
     dist_init_addr,
     nccl_port,
     host,
+    peer_host: str,
     port,
     worker_type: WorkerType = WorkerType.REGULAR,
     disaggregation_bootstrap_port: int | None,
@@ -214,8 +217,9 @@ def _compute_server_args(
             f"--sglang-output-store-backend does not support PD disaggregation, "
             f"but a {worker_type.value} engine enables it"
         )
+        # The peer host, not the bind host: other Mooncake clients reach the engine at this address.
         kwargs["output_store_backend_extra_config"] = _compute_output_store_extra_config(
-            args, local_hostname=host.strip("[]")
+            args, local_hostname=peer_host.strip("[]")
         )
 
     if is_multi_lora_enabled(args):

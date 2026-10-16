@@ -78,6 +78,7 @@ def _server_args(
         dist_init_addr=dist_init_addr,
         nccl_port=20031,
         host="10.0.0.1",
+        peer_host="10.0.0.1",
         port=30000,
         worker_type=worker_type,
         disaggregation_bootstrap_port=disaggregation_bootstrap_port,

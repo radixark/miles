@@ -4184,15 +4184,6 @@ def miles_validate_args(args):
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
 
     _validate_deploy_component(args)
-    _validate_output_store_cluster_backend(args)
-
-
-def _validate_output_store_cluster_backend(args: argparse.Namespace) -> None:
-    # TODO: pass each pod's IP as the engine's local_hostname; the launcher renders --host 0.0.0.0.
-    assert args.sglang_output_store_backend == "none" or ClusterBackend(args.cluster_backend) is ClusterBackend.RAY, (
-        f"--sglang-output-store-backend does not support --cluster-backend {args.cluster_backend} yet: a Kubernetes "
-        "engine binds 0.0.0.0, which no Mooncake peer can reach"
-    )
 
 
 def validate_skip_actor_forward_only(args) -> None:

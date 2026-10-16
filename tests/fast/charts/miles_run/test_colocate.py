@@ -25,6 +25,7 @@ from miles.utils.workers.env_vars import (
     NAMESPACE_ENV_VAR,
     PLATFORM_IDENTITY_ENV_VARS,
     POD_INDEX_ENV_VAR,
+    POD_IP_ENV_VAR,
     RELEASE_ENV_VAR,
     SUBPROCESS_INDEX_ENV_VAR,
 )
@@ -301,7 +302,13 @@ class TestTheTwoListsOfPlatformVariables:
         reserved = set(_PLATFORM_OWNED_ENV_VARS)
         identity = set(PLATFORM_IDENTITY_ENV_VARS)
 
-        assert reserved - identity == {"PYTHONPATH", BASE_GPU_ID_ENV_VAR, NAMESPACE_ENV_VAR, RELEASE_ENV_VAR}
+        assert reserved - identity == {
+            "PYTHONPATH",
+            BASE_GPU_ID_ENV_VAR,
+            NAMESPACE_ENV_VAR,
+            RELEASE_ENV_VAR,
+            POD_IP_ENV_VAR,
+        }
         assert identity - reserved == {SUBPROCESS_INDEX_ENV_VAR}
 
 

@@ -16,6 +16,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 )
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.placeholders import (
     LEADER_ADDRESS_PLACEHOLDER,
+    POD_IP_PLACEHOLDER,
     RENDERED_CELL_INDEX,
     WORKER_INDEX_SENTINEL,
     real_or_sentinel_gpu_ids,
@@ -147,9 +148,11 @@ def _launch_context(
     is_sub_node: bool = False,
 ) -> LaunchCommandContext:
     self_addrs = {
-        port.name: HostAndPort(
-            host=LEADER_ADDRESS_PLACEHOLDER if port.mode == "master" else _BIND_HOST,
-            port=port.static_port,
+        port.name: (
+            HostAndPort(host=LEADER_ADDRESS_PLACEHOLDER, port=port.static_port)
+            if port.mode == "master"
+            # One command serves every pod of the pool, so it binds every address and each pod names its own IP.
+            else HostAndPort(host=_BIND_HOST, port=port.static_port, peer_host=POD_IP_PLACEHOLDER)
         )
         for port in spec.port_infos
     }

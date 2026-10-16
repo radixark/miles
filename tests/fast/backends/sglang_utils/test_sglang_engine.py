@@ -28,6 +28,7 @@ def _cmd(
 ) -> str:
     addr_and_ports = dict(
         host="10.0.0.1",
+        peer_host="10.0.0.1",
         port=30000,
         nccl_port=20031,
         engine_info_bootstrap_port=20033,
@@ -47,6 +48,7 @@ def _cmd(
         dist_init_addr=addr_and_ports["dist_init_addr"],
         nccl_port=addr_and_ports["nccl_port"],
         host=addr_and_ports["host"],
+        peer_host=addr_and_ports["peer_host"],
         port=addr_and_ports["port"],
         disaggregation_bootstrap_port=addr_and_ports["disaggregation_bootstrap_port"],
         engine_info_bootstrap_port=addr_and_ports["engine_info_bootstrap_port"],

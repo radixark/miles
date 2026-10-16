@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from types import SimpleNamespace
 
 import msgspec
@@ -42,6 +43,7 @@ def compute(args: SimpleNamespace, **overrides: object) -> dict:
         dist_init_addr="127.0.0.1:1234",
         nccl_port=5000,
         host="127.0.0.1",
+        peer_host="127.0.0.1",
         port=30000,
         worker_type=WorkerType.REGULAR,
         disaggregation_bootstrap_port=None,
@@ -201,6 +203,7 @@ class TestOutputStore:
         server_args = compute(
             self._args(),
             host="10.0.0.7",
+            peer_host="10.0.0.7",
             sglang_overrides={"output_store_backend_extra_config": '{"key_prefix": "other"}'},
         )
 
@@ -223,6 +226,12 @@ class TestOutputStore:
     def test_sglangs_parser_rejects_a_bad_user_value_when_miles_builds_the_config(self, output_store_config):
         with pytest.raises(ValueError, match="Invalid size"):
             compute(self._args(local_buffer_size=["4gb"]))
+
+    def test_an_engine_bound_to_every_address_names_its_peer_host(self, output_store_config):
+        """A bind-all host such as Kubernetes' 0.0.0.0 is no address a peer can reach."""
+        server_args = compute(self._args(), host="0.0.0.0", peer_host="$(MILES_POD_IP)")
+
+        assert json.loads(server_args["output_store_backend_extra_config"])["local_hostname"] == "$(MILES_POD_IP)"
 
     def test_a_group_that_turns_it_off_gets_no_extra_config(self):
         server_args = compute(self._args(), sglang_overrides={"output_store_backend": "none"})

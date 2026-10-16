@@ -812,6 +812,31 @@ class TestInferenceEnginePortSchema:
         ]
 
 
+class TestInferenceEnginePeerHost:
+    def test_the_launch_command_is_told_the_host_its_peers_reach_it_on(self, tmp_path, monkeypatch):
+        """A bind-all host is no address the engine's Mooncake peers can reach."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)
+        recorded: dict = {}
+
+        def _record(**kwargs) -> str:
+            recorded.update(kwargs)
+            return "launch-cmd"
+
+        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
+        (spec,) = specs_inference_engine(args)
+        ctx = _make_engine_ctx()
+        primary = HostAndPort(host="0.0.0.0", port=30000, peer_host="10.0.0.9")
+        spec.launch_command(ctx.model_copy(update={"self_addrs": {**ctx.self_addrs, "primary": primary}}))
+
+        assert (recorded["host"], recorded["peer_host"]) == ("0.0.0.0", "10.0.0.9")
+
+
 class TestInferenceEngineGatedLaunch:
     def test_the_launch_command_is_told_the_cells_own_gate_port(self, tmp_path, monkeypatch):
         """An engine launched without its gate port would start ungated and ignore the release."""

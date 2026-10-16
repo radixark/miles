@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ import yaml
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo, MooncakePlan
 
 
 def _infra_file(tmp_path: Path, name: str, values: dict[str, Any]) -> str:
@@ -117,8 +118,22 @@ class TestWandbRunIdReachesEveryPod:
         assert "--wandb-run-id" not in pod_argv
 
 
-def _compute_train_argv(monkeypatch: pytest.MonkeyPatch, train_args: str) -> tuple[list[str], Any]:
-    monkeypatch.setattr(entrypoint, "_compute_mooncake_plan", lambda args: None)
+class TestMooncakeMasterReachesEveryPod:
+    def test_the_rendered_commands_and_the_pod_argv_name_the_in_cluster_master(self, monkeypatch):
+        """Engine and session-server commands are rendered from these args, so they must not keep the local address."""
+        plan = MooncakePlan(init_kwargs={"master_server_address": "127.0.0.1:50051", "protocol": "tcp"}, port=50051)
+
+        pod_argv, args = _compute_train_argv(monkeypatch, "", mooncake_plan=plan)
+
+        expected = {"master_server_address": f"{MooncakeInfo.master_service_host('r', 'rl')}:50051", "protocol": "tcp"}
+        assert args.mooncake_store_init_kwargs == expected
+        assert json.loads(pod_argv[pod_argv.index("--mooncake-store-init-kwargs") + 1]) == expected
+
+
+def _compute_train_argv(
+    monkeypatch: pytest.MonkeyPatch, train_args: str, *, mooncake_plan: MooncakePlan | None = None
+) -> tuple[list[str], Any]:
+    monkeypatch.setattr(entrypoint, "_compute_mooncake_plan", lambda args: mooncake_plan)
     request = ExecuteTrainRequest(
         train_args=f"--train-backend fsdp --rollout-batch-size 8 --num-rollout 1 --rollout-num-gpus 8 {train_args}",
         num_gpus_per_node=8,

@@ -99,6 +99,13 @@ affinity:
       fieldPath: metadata.labels['{{ .label }}']
 {{- end }}
 
+{{- define "miles-run.podIpEnv" -}}
+- name: {{ .name }}
+  valueFrom:
+    fieldRef:
+      fieldPath: status.podIP
+{{- end }}
+
 {{- define "miles-run.annotationEnv" -}}
 - name: {{ .name }}
   valueFrom:

@@ -63,6 +63,20 @@ class TestBuildEntry:
 
         assert command[command.index("--dist-init-addr") + 1] == f"{placeholders.LEADER_ADDRESS_PLACEHOLDER}:9000"
 
+    def test_names_each_pod_s_own_ip_as_the_host_peers_reach_it_on(self):
+        """One command serves every pod and binds every address, so only kubelet knows a pod's own IP."""
+
+        def _launch_command(ctx) -> str:
+            primary = ctx.self_addrs["primary"]
+            return f"serve --host {primary.host} --peer-host {primary.host_for_peers}"
+
+        spec = engine().model_copy(update={"launch_command": _launch_command})
+
+        command = build_values([spec], LAYOUT).as_values()["run"]["inferenceEngines"][0]["command"]
+
+        assert command[command.index("--host") + 1] == "0.0.0.0"
+        assert command[command.index("--peer-host") + 1] == placeholders.POD_IP_PLACEHOLDER
+
     def test_renders_a_sub_node_gpu_sentinel_in_the_pool_environment(self) -> None:
         """An environment value derived from the assigned base GPU must remain a kubelet variable."""
         spec = engine(num_cells=2, gpus_per_engine=4).model_copy(

@@ -58,6 +58,7 @@ class TestLaunchOnRealRay:
                 "host": advertised.host,
                 "port": advertised.port,
                 "external_host": advertised.external_host,
+                "peer_host": advertised.peer_host,
             }
 
     async def test_the_advertised_address_is_one_the_worker_can_serve_on(self, manager_factory, worker_probe_factory):
@@ -169,6 +170,7 @@ class TestNamedManagerActor:
             "host": addr.host,
             "port": addr.port,
             "external_host": addr.external_host,
+            "peer_host": addr.peer_host,
         }
         await wait_tcp_ready_async(addr.host, addr.port, timeout=30)
 

@@ -321,6 +321,7 @@ def _compute_spec_inference_engine(
             dist_init_addr=f"{dist_init.host}:{dist_init.port}",
             nccl_port=ctx.self_addrs["nccl"].port,
             host=ctx.self_addrs["primary"].host,
+            peer_host=ctx.self_addrs["primary"].host_for_peers,
             port=ctx.self_addrs["primary"].port,
             disaggregation_bootstrap_port=d.port if (d := ctx.self_addrs.get("disaggregation_bootstrap")) else None,
             engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,

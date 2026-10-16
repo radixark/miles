@@ -334,9 +334,12 @@ def _compute_train_argv(
         args.wandb_run_id = _generate_wandb_run_id()
         argv = ArgvManipulator.set(argv, _WANDB_RUN_ID_FLAG, args.wandb_run_id)
 
-    pod_argv = MooncakeInfo.with_cluster_master(
-        argv, plan=_compute_mooncake_plan(args), host=MooncakeInfo.master_service_host(release, namespace)
-    )
+    mooncake_plan = _compute_mooncake_plan(args)
+    mooncake_host = MooncakeInfo.master_service_host(release, namespace)
+    pod_argv = MooncakeInfo.with_cluster_master(argv, plan=mooncake_plan, host=mooncake_host)
+    if mooncake_plan is not None:
+        # The commands rendered from these args (engines, session servers) reach the master the pods' argv names.
+        args.mooncake_store_init_kwargs = MooncakeInfo.cluster_init_kwargs(mooncake_plan, host=mooncake_host)
     return pod_argv, args
 
 
