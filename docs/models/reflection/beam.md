@@ -17,7 +17,7 @@ below come from that branch.
 - **GQA with a gate**: 48 query heads over 8 KV groups, head dim 128, QK RMSNorm, and a sigmoid output gate with a per-head bias.
 - **Sandwich norms**: RMSNorm before and after every attention and MLP block, and depth-scaled residuals: counting attention and MLP blocks separately from k = 2, block k adds its output as `residual · √((k − 1) / k) + output / √k`.
 - **MoE**: 256 routed experts, no shared expert. Sigmoid scores with an expert-bias correction pick the top 8 from the best 4 of 8 expert groups, scaled by 2.5. Layers 0–2 are dense.
-- **FP32 head and router**: the final logits are softcapped at 30 in FP32, and the router weights ship in FP32. Everything else in the checkpoint is BF16.
+- **FP32 softcap and router**: the BF16 LM-head output is softcapped at 30 in FP32, and the router weights and expert-score biases ship in FP32. Everything else in the checkpoint is BF16.
 
 ## 2. Supported Variants
 
@@ -42,7 +42,7 @@ The checkpoint needs no Megatron conversion: the trainer loads the HF checkpoint
 
 ### 3.2 SGLang
 
-The engine needs the Beam support on SGLang's [`beam-miles`](https://github.com/sgl-project/sglang/tree/beam-miles) branch, pinned at `9ac1c65b`: the last Beam commit on torch 2.13, which also carries the streamed LoRA updates `run_beam_lora.py` needs. Later Beam commits require torch 2.14.1.
+The engine needs the Beam support on SGLang's [`beam-miles`](https://github.com/sgl-project/sglang/tree/beam-miles) branch, pinned at `9ac1c65b`: the last Beam commit on torch 2.13, which also carries the Beam LoRA serving and streamed adapter updates `run_beam_lora.py` needs. Later Beam commits, on the [`beam`](https://github.com/sgl-project/sglang/tree/beam) branch, require torch 2.14.1.
 
 `docker/Dockerfile.beam` on the `beam-image` branch builds the image from the repository root. It starts from `radixark/miles:v0.1.2`, replaces its SGLang with that commit, and installs the checkout:
 
@@ -130,11 +130,11 @@ The reward (`examples/beam/reward.py`) checks the `\boxed{}` answer against the 
 
 `execute-colocate` adds `--offload-train-target disk`: while the engines generate, the paused trainer is written to the same NVMe.
 
-**LoRA**: rank 16, alpha 32 on every linear layer — attention q/k/v/o and the output gate, the dense MLPs, and the routed experts with per-expert factors. The router, embeddings and LM head stay frozen. The LR peaks at 1e-4 after 10 warmup steps and decays (cosine) to 1e-5 by step 400: at a constant 1e-5 the zero-initialized LoRA B barely moves, and a constant 2e-4 learns fast but turns unstable after about 100 steps. The adapter's optimizer state (~4.7B parameters) fits on the GPUs, so the recipe does not stream it to NVMe.
+**LoRA**: rank 16, alpha 32 on every linear layer — attention q/k/v/o and the output gate, the dense MLPs, and the routed experts with per-expert factors. The router, embeddings and LM head stay frozen. The LR peaks at 1e-4 after 10 warmup steps and decays (cosine) to 1e-5 by step 400: at a constant 1e-5 the zero-initialized LoRA B barely moves, and a constant 2e-4 learns fast but turns unstable after about 100 steps. The adapter has ~4.7B parameters, and its optimizer state (~4.6 GB per GPU) stays on the GPUs: the NVMe-streamed optimizer does not support LoRA.
 
 ### 5.4 Rollout
 
-The engines serve BF16 with `--sglang-attention-backend triton --sglang-moe-runner-backend triton` and chunked prefill 8192. `--sglang-max-running-requests` and `--sglang-cuda-graph-max-bs-decode` are each engine's share of the 256 responses. The trainer sends new weights after every rollout; the LoRA recipe sends only the adapter (~8.7 GB).
+The engines serve BF16 with `--sglang-attention-backend triton --sglang-moe-runner-backend triton` and chunked prefill 8192. `--sglang-max-running-requests` and `--sglang-cuda-graph-max-bs-decode` are each engine's share of the 256 responses. The trainer sends new weights after every rollout; the LoRA recipe sends only the adapter (~8.7 GiB in BF16).
 
 ### 5.5 Notable quirks
 
