@@ -105,7 +105,6 @@ MASTER_ADDR=<head ip> python scripts/run_beam_lora.py execute --num-rollout 100 
 |---|---|---|---|---|---|---|---|
 | `run_beam.py execute` | 8 | 1 | 1 | 8 | 8 | 96 (12 × 8): 64 train, 32 rollout | 2 × TP16, `--sglang-mem-fraction-static 0.85` |
 | `run_beam.py execute-colocate` | 8 | 1 | 1 | 8 | 8 | 64 (8 × 8), shared | 4 × TP16, `--sglang-mem-fraction-static 0.7` |
-| `run_beam_lora.py execute` | 8 | 1 | 1 | 16 | 1 | 32 (4 × 8): 16 train, 16 rollout | 1 × TP16, `--sglang-mem-fraction-static 0.85` |
 
 `--sequence-parallel` and full recompute are on in every recipe. Core attention runs unfused on padded `bshd` micro-batches of one sample, up to 5,120 tokens (1,024 prompt + 4,096 response).
 
@@ -115,7 +114,7 @@ GRPO on DAPO-Math-17K with `--eps-clip 0.2 --eps-clip-high 0.28 --eps-clip-c 10`
 
 ### 5.3 Optimizer
 
-**Full parameter**: Adam at a constant `--lr 1e-6`, no weight decay, gradient clip 1.0, distributed optimizer. The FP32 master weights and BF16 Adam moments live on node-local NVMe and stream through the GPU at each step:
+Adam at a constant `--lr 1e-6`, no weight decay, gradient clip 1.0, distributed optimizer. The FP32 master weights and BF16 Adam moments live on node-local NVMe and stream through the GPU at each step:
 
 ```bash
 --offload-train-disk-dir /scratch/beam-optimizer
@@ -127,19 +126,26 @@ GRPO on DAPO-Math-17K with `--eps-clip 0.2 --eps-clip-high 0.28 --eps-clip-c 10`
 
 `execute-colocate` adds `--offload-train-target disk`: while the engines generate, the paused trainer is written to the same NVMe.
 
-**LoRA**: rank 16, alpha 32 on every linear layer — attention q/k/v/o and the output gate, the dense MLPs, and the routed experts with per-expert factors. The router, embeddings and LM head stay frozen. The LR peaks at 1e-4 after 10 warmup steps and decays (cosine) to 1e-5 by step 400: at a constant 1e-5 the zero-initialized LoRA B barely moves, and a constant 2e-4 learns fast but turns unstable after about 100 steps. The adapter has ~4.7B parameters, and its optimizer state (~4.6 GB per GPU) stays on the GPUs: the NVMe-streamed optimizer does not support LoRA.
-
 ### 5.4 Rollout
 
-The engines serve BF16 with `--sglang-attention-backend triton --sglang-moe-runner-backend triton` and chunked prefill 8192. `--sglang-max-running-requests` and `--sglang-cuda-graph-max-bs-decode` are each engine's share of the 256 responses. The trainer sends new weights after every rollout; the LoRA recipe sends only the adapter (~8.7 GiB in BF16).
+The engines serve BF16 with `--sglang-attention-backend triton --sglang-moe-runner-backend triton` and chunked prefill 8192. `--sglang-max-running-requests` and `--sglang-cuda-graph-max-bs-decode` are each engine's share of the 256 responses. The trainer sends new weights after every rollout.
 
 ### 5.5 Notable quirks
 
 - **AIME25 prompts carry the answer-format instruction**: the grader requires `\boxed{}`, and on bare AIME problems the policy drops it as its final message gets shorter. `prepare` writes the wrapped file the evals read.
-- **Expert-TP 1 for LoRA**: expert LoRA under expert-TP > 1 is wrong in Megatron-Bridge (forward, backward and export), so the LoRA recipe shards experts by EP only.
 - **FP32 router**: Megatron casts the router weight to the parameter dtype; the Beam plugin keeps it in FP32, as the checkpoint stores it and SGLang serves it.
 
-## 6. Pairs Well With
+## 6. LoRA RL
+
+`scripts/run_beam_lora.py` keeps the math recipe of `run_beam.py` (data, reward, GRPO objective, batch and lengths) but trains a LoRA adapter on the frozen BF16 base. It runs on four 8×H200 nodes, launched as in [4.4](#4-4-lora-4-nodes): 16 trainers at TP 8 / EP 16 / expert-TP 1 and one TP16 rollout engine. There is no colocated variant.
+
+The adapter covers every linear layer of Beam (defaults: rank 16, alpha 32): attention q/k/v/o and the output gate, the dense MLPs, and the routed experts, each expert with its own factors. The router, embeddings and LM head stay frozen. Experts shard by EP only, because expert LoRA under expert-TP > 1 is wrong in Megatron-Bridge (forward, backward and export).
+
+The adapter has ~4.7B parameters, so its optimizer state (~4.6 GB per GPU) stays on the GPUs and the recipe needs no NVMe. Adam warms up to 1e-4 over 10 steps and decays (cosine) to 1e-5 by step 400: at a constant 1e-5 the zero-initialized LoRA B barely moves, and a constant 2e-4 learns fast but turns unstable after about 100 steps.
+
+Each weight update broadcasts only the adapter (~8.7 GiB in BF16) to the engine, which keeps the base it loaded from the checkpoint and serves the adapter through SGLang's Beam LoRA support.
+
+## 7. Pairs Well With
 
 - [LoRA Training and Serving](/advanced/lora)
 - [Rollout Routing Replay (R3)](/advanced/miles-router)
