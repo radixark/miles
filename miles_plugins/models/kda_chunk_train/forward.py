@@ -55,6 +55,7 @@ from .backward import (
     _launch_fwdh,
     _launch_wy,
     _roles,
+    _sm_count,
     _use_cp,
     chunk_layout,
 )
@@ -83,6 +84,9 @@ def _token_rows(name: str, t: torch.Tensor, rows: int, tail: tuple[int, ...], dt
         f"{name}: expected [..., {rows} token rows, {', '.join(map(str, tail))}], got {tuple(t.shape)}",
     )
     return t if t.is_contiguous() else t.contiguous()
+
+
+FWD_BULK_MIN_CTAS = 256  # fwd_prep dispatch: the bulk kernel at >= 256 (chunk, head) CTAs, else the split kernel
 
 
 def _launch_fwd_prep(arch, q, k, v, g_raw, beta_logits, A_log, dt_bias, *, layout, lead, lower_bound, write_qg=True):
@@ -116,8 +120,14 @@ def _launch_fwd_prep(arch, q, k, v, g_raw, beta_logits, A_log, dt_bias, *, layou
         qg_ptr = out["qg"]
     else:
         qg_ptr = _dummy_bf16(dev)
-    kernel("fwd_prep", arch).launch(
-        grid=(layout.num_chunks_padded, hv, 1),
+    # dispatch: the bulk kernel at >= FWD_BULK_MIN_CTAS (chunk, head) CTAs, else the split kernel (one CTA per
+    # 32-token half-chunk and head); same arguments, same outputs
+    if layout.num_chunks_padded * hv >= FWD_BULK_MIN_CTAS:
+        stage, grid = "fwd_prep", (layout.num_chunks_padded, hv, 1)
+    else:
+        stage, grid = "fwd_prep_split", (2 * layout.num_chunks_padded, hv, 1)
+    kernel(stage, arch).launch(
+        grid=grid,
         q=q,
         k=k,
         v=v,
@@ -195,8 +205,9 @@ def _launch_fwd_o(arch, qg, h, aqk_ext, v_new, *, layout, lead, scale):
         "fwd_o: expected internal [R,HV,128] qg/v_new and [NC,HV,128,128] h",
     )
     o = torch.empty(*lead, hv, HEAD_DIM, dtype=torch.bfloat16, device=qg.device)
+    # persistent: one CTA per SM grid-striding over the nc * hv (chunk, head) tiles
     kernel("fwd_o", arch).launch(
-        grid=(nc, hv, 1),
+        grid=(max(1, min(nc * hv, _sm_count(qg.device))), 1, 1),
         qg_tma=qg,
         h_tma=h.view(nc * hv * HEAD_DIM, HEAD_DIM),
         aqk_tma=aqk_ext,
@@ -206,6 +217,7 @@ def _launch_fwd_o(arch, qg, h, aqk_ext, v_new, *, layout, lead, scale):
         chunk_len=layout.chunk_len,
         num_heads=hv,
         scale=float(scale),
+        num_chunks=nc,
     )
     return o
 

@@ -100,9 +100,10 @@ class ChunkLayout:
     ``prepare_chunk_indices`` for the same packing, handed to the fla forward of the ``deterministic_fla_fwd``
     mode (``chunk_indices_flat`` is its storage; the ``[nc, 2]`` view is taken on first use); ``cp_cu_first`` /
     ``cp_cu_last``: int32 ``[0, L]`` of the first / last sequence, the two-entry ``cu_seqlens`` fla's CP
-    pre-process kernels index.  All of these are int32 views of ONE device buffer filled by one host-to-device
-    copy.  ``internal_rows[r]`` (int64): internal row of input row ``r``, built and uploaded the first time
-    :meth:`scatter` needs it.
+    pre-process kernels index; ``seq_order[r]``: the sequence the ``fwdh`` / ``dhu`` walks dispatch at CTA rank
+    ``r`` (sequences by chunk count descending, ties by index ascending; the order changes no output byte).  All
+    of these are int32 views of ONE device buffer filled by one host-to-device copy.  ``internal_rows[r]``
+    (int64): internal row of input row ``r``, built and uploaded the first time :meth:`scatter` needs it.
 
     Layouts are immutable and cached per packing, so the derived counts below are computed once per
     layout rather than on every access from the backward's hot path.
@@ -112,9 +113,11 @@ class ChunkLayout:
     offsets: tuple[int, ...]
     rows_external: int
     seq_chunk_start_cpu: tuple[int, ...]
+    seq_order_cpu: tuple[int, ...]
     chunk_bos: torch.Tensor
     chunk_len: torch.Tensor
     seq_chunk_start: torch.Tensor
+    seq_order: torch.Tensor
     chunk_indices_flat: torch.Tensor
     cp_cu_first: torch.Tensor
     cp_cu_last: torch.Tensor
@@ -219,6 +222,13 @@ def _chunk_tables(lengths: tuple[int, ...], offsets: tuple[int, ...], bos_out, c
     return starts
 
 
+def _longest_first(starts) -> list[int]:
+    """``seq_order``: sequence indices by chunk count descending, ties by index ascending (the serial walks
+    dispatch the longest sequence first; the order does not change any output byte)."""
+    counts = [starts[n + 1] - starts[n] for n in range(len(starts) - 1)]
+    return sorted(range(len(counts)), key=lambda n: (-counts[n], n))
+
+
 def _row_table(lengths: tuple[int, ...], offsets: tuple[int, ...], rows_external: int, starts, device) -> torch.Tensor:
     """int64 ``internal_rows`` of the packing on ``device`` (internal row = row + (first internal row of its
     sequence - its exclusive cumsum)): written into a pinned staging buffer with a single ``np.add(..., out=)``
@@ -272,7 +282,8 @@ def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
     o_start = 2 * table
     o_ci = o_start + _round_up(n + 1, _TABLE_ALIGN)
     o_cp = o_ci + _round_up(2 * nc, _TABLE_ALIGN)
-    host = torch.empty(o_cp + _TABLE_ALIGN, dtype=torch.int32, pin_memory=pinned)
+    o_so = o_cp + _TABLE_ALIGN  # seq_order section (the CP pairs use 4 of the preceding aligned block)
+    host = torch.empty(o_so + _round_up(n, _TABLE_ALIGN), dtype=torch.int32, pin_memory=pinned)
     a = host.numpy()  # numpy views of the staging buffer cost well under a microsecond; a torch view op ~4 us
     starts = _chunk_tables(lengths, offsets, a[:nc], a[table : table + nc], a[o_ci : o_ci + 2 * nc].reshape(nc, 2))
     if nc_pad != nc:  # trailing pad chunk: no rows, zero length
@@ -280,21 +291,26 @@ def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
         a[table + nc] = 0
     a[o_start : o_start + n + 1] = starts
     a[o_cp : o_cp + 4] = (0, lengths[0], 0, lengths[-1])
+    order = _longest_first(starts)
+    a[o_so : o_so + n] = order
 
     dev = torch.empty(host.numel(), dtype=torch.int32, device=device)
     dev.copy_(host, non_blocking=pinned)
     # every table view comes out of ONE split call (gap sections may be empty) rather than one slice op per table
-    bos, _, clen, _, start, _, ci, _, cp_first, cp_last, _ = dev.split(
-        [nc_pad, table - nc_pad, nc_pad, table - nc_pad, n + 1, o_ci - o_start - (n + 1), 2 * nc, o_cp - o_ci - 2 * nc, 2, 2, _TABLE_ALIGN - 4]
+    bos, _, clen, _, start, _, ci, _, cp_first, cp_last, _, sorder, _ = dev.split(
+        [nc_pad, table - nc_pad, nc_pad, table - nc_pad, n + 1, o_ci - o_start - (n + 1), 2 * nc, o_cp - o_ci - 2 * nc,
+         2, 2, _TABLE_ALIGN - 4, n, _round_up(n, _TABLE_ALIGN) - n]
     )
     return ChunkLayout(
         lengths=lengths,
         offsets=offsets,
         rows_external=int(rows_external),
         seq_chunk_start_cpu=tuple(starts),
+        seq_order_cpu=tuple(order),
         chunk_bos=bos,
         chunk_len=clen,
         seq_chunk_start=start,
+        seq_order=sorder,
         chunk_indices_flat=ci,
         cp_cu_first=cp_first,
         cp_cu_last=cp_last,
@@ -437,14 +453,18 @@ def _launch_wy(arch, akk, vb, kb):
     rows, hv, _ = vb.shape
     _check(rows % PAIR_ROWS == 0, "wy: R % 128 == 0 required")
     u, w = torch.empty(2, rows, hv, HEAD_DIM, dtype=torch.bfloat16, device=vb.device).unbind(0)
+    num_pairs = rows // PAIR_ROWS
+    # persistent: one CTA per SM grid-striding over the num_pairs * hv tiles; u / w are the contiguous bf16
+    # [R, HV, 128] TMA-store destinations
     kernel("wy", arch).launch(
-        grid=(rows // PAIR_ROWS, hv, 1),
+        grid=(max(1, min(num_pairs * hv, _sm_count(vb.device))), 1, 1),
         akk_tma=akk,
         vb_tma=vb,
         kb_tma=kb,
-        u_out=u,
-        w_out=w,
+        u_tma=u,
+        w_tma=w,
         num_heads=hv,
+        num_pairs=num_pairs,
     )
     return u, w
 
@@ -642,6 +662,7 @@ def _launch_fwdh(arch, w, kg, u, gk, *, layout, h0=None, return_ht=False, walk="
         use_h0=use_h0,
         ht_out=ht_t,
         store_ht=store_ht,
+        seq_order=layout.seq_order,
     )
     if return_ht:
         return h_out, v_new, ht_t
@@ -696,6 +717,7 @@ def _launch_dhu(arch, kg, qg, w, do, dv1, gk, *, layout, scale, dht=None, return
         use_dht=use_dht,
         dh0_out=dh0_t,
         store_dh0=store_dh0,
+        seq_order=layout.seq_order,
     )
     if return_dh0:
         return dh_out, dv2, dh0_t
@@ -728,8 +750,8 @@ def _launch_dqkg(arch, do, v_new, dv2, v, k_e, q_e, h, dh, akk, gk, beta, *, lay
         q_tma=q_e,
         beta=beta,
         dq_out=dq,
-        dk_out=dk,
-        dg_out=dg,
+        dk_tma=dk,
+        dg_tma=dg,
         db_out=db,
         dAkk_out=dAkk,
         dv_out=dv,
