@@ -63,14 +63,15 @@ unset.
 ### `--data-source-path`
 
 **Class** (not a function). Default:
-`miles.rollout.data_source.RolloutDataSource`.
+`miles.rollout.data_source.RolloutDataSourceWithBuffer`.
 
 ```python
 class CustomDataSource:
     def __init__(self, args): ...
     def get_samples(self, num_samples) -> list[list[Sample]]: ...
-    def save(self, directory: Path) -> None: ...
-    def load(self, directory: Path) -> None: ...
+    def add_samples(self, samples) -> None: ...
+    def save(self, rollout_id) -> None: ...
+    def load(self, rollout_id=None) -> None: ...
 ```
 
 ### `--custom-generate-function-path`
@@ -89,21 +90,26 @@ async def custom_generate(
 
 ### `--diffusion-step-strategy-path`
 
-Select which denoising steps contribute SDE log-probs / train pairs. Stock
-implementations live in `miles/rollout/step_strategy_hub.py`.
+Select which denoising steps contribute SDE log-probs / train pairs, and which
+latents the engine ships back for the trainer. Stock implementations live in
+`miles/rollout/step_strategy_hub.py`.
 
 ```python
 def strategy(args, sample, num_steps, seed) -> tuple[list[int] | None, list[int] | None]:
-    # returns (sde_step_indices, return_step_indices); return must be None today
+    # returns (sde_step_indices, return_step_indices)
+    # sde None = no SDE steps (pure ODE rollout)
+    # return None = the engine returns every step's latent
     ...
 ```
 
+`--rollout-return-full-trajectory` overrides `return_step_indices` back to all
+steps for debugging / A-B runs.
+
 | Stock | Behavior |
 |---|---|
-| `sde_window` | Random contiguous window (`--diffusion-num-sde-steps`, `--diffusion-sde-window-range`) |
-| `epoch_global_random_choice` | Per-epoch subset of `--diffusion-sde-candidate-steps` |
-
-Details: [SDE step backend](/diffusion/advanced/sde-backend).
+| `sde_window` | Random contiguous window (`--diffusion-num-sde-steps`, `--diffusion-sde-window-range`); returns all latents its steps touch |
+| `epoch_global_random_choice` | Per-epoch subset of `--diffusion-sde-candidate-steps`; returns all latents its steps touch |
+| `ode_and_return_last` | No SDE steps, return only the final clean `x0` (DiffusionNFT) |
 
 ***
 
@@ -120,15 +126,25 @@ async def custom_rm(args, samples: list[Sample], **kwargs) -> list[float]:
 ```
 
 Wired only through `batched_async_rm` — implement per-sample routing inside your
-batched function if needed.
+batched function if needed. Once set, `--rm-type` and `metadata.rm_type` are ignored: the
+custom function is the whole dispatch.
 
 ```bash
 --custom-rm-path my_project.rewards.aesthetic_rm
 ```
 
+`--custom-rm-args` is an opaque string passed through as `args.custom_rm_args` for the
+custom RM to parse.
+
+Shipped custom RMs:
+
+| Path | What |
+|---|---|
+| `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` | Weighted sum of built-in rewards (`hps`, `pickscore`, `ocr`), weights from `--custom-rm-args "hps=0.7,pickscore=0.3"`; returns a dict per sample, train on it with `--reward-key weighted`. See [Rewards](/diffusion/user-guide/rewards) § Combining rewards. |
+
 HTTP / remote scoring: implement a batched custom RM and read `args.rm_url` (or
 your own flags). Encode images from `sample.generated_output` (see
-`_sample_to_rgb_hwc_uint8_frames` in `miles/rollout/rm_hub/pickscore.py`):
+`generated_output_to_rgb_hwc_uint8_frames` in `miles/utils/processing_utils.py`):
 
 ```python
 import aiohttp
@@ -176,7 +192,7 @@ Per-group filter after scoring (DAPO-style). Stock:
 
 ```python
 def filter_function(args, samples: list[Sample], **kwargs):
-    # return FilterOutput(keep=..., reason=...) or a bool
+    # return DynamicFilterOutput(keep=..., reason=...) or a bool
     ...
 ```
 
@@ -250,7 +266,9 @@ def prepare(ctx, batch, *, pad_to_len=None) -> PreparedBatch:
 
 Builds DiT inputs from train pairs. Defaults:
 `miles.backends.fsdp_utils.loss_hub.flow_grpo.prepare_flow_grpo_batch` or the NFT
-equivalent under `loss_hub.nft`.
+equivalent under `loss_hub.nft`. `PreparedBatch.latents`, `timesteps` and
+`timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
+`"audio"` for joint audio-video models.
 
 ### `--custom-loss-function-path`
 
@@ -259,10 +277,12 @@ def loss_formula(ctx, batch, prepared, *, new_pred, ref_pred, metrics, **kwargs)
     ...
 ```
 
+`new_pred`, `old_pred` and `ref_pred` are keyed by the same stream names as `prepared.latents`.
+
 ### `--sde-step-backend-path`
 
 **Class** implementing `SdeStepBackend`. Auto-selected from
-`--diffusion-sde-type` (`sde` / `ode` → `DiffusersSdeStepBackend`, `cps` →
+`--diffusion-sde-type` (`sde` / `ode` → `FlowSdeStepBackend`, `cps` →
 `CpsSdeStepBackend`) unless overridden. See
 [SDE step backend](/diffusion/advanced/sde-backend).
 
@@ -284,16 +304,17 @@ Return a truthy value to skip the default logging; falsy layers on top.
 
 ## Model family
 
-### `--hf-checkpoint` / `--diffusion-model-family` / `--train-pipeline-config-path`
+### `--hf-checkpoint` / `--diffusion-model-family` / `--diffusion-task` / `--train-pipeline-config-path`
 
 `--hf-checkpoint` names the diffusers pipeline for train + rollout. Family is
 resolved from the checkpoint name unless you pass `--diffusion-model-family`
-(e.g. `sd3`). For an unregistered family, pass `--train-pipeline-config-path`
-to a `TrainPipelineConfig` subclass instead.
+(e.g. `sd3`). `--diffusion-task` (e.g. `t2i`) must be one of the
+`tasks` that family's `TrainPipelineConfig` declares. For an unregistered family, pass
+`--train-pipeline-config-path` to a `TrainPipelineConfig` subclass instead.
 
 ### `--model-backend-path`
 
-**Class** for loading components / FSDP / scheduler. Default comes from the
+**Class** for loading components / FSDP. Default comes from the
 family config (usually a `DiffusersModelBackend`).
 
 ***

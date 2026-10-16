@@ -24,7 +24,10 @@ training curve.
 
 
 
-## 2. Supported variants
+## 2. Validated variant
+
+Only Nano has a validated recipe and training curve.
+
 
 | Size  | Composition              | HF checkpoints                                                                                                                                                                                                   | Status                            |
 | ----- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
@@ -53,7 +56,7 @@ From `miles/backends/fsdp_utils/configs/cosmos3.py`:
 Canonical recipe: `scripts/run_diffusion_grpo_cosmos3_pickscore_t2i_4gpu.py` — train, rollout,
 and PickScore colocated on 4 GPUs; T2I (832×480, 1 frame).
 
-**Status:** [📈 V — Verified](/diffusion/user-guide/recipe-verification#v)
+**Status:** [🛡️ FG — Fully gated](/diffusion/user-guide/recipe-verification#fg)
 
 ```bash
 export SGLANG_DISABLE_COSMOS3_GUARDRAILS=1   # RL scores raw samples; skip serving-side guardrail models

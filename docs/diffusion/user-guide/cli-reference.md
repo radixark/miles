@@ -20,7 +20,7 @@ Reading the prefixes:
 | Prefix | Marks |
 |---|---|
 | `diffusion-` | The modality — denoising, SDE, CFG, latents, frames. Generic ML/RL concepts (clipping, KL, EMA, LoRA, batching) do not take it |
-| `fsdp-` | The training side — compare `--fsdp-flow-shift` (training-side sigma grid) with `--diffusion-flow-shift` (the engine's generation schedule) |
+| `fsdp-` | The training side — compare `--fsdp-flow-shift` (SFT training sigma grid) with `--diffusion-flow-shift` (the engine's generation schedule) |
 | `rollout-` / `sglang-` | The engine side |
 
 The prefix does not tell you which argument group a flag lives in — groups follow concern, not
@@ -30,13 +30,14 @@ name. `python3 train_diffusion.py --help` is always the ground truth.
 
 ## Essentials
 
-### The one required flag
+### The required flags
 
 | Flag | What |
 |---|---|
 | `--hf-checkpoint` | The diffusers pipeline to train, as an HF repo id or a local directory. |
+| `--diffusion-task` | The task to train on that family, e.g. `t2i` for SD3, `t2v` for Wan2.2. |
 
-One value serves three readers: training loads components and scheduler from it, the sglang-d
+One value serves three readers: training loads components from it, the sglang-d
 engine serves it, and the **model family** is matched from its name. Add
 `--diffusion-model-family` when the name carries no family hint — which local weights usually
 do not.
@@ -113,13 +114,14 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 |---|---|---|---|
 | `--actor-num-nodes` | int | `1` | |
 | `--actor-num-gpus-per-node` | int | `8` | |
-| `--rollout-num-gpus` | int | – | For train-only SFT, unset colocates encoders with training; set it to reserve dedicated encoder GPUs. |
+| `--rollout-num-gpus` | int | – | For train-only SFT, unset colocates encoders with training; set it to reserve dedicated encoder GPUs, which also lets encoding overlap training. |
 | `--rollout-num-gpus-per-engine` | int | `1` | Like sglang's `tp_size`. |
 | `--num-gpus-per-node` | int | `8` | |
 | `--colocate` | flag | off | Required: CUDA IPC weight sync currently supports only colocated trainer and rollout execution. |
 | `--offload` | flag | off | `--offload-train` + `--offload-rollout`. |
 | `--offload-train` / `--no-offload-train` | tri-state | – | Always on under `--colocate`. |
 | `--offload-rollout` / `--no-offload-rollout` | tri-state | – | Always on under `--colocate`. |
+| `--skip-train-actor-gc-collect` | flag | off | The train actor's `clear_memory` after each rollout's training skips `gc.collect()` and only releases the CUDA cache; saves 0.2-0.5 s per rollout on a large actor process. |
 | `--distributed-backend` | str | `nccl` | |
 | `--distributed-timeout-minutes` | int | `10` | |
 
@@ -137,7 +139,8 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 | `--sequence-parallel-size` | int | `1` | USP = Ulysses × Ring. |
 | `--ulysses-degree` | int | `0` | `0` = auto (Ulysses fills SP). Ring degree > 1 needs torch ≥ 2.11 and a ring-capable attention backend. |
 | `--fsdp-attention-backend` | str | – | diffusers `set_attention_backend` value. |
-| `--fsdp-flow-shift` | float | – | Training-side sigma grid shift, regenerated when no engine supplies scheduler meta (SFT). Distinct from `--diffusion-flow-shift`. |
+| `--fsdp-flow-shift` | str | – | SFT training sigma grid shift per latent stream, e.g. `visual=12,audio=3`; a bare number is the visual shift. RL pairs carry their rollout sigmas instead. Distinct from `--diffusion-flow-shift`. |
+| `--fsdp-supervised-streams` | str | `visual,audio` | Comma-separated latent streams the SFT loss supervises, among those the pair carries; must include `visual`. A stream left out is still noised and fed to the DiT but adds no loss. RL trajectories carry only the visual stream. |
 | `--gradient-checkpointing` | flag | off | |
 | `--deterministic-mode` | flag | off | See [Deterministic Training](/diffusion/advanced/deterministic). |
 | `--train-env-vars` | JSON | `{}` | Extra env for the training processes. |
@@ -168,6 +171,7 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 |---|---|---|---|
 | `--hf-checkpoint` | str | – | **Required.** Pipeline to train and to serve; also the family source. |
 | `--diffusion-model-family` | str | – | Registered family key: `sd3`, `wan2_2`, `ltx`, `qwen_image`, `cosmos3`. Overrides name matching. |
+| `--diffusion-task` | str | – | **Required** unless the config declares no `tasks`. The task to train, one of the family config's `tasks`: `t2i` (sd3, krea2, qwen_image, cosmos3), `t2v` (wan2_2, ltx), `t2va` (h3, the only H3 rollout task) or `ref2va` (h3 joint video/audio SFT with ordered references on `transformer_ref`). |
 | `--rollout-function-path` | str | `miles.rollout.sglang_rollout.generate_rollout` | Generic Miles default. Diffusion recipes explicitly set `miles.rollout.sglang_diffusion_rollout.generate_rollout`. |
 | `--train-pipeline-config-path` | str | – | Your own `TrainPipelineConfig` for an unregistered family. Mutually exclusive with `--diffusion-model-family`. |
 | `--model-backend-path` | str | – | Override the family's model loader. |
@@ -176,24 +180,30 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 | `--rollout-microgroup-size` | int | `1` | |
 | `--diffusion-fps` | float | – | Video only. |
 | `--diffusion-output-num-frames` | int | `1` | |
+| `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout responses. `uint8` quantizes engine-side with the reward path's formula, cutting the response ~4x; keep `keep` for consumers that need the float tensor. |
 | `--diffusion-guidance-scale` | float | `4.0` | |
 | `--diffusion-guidance-scale-2` | float | – | Wan2.2 low-noise expert; **required** when training it. |
 | `--diffusion-true-cfg-scale` | float | – | |
 | `--diffusion-negative-prompt` | str | – | Defaults to `" "` on the engine when CFG is on. |
 | `--diffusion-noise-level` | float | `0.7` | |
-| `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT center-crop size. |
+| `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT target media must already be this size. |
+| `--diffusion-h3-aspect-ratio` | str | `16:9` | MiniMax H3 only: `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
+| `--diffusion-h3-duration-seconds` | float | `5.0` | MiniMax H3 only: rollout duration, 4.0–15.0 s. |
+| `--diffusion-audio-flow-shift` | float | `3.0` | MiniMax H3 only: audio flow shift for rollout. |
 | `--diffusion-sde-type` | enum | `sde` | `sde` / `cps` / `ode`. Selects the train-side SDE backend too. |
 | `--sde-step-backend-path` | str | – | Custom dynamics. See [SDE backends](#sde-step-backends). |
 | `--diffusion-num-sde-steps` | int | `0` | |
 | `--diffusion-sde-window-range` | `"lo,hi"` | – | For `sde_window`. Defaults to `[0, num_inference_steps)`. |
 | `--diffusion-sde-candidate-steps` | `"1,2,3"` | – | Required by `epoch_global_random_choice`. |
 | `--diffusion-step-strategy-path` | str | – | Overrides the bare `--diffusion-num-sde-steps` selection. |
+| `--rollout-return-full-trajectory` | flag | off | Ask the engine for the whole denoising trajectory instead of only the steps the step strategy requests. The train tensors are identical; kept for debugging and A/B runs. |
 | `--diffusion-log-prob-no-const` | flag | off | Drop log-prob constants on the engine (pairs with the CPS backend). |
 | `--diffusion-generator-device` | str | `cuda` | |
 | `--rollout-patch-group` | str | – | Comma-separated numeric-parity patch groups, e.g. `sgld`, `ltx`. |
 | `--update-weight-target-module` | str | `transformer` | Modules to train and sync. Wan2.2: `transformer,transformer_2`. |
 | `--update-weight-buffer-size` | int | 512 MiB | Weight-sync chunk size in bytes. |
 | `--rollout-seed` | int | `42` | |
+| `--rollout-shuffle` | flag | off | Shuffle the prompt order once per epoch (seeded by `--rollout-seed`). Off reads the jsonl in file order. |
 | `--over-sampling-batch-size` | int | – | Must equal `--rollout-batch-size` today. |
 | `--sglang-server-concurrency` | int | `512` | Per-engine in-flight request cap. |
 | `--use-distributed-post` | flag | off | Rollout HTTP POSTs go through per-node Ray actors instead of the local client (`MILES_HTTP_POST_ACTORS_PER_NODE` sets the count). |
@@ -209,7 +219,7 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 | `--prompt-data` | str | – | jsonl, one row per prompt. |
 | `--input-key` | str | `input` | |
 | `--metadata-key` | str | `metadata` | |
-| `--data-source-path` | str | – | Defaults to `RolloutDataSource`. |
+| `--data-source-path` | str | – | Defaults to `RolloutDataSourceWithBuffer`. |
 | `--disable-rollout-global-dataset` | flag | off | Manage data yourself. |
 | `--rollout-batch-size` | int | – | |
 | `--n-samples-per-prompt` | int | `1` | |
@@ -224,7 +234,8 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 | `--num-epoch` | int | – | |
 | `--start-rollout-id` | int | – | Resumed from `--load` when unset. |
 | `--sft-encoder-checkpoint` | str | – | SFT only: tokenizer/text_encoder/vae source. |
-| `--sft-frame-stride` | int | `1` | SFT encode temporal stride. |
+| `--sft-frame-stride` | int | `1` | SFT encode temporal stride; target videos hold exactly `(num_frames - 1) * stride + 1` frames. |
+| `--sft-offload-encoder` | flag | off | SFT only: keep the frozen encoder in host RAM, on the GPU only during encode bursts. |
 
 ### Evaluation
 
@@ -252,33 +263,49 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 | `--diffusion-clip-range` | float | `1e-4` | |
 | `--diffusion-adv-clip-max` | float | `5.0` | Under `nft` this also sets the advantage-to-`r` slope. |
 | `--diffusion-recompute-old-log-prob` | flag | off | Recompute old log-probs with the trainer forward instead of trusting the rollout's. `policy_loss` only. |
-| `--diffusion-kl-beta` | float | `0.0` | |
-| `--ref-mode` | enum | – | `none` / `lora_base` / `ema`. Auto: `lora_base` when KL > 0, `ema` under `nft`. |
+| `--diffusion-kl-beta` | float | `0.0` | KL to the `--ref-mode` model; under `nft` adds `kl_beta * mean((v_θ − v_ref)²)` per pair. |
+| `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when KL > 0. |
+| `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |
+| `--ref-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--ref-load`, one per `--update-weight-target-module` entry, in order. |
+| `--ref-cpu-offload` | flag | off | Keep the reference shards in pinned CPU memory between forwards (FSDP `CPUOffloadPolicy`). |
+| `--teacher-load` | str | – | HF pipeline checkpoint of a frozen teacher model, read only by custom prepare/loss hooks as `ctx.teacher_models`, so it requires `--custom-prepare-train-batch-path` or `--custom-loss-function-path`. |
+| `--teacher-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--teacher-load`, one per `--update-weight-target-module` entry, in order. |
+| `--teacher-cpu-offload` | flag | off | Keep the teacher shards in pinned CPU memory between forwards. |
 | `--custom-prepare-train-batch-path` | str | – | Builds DiT inputs. |
 | `--custom-loss-function-path` | str | – | Loss **formula** only — the DiT forward stays in the actor. |
 | `--diffusion-nft-beta` | float | `1.0` | |
-| `--diffusion-nft-timestep-fraction` | float | `0.99` | |
+| `--diffusion-nft-timestep-strategy-path` | str | `…nft.drop_random_steps` | `(args, num_steps, generator) -> list[int]` returning the denoising steps each sample trains on, in training order; `generator` is seeded per sample. Built in: `drop_random_steps` (random order), `drop_final_steps` (schedule order, noisiest first). The final clean output (σ = 0) is never a training step. |
+| `--diffusion-nft-num-dropped-timesteps` | int | `0` | Steps the built-in strategies drop: random ones per sample for `drop_random_steps`, the final (lowest-noise) ones for `drop_final_steps`. |
 | `--no-diffusion-nft-adaptive-weight` | flag | off | |
-| `--no-diffusion-nft-shuffle-timesteps` | flag | off | |
 
 ### Reward
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--rm-type` | enum | – | `pickscore` / `ocr`. Overridable per sample via `metadata.rm_type`. |
+| `--rm-type` | enum | – | `pickscore` / `hps` / `ocr`. Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
 | `--reward-key` | str | – | When the reward is a dict. |
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
-| `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only. |
+| `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only; replaces the `--rm-type` dispatch entirely. Shipped: `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` (weighted sum of built-in rewards). |
+| `--custom-rm-args` | str | – | Opaque config string for the custom RM, read as `args.custom_rm_args`; e.g. `"hps=0.7,pickscore=0.3"` for `rm_hub.weighted_mixture_rm`. |
+| `--rm-url` | str | – | URL of a remote reward service, e.g. `http://localhost:8000`; mirrors miles core. No built-in `--rm-type` reads it yet, so read it from a `--custom-rm-path` function. |
+| `--reward-key` | str | – | For dict-valued rewards: the entry GRPO trains on. Every entry is also logged as `rollout/reward/<key>_mean` and `eval/<dataset>/<key>`. |
 | `--custom-reward-post-process-path` | str | – | Replace advantage normalisation. |
-| `--colocate-reward` | flag | off | Reward actors onto rollout GPUs (train 0.7 + rollout 0.25 + reward 0.05). Requires `--colocate`. |
 | `--pickscore-model-path` | str | – | Required for `--rm-type pickscore`. |
 | `--pickscore-processor-path` | str | – | Required for `--rm-type pickscore`. |
 | `--pickscore-num-workers` | int | `1` | |
-| `--pickscore-num-gpus-per-worker` | float | `1.0` | Fractional values allowed. |
+| `--pickscore-num-gpus-per-worker` | float | `1.0` | Standalone workers only; fractional values allowed. |
+| `--pickscore-reward-colocate` | flag | off | One worker per rollout GPU, sharing it with the train actor and rollout engine. Requires `--colocate`. |
 | `--pickscore-batch-size` | int | `8` | |
 | `--pickscore-num-frames` | int | – | Frames scored per video; unset = all. |
+| `--hps-num-workers` | int | `1` | |
+| `--hps-num-gpus-per-worker` | float | `1.0` | Standalone workers only; fractional values allowed. |
+| `--hps-reward-colocate` | flag | off | One worker per rollout GPU, sharing it with the train actor and rollout engine. Requires `--colocate`. |
+| `--hps-batch-size` | int | `8` | |
+| `--hps-version` | enum | `v2.1` | `v2.0` / `v2.1`. |
+| `--hps-checkpoint-path` | str | – | Local checkpoint; unset downloads from Hugging Face. |
 | `--ocr-num-workers` | int | `4` | |
 | `--rollout-parser-num-workers` | int | `1` | Ray actors deserializing rollout responses. Raise when trajectory tensors are large. |
+| `--rollout-fetch-in-parser` | flag | off | Parser actors pick the least-loaded engine through the miles router, then fetch and parse its response in place, skipping the router's data plane and the manager's event loop. Requires `--use-miles-router` and at least as many parser workers as concurrency slots. |
 
 ### Rollout customization hooks
 
@@ -301,18 +328,19 @@ Every one takes a dotted path.
 |---|---|---|---|
 | `--use-lora` | flag | off | |
 | `--lora-rank` / `--lora-alpha` | int | `64` / `64` | |
+| `--lora-adapter-path` | str+ | – | PEFT adapter directories the actor continues from, one per `--update-weight-target-module` entry, in order; `--lora-rank` / `--lora-alpha` must match their configs. |
 | `--lora-target-modules` | str+ | – | Defaults per model family. |
 | `--lora-init-weights` | str | `gaussian` | `kaiming-uniform` maps to PEFT's default; other PEFT schemes pass through. |
-| `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B`; the engine merges locally. Requires `--use-lora`. |
+| `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B` over CUDA IPC and let the rollout merge them (`weight_update_mode=lora_merge`); without it, the trainer merges LoRA into the base weights and pushes full weights. Requires `--use-lora` and `--colocate`. Without `--colocate`, LoRA always pushes `lora_A`/`lora_B` over NCCL for the rollout to merge. |
 
 ### EMA
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--use-ema` | flag | off | Maintains an EMA copy as πₒₗd. Needs a consumer (`--ref-mode ema` or `--ema-rollout-policy ema`). |
-| `--ema-rollout-policy` | enum | `live` | `live` / `ema`: which weights get pushed to rollout. |
-| `--ema-decay-init` | float | `0.001` | Decay during the flat period. |
-| `--ema-decay-ramp` | float | `0.001` | Per-step increase after the flat period; the ramp restarts from zero. |
+| `--use-ema` | flag | off | Maintains an EMA copy as `π_old`. Needs a consumer (`--loss-type nft`, which trains against it as `π_old`, or `--rollout-weights ema`). |
+| `--rollout-weights` | enum | `actor` | `actor` / `ema`: which weights get pushed to rollout. |
+| `--ema-decay-init` | float | `0.001` | Decay during the flat period, counted in actor optimizer steps. |
+| `--ema-decay-ramp` | float | `0.001` | Increase per actor optimizer step after the flat period; the ramp restarts from zero. |
 | `--ema-decay-max` | float | `0.5` | Ceiling. |
 | `--ema-decay-flat-steps` | int | `0` | |
 
@@ -326,6 +354,7 @@ Every one takes a dotted path.
 | `--load` | str | – | |
 | `--ckpt-step` | int | – | Defaults to `latest_checkpointed_iteration.txt`. |
 | `--no-load-optim` / `--no-load-rng` | flag | off | |
+| `--async-exact-resume` | flag | off | Async training only. Also checkpoints the EMA from before the latest step and resamples the first resumed batch with it, so a resume matches an uninterrupted run. Off: that batch samples the loaded EMA. |
 
 ### Logging
 
@@ -339,6 +368,7 @@ Every one takes a dotted path.
 | `--disable-wandb-random-suffix` | flag | off | Run names include a random suffix by default; pass this flag to disable it. |
 | `--wandb-log-num-images` | int | `0` | Images/videos per rollout; `0` disables. |
 | `--wandb-log-image-interval` | int | `1` | Send media every N rollouts. |
+| `--log-loss-sigma-bucket` | int | `10` | Sigma buckets for the per-bucket loss curves (emitted by the SFT loss): `loss_<stream>_sigma_*` for each supervised stream, bucketed by its own sigma; the total `loss` is never bucketed, since each stream reads the shared grid index through its own shift. `0` disables. |
 | `--use-miles-dashboard` | flag | off | Async phase/trajectory telemetry. |
 | `--miles-dashboard-workspace` | str | `./miles_dashboard` | |
 
@@ -358,7 +388,7 @@ Every one takes a dotted path.
 | `--debug-rollout-only` | flag | off | Rollout, no training. |
 | `--train-only` | flag | off | No engines, no weight sync, no eval. (`--debug-train-only` is a legacy alias.) |
 | `--debug-skip-optimizer-step` | flag | off | No backward/step — weights never drift. Use it to measure pure forward divergence from the engine. |
-| `--save-debug-rollout-data` | path template | – | `.format(rollout_id)`; must contain `{rollout_id}`. |
+| `--save-debug-rollout-data` | path template | – | `.format(rollout_id)`. |
 | `--load-debug-rollout-data` | path template | – | Replays a rollout with **no engines started**. |
 | `--load-debug-rollout-data-subsample` | float | – | |
 | `--save-debug-train-data` | path template | – | |
@@ -370,8 +400,7 @@ probe: frozen weights, and the metrics report exactly how far the two forwards d
 
 ### CI
 
-`--ci-test`, `--ci-metric-checker-key`, `--ci-metric-checker-threshold`,
-`--ci-metric-checker-expect-num`. Used by `tests/e2e`;
+`--ci-test`, `--ci-metric-checker-key`, `--ci-metric-checker-threshold`. Used by `tests/e2e`;
 not meant for manual runs.
 
 ---
@@ -382,8 +411,8 @@ not meant for manual runs.
 
 | `--diffusion-sde-type` | Backend | Dynamics |
 |---|---|---|
-| `sde` | `DiffusersSdeStepBackend` | Flow-matching SDE over diffusers scheduler sigmas. |
-| `ode` | `DiffusersSdeStepBackend` | Same class; deterministic rollout (used by NFT). |
-| `cps` | `CpsSdeStepBackend` | CPS kernel, σ = timestep ÷ divisor, log-prob without constants. |
+| `sde` | `FlowSdeStepBackend` | Flow-matching SDE over the rollout's recorded sigmas. |
+| `ode` | `FlowSdeStepBackend` | Same class; deterministic rollout (used by NFT). |
+| `cps` | `CpsSdeStepBackend` | CPS kernel over the rollout's recorded sigmas, log-prob without constants. |
 
 `--sde-step-backend-path` overrides the mapping with your own `SdeStepBackend` subclass.

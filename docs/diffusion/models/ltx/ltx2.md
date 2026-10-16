@@ -39,7 +39,7 @@ Registered in `miles/backends/fsdp_utils/configs/ltx.py`:
 | Velocity → noise | `forward_velocity` reconstructs x0 via `ltx_core.utils.to_denoised` in fp32 and divides back out | Algebraically an identity, but the fp32 rounding path is what the e2e standards were recorded against |
 | Boundary dtypes | `latents` / `cond` cast to the forward dtype, `timestep` passthrough | Element-wise math anchors on `latents.dtype` and rollout runs bf16 — see [Dtype Control](/diffusion/advanced/dtype-control) |
 | Precision | bf16 end to end (master, reduce, forward, engine) + math-SDPA on both sides | Matches the original bitwise E2E reference; math-SDPA is deterministic by construction |
-| SDE | CPS kernel, `sde_timestep_divisor = 1000.0` | σ comes straight from the carried rollout timesteps rather than a scheduler lookup; log-prob drops its constants |
+| SDE | CPS kernel | Each train pair carries the σ the engine stepped with, so no scheduler lookup; log-prob drops its constants |
 | LoRA targets | Attention + FFN: `to_q`, `to_k`, `to_v`, `to_out.0`, `net.0.proj`, `net.2` | |
 | Rollout patches | `--rollout-patch-group ltx`: `patch_ltx2_rollout_cond_kwargs`, `patch_ltx2_disable_av_cross` | Video-only training forward needs AV cross-attention off engine-side |
 

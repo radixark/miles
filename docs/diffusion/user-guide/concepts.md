@@ -48,6 +48,12 @@ for rollout_id in range(start_rollout_id, num_rollout):
 
 Every flag in miles-diffusion configures one of these four phases.
 
+`train_sft.py` is the train-only variant of this loop, and the SFT recipes launch it. Its rollout
+data does not depend on the trained weights, so it generates rollout `i+1` while rollout `i`
+trains; only the first rollout is waited for. Encoders colocated with training hold their encode
+burst until the in-flight train step finishes, so under a cold cache only the cache load and dp
+split are hidden. Reserving encoder GPUs with `--rollout-num-gpus` overlaps the encoding too.
+
 ## The batch-knob invariant
 
 In miles-diffusion a sample is a whole denoising **trajectory**, and the fan-out continues below it: a step strategy

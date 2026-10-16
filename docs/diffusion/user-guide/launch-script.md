@@ -23,6 +23,7 @@ node's GPUs.
 | Launch script | `scripts/run_*.py` | Holds the recipe: the flag blocks and tuned values |
 | Command utilities | `miles/utils/external_utils/command_utils.py` | Starts Ray and submits the job |
 | Training entrypoint | `train_diffusion.py` | The train loop (~90 lines), run inside the Ray job |
+| SFT entrypoint | `train_sft.py` | The train-only loop with rollout prefetch; SFT recipes pass `train_script="train_sft.py"` |
 
 ## The structure of a launch script
 
@@ -76,7 +77,7 @@ live in `rollout_args`, a `--micro-batch-size-*` flag in `perf_args`).
 
 | Block | What it carries |
 |---|---|
-| `ckpt_args` | `--hf-checkpoint` (required — also selects the model family), `--save` / `--load` |
+| `ckpt_args` | `--hf-checkpoint` (required — also selects the model family), `--diffusion-task` (required — one of the family config's tasks), `--save` / `--load` |
 | `rollout_args` | Prompt data, batch shape, sampler: steps, guidance, noise level, SDE step strategy |
 | `eval_args` | Eval datasets and cadence; eval requests are pure generation, no trajectory |
 | `grpo_args` | Advantage estimator, reward normalisation, clip range |
@@ -237,7 +238,7 @@ MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_1
 ```
 
 Reward workers (`--pickscore-num-workers 4 --pickscore-num-gpus-per-worker 0.25`, no
-`--colocate-reward`) are default-scheduled and land on the only free GPU: the reward node.
+`--pickscore-reward-colocate`) are default-scheduled and land on the only free GPU: the reward node.
 
 ### Verify the run is healthy
 

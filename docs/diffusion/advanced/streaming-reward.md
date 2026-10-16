@@ -69,19 +69,26 @@ overlaps with generation and deserialization of the others.
 
 ## 4. Diagnosing the pipeline
 
-The miles dashboard visualizes the lifetime of every request — the generate / deserialize / reward spans of each
-microgroup on one timeline, so overlap (or the lack of it) is visible directly. Launch with `--use-miles-dashboard`
-(telemetry lands under `--miles-dashboard-workspace`), then render:
+Both actor pools report how deep their backlog was, which is what tells you whether a stage is keeping up. When a
+microgroup is dispatched, the pool records how many calls that worker already had in flight and keeps the largest value
+seen over the rollout:
 
-```bash
-python -m miles.dashboard.viewer --workspace ./miles_dashboard --out dash.html
-```
+| Metric | Meaning |
+|---|---|
+| `perf/parser_max_queue_depth` | Deepest backlog on a parser actor when a response was handed to it |
+| `perf/reward_max_queue_depth_<pool>` | Deepest backlog on that reward pool's actors when a batch was handed to them, one metric per pool (`hps`, `pickscore`, `ocr`) |
 
-For quick triage from `perf/*` metrics alone:
+`0` means every dispatch found its worker idle — that stage never made anything wait. A number that climbs with the
+number of concurrent microgroups means the stage is saturated and requests are lining up behind it.
 
-| Symptom                                                 | Look at                  | Likely fix                                                                 |
-| ------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------- |
-| `perf/rollout_time` high, engines idle between requests | `deserialize` stage time | Raise `--rollout-parser-num-workers`                                       |
-| Rollout stalls at the end of each iteration             | `reward` stage time      | More reward workers, or a dedicated reward GPU                             |
-| Event loop warnings / slow heartbeat                    | main-process CPU         | Confirm parsing is going through the actor pool (it always does on `main`) |
+Read them together with `perf/rollout_time`:
+
+| Symptom | Look at | Likely fix |
+|---|---|---|
+| `perf/rollout_time` high | `perf/parser_max_queue_depth` > 0 | Deserialization is the bottleneck; raise `--rollout-parser-num-workers` |
+| `perf/rollout_time` high | `perf/reward_max_queue_depth_<pool>` > 0 | That pool's scoring is the bottleneck; add its workers, or give it a dedicated GPU |
+| `perf/rollout_time` high, both depths `0` | Neither pool is holding anything up | The engines themselves are the limit — check `--rollout-microgroup-size` and `--sglang-server-concurrency` |
+
+Both metrics are emitted only when the corresponding pool ran, so a reward with no actor pool leaves
+its `perf/reward_max_queue_depth_<pool>` absent rather than zero.
 
