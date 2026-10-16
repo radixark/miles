@@ -33,7 +33,6 @@ def errors(tmp_path_factory) -> dict[str, float]:
 
 
 def test_context_parallel_matches_the_whole_sequence(errors):
-    print({key: f"{err:.2e}" for key, err in errors.items()})
     # different GEMM row counts and attention spans round differently in BF16, ~1e-3 apart
     assert errors["logits"] < 1e-2, errors
     assert all(err < 2e-2 for err in errors.values()), errors
