@@ -20,30 +20,6 @@ def _get_text_config(hf_config):
     return getattr(hf_config, "text_config", None) or hf_config
 
 
-def _linear_attn_fields(text_config) -> dict:
-    linear_attn_config = getattr(text_config, "linear_attn_config", None)
-    if not isinstance(linear_attn_config, dict):
-        linear_attn_config = {}
-
-    def field(key, attr, default):
-        value = linear_attn_config.get(key)
-        if value is None:
-            value = getattr(text_config, attr, default)
-        return value
-
-    gate_lower_bound = field("gate_lower_bound", "gate_lower_bound", None)
-    if gate_lower_bound is None:
-        gate_lower_bound = getattr(text_config, "linear_lower_bound", None)
-    if gate_lower_bound is None:
-        raise ValueError("GLM-5.3 KDA requires gate_lower_bound (safe gate) in the HF config.")
-    return dict(
-        num_heads=int(field("num_heads", "linear_num_heads", 64)),
-        head_dim=int(field("head_dim", "linear_head_dim", 128)),
-        conv_kernel_size=int(field("short_conv_kernel_size", "linear_conv_kernel_dim", 4)),
-        gate_lower_bound=float(gate_lower_bound),
-    )
-
-
 class Glm5NextKDA(nn.Module):
 
     def __init__(
@@ -160,13 +136,15 @@ class Glm5NextKDAAttention(HuggingfaceAttention):
     ):
         super().__init__(args, config, layer_number, cp_comm_type, pg_collection, name=name)
         text_config = _get_text_config(self.hf_config)
-        fields = _linear_attn_fields(text_config)
+        # the native config parses linear_attn_config into the linear_* fields
+        if text_config.linear_lower_bound is None:
+            raise ValueError("GLM-5.3 KDA requires gate_lower_bound (safe gate) in the HF config.")
         self.kda = Glm5NextKDA(
             hidden_size=text_config.hidden_size,
-            num_heads=fields["num_heads"],
-            head_dim=fields["head_dim"],
-            conv_kernel_size=fields["conv_kernel_size"],
-            gate_lower_bound=fields["gate_lower_bound"],
+            num_heads=text_config.linear_num_heads,
+            head_dim=text_config.linear_head_dim,
+            conv_kernel_size=text_config.linear_conv_kernel_dim,
+            gate_lower_bound=text_config.linear_lower_bound,
             rms_norm_eps=text_config.rms_norm_eps,
         )
 

@@ -2922,9 +2922,11 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
                 text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
                 args.indexer_rope_interleave = bool(getattr(text_config, "indexer_rope_interleave", False))
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
-                linear_attn_config = getattr(text_config, "linear_attn_config", None)
-                kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
-                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - len(kda_layers)
+                # one indexer top-k stream per DSA layer; GLM-5.3-Flash's KDA layers have none
+                layer_types = getattr(text_config, "layer_types", None) or []
+                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - layer_types.count(
+                    "linear_attention"
+                )
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0

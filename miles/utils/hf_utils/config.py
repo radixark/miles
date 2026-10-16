@@ -61,36 +61,6 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
         override_hf_native=True,
         normalize_kwargs="_normalize_deepseek_v41_kwargs",
     ),
-    # Qwen3.8-Flash-Next: the composite config resolves text_config by its nested
-    # model_type, so both levels need an alias; extra fields survive as attributes.
-    # transformers 5.19 ships native qwen4_exp configs, but they relabel layer_types
-    # (indexed_attention), which the Miles model code does not handle yet.
-    _HFConfigAlias(
-        model_type="qwen4_exp_text",
-        base_module="transformers.models.qwen3_5_moe.configuration_qwen3_5_moe",
-        base_class="Qwen3_5MoeTextConfig",
-        compat_class_name="Qwen4ExpTextConfig",
-        auto_model_classes=(),
-        override_hf_native=True,
-    ),
-    _HFConfigAlias(
-        model_type="qwen4_exp",
-        base_module="transformers.models.qwen3_5_moe.configuration_qwen3_5_moe",
-        base_class="Qwen3_5MoeConfig",
-        compat_class_name="Qwen4ExpConfig",
-        auto_model_classes=(),
-        override_hf_native=True,
-    ),
-    # transformers 5.19's native glm5_next text config carries no rope_theta /
-    # rope_parameters, which Glm5NextBridge requires.
-    _HFConfigAlias(
-        model_type="glm5_next",
-        base_module="transformers.models.glm4v_moe.configuration_glm4v_moe",
-        base_class="Glm4vMoeConfig",
-        compat_class_name="Glm5NextConfig",
-        auto_model_classes=(),
-        override_hf_native=True,
-    ),
 )
 
 _REGISTERED_ALIASES: set[str] = set()
