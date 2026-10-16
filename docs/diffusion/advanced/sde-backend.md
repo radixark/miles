@@ -7,8 +7,8 @@ Flow-matching RL algorithms fall into two paradigms:
 - **Coupled (Flow-GRPO)** — training re-scores the same `(x_t → x_{t+1})`
   transitions that rollout produced, so it needs tractable log-probs via
   `SdeStepBackend`.
-- **Decoupled (DiffusionNFT, …)** — training samples its own timesteps from the
-  final image; rollout dynamics are irrelevant, so this backend is unused.
+- **Decoupled (DiffusionNFT, …)** — training re-noises the final image at the
+  rollout's sampling sigmas; rollout dynamics are irrelevant, so this backend is unused.
 
 ## 1. When it applies
 
@@ -31,9 +31,9 @@ Implementation: `miles/backends/fsdp_utils/sde_step_backend.py`. Override with
 
 | Formulation | `--diffusion-sde-type` | Backend | Notes |
 |---|---|---|---|
-| Flow-SDE | `sde` (default) | `DiffusersSdeStepBackend` | η√(t/(1−t)) via scheduler σ; [Flow-GRPO](https://arxiv.org/abs/2505.05470) |
+| Flow-SDE | `sde` (default) | `FlowSdeStepBackend` | η·√(σ/(1−σ)) with the rollout's recorded σ; [Flow-GRPO](https://arxiv.org/abs/2505.05470) |
 | CPS | `cps` | `CpsSdeStepBackend` | [FlowCPS](https://arxiv.org/abs/2509.05952) |
-| ODE | `ode` | `DiffusersSdeStepBackend` (η=0) | Deterministic; NFT rollout only |
+| ODE | `ode` | `FlowSdeStepBackend` (η=0) | Deterministic; NFT rollout only |
 
 `--diffusion-noise-level` (η) sets the SDE noise scale. DanceGRPO-style constant-η
 schedules use the same `sde` backend with a tuned η

@@ -33,9 +33,9 @@ pipeline, or from a native package when a family brings its own modeling. Shippe
 
 ## Supported models
 
-Each model links to its recipe page; see
-[verification levels](/diffusion/user-guide/recipe-verification). Validated models also
-appear in the [Miles model list](/#supported-models).
+Each model name links to its recipe page. Every documented recipe is labeled with a
+[recipe verification level](/diffusion/user-guide/recipe-verification). Validated models also
+appear in the [Miles model list](https://miles.radixark.com/docs#supported-models).
 
 
 | Model                                                   | Task      | Canonical recipes                         |
@@ -44,8 +44,10 @@ appear in the [Miles model list](/#supported-models).
 | [Qwen-Image](/diffusion/models/qwen-image/qwen-image)             | T2I       | Flow-GRPO + PickScore (flow_grpo-aligned) |
 | [Wan2.2-T2V-A14B](/diffusion/models/wan/wan2-2)                   | T2V       | Flow-GRPO + PickScore, LoRA SFT           |
 | [LTX-2.3](/diffusion/models/ltx/ltx2)                             | T2V       | Flow-GRPO + PickScore                     |
-| [Cosmos3 (Edge / Nano / Super)](/diffusion/models/cosmos/cosmos3) | T2I       | Flow-GRPO + PickScore                     |
-| [MiniMax H3](/diffusion/models/h3/h3)                             | T2VA      | **Not merged** — [PR #154](https://github.com/radixark/miles_diffusion/pull/154); 2-GPU PR-only recipe |
+| [Cosmos3-Nano](/diffusion/models/cosmos/cosmos3)                   | T2I       | Flow-GRPO + PickScore                     |
+| [Krea-2](/diffusion/models/krea/krea2)                             | T2I       | DiffusionNFT + OCR (2- and 8-GPU sync, 6 + 2 async) |
+| [FLUX 3 Image Klein](/diffusion/models/flux3/flux3-image)          | T2I       | DiffusionNFT + PickScore (LoRA), Flow-GRPO + HPSv2.1 (full finetune) |
+| [MiniMax H3](/diffusion/models/h3/h3)                             | T2VA      | Flow-GRPO + PickScore (t2va, video branch); 2-GPU recipe                                               |
 
 
 

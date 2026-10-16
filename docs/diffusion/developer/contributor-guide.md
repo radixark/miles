@@ -11,6 +11,7 @@ test topology, because almost everything meaningful needs GPUs.
 ```text
 miles_diffusion/
 ├── train_diffusion.py             # the entry point — the whole train loop, ~90 lines
+├── train_sft.py                   # train-only entry point: generates rollout i+1 while i trains
 ├── miles/
 │   ├── backends/
 │   │   ├── fsdp_utils/            # the training half
