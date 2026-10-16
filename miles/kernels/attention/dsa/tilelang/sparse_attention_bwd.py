@@ -140,7 +140,6 @@ def _sparse_attention_bwd_kernel(
         KV: T.Tensor(k_shape, dtype),
         dO: T.Tensor(o_shape, dtype),
         Indices: T.Tensor(indices_shape, indices_dtype),
-        KVIndices: T.Tensor(indices_shape, indices_dtype),
         Lse: T.Tensor(lse_shape, accum_dtype),
         Delta: T.Tensor(delta_shape, accum_dtype),
         dQ: T.Tensor(q_shape, dtype),
@@ -161,6 +160,7 @@ def _sparse_attention_bwd_kernel(
             acc_dq = T.alloc_fragment([block_H, D], accum_dtype)
             acc_dkv = T.alloc_fragment([BS, D], accum_dtype)
             acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
+            dkv_rows = T.alloc_shared([BS], indices_dtype)
             if D_tail > 0:
                 Q_tail_shared = T.alloc_shared([block_H, D_tail], dtype)
                 KV_tail_shared = T.alloc_shared([BS, D_tail], dtype)
@@ -188,14 +188,14 @@ def _sparse_attention_bwd_kernel(
 
                 # Load KV, V for this block of indices
                 for bi_i, d_i in T.Parallel(BS, D):
-                    KV_shared[bi_i, d_i] = KV[by, KVIndices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, d_i]
+                    KV_shared[bi_i, d_i] = KV[by, T.max(Indices[by, s_i, bz // NH, i_i * BS + bi_i], 0), bz // NH, d_i]
 
                 T.gemm(Q_shared, KV_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
                 if D_tail > 0:
                     for bi_i, d_i in T.Parallel(BS, D_tail):
                         KV_tail_shared[bi_i, d_i] = KV[
-                            by, KVIndices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, D + d_i
+                            by, T.max(Indices[by, s_i, bz // NH, i_i * BS + bi_i], 0), bz // NH, D + d_i
                         ]
                     T.gemm(Q_tail_shared, KV_tail_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
@@ -236,6 +236,9 @@ def _sparse_attention_bwd_kernel(
                         dP_shared_cast, Q_tail_shared, acc_dkv_tail, transpose_A=True, policy=T.GemmWarpPolicy.FullCol
                     )
 
+                for bi_i in T.Parallel(BS):
+                    dkv_rows[bi_i] = Indices[by, s_i, bz // NH, i_i * BS + bi_i]
+
                 for s in range(split_store):
                     for bi_i, d_i in T.Parallel(BS, D):
                         if bi_i < BS // split_store:
@@ -247,27 +250,29 @@ def _sparse_attention_bwd_kernel(
                                 acc_dkv_tail_shared[bi_i, d_i] = acc_dkv_tail[bi_i + s * (BS // split_store), d_i]
 
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
-                        T.atomic_addx4(
-                            dKV[
-                                by,
-                                KVIndices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
-                                bz // NH,
-                                d_i * 4,
-                            ],
-                            acc_dkv_shared[bi_i, d_i * 4],
-                        )
-
-                    if D_tail > 0:
-                        for bi_i, d_i in T.Parallel(BS // split_store, D_tail // 4):
+                        if dkv_rows[bi_i + s * (BS // split_store)] != -1:
                             T.atomic_addx4(
                                 dKV[
                                     by,
-                                    KVIndices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                    dkv_rows[bi_i + s * (BS // split_store)],
                                     bz // NH,
-                                    D + d_i * 4,
+                                    d_i * 4,
                                 ],
-                                acc_dkv_tail_shared[bi_i, d_i * 4],
+                                acc_dkv_shared[bi_i, d_i * 4],
                             )
+
+                    if D_tail > 0:
+                        for bi_i, d_i in T.Parallel(BS // split_store, D_tail // 4):
+                            if dkv_rows[bi_i + s * (BS // split_store)] != -1:
+                                T.atomic_addx4(
+                                    dKV[
+                                        by,
+                                        dkv_rows[bi_i + s * (BS // split_store)],
+                                        bz // NH,
+                                        D + d_i * 4,
+                                    ],
+                                    acc_dkv_tail_shared[bi_i, d_i * 4],
+                                )
 
             T.copy(acc_dq, dQ_shared)
             T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
@@ -278,7 +283,7 @@ def _sparse_attention_bwd_kernel(
     return sparse_mla_bwd_kernel
 
 
-def sparse_attention_bwd(q, kv, o, do, indices, kv_indices, lse, d_v, *, sm_scale, num_stages, split_store):
+def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stages, split_store):
     """Shapes as in sparse_attention_fwd, plus o/do [B, S, H, d_v] and lse [B, S, H].
     Returns dq [B, S, H, d_v + d_tail] bf16, dkv [B, S_kv, G, d_v + d_tail] bf16 and delta [B, S, H] fp32
     (rowsum(o * do), which the caller needs for the attention-sink gradient)."""
@@ -296,6 +301,6 @@ def sparse_attention_bwd(q, kv, o, do, indices, kv_indices, lse, d_v, *, sm_scal
     dkv = torch.zeros_like(kv, dtype=torch.float32)
     dq = _sparse_attention_bwd_kernel(
         H, d_v, D_tail, topk, kv_group, sm_scale, num_stages=num_stages, split_store=split_store
-    )(q, kv, do, indices, kv_indices, lse, delta, dkv)
+    )(q, kv, do, indices, lse, delta, dkv)
     dkv = _bwd_postprocess_kernel(d_v, D_tail, kv_group)(dkv)
     return dq, dkv, delta

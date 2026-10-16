@@ -27,7 +27,7 @@ def _args(**overrides):
         allgather_cp=False,
         dsa_kernel_backend="cudnn",
         dsa_indexer_loss_coeff=None,
-        miles_dsa_topk_backend="torch",
+        miles_dsa_topk_backend="canonical",
         cp_comm_type=None,
     )
     return Namespace(**(values | overrides))
@@ -40,7 +40,7 @@ def _hf_config(**overrides):
 
 def test_default_preserves_the_existing_miles_path():
     args = add_dsa_arguments(ArgumentParser()).parse_args([])
-    assert vars(args) == {"dsa_impl": "miles", "miles_dsa_topk_backend": "torch", "cp_comm_type": None}
+    assert vars(args) == {"dsa_impl": "miles", "miles_dsa_topk_backend": "canonical", "cp_comm_type": None}
     before = vars(args).copy()
     normalize_dsa_args(args, None)
     assert vars(args) == before
