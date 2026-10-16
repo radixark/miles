@@ -33,7 +33,8 @@ class _HFConfigAlias:
 
 
 def _normalize_deepseek_v41_kwargs(kwargs: dict) -> dict:
-    """Flatten the composite HF config (text_config holds the decoder)."""
+    """Flatten the composite HF config (text_config holds the decoder). Every V4.1 layer is MoE, so
+    DeepseekV3Config's first_k_dense_replace=3 default does not apply."""
     kwargs = dict(kwargs)
     text = kwargs.pop("text_config", None)
     kwargs.pop("vision_config", None)
@@ -41,6 +42,7 @@ def _normalize_deepseek_v41_kwargs(kwargs: dict) -> dict:
         text = dict(text)
         text.pop("model_type", None)
         kwargs = {**text, **kwargs}
+    kwargs.setdefault("first_k_dense_replace", 0)
     return kwargs
 
 
