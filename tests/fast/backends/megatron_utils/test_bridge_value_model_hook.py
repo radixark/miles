@@ -45,6 +45,12 @@ class _FakeModelChunk:
         self.output_layer = "original-lm-head"
 
 
+class _FakeVLMChunk:
+    def __init__(self) -> None:
+        self.config = types.SimpleNamespace(sequence_parallel=False)
+        self.language_model = types.SimpleNamespace(output_layer="original-lm-head")
+
+
 @pytest.fixture(scope="module")
 def helpers_module():
     """Stub the megatron surface the hook touches and import the helpers once.
@@ -184,3 +190,13 @@ def test_value_head_kwargs_match_the_real_constructor(hook_env):
     head = chunk.output_layer
 
     inspect.Signature(parameters).bind(input_size=head.input_size, output_size=head.output_size, config=head.config)
+
+
+def test_value_head_goes_on_vlm_language_model(hook_env):
+    hook = hook_env.helpers._make_value_model_hook(4096)
+    chunk = _FakeVLMChunk()
+
+    hook([chunk])
+
+    assert isinstance(chunk.language_model.output_layer, _RecordingValueHead)
+    assert not hasattr(chunk, "output_layer")
