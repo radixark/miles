@@ -28,6 +28,7 @@ from miles.rollout.session.v2.session_state import (
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
 from miles.utils.function_registry import load_function
+from miles.utils.object_store import BaseObjectStore
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,23 @@ class SessionCoreV2(SessionCore):
     transport shell (health, create/delete, raw proxy)."""
 
     def __init__(
-        self, backend, registry: SessionRegistryV2, config, session_server_instance_id=None, *, use_addition_r3=False
+        self,
+        backend,
+        registry: SessionRegistryV2,
+        config,
+        session_server_instance_id=None,
+        *,
+        use_addition_r3=False,
+        output_store: BaseObjectStore | None = None,
     ):
-        super().__init__(backend, registry, config, session_server_instance_id, use_addition_r3=use_addition_r3)
+        super().__init__(
+            backend,
+            registry,
+            config,
+            session_server_instance_id,
+            use_addition_r3=use_addition_r3,
+            output_store=output_store,
+        )
         # Import-path only in production: function_registry is process-local.
         self.sample_picker = load_function(config.session_sample_picker_path, sync_required=True)
         self.sample_postprocessor = load_function(config.session_sample_postprocessor_path, sync_required=True)
@@ -190,7 +205,9 @@ class SessionCoreV2(SessionCore):
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        response = orjson.loads(result["response_body"])
+        replay = await self._read_replay_outputs(request_body, response)
+        choice, assistant_message, completion_token_ids = extract_completion(response)
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,
@@ -212,6 +229,7 @@ class SessionCoreV2(SessionCore):
                 request=request_body,
                 response=response,
             )
+            record.attach_replay_outputs(replay)
             commit_generation(
                 session,
                 parent=attach_parent,

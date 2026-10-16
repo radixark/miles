@@ -5,6 +5,7 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 - `chat_completions` omits choice `meta_info` from client replies, and choice `logprobs` unless the client's request asked for them, without modifying the stored response; `SessionRecord` retains both for sample collection and `GET /sessions/{id}`.
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
+- ``chat_completions`` reads and removes a response's output-store bundle as soon as the response arrives, before anything can discard it; a failed read fails the chat.
 - ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
 """
 
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 import orjson
 from starlette.responses import Response
 
+from miles.rollout.generate_utils.output_store import ReplayOutputs, resolve_replay_outputs
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
@@ -33,6 +35,7 @@ from miles.rollout.session.samples.merge import (
     truncate_samples_by_total_tokens,
 )
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.utils.object_store import BaseObjectStore
 
 logger = logging.getLogger(__name__)
 
@@ -156,14 +159,12 @@ def proxy_result_to_response(result: dict) -> Response:
     return Response(content=_render_json(data), status_code=status_code, headers=headers, media_type=JSON_MEDIA_TYPE)
 
 
-def extract_completion(result: dict) -> tuple:
-    """Decode and validate the backend chat response — shared verbatim by the
-    v1 and v2 cores. Returns ``(response, choice, assistant_message,
+def extract_completion(response: dict) -> tuple:
+    """Validate the decoded backend chat response — shared verbatim by the
+    v1 and v2 cores. Returns ``(choice, assistant_message,
     completion_token_ids)``; malformed upstream payloads raise
     ``UpstreamResponseError``.
     """
-    # orjson: every turn parses a multi-MB body (per-token logprobs, R3); SGLang writes it with orjson too.
-    response = orjson.loads(result["response_body"])
     choice = response.get("choices", [{}])[0]
     if choice.get("finish_reason") == "abort":
         raise UpstreamGenerationAbortedError("upstream generation aborted before completion")
@@ -191,7 +192,7 @@ def extract_completion(result: dict) -> tuple:
         )
 
     completion_token_ids = [t[1] for t in output_token_logprobs]
-    return response, choice, assistant_message, completion_token_ids
+    return choice, assistant_message, completion_token_ids
 
 
 class SessionCore:
@@ -205,6 +206,7 @@ class SessionCore:
         session_server_instance_id=None,
         *,
         use_addition_r3=False,
+        output_store: BaseObjectStore | None = None,
     ):
         self.backend = backend
         self.registry = registry
@@ -213,6 +215,17 @@ class SessionCore:
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
+        # None unless the engines return replay outputs through the output store.
+        self.output_store = output_store
+
+    async def _read_replay_outputs(self, request_body: dict, response: dict) -> ReplayOutputs | None:
+        """Read and remove the response's output-store bundle; a malformed response is left to extract_completion."""
+        meta_info = response.get("choices", [{}])[0].get("meta_info")
+        if not isinstance(meta_info, dict):
+            return None
+        return await resolve_replay_outputs(
+            meta_info, via_store=request_body.get("return_outputs_via_store", False), store=self.output_store
+        )
 
     def _maybe_request_addition_r3(
         self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
@@ -376,7 +389,10 @@ class SessionCore:
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        # orjson: every turn parses a multi-MB body (per-token logprobs, R3); SGLang writes it with orjson too.
+        response = orjson.loads(result["response_body"])
+        replay = await self._read_replay_outputs(request_body, response)
+        choice, assistant_message, completion_token_ids = extract_completion(response)
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,
@@ -419,6 +435,7 @@ class SessionCore:
                 request=request_body,
                 response=response,
             )
+            record.attach_replay_outputs(replay)
             session.append_record(record)
         # --- lock released ---
 

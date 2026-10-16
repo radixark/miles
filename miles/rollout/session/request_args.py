@@ -17,6 +17,7 @@ from typing import Any
 
 import orjson
 
+from miles.rollout.generate_utils.generate_endpoint_utils import maybe_request_outputs_via_store
 from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
 from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
 from miles.rollout.session.config import SessionServerConfig
@@ -111,6 +112,7 @@ def prepare_chat_request(
             request_args["return_sampling_mask"] = True
         else:
             request_args.pop("return_sampling_mask", None)
+        maybe_request_outputs_via_store(config, request_args)
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), response_intent=response_intent
     )
@@ -180,6 +182,11 @@ def resolve_request_args_by_config(
             f"routed_experts_start_len={value!r} is not accepted: R3 offsets are computed by the session server"
         )
     request_args.pop("routed_experts_start_len", None)
+    if (value := request_args.get("return_outputs_via_store")) is not None:
+        raise MessageValidationError(
+            f"return_outputs_via_store={value!r} is not accepted: the session server reads replay outputs itself"
+        )
+    request_args.pop("return_outputs_via_store", None)
     if (value := request_args.get("logprob_start_len")) is not None:
         raise MessageValidationError(
             f"logprob_start_len={value!r} is not accepted: not supported on the session chat path"

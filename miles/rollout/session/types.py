@@ -1,6 +1,20 @@
-from pydantic import BaseModel, Field, StrictBool, StrictFloat, StrictInt, field_validator, model_validator
+from typing import TYPE_CHECKING
+
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel, StrictBaseModel
+
+if TYPE_CHECKING:
+    from miles.rollout.generate_utils.output_store import ReplayOutputs
 
 
 class CreateSessionRequest(StrictBaseModel):
@@ -53,6 +67,15 @@ class SessionRecord(BaseModel):
     request: dict
     response: dict
     status_code: int
+    # The arrays of the response's output-store bundle, read when the response arrived; never serialized.
+    _replay_outputs: "ReplayOutputs | None" = PrivateAttr(default=None)
+
+    @property
+    def replay_outputs(self) -> "ReplayOutputs | None":
+        return self._replay_outputs
+
+    def attach_replay_outputs(self, replay: "ReplayOutputs | None") -> None:
+        self._replay_outputs = replay
 
 
 class GetSessionResponse(BaseModel):

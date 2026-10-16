@@ -18,10 +18,12 @@ from aiohttp.helpers import get_env_proxy_for_url
 from fastapi import FastAPI
 from yarl import URL
 
+from miles.rollout.generate_utils.output_store import output_store_enabled
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import ProxyRequest
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.object_store import MooncakeObjectStore
 from miles.utils.workers.argv_utils import parse_config_argv
 
 logger = logging.getLogger(__name__)
@@ -65,10 +67,21 @@ class SessionServer:
         except LookupError:
             self.proxy, self.proxy_auth = None, None
 
+        # A pure client of Miles' Mooncake store, which the engines write their replay outputs to.
+        output_store = (
+            MooncakeObjectStore(
+                init_kwargs=config.mooncake_store_init_kwargs or {},
+                replica_num=config.mooncake_replica_num,
+                contribute_segment=False,
+            )
+            if output_store_enabled(config)
+            else None
+        )
+
         # `retract` may recompute earlier rows and must return full R3; all other
         # pause modes preserve prior rows and can request only the appended R3.
         self.use_addition_r3 = config.pause_generation_mode != "retract"
-        setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
+        setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3, output_store=output_store)
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):

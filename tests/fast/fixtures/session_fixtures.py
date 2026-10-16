@@ -34,6 +34,9 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
         rollout_temperature=1.0,
+        sglang_output_store_backend="none",
+        mooncake_store_init_kwargs=None,
+        mooncake_replica_num=1,
     )
     defaults.update(overrides)
     return SessionServerConfig(**defaults)
