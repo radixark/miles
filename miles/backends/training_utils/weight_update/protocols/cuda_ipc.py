@@ -50,8 +50,12 @@ logger = logging.getLogger(__name__)
 #   2. every rank of the engine group waits for the engine's reply before touching its slot again. Only the gather-src
 #      rank issues the HTTP request, so its result is broadcast within the gloo gather group after the reply (a single
 #      long-lived buffer without this broadcast let the 7 non-src ranks overwrite bucket N while the engine still read it).
-# The engine must not read the shared buffer after it has replied: SGLang drops every bucket reference before replying and
-# torch's consumer-side storage deleter synchronizes the stream, which is what makes the reply the completion signal.
+# Why at least two slots: the engine's reply to bucket N is sent by its TP rank 0 after a CPU barrier, i.e. after every
+# rank has *enqueued* its copies of bucket N, not after they completed. Each scheduler handles requests sequentially and
+# releases the bucket's IPC storage when its handler returns (torch's consumer-side deleter synchronizes the stream
+# first), so the reply to bucket N+1 is the first signal that every rank's copies of bucket N are complete. With N >= 2
+# slots a slot is rewritten only after that later reply; with a single slot the engine itself must synchronize the
+# device before replying (deployment patch DSV41_ENGINE_SYNC=1), which is also a cheap extra safety with two slots.
 _RING_SLOTS = int(os.environ.get("MILES_IPC_RING_SLOTS", "0") or "0")
 # Fallback: share the slot view afresh for every bucket (torch chains one IPC context per share) instead of caching the
 # first share. Same memory bound and the same completion handshake; only for A/B if the cached share misbehaves.
@@ -226,6 +230,11 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             logger.info(
                 f"CUDA-IPC bucket ring enabled: {_RING_SLOTS} slot(s) per dtype, reshare={_RING_RESHARE}, debug={_RING_DEBUG}"
             )
+            if _RING_SLOTS < 2:
+                logger.warning(
+                    "CUDA-IPC bucket ring with a single slot: the slot is rewritten right after the engine's reply, which "
+                    "only proves the engine enqueued its copies; the engine must synchronize the device before replying"
+                )
 
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
             end_rank = min(start_rank + self.args.rollout_num_gpus_per_engine, dist.get_world_size())
