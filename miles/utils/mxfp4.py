@@ -5,7 +5,11 @@ Torch-only, so checkpoint tooling can use it without importing Megatron.
 
 import torch
 
-_E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+MXFP4_GROUP_SIZE = 32
+E8M0_BIAS = 127
+E2M1_MAX = 6.0
+E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+_E2M1_VALUES = E2M1_VALUES
 
 
 def quantize_mxfp4(weight, group_size):
@@ -57,3 +61,11 @@ def dequantize_mxfp4(
     dequantized = dequantized.reshape(-1, group_size)
     scales = torch.exp2(weight_scale.float().reshape(-1, 1) - 127.0)
     return (dequantized * scales).reshape(unpacked.shape).to(torch.bfloat16).contiguous()
+
+
+def mxfp4_quantize(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pack weights with the MXFP4 parameter dtypes expected by SGLang."""
+    if weight.shape[-1] % MXFP4_GROUP_SIZE != 0:
+        raise ValueError(f"Last dim {weight.shape[-1]} must be divisible by {MXFP4_GROUP_SIZE} for MXFP4.")
+    packed, scale = quantize_mxfp4(weight.contiguous(), group_size=MXFP4_GROUP_SIZE)
+    return packed.view(torch.int8), scale.view(torch.float8_e8m0fnu)

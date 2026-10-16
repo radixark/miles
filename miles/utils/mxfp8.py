@@ -31,17 +31,12 @@ def should_use_mxfp8(
     *,
     skip_substrings: tuple[str, ...] = MXFP8_SKIP_WEIGHT_SUBSTRINGS,
     allow_source_fp8: bool = False,
-    packed_mxfp4_experts: bool = False,
 ) -> bool:
     """Whether a checkpoint tensor belongs in the MXFP8 rollout layout."""
     if not name.endswith(".weight") or any(substring in name for substring in skip_substrings):
         return False
     if len(shape) < 2:
         return False
-    if packed_mxfp4_experts:
-        # Each packed MXFP4 byte holds two weights; the MXFP8 alignment applies
-        # to the unpacked logical width.
-        return (shape[-1] * 2) % MXFP8_GROUP_SIZE == 0
     allowed_dtypes = (torch.float16, torch.bfloat16, torch.float32)
     if allow_source_fp8:
         allowed_dtypes += MXFP8_SOURCE_FP8_DTYPES

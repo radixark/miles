@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -32,6 +33,7 @@ def _runtime_args(**overrides):
         "dsa_kernel_backend": "cudnn",
         "mtp_num_layers": None,
         "mtp_detach_heads": True,
+        "dsv4_mxfp4_qat": False,
         "moe_token_dispatcher_type": "alltoall",
         "decoder_first_pipeline_num_layers": 4,
         "decoder_last_pipeline_num_layers": 3,
@@ -58,6 +60,7 @@ def test_bridge_runtime_preserves_native_variant_and_disables_unrequested_mtp():
     assert provider.experimental_attention_variant == "dsv4_hybrid"
     assert provider.dsa_kernel_backend == "cudnn"
     assert provider.mtp_num_layers is None
+    assert provider.dsv4_mxfp4_qat is False
 
 
 @pytest.mark.parametrize("backend", [None, "none", "tilelang", "cudnn"])
@@ -67,3 +70,13 @@ def test_bridge_runtime_resolves_native_dsv4_kernel_default(backend):
     _apply_bridge_runtime_config(provider, _runtime_args(dsa_kernel_backend=backend, dsa_attention_backend="tilelang"))
 
     assert provider.dsa_kernel_backend == (backend or "cudnn")
+
+
+def test_bridge_runtime_installs_mxfp4_qat_when_enabled():
+    provider = _provider()
+
+    with patch("miles_plugins.models.deepseek_v4.ops.mxfp4_qat.install_dsv4_mxfp4_qat") as install_qat:
+        _apply_bridge_runtime_config(provider, _runtime_args(dsv4_mxfp4_qat=True))
+
+    install_qat.assert_called_once_with()
+    assert provider.dsv4_mxfp4_qat is True
