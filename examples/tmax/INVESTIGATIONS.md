@@ -38,10 +38,12 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 
 Larger directions to evaluate against the evidence below. Add yours here.
 
-## 2026-10-16: slowdown from 09:20 (retry 2, steps 55–56)
+## 2026-10-16: slowdown from 09:20 to 10:41 (retry 2, steps 56–59)
 
-- **What happened:** step 56 trained 25 minutes after step 55 (09:20 to 09:45), against 5–7 minutes per step since
-  step 35. Rollout 56 took 19 minutes to fill, and training step 56 itself took 6 minutes instead of about 3.
+- **What happened:** steps 56–59 took 25, 32, 13 and 11 minutes (09:20 to 10:41), against 5–7 minutes per step
+  since step 35; step 60 was back to 7 minutes. Rollout 56 took 19 minutes to fill and rollout 57 took 29, and
+  training step 56 itself took 6 minutes instead of about 3. The weight syncs after steps 55 and 56 took 106 s and
+  163 s. The run recovered by itself, as after step 16.
 - **Evidence:**
   - Completed episodes per 20 minutes fell from about 1,500 (07:00–09:20) to about 600 (09:20–09:40). The
     episode's median time rose from about 200 s to 489 s.
@@ -53,7 +55,8 @@ Larger directions to evaluate against the evidence below. Add yours here.
     - the router's health checks against four head-node engines failed from 09:41;
     - the weight sync after step 55 took 106 s;
     - 47 sessions failed `collect_samples` with a 120 s `TimeoutError`, 14 of them while still connecting: one at
-      09:21, then 09:39–09:44. Before this, retry 2 had none.
+      09:21, then 09:39–09:44. Before this, retry 2 had none. Between 09:47 and 10:17, 186 more failed, in bursts
+      of up to 58 a minute; each dropped its group, which slowed the rollouts further.
   - Tool timeouts (a command running past 120 s) rose from 0.27 to 0.67 per episode. Most came from
     `task_005427` (107 in 20 minutes) and `task_000635` (173 over the hour).
 - **Reading:** the same CPU contention as at step 16, here starving the head node's HTTP serving (router, session
