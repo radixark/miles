@@ -122,10 +122,10 @@ new one.
 | | open-instruct production | Here |
 |---|---|---|
 | Training state | DeepSpeed state + dataloader + data-prep state every 5-10 steps in `--checkpoint_state_dir`, keep 3 | Megatron `torch_dist` (model, optimizer, RNG) + dataset position every `save_interval` steps in `<output_dir>/<exp_name>/checkpoints`, newest `keep_last_n_checkpoints` kept |
-| Resume | mason `--auto_resume --max_retries 5`; reloads `--checkpoint_state_dir` | `autoResume` + `retries`; the same `exp_name` loads its checkpoint dir; in-flight rollouts are lost and regenerated |
+| Resume | mason `--auto_resume --max_retries 5`; retries of one submission reload its `--checkpoint_state_dir` | `autoResume` + `retries`; `submit.py` names each submission `<exp_name>_YYYYMMDD_HHMMSS`, so its retries reload that run's checkpoints and a new submission starts fresh (`--exp-name` continues an existing run); prompts that were in flight are skipped, not regenerated |
 | HF checkpoints | every 20 steps (`--save_freq`) | not exported during training; `--save-hf` would write one at every checkpoint |
 | Rollouts | `--save_traces` JSONL with advantages and trainer logprobs | `trace_dir`: per-episode JSONL with messages, reward and metrics, every episode; `dump_training_data` adds each step's trained batch, `rollout_data/<step>.pt` (tokens, rewards, rollout logprobs) and `train_data/<step>_<rank>.pt` (advantages, trainer logprobs) |
-| W&B | `oe-general-agents`, one run per restart | `wandb_project`; with `exp_name`, all restarts log into one run |
+| W&B | `oe-general-agents`, one run per submission (shared by its retries) | `wandb_project`; one run per submission, named after the run (shared by its retries) |
 
 ## Mapping from open-instruct
 

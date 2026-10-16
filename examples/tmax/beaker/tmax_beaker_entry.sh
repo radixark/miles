@@ -124,9 +124,10 @@ fi
 
 # ---- 3. Keep the newest KEEP_LAST_N_CHECKPOINTS training checkpoints (open-instruct --keep_last_n_checkpoints) ----
 read -r CKPT_DIR MODEL_DIR < <(python - "$CONFIG" <<'PY'
-import sys, yaml
+import os, sys, yaml
 c = yaml.safe_load(open(sys.argv[1]))
-ckpt = f"{c['output_dir']}/{c['exp_name']}/checkpoints" if c.get("exp_name") and c.get("output_dir") else "-"
+exp = os.environ.get("MILES_SCRIPT_EXP_NAME") or c.get("exp_name")  # submit.py's per-submission run name
+ckpt = f"{c['output_dir']}/{exp}/checkpoints" if exp and c.get("output_dir") else "-"
 print(ckpt, c.get("model_dir", "/root/models"))
 PY
 )

@@ -9,6 +9,11 @@ weka mounts and the user's secrets. The job is pinned to the current git commit:
 at that commit and runs ``beaker/tmax_beaker_entry.sh <config>``, so a preempted job's retries, and edits made to
 the checkout while it runs, cannot change what it trains. Arguments after ``--`` are launcher overrides.
 
+Each submission is its own run: the config's ``exp_name`` gets a UTC date-time suffix (``<exp_name>_YYYYMMDD_HHMMSS``)
+that names the checkpoint and trace directories, the W&B run and the Beaker experiment. Beaker's retries of that
+submission keep the name, so they resume from its checkpoints; a later submission starts a new run.
+``--exp-name NAME`` reuses an existing run's name exactly, to continue that run.
+
 With ``nodes: N > 1`` the task gets N replicas the way mason's ``--num_nodes`` does (leader selection, host
 networking, failure and preemption propagated to every replica, NCCL over InfiniBand); the entrypoint makes
 replica 0 the Ray head and joins the others to it.
@@ -44,13 +49,17 @@ def main() -> None:
     commit = _git("rev-parse", "HEAD")
     if _git("status", "--porcelain", "--", "examples/tmax") and not args.allow_dirty:
         raise SystemExit("examples/tmax has uncommitted changes; the job runs the committed config. Commit first.")
-    name = args.name or f"{config.get('exp_name') or config_path.stem}-{time.strftime('%Y%m%d-%H%M%S')}"
+    exp_name = args.exp_name or (
+        f"{config['exp_name']}_{time.strftime('%Y%m%d_%H%M%S', time.gmtime())}" if config.get("exp_name") else ""
+    )
+    name = args.name or exp_name or f"{config_path.stem}-{time.strftime('%Y%m%d-%H%M%S')}"
     spec = _build_spec(
         beaker=beaker,
         config_rel=str(config_path.relative_to(_REPO)),
         commit=commit,
         overrides=args.overrides,
-        description=f"Miles TMax {config_path.stem} @ {commit[:9]}",
+        exp_name=exp_name,
+        description=f"Miles TMax {config_path.stem} {exp_name} @ {commit[:9]}".replace("  ", " "),
     )
     text = yaml.safe_dump(spec, sort_keys=False)
     if args.dry_run:
@@ -66,10 +75,11 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        usage="%(prog)s config [--name NAME] [--dry-run] [--allow-dirty] [-- launcher flags]",
+        usage="%(prog)s config [--exp-name NAME] [--name NAME] [--dry-run] [--allow-dirty] [-- launcher flags]",
     )
     parser.add_argument("config")
-    parser.add_argument("--name", default="")
+    parser.add_argument("--exp-name", default="", help="continue this existing run (no date-time suffix is added)")
+    parser.add_argument("--name", default="", help="Beaker experiment name (default: the run name)")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-dirty", action="store_true", help="submit although examples/tmax is uncommitted")
     argv = sys.argv[1:]
@@ -79,7 +89,9 @@ def _parse_args() -> argparse.Namespace:
     return args
 
 
-def _build_spec(*, beaker: dict, config_rel: str, commit: str, overrides: list[str], description: str) -> dict:
+def _build_spec(
+    *, beaker: dict, config_rel: str, commit: str, overrides: list[str], exp_name: str, description: str
+) -> dict:
     user = getpass.getuser().lower()
     secrets = beaker.get("secrets") or {
         "DOCKER_PAT": f"{user}_DOCKER_PAT",
@@ -97,6 +109,8 @@ def _build_spec(*, beaker: dict, config_rel: str, commit: str, overrides: list[s
         "MIRROR_URL": _mirror_url(beaker.get("mirror_url", "")),
         "KEEP_LAST_N_CHECKPOINTS": str(beaker.get("keep_last_n_checkpoints", 0)),
         "EXTRA_ARGS": shlex.join(overrides),
+        # The launcher's exported settings win over the config file's, and the entrypoint's pruner reads it too.
+        "MILES_SCRIPT_EXP_NAME": exp_name,
         # mason's multi-node defaults on the weka clusters: NCCL over the InfiniBand NICs, not the bonded Ethernet.
         **({"NCCL_SOCKET_IFNAME": "ib", "NCCL_IB_HCA": "^=mlx5_bond_0"} if nodes > 1 else {}),
         **{key: str(value) for key, value in (beaker.get("env") or {}).items()},
