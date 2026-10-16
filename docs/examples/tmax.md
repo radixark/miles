@@ -9,13 +9,22 @@ the Miles port of open-instruct's Terminal-RL recipe with the `swerl_vanillux_sa
 Every episode runs in a fresh container from the task's prebuilt image, the only tool is `bash`, and the
 reward is the task's `tests/test.sh` verdict, uploaded only at submit time so the policy cannot read it.
 
-Three modes are validated end to end on 4x B300 (Beaker `ai2/holmes`):
+Validated end to end on B300s (Beaker `ai2/holmes`):
 
 | Mode | Launcher flags | Validated with |
 |---|---|---|
-| Synchronous GRPO, colocated | (default) | Qwen3.5-9B, 3 steps |
-| Fully-async GRPO | `--async-rollout-gpus 2` | Qwen3.5-9B, 4 steps |
-| On-policy distillation (sync and async) | `--opd-teacher tmax-4b` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 + 4 steps |
+| Synchronous GRPO, colocated, 4 GPUs | (default) | Qwen3.5-9B, 3 steps |
+| Fully-async GRPO, 4 GPUs | `--async-rollout-gpus 2` | Qwen3.5-9B, 4 steps |
+| On-policy distillation (sync and async), 4 GPUs | `--opd-teacher tmax-4b` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 + 4 steps |
+| open-instruct's production recipe, fully async on 4 nodes (32x B300), 64k context | `configs/prod_4node.yaml` | Qwen3.5-9B, training on Beaker since 2026-10-16 |
+
+| Read | For |
+|---|---|
+| This page | What the example does, how an episode runs, how to run it, results, findings |
+| [beaker/README.md](/examples/tmax/beaker) | Running on Beaker: submissions, run names and resume, images, mirrors, watching a run, failure triage |
+| [DEVELOPING.md](https://github.com/radixark/miles/blob/main/examples/tmax/DEVELOPING.md) | How the port plugs into Miles, local development and tests, the validation ladder, conventions, history |
+| [ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md) | Open work by priority, decisions taken |
+| [Miles vs open-instruct](/deep-dive/open-instruct-comparison) | Every framework, harness and infrastructure difference, and the flag-by-flag mapping of the production recipe |
 
 ## Files
 
@@ -27,7 +36,7 @@ Three modes are validated end to end on 4x B300 (Beaker `ai2/holmes`):
 | `generate.py` | Reward function (`None` drops the group) and `agent/*` metrics |
 | `tmax_prompts.py` | open-instruct's system prompt |
 | `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes) |
-| `beaker/` | `submit.py` (config -> Beaker job, pinned to a commit), the job's entrypoint, and open-instruct's vendored podman bring-up |
+| `beaker/` | `submit.py` (config -> Beaker job, pinned to a commit), the job's entrypoint, open-instruct's vendored podman bring-up, and the registry mirror tooling |
 
 ## How an episode runs
 
@@ -35,7 +44,7 @@ The loop follows open-instruct's `vllm_utils.process_request` with the `swerl_va
 production script (`--tool_call_format_error_feedback` off, `SWERL_RESET_FAILURE_ZERO_REWARD=1`):
 
 1. `agentic_tool_call.generate` opens a TITO session and calls `tmax_agent_function.run` in a process of its own.
-2. `run` starts a container from `metadata.image` (`sleep infinity`, 4 GB memory limit) on one of the podman
+2. `run` starts a container from `metadata.image` (`sleep infinity`, a 4 GB memory limit requested) on one of the podman
    daemons, uploads the task's `environment/seeds`, and installs a wrapper that keeps `cwd` and exported variables
    across commands. A failed start is retried 5 times (1-16 s backoff); a daemon that fails to connect is benched
    for 300-330 s. If it never starts, the episode scores 0 and stays in its group, through a one-token turn
@@ -72,79 +81,49 @@ The sandboxes need a Docker-compatible API socket (podman), whose containers can
 ### Beaker
 
 ```bash
-python examples/tmax/beaker/submit.py examples/tmax/configs/prod_1node.yaml [--dry-run] [-- --num-rollout 10]
+python examples/tmax/beaker/submit.py examples/tmax/configs/prod_4node.yaml [--dry-run] [-- --num-rollout 10]
 ```
 
-`submit.py` plays mason's role. From the config's `beaker:` section it writes the spec (cluster, GPUs, image,
-weka mounts, secrets, and `minRuntime` + `autoResume` + task retries) and pins the job to the current commit:
-the task clones this repository at that commit, so retries and later edits to the checkout cannot change what it
-runs. Commit the config before submitting. The task runs `beaker/tmax_beaker_entry.sh`, which installs podman
-(apt) and runs open-instruct's own bring-up, vendored in `beaker/podman/`: `sandbox_shards` daemons with their
-own storage, the docker.io mirror (`mirror_url`), the image janitor and Docker Hub credentials. It also keeps the
-newest `keep_last_n_checkpoints` training checkpoints, then runs `prepare` + `execute`.
-
-With `nodes: N` (and the launcher's `num_nodes: N`), the task gets N replicas as mason's `--num_nodes` makes them:
-leader selection, host networking, failure and preemption propagated to every replica, and NCCL over InfiniBand
-(`NCCL_SOCKET_IFNAME=ib`, `NCCL_IB_HCA=^=mlx5_bond_0`). Every replica brings podman up; replica 0 does
-everything else and starts the Ray head, and the other replicas join it as GPU workers and exit with it, as
-open-instruct's `ray_node_setup.sh` workers do. The agent processes run on the head and reach each worker's
-podman shards through `socat` TCP forwards that accept only the head's address; `sandboxes_per_node` caps the
-live sandboxes on each node, as open-instruct's `--pool_size` actors spread over its nodes (512 on 4 nodes: 128),
-and the start and exec limits apply per node, as open-instruct's file semaphores do.
-Fully async on several nodes gives training and SGLang whole nodes, training first: `prod_4node.yaml` trains on
-2 nodes (TP 2 x CP 2 x DP 4) and generates with 16 engines on the other 2, open-instruct's 16 learners + 16 vLLM
-engines.
-
-### Sandbox images: credentials and mirrors
-
-Every task has its own image (`hamishi740/swerl-tmax-v3:<tag>`, 14,490 of them, ~300 MB each), pulled by each
-podman shard that runs it. The pulls carry the Docker Hub login from the `<user>_DOCKER_PAT` Beaker secret: podman
-takes pull credentials from the API request alone, so the entrypoint hands them to `tmax_sandbox` (an empty one
-pulls anonymously, at 100 pulls per hour per IP), and the pull log line names the account.
-
-`beaker/registry_mirror/registry_mirror.py` runs open-instruct's Docker Hub pull-through caches (`registry:3`,
-host-networked on `ai2/neptune`, login from the same secret):
-
-```bash
-python examples/tmax/beaker/registry_mirror/registry_mirror.py launch   # 3 mirrors, ports 5000 / 5010 / 5020
-python examples/tmax/beaker/registry_mirror/registry_mirror.py probe    # /v2/ and a real task manifest per mirror
-python examples/tmax/beaker/registry_mirror/registry_mirror.py test     # pull-through and fallback, on podman 4.9
-python examples/tmax/beaker/registry_mirror/registry_mirror.py warm     # open-instruct's warmer, one job per mirror
-```
-
-`mirror_url: auto` in a config resolves the running mirrors at submit time; the entrypoint shuffles them per node.
-podman tries them in order and then docker.io, so a dead mirror costs a refused connection per pull, not the job. A
-mirror's address moves, with an empty cache, whenever Beaker reschedules it: relaunch or resubmit to pick up the
-new one.
-
-### Checkpoints, resume and logging
-
-| | open-instruct production | Here |
-|---|---|---|
-| Training state | DeepSpeed state + dataloader + data-prep state every 5-10 steps in `--checkpoint_state_dir`, keep 3 | Megatron `torch_dist` (model, optimizer, RNG) + dataset position every `save_interval` steps in `<output_dir>/<exp_name>/checkpoints`, newest `keep_last_n_checkpoints` kept |
-| Resume | mason `--auto_resume --max_retries 5`; retries of one submission reload its `--checkpoint_state_dir` | `autoResume` + `retries`; `submit.py` names each submission `<exp_name>_YYYYMMDD_HHMMSS`, so its retries reload that run's checkpoints and a new submission starts fresh (`--exp-name` continues an existing run); prompts that were in flight are skipped, not regenerated |
-| HF checkpoints | every 20 steps (`--save_freq`) | not exported during training; `--save-hf` would write one at every checkpoint |
-| Rollouts | `--save_traces` JSONL with advantages and trainer logprobs | `trace_dir`: per-episode JSONL with messages, reward and metrics, every episode; `dump_training_data` adds each step's trained batch, `rollout_data/<step>.pt` (tokens, rewards, rollout logprobs) and `train_data/<step>_<rank>.pt` (advantages, trainer logprobs) |
-| W&B | `oe-general-agents`, one run per submission (shared by its retries) | `wandb_project`; one run per submission, named after the run (shared by its retries) |
+`submit.py` turns a config's `beaker:` section into a Beaker job pinned to the current commit; its entrypoint brings
+up open-instruct's podman setup on every node and runs `prepare` + `execute`. Each submission is its own run
+(`<exp_name>_YYYYMMDD_HHMMSS`), and its Beaker retries resume from that run's checkpoints. Everything else (the
+`beaker:` keys, multi-node layout, images, pull credentials and mirrors, checkpoints, watching a run, failures) is in
+[beaker/README.md](/examples/tmax/beaker).
 
 ## Mapping from open-instruct
 
-| open-instruct (`qwen35_9b_base_tmax_10k_dppo_32k.sh`) | Here |
-|---|---|
-| `--use_vllm_logprobs true` | `--use-rollout-logprobs` |
-| `--advantage_normalization_type centered` | `grpo` + `--disable-grpo-std-normalization` |
-| `--loss_denominator token` | `--calculate-per-token-loss` |
-| `--active_sampling` | `--filter-zero-std` (default on), i.e. `apply_reward_nonzero_std_filter` |
-| `--per_turn_max_tokens 8192` | `--rollout-max-response-len 8192` |
-| `--response_length 32768` | `--max-seq-len 34816` (Miles counts the prompt) |
-| `--max_steps 64` | `--max-steps 64` (`TMAX_MAX_STEPS`) |
-| `--async_steps 4`, `--inflight_updates true` | `--async-rollout-gpus N --max-weight-staleness 4 --async-data-buffer-capacity-factor 4`, `--pause-generation-mode in_place` |
-| `--pool_size 512` (caps concurrent trajectories: 2 batches of 256 in flight) | `--async-max-concurrent-samples 512` |
-| `--system_prompt_override_file swerl_vanillux_sandbox_system_prompt.txt` | `tmax_prompts.TMAX_SYSTEM_PROMPT` (byte-identical) |
-| `--loss_fn dppo` | not available in Miles; PPO clip (0.2 / 0.28) around the rollout log-probs instead |
-| `EnvironmentPool` of 512 warm actors, sharded Podman daemons | one container per episode on one socket; no warm pool |
+Every flag of open-instruct's production script and its counterpart here is in the
+[comparison's flag-by-flag table](/deep-dive/open-instruct-comparison#flag-by-flag-the-production-recipe).
+The deliberate algorithmic difference is the loss: open-instruct trains with DPPO, which Miles does not have, so
+the port uses PPO clip (0.2 / 0.28) around the rollout log-probs.
 
-## Results (4x B300, 64-prompt subset, 4 prompts x 4 samples per step, 16k tokens per episode)
+## Results
+
+### Production recipe, 4 nodes
+
+`configs/prod_4node.yaml` on 4x 8 B300 (`ai2/holmes`), run `tmax_prod4node_qwen35_9b_20261016_001037` (commit
+`edf2c7ae3e`, session server v2): 8 prompts x 32 samples per step, 64k tokens per episode, fully async with 16
+SGLang engines and 512 episodes in flight.
+
+| Step | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loss | 0.022 | 0.025 | 0.012 | 0.032 | 0.008 | 0.042 | 0.027 | 0.057 | 0.025 | 0.044 | 0.030 |
+| grad_norm | 0.084 | 0.082 | 0.051 | 0.076 | 0.101 | 0.066 | 0.079 | 0.086 | 0.076 | 0.066 | 0.056 |
+| `rollout/raw_reward_unfiltered` | 0.41 | 0.40 | 0.65 | 0.43 | 0.29 | 0.40 | 0.27 | 0.50 | 0.38 | 0.34 | |
+| `rollout/fully_async/avg_staleness` | 0 | 1 | 2 | 3 | 4 | 3 | 1.6 | 1.9 | 2.1 | 2.1 | |
+
+- **Speed.** Step 0 trained 41 minutes after the replicas started, then a step about every 5 minutes.
+- **Weight syncs** took 1.5-8 s, with an occasional 30-50 s one.
+- **Train/rollout agreement.** `train/train_rollout_logprob_abs_diff` stayed at 0.0066-0.0068.
+- **Session-collect failures:** none.
+- **Episodes.** Over the first 5,705:
+  - mean reward 0.38, mean 38 turns;
+  - ended by submitting 62%, at the 64-step limit 30%, with no tool call 7%, with a full context 1.3%, on a
+    length-truncated turn 0.1%;
+  - 0.19 failed or timed-out tool steps per episode;
+  - median episode 4 minutes (p90 10), 48% of it in model calls and 19% in sandbox commands.
+
+### Smoke tests (4x B300, 64-prompt subset, 4 prompts x 4 samples per step, 16k tokens per episode)
 
 Synchronous GRPO, Qwen3.5-9B:
 
@@ -197,10 +176,23 @@ above 1 nat).
 ### Throughput
 
 - A synchronous step waits for its slowest episode. Most episodes take 1-6 minutes; 40-turn long-thinking
-  ones took about 20. About 80% of episode wall time is sandbox execution, not generation. Cap episodes with
-  `TMAX_EPISODE_TIMEOUT_S` (default 3600) or use `--async-rollout-gpus`.
+  ones took about 20. Cap episodes with `episode_timeout_s` (default 0, off; the smoke configs use 3600) or use
+  `--async-rollout-gpus`.
+- Where the time goes depends on load. In 4-GPU smoke tests about 80% of episode wall time was sandbox
+  execution; in the 4-node production run, with 512 episodes sharing 16 engines, model calls take 48% and sandbox
+  commands 19%.
 - The first training step JIT-compiles the TileLang and Triton kernels for the linear-attention layers
   (a few minutes); SGLang engines also compile at start-up and log health-check failures meanwhile.
+
+### Session server
+
+- `session_server: v2` (the default) is required by upstream's `--namespaced-radix-cache`, which fully async turns
+  on with in-place weight updates so prefix KV computed under old weights never serves a later call. v2 also needs
+  an image whose SGLang has prefill weight versions ([Images](/examples/tmax/beaker#images)). `v1` still works; pair it
+  with `--no-namespaced-radix-cache` in that mode.
+- v2 builds the same training samples as v1: one sample per episode, tool tokens loss-masked, the same observation
+  framing. Episodes that end with a full context lose their last, overflowing turn, or keep it cut at
+  `max_seq_len`; both versions do both.
 
 ### Fully async
 
@@ -238,7 +230,8 @@ above 1 nat).
 - GPU containers cannot be nested inside a Beaker task: Podman there can neither mount a fresh procfs nor
   create cgroups, and the `/proc` bind it falls back to belongs to another PID namespace, which makes
   `cuInit` fail with CUDA error 304. Run the Miles image as the Beaker task itself and nest only the CPU
-  sandboxes. `radixark/miles:latest` is CUDA 13; use `latest-cu12` on 570-series drivers.
+  sandboxes. Current Miles images are CUDA 13 only (upstream retired the CUDA 12 images), so 570-series drivers
+  cannot run them.
 - `openai_session_url` already appends `/v1`; agent functions pass its result to the OpenAI client as is.
 - Qwen3.5 `torch_dist` checkpoints converted before the head-sharded linear-attention layout (upstream #3610)
   are rejected at load; re-convert them from HF into a new `--model-dir`.
@@ -247,14 +240,15 @@ above 1 nat).
 
 ### Known gaps
 
-- No DPPO in Miles; add it as a custom loss (`--loss-type custom_loss`) if the ablation matters.
-- No warm container pool: every episode pulls (cached per daemon), creates and removes its own container.
-- Tool observations differ from open-instruct's `vllm_qwen3_xml` framing by two newline tokens per tool turn
-  (Qwen3.5's chat template puts `\n` after the assistant's `<|im_end|>` and none before the tool's); the first-turn
-  prompt is token-identical.
-- Podman comes from Ubuntu's apt (4.9) at job start; open-instruct's image builds 5.6.2 and crun 1.14.3 from
-  source. Bake them into a Miles image for production.
+Open differences from open-instruct and the work on them are tracked in [ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md); the
+[comparison](/deep-dive/open-instruct-comparison) describes each. The largest:
+
+- No DPPO in Miles: the port trains with PPO clip.
+- The first-turn prompt is not token-identical: SGLang's tool schema adds `"strict": false` and reorders the tool
+  definition's keys, about 17 tokens. Tool observations are framed differently too (two newlines, trimmed output,
+  several calls in one turn share one user block).
+- `agent/*` episode metrics are not logged in fully-async runs.
+- Podman comes from Ubuntu's apt (4.9) at job start; open-instruct's image builds 5.6.2 and crun 1.14.3.
+- Every agent process runs on the head node (`--pin-rollout-manager-to-head`); open-instruct's environment actors
+  run on every node. The sandboxes still spread: the head drives the other nodes' podman over TCP.
 - Group-granular dropping: one infra failure discards its whole group.
-- Multi-node runs every agent process on the head, where the RolloutExecutor is pinned
-  (`--pin-rollout-manager-to-head`); open-instruct's environment actors run on all nodes. The sandboxes still
-  spread like open-instruct's: the head drives the other nodes' podman over TCP.

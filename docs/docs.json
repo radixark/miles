@@ -269,7 +269,8 @@
        "examples/ppo",
        "examples/retool-v2",
        "examples/swe-agent-harbor-docker",
-       "examples/tmax"
+       "examples/tmax",
+       "examples/tmax/beaker"
       ]
      },
      {
@@ -306,7 +307,8 @@
        "deep-dive/rl-step-walkthrough",
        "deep-dive/metrics-and-debugging",
        "deep-dive/async-and-off-policy",
-       "deep-dive/agentic-rollout-internals"
+       "deep-dive/agentic-rollout-internals",
+       "deep-dive/open-instruct-comparison"
       ]
      },
      {

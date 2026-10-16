@@ -3,23 +3,12 @@
 =====================
 
 Trains a Qwen3.5 dense model (default Qwen3.5-9B) with GRPO on the 14.6k TMax terminal tasks
-(allenai/tmax-15k-open-instruct), the Miles counterpart of open-instruct's
-scripts/general_agent/terminal/rl/qwen35_9b_base_tmax_10k_dppo_32k.sh. Every
-episode runs in a fresh container from the task's prebuilt image, driven by
-tmax_agent_function.run through the TITO session server; the reward is the
-task's tests/test.sh verdict.
-
-Mapping from the open-instruct recipe:
-
-  --use_vllm_logprobs true       -> --use-rollout-logprobs
-  --advantage_normalization_type centered -> grpo + --disable-grpo-std-normalization
-  --loss_denominator token       -> --calculate-per-token-loss
-  --active_sampling              -> --dynamic-sampling-filter-path apply_reward_nonzero_std_filter
-  --per_turn_max_tokens          -> --rollout-max-response-len (8192 here; prod uses 16384)
-  --response_length 32768        -> --max-seq-len 34816 (Miles counts the prompt too)
-  --max_steps 64                 -> TMAX_MAX_STEPS=64
-  --loss_fn dppo                 -> not available; PPO clip (eps 0.2 / 0.28) instead
-  --async_steps 4                -> synchronous by default; --async-rollout-gpus N for train_async.py --fully-async
+(allenai/tmax-15k-open-instruct), the Miles counterpart of open-instruct's Terminal-RL recipe
+(branch opd, scripts/general_agent/terminal/rl/qwen35_9b_dppo_repro_4node_64k.sh, reproduced by
+configs/prod_4node.yaml). Every episode runs in a fresh container from the task's prebuilt image, driven by
+tmax_agent_function.run through the TITO session server; the reward is the task's tests/test.sh verdict.
+The flag-by-flag mapping from open-instruct is in docs/deep-dive/open-instruct-comparison.md; the main
+difference is PPO clip (eps 0.2 / 0.28) instead of DPPO, which Miles does not have.
 
 Requires:
   * a Docker-API socket to Podman (`podman system service`), reachable at --docker-host;

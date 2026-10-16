@@ -1,0 +1,113 @@
+# TMax port roadmap
+
+Open work on the port, by priority, as of 2026-10-16. The differences from open-instruct that motivate most items
+are described in [the comparison](../../docs/deep-dive/open-instruct-comparison.md); this file only tracks the
+work. When an item is done, move it to [Done](#done) with its commit.
+
+Priorities: **P0** blocks calling this a reproduction of open-instruct's run, or risks the run or a secret. **P1**
+improves fidelity or visibility. **P2** is cleanup and rare cases.
+
+## P0
+
+| Item | Why | How |
+|---|---|---|
+| **Rotate the Docker Hub token and the W&B API key; scrub old W&B configs** | The Docker token was printed in Beaker job logs from 2026-09-25 until `de58153970`. The W&B key was on the logged train command until `07bf7f9d74`, and Miles uploads its arguments as the W&B config, so earlier runs' configs still hold it | Rotate both and update the Beaker secrets (`<user>_DOCKER_PAT`, `<user>_WANDB_API_KEY`); relaunch the mirrors; delete `wandb_key` from earlier runs' configs. Upstream: have Miles redact the key before uploading its config. Not confirmed done |
+| **DPPO loss** | The recipe's named algorithm; PPO clip behaves differently on low-probability tokens | A custom loss through `--loss-type custom_loss`: binary TV divergence, threshold 0.1, no ratio clip, anchored on rollout log-probs. Per token, so safe under context parallelism. Log the kept-token fraction |
+| **Adam beta2 0.999** | open-instruct uses `torch.optim.AdamW` defaults; the launcher passes 0.98 | Change `--adam-beta2` in `run_tmax_qwen3_5.py` for new runs |
+| **Episode and tool statistics in fully-async runs** | `agent/*` (end reasons, turns, tool errors, sandbox start failures, model vs environment time) is only logged in synchronous mode, because `--fully-async` rejects `--rollout-function-path`; in prod about 30% of episodes hit the 64-step limit and W&B cannot show it | A per-rollout logging hook that fully async calls; until then, read the trace files |
+| **Durable checkpoints** | open-instruct keeps an HF snapshot every 20 steps forever; the pruner keeps only the newest 3 Megatron checkpoints, so step 20, 40, … are gone by the time anyone evaluates them | Let the pruner keep every 20th iteration and convert offline, or `--save-hf` with its own pruning |
+| **Weight-sync `ReadError`** | The old 4-node run died once at step 118 when some trainer → engine HTTP connections dropped during a 64 s sync (normally 1.5-3 s). It is not a timeout; the cause is unknown. Slow syncs (30-50 s) still happen on the rebased code | First measure: a per-node sampler in the entry script (load, CPU, memory, disk, TCP reset and abort counters, top processes every 15 s). Candidate cause: the 128 colocated sandboxes per node, which share the host network and run without CPU limits; cheap mitigation is running sandbox commands under `nice -n 19`. Later, if it recurs: treat a dropped reply after a completed broadcast as "unknown" and verify the engines' weight version (Miles core; check upstream first) |
+
+## P1
+
+| Item | Notes |
+|---|---|
+| fp32 LM head | Pass `--sglang-enable-fp32-lm-head`; make Megatron's output layer fp32; compare `train/train_rollout_logprob_abs_diff` before and after |
+| Token-identical first turn | SGLang's tool schema adds `"strict": false` and reorders keys: about 17 extra tokens per prompt. Render the tool from the raw dict, then diff token ids against a decoded open-instruct rollout |
+| W&B and Beaker visibility | Pin the W&B entity (`ai2-llm`); put the W&B URL in the Beaker description at submit time; update progress and ETA per step (needs a `BEAKER_TOKEN` secret); export `WANDB_TAGS` / `WANDB_NOTES` with commit and Beaker link |
+| Fail fast on a stalled rollout | Fully async only warns every 30 s when no group completes; add a watchdog that exits so the Beaker retry resumes, or evaluate `--use-fault-tolerance` |
+| Fully-async throughput metrics | `perf/rollout_time` measures the buffer drain, so `perf/tokens_per_gpu_per_sec` is meaningless and some `perf/longest_*` go negative; `rollout/zero_std/*` is computed after the filter and is always 0. Fix upstream or hide |
+| open-instruct metrics worth porting | Solve-rate distribution before the filter, solved vs unsolved trajectory length, advantage min/max/std, max train/rollout log-prob gap, episode and token counters, entropy (`--observe-training-entropy`) |
+| Podman 5.6.2 and crun 1.14.3 in the image | apt's podman 4.9 breaks exec framing under load (44 of 70 step failures in one 4-node run). Plan: a thin image derived from the official Miles image with podman, crun and docker-py baked in, launched with beaker-gantry |
+| Agents near their sandboxes | Every agent process runs on the head node, which also trains; open-instruct spreads its environment actors over the nodes. Run agents on the node of their sandbox |
+
+## P2
+
+- **Harness fidelity:**
+  - match open-instruct's tool-response framing (or keep documenting it);
+  - count the pending observation in the token budget (about 1.3% of episodes end `context_full`);
+  - queue a command behind a timed-out one, as open-instruct does;
+  - format timeouts as floats (`120.0s`);
+  - check `test.sh` inside the container;
+  - choose one behavior for a vanished container;
+  - add per-phase sandbox timing logs (`SWERL_SANDBOX_TIMING_LOGS`).
+- **Sandboxes:**
+  - a janitor for leaked containers, keyed on the `miles_tmax_sandbox` label;
+  - print free disk to the job log, with an emergency prune under a threshold.
+- **Beaker:**
+  - find secrets by Beaker identity and check that they exist (add `BEAKER_TOKEN`);
+  - a description option;
+  - a `/output` result dataset;
+  - make a missing dataset state fatal on resume;
+  - snapshot the repository so a `git gc` on the weka checkout cannot break a later retry (bundle or full clone).
+- **Training:**
+  - `--seed 42`;
+  - optionally flush the KV cache after in-place updates;
+  - check which FlashAttention Megatron uses on B300;
+  - decide whether `max_weight_staleness` should be 3 to match `--async_steps 4` exactly (see the comparison).
+- **Code hygiene:**
+  - cover the launcher with recorded-command tests;
+  - commit the trajectory checker and the run watcher used during validation as tools under `examples/tmax/`.
+
+## Done
+
+| Item | Commit |
+|---|---|
+| Per-submission run names; `--exp-name` continues a run; W&B run per submission | `edf2c7ae3e` |
+| Multi-node replicas wait up to 1 h for each other (`synchronizedStartTimeout`) | `fd31043981` |
+| Image `dev-202610151741` | `c55f57cb5b` |
+| Session server v2 with the namespaced radix cache | `09053e0bc6` |
+| `--distributed-timeout-minutes 120`, `--sglang-watchdog-timeout 1800`, `NCCL_DEBUG=WARN` on the 4-node config | `72033aa800` |
+| Each step's trained batch dumped (`dump_training_data`), about 200 MB per step | `e1e06ce53d` |
+| W&B key off the logged command line | `07bf7f9d74` |
+| Head-node lookup through the GCS (Miles core) | `ef3dcd4861` |
+| Registry mirrors, `mirror_url: auto`, authenticated pulls | `0b910d7822`, `bfd6826c2b`, `dafe101cff` |
+| Docker Hub token out of the job log | `de58153970` |
+| Env-step exceptions become failed-step observations | `212c6ad522` |
+| Multi-node layout and sandboxes spread over every node | `1eb8f5e307`, `984e017222`, `7ae3853e16`, `505ea34897` |
+| Session-collect failures (2.5-3% of episodes on the old base, each dropping its group) | Gone after rebasing onto upstream's session-server and transport fixes |
+
+## Decisions taken
+
+- **Upstream first.** Rebase onto upstream rather than patch Miles core (2026-10-15). The session-fetch retry
+  written before that rebase was dropped; it survives on `backup/tmax-terminal-rl-pre-rebase-2` (`5237ac3fac`).
+- **Session server v2** with upstream's namespaced radix cache, not v1.
+- **Images.** Official Miles dev images pinned per config for now; the thin derived image with beaker-gantry later.
+- **Mirrors** are neither rotated nor warmed.
+- **Context.** Production trains at 64k (`max_seq_len: 67584`); smoke tests use 16k.
+- **Runs.** Every submission is a new run with a UTC date-time suffix; `--exp-name` continues one.
+- **Loss.** PPO clip until DPPO lands.
+- **Kept on purpose:**
+  - containers are removed at episode end;
+  - exact global token-mean loss;
+  - hard per-node sandbox caps;
+  - every episode saved as text;
+  - commit pinning.
+- **Not ported:**
+  - open-instruct's per-shard loss weighting and its dropping of packs not divisible by DP;
+  - ZeRO-3 with Ulysses (Megatron TP × CP gives the same DP);
+  - the tiled Liger loss (Miles' fused log-prob backend covers the memory problem);
+  - metrics that are constant 0 in this recipe;
+  - a reference model at KL weight 0.
+
+## Not verified
+
+- **Staleness origins.** Whether open-instruct's `result.model_step` is the oldest or the newest version in an
+  in-flight trajectory, which decides how exact the one-version offset from Miles' oldest-token staleness is.
+- **Megatron internals:** its Adam epsilon default, and whether it offers an fp32 output layer.
+- **Memory limits.** Whether the 4 GB limit and OOM detection work at all with podman's `cgroups="disabled"`, on
+  either side.
+- **open-instruct's actor spread.** How evenly its environment actors actually spread over nodes.
+- **Slow cross-node collectives and the weight-sync `ReadError`: the cause.** Colocated sandboxes are the leading
+  suspect. A first check against the old run's traces found the slow syncs (27-31 s) happened at ordinary sandbox
+  counts. That check counted sandboxes, not CPU use, and couldn't see which node they ran on.

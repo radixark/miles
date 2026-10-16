@@ -21,6 +21,7 @@ End-to-end training workflows — the place to start.
 - **[retool_v2](/examples/retool-v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
 - **[swe-agent-harbor-docker](/examples/swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.
 - **[tmax](/examples/tmax)**: Terminal-RL on the TMax tasks with per-task Podman sandboxes: sync and fully-async GRPO, plus on-policy distillation.
+  - **[beaker](/examples/tmax/beaker)**: Running the TMax experiments on AI2's Beaker: submissions, resume, images, mirrors, monitoring and failure triage.
 
 ## [Infra Features](/examples/infra-features)
 
