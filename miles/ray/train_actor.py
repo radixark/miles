@@ -137,11 +137,10 @@ class TrainRayActor(NodeProbeMixin):
             args.distributed_backend = DET_NCCL_BACKEND_NAME
             logger.info("Deterministic collectives: training world uses the det_nccl backend")
 
-        # Use hybrid backend when FSDP CPU offload is enabled with a CPU backend
+        # FSDP2's CPU offload steps the optimizer on host tensors, which needs a CPU backend alongside NCCL
         backend = args.distributed_backend
-        if getattr(args, "fsdp_cpu_offload", False) and getattr(args, "fsdp_cpu_backend", None):
-            cpu_backend = args.fsdp_cpu_backend
-            backend = f"cpu:{cpu_backend},cuda:{args.distributed_backend}"
+        if args.train_backend in ("fsdp", "torchtitan") and args.optimizer_cpu_offload and args.fsdp_cpu_backend:
+            backend = f"cpu:{args.fsdp_cpu_backend},cuda:{args.distributed_backend}"
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
         dist.init_process_group(

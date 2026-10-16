@@ -24,6 +24,9 @@ def _args(**overrides) -> Namespace:
         rollout_max_response_len=4096,
         ref_update_interval=None,
         save_debug_train_data=None,
+        optimizer_cpu_offload=False,
+        stream_optimizer_state_to_disk=False,
+        stream_optimizer_state_moment_dtype="fp32",
         fp16=False,
         lr_decay_style="constant",
         lr_warmup_fraction=None,
@@ -88,6 +91,7 @@ def _config_args(**overrides) -> Namespace:
         weight_decay=0.1,
         seed=1,
         gradient_checkpointing=False,
+        optimizer_cpu_offload=False,
         save=None,
         load=None,
     )
