@@ -54,6 +54,8 @@ TARGET_METRIC_KEYS: tuple[str, ...] = (
     "train/train_rollout_logprob_abs_diff",
     "train/train_rollout_kl",
     "rollout/raw_reward",
+    "rollout/topk_logprob_abs_diff",
+    "rollout/topk_set_mismatch",
     "rollout/tito_session_mismatch_rate/v1/assistant_text",
     "rollout/tito_session_mismatch_rate/v2/assistant_text",
 )

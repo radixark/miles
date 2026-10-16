@@ -233,6 +233,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         "teacher_log_probs",
                         "opd_reverse_kl",
                         "entropy",
+                        "topk_logprob_abs_diff",
+                        "topk_set_mismatch",
                     ]:
                         sum_of_sample_mean = get_sum_of_sample_mean(
                             total_lengths,
@@ -300,6 +302,17 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 f"({log_dict['log_probs']}) != rollout_log_probs "
                 f"({log_dict['rollout_log_probs']})"
             )
+            # Emitted by the torch-native forward-only pass; a backend that skips it must fail here, not pass.
+            if args.rollout_top_logprobs_num > 0:
+                for key in ("topk_logprob_abs_diff", "topk_set_mismatch"):
+                    assert key in log_dict, (
+                        f"CI check failed: --rollout-top-logprobs-num is set, but the actor did not score the "
+                        f"rollout top-k candidates ({key} missing)"
+                    )
+                    assert log_dict[key][0] == 0, (
+                        f"CI check failed: true_on_policy_mode is enabled, but the rollout top-k candidates "
+                        f"differ from the trainer's: {key} sum = {log_dict[key][0]}"
+                    )
 
     if args.log_multi_turn:
         log_multi_turn_data(rollout_id, args, rollout_data)
