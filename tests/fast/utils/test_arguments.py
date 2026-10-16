@@ -1957,6 +1957,38 @@ def test_stream_optimizer_state_to_disk_rejects_reading_grads_outside_the_step(m
         miles_validate_args(args)
 
 
+@pytest.mark.parametrize(
+    ("extra", "megatron_args", "match"),
+    [
+        (["--stream-optimizer-state-page-cache-mb", "1024"], {}, "needs --stream-optimizer-state-to-disk"),
+        (
+            ["--stream-optimizer-state-to-disk", "--stream-optimizer-state-page-cache-mb", "-1"],
+            {"optimizer": "adam"},
+            "must be >= 0",
+        ),
+        (
+            ["--stream-optimizer-state-to-disk", "--stream-optimizer-state-page-cache-mb", "1024"],
+            {
+                "optimizer": "dist_muon",
+                "chunked_optimizer_state_offload": True,
+                "optimizer_state_offload_fraction": 1.0,
+            },
+            "caps the Adam bucket store",
+        ),
+    ],
+)
+def test_stream_optimizer_state_page_cache_mb_reaches_only_the_adam_store(extra, megatron_args, match):
+    """The cap is read only by the Adam bucket store, so anything else would make it a silent no-op."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+    vars(args).update(megatron_args)
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(AssertionError, match=match):
+        miles_validate_args(args)
+
+
 class TestMtpTrainingValidation:
     """--mtp-num-layers describes the model; only --enable-mtp-training builds and trains the MTP layers."""
 
