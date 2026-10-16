@@ -313,6 +313,43 @@ def test_latent_moe_runs_routed_experts_in_the_latent_width():
     assert per_layer(flops, 1) == LayerFlops(expected)
 
 
+# text_config of meta-models/Muse-Spark-Open-816B-A42B, inlined because the repo is gated
+MUSE_SPARK_OPEN = {
+    "model_type": "muse_spark",
+    "text_config": {
+        "model_type": "muse_spark_text",
+        "hidden_size": 8192,
+        "num_attention_heads": 128,
+        "num_key_value_heads": 16,
+        "head_dim": 64,
+        "intermediate_size": 16384,
+        "moe_hidden_size": 4096,
+        "moe_intermediate_size": 4096,
+        "num_local_experts": 256,
+        "num_experts_per_tok": 8,
+        "num_shared_experts": 0,
+        "num_hidden_layers": 62,
+        "layer_types": ["full_attention" if i % 4 == 1 else "sliding_attention" for i in range(62)],
+        "mlp_layer_types": ["sparse"] * 62,
+        "sliding_window": 2048,
+        "vocab_size": 202048,
+    },
+}
+
+
+def test_muse_spark_open_counts_its_output_gate_and_latent_experts():
+    flops = model_flops_from_hf_config(MUSE_SPARK_OPEN)
+    # 2 x the active matmul params read from the released checkpoint's safetensors headers
+    assert flops.per_token == pytest.approx(88865767424, rel=1e-12)
+    assert per_layer(flops, 0).key_terms == (KeyTerm(4 * 128 * 64, cap=2048),)
+    assert per_layer(flops, 1).key_terms == (KeyTerm(4 * 128 * 64),)
+
+
+def test_muse_spark_open_flattened_config_keeps_its_output_gate():
+    flattened = MUSE_SPARK_OPEN["text_config"] | {"model_type": "muse_spark"}
+    assert model_flops_from_hf_config(flattened) == model_flops_from_hf_config(MUSE_SPARK_OPEN)
+
+
 # (per-token FLOPs without attention keys, forward FLOPs of one 131072-token sequence) of each released config
 RELEASED_MODEL_FLOPS = {
     "deepseek-ai/DeepSeek-V3": (73249193984, 52526179793502208),
