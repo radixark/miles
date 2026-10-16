@@ -10,6 +10,7 @@ from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import (  # noqa: E402
     compress_keys_by_mean,
     compress_keys_by_mean_packed,
     packed_block_causal_mask,
+    selected_blocks,
 )
 
 RATIO = 4
@@ -99,6 +100,24 @@ def test_layout_block_local_positions_restart_per_sequence():
     expected = torch.cat([torch.arange(-(-length // RATIO)) for length in LENS])
     torch.testing.assert_close(layout.block_local, expected)
     assert layout.num_blocks == sum(-(-length // RATIO) for length in LENS)
+
+
+def test_selected_blocks_name_the_indexer_blocks():
+    """The block ids handed to the packed kernel round-trip the indexer's token rows."""
+    cu, total, positions, _ = _fixture()
+    layout = PackedBlockLayout(cu, positions, RATIO)
+    valid = packed_block_causal_mask(positions, layout, RATIO)
+    torch.manual_seed(0)
+    logits = torch.rand(total, layout.num_blocks).masked_fill(~valid, float("-inf"))
+    scores, block_idx = torch.topk(logits, 3, dim=-1)
+    block_idx = block_idx.masked_fill(scores == float("-inf"), -1)
+
+    # the expansion Qwen38NextQSAIndexer.forward applies to its top-k blocks
+    block_local = block_idx - layout.token_block_start.unsqueeze(-1)
+    tokens = layout.token_start.unsqueeze(-1).unsqueeze(-1) + (block_local.unsqueeze(-1) * RATIO + torch.arange(RATIO))
+    tokens = tokens.masked_fill(block_idx.unsqueeze(-1) < 0, -1).flatten(-2)
+
+    torch.testing.assert_close(selected_blocks(tokens, layout, RATIO), block_idx)
 
 
 @pytest.mark.parametrize("lens", [[37, 13], [64, 64], [1, 41]])
