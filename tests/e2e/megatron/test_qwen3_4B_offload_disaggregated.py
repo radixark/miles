@@ -27,6 +27,7 @@ register_cuda_ci(
 register_rocm_ci(est_time=300, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "weight-update"])
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 
 def prepare():

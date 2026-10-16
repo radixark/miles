@@ -23,6 +23,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     # tp2/pp1/cp1/ep4: dense DP2 with EP4 folded over TP x DP. TP=4 hits the Qwen3.5

@@ -13,6 +13,9 @@
   gate. It is active only when the store returns >=1 trusted baseline value
   for the (identity, coordinate), and compares against the mean of those
   values. Zero trusted values means INACTIVE -- a cold start, not a failure.
+* A spec with constraint None is TRACKED: its value is recorded and reported
+  against the mean of its own trusted history, but never judged, so it
+  neither fails nor untrusts a run, even when the metric is missing.
 * The run is trusted iff every *active* check passed for every coordinate.
 * The gate is pure and read-only: the store is injected via
   :class:`MetricHistoryStore` and the only store call is
@@ -58,6 +61,7 @@ class GateStatus(Enum):
     PASS = "pass"
     FAIL = "fail"
     INACTIVE = "inactive"  # check not applicable: historical cold start
+    TRACKED = "tracked"  # recorded and compared to its own history, never judged
     ERROR = "error"  # the metric could not be selected (missing/empty series, bad step)
 
 
@@ -88,7 +92,7 @@ class MetricGateResult:
 
     @property
     def trusted(self) -> bool:
-        return self.historical_status in (GateStatus.PASS, GateStatus.INACTIVE)
+        return self.historical_status in (GateStatus.PASS, GateStatus.INACTIVE, GateStatus.TRACKED)
 
 
 @dataclass(frozen=True)
@@ -160,6 +164,7 @@ def _registry_for(filename: str) -> CIRegistry:
 
 
 def _error_result(spec: CiGateSpec, reason: str) -> MetricGateResult:
+    tracked = spec.constraint is None
     return MetricGateResult(
         metric_key=spec.metric_key,
         steps_key=spec.steps_key,
@@ -167,10 +172,10 @@ def _error_result(spec: CiGateSpec, reason: str) -> MetricGateResult:
         step=None,
         at_step=None,
         current=None,
-        historical_status=GateStatus.ERROR,
+        historical_status=GateStatus.TRACKED if tracked else GateStatus.ERROR,
         baseline_n=0,
         baseline_mean=None,
-        reason=reason,
+        reason=f"tracked: {reason}" if tracked else reason,
     )
 
 
@@ -216,6 +221,27 @@ def evaluate_coordinate(
 ) -> MetricGateResult:
     """Compare one selected value; live gating and offline replay share this rule."""
     reasons: list[str] = []
+    if spec.constraint is None:
+        baseline_mean = sum(trusted_values) / len(trusted_values) if trusted_values else None
+        if baseline_mean is None:
+            reason = f"tracked: cur={current:.6g}, no history yet"
+        elif baseline_mean == 0:
+            reason = f"tracked: cur={current:.6g} vs mean=0 (n={len(trusted_values)})"
+        else:
+            change = (current - baseline_mean) / abs(baseline_mean)
+            reason = f"tracked: cur={current:.6g} vs mean={baseline_mean:.6g} (n={len(trusted_values)}, {change:+.1%})"
+        return MetricGateResult(
+            metric_key=spec.metric_key,
+            steps_key=spec.steps_key,
+            constraint_key=spec.constraint_key,
+            step=step,
+            at_step=at_step,
+            current=current,
+            historical_status=GateStatus.TRACKED,
+            baseline_n=len(trusted_values),
+            baseline_mean=baseline_mean,
+            reason=reason,
+        )
     if not trusted_values:
         historical_status = GateStatus.INACTIVE
         baseline_mean = None
