@@ -5,9 +5,11 @@ from torch import nn
 from torchtitan.distributed.pipeline_parallel import pipeline_llm
 from torchtitan.models.common import Embedding, Linear
 from torchtitan.models.common.config_utils import make_moe_config, make_routed_experts_config, make_router_config
+from torchtitan.models.common.moe import MoE
 from torchtitan.protocols.model_spec import ModelSpec
 
 from miles.backends.torchtitan_utils.models.step5.layers import (
+    Step5Attention,
     Step5FeedForward,
     Step5FinalRMSNorm,
     Step5GroupedExperts,
@@ -147,7 +149,7 @@ def _ffn(arch: _Architecture, hidden_dim: int) -> Step5FeedForward.Config:
     )
 
 
-def _moe(arch: _Architecture):
+def _moe(arch: _Architecture) -> MoE.Config:
     routed = make_routed_experts_config(
         dim=arch.dim,
         hidden_dim=arch.moe_hidden_dim,
@@ -179,7 +181,7 @@ def _moe(arch: _Architecture):
     )
 
 
-def _attention(arch: _Architecture, *, layer_type: str):
+def _attention(arch: _Architecture, *, layer_type: str) -> Step5Attention.Config:
     q_dim, kv_dim = arch.n_heads * arch.head_dim, arch.n_kv_heads * arch.head_dim
     common = dict(
         n_heads=arch.n_heads,

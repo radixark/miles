@@ -1,7 +1,7 @@
 """Step5 blocks for torchtitan, numerically following the Megatron model in ``miles_plugins/models/step5``.
 
 Norm weights are FP32 and round their output once to BF16; q and k rotate in FP32 with their attention
-type's RoPE; each head's output is scaled by a sigmoid gate; every SwiGLU clamps to 7.
+type's RoPE; each head's output is scaled by a sigmoid gate; every SwiGLU is clamped.
 """
 
 from dataclasses import dataclass
@@ -176,11 +176,11 @@ class Step5SlidingWindowAttention(Step5Attention):
 
     def __init__(self, config: Config):
         super().__init__(config)
-        # torch's default flash kernel: the FA4 one torchtitan activates on Blackwell rejects 192-wide heads
         self.window = config.window
 
     def _attend(self, x_TD, query, key, value, sequence: PackedSequence) -> torch.Tensor:
         spans = sequence.window
+        # torch's default flash kernel: the FA4 one torchtitan activates on Blackwell rejects 192-wide heads
         return varlen_attn(
             query,
             sequence.window_keys(key),
