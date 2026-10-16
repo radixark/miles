@@ -1703,7 +1703,8 @@ class TestEvalSglangOverrides:
     """Unset means "inherit --sglang-*", so an unset flag must leave no attribute at all."""
 
     def _parse(self, argv):
-        return add_sglang_arguments(argparse.ArgumentParser()).parse_args(argv)
+        # Like Megatron's parser: no prefix matching, so a flag SGLang dropped fails instead of hitting a longer one.
+        return add_sglang_arguments(argparse.ArgumentParser(allow_abbrev=False)).parse_args(argv)
 
     def test_unset_flags_produce_no_overrides(self):
         args = self._parse(["--sglang-mem-fraction-static", "0.7"])
@@ -1718,10 +1719,10 @@ class TestEvalSglangOverrides:
         assert args.sglang_mem_fraction_static == 0.7
 
     def test_boolean_can_be_turned_back_off(self):
-        args = self._parse(["--sglang-enable-dp-attention", "--no-eval-sglang-enable-dp-attention"])
+        args = self._parse(["--sglang-enable-torch-compile", "--no-eval-sglang-enable-torch-compile"])
 
-        assert args.sglang_enable_dp_attention is True
-        assert collect_eval_sglang_overrides(args) == {"enable_dp_attention": False}
+        assert args.sglang_enable_torch_compile is True
+        assert collect_eval_sglang_overrides(args) == {"enable_torch_compile": False}
 
     def test_parallel_sizes_keep_server_args_destinations(self):
         args = self._parse(["--eval-sglang-data-parallel-size", "2", "--eval-sglang-expert-parallel-size", "4"])
