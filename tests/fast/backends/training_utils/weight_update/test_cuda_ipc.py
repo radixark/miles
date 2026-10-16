@@ -205,7 +205,7 @@ class TestIpcBucketRing:
         assert _ipc_ref_counter(base64.b64encode(data).decode()) == ("/torch_4242_1518968791_17", 9)
         assert _ipc_ref_counter(pickle.dumps({"metadata": []})) is None
 
-    def test_ring_handshake_broadcasts_the_engine_verdict_to_every_rank(self) -> None:
+    def test_ring_handshake_shares_the_engine_verdict_with_every_rank(self) -> None:
         """With the ring, a non-source rank waits for the gather-source rank's verdict and raises on an engine error
         instead of running ahead into the next bucket."""
         protocol = UpdateWeightFromTensor.__new__(UpdateWeightFromTensor)
@@ -218,19 +218,23 @@ class TestIpcBucketRing:
         protocol._ipc_engine = None
         protocol._selector = "all"
 
-        def broadcast(obj_list, src, group):
-            assert src == 0 and group is protocol._ipc_gather_group
-            obj_list[0] = "RuntimeError: engine said no"
+        def all_gather(obj_list, obj, group):
+            assert group is protocol._ipc_gather_group
+            assert obj is None  # this rank holds no futures, so it has no error of its own
+            assert len(obj_list) == 8
+            obj_list[0] = "rank 0: RuntimeError: engine said no"
 
         with (
             patch(f"{_TENSOR_MODULE}.dist") as dist_mock,
             patch(f"{_TENSOR_MODULE}._send_to_colocated_engine", return_value=([], [], ["payload"])),
         ):
             dist_mock.get_rank.return_value = 3  # not the gather source: holds no futures
-            dist_mock.broadcast_object_list.side_effect = broadcast
+            dist_mock.get_world_size.return_value = 8
+            dist_mock.all_gather_object.side_effect = all_gather
             with pytest.raises(RuntimeError, match="engine said no"):
                 protocol.send_bucket([("w", torch.zeros(1))])
-            dist_mock.broadcast_object_list.assert_called_once()
+            dist_mock.all_gather_object.assert_called_once()
+            dist_mock.barrier.assert_not_called()
 
 
 class TestIpcBucketRingStage:
@@ -264,7 +268,14 @@ class TestIpcBucketRingStage:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import _IpcBucketRing
 
         ring = _IpcBucketRing(slots, min_bytes=min_bytes, reshare=reshare)
-        ring._share_once = self._fake_share  # type: ignore[method-assign]
+
+        def fake_share(buf: torch.Tensor):
+            # the real _share_once records the ref-counter file of the one-time share; mirror that side effect
+            fn, args = self._fake_share(buf)
+            ring._note_counter_file(args[_IpcBucketRing._ARG_REF_COUNTER_HANDLE])
+            return fn, args
+
+        ring._share_once = fake_share  # type: ignore[method-assign]
         return ring
 
     def test_slots_rotate_and_the_cached_share_carries_the_bucket_length(self) -> None:
