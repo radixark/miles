@@ -13,7 +13,8 @@ Runs referred to:
   - **Retry 1:** 04:33 to 06:15, steps 25–34.
   - **Retry 2:** 06:45 to 15:19, steps 35–97; died with `ENOSPC`.
   - **Retry 3:** 15:24 to 15:26; died with `ENOSPC` at startup.
-  - **Retry 4:** from 15:30, resumed from `iter_0000094`.
+  - **Retry 4:** 15:30 to 22:40, steps 95–149; rollout node declared dead.
+  - **Retry 5** (the last of `retries: 5`): from 22:45, resumed from `iter_0000149`.
 
 ## Open decisions
 
@@ -39,6 +40,19 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 ## Ideas to explore
 
 Larger directions to evaluate against the evidence below. Add yours here.
+
+## 2026-10-16: rollout node declared dead again (retry 4 failure)
+
+- **What happened:** the weight sync after step 149 (22:08:43 to 22:17:04) took 498 s, its 34 chunks slowing from
+  about 5 s to 20–30 s each, against 2–3 s for the whole sync otherwise. No step trained after it. At 22:39 the
+  podman daemons on rollout node `10.93.2.35` dropped connections (`tmax_sandbox` benched them), the router could no
+  longer reach that node's engines, Ray reported `raylet has lagging heartbeats due to slow network or busy
+  workload` and then `The actor died because its node has died`, and the job failed at 22:40.
+- **Before it:** the node's engines decoded at 70–106 tokens/s per request up to the sync, with no failed session
+  collections, so the slowdown came on fast.
+- **Reading:** the same sequence as retry 1 (a 320 s sync, then the node declared dead 20 minutes later): a rollout
+  node too busy for Ray's heartbeats. No step was lost; `iter_0000149` was saved at 22:08.
+- **Options:** L (the gateway backend) removes the sandboxes from the rollout nodes; A–C otherwise.
 
 ## 2026-10-16: `oe-adapt` Weka volume full (retry 2 and 3 failures)
 
