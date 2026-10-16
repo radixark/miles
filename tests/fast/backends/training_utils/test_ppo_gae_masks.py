@@ -81,6 +81,28 @@ def _compute(
 
 
 @pytest.mark.parametrize("chunked", [False, True])
+def test_truncated_bootstrap_crosses_masked_tail(chunked: bool) -> None:
+    advantages, returns = get_advantages_and_returns_batch(
+        total_lengths=[5, 5],
+        response_lengths=[4, 4],
+        values_list=[torch.tensor([1.0, 2.0, 9.0, 9.0]), torch.tensor([1.0, 2.0, 9.0, 9.0])],
+        rewards_list=[torch.zeros(4), torch.zeros(4)],
+        terminal_rewards=[3.0, 3.0],
+        qkv_format="thd",
+        max_seq_lens=None,
+        loss_masks=[torch.tensor([1, 1, 0, 0]), torch.tensor([1, 1, 0, 0])],
+        gamma=0.9,
+        lambd=1.0,
+        chunked=chunked,
+        bootstrap_values=[torch.tensor([4.0]), torch.tensor([0.0])],
+    )
+    torch.testing.assert_close(advantages[0], torch.tensor([4.94, 4.6, 0.0, 0.0]))
+    torch.testing.assert_close(returns[0], torch.tensor([5.94, 6.6, 0.0, 0.0]))
+    torch.testing.assert_close(advantages[1], torch.tensor([1.7, 1.0, 0.0, 0.0]))
+    torch.testing.assert_close(returns[1], torch.tensor([2.7, 3.0, 0.0, 0.0]))
+
+
+@pytest.mark.parametrize("chunked", [False, True])
 def test_masked_gap_matches_compressed_reference(chunked: bool) -> None:
     torch.manual_seed(0)
     mask = torch.tensor([1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0])
