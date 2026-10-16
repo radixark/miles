@@ -1,5 +1,6 @@
 import functools
 import ipaddress
+import json
 import logging
 import os
 import shlex
@@ -15,6 +16,8 @@ from miles.utils.lora.utils import (
     lora_base_cpu_backup_enabled,
     lora_rollout_enabled,
 )
+from miles.utils.object_store import MOONCAKE_KEY_PREFIX
+from miles.utils.object_store_config import compute_mooncake_connection_config
 from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
@@ -142,6 +145,8 @@ def _compute_server_args(
         kwargs["enable_return_routed_experts"] = True
     if args.use_rollout_indexer_replay:
         kwargs["enable_return_indexer_topk"] = True
+    if args.sglang_output_store_backend != "none":
+        kwargs["output_store_backend"] = args.sglang_output_store_backend
     if args.fp16:
         kwargs["dtype"] = "float16"
     if engine_info_bootstrap_port is not None:
@@ -199,6 +204,20 @@ def _compute_server_args(
         for key in unused_keys:
             kwargs.pop(key)
 
+    # After the group overrides: the eval engines' "none" keeps them out of the store, and the derived
+    # extra config replaces any override of it, because the readers can only read what it describes.
+    if kwargs.get("output_store_backend", "none") != "none":
+        # TODO: support PD. Prefill and decode would each write a bundle, but the PD router merges only
+        # inline routed_experts, so the decode ref keeps prompt rows decode never computed. One option:
+        # hand prefill's rows to decode with the KV, so decode writes one complete bundle.
+        assert worker_type not in (WorkerType.PREFILL, WorkerType.DECODE), (
+            f"--sglang-output-store-backend does not support PD disaggregation, "
+            f"but a {worker_type.value} engine enables it"
+        )
+        kwargs["output_store_backend_extra_config"] = _compute_output_store_extra_config(
+            args, local_hostname=host.strip("[]")
+        )
+
     if is_multi_lora_enabled(args):
         assert kwargs.get("load_format") != "dummy", "Tinker engines must load the frozen base from disk"
         if kwargs.get("max_loaded_loras") is None:
@@ -210,6 +229,29 @@ def _compute_server_args(
         kwargs["device"] = "cuda"
 
     return kwargs
+
+
+def _compute_output_store_extra_config(args, *, local_hostname: str) -> str:
+    """One engine's ``--output-store-backend-extra-config``: a client of Miles' own Mooncake store,
+    built and checked by the class the engine parses it with."""
+    # Deferred: SGLang builds without the output store lack this module, and only this path needs it.
+    import msgspec
+    from sglang.srt.managers.output_store import OutputStoreConfig
+
+    config = OutputStoreConfig.from_extra_config(
+        json.dumps(
+            {
+                # Startup validation keeps the user's keys apart from the derived ones below.
+                **args.sglang_output_store_client_config,
+                **compute_mooncake_connection_config(args.mooncake_store_init_kwargs or {}),
+                # Mooncake checks a bundle's key against the reader's prefix.
+                "key_prefix": MOONCAKE_KEY_PREFIX,
+                "replica_num": args.mooncake_replica_num,
+                "local_hostname": local_hostname,
+            }
+        )
+    )
+    return msgspec.json.encode(config).decode()
 
 
 @functools.cache

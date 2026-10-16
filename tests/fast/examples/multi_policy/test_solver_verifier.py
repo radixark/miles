@@ -50,6 +50,7 @@ def _make_input(*, prompt: str | list[dict[str, str]], label: str) -> GenerateFn
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         use_sampling_support_replay=False,
+        sglang_output_store_backend="none",
         lora_rank=0,
         lora_adapter_path=None,
     )

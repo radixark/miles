@@ -39,6 +39,8 @@ class CaseConfig:
     # Off: no draft runs, the trainer builds no MTP layer, and the weight check covers the target only.
     use_spec: bool = True
     use_r3: bool = True
+    # Return the replay outputs through SGLang's output store, over Mooncake RDMA, instead of inline.
+    use_output_store: bool = False
     # "bshd" (Megatron only) trains fixed micro-batches of micro_batch_size samples instead of
     # dynamic THD batches.
     qkv_format: str = "thd"
@@ -89,6 +91,8 @@ class CaseConfig:
             raise ValueError(
                 f"the blockwise FP8 checkpoint needs SGLang attention TP <= 2: {self.sglang_attn_tp_size=}"
             )
+        if self.use_output_store and not self.use_r3:
+            raise ValueError("use_output_store moves the R3 outputs, so it requires use_r3=True")
         if self.sglang_deepep_dispatcher_output_dtype is not None and not self.use_deepep:
             raise ValueError("sglang_deepep_dispatcher_output_dtype requires use_deepep=True")
         if (self.qkv_format == "bshd") != (self.micro_batch_size is not None):
@@ -282,6 +286,13 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
     if case.fully_async:
         misc_args += "--fully-async "
+
+    if case.use_output_store:
+        # rdma so the bundles cross the runner's RoCE NICs; the backend starts the master it names.
+        misc_args += command_utils.get_mooncake_object_store_args(protocol="rdma")
+        misc_args += "--sglang-output-store-backend mooncake "
+        # Each engine stages its puts through this buffer; an 8k-token R3 bundle here is about 6 MB.
+        misc_args += '--sglang-output-store-client-config \'{"local_buffer_size": "1gb"}\' '
 
     if case.use_deepep:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "

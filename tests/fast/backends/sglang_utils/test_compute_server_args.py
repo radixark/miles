@@ -24,6 +24,7 @@ def make_args(**overrides: object) -> SimpleNamespace:
         sglang_mem_fraction_static=0.7,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        sglang_output_store_backend="none",
         fp16=False,
         lora_adapter_path=None,
         debug_rollout_only=False,
@@ -167,3 +168,75 @@ class TestAdapterOwnership:
         server_args = compute(make_args(lora_rank=8, lora_adapter_path="/fake/adapter", **{flag: True}))
 
         assert server_args["lora_paths"] == ["miles_lora=/fake/adapter"]
+
+
+class TestOutputStore:
+    """Miles makes every training engine a client of its own Mooncake store."""
+
+    @pytest.fixture(autouse=True)
+    def _server_args_with_output_store(self, monkeypatch):
+        server_args_type = dataclasses.make_dataclass(
+            "ServerArgs",
+            [("gated_launch_port", int), ("output_store_backend", str), ("output_store_backend_extra_config", str)],
+        )
+        monkeypatch.setattr(sglang_engine, "ServerArgs", server_args_type)
+        for name in ("MOONCAKE_MASTER", "MOONCAKE_PROTOCOL", "MOONCAKE_TE_META_DATA_SERVER", "MOONCAKE_DEVICE"):
+            monkeypatch.delenv(name, raising=False)
+
+    @pytest.fixture
+    def output_store_config(self):
+        """The class each engine parses its extra config with; Miles builds the config through it."""
+        return pytest.importorskip("sglang.srt.managers.output_store").OutputStoreConfig
+
+    @staticmethod
+    def _args(local_buffer_size: object = "4gb") -> SimpleNamespace:
+        return make_args(
+            sglang_output_store_backend="mooncake",
+            sglang_output_store_client_config={"local_buffer_size": local_buffer_size, "chunk_bytes": 1 << 20},
+            mooncake_store_init_kwargs={"master_server_address": "10.0.0.1:50051", "protocol": "tcp"},
+            mooncake_replica_num=2,
+        )
+
+    def test_each_engine_joins_the_miles_store_with_its_own_address(self, output_store_config):
+        server_args = compute(
+            self._args(),
+            host="10.0.0.7",
+            sglang_overrides={"output_store_backend_extra_config": '{"key_prefix": "other"}'},
+        )
+
+        assert server_args["output_store_backend"] == "mooncake"
+        # The derived config replaces a group override: the readers can only read what it describes.
+        assert output_store_config.from_extra_config(
+            server_args["output_store_backend_extra_config"]
+        ) == output_store_config(
+            master_server_address="10.0.0.1:50051",
+            protocol="tcp",
+            metadata_server="P2PHANDSHAKE",
+            device_name="",
+            key_prefix="miles-object-store",
+            replica_num=2,
+            local_hostname="10.0.0.7",
+            local_buffer_size=4 * 1024**3,
+            chunk_bytes=1 << 20,
+        )
+
+    def test_sglangs_parser_rejects_a_bad_user_value_when_miles_builds_the_config(self, output_store_config):
+        with pytest.raises(ValueError, match="Invalid size"):
+            compute(self._args(local_buffer_size=["4gb"]))
+
+    def test_a_group_that_turns_it_off_gets_no_extra_config(self):
+        server_args = compute(self._args(), sglang_overrides={"output_store_backend": "none"})
+
+        assert server_args["output_store_backend"] == "none"
+        assert "output_store_backend_extra_config" not in server_args
+
+    def test_engines_stay_out_of_the_store_by_default(self):
+        server_args = compute(make_args())
+
+        assert server_args["output_store_backend"] == "none"
+        assert "output_store_backend_extra_config" not in server_args
+
+    @pytest.mark.parametrize("worker_type", [WorkerType.PREFILL, WorkerType.DECODE])
+    def test_pd_engines_cannot_enable_it(self, worker_type):
+        with pytest.raises(AssertionError, match="PD disaggregation"):
+            compute(self._args(), worker_type=worker_type, disaggregation_bootstrap_port=1)

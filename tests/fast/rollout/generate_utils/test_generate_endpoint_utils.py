@@ -10,6 +10,7 @@ def _make_args() -> SimpleNamespace:
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         use_sampling_support_replay=False,
+        sglang_output_store_backend="none",
         rollout_top_logprobs_num=0,
         lora_rank=0,
         lora_adapter_path=None,

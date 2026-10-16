@@ -353,6 +353,8 @@ def _eval_sglang_overrides(args) -> dict:
         "enable_return_routed_experts": False,
         "enable_return_indexer_topk": False,
     }
+    if args.sglang_output_store_backend != "none":
+        overrides["output_store_backend"] = "none"
     if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
         # Inheriting these across a different tp gives an engine SGLang refuses to boot.
         tp_coupled = ("dp_size", "pp_size", "ep_size", "attn_cp_size")

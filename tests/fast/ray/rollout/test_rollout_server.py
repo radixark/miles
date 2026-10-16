@@ -47,9 +47,18 @@ class TestRolloutServerPureFunctions:
         # Eval samples never feed training, so the replay side-channels are forced off.
         assert group.overrides["enable_return_routed_experts"] is False
         assert group.overrides["enable_return_indexer_topk"] is False
+        assert "output_store_backend" not in group.overrides
 
         # The fleet boots on --hf-checkpoint; every eval overwrites those weights anyway.
         assert group.model_path == args.hf_checkpoint
+
+    def test_eval_fleet_stays_out_of_the_output_store(self):
+        """Eval requests never ask for outputs via the store, so eval engines need no Mooncake client."""
+        args = make_args(eval_num_gpus=2, eval_num_gpus_per_engine=2, sglang_output_store_backend="mooncake")
+
+        [eval_model] = [m for m in resolve_sglang_config(args).models if m.name == "eval"]
+        [group] = eval_model.server_groups
+        assert group.overrides["output_store_backend"] == "none"
 
     def test_tp_coupled_sizes_are_not_inherited_across_a_different_eval_tp(self):
         """Inheriting these across a different eval tp gives an engine that will not boot."""

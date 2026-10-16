@@ -5,6 +5,8 @@ from typing import Any
 
 MOONCAKE_MASTER_PORT = 50051
 MOONCAKE_MASTER_ADDRESS_KEY = "master_server_address"
+# Fields every client of one Mooncake cluster must agree on, keyed by init kwarg.
+MOONCAKE_CONNECTION_KEYS = (MOONCAKE_MASTER_ADDRESS_KEY, "protocol", "metadata_server", "device_name")
 
 _GLOBAL_SEGMENT_SIZE_KEY = "global_segment_size"
 _MISSING = object()
@@ -25,6 +27,15 @@ def compute_mooncake_init_kwargs_from_env() -> dict:
         field.init_kwarg: value
         for field in _MOONCAKE_STORE_FIELDS
         if field.init_kwarg in defaulted_init_kwargs and (value := os.environ.get(field.env_var)) is not None
+    }
+
+
+def compute_mooncake_connection_config(init_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """The connection fields Miles' own clients resolve, keyed by init kwarg, for another client to reuse."""
+    return {
+        field.init_kwarg: field.parse(_resolve_field(field, init_kwargs=init_kwargs))
+        for field in _MOONCAKE_STORE_FIELDS
+        if field.init_kwarg in MOONCAKE_CONNECTION_KEYS
     }
 
 

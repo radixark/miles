@@ -7,7 +7,7 @@ from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, pre
 register_cuda_ci(
     est_time=1700,
     suite="stage-c-4-gpu-h200",
-    labels=["megatron", "weight-update", "replay"],
+    labels=["megatron", "weight-update", "replay", "mooncake"],
     hardware=["hopper", "blackwell"],
     num_gpus=4,
 )
@@ -21,6 +21,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 # NCCL broadcast from a disaggregated CP2 trainer (EP2 folded onto the CP ranks) into one TP2
 # engine, with R3, MTP training and EAGLE on. Each train GPU holds the dense part plus half the
 # experts, so the response cap and max_tokens_per_gpu keep each CP rank to about 2k tokens.
+# The R3 rows come back through the SGLang output store, which the replay check then validates.
 CASE = CaseConfig(
     use_deepep=False,
     num_gpus_per_node=2,
@@ -34,6 +35,7 @@ CASE = CaseConfig(
     update_weight_transfer_mode="broadcast",
     max_tokens_per_gpu=2048,
     rollout_max_response_len=4096,
+    use_output_store=True,
 )
 
 

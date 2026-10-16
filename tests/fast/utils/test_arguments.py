@@ -27,6 +27,7 @@ from miles.utils.arguments import (
     _resolve_run_uuid,
     _resolve_sample_ownership_check,
     _validate_deploy_component,
+    _validate_output_store_cluster_backend,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -846,6 +847,14 @@ class TestClusterBackend:
         miles_validate_args(args)
 
         assert args.cluster_backend == "kubernetes"
+
+    def test_a_kubernetes_run_cannot_take_the_output_store_yet(self):
+        """A Kubernetes engine binds 0.0.0.0, so a store client registered there is one no reader can fetch from."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
+        args.sglang_output_store_backend = "mooncake"
+
+        with pytest.raises(AssertionError, match="does not support --cluster-backend kubernetes yet"):
+            _validate_output_store_cluster_backend(args)
 
     def test_the_custom_config_file_still_decides_the_backend(self, tmp_path):
         """The config file overwrites args after the flags are parsed, so its backend must be the one that survives."""

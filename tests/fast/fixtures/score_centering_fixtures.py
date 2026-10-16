@@ -31,6 +31,7 @@ def _args(**overrides: object) -> Namespace:
         rollout_top_p=1.0,
         rollout_top_k=-1,
         use_sampling_support_replay=False,
+        sglang_output_store_backend="none",
         advantage_estimator="grpo",
         rewards_normalization=False,
         reward_key=None,
