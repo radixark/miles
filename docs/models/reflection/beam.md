@@ -130,11 +130,6 @@ Adam at a constant `--lr 1e-6`, no weight decay, gradient clip 1.0, distributed 
 
 The engines serve BF16 with `--sglang-attention-backend triton --sglang-moe-runner-backend triton` and chunked prefill 8192. `--sglang-max-running-requests` and `--sglang-cuda-graph-max-bs-decode` are each engine's share of the 256 responses. The trainer sends new weights after every rollout.
 
-### 5.5 Notable quirks
-
-- **AIME25 prompts carry the answer-format instruction**: the grader requires `\boxed{}`, and on bare AIME problems the policy drops it as its final message gets shorter. `prepare` writes the wrapped file the evals read.
-- **FP32 router**: Megatron casts the router weight to the parameter dtype; the Beam plugin keeps it in FP32, as the checkpoint stores it and SGLang serves it.
-
 ## 6. LoRA RL
 
 `scripts/run_beam_lora.py` keeps the math recipe of `run_beam.py` (data, reward, GRPO objective, batch and lengths) but trains a LoRA adapter on the frozen BF16 base. It runs on four 8×H200 nodes, launched as in [4.4](#4-4-lora-4-nodes): 16 trainers at TP 8 / EP 16 / expert-TP 1 and one TP16 rollout engine. There is no colocated variant.
