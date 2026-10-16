@@ -59,7 +59,24 @@ def _resolve_adapter_targets(megatron_module, checkpoint_parameters, selected, *
     return [megatron_module]
 
 
-def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapping, canonical, exclude_modules=()):
+def _resolve_module_subset(selections, *, canonical):
+    by_module = {}
+    for megatron_parameter, checkpoint_parameters, selected in selections:
+        by_module.setdefault(megatron_parameter.rsplit(".", 1)[0], []).append((checkpoint_parameters, selected))
+    adapter_targets = {}
+    for module, module_selections in by_module.items():
+        if not any(selected for _, selected in module_selections):
+            continue
+        for checkpoint_parameters, selected in module_selections:
+            adapter_targets.update(
+                dict.fromkeys(_resolve_adapter_targets(module, checkpoint_parameters, selected, canonical=canonical))
+            )
+    return adapter_targets
+
+
+def resolve_megatron_lora_targets(
+    targets, mappings, *, parameter_names, hf_mapping, canonical, exclude_modules=(), module_subsets=False
+):
     adapter_targets = {}
     matched_megatron_parameters = set()
     for mapping in mappings:
@@ -81,15 +98,18 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
                 megatron_module=megatron_module,
                 exclude_modules=exclude_modules,
             )
-            selections.append((checkpoint_parameters, selected))
-        if not any(selected for _, selected in selections):
+            selections.append((megatron_parameter, checkpoint_parameters, selected))
+        if not any(selected for _, _, selected in selections):
+            continue
+        if not all(selected for _, _, selected in selections):
+            assert (
+                module_subsets
+            ), f"LoRA cannot select a subset of parameters in {mapping.megatron_param!r} with pipeline parallelism"
+            adapter_targets.update(_resolve_module_subset(selections, canonical=canonical))
             continue
         # Template injection must select the same projections for every layer/expert it matches.
-        assert all(
-            selected for _, selected in selections
-        ), f"LoRA cannot select a subset of parameters in {mapping.megatron_param!r}"
         adapter_selections = set()
-        for checkpoint_parameters, selected in selections:
+        for _, checkpoint_parameters, selected in selections:
             selected_adapters = _resolve_adapter_targets(
                 megatron_module, checkpoint_parameters, selected, canonical=canonical
             )
