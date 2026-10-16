@@ -25,7 +25,7 @@ SOURCES = {
 }
 
 
-def run_check(tmp_path, wheels, selected, *, event="workflow_dispatch", force="true", failure=None, built=None):
+def run_check(tmp_path, wheels, selected, *, force="true", failure=None, built=None):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -59,7 +59,6 @@ def run_check(tmp_path, wheels, selected, *, event="workflow_dispatch", force="t
             "GITHUB_REPOSITORY": "radixark/miles",
             "GITHUB_OUTPUT": str(output),
             "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
-            "EVENT": event,
             "WHEELS_INPUT": wheels,
             "FORCE": force,
             "TE_REF": "miles-main",
@@ -85,15 +84,6 @@ def test_scoped_dispatch_does_not_resolve_other_sources(tmp_path, wheels):
         assert outputs[output] == (SOURCES[name][1] if name == wheels else "")
 
 
-def test_schedule_does_not_resolve_disabled_te_source(tmp_path):
-    result, outputs = run_check(tmp_path, "all", ["sgl-router", "int4_qat"], event="schedule")
-    assert result.returncode == 0, result.stderr
-    assert outputs["te_x86"] == "false"
-    assert outputs["te_sha"] == ""
-    assert outputs["int4_x86"] == "true"
-    assert len(json.loads(outputs["router_matrix"])) == 2
-
-
 @pytest.mark.parametrize("built", [None, "d" * 40, "a" * 40])
 def test_router_builds_only_when_manifest_is_missing_or_stale(tmp_path, built):
     result, outputs = run_check(tmp_path, "sgl-router", ["sgl-router"], force="false", built=built)
@@ -113,7 +103,7 @@ def test_selected_lookup_failure_stops_the_run(tmp_path, failure):
     assert not outputs
 
 
-@pytest.mark.parametrize("te_on_schedule,keep", [(False, False), (False, True), (True, False)])
+@pytest.mark.parametrize("keep", [False, True])
 @pytest.mark.parametrize(
     "arch,build_arch,sets",
     [
@@ -123,9 +113,7 @@ def test_selected_lookup_failure_stops_the_run(tmp_path, failure):
     ],
 )
 @pytest.mark.parametrize("upload_fails", [False, True])
-def test_publish_retains_only_te_during_transition(
-    tmp_path, te_on_schedule, keep, arch, build_arch, sets, upload_fails
-):
+def test_publish_keeps_superseded_wheels_only_when_asked(tmp_path, keep, arch, build_arch, sets, upload_fails):
     steps = WORKFLOW["jobs"]["publish"]["steps"]
     download = next(step["with"] for step in steps if step.get("uses") == "actions/download-artifact@v4")
     for name in sets:
@@ -164,7 +152,6 @@ def test_publish_retains_only_te_during_transition(
             "BUILD_ARCH": build_arch,
             "CUDA": "130",
             "TORCH": "213",
-            "TE_ON_SCHEDULE": str(te_on_schedule).lower(),
             "KEEP_SUPERSEDED": "--keep-superseded" if keep else "",
             "UPLOAD_FAILS": str(upload_fails).lower(),
         },
@@ -181,7 +168,7 @@ def test_publish_retains_only_te_during_transition(
     for name in sets:
         upload = next(upload for upload in uploads if upload["files"] == [f"{name}.whl"])
         expected = ["upload", "--cuda", "130", "--arch", build_arch, "--torch", "213"]
-        if keep or (name == "te" and not te_on_schedule):
+        if keep:
             expected.append("--keep-superseded")
         assert upload["args"] == expected
 

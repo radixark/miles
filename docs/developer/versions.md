@@ -37,7 +37,7 @@ The default build-args are the version surface:
 
 | Build-arg | Default | What it selects |
 |---|---|---|
-| `SGLANG_IMAGE_TAG` | `v0.5.22` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
+| `SGLANG_IMAGE_TAG` | `v0.5.22` | The `lmsysorg/sglang` base image, which brings torch, CUDA, cuDNN and Mooncake |
 | `SGLANG_BRANCH` | `sglang-miles-v0.5.22` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
@@ -52,10 +52,10 @@ so the set of kernels in an image is one auditable name rather than a computed s
 
 Everything else is pinned inline where it is installed: `mbridge` and `Megatron-Bridge` and
 `torch_memory_saver` at explicit commits, `flash-linear-attention`, `tilelang` and friends at
-explicit versions. Transformer Engine is special: `docker/verify_transformer_engine.py`
-asserts the installed triplet is `2.17.0`, and the patches under `docker/patch/cu13/` are
-applied to it with a build failure if any patch does not apply cleanly, so an image can
-never ship silently unpatched TE. Mooncake comes from the base image unchanged; Miles'
+explicit versions. Transformer Engine is special: the wheels release carries the `+miles`
+triplet built from `radixark/TransformerEngine` `miles-main` (NVIDIA's release commit plus
+the fixes Miles carries), and `docker/verify_transformer_engine.py` asserts the installed
+triplet is `2.17.0+miles`. Mooncake comes from the base image unchanged; Miles'
 Mooncake object-store backend needs 0.3.12.post1 or newer, the first release whose
 `mooncake.structured_object_store` has the API Miles imports.
 
@@ -113,7 +113,7 @@ Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 1
 This is the part that decides whether your change needs a new image. A CUDA CI job starts
 from `radixark/miles:<tag>` and then:
 
-1. Installs `examples/multi_lora/requirements.txt` before `requirements.txt` through `tests/ci/reconcile_dependencies.py`. It preserves installed CUDA 12/13 cuDNN versions with uv overrides because TE needs a newer cuDNN than torch's exact pin; images without cuDNN use pip. Before each install, a dry-run gate rejects replacement of installed GPU runtimes or packages with at least 100 MiB of recorded installed files, including same-version reinstalls. Update these packages in the image.
+1. Installs `examples/multi_lora/requirements.txt` before `requirements.txt` through `tests/ci/reconcile_dependencies.py`. It preserves installed CUDA 12/13 cuDNN versions with uv overrides so a resolve cannot move cuDNN off the image's version; images without cuDNN use pip. Before each install, a dry-run gate rejects replacement of installed GPU runtimes or packages with at least 100 MiB of recorded installed files, including same-version reinstalls. Update these packages in the image.
 2. Resets both dependency checkouts and fetches the selected refs. Explicit dispatch or PR-body overrides win first, `release-lock.json` commits win when no override exists, and the moving `sglang-miles` / `miles-main` heads are the final defaults.
 3. Sets `PYTHONPATH` to the Miles workspace plus both source roots.
 
@@ -170,9 +170,9 @@ timestamped tag; the scheduled prune keeps every timestamped tag for at least 14
 
 | Symptom | Look at |
 |---|---|
-| `CUDNN_STATUS_BAD_PARAM` in a fused-attention backward | Something re-resolved cuDNN below the image's pin |
-| Build fails with "TE patch did not apply cleanly" | A `docker/patch/cu13/*.patch` no longer matches the new TE; rebase the patch or drop it if upstream fixed it |
-| TE triplet assertion at build time | The base image moved TE off `2.17.0`; update `docker/verify_transformer_engine.py` together with whatever depends on it |
+| `CUDNN_STATUS_BAD_PARAM` in a fused-attention backward | Something re-resolved cuDNN below the image's version |
+| Build fails with "expected exactly one TransformerEngine 2.17.0+miles wheel" | The wheels release lacks the TE triplet for that arch, or `miles-main` moved off `2.17.0`; rebuild it (`build-wheels.yml` on x86_64, by hand on aarch64) and update the Dockerfile globs together with `docker/verify_transformer_engine.py` |
+| `#error C++20 or later compatible compiler is required` while building a wheel | The new torch requires C++20 and the extension hard-codes `-std=c++17`; raise it in the extension's build flags, patching `setup.py` for a PyPI sdist |
 | `cannot import name 'FieldSchema' from 'mooncake.structured_object_store'` | The base image's Mooncake predates 0.3.12.post1, typically because `SGLANG_IMAGE_TAG` points at an older base |
 | A test passes locally but fails in CI, or the reverse | Compare the image tag and the two dependency refs or commits CI resolved. Every job logs all three |
 
