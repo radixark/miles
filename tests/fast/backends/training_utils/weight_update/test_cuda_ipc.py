@@ -194,15 +194,15 @@ class TestIpcBucketRing:
             4096,
             0,
             False,
-            "/torch_4242_17",
+            "/torch_4242_1518968791_17",
             9,
             b"\x02" * 64,
             False,
         )
         payload = {"flattened_tensor": ("rebuild", args), "metadata": [("b0.t0", "/torch_1_1 is only a name here", 3)]}
         data = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
-        assert _ipc_ref_counter(data) == ("/torch_4242_17", 9)
-        assert _ipc_ref_counter(base64.b64encode(data).decode()) == ("/torch_4242_17", 9)
+        assert _ipc_ref_counter(data) == ("/torch_4242_1518968791_17", 9)
+        assert _ipc_ref_counter(base64.b64encode(data).decode()) == ("/torch_4242_1518968791_17", 9)
         assert _ipc_ref_counter(pickle.dumps({"metadata": []})) is None
 
     def test_ring_handshake_broadcasts_the_engine_verdict_to_every_rank(self) -> None:
