@@ -14,6 +14,7 @@ networking, failure and preemption propagated to every replica, NCCL over Infini
 replica 0 the Ray head and joins the others to it.
 
 ``beaker:`` keys: cluster, workspace, budget, priority, preemptible, min_runtime, retries, nodes, gpus (per node),
+synchronized_start_timeout (multi-node: how long replicas wait for each other to start, default 1h),
 shared_memory, image, sandbox_shards, mirror_url (``auto``: the running registry_mirror.py mirrors), keep_last_n_checkpoints, weka (list of buckets, mounted at
 /weka/<bucket>), dockerhub_username, secrets (env var -> Beaker secret), env (extra env vars).
 """
@@ -123,6 +124,10 @@ def _build_spec(*, beaker: dict, config_rel: str, commit: str, overrides: list[s
             "hostNetworking": True,
             "propagateFailure": True,
             "propagatePreemption": True,
+            # Beaker cancels the other replicas when one has not started within this window (default 10 min) and
+            # does not retry the cancelled ones, which leaves a retried job with part of its nodes for good. A
+            # replica whose node fails Beaker's health check needs longer than 10 min to be placed elsewhere.
+            "synchronizedStartTimeout": beaker.get("synchronized_start_timeout", "1h"),
         }
         if nodes > 1
         else {}
