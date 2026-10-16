@@ -1,11 +1,10 @@
-from miles.kernels.attention.qsa.block_sparse_attention import (
-    qsa_block_sparse_attention,
-    qsa_sparse_attention_from_indices,
-)
+from miles.kernels.attention.qsa.block_attention import qsa_block_attention
+from miles.kernels.attention.qsa.block_index import QSABlockIndex, build_qsa_block_index
 from miles.kernels.attention.qsa.sparse_attention import qsa_sparse_attention
 
 __all__ = [
-    "qsa_block_sparse_attention",
+    "QSABlockIndex",
+    "build_qsa_block_index",
+    "qsa_block_attention",
     "qsa_sparse_attention",
-    "qsa_sparse_attention_from_indices",
 ]
