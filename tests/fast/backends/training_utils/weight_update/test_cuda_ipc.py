@@ -231,3 +231,72 @@ class TestIpcBucketRing:
             with pytest.raises(RuntimeError, match="engine said no"):
                 protocol.send_bucket([("w", torch.zeros(1))])
             dist_mock.broadcast_object_list.assert_called_once()
+
+
+class TestIpcBucketRingStage:
+    """CPU-only: slot rotation, growth, cached share args and the re-share fallback of ``_IpcBucketRing.stage``."""
+
+    @staticmethod
+    def _fake_share(buf: torch.Tensor):
+        # positional layout of torch.multiprocessing.reductions.reduce_tensor's args
+        return (
+            "rebuild",
+            (
+                torch.Tensor,
+                torch.Size([buf.numel()]),
+                (1,),
+                0,
+                torch.storage.TypedStorage,
+                buf.dtype,
+                "GPU-uuid",
+                b"\x01" * 64,
+                buf.numel(),
+                0,
+                False,
+                b"/torch_1_2_0",
+                7,
+                b"\x02" * 64,
+                True,
+            ),
+        )
+
+    def _ring(self, slots: int, min_bytes: int, reshare: bool = False):
+        from miles.backends.training_utils.weight_update.protocols.cuda_ipc import _IpcBucketRing
+
+        ring = _IpcBucketRing(slots, min_bytes=min_bytes, reshare=reshare)
+        ring._share_once = self._fake_share  # type: ignore[method-assign]
+        return ring
+
+    def test_slots_rotate_and_the_cached_share_carries_the_bucket_length(self) -> None:
+        from miles.backends.training_utils.weight_update.protocols.cuda_ipc import _SharedTensorRef
+
+        ring = self._ring(2, min_bytes=16)
+        stream = MagicMock(name="stream")
+        with patch("torch.cuda.current_stream", return_value=stream):
+            refs = [ring.stage(torch.full((n,), i, dtype=torch.uint8)) for i, n in enumerate((4, 6, 8))]
+        assert all(isinstance(r, _SharedTensorRef) for r in refs)
+        assert [r.args[1] for r in refs] == [torch.Size([4]), torch.Size([6]), torch.Size([8])]
+        assert all(r.args[2] == (1,) and r.args[3] == 0 and r.args[14] is False for r in refs)
+        assert refs[0].args[7] == refs[2].args[7]  # bucket 2 reused slot 0's one-time share
+        assert stream.synchronize.call_count == 3
+        slots = ring._slots[(torch.uint8, torch.device("cpu"))]
+        assert len(slots) == 2 and ring.reallocs == 2 and ring.retired == []
+        assert slots[0].buf[:8].tolist() == [2] * 8  # bucket 2 overwrote slot 0 with its bytes
+        assert ring.counter_files == {"/dev/shm/torch_1_2_0"}
+
+    def test_oversized_bucket_grows_the_slot_and_retires_the_old_buffer(self) -> None:
+        ring = self._ring(2, min_bytes=8)
+        with patch("torch.cuda.current_stream", return_value=MagicMock()):
+            ring.stage(torch.zeros(8, dtype=torch.uint8))  # slot 0 at min size
+            ring.stage(torch.zeros(8, dtype=torch.uint8))  # slot 1
+            big = ring.stage(torch.ones(32, dtype=torch.uint8))  # slot 0 again: too small -> grow
+        assert ring.reallocs == 3 and len(ring.retired) == 1 and ring.retired[0].numel() == 8
+        assert big.args[1] == torch.Size([32])
+        assert ring._slots[(torch.uint8, torch.device("cpu"))][0].buf.numel() == 32
+
+    def test_reshare_mode_returns_the_slot_view_itself(self) -> None:
+        ring = self._ring(1, min_bytes=16, reshare=True)
+        with patch("torch.cuda.current_stream", return_value=MagicMock()):
+            view = ring.stage(torch.arange(5, dtype=torch.uint8))
+        assert isinstance(view, torch.Tensor) and view.numel() == 5 and view.tolist() == [0, 1, 2, 3, 4]
+        assert ring._slots[(torch.uint8, torch.device("cpu"))][0].shared is None
