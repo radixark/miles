@@ -5,7 +5,7 @@
 zigzag relayout, and the row-parallel ``out_proj`` collective out. :class:`LinearAttention` runs this
 rank's heads: the model's input projections, the short conv(s) over q/k/v (one over group-major rows
 for GDN, see ``megatron_to_hf.linear_attn_layout``; one per tensor for KDA), the family's recurrence
-through fla, and a gated RMSNorm whose
+through fla (GDN also through FlashQLA or the generated deterministic ``cake`` kernels), and a gated RMSNorm whose
 replicated weight has its gradient summed across TP. A family subclass supplies the recurrence; a model
 subclass declares the projections under the HF names, plain bf16 linears on sharded parameters, so
 ``--fp8`` training leaves this layer in bf16.
@@ -70,6 +70,16 @@ def gdn_kernel(backend: str):
             ) from exc
         return chunk_gated_delta_rule
 
+    if backend == "cake":
+        try:
+            from miles.kernels.attention.gdn.cake import chunk_gated_delta_rule
+        except ImportError as exc:
+            raise ImportError(
+                "GDN backend 'cake' requires the generated deterministic kernels in "
+                "miles/kernels/attention/gdn/cake."
+            ) from exc
+        return chunk_gated_delta_rule
+
     raise ValueError(f"Unsupported GDN backend: {backend}")
 
 
@@ -87,15 +97,27 @@ def kda_kernel():
     return chunk_kda
 
 
-def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context):
-    """q/k ``[b, s, G, hk]``, v ``[b, s, H, hv]`` (fla groups value heads per key head), decay ``[b, s, H]``
-    -> ``[b, s, H, hv]``."""
-    if cp_context is not None and backend != "fla":
-        raise NotImplementedError(f"GDN context parallelism requires the 'fla' backend, got {backend!r}.")
+def gdn_recurrence(
+    q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context, cu_seqlens_host=None
+):
+    """q/k ``[b, s, G, hk]``, v ``[b, s, H, hv]`` (fla and the cake kernels group value heads per key head),
+    decay ``[b, s, H]`` -> ``[b, s, H, hv]``.
+
+    ``cu_seqlens_host`` (the packed boundaries as host ints, from ``packed_seq_params.cu_seqlens_host``) lets the
+    ``cake`` backend take its exact per-layout chunk table from a cache shared by every layer of the micro-batch
+    instead of rebuilding it on the device per layer; it is not passed under context parallelism, where the CP
+    context carries this rank's local boundaries."""
+    if cp_context is not None and backend not in ("fla", "cake"):
+        raise NotImplementedError(f"GDN context parallelism requires the 'fla' or 'cake' backend, got {backend!r}.")
     beta = beta_logits.sigmoid()
     g = -A_log.float().exp() * F.softplus(decay.float() + dt_bias)
     if backend == "flashqla":
         q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
+    extra = {}
+    if cp_context is not None:
+        extra["cp_context"] = cp_context
+    elif backend == "cake" and cu_seqlens_host is not None and cu_seqlens is not None:
+        extra["cu_seqlens_cpu"] = cu_seqlens_host
     out, _ = gdn_kernel(backend)(
         q,
         k,
@@ -106,7 +128,7 @@ def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_s
         output_final_state=False,
         use_qk_l2norm_in_kernel=True,
         cu_seqlens=cu_seqlens,
-        **({"cp_context": cp_context} if cp_context is not None else {}),
+        **extra,
     )
     return out
 
@@ -148,6 +170,16 @@ def short_conv_backend() -> str:
         except ImportError:
             backend = "triton"
     logger.info(f"Linear-attention short conv backend: {backend}")
+    return backend
+
+
+@functools.cache
+def cake_conv_backend() -> str:
+    """Short conv backend under the ``cake`` GDN backend: fla's Triton kernels, whose backward reproduces the weight
+    gradient bit for bit, instead of :func:`short_conv_backend`'s ``mix`` (causal-conv1d's CUDA backward accumulates
+    ``dweight`` with atomics, so repeated passes differ in the last bits). An explicit ``FLA_CONV_BACKEND`` wins."""
+    backend = os.environ.get("FLA_CONV_BACKEND", "triton")
+    logger.info(f"Linear-attention short conv backend under cake: {backend}")
     return backend
 
 
@@ -193,7 +225,7 @@ class ShardedShortConv(nn.Conv1d):
     """Depthwise causal conv (SiLU, no bias) over this rank's channels, holding the TP-sharded weight.
     Built like fla's ``ShortConvolution``, so weights and checkpoints match it."""
 
-    def __init__(self, channels: int, kernel_size: int, tp_group, device=None, dtype=None):
+    def __init__(self, channels: int, kernel_size: int, tp_group, device=None, dtype=None, backend: str | None = None):
         super().__init__(
             in_channels=channels,
             out_channels=channels,
@@ -205,7 +237,7 @@ class ShardedShortConv(nn.Conv1d):
             dtype=dtype,
         )
         self.activation = "silu"
-        self.backend = short_conv_backend()
+        self.backend = backend or short_conv_backend()
         self.tp_group = tp_group
         set_tensor_model_parallel_attributes(self.weight, True, 0, 1)
 
@@ -239,7 +271,8 @@ class Projections(NamedTuple):
 class LinearAttention(MegatronModule, ABC):
     """This rank's heads: projections -> conv -> recurrence -> gated norm. ``out_proj`` holds this
     rank's columns; :class:`LinearAttentionLayer` applies it and the TP reduction. ``dt_bias`` is one
-    value per value head, or per value channel when the family sets ``dt_bias_per_channel``."""
+    value per value head, or per value channel when the family sets ``dt_bias_per_channel``.
+    ``conv_backend`` pins the short conv's fla backend (``None``: :func:`short_conv_backend`)."""
 
     dt_bias_per_channel: bool = False
     dt_bias_dtype: torch.dtype | None = None
@@ -252,12 +285,14 @@ class LinearAttention(MegatronModule, ABC):
         norm_eps: float,
         tp_group,
         norm_activation: str,
+        conv_backend: str | None = None,
     ):
         super().__init__(config=config)
         self.tp_group = tp_group
         self.heads = heads
         self.local = heads.local(tp_group.size())
         self.conv_kernel_size = conv_kernel_size
+        self.conv_backend = conv_backend
         self.norm_eps = norm_eps
         self.norm_activation = norm_activation
         device = torch.cuda.current_device()
@@ -290,7 +325,12 @@ class LinearAttention(MegatronModule, ABC):
 
     def sharded_conv(self, channels: int) -> ShardedShortConv:
         return ShardedShortConv(
-            channels, self.conv_kernel_size, self.tp_group, torch.cuda.current_device(), self.config.params_dtype
+            channels,
+            self.conv_kernel_size,
+            self.tp_group,
+            torch.cuda.current_device(),
+            self.config.params_dtype,
+            backend=self.conv_backend,
         )
 
     def _build_convolutions(self) -> None:
@@ -349,15 +389,18 @@ class LinearAttention(MegatronModule, ABC):
     def project(self, x: torch.Tensor) -> Projections: ...
 
     @abstractmethod
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context) -> torch.Tensor:
-        """q/k ``[b, s, Gl, hk]``, v ``[b, s, Hl, hv]`` -> ``[b, s, Hl, hv]``."""
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=None) -> torch.Tensor:
+        """q/k ``[b, s, Gl, hk]``, v ``[b, s, Hl, hv]`` -> ``[b, s, Hl, hv]``.  ``cu_seqlens_host``: the same
+        boundaries as host ints when the batch carries them (see :func:`gdn_recurrence`)."""
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor | None, cp_context=None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, cu_seqlens: torch.Tensor | None, cp_context=None, cu_seqlens_host=None
+    ) -> torch.Tensor:
         """x ``[b, s, hidden]``, TP collective already applied -> ``[b, s, local value_dim]``."""
         batch, seq_len, _ = x.shape
         qkv, gate, beta_logits, decay = self.project(x)
         q, k, v = self.convolve(qkv, cu_seqlens, cp_context)
-        core = self.recurrence(q, k, v, beta_logits, decay, cu_seqlens, cp_context)
+        core = self.recurrence(q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=cu_seqlens_host)
         weight = copy_to_tensor_model_parallel_region(self.norm.weight, group=self.tp_group)
         core = rms_norm_gated(
             core.reshape(-1, self.heads.head_v_dim),
@@ -372,14 +415,19 @@ class LinearAttention(MegatronModule, ABC):
 
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
-    kernel. Models subclass it with their projections."""
+    kernel, or the bit-deterministic generated one (``cake``, Blackwell SM100a / SM103a, K = V = 128,
+    see ``miles/kernels/attention/gdn/cake``; its short conv runs on :func:`cake_conv_backend` so the
+    whole layer's gradients are reproducible). Models subclass it with their projections."""
 
     def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu"):
         gdn_kernel(backend)
-        super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation)
+        conv_backend = cake_conv_backend() if backend == "cake" else None
+        super().__init__(
+            config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation, conv_backend=conv_backend
+        )
         self.backend = backend
 
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=None):
         return gdn_recurrence(
             q,
             k,
@@ -391,6 +439,7 @@ class GatedDeltaNet(LinearAttention):
             backend=self.backend,
             cu_seqlens=cu_seqlens,
             cp_context=cp_context,
+            cu_seqlens_host=cu_seqlens_host,
         )
 
 
@@ -456,7 +505,7 @@ class KimiDeltaAttention(LinearAttention):
             self.f_b_proj(F.linear(x, f_a_weight)),
         )
 
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=None):
         return kda_recurrence(
             q,
             k,
@@ -495,10 +544,12 @@ class LinearAttentionLayer(MegatronModule):
             param.sequence_parallel = self.sequence_parallel
 
     def _global_cu_seqlens(self, hidden_states, packed_seq_params):
+        """Global packed boundaries on the device and, when the batch carries them, the same values as host ints
+        (``PackedSeqParamsWithHostCuSeqlens.cu_seqlens_host``; ``None`` otherwise)."""
         if packed_seq_params is not None and packed_seq_params.cu_seqlens_q is not None:
-            return packed_seq_params.cu_seqlens_q
+            return packed_seq_params.cu_seqlens_q, getattr(packed_seq_params, "cu_seqlens_host", None)
         total = hidden_states.shape[0] * self.cp_size
-        return torch.tensor([0, total], dtype=torch.int32, device=hidden_states.device)
+        return torch.tensor([0, total], dtype=torch.int32, device=hidden_states.device), (0, total)
 
     def forward(
         self,
@@ -521,7 +572,7 @@ class LinearAttentionLayer(MegatronModule):
         else:
             x = copy_to_tensor_model_parallel_region(x, group=self.tp_group)
 
-        global_cu_seqlens = self._global_cu_seqlens(x, packed_seq_params)
+        global_cu_seqlens, cu_seqlens_host = self._global_cu_seqlens(x, packed_seq_params)
         relayout = self.cp_size > 1 and not self.allgather_cp
         if relayout:
             x = zigzag_to_packed_shard(x, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
@@ -532,8 +583,11 @@ class LinearAttentionLayer(MegatronModule):
                 global_cu_seqlens, self.cp_group, self.linear_attn.conv_kernel_size, x.device
             )
             cu_seqlens = cp_context.cu_seqlens
+            cu_seqlens_host = None  # the CP context carries this rank's local boundaries
 
-        core = self.linear_attn(x.transpose(0, 1), cu_seqlens, cp_context).transpose(0, 1)
+        core = self.linear_attn(x.transpose(0, 1), cu_seqlens, cp_context, cu_seqlens_host=cu_seqlens_host).transpose(
+            0, 1
+        )
 
         if relayout:
             core = packed_shard_to_zigzag(core, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
