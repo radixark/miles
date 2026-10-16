@@ -42,7 +42,7 @@ The checkpoint needs no Megatron conversion: the trainer reads it through the Be
 
 ### 3.2 SGLang
 
-The engine needs the Beam support on SGLang's [`beam-miles`](https://github.com/sgl-project/sglang/tree/beam-miles) branch at `9ac1c65b`, the last Beam commit that runs on torch 2.13. It also carries the Beam LoRA serving and streamed adapter updates the LoRA recipe uses.
+The engine needs the Beam support on SGLang's [`beam-miles`](https://github.com/sgl-project/sglang/tree/beam-miles) branch.
 
 The `radixark/miles:beam` image (multi-arch, built on `radixark/miles:v0.1.2` by `docker/Dockerfile.beam`) carries it and the recipe code:
 
