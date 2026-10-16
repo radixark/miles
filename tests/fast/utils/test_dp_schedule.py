@@ -16,7 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from miles.utils import dp_schedule
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.utils.flops_utils import KeyTerm, LayerFlops, ModelFlops
 
 
 def make_args(
@@ -33,20 +35,7 @@ def make_args(
         max_tokens_per_gpu=max_tokens_per_gpu,
         balance_data=balance_data,
         balance_by_flops=balance_by_flops,
-        # Minimal model config for calculate_fwd_flops (balance_by_flops path).
-        hidden_size=16,
-        num_attention_heads=2,
-        num_query_groups=2,
-        vocab_size=32,
-        ffn_hidden_size=64,
-        num_experts=None,
-        num_layers=2,
-        kv_channels=8,
-        q_lora_rank=None,  # no MLA in the stub config
-        kv_lora_rank=None,
-        qk_pos_emb_head_dim=0,
-        qk_head_dim=8,
-        v_head_dim=8,
+        hf_checkpoint="unused",
     )
 
 
@@ -390,7 +379,14 @@ def test_randomized_invariants_dynamic():
         )
 
 
-def test_balance_by_flops_packs_and_distributes():
+@pytest.fixture
+def quadratic_model_flops(monkeypatch):
+    """A model whose cost grows with the square of the sequence length, so FLOPs and tokens disagree."""
+    model_flops = ModelFlops(layers=(LayerFlops(10.0, (KeyTerm(1.0),)),), lm_head=0.0)
+    monkeypatch.setattr(dp_schedule, "_model_flops", lambda hf_checkpoint: model_flops)
+
+
+def test_balance_by_flops_packs_and_distributes(quadratic_model_flops):
     """balance_by_flops: KK-on-FLOPs packing, invariants preserved (the token cap
     is intentionally NOT enforced in this mode)."""
     total_lengths = [10, 200, 30, 400, 50, 600, 70, 800]
@@ -414,7 +410,7 @@ def test_balance_by_flops_packs_and_distributes():
     )
 
 
-def test_balance_by_flops_singleton_fallback():
+def test_balance_by_flops_singleton_fallback(quadratic_model_flops):
     """When ceil(total/cap) >= n samples, every sample gets its own micro_batch."""
     total_lengths = [100] * 4
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=100, balance_by_flops=True)
