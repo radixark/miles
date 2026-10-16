@@ -331,8 +331,8 @@ class _MastersUnderChunkedOffload:
 
 class TestTheFirstForwardAfterALoad:
     def test_finds_the_masters_the_load_refreshed_already_on_host(self, tmp_path: Path):
-        """Offloaded only after a step, they would share the first fwd/bwd with the weights and gradients (33 GiB per
-        GPU on the 8-layer Step5 slice at TP4 / EP4); Megatron's loop moves them before its first forward too."""
+        """Offloaded only after a step, they would share the first fwd/bwd with the weights and gradients;
+        Megatron's loop moves them before its first forward too."""
         from miles.backends.megatron_utils.model import load_model_state
 
         load_dir = tmp_path / "hf"

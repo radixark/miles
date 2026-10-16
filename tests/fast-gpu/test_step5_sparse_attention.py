@@ -78,7 +78,6 @@ def test_sparse_layer_is_the_dense_layer_while_every_region_is_selected(results,
     assert torch.equal(short["selection"], _every_region(short["lengths"], num_groups=4))
 
     errors = {key: _rel_err(short["sparse"][key], short["dense"][key]) for key in ("out", *_GRADIENTS)}
-    print(_layout_id(layout), "sparse vs dense:", {key: f"{err:.2e}" for key, err in errors.items()})
     # BF16 rounding inside each attention kernel puts two correct kernels ~3e-3 apart
     assert errors["out"] < 1e-2 and errors["d_hidden"] < 1e-2, errors
     assert all(err < 2e-2 for err in errors.values()), errors
@@ -108,13 +107,6 @@ def test_every_layout_agrees_with_tp1(results, layout, pack):
     got, want = results[layout][pack], results[_REFERENCE][pack]
     matching_rows = (got["selection"] == want["selection"]).all(-1).float().mean().item()
     errors = {key: _rel_err(got["sparse"][key], want["sparse"][key]) for key in ("out", *_GRADIENTS)}
-    print(
-        _layout_id(layout),
-        pack,
-        f"selection rows equal to tp1: {matching_rows:.6f};",
-        "vs tp1:",
-        {key: f"{err:.2e}" for key, err in errors.items()},
-    )
-    assert matching_rows == 1.0
+    assert matching_rows == 1.0, f"{matching_rows:.6f} of the selection rows equal TP1's"
     assert errors["out"] < 1e-2 and errors["d_hidden"] < 1e-2, errors
     assert all(err < 2e-2 for err in errors.values()), errors

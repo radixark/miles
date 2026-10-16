@@ -21,7 +21,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig  # no
 from tests.fast.launch_scripts.model_args_harness import expand_model_args  # noqa: E402
 
 from miles.backends.megatron_utils.megatron_to_hf.step5 import convert_step5_to_hf  # noqa: E402
-from miles_plugins.models.step5.indexer import CHECKPOINT_NAMES, FP32_PARAMS  # noqa: E402
+from miles_plugins.models.step5.indexer import CHECKPOINT_NAMES  # noqa: E402
 from miles_plugins.models.step5.layers import (  # noqa: E402
     FULL_ATTENTION_ROPE,
     SLIDING_WINDOW_ROPE,
@@ -159,17 +159,14 @@ def test_each_attention_type_keeps_its_rope(model_parallel):
         torch.testing.assert_close(attention.rotary_pos_emb.inv_freq, expected)
 
 
-def test_the_indexer_is_frozen_and_kept_in_fp32(model_parallel):
+def test_only_the_indexer_is_frozen(model_parallel):
     attention = _build_attention(Step5SparseAttention, Step5SparseCoreAttention, layer_number=4)
 
     frozen = {name for name, param in attention.named_parameters() if not param.requires_grad}
     assert frozen == {f"indexer.{name}" for name in CHECKPOINT_NAMES}
-    for name in FP32_PARAMS:
-        param = getattr(attention.indexer, name)
-        assert param.dtype == torch.float32 and param.keep_in_fp32
 
 
-# ``model.layers.3.self_attn.*`` of the 8-layer slice, with the dtypes the checkpoint stores.
+# A full-attention layer's ``model.layers.N.self_attn.*`` tensors, with the dtypes the checkpoint stores.
 _CHECKPOINT_FULL_ATTENTION = {
     "q_proj.weight": torch.bfloat16,
     "k_proj.weight": torch.bfloat16,

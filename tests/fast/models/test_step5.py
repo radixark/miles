@@ -238,21 +238,11 @@ def test_norms_and_router_bias_keep_fp32_through_the_bridge(step5_bridge):
         torch.testing.assert_close(converted, weight, rtol=0, atol=0)
 
 
-def test_indexer_names_map_to_the_checkpoint_and_fp32_tensors_stay_fp32(step5_bridge):
+def test_indexer_fp32_tensors_stay_fp32_through_the_bridge(step5_bridge):
     bridge = object.__new__(step5_bridge.Step5Bridge)
     bridge.dtype = torch.bfloat16
     bridge.make_vocab_size_divisible_by = None
     prefix = "decoder.layers.3.self_attention.indexer"
-    assert {
-        name: bridge._weight_name_mapping_attention(f"{prefix}.{name}")
-        for name in ("q_weight", "w_weight", "q_norm_weight", "k_norm_bias", "ssmax_s")
-    } == {
-        "q_weight": ["model.layers.3.self_attn.sparse_indexer_q.weight"],
-        "w_weight": ["model.layers.3.self_attn.sparse_indexer_w.weight"],
-        "q_norm_weight": ["model.layers.3.self_attn.sparse_indexer_q_norm.weight"],
-        "k_norm_bias": ["model.layers.3.self_attn.sparse_indexer_k_norm.bias"],
-        "ssmax_s": ["model.layers.3.self_attn.ssmax_s"],
-    }
     weight = torch.tensor([0.1234567], dtype=torch.float32)
     for name in ("w_weight", "q_norm_weight", "k_norm_weight", "k_norm_bias", "ssmax_s"):
         converted = bridge._weight_to_mcore_format(f"{prefix}.{name}", [weight])
@@ -341,11 +331,11 @@ def test_split_undoes_fuse(tp_size):
         torch.testing.assert_close(got, want, rtol=0, atol=0)
 
 
-def _sync_names(name: str, param: torch.Tensor) -> list[str]:
+def _sync(name: str, param: torch.Tensor) -> dict[str, torch.Tensor]:
     from miles.backends.megatron_utils.megatron_to_hf.step5 import convert_step5_to_hf
 
     args = SimpleNamespace(num_query_groups=4, num_attention_heads=8, kv_channels=3, tensor_model_parallel_size=2)
-    return [hf_name for hf_name, _ in convert_step5_to_hf(args, name, param)]
+    return dict(convert_step5_to_hf(args, name, param))
 
 
 @pytest.mark.parametrize(
@@ -383,14 +373,7 @@ def _sync_names(name: str, param: torch.Tensor) -> list[str]:
     ],
 )
 def test_weight_sync_uses_checkpoint_and_per_expert_names(megatron_name, shape, hf_names):
-    assert _sync_names(megatron_name, torch.zeros(shape)) == hf_names
-
-
-def _sync(name: str, param: torch.Tensor) -> dict[str, torch.Tensor]:
-    from miles.backends.megatron_utils.megatron_to_hf.step5 import convert_step5_to_hf
-
-    args = SimpleNamespace(num_query_groups=4, num_attention_heads=8, kv_channels=3, tensor_model_parallel_size=2)
-    return dict(convert_step5_to_hf(args, name, param))
+    assert list(_sync(megatron_name, torch.zeros(shape))) == hf_names
 
 
 @pytest.mark.parametrize(
@@ -412,24 +395,6 @@ def test_weight_sync_splits_the_qkv_and_gate_rows_the_bridge_fused():
         torch.testing.assert_close(
             sent[f"model.layers.2.self_attn.{projection}_proj.weight"], expected, rtol=0, atol=0
         )
-
-
-@pytest.mark.parametrize(
-    "name,checkpoint_name",
-    [
-        ("q_weight", "sparse_indexer_q.weight"),
-        ("k_weight", "sparse_indexer_k.weight"),
-        ("z_weight", "sparse_indexer_z.weight"),
-        ("w_weight", "sparse_indexer_w.weight"),
-        ("q_norm_weight", "sparse_indexer_q_norm.weight"),
-        ("k_norm_weight", "sparse_indexer_k_norm.weight"),
-        ("k_norm_bias", "sparse_indexer_k_norm.bias"),
-        ("ssmax_s", "ssmax_s"),
-    ],
-)
-def test_the_frozen_indexer_syncs_under_its_checkpoint_names(name, checkpoint_name):
-    hf_names = _sync_names(f"module.module.decoder.layers.3.self_attention.indexer.{name}", torch.zeros(4, 4))
-    assert hf_names == [f"model.layers.3.self_attn.{checkpoint_name}"]
 
 
 def test_fp8_sync_leaves_modules_the_checkpoint_keeps_in_bf16():

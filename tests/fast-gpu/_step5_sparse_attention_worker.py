@@ -263,19 +263,17 @@ def main() -> None:
         }
 
     if dist.get_rank() == 0:
-        cpu = {
-            name: {
-                key: {k: v.cpu() for k, v in value.items()} if isinstance(value, dict) else value
-                for key, value in result.items()
-            }
-            for name, result in results.items()
-        }
-        for result in cpu.values():
-            result["selection"] = result["selection"].cpu()
+        cpu = {name: {key: _to_cpu(value) for key, value in result.items()} for name, result in results.items()}
         torch.save(cpu, args.output)
         print(f"PASS tp{tp_size}{'-sp' if args.sequence_parallel else ''}", flush=True)
     parallel_state.destroy_model_parallel()
     dist.destroy_process_group()
+
+
+def _to_cpu(value):
+    if isinstance(value, dict):
+        return {key: tensor.cpu() for key, tensor in value.items()}
+    return value.cpu() if isinstance(value, torch.Tensor) else value
 
 
 if __name__ == "__main__":
