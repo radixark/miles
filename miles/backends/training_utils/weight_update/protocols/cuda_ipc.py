@@ -95,6 +95,8 @@ class _IpcBucketRing:
         14,
     )  # torch.multiprocessing.reductions.reduce_tensor
 
+    _ARG_REF_COUNTER_HANDLE = 11
+
     def __init__(self, slots: int, min_bytes: int = 0, reshare: bool = False) -> None:
         assert slots > 0
         self.slots = slots
@@ -105,6 +107,46 @@ class _IpcBucketRing:
         self.retired: list[torch.Tensor] = []  # grown-out buffers: a shared storage is never dropped mid-run
         self.staged = 0
         self.reallocs = 0
+        # torch keeps one ref-counter file per 10000 shares in /dev/shm (/torch_<pid>_<rand>_<n>) and unlinks it when the
+        # process exits. On nodes whose /dev/shm is swept by a cleaner the file is gone long before that, torch's
+        # unlink then throws inside a destructor and the process aborts at exit. Remember our files and recreate a
+        # placeholder right before the interpreter exits so the unlink succeeds (the consumer's release decrements also
+        # fail silently on such nodes, which is exactly why this ring exists).
+        self.counter_files: set[str] = set()
+        self._missing_reported = False
+        import atexit
+
+        atexit.register(self._restore_counter_files)
+
+    def _note_counter_file(self, handle) -> None:
+        if isinstance(handle, (bytes, bytearray)):
+            handle = bytes(handle).decode("ascii", "replace")
+        if isinstance(handle, str) and handle.startswith("/torch_"):
+            self.counter_files.add("/dev/shm/" + handle.lstrip("/"))
+
+    def _restore_counter_files(self) -> None:
+        for path in sorted(self.counter_files):
+            try:
+                if not os.path.exists(path):
+                    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+                    os.close(fd)
+                    logger.warning(
+                        f"CUDA-IPC bucket ring: recreated the swept ref-counter file {path} for torch's exit-time unlink"
+                    )
+            except OSError as e:
+                logger.warning(f"CUDA-IPC bucket ring: cannot recreate {path}: {e!r}")
+
+    def check_counter_files(self) -> int:
+        """Diagnostics: how many of our ref-counter files are missing from /dev/shm (swept by the node)."""
+        missing = [p for p in self.counter_files if not os.path.exists(p)]
+        if missing and not self._missing_reported:
+            self._missing_reported = True
+            logger.warning(
+                f"CUDA-IPC bucket ring: {len(missing)}/{len(self.counter_files)} torch ref-counter file(s) vanished from "
+                f"/dev/shm (e.g. {missing[0]}); the engine's releases cannot reach this process on this node, the ring keeps "
+                f"producer memory bounded regardless"
+            )
+        return len(missing)
 
     def _share_once(self, buf: torch.Tensor):
         # Same reducer the per-bucket path uses through ForkingPickler (SGLang's UUID device patch included), applied
@@ -117,6 +159,7 @@ class _IpcBucketRing:
         fn, args = reductions.reduce_tensor(buf)
         args = list(args)
         args[self._ARG_EVENT_SYNC] = False  # rule 1: bytes are ordered by the producer's stream synchronize
+        self._note_counter_file(args[self._ARG_REF_COUNTER_HANDLE])
         return fn, tuple(args)
 
     def stage(self, flat: torch.Tensor):
@@ -192,7 +235,7 @@ def _read_ipc_ref_counter(handle: str, offset: int) -> int | None:
             raw = fh.read(8)
         return struct.unpack("<q", raw)[0] if len(raw) == 8 else None
     except OSError as e:
-        logger.warning(f"CUDA-IPC ring debug: cannot read {path}: {e!r}")
+        logger.info(f"CUDA-IPC ring debug: cannot read {path}: {e!r}")
         return None
 
 
@@ -415,6 +458,9 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         The counter of a shared storage starts at 1 and every consumer release decrements it (cached share: one counter
         per slot, so it keeps decreasing by one per bucket; re-share: one counter per bucket, 1 -> 0)."""
         rc = _ipc_ref_counter(serialized[0]) if serialized else None
+        if rc:
+            self._ring._note_counter_file(rc[0])
+        missing = self._ring.check_counter_files()
         value = _read_ipc_ref_counter(*rc) if rc else None
         last = self._ring_counter_last.get(rc, 1) if rc else None
         released = value is not None and value < last
@@ -426,6 +472,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         logger.info(
             f"CUDA-IPC ring debug: rank={dist.get_rank()} bucket#{self._ring.staged} ref_counter={value} (prev={last}, "
             f"handle={rc[0] if rc else None} off={rc[1] if rc else None}) released={self._ring_released}/{self._ring_checked} "
+            f"counter_files_missing={missing} "
             f"allocated={torch.cuda.memory_allocated() / 2**30:.2f} GiB reserved={torch.cuda.memory_reserved() / 2**30:.2f} GiB"
         )
 
