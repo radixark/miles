@@ -306,6 +306,7 @@ def test_final_update_logs_once_at_its_trained_rollout_without_resetting_timers(
     assert values["actor/rollout/step"] == 56  # Existing train-step conversion for rollout 7.
     assert values["actor/perf/gpu_delta/base_version"] == 0
     assert values["actor/perf/gpu_delta/target_version"] == 1
+    assert all(values[f"actor/{key}"] == value for key, value in completed.items())
     assert values["actor/perf/update_weights_wire_bytes"] == 123456
     assert values["actor/perf/gpu_delta/trainer_logging_rank"] == 7
     assert values["actor/perf/gpu_delta/trainer_logging_rank_blocked_s"] == 4.0
@@ -315,24 +316,57 @@ def test_final_update_logs_once_at_its_trained_rollout_without_resetting_timers(
     reset.assert_not_called()
 
 
-@pytest.mark.parametrize("case", ["nonprimary", "no_trained_rollout", "ordinary"])
+@pytest.mark.parametrize(
+    "case,receiver_pool",
+    [
+        ("nonprimary", "rollout"),
+        ("nonprimary", "eval"),
+        ("no_trained_rollout", "rollout"),
+        ("no_trained_rollout", "eval"),
+        ("ordinary", "rollout"),
+    ],
+)
 def test_completion_logging_preserves_rank_startup_and_other_protocol_semantics(
-    actor_update, monkeypatch, case, caplog
+    actor_update, monkeypatch, case, receiver_pool, caplog
 ):
     completed = metrics.activation_metrics(_activation())
     submit = Mock()
     monkeypatch.setattr(metrics.tracking, "log", submit)
+    completed.update(
+        {
+            "perf/update_weights_wire_bytes": 128,
+            "perf/gpu_delta/payload_raw_bytes": 7,
+            "perf/gpu_delta/payload_matrix_payload_bytes": 101,
+            "perf/gpu_delta/payload_matrix_inner_arena_bytes": 512,
+            "perf/gpu_delta/payload_canonical_bytes": 2048,
+            "perf/gpu_delta/payload_changed_bytes": 27,
+        }
+    )
     overrides = {
         "nonprimary": {"primary": False},
         "no_trained_rollout": {"rollout_id": None},
         "ordinary": {"mode": "disk-delta"},
     }
     with caplog.at_level(logging.INFO):
-        _, updater = actor_update(completed_metrics=completed, **overrides[case])
+        _, updater = actor_update(completed_metrics=completed, receiver_pool=receiver_pool, **overrides[case])
     submit.assert_not_called()
     assert updater.pop_metrics() == (completed if case == "ordinary" else {})
     if case == "no_trained_rollout":
         assert "initial sync completed before the first rollout" in caplog.text
+        assert f"pool={receiver_pool}" in caplog.text
+        summary = next(record.args[-1] for record in caplog.records if "initial sync" in record.msg)
+        assert summary == dict(
+            wire_bytes=128,
+            raw_bytes=7,
+            matrix_payload_bytes=101,
+            matrix_inner_arena_bytes=512,
+            canonical_bytes=2048,
+            changed_bytes=27,
+            file_alignment_bytes=20,
+        )
+        assert "scheduler_pause" not in caplog.text
+    else:
+        assert "initial sync" not in caplog.text
 
 
 def test_failed_update_is_not_reported_and_tracking_failure_cannot_retry_a_completed_update(

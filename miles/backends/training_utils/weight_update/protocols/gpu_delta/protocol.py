@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import time
 import uuid
 from collections import Counter
@@ -54,7 +53,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._initial_sync_codec = gpu_delta_publication.configured_codec(initial_sync=True)
         self.codec = self._initial_sync_codec
         self._frame_bytes = frame_bytes
-        self._timing = os.environ.get("GPU_DELTA_TIMING", "0") == "1"
         self._snapshot = {}
         self._next_snapshot = {}
         self._hf_snapshot = {}
@@ -665,8 +663,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self.publication_metrics["baseline_d2h_bytes"] += sum(t.nbytes for t in self._next_snapshot.values())
         self.publication_metrics.update(self._writer.payload_metrics)
         self.publication_metrics.update(self._gpu_encoder.finalization_metrics)
-        if self._timing:
-            self.publication_metrics["tensor_phases"] = self._encoding_metrics
         shard["producer_metrics"] = self.publication_metrics
         shards = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
         gather_started = time.monotonic()
@@ -689,6 +685,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                     "raw_tensor_count",
                     "raw_changed_tensors",
                     "raw_bytes",
+                    "matrix_inner_arena_bytes",
+                    "matrix_payload_bytes",
                 )
             }
             descriptor["producer_summary_metrics"] = gpu_delta_metrics.producer_metrics(
@@ -760,32 +758,20 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
     def _commit_activation(self, publication, activation, weight_version):
         self._commit_baseline()
         counts = publication["summary_counts"]
-        tensor_count, wire, changed, total = (
-            counts[key] for key in ("tensor_count", "wire_bytes", "changed_bytes", "canonical_bytes")
-        )
+        wire, changed, total = (counts[key] for key in ("wire_bytes", "changed_bytes", "canonical_bytes"))
         elapsed = time.monotonic() - self._started
         # The metrics logger can live on the last PP stage instead of global
         # rank 0. Reuse the existing broadcasts for compact summaries, not receipts.
         self.update_weight_metrics = {
             **publication["producer_summary_metrics"],
             **activation,
+            **{f"perf/gpu_delta/payload_{key}": value for key, value in counts.items() if key != "wire_bytes"},
             "perf/update_weights_density": changed / max(total, 1),
             "perf/update_weights_wire_bytes": wire,
             "perf/update_weights_gpu_delta_s": elapsed,
             "perf/gpu_delta/recovery_owner_encode_s": self._recovery_encode_s,
             "perf/gpu_delta/activation_join_s": self._activation_join_s,
         }
-        if dist.get_rank() == 0:
-            logger.info(
-                "[gpu delta v=%d] committed tensors=%d changed_bytes=%d canonical_bytes=%d wire_bytes=%d elapsed_s=%.6f manifest=%s",
-                weight_version,
-                tensor_count,
-                changed,
-                total,
-                wire,
-                elapsed,
-                publication["manifest_sha256"],
-            )
 
     def after_engines_resumed(self):
         # The updater has completed its existing final trainer barrier. This is

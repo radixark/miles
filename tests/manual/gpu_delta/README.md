@@ -55,7 +55,6 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 | `GPU_DELTA_CODEC=snappy-zstd` | Trainer codec for ordinary learned updates; `lz4-zstd` selects LZ4 with outer Zstd; `lz4` skips outer Zstd. Read once at launch. The receiver selects the codec from each authenticated publication. |
 | `GPU_DELTA_INITIAL_SYNC_CODEC=lz4-zstd` | Trainer codec for initial sync, engine recovery and checkpoint companions; `snappy-zstd` or plain `lz4` overrides it. Initial synchronization is mandatory. |
 | `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for all codecs. It does not change publication bytes or move sorting into preparation. |
-| `GPU_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
 | `GPU_DELTA_CPU_WORKERS=32` | CPU workers per rank. Each engine-host cache creator also uses its pool for parallel owner-file read/hash before local payload preparation. Two EP4 engines have eight pools (up to 256 workers at the default). |
 | `GPU_DELTA_SKIP_PAYLOAD_HASH=1` | Shared sender/receiver opt-in: omit owner-file SHA256 generation and verification. Defaults off. The manifest declares `payload_checksum_format="none"` and null file hashes; receivers accept this only when their same flag is enabled. Manifest SHA256 and native decoder checks remain mandatory. |
 | `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-host encoded caches; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Each engine has separate identities and locks. Its ranks share encoded files, while DE input arenas remain private to each rank. |
@@ -63,8 +62,8 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 For Ray launches, set job-level variables through `runtime_env` or
 `execute_train(extra_env_vars=...)`; the submitting shell does not configure
 existing workers. Both trainer and rollout must inherit the shared hash flag.
-Trainer-only settings can use `--train-env-vars`; sorting and receiver timing
-belong on rollout actors. The five-layer E2E forwards these controls and checks
+Trainer-only settings can use `--train-env-vars`; receiver sorting belongs
+on rollout actors. The five-layer E2E forwards these controls and checks
 each publication's manifest and phase-specific codec.
 
 The five-layer test is dedicated to GPU delta: it prepares checkpoints and data,
@@ -104,8 +103,14 @@ Completed training updates report the final delta payload size through the exist
 `perf/update_weights_wire_bytes` metric to W&B when enabled, with the normal trainer
 namespace. This sums payload files across every owner, including compressed matrix
 data, raw scalar/vector replacements and alignment padding, excluding the JSON
-manifest. It reuses the existing owner gather; no codec-specific metric, additional
-payload scan, collective or CUDA synchronization is required.
+manifest. Initial sync has no trained rollout step, so it logs a payload-only
+summary once on the logging rank, separately for rollout and eval. The breakdown
+includes raw replacements, final matrix payload, file alignment, canonical and
+changed bytes, and the aligned inner-codec arena size before optional Zstd. The
+inner size is not additive with wire bytes. These owner totals also accompany
+trained W&B metrics under `perf/gpu_delta/payload_*`; receiver fanout is not counted.
+All counters reuse the existing owner gather, without another payload scan,
+collective or CUDA synchronization.
 
 ## Dedicated eval synchronization
 
@@ -440,10 +445,11 @@ with payload hashing on and off. Inner frames are 1 MiB; wrapped codecs also use
 cumulative versions and two EP4 receivers. `--codecs`, `--hashing`,
 `--frame-bytes`, `--versions` and `--ports` select the configuration. For a quick
 single arm, use `--codecs snappy-zstd --hashing off`. Hash-on arms generate and
-verify payload SHA256; hash-off arms skip it on both sides. CUDA event
-instrumentation is enabled for both sides so the report contains actual phase
-measurements. Instrumented timings are distinct from
-historical `GPU_DELTA_TIMING=0` results.
+verify payload SHA256; hash-off arms skip it on both sides. Host wall clocks and
+scheduler pause timestamps remain available without per-phase CUDA events.
+Use `--profile-version` with an external Nsight Systems launcher for GPU profiling.
+Historical event measurements in saved fixtures remain identifiable as old
+measurements; missing CUDA intervals are reported as unmeasured, not zero.
 
 All arms share one calibrated mutation rate and the same prepared bytes.
 Mutations are deterministic finite mantissa/packed-FP4 bit changes seeded by
@@ -528,14 +534,16 @@ Report timing scopes separately:
 - **Sender:** the compression-and-publication wall column includes payload
   hashing when enabled, raw/matrix writes and shard flush/fsync, alongside
   encoding and finalization. It sums sequential owner call spans, excluding
-  shared input construction and pinned input reads. Separate codec-only CUDA columns
-  exclude hashing, transfers and XOR; publication wall is not pure SHA time.
+  shared input construction and pinned input reads. Publication wall is not pure
+  SHA time. Saved fixtures may retain historical codec-only CUDA intervals,
+  excluding hashing, transfers and XOR; fresh encoding leaves those unmeasured.
   Summary columns take independent owner maxima, not a synchronized global
   critical path. Parent manifest sealing is separate.
-- **Receiver:** background preparation, CPU outer-decode wall time, DE-stream
-  CUDA interval, matrix application and actual scheduler pause. CPU decode wall
-  time includes submission/raw copies/drain; DE intervals include zero-fill,
-  enqueue gaps and decode. They are not pure hardware busy-time measurements.
+- **Receiver:** background preparation, CPU outer-decode and matrix-application
+  host wall times, and actual scheduler pause. CPU decode wall time includes
+  submission/raw copies/drain. Historical DE-stream CUDA intervals include
+  zero-fill, enqueue gaps and decode; they are not pure hardware busy time.
+  Fresh runs use Nsight for GPU profiling and leave these intervals unmeasured.
 - **Coordinator:** complete prepare/apply/resume RPC lifetime. It overlaps rank
   work and cannot be added to preparation, decode or pause columns.
 

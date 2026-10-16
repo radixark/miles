@@ -320,6 +320,8 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
             == protocol._writer.payload_metrics["matrix_hash_write_s"]
         )
         assert publication["summary_counts"]["raw_bytes"] == publication["summary_counts"]["wire_bytes"] == 4
+        assert publication["summary_counts"]["matrix_inner_arena_bytes"] == 0
+        assert publication["summary_counts"]["matrix_payload_bytes"] == 0
         assert (protocol._version_dir / "owner-00000.bin").read_bytes() == bytes(current)
         np.testing.assert_array_equal(protocol._snapshot["w"], previous)
         protocol._commit_baseline()

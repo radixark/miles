@@ -506,7 +506,7 @@ def _encode_version(args, owner, index, encoder, metadata, version):
     )
     started, changed, input_read_s = time.monotonic(), 0, 0.0
     pending, batch, batch_bytes = [], [], 0
-    batch_cuda_s, batch_wall_s, publication_write_s = {}, 0.0, 0.0
+    batch_wall_s, publication_write_s = 0.0, 0.0
     try:
         for tensor in raw_plan:
             reading = time.monotonic()
@@ -536,8 +536,6 @@ def _encode_version(args, owner, index, encoder, metadata, version):
             matrix_plan, encoder.finish_device(pending), strict=True
         ):
             batch_wall_s += metrics["encode_wall_s"]
-            for name, seconds in metrics["cuda_phase_s"].items():
-                batch_cuda_s[name] = batch_cuda_s.get(name, 0.0) + seconds
             writing = time.monotonic()
             writer.add_encoded_tensor(
                 tensor["name"],
@@ -557,15 +555,9 @@ def _encode_version(args, owner, index, encoder, metadata, version):
     finally:
         writer.close()
     finalization = encoder.finalization_metrics
-    if encoder.timing:
-        batch_cuda_s.setdefault("compression_s", 0.0)
-        if not finalization["final_payload_d2h_bytes"]:
-            finalization = finalization | {"finalize_cuda_phase_s": {"outer_zstd_s": 0.0, "pack_d2h_s": 0.0}}
     metrics = {key: owner[key] for key in ("owner", "gpu", "groups", "canonical_bytes")}
     metrics.update(
         pid=os.getpid(),
-        timing_enabled=encoder.timing,
-        batch_cuda_s=batch_cuda_s,
         batch_wall_s=batch_wall_s,
         finalization=finalization,
         publication_write_s=publication_write_s,
@@ -820,7 +812,6 @@ async def _engines(args, model):
                 "feature_env": {
                     key: os.environ.get(key)
                     for key in (
-                        "GPU_DELTA_TIMING",
                         "GPU_DELTA_SKIP_PAYLOAD_HASH",
                         "GPU_DELTA_DECODE_STAGES",
                         "GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS",
@@ -1070,7 +1061,8 @@ def _rank_rows(update, publication, identities):
         if start != stages[0][rank]["scheduler_timing"]["pause_started_ns"]:
             raise ValueError("Apply and resume pause endpoints differ")
         result, metrics = resumed["result"], resumed["result"]["timings"]
-        cuda = metrics["cuda_event_ms"] if result["timing_enabled"] else None
+        # Older receipts may contain CUDA-event diagnostics; fresh runs use Nsight.
+        cuda = metrics["cuda_event_ms"] if result.get("timing_enabled", False) else None
         rows.append(
             {
                 "identity": identities[rank],
@@ -1094,13 +1086,12 @@ def _rank_rows(update, publication, identities):
 
 
 def _owner_compression(metrics, codec):
-    enabled, final = metrics["timing_enabled"], metrics["finalization"]
-    inner = _seconds(metrics["batch_cuda_s"]["compression_s"]) if enabled else None
-    outer = None
-    if codec == "lz4":
-        outer = 0.0
-    elif enabled:
-        outer = _seconds(final["finalize_cuda_phase_s"]["outer_zstd_s"])
+    final = metrics["finalization"]
+    # Saved fixtures retain their original diagnostics, never new measurements.
+    inner_cuda = metrics.get("batch_cuda_s", {})
+    outer_cuda = final.get("finalize_cuda_phase_s", {})
+    inner = _seconds(inner_cuda["compression_s"]) if "compression_s" in inner_cuda else None
+    outer = _seconds(outer_cuda["outer_zstd_s"]) if codec != "lz4" and "outer_zstd_s" in outer_cuda else None
     combined = _seconds(metrics["compression_and_publication_s"])
     if not math.isclose(
         combined,
@@ -1259,10 +1250,10 @@ def _markdown(summary):
         "manifest/publication sizes, frame sizes and canonical/changed bytes remain in `summary.json`.",
         "",
         "`summary.json` retains every owner/rank receipt at full precision, including input read/pin and "
-        "owner elapsed time, inner/outer CUDA, publication writes, finalization, pack/D2H, parent sealing, "
-        "CPU outer decode/plain copy, DE stream, matrix apply and coordinator time. Components overlap; "
-        "CUDA intervals include wrapper/launch gaps and are not pure hardware busy time. Unavailable "
-        "measurements are unmeasured. The table rounds values to three decimal places.",
+        "owner elapsed time, publication writes, finalization, pack/D2H, parent sealing, "
+        "CPU outer decode/plain copy and coordinator time. Components overlap. CUDA intervals from "
+        "older fixtures/receipts remain historical diagnostics, including wrapper/launch gaps; fresh runs "
+        "leave them unmeasured and use Nsight for GPU profiling. The table rounds values to three decimal places.",
         "",
     ]
     lines += _report_table(
@@ -1489,7 +1480,6 @@ def _phase(phase, args, directory, settings, arm):
 def _run_phase(phase, args, directory, arm, records):
     settings = {
         "GPU_DELTA_CODEC": arm["codec"],
-        "GPU_DELTA_TIMING": "1",
         "GPU_DELTA_SKIP_PAYLOAD_HASH": "1" if arm["skip_payload_hash"] else "0",
     }
     if phase == "run" and args.profile_version is not None:

@@ -160,7 +160,24 @@ def log_completed_update(args, metrics, rollout_id, is_primary_rank, receiver_po
     if rollout_id is None:
         # An initial delta precedes any trained rollout. Report it without
         # assigning an invented rollout step to the tracking series.
-        logger.info("GPU-delta initial sync completed before the first rollout: %s", metrics)
+        # Payload totals count each owner shard once, not receiver fanout.
+        # Inner compressed arenas precede optional Zstd and are not additive
+        # with the final matrix payload. Wire bytes exclude the manifest.
+        payload = {
+            key.removeprefix(_PREFIX + "payload_"): value
+            for key, value in metrics.items()
+            if key.startswith(_PREFIX + "payload_")
+        }
+        payload["wire_bytes"] = metrics["perf/update_weights_wire_bytes"]
+        payload["file_alignment_bytes"] = (
+            payload["wire_bytes"] - payload["raw_bytes"] - payload["matrix_payload_bytes"]
+        )
+        logger.info(
+            "GPU-delta initial sync completed before the first rollout (pool=%s, owner payload totals; "
+            "wire=raw+matrix_payload+file_alignment; inner arena is before optional Zstd): %s",
+            receiver_pool,
+            payload,
+        )
         return
     pool_metrics = {f"eval/{key}": value for key, value in metrics.items()} if receiver_pool == "eval" else metrics
     log_dict, step_key = namespace_metrics(
@@ -169,7 +186,6 @@ def log_completed_update(args, metrics, rollout_id, is_primary_rank, receiver_po
         step_name="rollout/step",
         step=compute_rollout_step(args, rollout_id),
     )
-    logger.info("GPU-delta completed update metrics at rollout %s: %s", rollout_id, metrics)
     try:
         tracking.log(args, log_dict, step_key=step_key)
     except Exception:

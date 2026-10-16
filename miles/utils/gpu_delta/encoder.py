@@ -7,9 +7,7 @@ slab. The encoder does not hash or copy canonical weights back to the CPU.
 
 from __future__ import annotations
 
-import os
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 
 import torch
@@ -44,26 +42,6 @@ def _xor_count_kernel(parameters, counts, nframes, TILE: tl.constexpr, BLOCK: tl
 if triton is not None:
     # Batch cardinality is runtime data, not a new compilation per batch shape.
     _xor_count_kernel = triton.jit(_xor_count_kernel, do_not_specialize=["nframes"])
-
-
-class _PhaseTimes:
-    def __init__(self, enabled):
-        self.enabled, self.events = enabled, {}
-
-    @contextmanager
-    def record(self, name):
-        if not self.enabled:
-            yield
-            return
-        start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-        start.record()
-        yield
-        end.record()
-        self.events[name] = (start, end)
-
-    def elapsed(self):
-        # One final batch completion fence precedes all event reads.
-        return {name: start.elapsed_time(end) / 1000 for name, (start, end) in self.events.items()}
 
 
 def _validate_snapshots(tensors):
@@ -145,7 +123,6 @@ def _tensor_metrics(tensors, batch_metrics):
             baseline_d2h_bytes=0,
             encoded_d2h_bytes=0,
             metadata_wait_s=0.0,
-            cuda_phase_s={},
             timing_scope="none",
         )
         for _, current in tensors
@@ -233,7 +210,6 @@ class GpuBatchEncoder:
         if type(frame_bytes) is not int or not 0 < frame_bytes <= 4 << 20:
             raise ValueError("GPU delta frame_bytes must be a positive integer at most 4 MiB")
         self.device, self.frame_bytes = torch.device(device), frame_bytes
-        self.timing = os.environ.get("GPU_DELTA_TIMING", "0") == "1"
         self.stream = torch.cuda.Stream(device=self.device)
         inner_codec, outer_codec = CODECS[codec]
         self.compressor = NvcompCompressor(inner_codec, self.device)
@@ -250,23 +226,19 @@ class GpuBatchEncoder:
         _validate_snapshots(tensors)
         if not tensors:
             return []
-        started, phases = time.monotonic(), _PhaseTimes(self.timing)
+        started = time.monotonic()
         xor_metadata = {}
         if not any(current.numel() for _, current in tensors):
             metrics = _tensor_metrics(tensors, {"encode_wall_s": time.monotonic() - started})
             return [DeviceEncodedTensor([], None, 0, item) for item in metrics]
         try:
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
-                with phases.record("baseline_h2d_s"):
-                    previous_gpu = [previous.to(self.device, non_blocking=True) for previous, _ in tensors]
-                with phases.record("current_h2d_s"):
-                    current_gpu = [current.to(self.device, non_blocking=True) for _, current in tensors]
-                with phases.record("xor_count_s"):
-                    frames, owners, counts = _xor_frames(previous_gpu, current_gpu, self.frame_bytes, xor_metadata)
+                previous_gpu = [previous.to(self.device, non_blocking=True) for previous, _ in tensors]
+                current_gpu = [current.to(self.device, non_blocking=True) for _, current in tensors]
+                frames, owners, counts = _xor_frames(previous_gpu, current_gpu, self.frame_bytes, xor_metadata)
                 # The one batch may contain frames from many allocations and
                 # tensors. No per-tensor metadata readback serializes submission.
-                with phases.record("compression_s"):
-                    batch = self.compressor.compress(frames, self.stream)
+                batch = self.compressor.compress(frames, self.stream)
                 metadata = torch.stack((counts, batch.sizes, batch.statuses.to(torch.int64)))
                 host_metadata = torch.empty(metadata.shape, dtype=torch.int64, device="cpu", pin_memory=True)
                 host_metadata.copy_(metadata, non_blocking=True)
@@ -291,7 +263,6 @@ class GpuBatchEncoder:
                     {
                         "encode_wall_s": time.monotonic() - started,
                         "metadata_wait_s": metadata_wait_s,
-                        "cuda_phase_s": phases.elapsed(),
                         "nvcomp_frames": len(frames),
                         "frame_bytes": self.frame_bytes,
                     },
@@ -302,11 +273,10 @@ class GpuBatchEncoder:
             self.stream.synchronize()
             raise
 
-    def _compress_outer(self, groups, frames, phases):
+    def _compress_outer(self, groups, frames):
         try:
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
-                with phases.record("outer_zstd_s"):
-                    batch = self.outer_compressor.compress(frames, self.stream, compact_outputs=True)
+                batch = self.outer_compressor.compress(frames, self.stream, compact_outputs=True)
                 metadata = torch.stack((batch.sizes, batch.statuses.to(torch.int64)))
                 host = torch.empty(metadata.shape, dtype=torch.int64, device="cpu", pin_memory=True)
                 host.copy_(metadata, non_blocking=True)
@@ -341,7 +311,7 @@ class GpuBatchEncoder:
 
     def finish_device(self, tensors: list[DeviceEncodedTensor]):
         """Optionally Zstd-wrap, then pack all owner tensors into one pinned slab."""
-        started, phases, transfer = time.monotonic(), _PhaseTimes(self.timing), {}
+        started, transfer = time.monotonic(), {}
         wrapped = self.outer_compressor is not None
         # Plain LZ4 already has aligned inner arenas; preserve them intact.
         # Wrapped codecs split only within natural tensor boundaries.
@@ -367,14 +337,13 @@ class GpuBatchEncoder:
             return [(item.frames, memoryview(b""), None, item.changed, item.metrics) for item in tensors]
         try:
             compression_started = time.monotonic()
-            encoded_groups, metadata_wait = self._compress_outer(groups, frames, phases) if wrapped else (groups, 0.0)
+            encoded_groups, metadata_wait = self._compress_outer(groups, frames) if wrapped else (groups, 0.0)
             compression_wall = time.monotonic() - compression_started if wrapped else 0.0
             pack_started = time.monotonic()
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
-                with phases.record("pack_d2h_s"):
-                    arenas, offsets, packed = _pack_device_arenas(encoded_groups, self._alignment_padding)
-                    # Retain alignment and perform only one owner-wide D2H.
-                    _copy_payload_slab(packed, transfer)
+                arenas, offsets, packed = _pack_device_arenas(encoded_groups, self._alignment_padding)
+                # Retain alignment and perform only one owner-wide D2H.
+                _copy_payload_slab(packed, transfer)
                 done = torch.cuda.Event()
                 done.record()
             waiting = time.monotonic()
@@ -393,7 +362,6 @@ class GpuBatchEncoder:
             "final_payload_d2h_bytes": transfer["host"].numel(),
             "outer_zstd_metadata_wait_s": metadata_wait,
             "payload_d2h_wait_s": payload_wait,
-            "finalize_cuda_phase_s": phases.elapsed(),
         }
         return _finished_results(tensors, groups, encoded_groups, arenas, offsets, transfer, wrapped)
 

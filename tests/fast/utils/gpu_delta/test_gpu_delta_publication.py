@@ -137,6 +137,12 @@ def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_pat
         raw_offset = (offset + len(payload) + 15) // 16 * 16
         assert blob[offset + len(payload) : raw_offset] == bytes(raw_offset - offset - len(payload))
         assert blob[raw_offset:] == b"1234"
+        assert writer.payload_metrics["matrix_payload_bytes"] == len(payload)
+        assert writer.payload_metrics["matrix_inner_arena_bytes"] == entry["outer"]["decoded_bytes"]
+        # Only file alignment is additive with raw and final matrix bytes.
+        assert len(blob) - 7 - writer.payload_metrics["matrix_payload_bytes"] == 13 + raw_offset - offset - len(
+            payload
+        )
         for tensor in manifest["tensors"]:
             if tensor["name"] in ("empty", "unchanged"):
                 assert not tensor["frames"] and "outer" not in tensor and tensor["changed_bytes"] == 0
