@@ -97,13 +97,6 @@ MASTER_ADDR=<head ip> python scripts/run_beam_lora.py execute --num-rollout 100 
     --output-dir /root/shared_data/beam-lora-run
 ```
 
-### 4.5 Resume
-
-Rerun the same command with `--resume`, on the same topology and output directory:
-
-- `run_beam.py` restores the latest checkpoint and the dataset's sampling position. **`--num-rollout` is the total count**, including completed rollouts.
-- `run_beam_lora.py` restores the latest adapter with its optimizer and LR scheduler from `<output-dir>/iter_*/adapter`. Rollout ids and the dataset position restart at 0.
-
 ## 5. Recipe Configuration
 
 ### 5.1 Parallelism
