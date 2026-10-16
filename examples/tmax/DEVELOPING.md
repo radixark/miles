@@ -149,14 +149,15 @@ Run each rung before the next, and keep jobs to 4 GPUs until the change is ready
 3. **2-node smoke** (`smoke_2node`), with `-- --trace-dir <dir> --dump-training-data`. It exercises the replicas,
    the Ray join, the forwarded podman shards and the weight broadcast. Beaker may pack both replicas onto one
    machine; the worker IPs in `Ray cluster has … workers […]` tell you whether the sync crossed machines. Then
-   check the trained samples in `rollout_data/<step>.pt` against the traces:
+   check the trained samples against the traces with
+   `HF_HUB_OFFLINE=1 python examples/tmax/tools/check_samples.py <run dir>/rollout_data/*.pt --trace-dir <run dir>`:
    - one sample per episode;
    - token, loss-mask and log-prob lengths consistent;
    - tool observations framed as in open-instruct;
    - trained stretches ending with `<|im_end|>`;
    - trained turns equal to the trace's `turns`, except for `context_full` episodes, which lose their last turn.
-4. **Production** (`prod_4node`): submit, watch the first steps ([Watching a run](beaker/README.md#watching-a-run)),
-   and push the branch once a few steps have trained.
+4. **Production** (`prod_4node`): submit, watch the first steps with `tools/watch_run.py <experiment> --until-steps 3`
+   ([Watching a run](beaker/README.md#watching-a-run)), and push the branch once a few steps have trained.
 
 ### Conventions
 

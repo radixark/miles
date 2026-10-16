@@ -55,14 +55,13 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
   - optionally flush the KV cache after in-place updates;
   - check which FlashAttention Megatron uses on B300;
   - decide whether `max_weight_staleness` should be 3 to match `--async_steps 4` exactly (see the comparison).
-- **Code hygiene:**
-  - cover the launcher with recorded-command tests;
-  - commit the trajectory checker and the run watcher used during validation as tools under `examples/tmax/`.
+- **Code hygiene:** cover the launcher with recorded-command tests.
 
 ## Done
 
 | Item | Commit |
 |---|---|
+| Run watcher and trajectory checker (`tools/watch_run.py`, `tools/check_samples.py`) | the commit adding `tools/` |
 | Per-submission run names; `--exp-name` continues a run; W&B run per submission | `edf2c7ae3e` |
 | Multi-node replicas wait up to 1 h for each other (`synchronizedStartTimeout`) | `fd31043981` |
 | Image `dev-202610151741` | `c55f57cb5b` |

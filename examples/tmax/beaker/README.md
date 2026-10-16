@@ -173,6 +173,9 @@ python examples/tmax/beaker/registry_mirror/registry_mirror.py warm     # open-i
 ```bash
 beaker experiment get <experiment>                     # jobs, replica ranks, status
 beaker job logs <head job> --since 10m                 # replica 0 carries the training log
+
+# One line per event until the head exits: every 10th step, syncs over 20 s, failures, exited replicas
+python examples/tmax/tools/watch_run.py <experiment> --every-step 10 --slow-sync 20
 ```
 
 Log lines worth grepping in the head job's log:
