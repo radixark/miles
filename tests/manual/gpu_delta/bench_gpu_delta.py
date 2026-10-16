@@ -813,12 +813,11 @@ async def _engines(args, model):
                     key: os.environ.get(key)
                     for key in (
                         "GPU_DELTA_SKIP_PAYLOAD_HASH",
-                        "GPU_DELTA_DECODE_STAGES",
                         "GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS",
                         "GPU_DELTA_LAYERS_PER_BATCH",
                         "GPU_DELTA_CPU_WORKERS",
                         "GPU_DELTA_HOST_CACHE_DIR",
-                        "GPU_DELTA_NVTX",
+                        "SGLANG_ENABLE_NVTX_OPERATIONS",
                     )
                 },
             },
@@ -1483,7 +1482,7 @@ def _run_phase(phase, args, directory, arm, records):
         "GPU_DELTA_SKIP_PAYLOAD_HASH": "1" if arm["skip_payload_hash"] else "0",
     }
     if phase == "run" and args.profile_version is not None:
-        settings["GPU_DELTA_NVTX"] = "2"
+        settings["SGLANG_ENABLE_NVTX_OPERATIONS"] = "1"
     process = multiprocessing.get_context("spawn").Process(
         target=_phase, args=(phase, args, directory, settings, arm), name=phase
     )
