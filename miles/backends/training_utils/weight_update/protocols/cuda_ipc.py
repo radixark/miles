@@ -159,7 +159,7 @@ class _IpcBucketRing:
 def _ipc_ref_counter(serialized: str | bytes) -> tuple[str, int] | None:
     """(ref_counter_handle, ref_counter_offset) of the shared flattened tensor inside a serialized bucket, read from the
     pickle opcodes (no unpickling, so no CUDA-IPC handle is opened): torch's reducer emits the ref-counter shm name
-    ``/torch_<pid>_<rand>_<n>`` as a unicode string immediately followed by the integer slot offset."""
+    ``/torch_<pid>_<rand>_<n>`` (bytes) immediately followed by the integer slot offset."""
     import base64
     import pickletools
     import re
@@ -169,11 +169,11 @@ def _ipc_ref_counter(serialized: str | bytes) -> tuple[str, int] | None:
     try:
         for opcode, arg, _pos in pickletools.genops(data):
             if handle is None:
-                if opcode.name in ("BINUNICODE", "SHORT_BINUNICODE", "BINUNICODE8", "UNICODE") and isinstance(
-                    arg, str
-                ):
-                    if re.fullmatch(r"/torch_\d+(_\d+)+", arg):
-                        handle = arg
+                # torch packs the ref-counter shm name as bytes (PyBytes_FromString); accept str too
+                if isinstance(arg, (bytes, bytearray)):
+                    arg = bytes(arg).decode("ascii", "replace")
+                if isinstance(arg, str) and re.fullmatch(r"/torch_\d+(_\d+)+", arg):
+                    handle = arg
             elif opcode.name in ("BININT", "BININT1", "BININT2", "LONG1", "LONG4", "INT", "LONG"):
                 return handle, int(arg)
     except Exception as e:  # diagnostics only

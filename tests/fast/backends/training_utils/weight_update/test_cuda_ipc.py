@@ -215,7 +215,7 @@ class TestIpcBucketRing:
             4096,
             0,
             False,
-            "/torch_4242_1518968791_17",
+            b"/torch_4242_1518968791_17",
             9,
             b"\x02" * 64,
             False,
