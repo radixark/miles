@@ -22,7 +22,9 @@ replica 0 the Ray head and joins the others to it.
 ``beaker:`` keys: cluster, workspace, budget, priority, preemptible, min_runtime, retries, nodes, gpus (per node),
 synchronized_start_timeout (multi-node: how long replicas wait for each other to start, default 1h),
 shared_memory, image, sandbox_shards, mirror_url (``auto``: the running registry_mirror.py mirrors), keep_last_n_checkpoints, weka (list of buckets, mounted at
-/weka/<bucket>), dockerhub_username, secrets (env var -> Beaker secret), env (extra env vars).
+/weka/<bucket>), dockerhub_username, secrets (env var -> Beaker secret), env (extra env vars); with the config's
+``sandbox_backend: gateway``: gateway_registry (the podman fleet's head registry, for a gateway started on the head)
+or gateway_url (a running gateway), gateway_min_replicas, literegistry_version.
 """
 
 import argparse
@@ -148,6 +150,10 @@ def _build_spec(
         "SANDBOX_SHARDS": str(beaker.get("sandbox_shards", 1)),
         "MIRROR_URL": _mirror_url(beaker.get("mirror_url", "")),
         "KEEP_LAST_N_CHECKPOINTS": str(beaker.get("keep_last_n_checkpoints", 0)),
+        "GATEWAY_REGISTRY": beaker.get("gateway_registry", ""),
+        "GATEWAY_URL": beaker.get("gateway_url", ""),
+        "GATEWAY_MIN_REPLICAS": str(beaker.get("gateway_min_replicas", "")),
+        "LITEREGISTRY_VERSION": str(beaker.get("literegistry_version", "")),
         "EXTRA_ARGS": shlex.join(overrides),
         # The launcher's exported settings win over the config file's, and the entrypoint's pruner reads it too.
         "MILES_SCRIPT_EXP_NAME": exp_name,

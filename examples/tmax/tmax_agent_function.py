@@ -24,7 +24,8 @@ Failure semantics:
   so the sample is ABORTED and the whole group is dropped;
 * a bash command or the tests failing for infra reasons: the error is the
   observation and the episode continues (a vanished container is recreated once);
-* sandbox OOM or the optional episode wall-clock cap: reward 0;
+* sandbox OOM, a remote sandbox removed under the episode (gateway backend), or the optional episode
+  wall-clock cap: reward 0;
 * over-sampling abort: ``reward=None``; the group is discarded anyway.
 
 Each call runs in its own process under ``--custom-agent-function-mode subproc``
@@ -58,7 +59,16 @@ from pathlib import Path
 from typing import Any
 
 from openai import AsyncOpenAI
-from tmax_sandbox import SandboxInfraError, SandboxOOMError, TmaxSandbox, remove_owned_sandboxes
+from tmax_gateway import TmaxGatewaySandbox, close_live_sandboxes
+from tmax_sandbox import (
+    SandboxBase,
+    SandboxInfraError,
+    SandboxLostError,
+    SandboxOOMError,
+    TmaxSandbox,
+    backend_name,
+    remove_owned_sandboxes,
+)
 
 from miles.rollout.agentic.rollout_limits import current_scope, rollout_lock
 from miles.rollout.agentic.session import openai_session_url
@@ -146,7 +156,7 @@ async def run(
     t_start = time.monotonic()
 
     try:
-        sandbox = TmaxSandbox(
+        sandbox = _make_sandbox(
             image=metadata["image"], task_dir=os.path.join(os.environ["TMAX_TASK_DATA_DIR"], task_id)
         )
         async with sandbox as box:
@@ -172,8 +182,14 @@ async def abort(args) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(str(_abort_generation() + 1))
     tmp.replace(path)  # atomic, so a reader never sees a half-written counter
-    removed = await remove_owned_sandboxes()
+    removed = await (close_live_sandboxes() if backend_name() == "gateway" else remove_owned_sandboxes())
     logger.info(f"TMax abort: signalled in-flight episodes, removed {removed} sandboxes")
+
+
+def _make_sandbox(image: str, task_dir: str) -> SandboxBase:
+    """A container from the configured backend: podman daemons of this job, or a LiteRegistry podman fleet."""
+    backend = TmaxGatewaySandbox if backend_name() == "gateway" else TmaxSandbox
+    return backend(image=image, task_dir=task_dir)
 
 
 async def _run_episode(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox, request_kwargs: dict) -> None:
@@ -182,6 +198,8 @@ async def _run_episode(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox,
         await asyncio.wait_for(_loop(episode, policy, box, request_kwargs), timeout=timeout_s)
     except TimeoutError:
         episode.end_reason, episode.reward = "episode_timeout", 0.0
+    except SandboxLostError:  # the remote container was removed or stopped under the episode
+        episode.end_reason, episode.reward = "sandbox_lost", 0.0
     except SandboxOOMError:
         episode.end_reason, episode.reward = "oom", 0.0
     except _Aborted:

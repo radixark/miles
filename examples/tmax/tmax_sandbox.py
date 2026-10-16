@@ -1,10 +1,13 @@
-"""Per-episode TMax sandbox on a local Podman (or Docker) daemon.
+"""Per-episode TMax sandbox: a container on Podman daemons the job runs, or on a remote fleet.
 
-A port of the open-instruct ``swerl_vanillux_sandbox`` environment and its
-``DockerBackend`` onto the Docker-compatible REST API that ``podman system
-service`` exposes. Each episode gets a fresh container from the task's
-prebuilt image; the agent's only tool is bash; tests are uploaded only at
-submit time so the policy cannot read them.
+A port of the open-instruct ``swerl_vanillux_sandbox`` environment. Each episode gets a fresh container from the
+task's prebuilt image; the agent's only tool is bash; tests are uploaded only at submit time so the policy cannot
+read them. ``SandboxBase`` holds that episode logic; the container comes from one of two backends:
+
+* ``podman`` (``TmaxSandbox``, here): open-instruct's ``DockerBackend`` on the Docker-compatible REST API that
+  ``podman system service`` exposes, on daemons the training job runs on its own nodes.
+* ``gateway`` (``tmax_gateway.TmaxGatewaySandbox``): open-instruct's ``GatewayBackend``, a container on a
+  LiteRegistry podman fleet reached through its gateway, so no sandbox shares a node with training or SGLang.
 
 Behavior kept identical to open-instruct, since it shapes the reward:
 
@@ -28,6 +31,10 @@ are one node, and every ``unix://`` socket is the rollout's own node. As open-in
 ``_FileSlotSemaphore``s, the start and exec limits apply to each node separately.
 
 Env vars:
+  TMAX_SANDBOX_BACKEND      podman | gateway (default: podman).
+  TMAX_GATEWAY_URL          gateway backend: the LiteRegistry gateway, e.g. http://127.0.0.1:24750.
+  TMAX_GATEWAY_KEEPALIVE_S  gateway backend: seconds between keepalive execs on an idle container, so its
+                            affinity binding (15 min TTL) survives a long generation (default: 300, 0 = off).
   TMAX_DOCKER_HOST          Docker API endpoint(s), comma-separated (default: $DOCKER_HOST,
                             else unix:///run/podman/podman.sock). One podman daemon serializes
                             on its lock database at high concurrency, so open-instruct runs
@@ -61,8 +68,6 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from urllib.parse import urlparse
-
-import docker
 
 from miles.rollout.agentic.rollout_limits import current_scope, rollout_semaphore
 
@@ -130,6 +135,10 @@ class SandboxOOMError(RuntimeError):
     """The sandbox was OOM-killed; the episode ends with reward 0."""
 
 
+class SandboxLostError(SandboxOOMError):
+    """The remote sandbox was killed or stopped under the episode (gateway backend); it ends like an OOM kill."""
+
+
 @dataclass(frozen=True)
 class ExecResult:
     stdout: str
@@ -139,6 +148,9 @@ class ExecResult:
 
 @dataclass(frozen=True)
 class _Settings:
+    backend: str
+    gateway_url: str
+    gateway_keepalive_s: float
     docker_hosts: tuple[str, ...]
     sandboxes_per_node: int
     mem_limit: str
@@ -152,6 +164,9 @@ class _Settings:
 @cache
 def _settings() -> _Settings:
     return _Settings(
+        backend=os.getenv("TMAX_SANDBOX_BACKEND", "podman"),
+        gateway_url=os.getenv("TMAX_GATEWAY_URL", "").rstrip("/"),
+        gateway_keepalive_s=float(os.getenv("TMAX_GATEWAY_KEEPALIVE_S", "300")),
         docker_hosts=tuple(
             host.strip()
             for host in (
@@ -173,9 +188,22 @@ def _settings() -> _Settings:
     )
 
 
+def backend_name() -> str:
+    """The configured sandbox backend: podman or gateway."""
+    return _settings().backend
+
+
 @cache
-def _client(docker_host: str) -> docker.DockerClient:
-    return docker.DockerClient(base_url=docker_host, timeout=300)
+def _docker():
+    """docker-py, imported on first use: only the podman backend needs it, and Miles does not depend on it."""
+    import docker
+
+    return docker
+
+
+@cache
+def _client(docker_host: str):
+    return _docker().DockerClient(base_url=docker_host, timeout=300)
 
 
 def _bench_dir() -> Path:
@@ -279,42 +307,21 @@ def _tar_file(path: str, content: str, mode: int = 0o755) -> bytes:
     return buf.getvalue()
 
 
-class TmaxSandbox:
-    """One task container for one episode. Use as ``async with TmaxSandbox(...) as box``."""
+class SandboxBase:
+    """One task container for one episode, whatever runs it. Use as ``async with make_sandbox(...) as box``.
+
+    Holds the episode logic shared by the backends (the persistent shell, observations, the withheld tests and the
+    reward); a backend provides the container: ``__aenter__`` (start it, retrying), ``_release``, ``_exec`` (one
+    command under a timeout) and ``_put_archive`` (a tar extracted at ``/``).
+    """
 
     def __init__(self, image: str, task_dir: str):
         self._image = image
         self._task_dir = task_dir
         self._tests_dir = os.path.join(task_dir, "tests")
-        self._docker_host = ""
-        self._node_slot: int | None = None
-        self._container = None
-        self._ready = False  # set once the episode's container is up; a restart is only allowed after that
-        self._restarted = False
 
-    async def __aenter__(self) -> "TmaxSandbox":
-        last_error: Exception | None = None
-        for attempt in range(_START_ATTEMPTS):
-            try:
-                self._docker_host, self._node_slot = await _acquire_host()
-                await self._start()
-                await self._prepare_runtime()
-                self._ready = True
-                return self
-            except asyncio.CancelledError:
-                await asyncio.shield(self._release())
-                raise
-            except Exception as e:
-                last_error = e
-                await self._release()
-                if any(marker in str(e).lower() for marker in _CONNECTIVITY_MARKERS):
-                    _bench(self._docker_host, e)
-                if attempt + 1 < _START_ATTEMPTS:
-                    delay = min(_START_RETRY_BASE_S * 2**attempt, _START_RETRY_MAX_S)
-                    await asyncio.sleep(delay + random.uniform(0.0, _START_RETRY_JITTER_S))
-        raise SandboxInfraError(
-            f"sandbox start failed {_START_ATTEMPTS}x for image={self._image}: {last_error!r}"
-        ) from last_error
+    async def __aenter__(self) -> "SandboxBase":
+        raise NotImplementedError
 
     async def __aexit__(self, *exc) -> None:
         await self._release()
@@ -348,6 +355,64 @@ class TmaxSandbox:
         except ValueError:
             return 0.0
 
+    async def _prepare_runtime(self) -> None:
+        await self._exec("mkdir -p /workspace /output /logs/verifier /root")
+        seeds_dir = os.path.join(self._task_dir, "environment", "seeds")
+        if os.path.isdir(seeds_dir):
+            await self._put_archive(_tar_directory(seeds_dir, "/workspace"))
+        await self._exec(
+            "cd /workspace && "
+            '[ -d /app ] || { _P="$(pwd)"; [ "$_P" != "/" ] && ln -sf "$_P" /app; } && '
+            f"printf '%s\\n' /app > {shlex.quote(_BASH_CWD_PATH)} && "
+            f": > {shlex.quote(_BASH_ENV_PATH)}"
+        )
+        await self._put_archive(_tar_file(_BASH_WRAPPER_PATH, _BASH_WRAPPER))
+
+    async def _release(self) -> None:
+        raise NotImplementedError
+
+    async def _exec(self, command: str, timeout_s: int | None = None) -> ExecResult:
+        raise NotImplementedError
+
+    async def _put_archive(self, tar_bytes: bytes) -> None:
+        raise NotImplementedError
+
+
+class TmaxSandbox(SandboxBase):
+    """The podman backend: a container on one of the Podman daemons in ``TMAX_DOCKER_HOST``."""
+
+    def __init__(self, image: str, task_dir: str):
+        super().__init__(image, task_dir)
+        self._docker_host = ""
+        self._node_slot: int | None = None
+        self._container = None
+        self._ready = False  # set once the episode's container is up; a restart is only allowed after that
+        self._restarted = False
+
+    async def __aenter__(self) -> "TmaxSandbox":
+        last_error: Exception | None = None
+        for attempt in range(_START_ATTEMPTS):
+            try:
+                self._docker_host, self._node_slot = await _acquire_host()
+                await self._start()
+                await self._prepare_runtime()
+                self._ready = True
+                return self
+            except asyncio.CancelledError:
+                await asyncio.shield(self._release())
+                raise
+            except Exception as e:
+                last_error = e
+                await self._release()
+                if any(marker in str(e).lower() for marker in _CONNECTIVITY_MARKERS):
+                    _bench(self._docker_host, e)
+                if attempt + 1 < _START_ATTEMPTS:
+                    delay = min(_START_RETRY_BASE_S * 2**attempt, _START_RETRY_MAX_S)
+                    await asyncio.sleep(delay + random.uniform(0.0, _START_RETRY_JITTER_S))
+        raise SandboxInfraError(
+            f"sandbox start failed {_START_ATTEMPTS}x for image={self._image}: {last_error!r}"
+        ) from last_error
+
     async def _release(self) -> None:
         """Remove the container and give its node slot back."""
         try:
@@ -362,7 +427,7 @@ class TmaxSandbox:
         if container is not None:
             try:
                 await asyncio.to_thread(container.remove, force=True)
-            except docker.errors.NotFound:
+            except _docker().errors.NotFound:
                 pass
             except Exception as e:
                 logger.warning(f"failed to remove sandbox {container.short_id}: {e!r}")
@@ -387,23 +452,10 @@ class TmaxSandbox:
         async with rollout_semaphore(f"tmax-pull-{self._docker_host}-{self._image}", 1):
             try:
                 await asyncio.to_thread(client.images.get, self._image)
-            except docker.errors.ImageNotFound:
+            except _docker().errors.ImageNotFound:
                 user = _settings().registry_auth.get("username", "anonymous")
                 logger.info(f"pulling sandbox image {self._image} on {self._docker_host} as {user}")
                 await asyncio.to_thread(client.images.pull, self._image, auth_config=_settings().registry_auth)
-
-    async def _prepare_runtime(self) -> None:
-        await self._exec("mkdir -p /workspace /output /logs/verifier /root")
-        seeds_dir = os.path.join(self._task_dir, "environment", "seeds")
-        if os.path.isdir(seeds_dir):
-            await self._put_archive(_tar_directory(seeds_dir, "/workspace"))
-        await self._exec(
-            "cd /workspace && "
-            '[ -d /app ] || { _P="$(pwd)"; [ "$_P" != "/" ] && ln -sf "$_P" /app; } && '
-            f"printf '%s\\n' /app > {shlex.quote(_BASH_CWD_PATH)} && "
-            f": > {shlex.quote(_BASH_ENV_PATH)}"
-        )
-        await self._put_archive(_tar_file(_BASH_WRAPPER_PATH, _BASH_WRAPPER))
 
     async def _put_archive(self, tar_bytes: bytes) -> None:
         ok = await asyncio.to_thread(self._container.put_archive, "/", tar_bytes)
@@ -425,8 +477,8 @@ class TmaxSandbox:
         for attempt in range(_TRANSIENT_EXEC_RETRIES):
             try:
                 return await asyncio.to_thread(self._container.exec_run, ["bash", "-c", wrapped], demux=True)
-            except docker.errors.APIError as e:
-                gone = isinstance(e, docker.errors.NotFound) or getattr(e, "status_code", None) == 409
+            except _docker().errors.APIError as e:
+                gone = isinstance(e, _docker().errors.NotFound) or getattr(e, "status_code", None) == 409
                 if getattr(e, "status_code", None) == 409 and await self._was_oom_killed():
                     raise SandboxOOMError(f"sandbox {self._container.short_id} was OOM-killed") from e
                 if gone and self._ready and not self._restarted:
@@ -465,13 +517,13 @@ async def remove_owned_sandboxes() -> int:
                     all=True, filters={"label": f"{_OWNER_LABEL}={owner()}"}
                 )
             )
-        except docker.errors.DockerException as e:  # one unreachable daemon must not stop the sweep of the others
+        except _docker().errors.DockerException as e:  # one unreachable daemon must not stop the sweep of the others
             logger.warning(f"cannot list sandboxes on {docker_host}: {e!r}")
             continue
         for container in containers:
             try:
                 await asyncio.to_thread(container.remove, force=True)
-            except docker.errors.NotFound:
+            except _docker().errors.NotFound:
                 pass
         removed += len(containers)
     return removed

@@ -22,6 +22,12 @@
 #   SANDBOX_NICE              niceness of the podman services, inherited by every sandbox   (default: 19)
 #   RAY_health_check_timeout_ms, RAY_health_check_failure_threshold   Ray's node health check (default: 20000, 60)
 #   RAY_gcs_rpc_server_reconnect_timeout_s   how long a node's Ray processes wait for an unresponsive head (default: 1200)
+# With the config's sandbox_backend: gateway, no podman runs in the job; instead the head runs a LiteRegistry gateway
+# in front of a podman fleet (tmax_gateway.py) and exports TMAX_GATEWAY_URL for the launcher:
+#   GATEWAY_REGISTRY          the fleet's head registry, e.g. head+sqlite:///weka/.../head.sqlite3 (gateway started here)
+#   GATEWAY_URL               or an already running gateway to use as is
+#   GATEWAY_MIN_REPLICAS      podman replicas the gateway must list before training starts (default: 1)
+#   LITEREGISTRY_VERSION      the gateway's literegistry release (default: 1.0.49)
 set -euxo pipefail
 
 REPO=$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)
@@ -35,7 +41,6 @@ PODMAN_TCP_PORT=23750  # worker replicas forward <port + shard> to their podman 
 cd "$REPO"
 git log -1 --format='running miles @ %H (%s)' || true
 nvidia-smi
-pip install docker  # the sandbox client; the Miles image does not ship it
 # A node whose raylet is starved of CPU misses Ray's health checks and is declared dead, which fails the job (three
 # times on 2026-10-16/17, INVESTIGATIONS.md). Ray's default gives up after 5 missed checks (3 s apart, 10 s timeout);
 # allow about 20 minutes instead, so a stall the node recovers from does not kill the run. ray start reads these.
@@ -51,12 +56,16 @@ export PYTHONFAULTHANDLER=${PYTHONFAULTHANDLER:-1}  # a crash of any Python proc
  for pid in $(pgrep -f 'gcs_server|raylet' || true); do
     tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -E '^RAY_(health_check|gcs_rpc_server_reconnect)' | sed "s/^/ray pid $pid: /"
  done) &
+SANDBOX_BACKEND=$(python -c 'import sys, yaml; print((yaml.safe_load(open(sys.argv[1])) or {}).get("sandbox_backend", "podman"))' "$CONFIG")
+echo "sandbox backend: $SANDBOX_BACKEND"
 if [ "$NUM_NODES" -gt 1 ]; then
     HEAD_IP=$(getent hosts "$BEAKER_LEADER_REPLICA_HOSTNAME" | awk '{print $1; exit}')
     export MASTER_ADDR=$HEAD_IP
 fi
 
 # ---- 1. Podman, brought up exactly as open-instruct's Terminal-RL jobs do (beaker/podman/, vendored) ----
+if [ "$SANDBOX_BACKEND" = podman ]; then
+pip install docker  # the sandbox client; the Miles image does not ship it
 # The Miles image has no podman: install it from apt (4.9; open-instruct's image builds 5.6.2 from source),
 # then run the vendored config + docker_login.sh: SANDBOX_SHARDS daemons with their own storage, the
 # docker.io mirror when MIRROR_URL is set, the image janitor, and Docker Hub credentials.
@@ -106,6 +115,52 @@ set -xu
 export TMAX_DOCKER_HOST="$SWERL_PODMAN_DOCKER_HOSTS"
 ps -o ni=,args= -p "$(pgrep -d, -f 'podman.* system service')" | cut -c1-120 || true  # the services' niceness
 podman --url "${TMAX_DOCKER_HOST%%,*}" run --rm docker.io/library/alpine:latest echo podman-sandbox-ok
+fi
+
+# ---- 1b. Gateway backend: a LiteRegistry gateway on the head, in front of the podman fleet ----
+# All agent processes run on the head, so the gateway listens on localhost only. It reads the fleet's Redis address
+# from the head registry on weka, so it follows a Redis restart, and it is restarted if it exits.
+if [ "$SANDBOX_BACKEND" = gateway ] && [ "$RANK" = 0 ]; then
+    if [ -n "${GATEWAY_REGISTRY:-}" ]; then
+        # literegistry pins starlette and pulls streamlit/pandas, which the training env cannot take: its own venv.
+        LR_VENV=/opt/literegistry-venv
+        if command -v uv >/dev/null; then
+            uv venv -q --python "$(command -v python3)" "$LR_VENV" && uv pip install -q --python "$LR_VENV/bin/python" "literegistry==${LITEREGISTRY_VERSION:-1.0.49}"
+        else
+            python3 -m venv "$LR_VENV" && "$LR_VENV/bin/pip" install -q "literegistry==${LITEREGISTRY_VERSION:-1.0.49}"
+        fi
+        GATEWAY_PORT=${GATEWAY_PORT:-24750}
+        (
+            while true; do
+                "$LR_VENV/bin/python" -m literegistry.gateway --registry="$GATEWAY_REGISTRY" --host=127.0.0.1 \
+                    --port="$GATEWAY_PORT" --workers="${GATEWAY_WORKERS:-8}" --register=False >> /tmp/literegistry-gateway.log 2>&1
+                echo "literegistry gateway exited; restarting in 5 s (log: /tmp/literegistry-gateway.log)"
+                sleep 5
+            done
+        ) &
+        export TMAX_GATEWAY_URL="http://127.0.0.1:$GATEWAY_PORT"
+    elif [ -n "${GATEWAY_URL:-}" ]; then
+        export TMAX_GATEWAY_URL="$GATEWAY_URL"
+    else
+        echo "sandbox_backend: gateway needs beaker.gateway_registry or beaker.gateway_url"; exit 1
+    fi
+    python - "$TMAX_GATEWAY_URL" "${GATEWAY_MIN_REPLICAS:-1}" "${GATEWAY_WAIT_S:-1800}" <<'PY' || { tail -50 /tmp/literegistry-gateway.log 2>/dev/null; exit 1; }
+import json, sys, time, urllib.request
+url, want, deadline = sys.argv[1], int(sys.argv[2]), time.time() + float(sys.argv[3])
+have = -1
+while time.time() < deadline:
+    try:
+        models = json.load(urllib.request.urlopen(f"{url}/v1/models", timeout=10))["data"]
+        have = sum(len(m.get("metadata") or []) for m in models if m.get("id") == "podman")
+        if have >= want:
+            break
+    except Exception:
+        pass
+    time.sleep(5)
+print(f"gateway {url}: {have} podman replicas (need {want})", flush=True)
+sys.exit(0 if have >= want else 1)
+PY
+fi
 
 # ---- 2. Ray worker replicas: serve podman to the head, join its Ray cluster and stay until the run is done ----
 if [ "$NUM_NODES" -gt 1 ] && [ "$RANK" != 0 ]; then
@@ -113,7 +168,7 @@ if [ "$NUM_NODES" -gt 1 ] && [ "$RANK" != 0 ]; then
     # only on an IPv4 listener). A forward that does not stay up fails the job rather than leaving its node idle.
     shard=0
     forwards=()
-    for host in ${SWERL_PODMAN_DOCKER_HOSTS//,/ }; do
+    for host in $([ "$SANDBOX_BACKEND" = podman ] && echo "${SWERL_PODMAN_DOCKER_HOSTS//,/ }"); do
         socat TCP4-LISTEN:$((PODMAN_TCP_PORT + shard)),fork,reuseaddr,range="$HEAD_IP/32" "UNIX-CONNECT:${host#unix://}" &
         forwards+=($!)
         shard=$((shard + 1))
@@ -210,6 +265,7 @@ print(" ".join(workers))
 PY
 )
     # The head's own shards, then every worker's forwarded shards.
+    [ "$SANDBOX_BACKEND" = podman ] || WORKER_IPS=""
     for ip in $WORKER_IPS; do
         for shard in $(seq 0 $((SANDBOX_SHARDS - 1))); do
             TMAX_DOCKER_HOST+=",tcp://$ip:$((PODMAN_TCP_PORT + shard))"

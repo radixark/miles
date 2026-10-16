@@ -67,6 +67,10 @@ Args:
   --hf-snapshot-every: export HF weights at every save and keep every Nth (default: 0, off; prod: 20).
   --wandb-project: wandb project (default: miles-run_tmax_qwen3_5); with --exp-name restarts share one run.
   --wandb-entity: wandb entity (team) to log to (default: the API key's default entity).
+  --sandbox-backend: podman (daemons of this job, the default) or gateway (a LiteRegistry podman fleet; see
+      tmax_gateway.py).
+  --gateway-url: the fleet's gateway for --sandbox-backend gateway (default: inherit TMAX_GATEWAY_URL, which
+      beaker/tmax_beaker_entry.sh exports for the gateway it starts).
   --docker-host: Docker API endpoint(s) of the podman daemons (default: inherit TMAX_DOCKER_HOST / DOCKER_HOST).
   --model-dir / --data-dir / --output-dir: checkpoint / dataset / output directories.
 
@@ -162,6 +166,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     sglang_mem_fraction_static: float = 0.7
     num_prompts: int = 0
     max_steps: int = 64
+    # podman: containers on podman daemons this job runs; gateway: on a LiteRegistry podman fleet (tmax_gateway.py).
+    sandbox_backend: Literal["podman", "gateway"] = "podman"
+    # The fleet's gateway; empty inherits TMAX_GATEWAY_URL (the Beaker entrypoint exports the gateway it starts).
+    gateway_url: str = ""
     # Comma-separated Docker API endpoints of the sandbox daemons; empty inherits TMAX_DOCKER_HOST / DOCKER_HOST
     # from the launching environment (the Beaker entrypoint exports the shard sockets it started).
     docker_host: str = ""
@@ -222,6 +230,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     @property
     def sandbox_docker_host(self) -> str:
         return self.docker_host or os.environ.get("TMAX_DOCKER_HOST") or os.environ.get("DOCKER_HOST", "")
+
+    @property
+    def sandbox_gateway_url(self) -> str:
+        return self.gateway_url or os.environ.get("TMAX_GATEWAY_URL", "")
 
     @property
     def checkpoint_dir(self) -> str:
@@ -308,6 +320,9 @@ def _write_prompt_data(args: ScriptArgs) -> None:
 @command_utils.dataclass_cli
 def execute(args: ScriptArgs):
     U = args.create_backend()
+    assert (
+        args.sandbox_backend != "gateway" or args.sandbox_gateway_url
+    ), "--sandbox-backend gateway needs --gateway-url or TMAX_GATEWAY_URL"
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
@@ -444,7 +459,8 @@ def execute(args: ScriptArgs):
         misc_args += "--colocate "
     if args.num_nodes > 1:
         # The agent processes run where the RolloutExecutor does: on the head, whose podman sockets are the unix://
-        # endpoints in TMAX_DOCKER_HOST and the only address the other nodes' podman forwards accept.
+        # endpoints in TMAX_DOCKER_HOST and the only address the other nodes' podman forwards accept, and which runs
+        # the gateway the entrypoint starts for --sandbox-backend gateway.
         misc_args += "--pin-rollout-manager-to-head "
 
     if args.dump_training_data:
@@ -476,6 +492,8 @@ def execute(args: ScriptArgs):
         extra_env_vars={
             "PYTHONPATH": f"{args.megatron_path}:{_SCRIPT_DIR}:{command_utils.repo_base_dir}",
             "TMAX_TASK_DATA_DIR": args.task_data_dir,
+            "TMAX_SANDBOX_BACKEND": args.sandbox_backend,
+            "TMAX_GATEWAY_URL": args.sandbox_gateway_url,
             "TMAX_DOCKER_HOST": args.sandbox_docker_host,
             "TMAX_MAX_STEPS": str(args.max_steps),
             "TMAX_START_CONCURRENCY": str(args.sandbox_start_concurrency),
