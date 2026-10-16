@@ -205,8 +205,6 @@ def merge_samples_with_addition_r3(
         if end < start:
             raise ValueError(f"additional R3: record {i} has invalid offsets (start={start}, end={end})")
         delta_rows = end - start
-        if bool(info) != bool(delta_rows):
-            raise ValueError(f"additional R3: record {i} payload presence does not match {delta_rows} rows")
 
         patch = get_routed_experts_from_response(args, choice, delta_rows)
         if len(patch) or required_rows == 0:

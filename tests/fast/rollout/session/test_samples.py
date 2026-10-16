@@ -8,8 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
-import pybase64
 import pytest
+from sglang.srt.state_capturer.routed_experts_codec import RoutedExpertsEncoder
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.samples.merge import compute_samples_from_openai_records, merge_samples_with_addition_r3
@@ -796,7 +796,7 @@ def _r3_rows(num_rows: int, seed: int) -> np.ndarray:
 
 
 def _r3_patch(rows: np.ndarray) -> str:
-    return pybase64.b64encode(np.ascontiguousarray(rows).tobytes()).decode("ascii")
+    return RoutedExpertsEncoder().encode(rows)
 
 
 def _merge_addition(records, accumulated, max_trim_tokens=0):
@@ -933,14 +933,13 @@ class TestAdditionR3Assembly:
         assert merged.tokens == reference.tokens
         assert merged.loss_mask == reference.loss_mask
 
-    def test_empty_delta_keeps_empty_buffer_shape(self):
-        """A trajectory whose only patch is empty keeps the existing
-        empty-buffer decode shape instead of inventing a top-k source."""
-        records = [_make_record([1], [], routed_experts="", routed_experts_start_len=0)]
+    def test_empty_delta_keeps_the_payload_shape(self):
+        """A trajectory whose only patch has no rows keeps the zero-row shape SGLang sent."""
+        records = [_make_record([1], [], routed_experts=_r3_patch(_r3_rows(0, 0)), routed_experts_start_len=0)]
 
         merged = _merge_addition(records, [1])
 
-        assert merged.rollout_routed_experts.shape == (0, _ARGS_R3.num_layers, 0)
+        assert merged.rollout_routed_experts.shape == (0, _ARGS_R3.num_layers, _R3_TOPK)
         assert merged.rollout_routed_experts.dtype == np.int32
 
     def test_missing_start_len_raises(self):
@@ -949,10 +948,12 @@ class TestAdditionR3Assembly:
         with pytest.raises(ValueError, match="carries no routed_experts_start_len"):
             _merge_addition(records, [1, 2, 3, 10, 11])
 
-    def test_empty_payload_for_nonempty_delta_raises(self):
-        records = [_make_record([1, 2, 3], [10, 11], routed_experts="", routed_experts_start_len=0)]
+    def test_zero_row_payload_for_nonempty_delta_raises(self):
+        records = [
+            _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(0, 0)), routed_experts_start_len=0)
+        ]
 
-        with pytest.raises(ValueError, match="payload presence does not match 4 rows"):
+        with pytest.raises(ValueError, match="do not match"):
             _merge_addition(records, [1, 2, 3, 10, 11])
 
     def test_gapped_start_raises(self):

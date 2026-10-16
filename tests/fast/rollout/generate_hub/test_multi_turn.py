@@ -6,8 +6,8 @@ from itertools import groupby
 
 import httpx
 import numpy as np
-import pybase64
 import pytest
+from sglang.srt.state_capturer.routed_experts_codec import RoutedExpertsEncoder
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 
@@ -652,9 +652,7 @@ class TestRoutedExpertsMultiTurn:
             return ProcessResult(
                 text=text,
                 finish_reason="stop",
-                meta_info=ProcessResultMetaInfo(
-                    routed_experts=pybase64.b64encode(routed_experts.tobytes()).decode("ascii")
-                ),
+                meta_info=ProcessResultMetaInfo(routed_experts=RoutedExpertsEncoder().encode(routed_experts)),
             )
 
         generation_env.mock_server.process_fn = process_fn

@@ -243,8 +243,17 @@ class TestSamplesWireCodec:
 
     def test_encode_rejects_non_int32_replay_dtype(self):
         sample = _computed_sample(rollout_routed_experts=np.arange(24, dtype=np.int64).reshape(4, 3, 2))
-        with pytest.raises(ValueError, match="rollout_routed_experts must have dtype int32"):
+        with pytest.raises(ValueError, match="rollout_routed_experts must have dtype uint8 or int16 or int32"):
             encode_samples([sample], {}, None)
+
+    @pytest.mark.parametrize("dtype", [np.uint8, np.int16])
+    def test_narrow_routed_experts_round_trip(self, dtype):
+        routed = np.arange(24, dtype=dtype).reshape(4, 3, 2)
+        out = decode_samples_and_merge_input_sample(
+            encode_samples([_computed_sample(rollout_routed_experts=routed)], {}, None), Sample()
+        ).samples[0]
+        assert out.rollout_routed_experts.dtype == dtype
+        assert np.array_equal(out.rollout_routed_experts, routed)
 
     def test_encode_rejects_loss_mask_values_that_wrap_in_uint8(self):
         with pytest.raises(ValueError, match="loss_mask values do not fit wire dtype uint8"):

@@ -27,7 +27,7 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "rollout_sampling_mask_offsets": "int64",
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
-    "rollout_routed_experts": "int32",
+    "rollout_routed_experts": "uint8",  # int16 past 256 experts: see miles.utils.routed_experts
     "rollout_indexer_topk": "int32",
 }
 

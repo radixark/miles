@@ -82,6 +82,8 @@ def fill_replay_data(
         for a, b in zip(replay_data, tokens, strict=False):
             assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
 
+        # int16 holds every rollout id and the -1 padding at half int32's size; Replay widens on device
+        replay_data = [r.to(torch.int16) if r.dtype == torch.uint8 else r for r in replay_data]
         # Pad replay data to align with the token batch's final token. The padded token is masked from loss.
         # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
         replay_data = [pad_func(r, 1) for r in replay_data]

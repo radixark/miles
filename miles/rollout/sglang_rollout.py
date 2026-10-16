@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
-import pybase64
 import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
@@ -39,6 +38,7 @@ from miles.utils.processing_utils import (
     load_processor,
     load_tokenizer,
 )
+from miles.utils.routed_experts import decode_routed_experts
 from miles.utils.types import Sample
 
 from .generate_utils.generate_endpoint_utils import (
@@ -275,26 +275,12 @@ async def generate(
     sample.rollout_log_probs += new_response_log_probs
 
     if "routed_experts" in output["meta_info"]:
-        _re = np.frombuffer(
-            pybase64.b64decode(output["meta_info"]["routed_experts"].encode("ascii")),
-            dtype=np.int32,
+        sample.rollout_routed_experts = decode_routed_experts(
+            output["meta_info"],
+            num_tokens=int(output["meta_info"]["prompt_tokens"]) + len(new_response_tokens) - 1,
+            num_layers=args.num_layers,
+            allow_extra_tail_row=True,
         )
-        _ntok = int(output["meta_info"]["prompt_tokens"]) + len(new_response_tokens) - 1
-        _topk = _re.size // max(1, _ntok * args.num_layers)
-        if _re.size == (_ntok + 1) * args.num_layers * max(1, _topk):
-            # stop-edge: sglang also forwarded the final token; its routing rows
-            # feed no training position - drop the tail position.
-            _re = _re[: _ntok * args.num_layers * _topk]
-        assert _re.size == _ntok * args.num_layers * _topk, (
-            f"routed_experts buffer {_re.size} != ntok({_ntok}) x layers({args.num_layers}) x topk({_topk}); "
-            f"prompt_tokens={output['meta_info'].get('prompt_tokens')} response={len(new_response_tokens)} "
-            f"unexpanded_tokens={len(sample.tokens)}"
-        )
-        assert _re.size == 0 or _re.any(), (
-            "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
-            "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
-        )
-        sample.rollout_routed_experts = _re.reshape(_ntok, args.num_layers, _topk)
     if "indexer_topk" in output["meta_info"]:
         sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 

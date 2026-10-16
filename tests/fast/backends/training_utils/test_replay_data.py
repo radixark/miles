@@ -156,3 +156,33 @@ def test_fill_replay_thd_preserves_packed_order(monkeypatch, sequence_first, tp_
         )
         local_expected = expected.chunk(tp_size)[tp_rank] if sequence_parallel else expected
         torch.testing.assert_close(replay.recorded[0][:, 0], local_expected)
+
+
+@pytest.mark.parametrize("dtype", [torch.uint8, torch.int16])
+def test_fill_replay_stores_narrow_rollout_ids_as_int16_with_padding(monkeypatch, dtype):
+    args = SimpleNamespace(qkv_format="thd", allgather_cp=False, sequence_parallel=False, data_pad_size_multiplier=1)
+    state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
+    monkeypatch.setattr(parallel, "_parallel_state", state)
+    rollout_data = {
+        "routes": [
+            torch.tensor([0, 255], dtype=dtype).reshape(2, 1, 1),
+            torch.tensor([7, 9], dtype=dtype).reshape(2, 1, 1),
+        ],
+        "tokens": [torch.arange(3), torch.arange(3)],
+        "max_seq_lens": None,
+    }
+    iterator = SimpleNamespace(reset=lambda: None, get_next=lambda keys, batch=rollout_data: batch)
+    replay = _Replay()
+    fill_replay_data(
+        args=args,
+        models=None,
+        data_iterator=[iterator],
+        num_microbatches=[1],
+        rollout_data=rollout_data,
+        data_key="routes",
+        replay_list=[replay],
+        register_replay_list_func=register_replay_list_sequential,
+    )
+    recorded = replay.recorded[0][:, 0]
+    assert recorded.dtype == torch.int16
+    torch.testing.assert_close(recorded, torch.tensor([0, 255, -1, 7, 9, -1], dtype=torch.int16))

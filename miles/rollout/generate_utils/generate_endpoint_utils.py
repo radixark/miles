@@ -15,6 +15,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata, should_return_sampling_mask
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
+from miles.utils.routed_experts import decode_routed_experts
 from miles.utils.types import Sample
 
 
@@ -135,8 +136,7 @@ async def update_sample_from_response(
             sample.loss_mask = []
         sample.loss_mask += [1] * len(new_response_tokens)
 
-    # TODO handle multi-turn cases (may need concat instead of assignment)
-    sample.rollout_routed_experts = get_routed_experts_from_response(args, output, len(sample.tokens) - 1)
+    sample.rollout_routed_experts = _merge_routed_experts(args, sample, payload, output)
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
@@ -154,15 +154,35 @@ def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) 
 
 
 def get_routed_experts_from_response(args, output, num_tokens: int):
-    info = output["meta_info"].get("routed_experts")
-    if info is None:
+    if output["meta_info"].get("routed_experts") is None:
         return None
-    routed_experts = _decode_topk_buffer(info, num_tokens, args.num_layers, -1)
-    assert routed_experts.size == 0 or routed_experts.any(), (
-        "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
-        "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
+    return decode_routed_experts(output["meta_info"], num_tokens, args.num_layers)
+
+
+def request_routed_experts_patch(args, payload: dict, sample: Sample) -> None:
+    """Ask SGLang only for the R3 rows `sample` does not hold yet (additional R3).
+
+    The retained rows must be a causal prefix of `payload["input_ids"]`. Off under
+    `retract` pause mode, where a weight update recomputes (and re-routes) the prefix.
+    """
+    if not payload.get("return_routed_experts") or sample.rollout_routed_experts is None:
+        return
+    if args.pause_generation_mode == "retract":
+        return
+    payload["routed_experts_start_len"] = len(sample.rollout_routed_experts)
+
+
+def _merge_routed_experts(args, sample: Sample, payload: dict, output: dict):
+    start = payload.get("routed_experts_start_len", 0)
+    patch = get_routed_experts_from_response(args, output, len(sample.tokens) - 1 - start)
+    if start == 0 or patch is None:
+        return patch
+    retained = sample.rollout_routed_experts
+    assert retained is not None and len(retained) == start, (
+        f"additional R3 asked for rows from {start} but the sample retains "
+        f"{0 if retained is None else len(retained)}"
     )
-    return routed_experts
+    return np.concatenate([retained, patch])
 
 
 def get_indexer_topk_from_response(args, output, sample):
