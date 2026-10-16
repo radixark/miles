@@ -8,8 +8,25 @@ from typing import Any
 from miles.utils.chat_template_utils import deepseek
 from miles.utils.chat_template_utils.message_matcher_hub import assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.truncation import MarkerPair, TruncationGrammar
 
 _DEEPSEEK_MODE_KWARG_ALIASES = frozenset({"thinking_mode", "enable_thinking", "thinking"})
+
+
+def _dsml_truncation_grammar(block: str, invoke: str, parameter: str) -> TruncationGrammar:
+    """DeepSeek closing grammar; DSML tool-call tags are fixed text around ``｜DSML｜``.
+
+    The invoke and parameter openers are tag prefixes: their attributes follow.
+    """
+    return TruncationGrammar(
+        think=MarkerPair("<think>", "</think>"),
+        tool_blocks=(
+            MarkerPair(f"<｜DSML｜{block}>", f"\n</｜DSML｜{block}>"),
+            MarkerPair(f"<｜DSML｜{invoke}", f"\n</｜DSML｜{invoke}>"),
+            MarkerPair(f"<｜DSML｜{parameter}", f"</｜DSML｜{parameter}>"),
+        ),
+        end_of_turn="<｜end▁of▁sentence｜>",
+    )
 
 
 class DeepSeekV32TITOTokenizer(TITOTokenizer):
@@ -37,6 +54,8 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
         extra_kwargs={"drop_thinking": False},
         consistant_kwargs=["add_default_bos_token", "context"],
     )
+
+    TRUNCATION_GRAMMAR = _dsml_truncation_grammar("function_calls", "invoke", "parameter")
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
 
@@ -119,6 +138,8 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
         consistant_kwargs=["add_default_bos_token", "context", "reasoning_effort"],
     )
+
+    TRUNCATION_GRAMMAR = _dsml_truncation_grammar("tool_calls", "invoke", "parameter")
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
 
@@ -210,6 +231,9 @@ class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):
 
     reasoning_parser = "deepseek-v41"
     tool_call_parser = "deepseekv41"
+
+    # V4.1 tag names carry a leading space.
+    TRUNCATION_GRAMMAR = _dsml_truncation_grammar(" calls", " invoke", " parameter")
 
     def __init__(
         self,
