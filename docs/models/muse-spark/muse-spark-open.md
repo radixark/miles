@@ -61,12 +61,6 @@ MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_muse_spark_64xh200.py \
 
 `scripts/run_muse_spark_32xb300.py` is the same recipe on 4 × 8 B300 and takes the same options.
 
-| Mode | GPUs | Rollout | Training | Weight sync |
-|---|---|---|---|---|
-| Math reasoning | 64 H200 | 2–5.5 min | 3–5.5 min | about 50 s |
-| Image-grounded math | 64 H200 | 8–14 min | about 5 min | about 50 s |
-| Math reasoning | 32 B300 | 1.7–3.5 min | 8.5–12.5 min (18.5 min at step 0) | about 90 s |
-
 ### 4.2 Save and export
 
 `--save-interval N` saves the weights, without optimizer state, to `<output-dir>/<run-id>/checkpoints`, and the launcher converts the last save into a Hugging Face checkpoint at `<output-dir>/<run-id>/hf`. Each save and each conversion takes about 1.6 TB. Save directories count steps from 0, so `iter_0000009` below is the save after step 10:
