@@ -50,6 +50,19 @@ The `radixark/miles:beam` image (multi-arch, built on `radixark/miles:v0.1.2` by
 docker pull radixark/miles:beam
 ```
 
+### 3.3 Bring up the Ray cluster
+
+The launchers submit to a Ray cluster and do not start one. Run `radixark/miles:beam` on every node, with the checkpoint, the datasets and `--output-dir` on shared storage, then bring up the cluster:
+
+```bash
+# on the head node
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
+# on every other node
+ray start --address=${MASTER_ADDR}:6379 --node-ip-address ${WORKER_IP} --num-gpus 8 --disable-usage-stats
+```
+
+`ray status` on the head must list 96, 64 or 32 GPUs before launching, for 4.1, 4.2 and 4.3 respectively.
+
 ## 4. Launch
 
 ### 4.1 Full parameter, 12 nodes
