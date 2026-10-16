@@ -23,8 +23,9 @@ while the container idles through a long generation.
 
 A container the fleet reports lost (``PodmanContainerLostError``: the replica's watchdog removed it past its limits,
 4 GB of RSS or 2048 processes on 2026-10-16, it stopped because its init process died, or its replica left the
-roster) ends the episode with reward 0 (``SandboxLostError``, end reason ``sandbox_lost``). As literegistry
-prescribes, the episode does not continue in a replacement container.
+roster) ends the episode with reward 0 (``SandboxLostError``, end reason ``sandbox_lost``, its reason in the trace).
+So does a binding the gateway no longer has (``404``; the keepalive prevents expiry): nothing can reach the container
+again. As literegistry prescribes, the episode does not continue in a replacement container.
 """
 
 import asyncio
@@ -179,8 +180,10 @@ class TmaxGatewaySandbox(SandboxBase):
         try:
             return await self._run_command(command, timeout_s or _settings().command_timeout_s)
         except PodmanContainerLostError as e:
-            raise SandboxLostError(f"sandbox {self._image} lost: {_describe_loss(e)}") from e
+            raise SandboxLostError(f"sandbox {self._image} lost: {_describe_loss(e)}", reason=e.reason) from e
         except PodmanGatewayError as e:
+            if e.status_code == 404:  # the binding is gone, so is any way back to the container
+                raise SandboxLostError(f"sandbox {self._image} unreachable: {e}", reason="binding_lost") from e
             raise SandboxInfraError(f"gateway exec failed: {e}") from e
 
     async def _run_command(self, command: str, timeout_s: float) -> ExecResult:
@@ -222,6 +225,9 @@ class TmaxGatewaySandbox(SandboxBase):
                 if _PENDING_MARKER not in response.stdout:
                     markerless += 1
                     if markerless >= _MAX_MARKERLESS_WAITS:
+                        # A container being torn down, or a very slow replica: a trivial exec tells them apart
+                        # (a lost container raises here) before this becomes a plain tool error.
+                        await self._call("true", timeout=15.0)
                         raise PodmanGatewayError(
                             f"wait exec returned no marker {markerless}x (exit={response.exit_code}): "
                             f"stdout={response.stdout[:200]!r} stderr={response.stderr[:200]!r}"
@@ -300,8 +306,10 @@ class TmaxGatewaySandbox(SandboxBase):
                 )
                 _check(result, "upload assembly")
             except PodmanContainerLostError as e:
-                raise SandboxLostError(f"sandbox {self._image} lost: {_describe_loss(e)}") from e
+                raise SandboxLostError(f"sandbox {self._image} lost: {_describe_loss(e)}", reason=e.reason) from e
             except PodmanGatewayError as e:
+                if e.status_code == 404:
+                    raise SandboxLostError(f"sandbox {self._image} unreachable: {e}", reason="binding_lost") from e
                 raise SandboxInfraError(f"gateway upload failed: {e}") from e
 
 

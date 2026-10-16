@@ -285,7 +285,7 @@ the backend can be trusted at prod scale.
   `jupiter-cs-aus-159`. The roster listed 172 podman replicas (`podman128-cap8-*` and `tmax-source-replay512-*`, on
   neptune and jupiter hosts), 8 Docker Hub mirrors and a gateway. It is reachable from the dev box.
 - **Tests:**
-  - **Unit tests:** 10 against a fake gateway, a real HTTP server driven through literegistry's client
+  - **Unit tests:** 12 against a fake gateway, a real HTTP server driven through literegistry's client
     (`tests/fast/examples/tmax/test_tmax_gateway_sandbox.py`; skipped where the client is not installed).
   - **Live loss:** a command spawning 3,000 processes ended its episode after 5.9 s with
     `SandboxLostError: pids_limit (3012 tasks > 2048)`.
@@ -310,6 +310,17 @@ the backend can be trusted at prod scale.
     continues in a replacement container, as literegistry prescribes. The first smoke instead re-handshook a
     `sandbox_lost` answer and got 59 lost-sandbox tool errors; fixed by classifying errors with literegistry's own
     client.
+- **What the port adds on top of literegistry's client.** The client sends one request and classifies its answer;
+  these episode-level pieces, carried over from the first version of the port, still hold under 1.0.57:
+  - a keepalive every 5 min, since an idle binding expires after 900 s while the policy thinks;
+  - retries of transient answers;
+  - commands longer than the replica's 60 s exec cap run detached and are polled to completion;
+  - uploads over the 1 MB stdin cap go in 512 KB chunks;
+  - when a polled command's status file never appears, a trivial exec checks whether the container is gone before
+    the step fails as a tool error;
+  - a `404` for the binding ends the episode as a loss (`binding_lost`) rather than failing every later step;
+  - the loss reason goes into the episode metrics and trace (`sandbox_lost_reason`), and the head logs the fleet's
+    `session_limits` at startup.
 - **Contract:** literegistry 1.0.57, the release the fleet runs (gfaria's checkout
   `/weka/oe-adapt-default/gfaria/literegistry`, and on PyPI). The head's gateway is pinned to it.
   - The gateway now sends a pinned command once and never replays it.
@@ -318,7 +329,7 @@ the backend can be trusted at prod scale.
   - A request's `command` is capped at 16 KB, its stdin at 1 MB and its timeout at 60 s.
   - `literegistry-podman-client` 0.1.4 raises `PodmanContainerLostError` for `410 sandbox_lost` (reasons
     `memory_limit`, `pids_limit`, `container_stopped`, `unknown`) and `410 affinity_owner_lost`. It treats a generic
-    404 or 503 as a gateway error, not a loss.
+    404 or 503 as a gateway error, not a loss; the port treats a 404 as one (see above).
 - **Open decision, how a lost container scores:** today any loss ends the episode with reward 0, like an OOM kill.
   `affinity_owner_lost`, a replica dying, is infrastructure rather than the policy's doing. Marking such a sample
   aborted instead would drop its group, so an infrastructure loss never reaches the policy as a 0.

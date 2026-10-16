@@ -37,6 +37,7 @@ SANDBOX_LOST_PIDS = {
         "enforcement": "userspace_watchdog",
     }
 }
+SANDBOX_STOPPED = {"detail": {"code": "sandbox_lost", "reason": "container_stopped", "recoverable": False}}
 OWNER_LOST = {
     "error": "strict affinity server is no longer registered",
     "code": "affinity_owner_lost",
@@ -52,6 +53,8 @@ class FakeGateway:
         self.commands: list[str] = []  # agent-visible commands, in launch order
         self.results: dict[str, tuple[int, str, str]] = {}  # command substring -> (exit, stdout, stderr)
         self.pending_rounds = 0  # wait execs that answer PENDING before DONE
+        self.markerless_rounds = 0  # wait execs that answer with neither marker
+        self.stopped_on_probe = False  # the `true` probe finds the container stopped
         self.fail_next: list[tuple[int, object]] = []  # (status, JSON body) for the next requests
 
     async def handle(self, request: web.Request) -> web.Response:
@@ -74,6 +77,8 @@ class FakeGateway:
         container = self.containers.get(payload["affinity_id"])
         if container is None:
             return web.json_response({"detail": "strict affinity binding was not found or has expired"}, status=404)
+        if self.stopped_on_probe and payload["command"] == "true":
+            return web.json_response(SANDBOX_STOPPED, status=410)
         exit_code, stdout, stderr = self._exec(container, payload["command"], payload["stdin"])
         return web.json_response(
             {
@@ -96,6 +101,9 @@ class FakeGateway:
                 container["jobs"][job] = self._result_for(stdin)
             return 0, "LAUNCHED\n", ""
         if "until [ -f" in command:  # a wait exec
+            if self.markerless_rounds:
+                self.markerless_rounds -= 1
+                return 137, "", ""
             if self.pending_rounds:
                 self.pending_rounds -= 1
                 return 0, f"{tmax_gateway._PENDING_MARKER}\n", ""
@@ -229,19 +237,36 @@ def test_lost_container_ends_the_episode(gateway, task_dir, monkeypatch, status,
             gateway.fail_next = [(status, body)]
             await box.bash(":(){ :|:& };:")
 
-    with pytest.raises(tmax_sandbox.SandboxLostError):
+    with pytest.raises(tmax_sandbox.SandboxLostError) as lost:
         run(gateway, episode, monkeypatch)
+    assert lost.value.reason == body.get("detail", body).get("reason", body.get("code"))
     assert gateway.handshakes == 1  # never continued in a replacement container
 
 
-def test_expired_binding_is_a_tool_failure(gateway, task_dir, monkeypatch):
+def test_expired_binding_ends_the_episode(gateway, task_dir, monkeypatch):
     async def episode():
         async with tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir) as box:
             gateway.containers.clear()  # every request for the binding now 404s
             await box.bash("echo hi")
 
-    with pytest.raises(tmax_sandbox.SandboxInfraError):
+    with pytest.raises(tmax_sandbox.SandboxLostError) as lost:
         run(gateway, episode, monkeypatch)
+    assert lost.value.reason == "binding_lost"
+    assert gateway.handshakes == 1
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+def test_markerless_waits_probe_the_container(gateway, task_dir, monkeypatch, stopped):
+    async def episode():
+        async with tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir) as box:
+            gateway.markerless_rounds = tmax_gateway._MAX_MARKERLESS_WAITS
+            gateway.stopped_on_probe = stopped
+            await box.bash("echo hi")
+
+    with pytest.raises((tmax_sandbox.SandboxInfraError, tmax_sandbox.SandboxLostError)) as error:
+        run(gateway, episode, monkeypatch)
+    # A stopped container ends the episode; a live one that keeps answering oddly fails the step.
+    assert type(error.value) is (tmax_sandbox.SandboxLostError if stopped else tmax_sandbox.SandboxInfraError)
 
 
 def test_transient_errors_are_retried(gateway, task_dir, monkeypatch):

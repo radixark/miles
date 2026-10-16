@@ -136,7 +136,11 @@ class SandboxOOMError(RuntimeError):
 
 
 class SandboxLostError(SandboxOOMError):
-    """The remote sandbox was killed or stopped under the episode (gateway backend); it ends like an OOM kill."""
+    """The remote sandbox was killed or lost under the episode (gateway backend); it ends like an OOM kill."""
+
+    def __init__(self, message: str, reason: str = "unknown"):
+        super().__init__(message)
+        self.reason = reason  # the fleet's: memory_limit, pids_limit, container_stopped, affinity_owner_lost, ...
 
 
 @dataclass(frozen=True)

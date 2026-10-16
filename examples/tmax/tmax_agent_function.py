@@ -127,6 +127,8 @@ class _Episode:
     tool_calls: int = 0
     tool_errors: int = 0
     end_reason: str = "max_steps"
+    # Why the gateway backend's fleet lost the container (end_reason sandbox_lost): memory_limit, pids_limit, ...
+    sandbox_lost_reason: str = ""
     reward: float | None = 0.0
     last_total_tokens: int = 0
     messages: list[dict] = field(default_factory=list)
@@ -198,8 +200,8 @@ async def _run_episode(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox,
         await asyncio.wait_for(_loop(episode, policy, box, request_kwargs), timeout=timeout_s)
     except TimeoutError:
         episode.end_reason, episode.reward = "episode_timeout", 0.0
-    except SandboxLostError:  # the remote container was removed or stopped under the episode
-        episode.end_reason, episode.reward = "sandbox_lost", 0.0
+    except SandboxLostError as e:  # the remote container was removed or lost under the episode
+        episode.end_reason, episode.reward, episode.sandbox_lost_reason = "sandbox_lost", 0.0, e.reason
     except SandboxOOMError:
         episode.end_reason, episode.reward = "oom", 0.0
     except _Aborted:
@@ -352,6 +354,7 @@ def _metrics(episode: _Episode, total_time: float) -> dict[str, Any]:
         "tool_calls": episode.tool_calls,
         "tool_errors": episode.tool_errors,
         "end_reason": episode.end_reason,
+        **({"sandbox_lost_reason": episode.sandbox_lost_reason} if episode.sandbox_lost_reason else {}),
         "submitted": float(episode.end_reason == "submitted"),
         "start_failed": float(episode.end_reason == "start_failed"),
         "sandbox_start_time": episode.sandbox_start_time,

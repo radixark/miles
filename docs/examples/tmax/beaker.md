@@ -189,7 +189,8 @@ beaker:
   --registry=<gateway_registry> --register=False` on `127.0.0.1:24750`, restarting it if it exits; the gateway's log
   goes to `/tmp/literegistry-gateway.log`. Before training starts, the head waits up to 30 min for the gateway to
   list `gateway_min_replicas` podman replicas. The gateway finds the fleet's Redis through the head registry, so it
-  follows a Redis move. `gateway_url` skips all this and uses a running gateway.
+  follows a Redis move, and prints the first replica's `session_limits` once enough are listed. `gateway_url` skips
+  all this and uses a running gateway.
 - **What a container costs.** Started from the dev box, a container took 7.5–9.4 s to start, including the pull
   through the fleet's mirrors and setup, and each command took 0.3–0.6 s. In the Beaker smoke, from holmes, the
   median command took 1.2 s (p90 2.3 s), its own run time included.
@@ -200,12 +201,13 @@ beaker:
     checked by a userspace watchdog every 5 s. They also allow 8 containers per replica and a 2 h idle timeout
     (`session_limits` in the roster).
   - A container the fleet reports lost ends the episode with reward 0 (`end=sandbox_lost`): `410 sandbox_lost` (a
-    watchdog breach or a stopped container) or `410 affinity_owner_lost` (its replica left the roster). As
-    literegistry prescribes, the episode never continues in a replacement container; local podman instead recreates
-    a vanished container once. See the open decision in
+    watchdog breach or a stopped container), `410 affinity_owner_lost` (its replica left the roster), or a `404`
+    for its binding (the gateway no longer knows the container; the keepalive normally prevents this). The trace and
+    the episode metrics record why, as `sandbox_lost_reason` (`memory_limit`, `pids_limit`, `container_stopped`,
+    `affinity_owner_lost`, `binding_lost`). As literegistry prescribes, the episode never continues in a replacement
+    container; local podman instead recreates a vanished container once. See the open decision in
     [INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet).
-  - Transient gateway answers (`408`, `5xx`, a dropped connection) are retried; every request is safe to repeat. A
-    binding that expired anyway (`404`, despite the keepalive) fails that step as a tool error.
+  - Transient gateway answers (`408`, `5xx`, a dropped connection) are retried; every request is safe to repeat.
 - **The fleet** is shared and managed outside this job. Its roster is at `<gateway>/v1/models`: on 2026-10-16, 172
   podman replicas, 8 mirrors and the fleet's own gateway.
 - **Check it from a dev box.** Start a gateway from the same registry with `python -m literegistry.gateway
@@ -286,7 +288,7 @@ In W&B, a run and its group are named after the experiment name, in the config's
 Ignore `perf/tokens_per_gpu_per_sec` and `perf/rollout_time` in fully-async runs. Every episode is also in the trace
 files, `<trace_dir>/<run>/traces-<host>.jsonl`: one JSON record per episode with `reward`, `metrics.end_reason`,
 `metrics.turns`, `metrics.tool_errors`, `metrics.model_query_time_sum`, `metrics.env_execution_time_sum`,
-`metrics.sandbox_start_time` and `metrics.total_time`.
+`metrics.sandbox_start_time`, `metrics.total_time`, and on a gateway-backend loss `metrics.sandbox_lost_reason`.
 
 ## Failures and what they mean
 
@@ -303,7 +305,7 @@ What to do when a symptom shows up. Every failure mode seen so far, with its sta
 | `benching sandbox daemon tcp://<node>:2375x … ReadTimeout` | That node's podman daemons too slow to answer | Episodes move to other daemons for about 5 min; repeated benching of one node goes with the starvation above |
 | `!!!!!!! Segfault encountered !!!!!!!` from `RolloutExecutor`, then `EOFError: Ran out of input` from agent processes | A native crash in the rollout executor; no stack in the job log | The retry resumes. Set `PYTHONFAULTHANDLER: "1"` in the config's `env` to capture a stack next time |
 | `gateway http://127.0.0.1:24750: N podman replicas (need M)` and the head exits | Gateway backend: the fleet's registry is unreachable or lists too few replicas | Check the registry path and the fleet's roster (`/v1/models`); see [Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend) |
-| `end=sandbox_lost` in episode logs | Gateway backend: the replica removed or stopped the container (its resource watchdog, or the agent killed PID 1) | Scored 0 like an OOM kill |
+| `end=sandbox_lost` in episode logs | Gateway backend: the replica removed or stopped the container (its resource watchdog, or the agent killed PID 1), its replica left, or its binding expired | Scored 0 like an OOM kill; `sandbox_lost_reason` in the trace says which |
 | `Failed collecting samples: ReadError('')` from `agentic_tool_call.py` | Fetching an episode from the session server failed; the whole group is dropped | 2.5-3% of episodes on the pre-rebase code; none so far on the rebased code (upstream's session-server and transport fixes) |
 | `http_utils.py … Error: , retrying... (attempt 1/60, url=…/sessions` with `starlette.requests.ClientDisconnect` on the session server | A session-create request dropped mid-body | Harmless: retried and succeeded |
 | `AttributeError` mentioning `enable_prefill_weight_versions` at start | Image older than session server v2 needs | Pin `dev-202610151741` or newer |

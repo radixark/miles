@@ -105,6 +105,9 @@ def _agent_metrics(episodes: list[dict]) -> dict[str, float]:
     for reason, count in Counter(e.get("end_reason") for e in episodes).items():
         metrics[f"rollout/agent/end_reason/{reason}"] = count / len(episodes)
     metrics["rollout/agent/non_submitting_fraction"] = 1.0 - mean(e.get("submitted", 0.0) for e in episodes)
+    # Gateway backend: why the fleet removed a container (memory_limit, pids_limit, affinity_owner_lost, ...).
+    for reason, count in Counter(e["sandbox_lost_reason"] for e in episodes if "sandbox_lost_reason" in e).items():
+        metrics[f"rollout/agent/sandbox_lost_reason/{reason}"] = count / len(episodes)
 
     calls = sum(e.get("tool_calls", 0) for e in episodes)
     metrics["rollout/tools/bash/avg_calls_per_rollout"] = calls / len(episodes)

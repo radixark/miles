@@ -154,8 +154,10 @@ have = -1
 while time.time() < deadline:
     try:
         models = json.load(urllib.request.urlopen(f"{url}/v1/models", timeout=10))["data"]
-        have = sum(len(m.get("metadata") or []) for m in models if m.get("id") == "podman")
+        replicas = [r for m in models if m.get("id") == "podman" for r in m.get("metadata") or []]
+        have = len(replicas)
         if have >= want:
+            print(f"fleet session limits: {replicas[0].get('metadata', {}).get('session_limits')}", flush=True)
             break
     except Exception:
         pass
