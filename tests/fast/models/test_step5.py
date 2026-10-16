@@ -10,6 +10,7 @@ pytest.importorskip("megatron.core")
 from safetensors.torch import save_file  # noqa: E402
 from tests.fast.launch_scripts.model_args_harness import expand_model_args  # noqa: E402
 
+from miles.utils.arguments import hf_validate_args  # noqa: E402
 from miles_plugins.models.step5.checkpoint_config import check_matches_checkpoint  # noqa: E402
 from miles_plugins.models.step5.layers import is_full_attention_layer, zero_centered_rms_norm  # noqa: E402
 from miles_plugins.models.step5.qkv_layout import fuse_qkv_and_gate, split_qkv_and_gate  # noqa: E402
@@ -174,6 +175,16 @@ def test_indexer_rope_scaling_is_checked():
 def test_rope_theta_is_checked_per_layer():
     with pytest.raises(ValueError, match=r"rope_theta\[4\]"):
         check_matches_checkpoint(_megatron_config(), _checkpoint_config(rope_theta=[1e4, 1e7, 1e4, 1e4, 1e4]))
+
+
+def test_training_requires_rollout_routing_replay():
+    def validate(replay: bool) -> None:
+        args = SimpleNamespace(model_name="step5", context_parallel_size=1, use_rollout_routing_replay=replay)
+        hf_validate_args(args, SimpleNamespace(model_type="step5"))
+
+    validate(replay=True)
+    with pytest.raises(AssertionError, match="--use-rollout-routing-replay"):
+        validate(replay=False)
 
 
 def test_zero_centered_norm_scales_by_one_plus_weight():

@@ -4340,6 +4340,9 @@ def hf_validate_args(args, hf_config):
     model_name = (args.model_name or "").lower().replace("-", "").replace("_", "")
     if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:
         assert args.allgather_cp, "zigzag CP is not supported for DeepSeek V4."
+    # Step5 rollouts serve FP8 experts to a BF16 trainer, whose own routing diverges from the rollout's.
+    if hf_config.model_type == "step5":
+        assert args.use_rollout_routing_replay, "Step5 trains only with --use-rollout-routing-replay."
 
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
