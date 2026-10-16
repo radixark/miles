@@ -113,8 +113,7 @@ class Step5Indexer(Module):
             k_norm_weight=self.k_norm_weight,
             k_norm_bias=self.k_norm_bias,
         )
-        tokens = sequence.gather_tokens_detached(x_TD.detach())
-        return select_regions(tokens, sequence.cu_seqlens, weights, eps=self.eps).region_ids
+        return select_regions(sequence.gather_tokens(x_TD), sequence.cu_seqlens, weights, eps=self.eps).region_ids
 
 
 class Step5Attention(Module):

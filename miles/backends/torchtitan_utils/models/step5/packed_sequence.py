@@ -55,11 +55,6 @@ class PackedSequence:
         gathered = all_gather_single_autograd(x_TD.contiguous(), 0, self.cp_layout.group)
         return gathered.index_select(0, self.cp_layout.restore_indices)
 
-    def gather_tokens_detached(self, x_TD: torch.Tensor) -> torch.Tensor:
-        if self.cp_layout is None:
-            return x_TD
-        return _gather_tokens(x_TD, self.cp_layout.group).index_select(0, self.cp_layout.restore_indices)
-
     def local_rows(self, x_TD: torch.Tensor) -> torch.Tensor:
         """This rank's rows of a whole-sequence tensor."""
         if self.cp_layout is None:
