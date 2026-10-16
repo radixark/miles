@@ -143,6 +143,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
 def cleanup():
     """Kill old Ray jobs and stale processes to free GPU resources."""
+    if command_utils.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"):
+        print("Cleanup skipped: MILES_SCRIPT_EXTERNAL_RAY is set.")
+        return
     my_pid = os.getpid()
     ppid = os.getppid()
     print(f"Cleanup starting (pid={my_pid}, ppid={ppid})")
