@@ -13,27 +13,25 @@ with an overlay (`pip install --target /scratch/ref-pylib transformers==5.15.0`,
    ```
 
 2. Shard the slice for the reference, then write prompts and golden log-probs. `--valid-vocab` matches SGLang,
-   which normalizes over the tokenizer's 128,815 ids rather than the physical 128,896:
+   which normalizes over the tokenizer's 128,815 ids rather than the physical 128,896. `$MILES` is this checkout:
 
    ```bash
    cd /scratch/step5_ckpt/fp8_vit_mtp3/inference
    python convert.py --checkpoint /scratch/step5_slices/step5-5layer \
        --out-dir /scratch/step5_ref/step5-5layer --tp-size 4 --ep-size 4
-   python make_prompts.py /scratch/step5_golden/prompts.json
-   PYTHONPATH=/scratch/ref-pylib torchrun --standalone --nproc-per-node=4 golden_logprobs.py \
+   python $MILES/tests/manual/step5/make_prompts.py /scratch/step5_golden/prompts.json
+   PYTHONPATH=/scratch/ref-pylib torchrun --standalone --nproc-per-node=4 $MILES/tests/manual/step5/golden_logprobs.py \
        --ref-code . --tp-dir /scratch/step5_ref/step5-5layer/tp4 \
        --prompts /scratch/step5_golden/prompts.json --valid-vocab 128815 \
        --out /scratch/step5_golden/step5-5layer.pt
    ```
-
-   Copy `make_prompts.py` and `golden_logprobs.py` next to the reference code first.
 
 3. Serve the same slice with SGLang and compare. Truncated slices have only a few full-attention layers, so cap
    the KV pool (`--max-total-tokens 1048576`); otherwise one layer's K cache exceeds the int32 strides of the
    CuTe DSA kernels:
 
    ```bash
-   python compare_sglang.py --golden /scratch/step5_golden/step5-5layer.pt \
+   python $MILES/tests/manual/step5/compare_sglang.py --golden /scratch/step5_golden/step5-5layer.pt \
        --url http://127.0.0.1:30000 --out /scratch/step5_golden/step5-5layer-sglang.json
    ```
 
@@ -46,7 +44,7 @@ The prompts are 32, 600 and 5,000 random tokens: short, past the 512-token slidi
    layer as FP8 unless its config excludes it, so give it a view of the BF16 slice first:
 
    ```bash
-   python reference_bf16_view.py --bf16 /scratch/step5_slices/step5-5layer-bf16 \
+   python $MILES/tests/manual/step5/reference_bf16_view.py --bf16 /scratch/step5_slices/step5-5layer-bf16 \
        --fp8 /scratch/step5_slices/step5-5layer --out /scratch/step5_ref_input/step5-5layer-bf16
    python convert.py --checkpoint /scratch/step5_ref_input/step5-5layer-bf16 \
        --out-dir /scratch/step5_ref/step5-5layer-bf16 --tp-size 4 --ep-size 4
@@ -69,7 +67,7 @@ The prompts are 32, 600 and 5,000 random tokens: short, past the 512-token slidi
 
 To judge the numbers, compare the reference against itself at another layout (`--tp-size 1 --ep-size 1`):
 on GB300 the Megatron model's mean absolute log-prob difference equals the reference's own TP1-vs-TP4
-difference (8-layer slice: 0.0089 vs 0.0092 on 32 tokens, 0.0069 vs 0.0066 on 600). On 5,000 tokens, where
+difference (measured on an earlier 8-layer slice: 0.0089 vs 0.0092 on 32 tokens, 0.0069 vs 0.0066 on 600). On 5,000 tokens, where
 the full-attention layers select regions, it is 0.0070 vs 0.0062, and 0.0072 vs 0.0067 on the 895 positions
 past 4,103; the max is 0.22 vs 0.24. The Megatron model's own log-probs move by up to 0.17 between two runs
 of the same prompt (0.04 on 600 tokens before the sparse layers too), so compare means.
@@ -100,10 +98,11 @@ of the same prompt (0.04 on 600 tokens before the sparse layers too), so compare
        $(python miles/utils/external_utils/model_args_utils.py step5-5layer) \
        --custom-model-provider-path miles_plugins.models.step5.vl_model.step5_vl_model_provider \
        --hf-checkpoint /scratch/step5_slices/step5-5layer --no-gradient-accumulation-fusion \
-       --load /scratch/step5_slices/Step5-5layer_torch_dist --no-load-optim --no-load-rng
+       --load /scratch/step5_slices/step5-5layer_torch_dist --no-load-optim --no-load-rng
    ```
 
-   The smoke test checks image-feature placement, gradients only through text parameters, text-only batches,
+   `--load` is the slice's torch_dist conversion (`tools/convert_hf_to_torch_dist.py`, as
+   `scripts/run_step5.py prepare` runs it). The smoke test checks image-feature placement, gradients only through text parameters, text-only batches,
    and exclusion of the frozen tower from checkpoints and weight sync. For TP 2 with sequence parallelism,
    drop `--load ...` to read HF weights through the bridge, use `--nproc-per-node=2`, and add
    `--tensor-model-parallel-size 2 --sequence-parallel --expert-model-parallel-size 2
@@ -133,7 +132,7 @@ The trainer recomputes the full-attention layers' region selection with the froz
        tests/manual/step5/indexer_inputs.py \
        $(python miles/utils/external_utils/model_args_utils.py step5-5layer) \
        --hf-checkpoint /scratch/step5_slices/step5-5layer \
-       --load /scratch/step5_slices/Step5-5layer_torch_dist --no-load-optim --no-load-rng \
+       --load /scratch/step5_slices/step5-5layer_torch_dist --no-load-optim --no-load-rng \
        --text-files 'docs/**/*.md' '/root/Megatron-LM/megatron/core/**/*.py' \
        --out /scratch/step5_golden/indexer_inputs.pt
    ```
@@ -152,8 +151,9 @@ The trainer recomputes the full-attention layers' region selection with the froz
 
     The `stages` report compares normalized keys, FP8 queries, and compressed keys bit for bit. The
     "shared" path holds projections fixed to isolate kernel arithmetic; "served" includes SGLang's
-    projection shapes. Both require an SGLang build with Step5 support. The trainer now uses
-    SGLang's batch-invariant head-weight kernel on CUDA, retaining FP64 GEMM as the CPU reference.
+    projection shapes. Both require an SGLang build with Step5 support. On CUDA the trainer computes the
+    head weights with `miles/kernels/linear/batch_invariant_linear.py`, rounded as SGLang's batch-invariant
+    kernel rounds them; on CPU it falls back to the FP64 GEMM.
 
     **Exact selector parity requires identical scores.** DeepSelect's tie visitation is reproduced,
     including the tail-first permutation beyond 8,192 candidates. Score generation still has two
@@ -179,7 +179,7 @@ full-layer recompute selects the forward's regions bit for bit.
         --inputs /scratch/step5_golden/indexer_inputs.pt --prompt text0-32768 --sequence-parallel
     ```
 
-    On GB300 at TP4 + SP, one 32,768-token sequence of layer 3 (medians, ms, and peak MiB over the weights):
+    On GB300 at TP4 + SP, one 32,768-token sequence of the first full-attention layer (original layer 3; medians, ms, and peak MiB over the weights):
 
     | | indexer | forward | backward | fwd + bwd | with recompute | peak | peak, recompute |
     | --- | --- | --- | --- | --- | --- | --- | --- |
