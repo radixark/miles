@@ -6,6 +6,17 @@ from miles.backends.training_utils.metrics.checks import check_kl
 
 
 class TestCheckKl:
+    @pytest.mark.parametrize("ppo_kl", [-float("inf"), -1e-4, -1e-8, 1e-8, 1e-4, float("inf"), float("nan")])
+    def test_mla_rejects_deviation_in_either_direction(self, ppo_kl: float) -> None:
+        args = Namespace(multi_latent_attention=True, trainer_model_id=None)
+        with pytest.raises(AssertionError):
+            check_kl(args, {"train/ppo_kl": ppo_kl, "train/pg_clipfrac": 0.0}, 0, 1)
+
+    @pytest.mark.parametrize("ppo_kl", [-1e-9, 0.0, 1e-9])
+    def test_mla_accepts_values_within_tolerance(self, ppo_kl: float) -> None:
+        args = Namespace(multi_latent_attention=True, trainer_model_id=None)
+        check_kl(args, {"train/ppo_kl": ppo_kl, "train/pg_clipfrac": 0.0}, 0, 1)
+
     def test_namespaced_policy_metrics_still_trigger_the_kl_checker(self) -> None:
         """A policy namespace must not hide an out-of-tolerance PPO KL value."""
         args = Namespace(
