@@ -24,6 +24,7 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | [beaker/README.md](/examples/tmax/beaker) | Running on Beaker: submissions, run names and resume, images, mirrors, watching a run, failure triage |
 | [DEVELOPING.md](https://github.com/radixark/miles/blob/main/examples/tmax/DEVELOPING.md) | How the port plugs into Miles, local development and tests, the validation ladder, conventions, history |
 | [ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md) | Open work by priority, decisions taken |
+| [INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md) | Investigations from the production runs: evidence, options, open decisions |
 | [Miles vs open-instruct](/deep-dive/open-instruct-comparison) | Every framework, harness and infrastructure difference, and the flag-by-flag mapping of the production recipe |
 
 ## Files

@@ -16,13 +16,14 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | **Adam beta2 0.999** | open-instruct uses `torch.optim.AdamW` defaults; the launcher passes 0.98 | Change `--adam-beta2` in `run_tmax_qwen3_5.py` for new runs |
 | **Episode and tool statistics in fully-async runs** | `agent/*` (end reasons, turns, tool errors, sandbox start failures, model vs environment time) is only logged in synchronous mode, because `--fully-async` rejects `--rollout-function-path`; in prod about 30% of episodes hit the 64-step limit and W&B cannot show it | A per-rollout logging hook that fully async calls; until then, read the trace files |
 | **Durable checkpoints** | open-instruct keeps an HF snapshot every 20 steps forever; the pruner keeps only the newest 3 Megatron checkpoints, so step 20, 40, … are gone by the time anyone evaluates them | Let the pruner keep every 20th iteration and convert offline, or `--save-hf` with its own pruning |
-| **Weight-sync `ReadError`** | The old 4-node run died once at step 118 when some trainer → engine HTTP connections dropped during a 64 s sync (normally 1.5-3 s). It is not a timeout; the cause is unknown. Slow syncs (30-50 s) still happen on the rebased code | First measure: a per-node sampler in the entry script (load, CPU, memory, disk, TCP reset and abort counters, top processes every 15 s). Candidate cause: the 128 colocated sandboxes per node, which share the host network and run without CPU limits; cheap mitigation is running sandbox commands under `nice -n 19`. Later, if it recurs: treat a dropped reply after a completed broadcast as "unknown" and verify the engines' weight version (Miles core; check upstream first) |
+| **Rollout-node CPU starvation** | Evidence in [INVESTIGATIONS.md](INVESTIGATIONS.md). The engines on one rollout node slowed to a crawl twice: a 47-minute step after step 15, and a 320 s weight sync. Then Ray declared that node dead for missed heartbeats, failing retry 1. The old run's weight-sync `ReadError` fits the same pattern. The leading suspect is the up to 128 sandboxes per node, which run without CPU limits next to the engines | Options A–C in [INVESTIGATIONS.md](INVESTIGATIONS.md#open-decisions): a per-node host sampler, `nice -n 19` sandbox commands, sandboxes off the rollout nodes. Only if the `ReadError` recurs: make a dropped sync reply non-fatal (option K) |
 
 ## P1
 
 | Item | Notes |
 |---|---|
-| fp32 LM head | Pass `--sglang-enable-fp32-lm-head`; make Megatron's output layer fp32; compare `train/train_rollout_logprob_abs_diff` before and after |
+| SGLang attention backend | SGLang picks `triton` for Qwen3.5 on B300; `trtllm_mha` is 1.75× faster at 32k context with the same log-probs. Validate in a 4-GPU Miles smoke, then pass `--sglang-attention-backend trtllm_mha` (option F) |
+| fp32 LM head on both sides | Measured: the train/rollout gap drops 0.0065 → 0.0044, but only with fp32 on both sides. Pass `--sglang-enable-fp32-lm-head`, and make Megatron's output layer accumulate in fp32, which is a Miles core change (option G) |
 | Token-identical first turn | SGLang's tool schema adds `"strict": false` and reorders keys: about 17 extra tokens per prompt. Render the tool from the raw dict, then diff token ids against a decoded open-instruct rollout |
 | W&B and Beaker visibility | Pin the W&B entity (`ai2-llm`); put the W&B URL in the Beaker description at submit time; update progress and ETA per step (needs a `BEAKER_TOKEN` secret); export `WANDB_TAGS` / `WANDB_NOTES` with commit and Beaker link |
 | Fail fast on a stalled rollout | Fully async only warns every 30 s when no group completes; add a watchdog that exits so the Beaker retry resumes, or evaluate `--use-fault-tolerance` |
@@ -45,6 +46,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
   - a janitor for leaked containers, keyed on the `miles_tmax_sandbox` label;
   - print free disk to the job log, with an emergency prune under a threshold.
 - **Beaker:**
+  - `PYTHONFAULTHANDLER=1` in the env, so a native crash such as the rollout-executor segfault leaves a stack (option H);
   - find secrets by Beaker identity and check that they exist (add `BEAKER_TOKEN`);
   - a description option;
   - a `/output` result dataset;
@@ -107,6 +109,5 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 - **Memory limits.** Whether the 4 GB limit and OOM detection work at all with podman's `cgroups="disabled"`, on
   either side.
 - **open-instruct's actor spread.** How evenly its environment actors actually spread over nodes.
-- **Slow cross-node collectives and the weight-sync `ReadError`: the cause.** Colocated sandboxes are the leading
-  suspect. A first check against the old run's traces found the slow syncs (27-31 s) happened at ordinary sandbox
-  counts. That check counted sandboxes, not CPU use, and couldn't see which node they ran on.
+- **Rollout-node CPU starvation.** Strongly suggested by timing (engines on one node crawling while CPU-heavy tasks
+  ran, a node missing Ray heartbeats), but not yet measured on the hosts; option A measures it.

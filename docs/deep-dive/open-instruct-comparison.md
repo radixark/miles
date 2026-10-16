@@ -80,6 +80,31 @@ what matters for the TMax recipe.
   are 10 min (`--distributed-timeout-minutes`) and 300 s (`--sglang-watchdog-timeout`); both killed early 4-node runs
   during stalled cross-node collectives, so `prod_4node.yaml` sets 120 min and 1800 s.
 
+## Inference engines
+
+Both run 16 engines with TP 1, one GPU each, 8 per inference node (open-instruct: `--vllm_num_engines 16
+--vllm_tensor_parallel_size 1`, a `PACK` placement group of one-GPU bundles). TP 2 in the Miles config is Megatron's
+training layout; SGLang TP > 1 produces garbage for Qwen3.5 (sgl-project/sglang#21039).
+
+Where the agent loop runs differs:
+
+- **open-instruct:** each engine's Ray actor runs vLLM in-process (`VLLM_ENABLE_V1_MULTIPROCESSING=0`) and also the
+  agent loop for its trajectories. It pulls whole trajectories from the prompt queue, up to what fits in its KV
+  cache at full length, so agent work spreads over both inference nodes.
+- **Miles:** the router pins each session to the engine it starts on (`--policy manual --assignment-mode min_load`).
+  All agent processes, the router and the session servers run on the head node.
+
+| open-instruct (vLLM) | Miles (SGLang, as resolved in production) | |
+|---|---|---|
+| `--lm_head_fp32 true`: vLLM patched to compute Qwen3.5 logits in fp32 | `enable_fp32_lm_head = False`; the trainer's logits are bf16 too | Missing; worth a third of the train/rollout gap ([measured](https://github.com/shatu/miles/blob/shashank/tmax-terminal-rl/examples/tmax/INVESTIGATIONS.md)) |
+| Attention: vLLM's automatic choice on Blackwell | `attention_backend = triton` (SGLang's choice for Qwen3.5 on B300) | `trtllm_mha` is 1.75× faster at 32k context ([measured](https://github.com/shatu/miles/blob/shashank/tmax-terminal-rl/examples/tmax/INVESTIGATIONS.md)) |
+| `gpu_memory_utilization 0.9` | `mem_fraction_static 0.8` | KV usage stays at a few percent; not a limit |
+| `mamba_ssm_cache_dtype = "float32"` | SGLang defaults the linear-attention state to float32 | Same |
+| `--vllm_gdn_prefill_backend triton` | `linear_attn_backend = triton` | Same |
+| `generation_config="vllm"` (ignore the model's sampling defaults) | `sampling_defaults = model`, but the model ships no `generation_config.json` and Miles sends temperature 1.0, top_p 1.0, top_k -1 | Same in effect |
+| Concurrent trajectories per engine = KV capacity at full length | `max_running_requests` automatic | No difference at current load |
+| `seed + i` per engine, CUDA graphs, bf16 | `seed + engine offset`, CUDA graphs, bf16 | Same |
+
 ## Policy loss and numerics
 
 | | open-instruct | Miles (`prod_4node.yaml`) |
@@ -90,7 +115,7 @@ what matters for the TMax recipe.
 | Advantages | `centered`: reward minus the group mean | `grpo --disable-grpo-std-normalization` (same) |
 | Aggregation | Token denominator, but each (rank, micro-batch) shard is weighted separately, so tokens in sparse shards weigh more | Exact global token mean, `--calculate-per-token-loss` |
 | Packing | `--pack_length 67584`, one pack per micro-batch; packs not divisible by DP are dropped | Dynamic batching, `--max-tokens-per-gpu 34816` (≥ max_seq_len / CP), balanced, nothing dropped |
-| Logits | `--lm_head_fp32 true` in trainer and vLLM | bf16 output layer; SGLang's `--sglang-enable-fp32-lm-head` exists but is not passed |
+| Logits | `--lm_head_fp32 true` in trainer and vLLM | bf16 output layer; SGLang's `--sglang-enable-fp32-lm-head` exists but is not passed. bf16 rounding is most of the train/rollout gap, and only fixing both sides helps (see [Inference engines](#inference-engines)) |
 | Log-prob memory | `--use_liger_grpo_loss --liger_grpo_loss_chunk_size 8` (open-instruct's tiled LM-head loss) | `--log-probs-backend fused` |
 | Optimizer | AdamW, lr 1e-6, betas (0.9, 0.999), eps 1e-8, wd 0, constant LR, grad clip 1.0 | Adam, lr 1e-6, betas (0.9, **0.98**), wd 0, constant LR, `--clip-grad 1.0` |
 | Seed | 42 | Miles default 1234 (rollout seed 42) |

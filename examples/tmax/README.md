@@ -21,6 +21,7 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | [beaker/README.md](beaker/README.md) | Running on Beaker: submissions, run names and resume, images, mirrors, watching a run, failure triage |
 | [DEVELOPING.md](DEVELOPING.md) | How the port plugs into Miles, local development and tests, the validation ladder, conventions, history |
 | [ROADMAP.md](ROADMAP.md) | Open work by priority, decisions taken |
+| [INVESTIGATIONS.md](INVESTIGATIONS.md) | Investigations from the production runs: evidence, options, open decisions |
 | [Miles vs open-instruct](../../docs/deep-dive/open-instruct-comparison.md) | Every framework, harness and infrastructure difference, and the flag-by-flag mapping of the production recipe |
 
 ## Files
