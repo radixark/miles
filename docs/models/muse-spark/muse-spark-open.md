@@ -100,7 +100,6 @@ Rollout runs on 4 colocated engines, up to 64 concurrent requests each on H200 a
 ```bash
 --sglang-ep-size 16                # 16 GPUs per engine on H200; 8 (one node) on B300
 --sglang-kv-cache-dtype bfloat16   # FP8 KV widens the rollout/training log-prob gap
---pin-rollout-manager-to-head      # B300 only: rollout manager on the Ray head node
 ```
 
 ### 5.4 Optimizer
@@ -113,6 +112,8 @@ Adam at `--lr 1e-6`, constant, with weight decay 0.1 and no gradient clipping. T
 --offload-train-target disk
 --offload-train-disk-chunk-mb 256
 ```
+
+`--optimizer muon` switches to Muon (`dist_muon`), which keeps its state and the FP32 main weights in chunked CPU memory (`--chunked-optimizer-state-offload --chunked-muon-master-weights`). Megatron cannot save that state, so a Muon run also needs `--no-load-optim --no-save-optim`.
 
 ### 5.5 Image-grounded math (`--vlm`)
 
