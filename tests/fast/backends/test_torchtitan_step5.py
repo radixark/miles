@@ -49,10 +49,16 @@ _TEXT_CONFIG = dict(
         "enabled": True,
         "proxy_dim": 256,
         "sparse_indexer_rope_dim": 32,
+        "sparse_indexer_use_rope": True,
         "sparse_indexer_num_heads": 16,
+        "sparse_indexer_num_k_heads": 1,
+        "sparse_indexer_q_norm_type": "rmsnorm",
+        "sparse_indexer_k_norm_type": "layernorm",
+        "sparse_indexer_csa_z_norm_type": "none",
         "num_provider_groups": 4,
         "topk": 512,
         "region_block_size": 8,
+        "compression_method": "csa_block_compress",
         "apply_to_layer_types": ["full_attention"],
     },
 )
@@ -139,6 +145,8 @@ def test_a_checkpoint_variant_the_package_does_not_implement_is_refused():
         _model_config(swiglu_limits=[10.0] * 5)
     with pytest.raises(ValueError, match="RoPE theta"):
         _model_config(rope_theta=[1e4] * 5)
+    with pytest.raises(ValueError, match="region indexer"):
+        _model_config(sparse_config={**_TEXT_CONFIG["sparse_config"], "compression_method": "mean"})
 
 
 def test_packed_fp8_experts_dequantize_across_unaligned_block_edges(tmp_path):

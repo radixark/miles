@@ -75,10 +75,41 @@ class _Architecture:
         )
 
 
+# The indexer profile Megatron's ``check_matches_checkpoint`` accepts, besides its KV group count.
+_INDEXER_SPARSE_CONFIG = {
+    "enabled": True,
+    "apply_to_layer_types": ["full_attention"],
+    "sparse_indexer_num_heads": INDEXER_NUM_HEADS,
+    "sparse_indexer_num_k_heads": 1,
+    "proxy_dim": INDEXER_HEAD_DIM,
+    "region_block_size": REGION_SIZE,
+    "topk": TOP_REGIONS,
+    "compression_method": "csa_block_compress",
+    "sparse_indexer_use_rope": True,
+    "sparse_indexer_rope_dim": INDEXER_ROPE_DIM,
+    "sparse_indexer_q_norm_type": "rmsnorm",
+    "sparse_indexer_k_norm_type": "layernorm",
+    "sparse_indexer_csa_z_norm_type": "none",
+}
+_INDEXER_ROPE_SCALING = {
+    "rope_type": "llama3",
+    "low_freq_factor": INDEXER_ROPE.low_freq_factor,
+    "high_freq_factor": INDEXER_ROPE.high_freq_factor,
+    "original_max_position_embeddings": INDEXER_ROPE.original_max_position_embeddings,
+}
+
+
+def _indexer_mismatches(text) -> list[str]:
+    sparse, scaling = text.sparse_config, text.rope_scaling or {}
+    expected_sparse = _INDEXER_SPARSE_CONFIG | {"num_provider_groups": text.num_attention_groups}
+    return [f"sparse_config.{key}" for key, value in expected_sparse.items() if sparse.get(key) != value] + [
+        f"rope_scaling.{key}" for key, value in _INDEXER_ROPE_SCALING.items() if scaling.get(key) != value
+    ]
+
+
 def _require_supported(text) -> None:
     """The variant this package implements, as the Megatron model checks it; anything else would build
     the wrong model silently."""
-    sparse = text.sparse_config
     scaling = text.rope_scaling or {}
     unsupported = {
         "zero_centered norms": text.zero_centered is not True,
@@ -96,36 +127,7 @@ def _require_supported(text) -> None:
         "renormalized expert weights": text.norm_expert_weight is not True,
         f"every SwiGLU clamped to {SWIGLU_LIMIT}": set(text.swiglu_limits) | set(text.swiglu_limits_shared)
         != {SWIGLU_LIMIT},
-        "the frozen region indexer of the Megatron model": {
-            "enabled": sparse.get("enabled"),
-            "apply_to_layer_types": sparse.get("apply_to_layer_types"),
-            "num_provider_groups": sparse.get("num_provider_groups"),
-            "sparse_indexer_num_heads": sparse.get("sparse_indexer_num_heads"),
-            "proxy_dim": sparse.get("proxy_dim"),
-            "region_block_size": sparse.get("region_block_size"),
-            "topk": sparse.get("topk"),
-            "sparse_indexer_rope_dim": sparse.get("sparse_indexer_rope_dim"),
-            "rope_scaling": (
-                scaling.get("low_freq_factor"),
-                scaling.get("high_freq_factor"),
-                scaling.get("original_max_position_embeddings"),
-            ),
-        }
-        != {
-            "enabled": True,
-            "apply_to_layer_types": ["full_attention"],
-            "num_provider_groups": text.num_attention_groups,
-            "sparse_indexer_num_heads": INDEXER_NUM_HEADS,
-            "proxy_dim": INDEXER_HEAD_DIM,
-            "region_block_size": REGION_SIZE,
-            "topk": TOP_REGIONS,
-            "sparse_indexer_rope_dim": INDEXER_ROPE_DIM,
-            "rope_scaling": (
-                INDEXER_ROPE.low_freq_factor,
-                INDEXER_ROPE.high_freq_factor,
-                INDEXER_ROPE.original_max_position_embeddings,
-            ),
-        },
+        "the frozen region indexer of the Megatron model": _indexer_mismatches(text),
     }
     failed = [requirement for requirement, is_unsupported in unsupported.items() if is_unsupported]
     if failed:
