@@ -9,15 +9,16 @@ below come from that branch.
 
 ## 1. Model Introduction
 
-[Beam-1.0-501B-A23B](https://huggingface.co/reflection/Beam-1.0-501B-A23B) is Reflection's 501B-parameter MoE model (23B active per token). miles trains the full model in BF16, or a LoRA adapter on the frozen BF16 base.
+[Beam-1.0-501B-A23B](https://huggingface.co/reflection/Beam-1.0-501B-A23B) is Reflection's 501B-parameter MoE model (23B active) with a 1M-token context window, released in BF16, FP8 and NVFP4. miles trains the BF16 checkpoint, either the full model or a LoRA adapter on the frozen base, and loads it straight from HF through Megatron-Bridge, with no offline `torch_dist` conversion.
 
 **Key highlights:**
 
-- **Hybrid attention**: 43 sliding-window layers (window 512) with RoPE (base 1e4), and 9 full-attention layers (every sixth, plus the last) with no position embedding. The full-attention layers scale each query by its position, `exp(0.1 · log1p((pos + 1) / 2048))` (SSMax).
-- **GQA with a gate**: 48 query heads over 8 KV groups, head dim 128, QK RMSNorm, and a sigmoid output gate with a per-head bias.
-- **Sandwich norms**: RMSNorm before and after every attention and MLP block, and depth-scaled residuals: counting attention and MLP blocks separately from k = 2, block k adds its output as `residual · √((k − 1) / k) + output / √k`.
-- **MoE**: 256 routed experts, no shared expert. Sigmoid scores with an expert-bias correction pick the top 8 from the best 4 of 8 expert groups, scaled by 2.5. Layers 0–2 are dense.
-- **FP32 softcap and router**: the BF16 LM-head output is softcapped at 30 in FP32, and the router weights and expert-score biases ship in FP32. Everything else in the checkpoint is BF16.
+- **Hybrid attention**: 43 sliding-window layers (window 512) with RoPE, and 9 full-attention layers without positional encoding, one every six layers plus the last.
+- **SSMax**: the full-attention layers scale each query by a factor that grows with its position.
+- **Gated GQA**: 48 query heads over 8 KV heads, QK-norm, and a sigmoid output gate with a per-head bias.
+- **Sandwich norms**: every attention and MLP block is normalized on both its input and its output, and its residual add is scaled by depth.
+- **MoE**: 256 routed experts with grouped top-8 sigmoid routing and no shared expert; the first 3 layers are dense.
+- **FP32 softcap and router**: the logits are soft-capped at 30 in FP32, and the router weights stay in FP32 in the checkpoint, the trainer and SGLang.
 
 ## 2. Supported Variants
 
