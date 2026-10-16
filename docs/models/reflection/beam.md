@@ -113,10 +113,6 @@ MASTER_ADDR=<head ip> python scripts/run_beam_lora.py execute --num-rollout 100 
 
 GRPO on DAPO-Math-17K with `--eps-clip 0.2 --eps-clip-high 0.28 --eps-clip-c 10`, per-token loss and `--use-tis`; no KL loss and no entropy bonus. Each rollout samples 8 responses for each of 32 prompts at temperature 1.0 with top-p and top-k off, and its 256 responses feed one optimizer step.
 
-The reward (`examples/beam/reward.py`) checks the `\boxed{}` answer against the label and adds DAPO's soft overlong penalty over the last fifth of the response budget. AIME25 evaluation draws 8 samples per problem and reports plain accuracy.
-
-`execute` and the LoRA recipe run `train_async.py`, which generates the next rollout while the current one trains, so responses are one update behind; `--no-async-training` runs them in turn. `execute-colocate` always trains synchronously. Rollout routing replay is off in `run_beam.py` (`--use-rollout-routing-replay` turns it on with the Miles router) and on in `run_beam_lora.py`.
-
 ### 5.3 Optimizer
 
 **Full parameter**: Adam at a constant `--lr 1e-6`, no weight decay, gradient clip 1.0, distributed optimizer. The FP32 master weights and BF16 Adam moments live on node-local NVMe and stream through the GPU at each step:
