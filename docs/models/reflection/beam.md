@@ -105,6 +105,7 @@ MASTER_ADDR=<head ip> python scripts/run_beam_lora.py execute --num-rollout 100 
 |---|---|---|---|---|---|---|---|
 | `run_beam.py execute` | 8 | 1 | 1 | 8 | 8 | 96 (12 × 8): 64 train, 32 rollout | 2 × TP16, `--sglang-mem-fraction-static 0.85` |
 | `run_beam.py execute-colocate` | 8 | 1 | 1 | 8 | 8 | 64 (8 × 8), shared | 4 × TP16, `--sglang-mem-fraction-static 0.7` |
+| `run_beam_lora.py execute` | 8 | 1 | 1 | 16 | 1 | 32 (4 × 8): 16 train, 16 rollout | 1 × TP16, `--sglang-mem-fraction-static 0.85` |
 
 `--sequence-parallel` and full recompute are on in every recipe. Core attention runs unfused on padded `bshd` micro-batches of one sample, up to 5,120 tokens (1,024 prompt + 4,096 response).
 
@@ -128,19 +129,35 @@ Adam at a constant `--lr 1e-6`, no weight decay, gradient clip 1.0, distributed 
 
 ### 5.4 Rollout
 
-The engines serve BF16 with `--sglang-attention-backend triton --sglang-moe-runner-backend triton` and chunked prefill 8192. `--sglang-max-running-requests` and `--sglang-cuda-graph-max-bs-decode` are each engine's share of the 256 responses. The trainer sends new weights after every rollout.
+The engines serve BF16 with Triton attention and MoE. Each engine takes its share of the 256 responses, and the trainer sends new weights after every rollout:
 
-## 6. LoRA RL
+```bash
+--sglang-dtype bfloat16
+--sglang-attention-backend triton
+--sglang-moe-runner-backend triton
+--sglang-context-length 5120
+--sglang-chunked-prefill-size 8192
+--sglang-max-running-requests 128      # 256 / engines: 128, colocated 64, LoRA 256
+--sglang-cuda-graph-max-bs-decode 128  # same as max-running-requests
+--update-weight-transfer-mode broadcast
+--update-weights-interval 1
+```
 
-`scripts/run_beam_lora.py` keeps the math recipe of `run_beam.py` (data, reward, GRPO objective, batch and lengths) but trains a LoRA adapter on the frozen BF16 base. It runs on four 8×H200 nodes, launched as in [4.4](#4-4-lora-4-nodes): 16 trainers at TP 8 / EP 16 / expert-TP 1 and one TP16 rollout engine. There is no colocated variant.
+### 5.5 LoRA
 
-The adapter covers every linear layer of Beam (defaults: rank 16, alpha 32): attention q/k/v/o and the output gate, the dense MLPs, and the routed experts, each expert with its own factors. The router, embeddings and LM head stay frozen. Experts shard by EP only, because expert LoRA under expert-TP > 1 is wrong in Megatron-Bridge (forward, backward and export).
+`run_beam_lora.py` keeps the same data, reward, algorithm and rollout, and trains an adapter on every linear layer (attention q/k/v/o and the output gate, the dense MLPs, and each routed expert) while the router, embeddings and LM head stay frozen. What changes:
 
-The adapter has ~4.7B parameters, so its optimizer state (~4.6 GB per GPU) stays on the GPUs and the recipe needs no NVMe. Adam warms up to 1e-4 over 10 steps and decays (cosine) to 1e-5 by step 400: at a constant 1e-5 the zero-initialized LoRA B barely moves, and a constant 2e-4 learns fast but turns unstable after about 100 steps.
+```bash
+--lora-rank 16 --lora-alpha 32 --lora-dropout 0.0
+--expert-model-parallel-size 16
+--expert-tensor-parallel-size 1        # expert LoRA is wrong under expert-TP > 1 in Megatron-Bridge
+--lr 1e-4 --min-lr 1e-5 --lr-decay-style cosine --lr-warmup-iters 10 --lr-decay-iters 400
+--use-rollout-routing-replay --use-miles-router
+```
 
-Each weight update broadcasts only the adapter (~8.7 GiB in BF16) to the engine, which keeps the base it loaded from the checkpoint and serves the adapter through SGLang's Beam LoRA support.
+The adapter's optimizer state stays on the GPUs, so the NVMe flags of 5.3 are dropped, and each weight update sends only the adapter (~8.7 GiB).
 
-## 7. Pairs Well With
+## 6. Pairs Well With
 
 - [LoRA Training and Serving](/advanced/lora)
 - [Rollout Routing Replay (R3)](/advanced/miles-router)
