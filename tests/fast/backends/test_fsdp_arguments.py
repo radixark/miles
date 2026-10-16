@@ -14,15 +14,22 @@ def _parse(monkeypatch: pytest.MonkeyPatch, *argv: str):
 def test_cli_defaults_match_the_dataclass(monkeypatch: pytest.MonkeyPatch) -> None:
     args = _parse(monkeypatch)
     for field in dataclasses.fields(FSDPArgs):
-        assert field.default is not dataclasses.MISSING, (
-            f"{field.name} declares no plain default, so parse_fsdp_cli registers "
-            f"the dataclasses.MISSING sentinel as its CLI default; teach the parser "
-            f"about default_factory before adding a field like this"
+        default = field.default_factory() if field.default_factory is not dataclasses.MISSING else field.default
+        assert default is not dataclasses.MISSING, (
+            f"{field.name} declares no default, so parse_fsdp_cli registers "
+            f"the dataclasses.MISSING sentinel as its CLI default"
         )
-        assert getattr(args, field.name) == field.default, (
+        assert getattr(args, field.name) == default, (
             f"CLI default for --{field.name.replace('_', '-')} is {getattr(args, field.name)!r}, "
-            f"but the dataclass declares {field.default!r}"
+            f"but the dataclass declares {default!r}"
         )
+
+
+def test_list_fields_take_several_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A list field such as --profile-ranks takes one or more space-separated values, as Megatron's parser does."""
+    assert _parse(monkeypatch, "--profile-ranks", "0", "8").profile_ranks == [0, 8]
+    with pytest.raises(SystemExit):
+        _parse(monkeypatch, "--profile-ranks")
 
 
 def test_true_default_bools_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
