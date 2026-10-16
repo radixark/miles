@@ -11,7 +11,7 @@ Runs referred to:
   commit `edf2c7ae3e`, 4× 8 B300.
   - **First attempt:** 00:23 to 04:21 UTC on 2026-10-16, steps 0–24.
   - **Retry 1:** 04:33 to 06:15, steps 25–34.
-  - **Retry 2:** queued at 06:13.
+  - **Retry 2:** from 06:45, steps 35 onward.
 
 ## Open decisions
 
@@ -37,6 +37,29 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 ## Ideas to explore
 
 Larger directions to evaluate against the evidence below. Add yours here.
+
+## 2026-10-16: slowdown from 09:20 (retry 2, steps 55–56)
+
+- **What happened:** step 56 trained 25 minutes after step 55 (09:20 to 09:45), against 5–7 minutes per step since
+  step 35. Rollout 56 took 19 minutes to fill, and training step 56 itself took 6 minutes instead of about 3.
+- **Evidence:**
+  - Completed episodes per 20 minutes fell from about 1,500 (07:00–09:20) to about 600 (09:20–09:40). The
+    episode's median time rose from about 200 s to 489 s.
+  - Model-call time per turn doubled, from 4–6 s to 12–13 s. Yet each engine decoded at its usual 60–110 tokens/s
+    per request, on both rollout nodes, with about 10 requests running and none queued. So model calls were held
+    before reaching the engines, in the router or session server on the head node, rather than in SGLang.
+  - Unlike step 16, decode speed itself never dropped.
+  - Signs of an overloaded head node:
+    - the router's health checks against four head-node engines failed from 09:41;
+    - the weight sync after step 55 took 106 s;
+    - 47 sessions failed `collect_samples` with a 120 s `TimeoutError`, 14 of them while still connecting: one at
+      09:21, then 09:39–09:44. Before this, retry 2 had none.
+  - Tool timeouts (a command running past 120 s) rose from 0.27 to 0.67 per episode. Most came from
+    `task_005427` (107 in 20 minutes) and `task_000635` (173 over the hour).
+- **Reading:** the same CPU contention as at step 16, here starving the head node's HTTP serving (router, session
+  servers, agents) rather than its engines.
+- **Options:** A, B, C, E (above) and L, the gateway backend (on branch `shashank/tmax-gateway`), which takes the
+  sandboxes off the nodes altogether.
 
 ## 2026-10-16: rollout node declared dead (retry 1 failure)
 
