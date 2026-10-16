@@ -52,8 +52,6 @@ docker pull radixark/miles:beam
 
 ## 4. Launch
 
-Start a Ray cluster from this image over all the nodes, with the checkpoint, the datasets and `--output-dir` on shared storage, then launch from the head node. The launchers submit to that cluster and do not start one; `RAY_ADDRESS` defaults to `http://$MASTER_ADDR:8265`.
-
 ### 4.1 Full parameter, 12 nodes
 
 `execute` runs on twelve 8×H200 nodes: eight train and four host two rollout engines. Each trainer node needs at least 2 TB free on node-local NVMe for the optimizer state, at `/scratch/beam-optimizer` by default (`--optimizer-disk-dir`):
