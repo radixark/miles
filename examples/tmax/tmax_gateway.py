@@ -21,8 +21,8 @@ Per episode:
 The binding expires after 15 idle minutes, so a keepalive exec runs while the container idles through a long
 generation. A binding that is lost anyway (the replica died, or the gateway expired it) is re-handshaken once and the
 command retried, losing the container's state, as the podman backend recreates a vanished container once. A
-container the replica removed or stopped under the episode (its resource watchdog, or the agent killing PID 1) ends
-the episode with reward 0 (``SandboxLostError``). Replicas set no memory limit.
+container the replica removed or stopped under the episode (its resource watchdog, e.g. past 2048 processes, or the
+agent killing PID 1) ends the episode with reward 0 (``SandboxLostError``). Replicas set no memory limit.
 """
 
 import asyncio
@@ -80,7 +80,10 @@ _RETRY_MAX_S = 8.0
 # unavailable" while it is still listed but refuses connections. After this many in a row the session is lost.
 _OWNER_LOST_MARKERS = ("no longer registered", "server is unavailable")
 _OWNER_LOST_ATTEMPTS = 3
-_CONTAINER_REMOVED_MARKER = "container_not_found"
+# The replica removed the container itself: its resource watchdog (e.g. ``{"code": "sandbox_lost", "reason":
+# "pids_limit", "recoverable": false}`` past 2048 tasks) or idle janitor; older literegistry says container_not_found.
+# This is the sandbox dying under the agent's own commands, so it ends the episode instead of re-handshaking.
+_CONTAINER_REMOVED_MARKERS = ("container_not_found", "sandbox_lost")
 _CONTAINER_STOPPED_MARKERS = ("container state improper", "can only create exec sessions on running containers")
 
 
@@ -210,7 +213,7 @@ class TmaxGatewaySandbox(SandboxBase):
         try:
             return await self._run_command(command, timeout_s)
         except GatewaySessionLostError as e:
-            if _CONTAINER_REMOVED_MARKER in e.body:
+            if _removed_by_replica(e.body):
                 raise SandboxLostError(f"sandbox {self._image} was removed by its replica: {e.body[:300]}") from e
             if not self._ready or self._restarted:
                 raise SandboxInfraError(f"gateway sandbox lost: {e}") from e
@@ -362,11 +365,15 @@ class TmaxGatewaySandbox(SandboxBase):
                 )
                 _check(result, "upload assembly")
             except GatewaySessionLostError as e:
-                if _CONTAINER_REMOVED_MARKER in e.body:
+                if _removed_by_replica(e.body):
                     raise SandboxLostError(f"sandbox {self._image} was removed by its replica: {e.body[:300]}") from e
                 raise SandboxInfraError(f"gateway sandbox lost during upload: {e}") from e
             except GatewayError as e:
                 raise SandboxInfraError(f"gateway upload failed: {e}") from e
+
+
+def _removed_by_replica(body: str) -> bool:
+    return any(marker in body for marker in _CONTAINER_REMOVED_MARKERS)
 
 
 def _check(result: dict, what: str) -> None:

@@ -221,6 +221,22 @@ def test_container_removed_by_replica_ends_the_episode(gateway, task_dir):
         run(episode())
 
 
+def test_watchdog_removal_ends_the_episode(gateway, task_dir):
+    body = (
+        '{"detail":{"code":"sandbox_lost","reason":"pids_limit","recoverable":false,'
+        '"limit":2048,"observed":4538,"unit":"tasks","enforcement":"userspace_watchdog"}}'
+    )
+
+    async def episode():
+        async with tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir) as box:
+            gateway.fail_next = [(410, body)]
+            await box.bash(":(){ :|:& };:")
+
+    with pytest.raises(tmax_sandbox.SandboxLostError):
+        run(episode())
+    assert gateway.handshakes == 1  # not re-handshaken into a fresh container
+
+
 def test_start_retries_then_gives_up(gateway, task_dir):
     gateway.fail_next = [(503, "no replicas")] * (tmax_gateway._HANDSHAKE_ATTEMPTS * tmax_sandbox._START_ATTEMPTS)
 

@@ -88,6 +88,10 @@ Before submitting:
 | `dockerhub_username` | `$DOCKERHUB_USERNAME` | Login for sandbox image pulls |
 | `secrets` | `DOCKER_PAT`, `HF_TOKEN`, `WANDB_API_KEY` from `<user>_DOCKER_PAT` etc. | Env var → Beaker secret |
 | `env` | none | Extra env vars, e.g. `NCCL_DEBUG: WARN` |
+| `gateway_registry` | unset | With `sandbox_backend: gateway`: the podman fleet's head registry (`head+sqlite:///weka/…/head.sqlite3`); the head starts a gateway from it. See [Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend) |
+| `gateway_url` | unset | With `sandbox_backend: gateway`: a running gateway to use instead |
+| `gateway_min_replicas` | `1` | Podman replicas the gateway must list before training starts |
+| `literegistry_version` | `1.0.49` | The literegistry release the head's gateway runs |
 
 `submit.py` also sets `NUM_NODES`, `BEAKER_ALLOW_SUBCONTAINERS=1`, `BEAKER_SKIP_DOCKER_SOCKET=1`,
 `PYTORCH_ALLOC_CONF=expandable_segments:True`, `SANDBOX_SHARDS`, `MIRROR_URL`, `KEEP_LAST_N_CHECKPOINTS`,
@@ -163,6 +167,43 @@ python examples/tmax/beaker/registry_mirror/registry_mirror.py warm     # open-i
   for 10 minutes, so most pulls are cache misses on the node anyway.
 - **After rotating the Docker Hub token**, update the Beaker secret, then relaunch the mirrors, which read it at
   start.
+
+## Sandboxes on a podman fleet (gateway backend)
+
+With `sandbox_backend: gateway` in the config, the job runs no podman: every episode's container lives on a
+LiteRegistry podman fleet, a separate deployment of rootless podman replicas and Docker Hub mirrors that heartbeat
+into a Redis registry ([literegistry](https://github.com/goncalorafaria/literegistry),
+`literegistry_podman_beaker`). This is open-instruct's `literegistry_podman` setup. It takes the sandboxes, and the
+CPU they burn, off the nodes that train and run SGLang ([INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md)).
+
+```yaml
+sandbox_backend: gateway
+beaker:
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-terminal-jupiter-head.sqlite3
+```
+
+- **What the head does.** It installs literegistry into its own venv, since literegistry pins starlette and pulls
+  streamlit, which the training environment cannot take. It then starts `python -m literegistry.gateway
+  --registry=<gateway_registry> --register=False` on `127.0.0.1:24750`, restarting it if it exits; the gateway's log
+  goes to `/tmp/literegistry-gateway.log`. Before training starts, the head waits up to 30 min for the gateway to
+  list `gateway_min_replicas` podman replicas. The gateway finds the fleet's Redis through the head registry, so it
+  follows a Redis move. `gateway_url` skips all this and uses a running gateway.
+- **What a container costs.** Started from the dev box, a container took 7.5–9.4 s to start, including the pull
+  through the fleet's mirrors and setup, and each command took 0.3–0.6 s. In the Beaker smoke, from holmes, the
+  median command took 1.2 s (p90 2.3 s), its own run time included.
+- **Episode behavior** stays as with local podman, with these differences:
+  - Output is read up to 512 KB of stdout and 128 KB of stderr, rather than 1 MB each, so the tail of a huge output
+    comes from an earlier position.
+  - Replicas set no memory limit, but a userspace watchdog removes a container that runs more than 2,048
+    processes (`{"code": "sandbox_lost", "reason": "pids_limit"}`). Local podman has no such limit.
+  - A container the replica removes or stops under the episode ends it with reward 0 (`end=sandbox_lost`).
+  - A binding the gateway loses (its replica died) is re-handshaken once, losing the container's state, as local
+    podman recreates a vanished container once.
+- **The fleet** is shared and managed outside this job. Its roster is at `<gateway>/v1/models`: on 2026-10-16, 172
+  podman replicas, 8 mirrors and the fleet's own gateway.
+- **Check it from a dev box.** Start a gateway from the same registry with `python -m literegistry.gateway
+  --registry=<gateway_registry> --host=127.0.0.1 --port=24711 --register=False`. Then `curl
+  127.0.0.1:24711/v1/models` lists the replicas.
 
 ## Multi-node
 
@@ -254,6 +295,8 @@ What to do when a symptom shows up. Every failure mode seen so far, with its sta
 | `the actor's node was terminated unexpectedly: health check failed due to missing too many heartbeats`, then `Killing server cell_id=…` | A node too busy for Ray's heartbeat; Ray declares it dead and its engines are disposed. The job then fails | The Beaker retry resumes from the last checkpoint |
 | `benching sandbox daemon tcp://<node>:2375x … ReadTimeout` | That node's podman daemons too slow to answer | Episodes move to other daemons for about 5 min; repeated benching of one node goes with the starvation above |
 | `!!!!!!! Segfault encountered !!!!!!!` from `RolloutExecutor`, then `EOFError: Ran out of input` from agent processes | A native crash in the rollout executor; no stack in the job log | The retry resumes. Set `PYTHONFAULTHANDLER: "1"` in the config's `env` to capture a stack next time |
+| `gateway http://127.0.0.1:24750: N podman replicas (need M)` and the head exits | Gateway backend: the fleet's registry is unreachable or lists too few replicas | Check the registry path and the fleet's roster (`/v1/models`); see [Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend) |
+| `end=sandbox_lost` in episode logs | Gateway backend: the replica removed or stopped the container (its resource watchdog, or the agent killed PID 1) | Scored 0 like an OOM kill |
 | `Failed collecting samples: ReadError('')` from `agentic_tool_call.py` | Fetching an episode from the session server failed; the whole group is dropped | 2.5-3% of episodes on the pre-rebase code; none so far on the rebased code (upstream's session-server and transport fixes) |
 | `http_utils.py … Error: , retrying... (attempt 1/60, url=…/sessions` with `starlette.requests.ClientDisconnect` on the session server | A session-create request dropped mid-body | Harmless: retried and succeeded |
 | `AttributeError` mentioning `enable_prefill_weight_versions` at start | Image older than session server v2 needs | Pin `dev-202610151741` or newer |

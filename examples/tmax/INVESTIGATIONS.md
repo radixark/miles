@@ -43,6 +43,7 @@ The options below are the ones presented during the investigations; none is impl
 | H | `PYTHONFAULTHANDLER=1` in the Beaker env | Captures a Python stack if the rollout executor segfaults again | One env var | Bundle with the next restart |
 | I | More episodes in flight (1024, 256 sandboxes per node) | Uses idle engine capacity during long-tail phases | Doubles sandbox load per node, which is the suspected cause of the stalls | Not before A–C |
 | J | Episode wall-clock cap (`episode_timeout_s`) | Bounds long-tail episodes | open-instruct has no cap | Not now |
+| L | Sandboxes on a LiteRegistry podman fleet: `sandbox_backend: gateway`, open-instruct's `literegistry_podman` setup | Removes the sandboxes, and their CPU load, from the training and SGLang nodes altogether ([2026-10-16 entry](#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet)) | Implemented on branch `shashank/tmax-gateway`; depends on a fleet run outside the job | Validate on the 4-GPU smoke, then the 4-node run |
 | M | Worker replicas' watch on the Ray head. (1) None: workers leave when the head marks the run done, or through Beaker's `propagateFailure` when the head's job fails. (2) open-instruct's: 6 failed `ray status` checks 5 s apart, with no timeout on a check. (3) A ~20-minute tolerance (`HEAD_MISS_LIMIT` 80, `aeb4f9ecd3`) | The ported check (6 misses with a 10 s timeout each, about 90 s) failed three podman attempts on 2026-10-17 while a starved head was slow to answer | (1) relies on Beaker noticing a failed head; a head that hangs without exiting would leave the workers waiting | **(1), taken 2026-10-19 by the user, after (2) ended resume 6 on a starved head that had recovered from 5 misses minutes before; (2) was used 2026-10-17 to 19** |
 | K | Make a dropped weight-sync reply non-fatal: treat it as "outcome unknown" after a completed broadcast and verify the engines' weight version | Survives the `ReadError` seen once in the old run | Miles core change; check upstream first | Only if it recurs |
 
@@ -50,6 +51,10 @@ Suggested next restart: A + B + F + H (and G once the trainer side exists), vali
 resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to continue from the latest checkpoint.
 
 ## Ideas to explore
+
+- **Remote sandbox fleets** (from the user). open-instruct has two alternatives to colocated podman:
+  1. A LiteRegistry podman fleet behind a local gateway (branch `literegistry_podman`). Now option L, ported.
+  2. A hosted OpenSandbox service on GCP (branch `pd_open_sandbox_cuda13`, paid). Not explored yet.
 
 Larger directions to evaluate against the evidence below. Add yours here.
 
@@ -263,6 +268,43 @@ the backend can be trusted at prod scale.
   servers, agents) rather than its engines.
 - **Options:** A, B, C, E (above) and L, the gateway backend (on branch `shashank/tmax-gateway`), which takes the
   sandboxes off the nodes altogether.
+
+## 2026-10-16: gateway backend (sandboxes on a podman fleet)
+
+- **The idea:** open-instruct's answer to colocated podman. A separate Beaker deployment runs rootless podman
+  replicas and Docker Hub mirrors that heartbeat into Redis; a LiteRegistry gateway routes each container's requests
+  to the replica that owns it. The training job runs no podman.
+- **Port:** `tmax_gateway.TmaxGatewaySandbox` (branch `shashank/tmax-gateway`), an asyncio port of open-instruct's
+  `GatewayBackend`, behind `sandbox_backend: gateway`. On Beaker the head starts a gateway on localhost from the
+  fleet's head registry. Mechanics are in the
+  [Beaker runbook](beaker/README.md#sandboxes-on-a-podman-fleet-gateway-backend).
+- **Fleet on 2026-10-16:** the registry
+  `/weka/oe-adapt-default/gfaria/primebeaker/registries/podman-terminal-jupiter-head.sqlite3` points at Redis on
+  `jupiter-cs-aus-159`. The roster listed 172 podman replicas (`podman128-cap8-*` and `tmax-source-replay512-*`, on
+  neptune and jupiter hosts), 8 Docker Hub mirrors and a gateway. It is reachable from the dev box.
+- **Tests:**
+  - **Unit tests:** 9 against a fake gateway (`tests/fast/examples/tmax/test_tmax_gateway_sandbox.py`).
+  - **Live, from the dev box through a local gateway** (3 real tasks):
+    - containers started in 7.5–9.4 s and commands took 0.3–0.6 s;
+    - the persistent shell kept `cwd` and exports;
+    - a 70 s command finished past the replica's 60 s exec cap, and a 2 MB output was truncated as usual;
+    - the withheld tests ran in 1.4–2 s.
+  - **Beaker:** 4-GPU smoke `smoke_gateway.yaml` (experiment `01M51R3GETB3QFWJJ7YCDCGJCV`, commit `45644f34ea`)
+    passed:
+    - the head's gateway listed 172 replicas within 70 s of start, the literegistry install included;
+    - 3 steps trained, from 94 episodes, 38 of them solved, with no failed sandbox starts;
+    - the median sandbox command from holmes took 1.2 s (p90 2.3 s), the command's own run time included;
+    - the job exited 0.
+- **Differences from local podman:**
+  - output is read up to 512 KB of stdout and 128 KB of stderr instead of 1 MB each;
+  - replicas set no memory limit, but remove a container past 2,048 processes (`sandbox_lost`, `pids_limit`; the
+    smoke hit it once, at 4,538);
+  - a container the replica removes ends the episode (`sandbox_lost`). The first smoke instead re-handshook the
+    `sandbox_lost` answer, which newer literegistry uses in place of open-instruct's `container_not_found`, and got
+    59 lost-sandbox tool errors. Fixed in the next commit.
+- **Open questions:**
+  - Fleet capacity when 512 of our episodes share it with other users' jobs.
+  - Whether cross-cluster latency (holmes to jupiter/neptune) adds up over 64-step episodes.
 
 ## 2026-10-16: rollout node declared dead (retry 1 failure)
 

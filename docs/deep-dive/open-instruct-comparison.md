@@ -155,6 +155,7 @@ malformed and ends the episode on both sides. What differs is tokenization, time
 
 | | open-instruct | Miles |
 |---|---|---|
+| Where sandboxes run | Podman daemons in the training job; branch `literegistry_podman` adds `backend: gateway`, a LiteRegistry podman fleet behind a co-located gateway | Same two choices: `sandbox_backend: podman` (default) or `gateway` (`tmax_gateway.py`, a port of open-instruct's `GatewayBackend`) |
 | Podman | 5.6.2 and crun 1.14.3 built into the image | Ubuntu apt podman 4.9, installed at job start |
 | Bring-up | `scripts/docker/docker_login.sh`: N daemons per node with their own storage, mirror config, Docker Hub login, janitors | Same script, vendored byte-identical in `examples/tmax/beaker/podman/` |
 | Container options | 4 GB memory and swap, host network, auto user namespace, cgroups disabled | Same `containers.conf` |
