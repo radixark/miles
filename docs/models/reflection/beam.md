@@ -50,7 +50,9 @@ The `radixark/miles:beam` image (multi-arch, built on `radixark/miles:v0.1.2` by
 docker pull radixark/miles:beam
 ```
 
-### 3.3 Bring up the Ray cluster
+## 4. Launch
+
+### 4.1 Bring up the Ray cluster
 
 The launchers submit to a Ray cluster and do not start one. Run `radixark/miles:beam` on every node, with the checkpoint, the datasets and `--output-dir` on shared storage, then bring up the cluster:
 
@@ -61,11 +63,9 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-s
 ray start --address=${MASTER_ADDR}:6379 --node-ip-address ${WORKER_IP} --num-gpus 8 --disable-usage-stats
 ```
 
-`ray status` on the head must list 96, 64 or 32 GPUs before launching, for 4.1, 4.2 and 4.3 respectively.
+`ray status` on the head must list 96, 64 or 32 GPUs before launching, for 4.2, 4.3 and 4.4 respectively.
 
-## 4. Launch
-
-### 4.1 Full parameter, 12 nodes
+### 4.2 Full parameter, 12 nodes
 
 `execute` runs on twelve 8×H200 nodes: eight train and four host two rollout engines. Each trainer node needs at least 2 TB free on node-local NVMe for the optimizer state, at `/scratch/beam-optimizer` by default (`--optimizer-disk-dir`):
 
@@ -77,7 +77,7 @@ MASTER_ADDR=<head ip> python scripts/run_beam.py execute --num-rollout 100 \
 
 The run evaluates on AIME25 every five rollouts and saves a checkpoint every twenty.
 
-### 4.2 Full parameter, colocated, 8 nodes
+### 4.3 Full parameter, colocated, 8 nodes
 
 `execute-colocate` takes the same arguments on eight 8×H200 nodes. Every GPU trains and also hosts one of four rollout engines, which receive the new weights over CUDA IPC. Each node's NVMe holds both the optimizer state and the paused trainer:
 
@@ -87,7 +87,7 @@ MASTER_ADDR=<head ip> python scripts/run_beam.py execute-colocate --num-rollout 
     --output-dir /root/shared_data/beam-colocate-run
 ```
 
-### 4.3 LoRA, 4 nodes
+### 4.4 LoRA, 4 nodes
 
 `run_beam_lora.py` runs on four 8×H200 nodes: two train and two host one rollout engine. It needs no NVMe, since the adapter's optimizer state stays on the GPUs:
 
@@ -97,7 +97,7 @@ MASTER_ADDR=<head ip> python scripts/run_beam_lora.py execute --num-rollout 100 
     --output-dir /root/shared_data/beam-lora-run
 ```
 
-### 4.4 Resume
+### 4.5 Resume
 
 Rerun the same command with `--resume`, on the same topology and output directory:
 
