@@ -13,10 +13,10 @@ from PIL import Image
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, processors
 from transformers import PreTrainedTokenizerFast
 
+from miles.utils.types import STEP5_EXPANDED_PROMPT_KEY
 from miles_plugins.models.step5.processor import (
     CROP_NUM_TOKENS,
     CROP_SIZE,
-    EXPANDED_PROMPT_KEY,
     OVERVIEW_NUM_TOKENS,
     OVERVIEW_SIZE,
     Step5TrainProcessor,
@@ -119,12 +119,12 @@ class TestCall:
         placeholder = request_ids.index(tokenizer.convert_tokens_to_ids("<im_patch>"))
         block = _expected_block(tokenizer, split_image(image).row_ends)
         expected = [tokenizer.bos_token_id] + request_ids[:placeholder] + block + request_ids[placeholder + 1 :]
-        assert out[EXPANDED_PROMPT_KEY].tolist() == expected
+        assert out[STEP5_EXPANDED_PROMPT_KEY].tolist() == expected
 
     def test_positions_are_the_image_tokens_in_feature_order(self, tokenizer, processor):
         out = processor(text=_prompt(2), images=[_image(1000, 300), _image(256, 256)])
 
-        expanded = out[EXPANDED_PROMPT_KEY]
+        expanded = out[STEP5_EXPANDED_PROMPT_KEY]
         positions = out["step5_image_positions"]
         assert positions.dtype == torch.int64
         assert (
@@ -149,7 +149,7 @@ class TestCall:
         out = processor(text=_prompt(1), images=[_image(256, 256)])
 
         assert out["input_ids"][0][0] != tokenizer.bos_token_id
-        assert out[EXPANDED_PROMPT_KEY][:2].tolist().count(tokenizer.bos_token_id) == 1
+        assert out[STEP5_EXPANDED_PROMPT_KEY][:2].tolist().count(tokenizer.bos_token_id) == 1
 
     def test_the_image_count_must_match_the_placeholders(self, processor):
         with pytest.raises(AssertionError, match="2 <im_patch> but 1 image"):

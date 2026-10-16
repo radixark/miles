@@ -2,13 +2,15 @@
 
 import pytest
 import torch
-from tests.fast.backends.training_utils.step5_mm_rollout import IMAGE, rollout_data, set_trivial_parallel_state
-
-from miles.backends.training_utils.data.multimodal import (
-    STEP5_EXPANDED_PROMPT_KEY,
-    STEP5_MODEL_INPUT_KEYS,
-    expand_multimodal_rollout_data_in_place,
+from tests.fast.backends.training_utils.step5_mm_rollout import (
+    IMAGE,
+    MODEL_INPUT_KEYS,
+    rollout_data,
+    set_trivial_parallel_state,
 )
+
+from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
+from miles.utils.types import STEP5_EXPANDED_PROMPT_KEY
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +39,7 @@ def test_image_samples_carry_exactly_the_model_inputs_and_text_samples_none():
     expand_multimodal_rollout_data_in_place(data)
 
     image_inputs, text_inputs, other_image_inputs = data["multimodal_train_inputs"]
-    assert tuple(image_inputs) == tuple(other_image_inputs) == STEP5_MODEL_INPUT_KEYS
+    assert tuple(image_inputs) == tuple(other_image_inputs) == MODEL_INPUT_KEYS
     assert text_inputs is None
 
 

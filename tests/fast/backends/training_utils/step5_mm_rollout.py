@@ -2,11 +2,13 @@
 
 import torch
 
-from miles.backends.training_utils.data.multimodal import STEP5_EXPANDED_PROMPT_KEY
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
+from miles.utils.types import STEP5_EXPANDED_PROMPT_KEY
 
 IMAGE = 7
 BOS = 0
+# What an image sample hands the Step5 VL model once expanded; a text sample carries none of them.
+MODEL_INPUT_KEYS = ("step5_pixel_values", "step5_patch_pixel_values", "step5_num_patches", "step5_image_positions")
 
 
 def set_trivial_parallel_state(cp_size: int = 1) -> None:

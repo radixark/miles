@@ -16,6 +16,8 @@ from PIL import Image
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as TF
 
+from miles.utils.types import STEP5_EXPANDED_PROMPT_KEY
+
 # The geometry and tokens of SGLang's Step3VLProcessor (sglang/srt/multimodal/processors/step3_vl.py).
 OVERVIEW_SIZE = 728
 CROP_SIZE = 504
@@ -27,8 +29,6 @@ _CROP_START, _CROP_END, _CROP_ROW_END = "<patch_start>", "<patch_end>", "<patch_
 _MAX_LONG_SIDE = 3024
 _CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 _CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
-
-EXPANDED_PROMPT_KEY = "step5_expanded_prompt_ids"
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,7 @@ class Step5TrainProcessor:
             "step5_patch_pixel_values": to_pixel_values([crop for split in splits for crop in split.crops], CROP_SIZE),
             "step5_num_patches": torch.tensor([len(split.crops) for split in splits], dtype=torch.int64),
             "step5_image_positions": (expanded_prompt_ids == self._image_token_id).nonzero().flatten(),
-            EXPANDED_PROMPT_KEY: expanded_prompt_ids,
+            STEP5_EXPANDED_PROMPT_KEY: expanded_prompt_ids,
         }
 
     def _request_ids(self, text: str) -> list[int]:

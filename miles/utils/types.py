@@ -8,6 +8,9 @@ import torch
 from miles.utils.sampling_mask import RolloutSamplingMask
 
 LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
+# A Step5 image sample's multimodal_train_inputs entry: its prompt exactly as SGLang expanded it, every image
+# turned into its crop and overview blocks (miles_plugins/models/step5/processor.py writes it).
+STEP5_EXPANDED_PROMPT_KEY = "step5_expanded_prompt_ids"
 
 
 @dataclass(frozen=True)
@@ -403,7 +406,7 @@ class Sample:
     def _num_media_expanded_tokens(self) -> int:
         """``len(tokens)`` once the rollout engine has expanded every media placeholder in the prompt."""
         mm = self.multimodal_train_inputs or {}
-        if (expanded_prompt := mm.get("step5_expanded_prompt_ids")) is not None:
+        if (expanded_prompt := mm.get(STEP5_EXPANDED_PROMPT_KEY)) is not None:
             return len(expanded_prompt) + self.response_length
         extra = sum(
             int(c) - 1 for key in ("mm_vision_num_patches", "mm_audio_num_tokens") for c in list(mm.get(key) or [])

@@ -10,14 +10,12 @@ import pytest  # noqa: E402
 import torch  # noqa: E402
 from tests.fast.backends.training_utils.step5_mm_rollout import (  # noqa: E402
     IMAGE,
+    MODEL_INPUT_KEYS,
     rollout_data,
     set_trivial_parallel_state,
 )
 
-from miles.backends.training_utils.data.multimodal import (  # noqa: E402
-    STEP5_MODEL_INPUT_KEYS,
-    expand_multimodal_rollout_data_in_place,
-)
+from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place  # noqa: E402
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="get_batch packs on the current CUDA device")
@@ -38,7 +36,7 @@ def test_a_mixed_micro_batch_offsets_positions_into_the_packed_sequence():
     batch = get_batch(DataIterator(data, micro_batch_size=3), _BATCH_KEYS)
 
     inputs = batch["multimodal_train_inputs"]
-    assert tuple(inputs) == STEP5_MODEL_INPUT_KEYS
+    assert tuple(inputs) == MODEL_INPUT_KEYS
     assert inputs["step5_image_positions"].numel() == sum(int((t == IMAGE).sum()) for t in data["tokens"])
     assert (batch["tokens"][0][inputs["step5_image_positions"]] == IMAGE).all()
     assert inputs["step5_pixel_values"].shape[0] == 3

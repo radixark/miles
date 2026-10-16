@@ -7,7 +7,13 @@ import numpy
 import pytest
 import torch
 
-from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.types import (
+    LEGACY_WEIGHT_VERSIONS_KEY,
+    STEP5_EXPANDED_PROMPT_KEY,
+    Sample,
+    WeightVersionSpan,
+    WeightVersionsPerCall,
+)
 
 
 def _make_sample(
@@ -1004,7 +1010,7 @@ class TestValidateMediaExpandedRoutedExperts:
     def _step5_sample(num_routed_rows: int) -> Sample:
         s = _make_sample([5, 128001, 8], [3, 4])
         expanded_prompt = [0, 5, 128000] + [128001] * 169 + [128002, 8]
-        s.multimodal_train_inputs = {"step5_expanded_prompt_ids": torch.tensor(expanded_prompt)}
+        s.multimodal_train_inputs = {STEP5_EXPANDED_PROMPT_KEY: torch.tensor(expanded_prompt)}
         s.rollout_routed_experts = numpy.zeros((num_routed_rows, 2, 2), dtype=numpy.int32)
         return s
 

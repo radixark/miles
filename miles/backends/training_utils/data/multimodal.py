@@ -16,7 +16,7 @@ import torch
 
 from miles.backends.training_utils.data.context_parallel import all_gather_with_cp, slice_log_prob_with_cp
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.types import RolloutBatch
+from miles.utils.types import STEP5_EXPANDED_PROMPT_KEY, RolloutBatch
 
 logger = logging.getLogger(__name__)
 
@@ -199,19 +199,6 @@ def _expand_inkling_rollout_data_in_place(rollout_data: RolloutBatch) -> None:
             old_total_lengths,
             new_total_lengths,
         )
-
-
-# Written by miles_plugins/models/step5/processor.py: the prompt exactly as SGLang's Step3 processor
-# re-tokenizes it, every image expanded into its crop and overview blocks.
-STEP5_EXPANDED_PROMPT_KEY = "step5_expanded_prompt_ids"
-# What an image sample hands the Step5 VL model once expanded. A sample without images carries none of
-# them (its inputs stay None), so a micro-batch without images reaches the model without the keys.
-STEP5_MODEL_INPUT_KEYS = (
-    "step5_pixel_values",
-    "step5_patch_pixel_values",
-    "step5_num_patches",
-    "step5_image_positions",
-)
 
 
 def _is_step5_batch(multimodal_train_inputs: Sequence[dict[str, torch.Tensor] | None]) -> bool:
