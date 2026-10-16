@@ -12,6 +12,8 @@ Use --reuse-fixtures with a reviewed producer SPEC to skip encoding and apply
 saved deltas. Reused sender timings are historical; receiver timings are fresh.
 The expensive second model load/oracle is opt-in with --validate-final-target.
 Without it, reports explicitly remain NOT_VALIDATED for target equivalence.
+Use --profile-version N with saved fixtures under an external Nsight Systems
+launcher to gate capture around one warm receiver prepare/apply/resume update.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -825,6 +827,7 @@ async def _engines(args, model):
                         "GPU_DELTA_LAYERS_PER_BATCH",
                         "GPU_DELTA_CPU_WORKERS",
                         "GPU_DELTA_HOST_CACHE_DIR",
+                        "GPU_DELTA_NVTX",
                     )
                 },
             },
@@ -875,6 +878,16 @@ async def _generation(clients):
     return records
 
 
+def _profile_update(enabled):
+    if not enabled:
+        return nullcontext()
+    # Only an explicit profiling run imports the NVTX API. The one coordinator
+    # gate encloses both engines; rank-local ranges must not control capture.
+    from torch.cuda import nvtx
+
+    return nvtx.range("gpu_delta_benchmark_capture")
+
+
 async def _run(args, phase):
     codec = configured_codec()
     fixture = json.loads((args.fixture / "fixture.json").read_text()) if args.fixture else None
@@ -897,9 +910,19 @@ async def _run(args, phase):
             raise ValueError("Fixture plan no longer matches current loaded models")
         _save(args.output / "base-generation.json", await _generation(clients))
         for version in fixture["rounds"]:
+            profiled = version["version"] == args.profile_version
             started = time.monotonic()
             try:
-                receipt = await activate_publication(clients, cohort, version["publications"][codec])
+                with _profile_update(profiled):
+                    if profiled:
+                        from torch.cuda import nvtx
+
+                        # Allow the profiler to start collecting child processes.
+                        # The trace still needs review for complete rank coverage.
+                        with nvtx.range("gpu_delta.capture_arming"):
+                            await asyncio.sleep(0.2)
+                        started = time.monotonic()
+                    receipt = await activate_publication(clients, cohort, version["publications"][codec])
                 result = {
                     "version": version["version"],
                     "coordinator_s": time.monotonic() - started,
@@ -907,6 +930,17 @@ async def _run(args, phase):
                     "measurement_phase": "first-use-allocation" if version["version"] == 1 else "warm-update",
                     "receipt": receipt,
                 }
+                if args.profile_version is not None:
+                    result["profile"] = {
+                        "tool": "external nsys launcher",
+                        "capture_version": args.profile_version,
+                        "capture_range_emitted": profiled,
+                        "nvtx_capture_range": "gpu_delta_benchmark_capture",
+                        "capture_arming_s": 0.2 if profiled else 0.0,
+                        "capture_arming_scope": "before coordinator timer; trace coverage requires review",
+                        "scope": "receiver preparation through all engine resume replies",
+                        "timing_scope": "profiling run; exclude from unprofiled performance comparisons",
+                    }
                 _save(args.output / f"update-{version['version']}.json", result)
             except Exception as error:
                 _save(
@@ -1160,6 +1194,14 @@ def _markdown(summary):
         f"Prepared inputs: `{summary['inputs']['path']}`; reused: {summary['inputs']['reused']}. Input construction is shared across all arms and excluded from compression measurements; its metadata remains in `inputs.json`.",
         "",
     ]
+    if any("profile" in row for _, row in versions):
+        lines += [
+            "Only the version marked **capture range** emitted the NVTX capture range. All rows in this "
+            "profiling run used instrumented processes; their receiver timings are separate from unprofiled performance results. "
+            "The selected range includes a 0.2-second capture-arming lead-in before the coordinator timer; "
+            "this delay does not prove complete trace coverage.",
+            "",
+        ]
     lines += _report_table(
         [
             "Codec",
@@ -1179,7 +1221,11 @@ def _markdown(summary):
                 arm["codec"],
                 row["frame_bytes"] / 1024,
                 "off" if arm["skip_payload_hash"] else "on",
-                row["version"],
+                (
+                    f"{row['version']} ({'capture range' if row['profile']['capture_range_emitted'] else 'profiling run'})"
+                    if "profile" in row
+                    else row["version"]
+                ),
                 row["compression"].get("measurement_scope", "current_run"),
                 _format(row["compression"]["owner_max"]["compression_and_publication_s"]),
                 _format(row["receiver_max"]["prepare_s"]),
@@ -1333,6 +1379,8 @@ def _arm_report(output, arm, oracle_records):
                 "ranks": ranks,
             }
         )
+        if "profile" in update:
+            versions[-1]["profile"] = update["profile"]
     if not versions:
         raise ValueError("No fixture updates")
     comparison = (
@@ -1444,6 +1492,8 @@ def _run_phase(phase, args, directory, arm, records):
         "GPU_DELTA_TIMING": "1",
         "GPU_DELTA_SKIP_PAYLOAD_HASH": "1" if arm["skip_payload_hash"] else "0",
     }
+    if phase == "run" and args.profile_version is not None:
+        settings["GPU_DELTA_NVTX"] = "2"
     process = multiprocessing.get_context("spawn").Process(
         target=_phase, args=(phase, args, directory, settings, arm), name=phase
     )
@@ -1575,6 +1625,11 @@ def main():
         help="Payload SHA policy on both sender and receiver",
     )
     parser.add_argument("--versions", type=int, default=3)
+    parser.add_argument(
+        "--profile-version",
+        type=int,
+        help="Emit one gpu_delta_benchmark_capture NVTX range around warm version N; use an external nsys launcher",
+    )
     parser.add_argument("--seed", type=int, default=20261001)
     parser.add_argument(
         "--ratio", type=float, default=0.002, help="CPU Zstd calibration target for synthetic mutation rate"
@@ -1605,6 +1660,11 @@ def main():
         for codec in dict.fromkeys(args.codecs)
         for hashing in dict.fromkeys(args.hashing)
     ]
+    if args.profile_version is not None:
+        if not args.reuse_fixtures or len(args.arms) != 1 or args.validate_final_target:
+            parser.error("--profile-version requires saved fixtures, one arm and no final-target oracle")
+        if not 2 <= args.profile_version <= args.versions:
+            parser.error("--profile-version must select a warm update from 2 through --versions")
     if not 0 < args.frame_bytes <= 4 << 20:
         parser.error("--frame-bytes must be positive and at most 4 MiB")
     if args.sender_gpus is not None and args.sender_gpus < 1:
