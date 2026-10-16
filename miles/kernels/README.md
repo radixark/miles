@@ -6,7 +6,7 @@ attention/
   dense/           dense_attention_backward
   dsa/             sparse_attention · lightning_indexer · indexer_logits[_sbhd] · indexer_topk_scores · kpool · topk
     tilelang/      one indexer + sparse attention pair; RoPE tail and attention sink are compile-time parameters
-  qsa/             qsa_sparse_attention · qsa_block_sparse_attention
+  qsa/             qsa_sparse_attention · qsa_block_attention · build_qsa_block_index
 embedding/         gather_ple_rows · ple_gate_conv
 hyper_connection/  hc: hc_mix_inject · hc_combine    mhc: mhc_mix · mhc_aggregate
 moe/               fused_experts
