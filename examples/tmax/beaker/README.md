@@ -202,7 +202,8 @@ Timeline of the 4-node run `tmax_prod4node_qwen35_9b_20261016_001037`, from repl
 
 Weight syncs take 1.5-8 s, with an occasional 30-50 s one.
 
-In W&B, the useful signals are:
+In W&B, a run and its group are named after the experiment name, in the config's `wandb_project` (entity
+`ai2-llm`): `oe-general-agents` for `prod_4node`, `miles-run_tmax_qwen3_5` for the smokes. The useful signals are:
 
 - `rollout/raw_reward_unfiltered`;
 - `rollout/fully_async/avg_staleness` and `stale_groups_filtered`;
