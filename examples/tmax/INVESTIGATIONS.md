@@ -43,7 +43,7 @@ The options below are the ones presented during the investigations; none is impl
 | H | `PYTHONFAULTHANDLER=1` in the Beaker env | Captures a Python stack if the rollout executor segfaults again | One env var | Bundle with the next restart |
 | I | More episodes in flight (1024, 256 sandboxes per node) | Uses idle engine capacity during long-tail phases | Doubles sandbox load per node, which is the suspected cause of the stalls | Not before A–C |
 | J | Episode wall-clock cap (`episode_timeout_s`) | Bounds long-tail episodes | open-instruct has no cap | Not now |
-| L | Sandboxes on a LiteRegistry podman fleet: `sandbox_backend: gateway`, open-instruct's `literegistry_podman` setup | Removes the sandboxes, and their CPU load, from the training and SGLang nodes altogether ([2026-10-16 entry](#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet)) | Implemented on branch `shashank/tmax-gateway`; depends on a fleet run outside the job | Validate on the 4-GPU smoke, then the 4-node run |
+| L | Sandboxes on a LiteRegistry podman fleet: `sandbox_backend: gateway`, open-instruct's `literegistry_podman` setup | Removes the sandboxes, and their CPU load, from the training and SGLang nodes altogether ([2026-10-16 entry](#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet)) | Implemented on branch `shashank/tmax-gateway`, 4-GPU smoke passed; depends on a fleet run outside the job | The 4-node run (fleet capacity first) |
 | M | Worker replicas' watch on the Ray head. (1) None: workers leave when the head marks the run done, or through Beaker's `propagateFailure` when the head's job fails. (2) open-instruct's: 6 failed `ray status` checks 5 s apart, with no timeout on a check. (3) A ~20-minute tolerance (`HEAD_MISS_LIMIT` 80, `aeb4f9ecd3`) | The ported check (6 misses with a 10 s timeout each, about 90 s) failed three podman attempts on 2026-10-17 while a starved head was slow to answer | (1) relies on Beaker noticing a failed head; a head that hangs without exiting would leave the workers waiting | **(1), taken 2026-10-19 by the user, after (2) ended resume 6 on a starved head that had recovered from 5 misses minutes before; (2) was used 2026-10-17 to 19** |
 | K | Make a dropped weight-sync reply non-fatal: treat it as "outcome unknown" after a completed broadcast and verify the engines' weight version | Survives the `ReadError` seen once in the old run | Miles core change; check upstream first | Only if it recurs |
 
@@ -300,6 +300,16 @@ the backend can be trusted at prod scale.
     - 3 steps trained, from 94 episodes, 38 of them solved, with no failed sandbox starts;
     - the median sandbox command from holmes took 1.2 s (p90 2.3 s), the command's own run time included;
     - the job exited 0.
+  - **Beaker, on the final code** (experiment `01M51W45C2XH6KAHYA0ACQN2X5`, commit `37f1609b5e`) passed:
+    - the head printed the fleet's `session_limits` (8 sessions, 4 GB, 2,048 processes) and saw 172 replicas 14 s
+      after starting its gateway;
+    - 3 steps trained (train/rollout log-prob gap 0.0071, 0.0085, 0.0069), every weight sync succeeded, and the job
+      exited 0;
+    - of 101 traced episodes, 37 were solved; 49 submitted, 49 filled the context, 2 made no tool call, and 1 was lost
+      to `pids_limit` (its trace records `sandbox_lost_reason: pids_limit`; the agent ran a fuzzing script) and ended
+      at once, in its own container;
+    - the 11 tool errors were all commands that ran past the 120 s tool timeout; the gateway itself failed no step;
+    - sandbox time per turn: median 0.9 s, p90 3.7 s, the command's own run time included.
 - **Differences from local podman:**
   - output is read up to 512 KB of stdout and 128 KB of stderr instead of 1 MB each;
   - replicas enforce the limits local podman only requests: each container may use 4 GB of RSS and 2,048 processes
