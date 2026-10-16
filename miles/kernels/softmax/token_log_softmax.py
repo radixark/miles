@@ -44,6 +44,9 @@ _FALLBACK_CONFIGS = _MEASURED_CONFIGS["sm100"]
 # a masked (-inf) logit is read as this: exp of it is exactly 0 in fp32, and 0 times it is 0, never NaN
 _MASKED_LOGIT = tl.constexpr(-1.0e30)
 
+# a masked (-inf) logit is read as this: exp of it is exactly 0 in fp32, and 0 times it is 0, never NaN
+_MASKED_LOGIT = tl.constexpr(-1.0e30)
+
 
 def gpu_family(device: torch.device) -> str:
     """``sm<major><minor>`` on NVIDIA (sm90, sm100, sm103), the gfx architecture on ROCm."""
@@ -64,6 +67,7 @@ class VocabRange:
 
     start: int
     n_unpadded: int
+    size: int  # the whole true vocabulary, over every shard
     size: int  # the whole true vocabulary, over every shard
 
     def holds(self, ids: torch.Tensor) -> torch.Tensor:
@@ -293,7 +297,7 @@ def write_logits_grad(
     logits: torch.Tensor,
     *,
     rows: torch.Tensor,
-    targets: torch.Tensor,
+    targets: torch.Tensor | None,
     stats: SoftmaxStats,
     grad_log_probs: torch.Tensor | None,
     grad_entropy: torch.Tensor | None,
@@ -304,15 +308,14 @@ def write_logits_grad(
     """Write the gradient of the selected rows into ``grad``; ``grad`` may be ``logits`` itself.
 
     ``targets`` and ``grad_log_probs`` are ``[R, K]``; a ``-1`` target is padding. Every column of a
-    selected row is written, the vocab padding from ``vocab.n_unpadded`` on with zero.
+    selected row is written, the vocab padding from ``vocab.n_unpadded`` on with zero. With ``targets``
+    None only the dense pass runs: the entropy term, or zeros, everywhere.
     """
     assert grad_entropy is None or stats.expected_mean_logit is not None, "the entropy gradient needs its mean"
     launch = launch or kernel_configs(logits.device).grad
-    n_rows, n_targets = targets.shape
+    n_rows = rows.numel()
     if not n_rows:
         return
-    log_probs = stats.target_logit - stats.log_sum_exp.unsqueeze(1)  # read only at real targets
-    one_minus_p = -torch.expm1(log_probs)  # 1 - p at each target, exact even when p is close to 1
     target_grad_sum = grad_log_probs.sum(dim=1) if grad_log_probs is not None else None
     placeholder = stats.log_sum_exp  # a pointer for a tensor the kernel's flags say it never reads
     expected_mean_logit = stats.expected_mean_logit if stats.expected_mean_logit is not None else placeholder
@@ -335,6 +338,11 @@ def write_logits_grad(
         BLOCK_V=launch.block_v,
         num_warps=launch.num_warps,
     )
+    if targets is None:
+        return
+    n_targets = targets.size(1)
+    log_probs = stats.target_logit - stats.log_sum_exp.unsqueeze(1)  # read only at real targets
+    one_minus_p = -torch.expm1(log_probs)  # 1 - p at each target, exact even when p is close to 1
     # stream order puts this after the dense pass, so these values replace its target columns
     _target_grads_kernel[(n_rows,)](
         grad,
