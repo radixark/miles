@@ -22,10 +22,11 @@ below come from that branch.
 
 ## 2. Supported Variants
 
-| Launcher | What it trains | HF source |
-|---|---|---|
-| [`scripts/run_beam.py`](https://github.com/radixark/miles/blob/beam-image/scripts/run_beam.py) | the full model, BF16 | [reflection/Beam-1.0-501B-A23B](https://huggingface.co/reflection/Beam-1.0-501B-A23B) |
-| [`scripts/run_beam_lora.py`](https://github.com/radixark/miles/blob/beam-image/scripts/run_beam_lora.py) | a rank-16 LoRA adapter on the frozen BF16 base | [reflection/Beam-1.0-501B-A23B](https://huggingface.co/reflection/Beam-1.0-501B-A23B) |
+| Model | Active / Total | Layers | HF ID |
+|---|---|---|---|
+| Beam-1.0-501B-A23B | 23 B / 501 B | 52 (3 dense + 49 MoE) | [reflection/Beam-1.0-501B-A23B](https://huggingface.co/reflection/Beam-1.0-501B-A23B) |
+
+The Beam bridge loads only this BF16 checkpoint; the FP8 and NVFP4 releases are not supported for training.
 
 ## 3. Environment Setup
 
@@ -37,7 +38,7 @@ below come from that branch.
 python scripts/run_beam.py prepare --model-dir /root/models/Beam --data-dir /root/datasets
 ```
 
-The checkpoint needs no Megatron conversion: the trainer loads the HF checkpoint through Megatron-Bridge at startup (`--megatron-to-hf-mode bridge`). The Bridge accepts only the BF16 checkpoint.
+The checkpoint needs no Megatron conversion: the trainer loads the HF checkpoint through Megatron-Bridge at startup (`--megatron-to-hf-mode bridge`).
 
 `prepare` also writes `aime-2025/aime-2025-answer-format.jsonl`, the AIME25 problems wrapped in the training prompts' answer-format instruction; evaluation reads this file. `run_beam_lora.py prepare` does the same.
 
