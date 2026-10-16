@@ -151,10 +151,11 @@ class TestColocatedBaseSend:
         protocol._ipc_gather_src = 0
         protocol._ipc_gather_group = MagicMock(name="ipc_group")
         protocol._selector = "all"
+        protocol._ring = None  # default path: one fresh CUDA-IPC bucket per send
         future = MagicMock(name="engine_future")
 
         with (
-            patch(f"{_TENSOR_MODULE}._send_to_colocated_engine", return_value=([future], object())),
+            patch(f"{_TENSOR_MODULE}._send_to_colocated_engine", return_value=([future], object(), ["payload"])),
             patch(f"{_TENSOR_MODULE}.async_utils.wait_futures", return_value=[{"success": True}]) as wait,
             patch(f"{_TENSOR_MODULE}.check_weight_sync_results") as check,
             patch(f"{_TENSOR_MODULE}.dist.barrier") as barrier,
@@ -291,10 +292,12 @@ class TestIpcBucketRingStage:
         ring = _IpcBucketRing(slots, min_bytes=min_bytes, reshare=reshare)
 
         def fake_share(buf: torch.Tensor):
-            # the real _share_once records the ref-counter file of the one-time share; mirror that side effect
+            # mirror the real _share_once: it clears event_sync_required (rule 1) and records the ref-counter file
             fn, args = self._fake_share(buf)
+            args = list(args)
+            args[_IpcBucketRing._ARG_EVENT_SYNC] = False
             ring._note_counter_file(args[_IpcBucketRing._ARG_REF_COUNTER_HANDLE])
-            return fn, args
+            return fn, tuple(args)
 
         ring._share_once = fake_share  # type: ignore[method-assign]
         return ring
