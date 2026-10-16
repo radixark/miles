@@ -37,6 +37,53 @@ def test_short_conv_backend_respects_fla_conv_backend(monkeypatch):
     assert linear_attn.short_conv_backend.__wrapped__() == "cuda"
 
 
+@pytest.mark.parametrize("kernel_built", [True, False])
+def test_short_conv_backend_prefers_the_miles_backward_when_built(monkeypatch, kernel_built):
+    monkeypatch.delenv("FLA_CONV_BACKEND", raising=False)
+    monkeypatch.setattr(linear_attn, "conv_bwd_kernel_available", lambda: kernel_built)
+    expected = "miles" if kernel_built else linear_attn._fla_short_conv_backend()
+    assert linear_attn.short_conv_backend.__wrapped__() == expected
+
+
+def _seqtile_args(**changes):
+    """A shape the "miles" backward takes (8192 x 1024, above its 1M-element size floor), with ``changes``.
+    Meta tensors: the gate reads shapes and strides only."""
+    torch = pytest.importorskip("torch")
+    args = {
+        "x": torch.empty(1, 8192, 1024, dtype=torch.bfloat16, device="meta"),
+        "weight": torch.empty(1024, 4, device="meta"),
+        "activation": "silu",
+        "cu_seqlens": torch.empty(5, dtype=torch.int32, device="meta"),
+        "cp_context": None,
+    }
+    return {**args, **changes}
+
+
+_SEQTILE_FALLBACKS = {
+    "below_floor": lambda torch: {"x": torch.empty(1, 512, 1024, dtype=torch.bfloat16, device="meta")},
+    # 16-token sequences, under half a 64-row tile on average
+    "short_sequences": lambda torch: {"cu_seqlens": torch.empty(8192 // 16 + 1, dtype=torch.int32, device="meta")},
+    "context_parallel": lambda torch: {"cp_context": object()},
+    "no_activation": lambda torch: {"activation": None},
+    "no_boundaries": lambda torch: {"cu_seqlens": None},
+    "int64_boundaries": lambda torch: {"cu_seqlens": torch.empty(5, dtype=torch.int64, device="meta")},
+    "fp16": lambda torch: {"x": torch.empty(1, 8192, 1024, dtype=torch.float16, device="meta")},
+    "width_3": lambda torch: {"weight": torch.empty(1024, 3, device="meta")},
+    # rows 1028 channels apart, starting 4 channels in: not 16-byte aligned
+    "unaligned_rows": lambda torch: {"x": torch.empty(1, 8192, 1028, dtype=torch.bfloat16, device="meta")[..., 4:]},
+}
+
+
+def test_seqtile_applies_on_the_supported_shape():
+    assert linear_attn._seqtile_applies(**_seqtile_args())
+
+
+@pytest.mark.parametrize("case", list(_SEQTILE_FALLBACKS))
+def test_seqtile_falls_back(case):
+    torch = pytest.importorskip("torch")
+    assert not linear_attn._seqtile_applies(**_seqtile_args(**_SEQTILE_FALLBACKS[case](torch)))
+
+
 NUM_HEADS = 4
 HEAD_K_DIM = 128
 HEAD_V_DIM = 128
