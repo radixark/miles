@@ -196,12 +196,14 @@ def compute_sampling_params(
     top_p,
     top_k,
     max_new_tokens,
+    min_new_tokens=None,
 ):
     return dict(
         temperature=temperature,
         top_p=top_p,
         top_k=top_k,
         max_new_tokens=max_new_tokens,
+        min_new_tokens=min_new_tokens,  # SGLang treats None as 0
         stop=args.rollout_stop,
         stop_token_ids=args.rollout_stop_token_ids,
         skip_special_tokens=args.rollout_skip_special_tokens,

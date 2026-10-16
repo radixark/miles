@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from tests.fast.rollout.inference_rollout.conftest import (
     StampRecordingGenerate,
     make_eval_args,
@@ -9,6 +10,7 @@ from tests.fast.rollout.inference_rollout.conftest import (
 )
 
 import miles.rollout.inference_rollout.inference_rollout_common as inference_rollout_common
+from miles.rollout import sglang_rollout
 from miles.rollout.base_types import (
     GenerateFnInput,
     GenerateFnOutput,
@@ -16,7 +18,49 @@ from miles.rollout.base_types import (
     RolloutFnEvalInput,
     RolloutFnTrainInput,
 )
+from miles.rollout.inference_rollout import inference_rollout_eval
 from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
+from miles.utils.eval_config import build_eval_dataset_configs
+from miles.utils.types import Sample
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        dict(stop=["dataset"], stop_token_ids=[33], min_new_tokens=7),
+        dict(stop=[], stop_token_ids=[], min_new_tokens=0),
+        dict(stop=None, stop_token_ids=None, min_new_tokens=None),
+    ],
+    ids=["defaults", "dataset", "empty", "null"],
+)
+async def test_eval_forwards_stopping_settings(monkeypatch, legacy, overrides):
+    args = SimpleNamespace(**make_eval_args())
+    args.rollout_stop, args.rollout_stop_token_ids, args.eval_min_new_tokens = ["global"], [11], 3
+    defaults = dict(stop=["default"], stop_token_ids=[22], min_new_tokens=5)
+    args.eval_datasets = build_eval_dataset_configs(
+        args, [dict(name="fake_ds", path="fake.jsonl", n_samples_per_eval_prompt=1, **overrides)], defaults
+    )
+    cache = make_eval_prompt_dataset_cache(args)
+    captured = []
+
+    async def generate(_state_or_args, sample, *, sampling_params, evaluation):
+        assert evaluation
+        captured.append({key: sampling_params[key] for key in defaults})
+        sample.reward = 1.0
+        sample.status = Sample.Status.COMPLETED
+        return sample
+
+    module = sglang_rollout if legacy else inference_rollout_eval
+    monkeypatch.setattr(module, "generate_and_rm", generate)
+    if legacy:
+        monkeypatch.setattr(module, "EVAL_PROMPT_DATASET", cache)
+        await module.eval_rollout_single_dataset(args, 0, args.eval_datasets[0])
+    else:
+        await module.eval_rollout_single_dataset(SimpleNamespace(args=args), args.eval_datasets[0], cache)
+
+    assert captured == [defaults | overrides]
 
 
 def test_inference_rollout_fn_exposes_the_constructor_input(monkeypatch) -> None:
