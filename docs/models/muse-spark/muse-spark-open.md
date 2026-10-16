@@ -61,11 +61,13 @@ MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_muse_spark_64xh200.py \
 
 `scripts/run_muse_spark_32xb300.py` is the same recipe on 4 × 8 B300 and takes the same options.
 
-| Mode | GPUs | Rollout | Training | Weight sync |
-|---|---|---|---|---|
-| Math reasoning | 64 H200 | 2–5.5 min | 3–5.5 min | about 50 s |
-| Image-grounded math | 64 H200 | 8–14 min | about 5 min | about 50 s |
-| Math reasoning | 32 B300 | 1.7–3.5 min | 8.5–12.5 min (18.5 min at step 0) | about 90 s |
+| Mode | GPUs | Rollout | Training | Weight sync | `train/train_rollout_logprob_abs_diff` |
+|---|---|---|---|---|---|
+| Math reasoning | 64 H200 | 2–5.5 min | 3–5.5 min | about 50 s | 0.007 |
+| Image-grounded math | 64 H200 | 8–14 min | about 5 min | about 50 s | 0.013 |
+| Math reasoning | 32 B300 | 1.7–3.5 min | 8.5–12.5 min (18.5 min at step 0) | about 90 s | 0.004–0.007 |
+
+Reward starts at 0.65–0.75 and reaches 0.8–0.95 within 10 steps on math reasoning; every engine holds bit-identical weights after each sync.
 
 ### 4.2 Save and export
 
