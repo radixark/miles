@@ -9,6 +9,7 @@ from pydantic import Discriminator, Field, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
+from miles.utils.test_utils.fault_injector.actions.frozen import SleepForeverAction
 from miles.utils.test_utils.fault_injector.actions.union import FaultAction
 
 
@@ -42,6 +43,7 @@ class FaultHookName(StrEnum):
 
 class FaultHookStatus(StrEnum):
     PENDING = "pending"
+    SCHEDULED = "scheduled"
     CLEARED = "cleared"
     FIRED = "fired"
     FAILED = "failed"
@@ -79,6 +81,13 @@ class FaultHookRequest(FrozenStrictBaseModel):
     rollout_id: int | None = Field(default=None, ge=0)
     attempt: int | None = Field(default=None, ge=0)
     weight_version: int | None = Field(default=None, ge=0)
+    delay_ms: float = Field(default=0.0, ge=0, le=300_000, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _validate_delay(self) -> "FaultHookRequest":
+        if isinstance(self.action, SleepForeverAction) and self.delay_ms > 0:
+            raise ValueError("Training-thread indefinite sleep requires immediate hook execution")
+        return self
 
     @model_validator(mode="after")
     def _validate_target(self) -> "FaultHookRequest":
@@ -114,4 +123,5 @@ class FaultHookRecord(FrozenStrictBaseModel):
     set_at: float
     changed_at: float
     reached_at: float | None = None
+    due_at: float | None = None
     context: FaultHookContext | None = None
