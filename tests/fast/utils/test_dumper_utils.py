@@ -285,6 +285,34 @@ class TestDumperMegatronUtilFinalize:
         assert [torch.load(f, weights_only=False)["meta"]["name"] for f in dump_files] == ["param__weight"]
         assert model.model_companion is companion
 
+    def test_finalize_leaves_the_model_companion_out_of_the_model_dump(self, tmp_path: Path) -> None:
+        """Companion rows are bookkeeping, not weights, and an empty row tensor breaks the dump comparator."""
+        args = _make_args(tmp_path)
+        args.dumper_fwd_bwd = ["enable_model_value=true"]
+        model = torch.nn.Linear(2, 1, bias=False)
+        companion = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        model.model_companion = companion
+        state = SimpleNamespace(
+            effective_dp=SimpleNamespace(rank=0),
+            indep_dp=SimpleNamespace(rank=0, group=None),
+        )
+
+        with (
+            patch("miles.utils.dumper_utils.get_parallel_state", return_value=state),
+            patch("miles.utils.dumper_utils.dist") as mock_dist,
+        ):
+            mock_dist.is_initialized.return_value = False
+            util = DumperMegatronUtil(args, [model], DumperPhase.FWD_BWD, rollout_id=2)
+            try:
+                util.finalize([model])
+            finally:
+                dumper_utils.dumper.reset()
+                dumper_utils.dumper.configure(enable=False)
+
+        dump_files = sorted((tmp_path / "fwd_bwd" / "rollout_2").glob("*.pt"))
+        assert [torch.load(f, weights_only=False)["meta"]["name"] for f in dump_files] == ["param__weight"]
+        assert model.model_companion is companion
+
 
 class TestBarrierAfterDumpDirCleanup:
     @staticmethod

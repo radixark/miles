@@ -6,17 +6,21 @@ from pathlib import Path
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.soak.ft.checkers.reconfigure import ReconfigureInfo, assert_reconfigure_events
 
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.test_utils.comparisons.dumps import (
     INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     INPUT_TENSORS_SKIP_PATTERN,
     compare_dumps,
 )
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
-from miles.utils.test_utils.ft_test_actions import compute_ft_test_actions_arg
-from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
+from miles.utils.test_utils.fault_injector.actions.cell import StartCellAction, StopCellAction
+from miles.utils.test_utils.fault_injector.actions.process import ExitProcessAction
+from miles.utils.test_utils.fault_injector.models import DeclaredFaultHookTarget, FaultHookName, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import compute_fault_hooks_arg
 from miles.utils.workers.naming import compute_cell_id
 
 NUM_PHASE_A_STEPS: int = 1
@@ -57,18 +61,30 @@ _POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
 
 
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
-def _build_actions(num_cells: int) -> list[dict]:
+def _build_fault_hooks(num_cells: int) -> list[FaultHookRequest]:
+    rollout_id: int = NUM_PHASE_A_STEPS + 1
     target_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
     return [
-        {
-            "at_rollout": NUM_PHASE_A_STEPS + 1,
-            "action": "crash_before_allreduce",
-            "cell_id": target_cell_id,
-            "rank": 0,
-            "attempt": 0,
-        },
-        {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_id": target_cell_id},
-        {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_id": target_cell_id},
+        FaultHookRequest(
+            request_id=f"exit_before_allreduce_at_{rollout_id}",
+            hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+            action=ExitProcessAction(),
+            target=DeclaredFaultHookTarget(cell_id=target_cell_id, rank=0),
+            rollout_id=rollout_id,
+            attempt=0,
+        ),
+        FaultHookRequest(
+            request_id=f"stop_cell_at_{rollout_id}",
+            hook_name=FaultHookName.TRAINER_CONTROLLER_STEP_END,
+            action=StopCellAction(cell_id=target_cell_id),
+            rollout_id=rollout_id,
+        ),
+        FaultHookRequest(
+            request_id=f"start_cell_at_{rollout_id}",
+            hook_name=FaultHookName.TRAINER_CONTROLLER_STEP_END,
+            action=StartCellAction(cell_id=target_cell_id),
+            rollout_id=rollout_id,
+        ),
     ]
 
 
@@ -109,7 +125,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
         phase_a_dir = dump_dir.replace("/phase_b", "/phase_a")
         base += f"--load {phase_a_dir}/ckpt "
         if is_target:
-            base += compute_ft_test_actions_arg(_build_actions(num_cells=mode.num_cells))
+            base += compute_fault_hooks_arg(_build_fault_hooks(num_cells=mode.num_cells))
             if mode.has_real_rollout:
                 # Post-fault rollouts inject the baseline's recorded data (see README).
                 baseline_dump_dir = dump_dir.replace(f"/{TARGET_SIDE}/", f"/{BASELINE_SIDE}/")
@@ -122,11 +138,15 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     return base
 
 
-def _build_baseline_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+def _build_baseline_args(
+    mode: FTTestMode, dump_dir: str, enable_dumper: bool = True, config: ExecuteTrainConfig | None = None
+) -> str:
     return _build_phase_args(mode, dump_dir, is_target=False, enable_dumper=enable_dumper)
 
 
-def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+def _build_target_args(
+    mode: FTTestMode, dump_dir: str, enable_dumper: bool = True, config: ExecuteTrainConfig | None = None
+) -> str:
     return _build_phase_args(mode, dump_dir, is_target=True, enable_dumper=enable_dumper)
 
 

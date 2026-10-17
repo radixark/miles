@@ -133,7 +133,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # None lets Megatron resolve it: tilelang for --dsv4-impl miles, cuDNN for megatron.
     dsa_kernel_backend: Literal["none", "tilelang", "cudnn"] | None = None
     optimizer_offload: bool = True
-    use_fault_tolerance: bool = True
+    use_fault_tolerance: bool = False
     rollout_batch_size: int = 32
     n_samples_per_prompt: int = 8
     # None runs each recipe's own CP. Only the single-node miles impl lets it vary (TP takes the GPUs

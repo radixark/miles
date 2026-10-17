@@ -146,3 +146,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --check-weight-update-allow-quant-error
   --save /personal/checkpoints/260101-000000-000
   --save-interval 50   
+  --deploy-component all

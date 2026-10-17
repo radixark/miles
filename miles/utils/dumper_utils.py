@@ -134,22 +134,22 @@ class DumperMegatronUtil:
         if not self.enabled:
             return
 
-        extracted_model = self._extract_model(model)
-        get_grad: Callable[[torch.nn.Parameter], torch.Tensor | None] | None = None
-        if self.phase is DumperPhase.FWD_BWD and self.overrides.get("enable_model_grad"):
-            _log_model_grad_coverage(extracted_model)
-            get_grad = _build_full_grad_getter(extracted_model)
-
-        # Weights/grads are a once-per-rollout end-state, so pin them to step 0 instead of
-        # the running per-microbatch step. _configure already cleaned the scoped paths;
-        # disable lazy cleanup after reset to preserve activations from this rollout.
-        dumper.reset()
-        dumper.configure(cleanup_previous=False)
-        # The model companion holds training bookkeeping, not model weights.
         with ModelCompanionInstallationUtils.hide(model):
+            extracted_model = self._extract_model(model)
+            get_grad: Callable[[torch.nn.Parameter], torch.Tensor | None] | None = None
+            if self.phase is DumperPhase.FWD_BWD and self.overrides.get("enable_model_grad"):
+                _log_model_grad_coverage(extracted_model)
+                get_grad = _build_full_grad_getter(extracted_model)
+
+            # Weights/grads are a once-per-rollout end-state, so pin them to step 0 instead of
+            # the running per-microbatch step. _configure already cleaned the scoped paths;
+            # disable lazy cleanup after reset to preserve activations from this rollout.
+            dumper.reset()
+            dumper.configure(cleanup_previous=False)
+            # The model companion holds training bookkeeping, not model weights.
             dumper.dump_model(extracted_model, get_grad=get_grad)
-        dumper.step()
-        dumper.configure(enable=False)
+            dumper.step()
+            dumper.configure(enable=False)
 
     @staticmethod
     def _extract_model(model: Sequence[torch.nn.Module]) -> torch.nn.Module:

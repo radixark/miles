@@ -100,7 +100,7 @@ class TestRecordAndLogWitnessParam:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 
-            _record_and_log_witness_param(witness=witness, instance_id="pp0.head", stale_ids=[])
+            _record_and_log_witness_param(witness=witness, instance_id="pp0.head", stale_id_ranges=[])
 
             mock_logger.log.assert_called_once()
             # New API: log(event_cls, partial_dict)
@@ -117,7 +117,7 @@ class TestRecordAndLogWitnessParam:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 
-            _record_and_log_witness_param(witness=witness, instance_id="pp0.tail", stale_ids=[])
+            _record_and_log_witness_param(witness=witness, instance_id="pp0.tail", stale_id_ranges=[])
 
             mock_logger.log.assert_called_once()
             assert mock_logger.log.call_args[0][0] is WitnessSnapshotParamEvent
@@ -392,9 +392,9 @@ class TestWitnessDumpAndClearStale:
                 "pp0_chunk1.local_tail",
             ]
 
-            logged_stale_ids = [call[0][1]["stale_ids"] for call in mock_logger.log.call_args_list]
-            for stale in logged_stale_ids:
-                assert stale == [5, 6]
+            logged_stale_id_ranges = [call[0][1]["stale_id_ranges"] for call in mock_logger.log.call_args_list]
+            for stale in logged_stale_id_ranges:
+                assert stale == [(5, 7)]
 
     def test_witness_dump_and_clear_stale_clears_stale_rows(self) -> None:
         """Stale IDs should have their weight rows zeroed after the call."""
@@ -440,8 +440,8 @@ class TestWitnessDumpAndClearStale:
             witness = getattr(chunk.module, witness_attr)
             assert torch.all(witness.witness.weight.data == 1.0)
 
-    def test_record_and_log_witness_param_includes_stale_ids(self) -> None:
-        """Log event should contain the correct stale_ids field."""
+    def test_record_and_log_witness_param_includes_stale_id_ranges(self) -> None:
+        """Log event should contain the correct stale_id_ranges field."""
         witness = _DataWitness(buffer_size=10)
         witness.witness.weight.data[2] = 1.0
 
@@ -449,11 +449,11 @@ class TestWitnessDumpAndClearStale:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 
-            _record_and_log_witness_param(witness=witness, instance_id="pp0.head", stale_ids=[8, 9])
+            _record_and_log_witness_param(witness=witness, instance_id="pp0.head", stale_id_ranges=[(8, 10)])
 
             mock_logger.log.assert_called_once()
             partial = mock_logger.log.call_args[0][1]
-            assert partial["stale_ids"] == [8, 9]
+            assert partial["stale_id_ranges"] == [(8, 10)]
 
 
 class TestAbsBroadcastAddForward:

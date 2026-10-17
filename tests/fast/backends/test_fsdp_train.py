@@ -7,6 +7,8 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
+
 from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.training_utils.torch_native import actor as base_module
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
@@ -21,12 +23,15 @@ def test_fsdp_train_debug_rollout_only_returns_a_normal_output(monkeypatch):
     """A debug-rollout-only FSDP step trains nothing yet answers the driver with a NORMAL output."""
     actor = object.__new__(actor_module.FSDPTrainRayActor)
     actor.args = Namespace(offload_train=False, debug_rollout_only=True)
+    monkeypatch.setattr(
+        base_module,
+        "get_parallel_state",
+        lambda: SimpleNamespace(train_parallel_config=lambda **kwargs: make_train_parallel_config(dp_size=1)),
+    )
     actor._heartbeat = Mock()
     actor._train_core = Mock()
     actor.wake_up = Mock()
-    monkeypatch.setattr(
-        base_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
-    )
+    monkeypatch.setattr(base_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(base_module, "timer", _noop_timer)
     monkeypatch.setattr(base_module, "inverse_timer", _noop_timer)
 

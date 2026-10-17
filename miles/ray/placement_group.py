@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import socket
+from argparse import Namespace
 from typing import NamedTuple
 
 import ray
@@ -25,19 +26,28 @@ from miles.ray.specs.train import (
     create_trainer_controller_handle,
     external_trainer_controller_addrs,
 )
+from miles.ray.train_actor import WeightUpdateOutput
 from miles.ray.wiring import get_backend_capability
-from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
+from miles.utils.audit_utils.checksum_utils import (
+    ChecksumCollectionFailure,
+    InferenceEngineChecksumSnapshot,
+    merge_inference_engine_ranks,
+)
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
-from miles.utils.ft_utils.api_server.server import start_api_server
+from miles.utils.audit_utils.event_logger.models import (
+    InferenceEngineChecksumCollectionFailedEvent,
+    InferenceEngineWeightChecksumEvent,
+)
+from miles.utils.ft_utils.api_server.server import ApiServerHandle, start_api_server
 from miles.utils.hot_restart import (
     init_or_reset_inference_controller,
     trainer_init_or_load_state,
     wait_trainers_idle,
     wait_until_worker_not_initialized,
 )
-from miles.utils.test_utils.ft_test_actions import FTTestActionOrchestrationExecutor
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook_async
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
@@ -302,58 +312,105 @@ async def update_weights(
     rollout_id: int | None = None,
     trainer_model_id: str | None = None,
 ) -> None:
-    orchestration_executor = FTTestActionOrchestrationExecutor.from_args(args, trainer_model_id=trainer_model_id)
     if rollout_id is not None:
-        await orchestration_executor.run_after_step(rollout_id=rollout_id)
+        await reach_fault_hook_async(
+            FaultHookName.ORCHESTRATOR_STEP_END, rollout_id=rollout_id, trainer_model_id=trainer_model_id
+        )
 
     info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
     try:
-        weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+        output: WeightUpdateOutput = await actor_model.update_weights(info=info, rollout_id=rollout_id)
     except BaseException:
         await inference_controller.abort_update_weights()
         raise
-    await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
-
-    await _maybe_log_inference_engine_weight_checksums(
-        args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
-    )
-
-    if weight_version is not None:
-        await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
-
-
-async def _maybe_log_inference_engine_weight_checksums(
-    args, *, inference_controller: BaseWorkerHandle, rollout_id: int | None, trainer_model_id: str | None
-) -> None:
-    if not args.log_inference_engine_weight_checksums:
-        return
-    if not is_event_logger_initialized():
-        return
-    if args.debug_train_only or args.debug_rollout_only:
-        return
-
-    check_weights_result = await inference_controller.check_weights(action="checksum", model_id=trainer_model_id)
-    if not check_weights_result:
-        return
-    engine_checksums = flatten_inference_engine_checksums(check_weights_result)
-    get_event_logger().log(
-        InferenceEngineWeightChecksumEvent,
-        dict(
-            rollout_id=args.start_rollout_id - 1 if rollout_id is None else rollout_id,
-            trainer_model_id=trainer_model_id,
-            engine_checksums=engine_checksums,
+    checksum_results = await inference_controller.end_update_weights(
+        snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+        failed_cell_ids=output.failed_cell_ids,
+        checksum_model_id=trainer_model_id,
+        collect_checksums=(
+            args.log_inference_engine_weight_checksums
+            and is_event_logger_initialized()
+            and not args.debug_train_only
+            and not args.debug_rollout_only
+            and output.weight_version is not None
         ),
     )
+    _log_inference_engine_weight_checksums(
+        args,
+        checksum_results=checksum_results,
+        rollout_id=rollout_id,
+        trainer_model_id=trainer_model_id,
+        output=output,
+        snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+    )
+
+    if output.weight_version is not None:
+        await rollout_executor.set_weight_version(output.weight_version, trainer_model_id=trainer_model_id)
+
+
+def _log_inference_engine_weight_checksums(
+    args,
+    *,
+    checksum_results: list | ChecksumCollectionFailure,
+    rollout_id: int | None,
+    trainer_model_id: str | None,
+    output: WeightUpdateOutput,
+    snapshot_cell_id_to_hashes: dict[str, str],
+) -> None:
+    if not checksum_results:
+        return
+
+    published = {
+        cell_id: workers_hash
+        for cell_id, workers_hash in snapshot_cell_id_to_hashes.items()
+        if cell_id not in output.failed_cell_ids
+    }
+    try:
+        common = dict(
+            rollout_id=args.start_rollout_id - 1 if rollout_id is None else rollout_id,
+            trainer_model_id=trainer_model_id,
+            weight_version=output.weight_version,
+            debug_trainer_load_state_timestamp=output.debug_trainer_load_state_timestamp,
+            debug_weight_update_id=output.debug_weight_update_id,
+        )
+
+        if isinstance(checksum_results, ChecksumCollectionFailure):
+            get_event_logger().log(
+                InferenceEngineChecksumCollectionFailedEvent,
+                dict(
+                    **common,
+                    published_cell_id_to_hashes=published,
+                    reason=checksum_results.reason,
+                ),
+            )
+        else:
+            get_event_logger().log(
+                InferenceEngineWeightChecksumEvent,
+                dict(
+                    **common,
+                    engine_snapshots=[
+                        InferenceEngineChecksumSnapshot(
+                            cell_id=meta.cell_id,
+                            workers_hash=meta.workers_hash,
+                            tensor_checksums=merge_inference_engine_ranks(body),
+                        )
+                        for meta, body in checksum_results
+                        if published.get(meta.cell_id) == meta.workers_hash
+                    ],
+                ),
+            )
+    except Exception:
+        logger.exception("Could not record inference engine checksum observation")
 
 
 # TODO: move (when reorganizing files)
 def maybe_start_api_server(
-    args, *, trainer_models: dict[str, BaseWorkerHandle], inference_controller: BaseWorkerHandle
-) -> None:
+    args: Namespace, *, trainer_models: dict[str, BaseWorkerHandle], inference_controller: BaseWorkerHandle
+) -> ApiServerHandle | None:
     if not args.api_server_port:
         return
 
-    start_api_server(
+    return start_api_server(
         args=args,
         trainer_models=trainer_models,
         inference_controller=inference_controller,

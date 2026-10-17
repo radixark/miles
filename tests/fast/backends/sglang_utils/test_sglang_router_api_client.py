@@ -247,45 +247,51 @@ async def test_remove_worker_warns_about_an_unknown_worker(client, monkeypatch, 
     assert "not found in router" in caplog.text
 
 
-async def test_remove_worker_tolerates_a_broken_worker_lookup(client, monkeypatch, caplog):
-    """A router that cannot list its workers must not block the engine's shutdown."""
+async def test_remove_worker_propagates_a_broken_worker_lookup(
+    client: SGLangRouterApiClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed worker lookup reaches the caller so an unsuccessful removal can be retried."""
     monkeypatch.setattr(sglang_router, "__version__", "0.3.1")
+    error = httpx.ConnectError("router down")
 
     class _Refusing:
-        async def get(self, url, **kwargs):
-            raise httpx.ConnectError("router down")
+        async def get(self, url: str, **kwargs: object) -> _FakeResponse:
+            raise error
 
     monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: _Refusing())
 
-    with caplog.at_level("WARNING"):
+    with pytest.raises(httpx.ConnectError) as excinfo:
         await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
 
-    assert "Failed to fetch workers list" in caplog.text
+    assert excinfo.value is error
 
 
-async def test_remove_worker_tolerates_a_transport_error_during_id_delete(client, monkeypatch, caplog):
-    """A router that answers the lookup but drops the delete connection must not block the engine's shutdown."""
+async def test_remove_worker_propagates_a_transport_error_during_id_delete(
+    client: SGLangRouterApiClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed delete reaches the caller after resolving the exact worker id, allowing removal to be retried."""
     monkeypatch.setattr(sglang_router, "__version__", "0.3.1")
+    error = httpx.ConnectError("router down")
 
     class _FailingDelete:
-        def __init__(self):
+        def __init__(self) -> None:
             self.deleted_urls: list[str] = []
 
-        async def get(self, url, **kwargs):
+        async def get(self, url: str, **kwargs: object) -> _FakeResponse:
             return _FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-1"}]})
 
-        async def delete(self, url, **kwargs):
+        async def delete(self, url: str, **kwargs: object) -> _FakeResponse:
             self.deleted_urls.append(url)
-            raise httpx.ConnectError("router down")
+            raise error
 
     fake = _FailingDelete()
     monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: fake)
 
-    with caplog.at_level("WARNING"):
+    with pytest.raises(httpx.ConnectError) as excinfo:
         await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
 
     assert fake.deleted_urls == [f"{ROUTER_URL}/workers/w-1"]
-    assert "Failed to fetch workers list or remove worker" in caplog.text
+    assert excinfo.value is error
 
 
 def test_the_router_timeout_bounds_the_whole_request_not_just_the_connect():

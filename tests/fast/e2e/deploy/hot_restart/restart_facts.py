@@ -1,10 +1,3 @@
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
-    STATEFUL_SET_KIND,
-    ClusterSnapshot,
-    PodFact,
-    WorkloadFact,
-)
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     ENGINE_POOL,
     ORCHESTRATOR,
@@ -12,6 +5,8 @@ from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     ROLLOUT_EXECUTOR,
     TRAINER,
 )
+from tests.utils.deploy.hot_restart.cluster_observer import STATEFUL_SET_KIND, ClusterSnapshot, PodFact, WorkloadFact
+from tests.utils.deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 
 ENGINE_POOL_POD: str = f"{ENGINE_POOL}-0-1"
 
@@ -25,6 +20,7 @@ def restart_snapshot(
             WorkloadFact(
                 kind=STATEFUL_SET_KIND,
                 name=name,
+                uid=f"uid-{name}",
                 generation=1 if stamp is None else 2,
                 pod_template_fingerprint="template-base" if stamp is None else f"template-{stamp}",
                 restart_at=stamp,
@@ -32,6 +28,7 @@ def restart_snapshot(
             for name, stamp in sorted(stamp_of_workload.items())
         ),
         trainer_boot_uuid=boot_uuid,
+        orchestrator_state_file=None,
     )
 
 

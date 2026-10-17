@@ -108,7 +108,6 @@ MISC_ARGS=(
    --actor-num-nodes 1
    --actor-num-gpus-per-node 8
    --colocate
-   --use-fault-tolerance
    --dump-details /root/shared_data/qwen3-4B-fsdp-1116-noref/dump_details
    # --fsdp-cpu-offload
 )

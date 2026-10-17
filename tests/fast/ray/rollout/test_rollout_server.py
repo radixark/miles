@@ -270,10 +270,14 @@ class TestEngineListOrdering:
     def _server_with_cells(self, num_cells: int) -> RolloutServer:
         cells = {}
         for index in sorted(range(num_cells), key=lambda i: f"inference-engine-0-0-{i}"):
-            meta = SimpleNamespace(num_gpus_per_engine=index + 1, gpu_offset=index)
-            cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(meta=meta, api_client=f"client-{index}")
+            meta = SimpleNamespace(
+                cell_id=f"inference-engine-0-0-{index}", num_gpus_per_engine=index + 1, gpu_offset=index
+            )
+            cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(
+                meta=meta, api_client=f"client-{index}", is_errored=False
+            )
         return RolloutServer(
-            server_cells=cells,
+            all_server_cells=cells,
             args=SimpleNamespace(),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -287,6 +291,7 @@ class TestEngineListOrdering:
             assert srv.engine_gpu_offsets == list(range(12))
             assert srv.api_clients == [f"client-{i}" for i in range(12)]
             assert srv.engine_gpu_counts == [i + 1 for i in range(12)]
+            assert srv.engine_cell_ids == [f"inference-engine-0-0-{i}" for i in range(12)]
 
 
 class TestAddCellRollback:
@@ -310,7 +315,7 @@ class TestAddCellRollback:
     async def test_disposing_the_server_removes_every_cell_it_tracks(self, monkeypatch):
         """Controller teardown must reach each cell so its health checker task stops with it."""
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=True, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -321,7 +326,7 @@ class TestAddCellRollback:
             await srv.add_cell(self._make_meta())
             await srv.dispose()
 
-        assert srv.server_cells == {}
+        assert srv.all_server_cells == {}
 
     @pytest.mark.asyncio
     async def test_a_failed_add_drops_the_cell_after_disposing_it(self, monkeypatch):
@@ -332,7 +337,7 @@ class TestAddCellRollback:
             disposed.append(cell)
 
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=False, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -344,7 +349,7 @@ class TestAddCellRollback:
             with pytest.raises(RuntimeError, match="injected init failure"):
                 await srv.add_cell(self._make_meta())
 
-            assert srv.server_cells == {}
+            assert srv.all_server_cells == {}
             assert len(disposed) == 1
 
     @pytest.mark.asyncio
@@ -357,7 +362,7 @@ class TestAddCellRollback:
             raise RuntimeError("injected init failure")
 
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=False, ft_components=["rollout"]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -376,7 +381,7 @@ class TestAddCellRollback:
     async def test_a_failed_add_leaves_the_cells_already_tracked_alone(self, monkeypatch):
         """Only the cell that failed may be dropped, or a single bad engine unmanages the healthy ones too."""
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=False, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -390,7 +395,7 @@ class TestAddCellRollback:
             with pytest.raises(RuntimeError, match="injected init failure"):
                 await srv.add_cell(self._make_meta(cell_id="inference-engine-0-0-1"))
 
-            assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            assert list(srv.all_server_cells) == ["inference-engine-0-0-0"]
             await srv.dispose()
 
     @pytest.mark.asyncio
@@ -403,7 +408,7 @@ class TestAddCellRollback:
             raise RuntimeError("injected dispose failure")
 
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=False, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -415,13 +420,13 @@ class TestAddCellRollback:
             with pytest.raises(RuntimeError, match="injected dispose failure"):
                 await srv.add_cell(self._make_meta())
 
-            assert srv.server_cells == {}
+            assert srv.all_server_cells == {}
 
     @pytest.mark.asyncio
     async def test_a_dropped_cell_id_can_be_added_again(self, monkeypatch):
         """Retrying is the whole point: the next observation of the same cell must be able to build it again."""
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=False, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -436,14 +441,14 @@ class TestAddCellRollback:
             monkeypatch.setattr(ServerCell, "init", _noop_async)
             await srv.add_cell(self._make_meta())
 
-            assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            assert list(srv.all_server_cells) == ["inference-engine-0-0-0"]
             await srv.dispose()
 
     @pytest.mark.asyncio
     async def test_a_successful_add_commits_the_cell(self, monkeypatch):
         """After the failure is gone the same cell id can be added normally."""
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=False, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -453,7 +458,7 @@ class TestAddCellRollback:
         async with srv.context_lock:
             await srv.add_cell(self._make_meta())
 
-            assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            assert list(srv.all_server_cells) == ["inference-engine-0-0-0"]
             await srv.dispose()
 
 
@@ -462,7 +467,7 @@ class TestDuplicateCellId:
     async def test_adding_a_duplicate_cell_id_preserves_the_original_cell(self, monkeypatch):
         """Overwriting the entry would drop the first cell's health checker task and router registration on the floor."""
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=True, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -471,12 +476,12 @@ class TestDuplicateCellId:
 
         async with srv.context_lock:
             await srv.add_cell(TestAddCellRollback()._make_meta())
-            original = srv.server_cells["inference-engine-0-0-0"]
+            original = srv.all_server_cells["inference-engine-0-0-0"]
 
             with pytest.raises(AssertionError):
                 await srv.add_cell(TestAddCellRollback()._make_meta())
 
-            assert srv.server_cells["inference-engine-0-0-0"] is original
+            assert srv.all_server_cells["inference-engine-0-0-0"] is original
             await srv.dispose()
 
 
@@ -494,7 +499,7 @@ class TestRemoveCellDisposal:
             await real_dispose(cell)
 
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=True, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -507,13 +512,13 @@ class TestRemoveCellDisposal:
             remove_task = asyncio.create_task(srv.remove_cell("inference-engine-0-0-0"))
             await asyncio.wait_for(dispose_started.wait(), timeout=1)
 
-            assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            assert list(srv.all_server_cells) == ["inference-engine-0-0-0"]
             assert not remove_task.done()
 
             allow_dispose.set()
             await asyncio.wait_for(remove_task, timeout=1)
 
-        assert srv.server_cells == {}
+        assert srv.all_server_cells == {}
 
 
 class TestAddCellInitTiming:
@@ -526,7 +531,7 @@ class TestAddCellInitTiming:
             initialized.append(self.meta.cell_id)
 
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=False, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -548,7 +553,7 @@ class TestAddCellInitTiming:
             initialized.append(self.meta.cell_id)
 
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=True, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -559,7 +564,7 @@ class TestAddCellInitTiming:
             await srv.add_cell(TestAddCellRollback()._make_meta(needs_offload=True))
 
             assert initialized == []
-            assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            assert list(srv.all_server_cells) == ["inference-engine-0-0-0"]
             await srv.dispose()
 
     @pytest.mark.asyncio
@@ -571,7 +576,7 @@ class TestAddCellInitTiming:
             initialized.append(self.meta.cell_id)
 
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=True, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -607,7 +612,7 @@ class TestDeferredInitMatchesTheStartupBarrier:
             initialized.append(self.meta.cell_id)
 
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=colocate, ft_components=[]),
             context_lock=_make_lock(),
             engine_provider=_StubProvider(),
@@ -628,7 +633,7 @@ async def _make_serving_server(monkeypatch, *, num_cells: int) -> RolloutServer:
     monkeypatch.setattr(RolloutServer, "_router_api_client", property(lambda self: router))
 
     srv = RolloutServer(
-        server_cells={},
+        all_server_cells={},
         args=make_args(colocate=True, ft_components=[], use_miles_router=False),
         context_lock=_make_lock(),
         engine_provider=_StubProvider(),
@@ -649,7 +654,7 @@ async def _make_serving_server(monkeypatch, *, num_cells: int) -> RolloutServer:
                     workers_hash=f"pseudo-hash-{cell_index}",
                 )
             )
-            cell = srv.server_cells[f"default-{cell_index}"]
+            cell = srv.all_server_cells[f"default-{cell_index}"]
             addr_info = CellAddrInfo(
                 server_url=f"http://10.0.0.{cell_index + 1}:3000{cell_index}", bootstrap_port=None, gate_url=None
             )
@@ -687,3 +692,87 @@ async def _raise_async(self):
 
 async def _noop_async(self):
     return None
+
+
+def _fake_cell(*, cell_id: str, gpu_offset: int, errored: bool = False, serving: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(
+        meta=SimpleNamespace(cell_id=cell_id, gpu_offset=gpu_offset, num_gpus_per_engine=gpu_offset + 1),
+        api_client=f"client-{cell_id}",
+        is_errored=errored,
+        is_pending_weights_or_serving=serving and not errored,
+    )
+
+
+def _server_of(cells: dict[str, SimpleNamespace]) -> RolloutServer:
+    return RolloutServer(
+        all_server_cells=cells,
+        args=SimpleNamespace(colocate=False),
+        context_lock=_make_lock(),
+        engine_provider=_StubProvider(),
+    )
+
+
+class TestErroredCellsLeaveTheEngineLists:
+    def _server(self) -> RolloutServer:
+        return _server_of(
+            {
+                "engine-0": _fake_cell(cell_id="engine-0", gpu_offset=0),
+                "engine-1": _fake_cell(cell_id="engine-1", gpu_offset=1, errored=True),
+                "engine-2": _fake_cell(cell_id="engine-2", gpu_offset=2),
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_normal_view_drops_the_errored_cell_the_full_dict_still_holds(self):
+        """Reconcile still has to see the errored cell to replace it, so only the filtered view may lose it."""
+        srv = self._server()
+
+        async with srv.context_lock:
+            assert sorted(srv.normal_server_cells) == ["engine-0", "engine-2"]
+        assert sorted(srv.all_server_cells) == ["engine-0", "engine-1", "engine-2"]
+
+    @pytest.mark.asyncio
+    async def test_every_derived_engine_list_skips_the_errored_cell(self):
+        """The trainer indexes these lists in parallel, so a cell left in one of them receives weights again."""
+        srv = self._server()
+
+        async with srv.context_lock:
+            assert srv.engine_cell_ids == ["engine-0", "engine-2"]
+            assert srv.api_clients == ["client-engine-0", "client-engine-2"]
+            assert srv.engine_gpu_offsets == [0, 2]
+            assert srv.engine_gpu_counts == [1, 3]
+
+    @pytest.mark.asyncio
+    async def test_an_errored_cell_is_no_longer_addressed_by_the_fan_out_calls(self):
+        """Offload, abort and the weight checker would each dial an engine that is on its way out."""
+        srv = self._server()
+
+        async with srv.context_lock:
+            assert [cell.meta.cell_id for cell in srv._addressable_cells()] == ["engine-0", "engine-2"]
+
+    @pytest.mark.asyncio
+    async def test_a_server_whose_cells_all_errored_offers_no_engine_at_all(self):
+        """Handing back a stale list would start a weight update against engines nobody may address."""
+        srv = _server_of({"engine-0": _fake_cell(cell_id="engine-0", gpu_offset=0, errored=True)})
+
+        async with srv.context_lock:
+            assert srv.normal_server_cells == {}
+            assert srv.engine_cell_ids == []
+
+
+class TestServerCellViewLocking:
+    @pytest.mark.asyncio
+    async def test_the_filtered_view_is_refused_without_the_context_lock(self):
+        """It is read while the engine lists are built, which only makes sense inside the update window."""
+        srv = _server_of({"engine-0": _fake_cell(cell_id="engine-0", gpu_offset=0)})
+
+        with pytest.raises(AssertionError, match="context lock"):
+            _ = srv.normal_server_cells
+
+    @pytest.mark.asyncio
+    async def test_the_full_dict_is_readable_without_the_context_lock(self):
+        """The startup barrier and the status endpoint both read it before anyone owns the lock."""
+        cells = {"engine-0": _fake_cell(cell_id="engine-0", gpu_offset=0)}
+        srv = _server_of(cells)
+
+        assert srv.all_server_cells == cells

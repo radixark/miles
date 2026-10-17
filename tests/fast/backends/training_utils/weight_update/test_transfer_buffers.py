@@ -1,14 +1,15 @@
-"""A transfer buffer must never be loaded again while a write still reads it."""
+"""A transfer buffer stays unchanged for healthy cells and registered for every unfinished write."""
 
 import threading
+from argparse import Namespace
 from concurrent.futures import Future
 
 import pytest
 import torch
 
 import miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers as transfer_buffers_module
-from miles.backends.training_utils.weight_update.protocols.transports.mooncake import RemoteShard
-from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import TransferBuffers
+from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import PendingWrite, TransferBuffers
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 
 _RETURN_TIMEOUT_SECONDS = 10.0
 _STILL_BLOCKED_SECONDS = 0.2
@@ -40,13 +41,12 @@ def make_transfer_buffers(monkeypatch: pytest.MonkeyPatch):
     return make
 
 
-def _remote_shard(session_id: str) -> RemoteShard:
-    return RemoteShard(
-        rollout_engine_ind=0,
-        rollout_engine_rank=0,
-        runner_role="target",
-        session_id=session_id,
-        weight_locations_by_name={},
+def _pending_write(session_id: str, future: Future[None]) -> PendingWrite:
+    return PendingWrite(
+        future=future,
+        cell_updater=_RolloutCellUpdater(
+            args=Namespace(update_weight_engine_request_timeout=1), cell_id=session_id, api_client=None
+        ),
     )
 
 
@@ -66,7 +66,7 @@ def test_a_buffer_is_not_handed_out_while_a_write_still_reads_it(make_transfer_b
     transfer_buffers, _ = make_transfer_buffers(num_buffers=2)
     first_buffer = transfer_buffers.acquire()
     pending_write = Future()
-    transfer_buffers.release_after(first_buffer, [(_remote_shard("session-a"), pending_write)])
+    transfer_buffers.release_after(first_buffer, [_pending_write("session-a", pending_write)])
     transfer_buffers.release_after(transfer_buffers.acquire(), [])
 
     acquired: list[torch.Tensor] = []
@@ -78,32 +78,39 @@ def test_a_buffer_is_not_handed_out_while_a_write_still_reads_it(make_transfer_b
     assert acquired == [first_buffer]
 
 
-def test_a_failed_write_fails_the_next_acquire_of_its_buffer_and_frees_it(make_transfer_buffers) -> None:
+def test_a_failed_write_marks_its_cell_and_allows_reuse(make_transfer_buffers) -> None:
     """Loading on after a failed write would only queue more writes behind a broken rollout engine."""
     transfer_buffers, _ = make_transfer_buffers(num_buffers=1)
     buffer = transfer_buffers.acquire()
     failed_write = Future()
     failed_write.set_exception(RuntimeError("write failed"))
-    transfer_buffers.release_after(buffer, [(_remote_shard("session-a"), failed_write)])
+    pending = _pending_write("session-a", failed_write)
+    transfer_buffers.release_after(buffer, [pending])
 
-    with pytest.raises(RuntimeError, match="session session-a.*write failed"):
-        transfer_buffers.acquire()
+    assert transfer_buffers.acquire() is buffer
+    assert pending.cell_updater.is_errored
+    assert str(pending.cell_updater._error) == "write failed"
     assert transfer_buffers.acquire() is buffer
 
 
-def test_a_write_still_running_after_the_timeout_fails_acquire_and_keeps_its_buffer(make_transfer_buffers) -> None:
-    """A hung write must fail the update within the write timeout, and its buffer stays reserved while it reads."""
-    transfer_buffers, _ = make_transfer_buffers(num_buffers=1, write_timeout=_STILL_BLOCKED_SECONDS)
+def test_a_timed_out_write_allows_reuse_but_prevents_unregister_until_it_returns(make_transfer_buffers) -> None:
+    """A timed-out cell can absorb late reads, but the native writer must never read unregistered memory."""
+    transfer_buffers, registered = make_transfer_buffers(num_buffers=1, write_timeout=_STILL_BLOCKED_SECONDS)
     buffer = transfer_buffers.acquire()
     running_write = Future()
-    transfer_buffers.release_after(buffer, [(_remote_shard("session-a"), running_write)])
+    running_write.set_running_or_notify_cancel()
+    pending = _pending_write("session-a", running_write)
+    transfer_buffers.release_after(buffer, [pending])
 
-    with pytest.raises(RuntimeError, match=f"session session-a.*still running after {_STILL_BLOCKED_SECONDS}s"):
-        transfer_buffers.acquire()
-    with pytest.raises(RuntimeError, match="still running"):
-        transfer_buffers.acquire()
-    running_write.set_result(None)
     assert transfer_buffers.acquire() is buffer
+    assert pending.cell_updater.is_errored
+    assert transfer_buffers.acquire() is buffer
+    with pytest.raises(RuntimeError, match="still running"):
+        transfer_buffers.release()
+    assert registered == [(buffer.data_ptr(), buffer.numel())]
+    running_write.set_result(None)
+    transfer_buffers.release()
+    assert registered == []
 
 
 def test_each_buffer_is_registered_once_over_its_whole_allocation(make_transfer_buffers) -> None:
@@ -117,3 +124,94 @@ def test_each_buffer_is_registered_once_over_its_whole_allocation(make_transfer_
         transfer_buffers.release_after(buffer, [])
 
     assert sorted(registered) == sorted({(buffer.data_ptr(), 64) for buffer in buffers})
+
+
+def test_release_waits_for_every_cell_even_if_another_write_has_failed(make_transfer_buffers) -> None:
+    """A failed completed write cannot hide another cell that is still reading the allocation."""
+    buffers, registered = make_transfer_buffers(num_buffers=1, write_timeout=0.01)
+    buffer = buffers.acquire()
+    failed, running = Future(), Future()
+    failed.set_exception(RuntimeError("failed"))
+    buffers.release_after(buffer, [_pending_write("failed", failed), _pending_write("running", running)])
+
+    with pytest.raises(RuntimeError, match="still running"):
+        buffers.release()
+    assert registered == [(buffer.data_ptr(), buffer.numel())]
+    running.set_result(None)
+    buffers.release()
+    assert registered == []
+
+
+def test_cancelled_queued_writes_do_not_prevent_releasing_memory(make_transfer_buffers) -> None:
+    """A cancelled task never reads the buffer and must not be mistaken for a running native write."""
+    buffers, registered = make_transfer_buffers(num_buffers=1, write_timeout=0)
+    buffer = buffers.acquire()
+    cancelled = Future()
+    cancelled.cancel()
+    buffers.release_after(buffer, [_pending_write("cancelled", cancelled)])
+
+    buffers.release()
+    assert registered == []
+
+
+def test_failed_cell_writes_stay_registered_without_affecting_healthy_replacements(make_transfer_buffers) -> None:
+    """Failed-cell writes must retain memory while a healthy replacement keeps its own state."""
+    buffers, registered = make_transfer_buffers(num_buffers=2, write_timeout=0)
+    first, second = buffers.acquire(), buffers.acquire()
+    running, queued, healthy = Future(), Future(), Future()
+    running.set_running_or_notify_cancel()
+    old = _pending_write("cell-a", running)
+    replacement = _pending_write("cell-a", healthy)
+    buffers.release_after(first, [old])
+    buffers.release_after(second, [PendingWrite(future=queued, cell_updater=old.cell_updater), replacement])
+    first_error = RuntimeError("first")
+    old.cell_updater.mark_errored(first_error)
+    old.cell_updater.mark_errored(RuntimeError("second"))
+
+    assert buffers.acquire() is first
+
+    assert not running.done()
+    assert not healthy.cancelled()
+    assert not replacement.cell_updater.is_errored
+    assert old.cell_updater._error is first_error
+    with pytest.raises(RuntimeError, match="still running"):
+        buffers.release()
+    assert len(registered) == 2
+    running.set_result(None)
+    queued.set_result(None)
+    healthy.set_result(None)
+    buffers.wait_for_all_writes()
+    buffers.release()
+    assert registered == []
+
+
+def test_failure_before_registration_does_not_hide_an_unfinished_write(make_transfer_buffers) -> None:
+    """A failed cell must not hide unfinished readers registered after its failure."""
+    buffers, registered = make_transfer_buffers(num_buffers=1, write_timeout=0)
+    buffer = buffers.acquire()
+    queued = Future()
+    pending = _pending_write("cell-a", queued)
+    pending.cell_updater.mark_errored(RuntimeError("already failed"))
+    buffers.release_after(buffer, [pending])
+
+    assert buffers.acquire() is buffer
+
+    with pytest.raises(RuntimeError, match="still running"):
+        buffers.release()
+    assert registered == [(buffer.data_ptr(), buffer.numel())]
+    queued.set_result(None)
+    buffers.release()
+    assert registered == []
+
+
+def test_completion_before_tracking_does_not_retain_the_future(make_transfer_buffers) -> None:
+    """An already completed write must allow buffer reuse and allocation release."""
+    buffers, registered = make_transfer_buffers(num_buffers=1, write_timeout=0)
+    buffer = buffers.acquire()
+    done = Future()
+    done.set_result(None)
+    buffers.release_after(buffer, [_pending_write("cell-a", done)])
+
+    assert buffers.acquire() is buffer
+    buffers.release()
+    assert registered == []

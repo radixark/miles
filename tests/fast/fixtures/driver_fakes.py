@@ -4,6 +4,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
+from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.utils.data import RolloutDataPack
 from miles.utils.object_store import (
     BaseObjectStore,
@@ -39,8 +40,11 @@ class FakeWorkerManager:
 
 
 class FakeRolloutExecutor:
+    dispose = RolloutExecutor.dispose
+
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self._dispose_task: asyncio.Task[None] | None = None
         self.generation_gates: dict[int, asyncio.Event] = {}
         self.generation_errors: list[BaseException | None] = []
         self.generation_packs: list[RolloutDataPack] = []
@@ -66,7 +70,7 @@ class FakeRolloutExecutor:
     async def _save(self, rollout_id: int) -> None:
         self.events.append(f"executor_save:{rollout_id}")
 
-    async def dispose(self) -> None:
+    async def _dispose(self) -> None:
         self.events.append("executor_dispose")
 
     async def _report_eval_skip(self, rollout_id: int, reason: str) -> None:
