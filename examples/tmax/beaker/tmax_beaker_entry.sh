@@ -18,6 +18,8 @@
 #   KEEP_LAST_N_CHECKPOINTS   keep only the newest N training checkpoints, 0 keeps all     (default: 0)
 #   EXTRA_ARGS                launcher flags that override the config
 #   DOCKER_PAT, DOCKERHUB_USERNAME   Docker Hub login for the sandbox image pulls
+#   SANDBOX_NICE              niceness of the podman services, inherited by every sandbox   (default: 19)
+#   RAY_health_check_timeout_ms, RAY_health_check_failure_threshold   Ray's node health check (default: 20000, 60)
 set -euxo pipefail
 
 REPO=$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)
@@ -32,6 +34,16 @@ cd "$REPO"
 git log -1 --format='running miles @ %H (%s)' || true
 nvidia-smi
 pip install docker  # the sandbox client; the Miles image does not ship it
+# A node whose raylet is starved of CPU misses Ray's health checks and is declared dead, which fails the job (three
+# times on 2026-10-16/17, INVESTIGATIONS.md). Ray's default gives up after 5 missed checks (3 s apart, 10 s timeout);
+# allow about 20 minutes instead, so a stall the node recovers from does not kill the run. ray start reads these.
+export RAY_health_check_timeout_ms=${RAY_health_check_timeout_ms:-20000}
+export RAY_health_check_failure_threshold=${RAY_health_check_failure_threshold:-60}
+export PYTHONFAULTHANDLER=${PYTHONFAULTHANDLER:-1}  # a crash of any Python process leaves its stack in the log
+# Ten minutes in, report what Ray's own processes actually got (they start later, from the launcher or below).
+(sleep 600; for pid in $(pgrep -f 'gcs_server|raylet' || true); do
+    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -E '^RAY_health_check' | sed "s/^/ray pid $pid: /"
+done) &
 if [ "$NUM_NODES" -gt 1 ]; then
     HEAD_IP=$(getent hosts "$BEAKER_LEADER_REPLICA_HOSTNAME" | awk '{print $1; exit}')
     export MASTER_ADDR=$HEAD_IP
@@ -50,6 +62,15 @@ cp "$PODMAN_DIR/containers.conf" /etc/containers/containers.conf
 cp "$PODMAN_DIR/policy.json" /etc/containers/policy.json
 cp "$PODMAN_DIR/10-unqualified-search-registries.conf" /etc/containers/registries.conf.d/
 install -m 755 "$PODMAN_DIR/setup_dockerio_mirror" /usr/local/bin/setup_dockerio_mirror
+# Sandboxes yield the CPU to Ray, SGLang and the agents: the podman services run under nice, and every container
+# and exec they start inherits it, whatever the task image ships. The vendored docker_login.sh starts the services
+# by name, hence a podman ahead of /usr/bin on PATH.
+SANDBOX_NICE=${SANDBOX_NICE:-19}
+if [ "$SANDBOX_NICE" != 0 ]; then
+    printf '#!/bin/sh\nexec nice -n %s /usr/bin/podman "$@"\n' "$SANDBOX_NICE" > /usr/local/bin/podman
+    chmod 755 /usr/local/bin/podman
+    hash -r
+fi
 # podman 4.9 rejects a storage.conf without runroot/graphroot; setup_dockerio_mirror only patches the driver.
 printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' \
     > /etc/containers/storage.conf
@@ -76,6 +97,7 @@ if [ -n "${DOCKER_PAT:-}" ]; then
 fi
 set -xu
 export TMAX_DOCKER_HOST="$SWERL_PODMAN_DOCKER_HOSTS"
+ps -o ni=,args= -p "$(pgrep -d, -f 'podman.* system service')" | cut -c1-120 || true  # the services' niceness
 podman --url "${TMAX_DOCKER_HOST%%,*}" run --rm docker.io/library/alpine:latest echo podman-sandbox-ok
 
 # ---- 2. Ray worker replicas: serve podman to the head, join its Ray cluster and stay until it goes away ----
