@@ -12,7 +12,8 @@ the checkout while it runs, cannot change what it trains. Arguments after ``--``
 Each submission is its own run: the config's ``exp_name`` gets a UTC date-time suffix (``<exp_name>_YYYYMMDD_HHMMSS``)
 that names the checkpoint and trace directories, the W&B run and the Beaker experiment. Beaker's retries of that
 submission keep the name, so they resume from its checkpoints; a later submission starts a new run.
-``--exp-name NAME`` reuses an existing run's name exactly, to continue that run.
+``--exp-name NAME`` reuses an existing run's name exactly, to continue that run. ``--exclude-host HOST`` (repeatable)
+keeps the job off a node, such as one with a full disk: the spec then lists the cluster's other nodes by hostname.
 
 With ``nodes: N > 1`` the task gets N replicas the way mason's ``--num_nodes`` does (leader selection, host
 networking, failure and preemption propagated to every replica, NCCL over InfiniBand); the entrypoint makes
@@ -26,6 +27,7 @@ shared_memory, image, sandbox_shards, mirror_url (``auto``: the running registry
 
 import argparse
 import getpass
+import json
 import os
 import shlex
 import subprocess
@@ -58,6 +60,7 @@ def main() -> None:
         config_rel=str(config_path.relative_to(_REPO)),
         commit=commit,
         overrides=args.overrides,
+        exclude_hosts=args.exclude_host,
         exp_name=exp_name,
         description=f"Miles TMax {config_path.stem} {exp_name} @ {commit[:9]}".replace("  ", " "),
     )
@@ -75,11 +78,18 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        usage="%(prog)s config [--exp-name NAME] [--name NAME] [--dry-run] [--allow-dirty] [-- launcher flags]",
+        usage="%(prog)s config [--exp-name NAME] [--name NAME] [--exclude-host HOST] [--dry-run] [--allow-dirty] "
+        "[-- launcher flags]",
     )
     parser.add_argument("config")
     parser.add_argument("--exp-name", default="", help="continue this existing run (no date-time suffix is added)")
     parser.add_argument("--name", default="", help="Beaker experiment name (default: the run name)")
+    parser.add_argument(
+        "--exclude-host",
+        action="append",
+        default=[],
+        help="keep the job off this node (repeatable), e.g. holmes-cs-aus-556",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-dirty", action="store_true", help="submit although examples/tmax is uncommitted")
     argv = sys.argv[1:]
@@ -90,7 +100,14 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _build_spec(
-    *, beaker: dict, config_rel: str, commit: str, overrides: list[str], exp_name: str, description: str
+    *,
+    beaker: dict,
+    config_rel: str,
+    commit: str,
+    overrides: list[str],
+    exclude_hosts: list[str],
+    exp_name: str,
+    description: str,
 ) -> dict:
     user = getpass.getuser().lower()
     secrets = beaker.get("secrets") or {
@@ -167,11 +184,25 @@ def _build_spec(
                     "sharedMemorySize": beaker.get("shared_memory", "256GiB"),
                 },
                 "context": context,
-                "constraints": {"cluster": [beaker.get("cluster", "ai2/holmes")]},
+                "constraints": _constraints(beaker.get("cluster", "ai2/holmes"), exclude_hosts),
             }
         ],
         "retry": {"allowedTaskRetries": int(beaker.get("retries", 0))},
     }
+
+
+def _constraints(cluster: str, exclude_hosts: list[str]) -> dict:
+    """The cluster, or with ``exclude_hosts`` its other nodes by hostname: Beaker can pin hostnames but not exclude
+    them, and takes a cluster or hostnames, not both."""
+    if not exclude_hosts:
+        return {"cluster": [cluster]}
+    out = subprocess.run(["beaker", "cluster", "nodes", cluster, "--format", "json"], check=True, capture_output=True)
+    hostnames = sorted(node["hostname"] for node in json.loads(out.stdout) if not node.get("cordoned"))
+    excluded = {host.split(".")[0] for host in exclude_hosts}
+    unknown = excluded - {hostname.split(".")[0] for hostname in hostnames}
+    if unknown:
+        raise SystemExit(f"--exclude-host {sorted(unknown)}: not a node of {cluster}")
+    return {"hostname": [hostname for hostname in hostnames if hostname.split(".")[0] not in excluded]}
 
 
 def _mirror_url(configured: str) -> str:

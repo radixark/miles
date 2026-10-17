@@ -22,9 +22,11 @@ python examples/tmax/beaker/submit.py examples/tmax/configs/prod_4node.yaml --dr
 python examples/tmax/beaker/submit.py examples/tmax/configs/smoke_2node.yaml -- \
     --trace-dir /weka/oe-adapt-default/allennlp/deletable_rollouts/miles --dump-training-data
 
-# Continue an existing run: its checkpoints, traces and W&B run
+# Continue an existing run: its checkpoints, traces and W&B run. The experiment needs a name of its own (--name)
+# when the old one still exists; --exclude-host (repeatable) keeps it off a bad node
 python examples/tmax/beaker/submit.py examples/tmax/configs/prod_4node.yaml \
-    --exp-name tmax_prod4node_qwen35_9b_20261016_001037
+    --exp-name tmax_prod4node_qwen35_9b_20261016_001037 --name tmax_prod4node_qwen35_9b_20261016_001037_resume1 \
+    --exclude-host holmes-cs-aus-556
 ```
 
 Before submitting:
