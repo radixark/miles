@@ -41,7 +41,6 @@ from miles.utils.workers.worker_spec import (
     NamedHostAndPorts,
     WorkerCtorContext,
     WorkerLaunchContext,
-    WorkerMetaContext,
 )
 
 logger = logging.getLogger(__name__)
@@ -293,7 +292,7 @@ class _CellManager(Generic[SpecT]):
             alive=self.alive and self._all_workers_have_addrs,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
             workers_hash=f"pseudo-hash-{self.generation}",
-            meta=self.spec.meta(WorkerMetaContext(cell_index=self.cell_index)),
+            meta=self.spec.static_meta.resolve(cell_index=self.cell_index),
         )
 
     @property

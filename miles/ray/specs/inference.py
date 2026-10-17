@@ -30,9 +30,9 @@ from miles.utils.workers.worker_spec import (
     LaunchCommandContext,
     PortInfo,
     SchedulingSpec,
+    StaticMeta,
     WorkerCtorContext,
     WorkerLaunchContext,
-    WorkerMetaContext,
 )
 
 logger = logging.getLogger(__name__)
@@ -313,21 +313,6 @@ class InferenceEngineSpec(BaseCommandSpec):
     server_group_config: ServerGroupConfig
     interpreter_prefix: list[str]
 
-    # TODO: reduce complexity around passing around configs later during arguments refactor
-    def meta(self, ctx: WorkerMetaContext) -> dict[str, Any]:
-        scheduling = self.scheduling
-        server_group_config = self.server_group_config
-        return dict(
-            model_id=self.model_cfg.name,
-            worker_type=server_group_config.worker_type.value,
-            num_gpus_per_engine=server_group_config.num_gpus_per_engine,
-            gpu_offset=server_group_config.gpu_offset
-            + ctx.cell_index * scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker,
-            sglang_api_key=self.args.sglang.get_value("api_key", group=server_group_config),
-            needs_offload=server_group_config.needs_offload,
-            update_weights=self.model_cfg.update_weights,
-        )
-
     @classmethod
     def create(cls, config: Any) -> list[Self]:
         if config.rollout_external:
@@ -445,6 +430,19 @@ def _compute_spec_inference_engine(
             PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
         ],
         scheduling=scheduling,
+        # TODO: reduce complexity around passing around configs later during arguments refactor
+        static_meta=StaticMeta(
+            values=dict(
+                model_id=model_cfg.name,
+                worker_type=server_group_config.worker_type.value,
+                num_gpus_per_engine=server_group_config.num_gpus_per_engine,
+                sglang_api_key=args.sglang.get_value("api_key", group=server_group_config),
+                needs_offload=server_group_config.needs_offload,
+                update_weights=model_cfg.update_weights,
+            ),
+            gpu_offset_base=server_group_config.gpu_offset,
+            gpu_offset_stride_per_cell=scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker,
+        ),
     )
 
 
