@@ -22,7 +22,6 @@ from miles.utils.workers.cell_operations.ray import RayCellOperations
 from .conftest import (
     MockHandler,
     MockInferenceController,
-    MockStopCellController,
     MockTrainerCell,
     MockWorkerManager,
     make_cell_summaries,
@@ -309,7 +308,6 @@ class TestStartApiServerRegistration:
             ft_components=ft_components,
             cell_operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
         )
 
@@ -403,7 +401,6 @@ class TestStartApiServerRegistration:
             ft_components=["train"],
             cell_operations=RayCellOperations(
                 worker_manager_handle=manager,
-                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
         )
 

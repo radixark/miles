@@ -7,15 +7,8 @@ import time
 from collections.abc import Callable
 import requests
 
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ROLLOUT_CELL_TYPE, BaseFaultForm, CellFaultForms
-from tests.e2e.ft.conftest_ft.fault_injection.state import (
-    Event,
-    EventLog,
-    ObservedCellState,
-    cell_is_alive,
-    cell_type_of,
-    compute_observed_cell_state,
-)
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import BaseFaultForm, CellFaultForms
+from tests.e2e.ft.conftest_ft.fault_injection.state import Event, EventLog, cell_is_alive, cell_type_of
 from tests.e2e.ft.conftest_ft.fault_injection.views import compute_successful_form_names
 
 logger = logging.getLogger(__name__)
@@ -80,7 +73,7 @@ def run_fault_injection_loop(
         if not due_types:
             continue
 
-        # Inject only at a quiescent point: every replica of the kind present and serving for long
+        # Inject only at a quiescent point: every replica of the kind present and alive for long
         # enough that the readings cannot all be stale. A due kind that is still recovering (or has
         # no spare replica to survive the kill) waits for a later poll.
         ready_types = [
@@ -127,13 +120,7 @@ def run_fault_injection_loop(
 def _kind_is_quiescent(kind_cells: list[dict], *, expected_num_cells: int) -> bool:
     if not kind_cells or len(kind_cells) < expected_num_cells:
         return False
-    return all(cell_is_alive(cell) and _cell_can_serve(cell) for cell in kind_cells)
-
-
-def _cell_can_serve(cell: dict) -> bool:
-    if cell_type_of(cell) != ROLLOUT_CELL_TYPE:
-        return True
-    return compute_observed_cell_state(cell) is ObservedCellState.SERVING
+    return all(cell_is_alive(cell) for cell in kind_cells)
 
 
 def _draw_form(
