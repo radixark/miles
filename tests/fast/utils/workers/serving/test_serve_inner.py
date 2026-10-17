@@ -7,14 +7,14 @@ import pytest
 from miles.utils.workers.serving import serve_inner
 from miles.utils.workers.serving import utils as serving_utils
 from miles.utils.workers.serving.serve_inner import _rpc_port_of, parse_own_args
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, PortInfo, SchedulingSpec
 
 SPECS_PATH = "tests.fast.utils.workers.e2e.e2e_worker.compute_specs"
 POOL_ID = "e2e-pool"
 
 
-def _serve_spec() -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def _serve_spec() -> BaseServeSpec:
+    return BaseServeSpec(
         name=POOL_ID,
         port_infos=[PortInfo(name="rpc", static_port=8000)],
         env_var=lambda context: {},

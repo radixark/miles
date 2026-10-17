@@ -3,11 +3,11 @@ from __future__ import annotations
 from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
 from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
 from miles.utils.workers.worker_spec import (
-    BaseWorkerSpec,
-    CommandWorkerSpec,
+    BaseCommandSpec,
+    BaseServeSpec,
+    BaseSpec,
     PortInfo,
     SchedulingSpec,
-    ServeWorkerSpec,
     SpecMetaFn,
 )
 
@@ -21,7 +21,7 @@ def make_pool_spec(
     worker_class: str | None = None,
     meta: SpecMetaFn | None = None,
     workers_per_pod: int = 1,
-) -> BaseWorkerSpec:
+) -> BaseSpec:
     common = dict(
         name=pool_id,
         port_infos=[PortInfo(name=name, static_port=port) for name, port in ports.items()],
@@ -36,12 +36,12 @@ def make_pool_spec(
         meta=meta,
     )
     if worker_class is None:
-        return CommandWorkerSpec(**common, launch_command=lambda context: f"python -m {pool_id}")
-    return ServeWorkerSpec(**common, worker_class=worker_class, ctor_kwargs=lambda context: {})
+        return BaseCommandSpec(**common, launch_command=lambda context: f"python -m {pool_id}")
+    return BaseServeSpec(**common, worker_class=worker_class, ctor_kwargs=lambda context: {})
 
 
-def make_router_spec() -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+def make_router_spec() -> BaseCommandSpec:
+    return BaseCommandSpec(
         name="inference-router-0",
         port_infos=[PortInfo(name="primary", static_port=8000)],
         env_var=lambda context: {},
@@ -50,8 +50,8 @@ def make_router_spec() -> CommandWorkerSpec:
     )
 
 
-def make_engine_spec() -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+def make_engine_spec() -> BaseCommandSpec:
+    return BaseCommandSpec(
         name="engine",
         category=POOL_CATEGORY_INFERENCE_ENGINE,
         port_infos=[PortInfo(name="primary", static_port=8000), PortInfo(name="nccl", static_port=10000)],
@@ -69,8 +69,8 @@ def make_engine_spec() -> CommandWorkerSpec:
 
 def make_trainer_spec(
     *, num_workers_per_cell: int, num_gpus_per_node: int = 8, port_infos: list[PortInfo] | None = None
-) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+) -> BaseServeSpec:
+    return BaseServeSpec(
         name="trainer-engine-actor",
         category=POOL_CATEGORY_TRAINER_ENGINE,
         port_infos=port_infos or [PortInfo(name="master", static_port=9000, mode="master")],

@@ -14,7 +14,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.build
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import PortEntry
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.workers.types import PlatformAccess
-from miles.utils.workers.worker_spec import BaseWorkerSpec, SchedulingSpec
+from miles.utils.workers.worker_spec import BaseSpec, SchedulingSpec
 
 STAMP = "2026-08-12T09:00:00+00:00"
 
@@ -35,14 +35,14 @@ PREPARE_LAYOUT = LaunchPlan(
 )
 
 
-def _prepared(section: str, spec: BaseWorkerSpec) -> list[str]:
+def _prepared(section: str, spec: BaseSpec) -> list[str]:
     return build_values([spec], PREPARE_LAYOUT).as_values()["run"][section][0]["command"]
 
 
 class TestBuildEntry:
     def test_refuses_a_spec_with_no_launch_mechanism(self):
         """A pool without a command or RPC server cannot launch a worker."""
-        spec = BaseWorkerSpec(
+        spec = BaseSpec(
             name="unsupported-worker",
             port_infos=[],
             env_var=lambda context: {},
@@ -146,11 +146,11 @@ class TestPrepareCmd:
 
 class TestTheRestartStamp:
     @staticmethod
-    def _entry(spec: BaseWorkerSpec, *, plan: LaunchPlan) -> dict:
+    def _entry(spec: BaseSpec, *, plan: LaunchPlan) -> dict:
         return build_values([spec], plan).as_values()["run"]["staticWorkers"][0]
 
     @staticmethod
-    def _executor() -> BaseWorkerSpec:
+    def _executor() -> BaseSpec:
         return router().model_copy(update={"name": ROLLOUT_EXECUTOR_POOL_ID})
 
     def test_a_pool_the_launch_replaces_carries_the_stamp(self):

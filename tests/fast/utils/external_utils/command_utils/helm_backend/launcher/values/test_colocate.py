@@ -4,12 +4,12 @@ from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import pairing_config
-from miles.utils.workers.worker_spec import CommandWorkerSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec
 
 COLOCATE_LAYOUT = LAYOUT.model_copy(update={"colocate": True})
 
 
-def _disaggregated_engines(*, decode_offset: int) -> list[CommandWorkerSpec]:
+def _disaggregated_engines(*, decode_offset: int) -> list[BaseCommandSpec]:
     return [
         engine(num_cells=2, gpus_per_engine=8, name="inference-engine-0-0", gpu_offset=0),
         engine(num_cells=2, gpus_per_engine=8, name="inference-engine-0-1", gpu_offset=decode_offset),

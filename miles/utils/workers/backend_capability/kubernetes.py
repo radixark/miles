@@ -8,7 +8,7 @@ from miles.utils.workers.reconcile.loop import DEFAULT_RESYNC_PERIOD
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo, KubernetesWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider
-from miles.utils.workers.worker_spec import BaseWorkerSpec
+from miles.utils.workers.worker_spec import BaseSpec
 
 
 class KubernetesBackendCapability(BackendCapability):
@@ -17,7 +17,7 @@ class KubernetesBackendCapability(BackendCapability):
         *,
         run: KubernetesRunInfo,
         release: str,
-        static_specs: dict[str, BaseWorkerSpec],
+        static_specs: dict[str, BaseSpec],
         cell_operations: BaseCellOperations,
     ) -> None:
         self._run = run

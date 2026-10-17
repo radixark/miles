@@ -12,11 +12,11 @@ from miles.utils.workers.worker_provider.kubernetes.core.provider import Kuberne
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider
-from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec, PortInfo, SchedulingSpec
 
 
-def _router_spec() -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+def _router_spec() -> BaseCommandSpec:
+    return BaseCommandSpec(
         name="inference-router-0",
         port_infos=[PortInfo(name="primary", static_port=8000)],
         env_var=lambda context: {},

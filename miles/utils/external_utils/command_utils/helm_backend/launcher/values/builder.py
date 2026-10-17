@@ -24,23 +24,23 @@ from miles.utils.external_utils.command_utils.helm_backend.naming import RunName
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import static_cell_addrs
-from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseWorkerSpec, NamedHostAndPorts, ServeWorkerSpec
+from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseServeSpec, BaseSpec, NamedHostAndPorts
 
 _COLOCATE_PAIRING_COMPONENT = "colocate-pairing"
 
 
-def build_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> MilesRunChartValues:
+def build_values(specs: list[BaseSpec], plan: LaunchPlan) -> MilesRunChartValues:
     return MilesRunChartValues(run=_build_run_values(specs, plan), extra_manifests=plan.extra_manifests or None)
 
 
-def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValues:
+def _build_run_values(specs: list[BaseSpec], plan: LaunchPlan) -> RunValues:
     assert bool(plan.orchestrator_command) == bool(plan.state_file), (
         "The orchestration script and the exit file it writes come together: a release carries both, or it carries "
         "neither and is a deployment of workers that outlives any one run"
     )
     specs = _deployed_specs(specs)
     for spec in specs:
-        if isinstance(spec, ServeWorkerSpec):
+        if isinstance(spec, BaseServeSpec):
             _assert_worker_ports_fit(spec)
     addresses = _compute_addresses(specs, plan.release)
 
@@ -85,7 +85,7 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
     )
 
 
-def _pairing_config(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> PairingConfig | None:
+def _pairing_config(specs: list[BaseSpec], plan: LaunchPlan) -> PairingConfig | None:
     if not plan.colocate or not any(SECTION_OF_CATEGORY[spec.category] == INFERENCE_ENGINES_SECTION for spec in specs):
         return None
     return pairing_config(specs, plan)
@@ -103,11 +103,11 @@ def _object_names(release: str) -> ObjectNames:
     )
 
 
-def _deployed_specs(specs: list[BaseWorkerSpec]) -> list[BaseWorkerSpec]:
+def _deployed_specs(specs: list[BaseSpec]) -> list[BaseSpec]:
     return [spec for spec in specs if spec.scheduling.num_cells > 0]
 
 
-def _compute_addresses(specs: list[BaseWorkerSpec], release: str) -> dict[str, dict[str, NamedHostAndPorts]]:
+def _compute_addresses(specs: list[BaseSpec], release: str) -> dict[str, dict[str, NamedHostAndPorts]]:
     return {
         spec.name: {
             compute_cell_id(pool_id=spec.name, cell_index=cell_index): static_cell_addrs(
@@ -120,7 +120,7 @@ def _compute_addresses(specs: list[BaseWorkerSpec], release: str) -> dict[str, d
     }
 
 
-def _assert_worker_ports_fit(spec: ServeWorkerSpec) -> None:
+def _assert_worker_ports_fit(spec: BaseServeSpec) -> None:
     workers_per_pod = spec.scheduling.workers_per_pod()
     rpc_port = next(port.static_port for port in spec.port_infos if port.name == RPC_PORT_NAME)
     for port in spec.port_infos:

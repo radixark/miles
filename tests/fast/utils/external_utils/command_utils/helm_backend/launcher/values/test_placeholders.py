@@ -6,7 +6,7 @@ from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values import placeholders
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
-from miles.utils.workers.worker_spec import BaseWorkerSpec
+from miles.utils.workers.worker_spec import BaseSpec
 
 
 class TestTheWorkerIndex:
@@ -42,7 +42,7 @@ COLOCATE_LAYOUT = LAYOUT.model_copy(update={"colocate": True})
 _LARGEST_PLAUSIBLE_CARD_OR_RANK = 1_000_000
 
 
-def _engine_command(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> list[str]:
+def _engine_command(specs: list[BaseSpec], plan: LaunchPlan) -> list[str]:
     return build_values(specs, plan).as_values()["run"]["inferenceEngines"][0]["command"]
 
 

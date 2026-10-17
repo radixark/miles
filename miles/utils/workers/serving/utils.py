@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from miles.utils.function_registry import load_function
-from miles.utils.workers.worker_spec import ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseServeSpec
 
 IPV4_WILDCARD_HOST = "0.0.0.0"
 IPV6_WILDCARD_HOST = "::"
@@ -63,7 +63,7 @@ def parse_own_args(own_argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(own_argv)
 
 
-def compute_serve_worker_spec(*, specs_fn: str, pool_id: str, worker_argv: list[str]) -> ServeWorkerSpec:
+def compute_serve_worker_spec(*, specs_fn: str, pool_id: str, worker_argv: list[str]) -> BaseServeSpec:
     specs = load_function(specs_fn)(worker_argv)
     matched = [spec for spec in specs if spec.name == pool_id]
     assert len(matched) == 1, (
@@ -72,5 +72,5 @@ def compute_serve_worker_spec(*, specs_fn: str, pool_id: str, worker_argv: list[
     )
 
     spec = matched[0]
-    assert isinstance(spec, ServeWorkerSpec), f"spec '{pool_id}' is a {type(spec).__name__}, which is not served"
+    assert isinstance(spec, BaseServeSpec), f"spec '{pool_id}' is a {type(spec).__name__}, which is not served"
     return spec

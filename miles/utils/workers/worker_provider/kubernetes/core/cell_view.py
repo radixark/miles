@@ -12,9 +12,9 @@ from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
 from miles.utils.workers.worker_spec import (
     RPC_PORT_NAME,
+    BaseServeSpec,
     HostAndPort,
     NamedHostAndPorts,
-    ServeWorkerSpec,
     WorkerMetaContext,
 )
 
@@ -101,7 +101,7 @@ def _compute_worker_info(worker: KubernetesWorkerInfo, *, run: KubernetesRunInfo
         generation=worker.pod.restart_count,
         self_addrs=addrs_of_worker(worker, run=run),
         gpu_ids=list(worker.gpu_ids),
-        worker_class=spec.worker_class if isinstance(spec, ServeWorkerSpec) else None,
+        worker_class=spec.worker_class if isinstance(spec, BaseServeSpec) else None,
     )
 
 

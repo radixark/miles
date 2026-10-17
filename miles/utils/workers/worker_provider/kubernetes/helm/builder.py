@@ -5,10 +5,10 @@ from miles.utils.workers.cell_operations.kubernetes import KubernetesCellOperati
 from miles.utils.workers.reconcile.loop import DEFAULT_RESYNC_PERIOD
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo, KubernetesWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.helm import env
-from miles.utils.workers.worker_spec import BaseWorkerSpec
+from miles.utils.workers.worker_spec import BaseSpec
 
 
-def compute_helm_backend_capability(*, specs: list[BaseWorkerSpec]) -> KubernetesBackendCapability:
+def compute_helm_backend_capability(*, specs: list[BaseSpec]) -> KubernetesBackendCapability:
     release = env.current_release()
     run = KubernetesRunInfo(
         namespace=env.current_namespace(),
@@ -30,5 +30,5 @@ def compute_helm_backend_capability(*, specs: list[BaseWorkerSpec]) -> Kubernete
     )
 
 
-def _declares_dynamic_pool(spec: BaseWorkerSpec) -> bool:
+def _declares_dynamic_pool(spec: BaseSpec) -> bool:
     return spec.scheduling.gpus_per_cell() > 0
