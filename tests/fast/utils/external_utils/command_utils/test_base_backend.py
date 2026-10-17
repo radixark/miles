@@ -407,7 +407,7 @@ class TestTheDefaultLaunchGuard:
                     "--values",
                     "/v.yaml",
                 ],
-                {"capture_output": False, "check": True},
+                {"capture_output": False, "check": True, "timeout": None},
             )
         ]
 

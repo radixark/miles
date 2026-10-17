@@ -513,3 +513,29 @@ class TestStaticWorkerHost:
         assert naming.static_worker_host("myrun", "session-server", 1) == (
             "myrun-miles-run-session-server-1.myrun-miles-run-session-server"
         )
+
+
+class TestUpgradeTimeout:
+    @pytest.mark.parametrize("timeout", [None, 300.0])
+    def test_the_upgrade_process_is_bounded_by_exactly_the_timeout_it_was_given(
+        self, monkeypatch: pytest.MonkeyPatch, timeout: float | None
+    ) -> None:
+        """A dropped timeout lets an install that is expected to hang block its caller forever."""
+        calls: list[tuple[list[str], dict[str, object]]] = []
+
+        def fake_run_process(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(command_wrapper, "run_process", fake_run_process)
+
+        Helm.upgrade(
+            release="r", namespace="rl", chart="/chart", values_files=["/v.yaml"], ci_run=False, timeout=timeout
+        )
+
+        assert calls == [
+            (
+                Helm.upgrade_command("r", "rl", "/chart", ["/v.yaml"], ci_run=False),
+                {"capture_output": False, "check": True, "timeout": timeout},
+            )
+        ]
