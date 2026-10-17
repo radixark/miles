@@ -10,8 +10,24 @@ import pytest
 
 import miles.utils.workers.cell_operations.ray as cell_operations_ray_mod
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.actions.union import FaultAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.cell_operations.ray import RayCellOperations
+
+
+def _command(*, cell_id: str, rank: int = 0, action: FaultAction | None = None) -> FaultHookCommand:
+    return FaultHookCommand(
+        operation=FaultHookOperation.SET,
+        request=FaultHookRequest(
+            request_id="test",
+            action=KillProcessAction() if action is None else action,
+            target=ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash="h"),
+        ),
+    )
+
 
 _TRAINER_CELL_ID = "trainer-engine-actor-00001"
 
@@ -21,9 +37,12 @@ class _RecordingRemoteMethod:
         self._name = name
         self._calls = calls
         self.result: dict[str, Any] = {}
+        self.gate: asyncio.Event | None = None
 
     async def remote(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         self._calls.append((self._name, args, kwargs))
+        if self.gate is not None:
+            await self.gate.wait()
         return self.result
 
 
@@ -222,3 +241,25 @@ class TestRayCellOperationsInjectFaultPayload:
         assert fixture.worker_manager.calls == [
             ("inject_fault", (_TRAINER_CELL_ID,), {"mode": "segfault", "worker_in_cell_index": 3})
         ]
+
+    async def test_a_worker_manager_that_never_answers_times_out_after_the_dispatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A silent worker manager must surface as a bounded timeout, not hang the fault caller."""
+        monkeypatch.setattr(cell_operations_ray_mod, "CONTROL_FAULT_HOOK_TIMEOUT_SECONDS", 0.01)
+        fixture = _make_fixture()
+        fixture.worker_manager.control_fault_hook.gate = asyncio.Event()
+        command = _command(cell_id="engine-0-2")
+
+        with pytest.raises(TimeoutError):
+            await fixture.operations.control_fault_hook(command)
+        assert fixture.worker_manager.calls == [("control_fault_hook", (), {"command": command})]
+
+    async def test_observing_a_target_asks_the_worker_manager_for_that_rank(self) -> None:
+        """The observed identity must come from the worker manager for exactly the requested rank."""
+        fixture = _make_fixture()
+
+        result = await fixture.operations.observe_fault_target(cell_id="engine-0-2", rank=1)
+
+        assert fixture.worker_manager.calls == [("observe_fault_target", ("engine-0-2",), {"rank": 1})]
+        assert result is fixture.worker_manager.observe_fault_target.result

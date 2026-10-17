@@ -16,8 +16,8 @@ from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainCo
 from miles.utils.external_utils.command_utils.common import run_process
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.ft_utils.api_server.models import Cell, CellList
+from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
 from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS, compute_release_selector
-from miles.utils.workers.cell_operations.base import FaultTarget
 from miles.utils.workers.k8s_types import Pod, PodList
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import parse_pod
@@ -60,9 +60,11 @@ class CellObserver(SoakObserver):
             errors=errors,
         )
 
-    async def _observe_cells(self, *, errors: dict[str, str]) -> tuple[list[Cell] | None, dict[str, FaultTarget]]:
+    async def _observe_cells(
+        self, *, errors: dict[str, str]
+    ) -> tuple[list[Cell] | None, dict[str, ObservedFaultHookTarget]]:
         cells: list[Cell] | None = None
-        fault_targets: dict[str, FaultTarget] = {}
+        fault_targets: dict[str, ObservedFaultHookTarget] = {}
         with recording_error(errors, "cells"):
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(f"{self.base_url}/api/v1/cells")
@@ -77,17 +79,15 @@ class CellObserver(SoakObserver):
 
     async def _observe_fault_targets(
         self, *, client: httpx.AsyncClient, cells: list[Cell], errors: dict[str, str]
-    ) -> dict[str, FaultTarget]:
-        async def read_target(cell: Cell) -> tuple[str, FaultTarget | None]:
+    ) -> dict[str, ObservedFaultHookTarget]:
+        async def read_target(cell: Cell) -> tuple[str, ObservedFaultHookTarget | None]:
             name = cell.metadata.name
-            target: FaultTarget | None = None
+            target: ObservedFaultHookTarget | None = None
             with recording_error(errors, f"fault_target:{name}"):
-                response = await client.get(
-                    f"{self.base_url}/api/v1/cells/{name}/fault-target", params={"sub_index": 0}
-                )
+                response = await client.get(f"{self.base_url}/api/v1/cells/{name}/fault-target", params={"rank": 0})
                 response.raise_for_status()
-                observed = FaultTarget.model_validate(response.json())
-                assert observed.cell_id == name and observed.sub_index == 0
+                observed = ObservedFaultHookTarget.model_validate(response.json())
+                assert observed.cell_id == name and observed.rank == 0
                 assert observed.workers_hash == cell.status.workers_hash, f"Cell {name} changed during observation"
                 target = observed
             return name, target
@@ -225,7 +225,7 @@ def create_cell_observer(
 
 
 def _create_cell_target(
-    cell: Cell, *, pods: list[SoakPodTarget], fault_target: FaultTarget | None = None
+    cell: Cell, *, pods: list[SoakPodTarget], fault_target: ObservedFaultHookTarget | None = None
 ) -> CellTarget:
     return CellTarget(
         kind=cell_type_of(cell),
