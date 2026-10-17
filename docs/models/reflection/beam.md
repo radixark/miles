@@ -33,13 +33,13 @@ The Beam bridge loads only this BF16 checkpoint; the FP8 and NVFP4 releases are 
 
 ### 3.1 Download
 
+The `full-train` commands in section 4 download everything they need, so this step is optional: run it when you want the download to finish before you claim the cluster, or when several recipes share one copy.
+
 `prepare` downloads the checkpoint into `--model-dir` and DAPO-Math-17K and AIME25 into `--data-dir`; every node must see both at the same path. `run_beam_lora.py prepare` is identical, so one run serves both recipes:
 
 ```bash
 python scripts/run_beam.py prepare --model-dir /root/models/Beam --data-dir /root/datasets
 ```
-
-`full-train` folds this download into the training command, so a fresh cluster needs only that one call.
 
 The checkpoint needs no Megatron conversion: the trainer reads it through the Beam bridge at startup. `prepare` also writes `aime-2025/aime-2025-answer-format.jsonl`, the AIME25 problems wrapped in the training prompts' answer-format instruction, which the evals read.
 
@@ -72,22 +72,22 @@ ray start --address=${MASTER_ADDR}:6379 --node-ip-address ${WORKER_IP} --num-gpu
 
 ### 4.2 Full parameter, 12 nodes
 
-`train` runs on twelve 8×H200 nodes: eight train and four host two rollout engines. Each trainer node needs at least 2 TB free on node-local NVMe for the optimizer state, at `/scratch/beam-optimizer` by default (`--optimizer-disk-dir`):
+`full-train` downloads anything 3.1 did not and then runs on twelve 8×H200 nodes: eight train and four host two rollout engines. Each trainer node needs at least 2 TB free on node-local NVMe for the optimizer state, at `/scratch/beam-optimizer` by default (`--optimizer-disk-dir`):
 
 ```bash
-MASTER_ADDR=<head ip> python scripts/run_beam.py train --num-rollout 100 \
+MASTER_ADDR=<head ip> python scripts/run_beam.py full-train --num-rollout 100 \
     --model-dir /root/models/Beam --data-dir /root/datasets \
     --output-dir /root/shared_data/beam-run
 ```
 
-Training is asynchronous (`train_async.py`): the next rollout generates while the current one trains, so its responses are one update stale; `--no-async-training` switches to synchronous `train.py`. Swap `train` for `full-train` to download the checkpoint and datasets first. The run evaluates on AIME25 every five rollouts and saves a checkpoint every twenty.
+Training is asynchronous (`train_async.py`): the next rollout generates while the current one trains, so its responses are one update stale; `--no-async-training` switches to synchronous `train.py`. Use `train` instead of `full-train` to skip the download and go straight to training. The run evaluates on AIME25 every five rollouts and saves a checkpoint every twenty.
 
 ### 4.3 Full parameter, colocated, 8 nodes
 
 `--colocate` takes the same arguments on eight 8×H200 nodes. Every GPU trains and also hosts one of four rollout engines, which receive the new weights over CUDA IPC, and training is synchronous. Each node's NVMe holds both the optimizer state and the paused trainer:
 
 ```bash
-MASTER_ADDR=<head ip> python scripts/run_beam.py train --colocate --num-rollout 100 \
+MASTER_ADDR=<head ip> python scripts/run_beam.py full-train --colocate --num-rollout 100 \
     --model-dir /root/models/Beam --data-dir /root/datasets \
     --output-dir /root/shared_data/beam-colocate-run
 ```
@@ -97,7 +97,7 @@ MASTER_ADDR=<head ip> python scripts/run_beam.py train --colocate --num-rollout 
 `run_beam_lora.py` runs on four 8×H200 nodes: two train and two host one rollout engine, asynchronously like `train`. It needs no NVMe, since the adapter's optimizer state stays on the GPUs:
 
 ```bash
-MASTER_ADDR=<head ip> python scripts/run_beam_lora.py train --num-rollout 100 \
+MASTER_ADDR=<head ip> python scripts/run_beam_lora.py full-train --num-rollout 100 \
     --model-dir /root/models/Beam --data-dir /root/datasets \
     --output-dir /root/shared_data/beam-lora-run
 ```
@@ -108,9 +108,9 @@ MASTER_ADDR=<head ip> python scripts/run_beam_lora.py train --num-rollout 100 \
 
 | Launcher | TP | PP | CP | EP | expert-TP | GPUs | rollout engines |
 |---|---|---|---|---|---|---|---|
-| `run_beam.py train` | 8 | 1 | 1 | 8 | 8 | 96 (12 × 8): 64 train, 32 rollout | 2 × TP16, `--sglang-mem-fraction-static 0.85` |
-| `run_beam.py train --colocate` | 8 | 1 | 1 | 8 | 8 | 64 (8 × 8), shared | 4 × TP16, `--sglang-mem-fraction-static 0.7` |
-| `run_beam_lora.py train` | 8 | 1 | 1 | 16 | 1 | 32 (4 × 8): 16 train, 16 rollout | 1 × TP16, `--sglang-mem-fraction-static 0.85` |
+| `run_beam.py full-train` | 8 | 1 | 1 | 8 | 8 | 96 (12 × 8): 64 train, 32 rollout | 2 × TP16, `--sglang-mem-fraction-static 0.85` |
+| `run_beam.py full-train --colocate` | 8 | 1 | 1 | 8 | 8 | 64 (8 × 8), shared | 4 × TP16, `--sglang-mem-fraction-static 0.7` |
+| `run_beam_lora.py full-train` | 8 | 1 | 1 | 16 | 1 | 32 (4 × 8): 16 train, 16 rollout | 1 × TP16, `--sglang-mem-fraction-static 0.85` |
 
 `--sequence-parallel` and full recompute are on in every recipe. Core attention runs unfused on padded `bshd` micro-batches of one sample, up to 5,120 tokens (1,024 prompt + 4,096 response).
 
