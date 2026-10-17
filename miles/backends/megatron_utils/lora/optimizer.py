@@ -25,20 +25,26 @@ logger = logging.getLogger(__name__)
 
 def validate_multi_lora_optimizer_args(args: Namespace) -> None:
     """Reject launch options the per-slot optimizers cannot honor."""
-    assert not args.use_distributed_optimizer, (
+    assert not args.backend.use_distributed_optimizer, (
         "multi-LoRA per-slot optimizers require use_distributed_optimizer=False: "
         "gradient retention relies on all-reduce idempotency, and LayerWise "
         "sharding replaces byte-level ZeRO"
     )
-    assert args.bf16 and not args.fp16, "multi-LoRA per-slot optimizers require bf16 (no dynamic loss scaler)"
     assert (
-        args.optimizer or ""
+        args.backend.bf16 and not args.backend.fp16
+    ), "multi-LoRA per-slot optimizers require bf16 (no dynamic loss scaler)"
+    assert (
+        args.backend.optimizer or ""
     ).lower() == "adam", (
-        f"multi-LoRA per-slot optimizers only implement Adam semantics; got optimizer={args.optimizer!r}"
+        f"multi-LoRA per-slot optimizers only implement Adam semantics; got optimizer={args.backend.optimizer!r}"
     )
-    for flag in ("optimizer_cpu_offload", "stream_optimizer_state_to_disk", "rematerialize_param_from_master_weight"):
+    for config, flag in (
+        (args.backend, "optimizer_cpu_offload"),
+        (args, "stream_optimizer_state_to_disk"),
+        (args, "rematerialize_param_from_master_weight"),
+    ):
         assert not getattr(
-            args, flag, False
+            config, flag, False
         ), f"--{flag.replace('_', '-')} is not supported with multi-LoRA slots"  # config-access-exempt: attribute selected at runtime from flag
 
 
@@ -117,12 +123,12 @@ class SlotOptimizer:
 
         config = OptimizerConfig(
             **{
-                f.name: getattr(args, f.name) for f in fields(OptimizerConfig) if hasattr(args, f.name)
+                f.name: getattr(args.backend, f.name) for f in fields(OptimizerConfig) if hasattr(args.backend, f.name)
             }  # config-access-exempt: attribute selected at runtime from f.name
         )
         config.timers = None
         base_optimizers = _build_slot_base_optimizers(
-            config, model, slot_params, use_gloo_process_groups=args.use_gloo_process_groups
+            config, model, slot_params, use_gloo_process_groups=args.backend.use_gloo_process_groups
         )
         assert base_optimizers, f"adapter slot {slot} produced no optimizer children"
         self._inner = LayerWiseDistributedOptimizer(

@@ -420,7 +420,7 @@ def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None =
             and parallel_state.is_pp_last_stage
             and parallel_state.effective_dp_cp.rank == 0
         ),
-        compute_total_fwd_flops=lambda seq_lens: fwd_tflops_per_gpu(seq_lens, args, dist.get_world_size()),
+        compute_total_fwd_flops=lambda seq_lens: fwd_tflops_per_gpu(seq_lens, args.backend, dist.get_world_size()),
         extra_metrics=extra_metrics,
     )
 

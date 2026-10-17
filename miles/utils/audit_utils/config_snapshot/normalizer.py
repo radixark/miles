@@ -34,6 +34,14 @@ def normalize_record(
         if "rank" in args:
             assert type(args["rank"]) is int and args["rank"] >= 0, f"Unexpected args.rank: {args['rank']!r}"
             args["rank"] = _RANK
+        if "backend" in args:
+            backend = args["backend"]
+            assert isinstance(backend, dict), "Training snapshots require a config.args.backend object"
+            if "rank" in backend:
+                assert (
+                    type(backend["rank"]) is int and backend["rank"] >= 0
+                ), f"Unexpected args.backend.rank: {backend['rank']!r}"
+                backend["rank"] = _RANK
     return config
 
 

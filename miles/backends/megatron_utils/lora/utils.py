@@ -220,7 +220,7 @@ def save_lora_checkpoint(
         adapter_state = {name: param.detach().cpu() for name, param in _adapter_shard_params(model).items()}
         training_state = None
         if optimizer is not None:
-            save_optimizer = not args.no_save_optim
+            save_optimizer = not args.backend.no_save_optim
             training_state = {
                 "iteration": iteration,
                 "optimizer": optimizer.state_dict() if save_optimizer else None,
@@ -282,7 +282,7 @@ def restore_lora_adapter(
 
     if optimizer is None:
         return None
-    if args.no_load_optim:
+    if args.backend.no_load_optim:
         # the fp32 masters were built before the adapter load; without this the first step() reverts it
         optimizer.reload_model_params()
     else:

@@ -280,29 +280,29 @@ def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *
     from megatron.training import get_args
 
     args = get_args()
-    if args.context_parallel_size > 1:
+    if args.backend.context_parallel_size > 1:
         assert args.allgather_cp, "Inkling CP requires --allgather-cp (zigzag CP not supported)"
     text_cfg = json.load(open(f"{args.hf_checkpoint}/config.json"))["text_config"]
     config = build_inkling_config(
         text_cfg,
-        tp=args.tensor_model_parallel_size,
-        ep=args.expert_model_parallel_size,
-        pp=args.pipeline_model_parallel_size,
-        bf16=args.bf16,
-        sp=args.sequence_parallel,
-        etp=args.expert_tensor_parallel_size or 1,
-        cp=args.context_parallel_size or 1,
-        varlen=args.variable_seq_lengths,
-        permute_fusion=args.moe_permute_fusion,
-        fp32_residual=args.fp32_residual_connection,
-        pp_first_stage_layers=args.decoder_first_pipeline_num_layers,
-        pp_last_stage_layers=args.decoder_last_pipeline_num_layers,
+        tp=args.backend.tensor_model_parallel_size,
+        ep=args.backend.expert_model_parallel_size,
+        pp=args.backend.pipeline_model_parallel_size,
+        bf16=args.backend.bf16,
+        sp=args.backend.sequence_parallel,
+        etp=args.backend.expert_tensor_parallel_size or 1,
+        cp=args.backend.context_parallel_size or 1,
+        varlen=args.backend.variable_seq_lengths,
+        permute_fusion=args.backend.moe_permute_fusion,
+        fp32_residual=args.backend.fp32_residual_connection,
+        pp_first_stage_layers=args.backend.decoder_first_pipeline_num_layers,
+        pp_last_stage_layers=args.backend.decoder_last_pipeline_num_layers,
     )
     model = InklingGPTModel(
         config=config,
         transformer_layer_spec=get_inkling_block_spec(config, vp_stage=vp_stage),
         vocab_size=text_cfg["vocab_size"],
-        max_sequence_length=args.max_position_embeddings,
+        max_sequence_length=args.backend.max_position_embeddings,
         pre_process=pre_process,
         post_process=post_process,
         position_embedding_type="none",

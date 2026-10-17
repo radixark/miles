@@ -87,7 +87,7 @@ class HuggingfaceAttention(MegatronModule, ABC):
         assert packed_seq_params is not None
         cu_seqlens = packed_seq_params.cu_seqlens_q
 
-        if self.args.sequence_parallel:
+        if self.args.backend.sequence_parallel:
             # tensor_parallel_output_grad=False: the linear attention after this
             # gather is NOT TP-sharded (duplicated on all ranks), so the backward
             # should split (not reduce-scatter) to avoid inflating gradients by TP.
@@ -169,7 +169,7 @@ class HuggingfaceAttention(MegatronModule, ABC):
                 output_list.append(chunks[2 * cp_size - 1 - cp_rank])
             output = torch.cat(output_list, dim=0)
 
-        if self.args.sequence_parallel:
+        if self.args.backend.sequence_parallel:
             output = tensor_parallel.scatter_to_sequence_parallel_region(
                 output, group=mpu.get_tensor_model_parallel_group()
             )
