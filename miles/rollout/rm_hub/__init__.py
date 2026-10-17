@@ -4,6 +4,8 @@ import random
 
 import aiohttp
 
+from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
@@ -28,11 +30,13 @@ async def remote_rm(args, sample: Sample):
             return await resp.json()
 
 
-def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
+def _resolve_reward_config(args, sample: Sample) -> tuple[CustomFunctionConfig | None, str]:
     # Spec fields win when set; unset/empty fields fall back to sample metadata and process-wide args.
     spec = sample.reward_spec
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
     custom_rm_path = (spec.custom_rm_path if spec is not None else None) or args.custom_rm_path
+    if isinstance(custom_rm_path, str):
+        custom_rm_path = CustomFunctionConfig(path=custom_rm_path)
     rm_type = ((spec.rm_type if spec is not None else None) or metadata.get("rm_type") or args.rm_type or "").strip()
     return custom_rm_path, rm_type
 
@@ -42,7 +46,8 @@ async def async_rm(args, sample: Sample, **kwargs):
 
     if custom_rm_path is not None:
         rm_function = load_function(custom_rm_path)
-        return await rm_function(args, sample, **kwargs)
+        fn_args = compute_custom_function_config(args, custom_rm_path)
+        return await rm_function(fn_args, sample, **kwargs)
 
     response = sample.response
     label = sample.label
@@ -100,7 +105,8 @@ async def batched_async_rm(
 
     if args.custom_rm_path is not None:
         rm_function = load_function(args.custom_rm_path)
-        return await rm_function(args, samples, **kwargs)
+        fn_args = compute_custom_function_config(args, args.custom_rm_path)
+        return await rm_function(fn_args, samples, **kwargs)
     tasks = [async_rm(args, sample, **kwargs) for sample in samples]
     rewards = await asyncio.gather(*tasks)
     return rewards

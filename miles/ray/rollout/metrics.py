@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
@@ -25,7 +26,8 @@ logger = logging.getLogger(__name__)
 def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] | None = None):
     if (x := args.custom_eval_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
-        if custom_log_func(rollout_id, args, data, extra_metrics):
+        fn_args = compute_custom_function_config(args, x)
+        if custom_log_func(rollout_id, fn_args, data, extra_metrics):
             return
 
     log_dict = extra_metrics or {}
@@ -77,7 +79,8 @@ def log_rollout_data(
 ):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
-        if custom_log_func(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
+        fn_args = compute_custom_function_config(args, x)
+        if custom_log_func(rollout_id, fn_args, samples, rollout_extra_metrics, rollout_time):
             return
 
     if args.load_debug_rollout_data:
