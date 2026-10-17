@@ -33,6 +33,11 @@ class CallStatusResponse(StrictBaseModel):
     status: Literal["pending", "success", "failed"]
     result: Any = None
     error: str | None = None
+    error_type: str | None = None
+
+
+def exception_type_name(exception_type: type[BaseException]) -> str:
+    return f"{exception_type.__module__}.{exception_type.__qualname__}"
 
 
 class HealthResponse(StrictBaseModel):
