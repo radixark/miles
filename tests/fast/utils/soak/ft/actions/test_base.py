@@ -4,7 +4,7 @@ from tests.utils.soak.core.views import project_actions
 from tests.utils.soak.ft.actions.inject_fault import InjectFaultForm
 
 from miles.backends.training_utils.types import TrainStepOutcome
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 
 _FORM = InjectFaultForm(base_url="http://api:18080", failure_mode=FailureMode.SIGKILL)
 
