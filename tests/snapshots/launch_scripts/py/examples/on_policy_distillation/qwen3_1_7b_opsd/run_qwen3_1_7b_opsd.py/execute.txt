@@ -1,0 +1,123 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true;
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 7
+  --disable-usage-stats
+
+### 2
+mkdir -p <SANDBOX>/output/opsd-test
+
+### 3
+CUDA_VISIBLE_DEVICES=7 python -m sglang.launch_server
+  --model-path <SANDBOX>/models/Qwen3-1.7B
+  --host 127.0.0.1
+  --port 13141
+  --tp 1
+  --chunked-prefill-size 4096
+  --mem-fraction-static 0.25 > <SANDBOX>/output/opsd-test/teacher.log 2>&1 & echo $!
+
+### 4
+for attempt in $(seq 1 120); do kill -0 12345 || exit 1; curl -sf http://127.0.0.1:13141/health_generate >/dev/null && exit 0; sleep 5; done; exit 1
+
+### 5
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 6
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --swiglu
+  --num-layers 28
+  --hidden-size 2048
+  --ffn-hidden-size 6144
+  --num-attention-heads 16
+  --group-query-attention
+  --num-query-groups 8
+  --use-rotary-position-embeddings
+  --disable-bias-linear
+  --normalization RMSNorm
+  --norm-epsilon 1e-6
+  --rotary-base 1000000
+  --vocab-size 151936
+  --kv-channels 128
+  --qk-layernorm
+  --hf-checkpoint <SANDBOX>/models/Qwen3-1.7B
+  --ref-load <SANDBOX>/models/Qwen3-1.7B_torch_dist
+  --load <SANDBOX>/output/opsd-test/checkpoints
+  --save <SANDBOX>/output/opsd-test/checkpoints
+  --save-interval 25
+  --prompt-data <SANDBOX>/data/opsd-train.jsonl
+  --input-key prompt
+  --metadata-key metadata
+  --rollout-shuffle
+  --num-rollout 100
+  --rollout-batch-size 32
+  --n-samples-per-prompt 1
+  --rollout-max-response-len 1024
+  --rollout-temperature 1.1
+  --rollout-top-k 20
+  --global-batch-size 32
+  --balance-data
+  --eval-prompt-data aime24 <SANDBOX>/data/opsd-aime24.jsonl
+  --eval-interval 25
+  --eval-label-key label
+  --n-samples-per-eval-prompt 12
+  --eval-max-response-len 38912
+  --eval-temperature 1.0
+  --eval-top-p 0.95
+  --eval-top-k -1
+  --custom-rm-path examples.on_policy_distillation.qwen3_1_7b_opsd.opsd.reward_func
+  --rm-url http://127.0.0.1:13141/generate
+  --custom-convert-samples-to-train-data-path examples.on_policy_distillation.qwen3_1_7b_opsd.opsd.convert_samples
+  --loss-type custom_loss
+  --custom-loss-function-path examples.on_policy_distillation.qwen3_1_7b_opsd.opsd.loss_function
+  --custom-config-path <REPO_ROOT>/examples/on_policy_distillation/qwen3_1_7b_opsd/config.yaml
+  --disable-compute-advantages-and-returns
+  --object-store-backend ray
+  --lora-rank 64
+  --lora-alpha 128
+  --lora-dropout 0.0
+  --target-modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+  --megatron-to-hf-mode bridge
+  --tensor-model-parallel-size 1
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 1
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 16384
+  --optimizer adam
+  --lr 5e-6
+  --lr-decay-style constant
+  --clip-grad 0.1
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 2
+  --num-gpus-per-node 7
+  --rollout-num-gpus 5
+  --rollout-num-gpus-per-engine 1
+  --sglang-mem-fraction-static 0.7
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --use-wandb
+  --wandb-project miles-run_qwen3_1_7b_opsd
+  --wandb-group opsd-test
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix
+
+### 7
+kill 12345 2>/dev/null || true
