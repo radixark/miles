@@ -39,6 +39,7 @@ class WeightTransferProtocol(ABC):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,

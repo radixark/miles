@@ -128,6 +128,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self, runner_sender: _RunnerSender, converted_named_tensors: list[tuple[str, torch.Tensor]]
     ) -> None:
         cell_updaters_of_cell_id = self._cell_updaters_of_rollout_engine_ind
+        engine_cell_ids = self._engine_cell_ids
 
         ready_hf_tensors_by_param_group = runner_sender.model_param_stager.stage(converted_named_tensors)
         for param_groups in pack_into_buffers(
@@ -147,7 +148,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     remote_shards,
                     param_bytes_by_name,
                     run_write=lambda remote_shard, write: cell_updaters_of_cell_id[
-                        remote_shard.rollout_engine_ind
+                        engine_cell_ids[remote_shard.rollout_engine_ind]
                     ].run_write(write),
                 )
                 pending_writes = [
@@ -164,15 +165,21 @@ class UpdateWeightP2P(WeightTransferProtocol):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
         """Assign and validate write targets, reusing replicas, mappings, transport and buffers across reconnects."""
+        assert len(engine_cell_ids) == len(rollout_engines), (
+            f"[P2P-Shared] {len(engine_cell_ids)} cell ids for {len(rollout_engines)} rollout engines; "
+            f"the per-engine metadata must describe the same engines"
+        )
+
         self.rollout_engines = rollout_engines
+        self._engine_cell_ids = tuple(engine_cell_ids)
         self._cell_updaters_of_rollout_engine_ind = {
-            rollout_engine_ind: _P2PRolloutCellUpdater(rollout_engine_ind=rollout_engine_ind)
-            for rollout_engine_ind in range(len(rollout_engines))
+            cell_id: _P2PRolloutCellUpdater(cell_id=cell_id) for cell_id in engine_cell_ids
         }
         assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
         self.is_sender = bool(assignments)
