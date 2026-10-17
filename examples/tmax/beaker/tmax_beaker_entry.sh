@@ -40,10 +40,11 @@ pip install docker  # the sandbox client; the Miles image does not ship it
 export RAY_health_check_timeout_ms=${RAY_health_check_timeout_ms:-20000}
 export RAY_health_check_failure_threshold=${RAY_health_check_failure_threshold:-60}
 export PYTHONFAULTHANDLER=${PYTHONFAULTHANDLER:-1}  # a crash of any Python process leaves its stack in the log
-# Ten minutes in, report what Ray's own processes actually got (they start later, from the launcher or below).
-(sleep 600; for pid in $(pgrep -f 'gcs_server|raylet' || true); do
+# Once Ray is up (started later, by the launcher or below), report what its own processes actually got.
+(for _ in $(seq 720); do pgrep -f 'gcs_server|raylet' >/dev/null && break; sleep 15; done; sleep 30
+ for pid in $(pgrep -f 'gcs_server|raylet' || true); do
     tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -E '^RAY_health_check' | sed "s/^/ray pid $pid: /"
-done) &
+ done) &
 if [ "$NUM_NODES" -gt 1 ]; then
     HEAD_IP=$(getent hosts "$BEAKER_LEADER_REPLICA_HOSTNAME" | awk '{print $1; exit}')
     export MASTER_ADDR=$HEAD_IP
