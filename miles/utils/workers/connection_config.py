@@ -39,23 +39,24 @@ def build_static_conn_config(*, specs: list[BaseSpec], scaling: ScalingConfig) -
                 name=spec.name,
                 port_infos=spec.port_infos,
                 worker_class=spec.worker_class if isinstance(spec, BaseServeSpec) else None,
-                num_cells=spec.scheduling.num_cells,
-                num_workers_per_cell=spec.scheduling.num_workers_per_cell,
-                pods_per_cell=spec.scheduling.pods_per_cell(),
+                num_cells=scheduling.num_cells,
+                num_workers_per_cell=scheduling.num_workers_per_cell,
+                pods_per_cell=scheduling.pods_per_cell(),
             )
             for spec in specs
-            if not spec.scheduling.declares_dynamic_pool()
+            if not (scheduling := spec.scheduling(scaling)).declares_dynamic_pool()
         }
     )
 
 
 def build_worker_annotations(*, spec: BaseSpec, scaling: ScalingConfig) -> dict[str, str]:
+    scheduling = spec.scheduling(scaling)
     metadata = WorkerPodMetadata(
         category=spec.category,
-        workers_per_pod=spec.scheduling.workers_per_pod(),
-        pods_per_cell=spec.scheduling.pods_per_cell(),
-        gpu_slots_per_worker=spec.scheduling.num_gpu_slots_per_worker,
-        dynamic_pool=spec.scheduling.declares_dynamic_pool(),
+        workers_per_pod=scheduling.workers_per_pod(),
+        pods_per_cell=scheduling.pods_per_cell(),
+        gpu_slots_per_worker=scheduling.num_gpu_slots_per_worker,
+        dynamic_pool=scheduling.declares_dynamic_pool(),
         worker_class=spec.worker_class if isinstance(spec, BaseServeSpec) else None,
         port_infos=spec.port_infos,
         static_meta=spec.static_meta,

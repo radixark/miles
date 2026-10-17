@@ -116,7 +116,7 @@ def _object_names(release: str) -> ObjectNames:
 
 
 def _deployed_specs(specs: list[BaseSpec], *, scaling: ScalingConfig) -> list[BaseSpec]:
-    return [spec for spec in specs if spec.scheduling.num_cells > 0]
+    return [spec for spec in specs if spec.scheduling(scaling).num_cells > 0]
 
 
 def _compute_addresses(
@@ -127,7 +127,7 @@ def _compute_addresses(
             compute_cell_id(pool_id=spec.name, cell_index=cell_index): static_cell_addrs(
                 spec=spec, release=release, cell_index=cell_index
             )
-            for cell_index in range(spec.scheduling.num_cells)
+            for cell_index in range(spec.scheduling(scaling).num_cells)
         }
         for spec in specs
         if SECTION_OF_CATEGORY[spec.category] == STATIC_WORKERS_SECTION
@@ -135,7 +135,7 @@ def _compute_addresses(
 
 
 def _assert_worker_ports_fit(spec: BaseServeSpec, *, scaling: ScalingConfig) -> None:
-    workers_per_pod = spec.scheduling.workers_per_pod()
+    workers_per_pod = spec.scheduling(scaling).workers_per_pod()
     rpc_port = next(port.static_port for port in spec.port_infos if port.name == RPC_PORT_NAME)
     for port in spec.port_infos:
         if port.name == RPC_PORT_NAME:
