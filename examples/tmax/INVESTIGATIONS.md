@@ -44,6 +44,19 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 
 Larger directions to evaluate against the evidence below. Add yours here.
 
+## 2026-10-17: fleet Redis outage delays the gateway prod run
+
+- **Run:** `tmax_prod4node_gateway_qwen35_9b_20261017_035830` (Beaker `01M54060ECZQ0CN4XF1A5FZPZ6`,
+  `prod_4node_gateway.yaml` on branch `shashank/tmax-gateway`), from step 0, alongside the podman run.
+- **What happened:** the fleet's Redis (`jupiter-cs-aus-159:29088`) stopped answering between 03:50 and 04:13 UTC and
+  the head registry emptied at 04:23. The head's gateway listed no replicas, the 30-minute readiness wait ran out, and
+  the first attempt exited 1 at 04:43. The fleet's owner (goncalof) recovered Redis (`redis-local-diagnose`,
+  `redis-*-recovery` experiments in `ai2/oe-agents`, 04:54–05:06) on `jupiter-cs-aus-188:29088`; the 253 replicas,
+  still running throughout, re-registered with it. Beaker's retry 1 (from 04:48) found the new Redis through the head
+  registry and saw 250 replicas at 05:06.
+- **Reading:** a Redis outage before training costs a retry and its wait; during training it would cost more, since
+  the gateway resolves every container's binding through Redis (`binding_lost` ends those episodes).
+
 ## 2026-10-17: step-149 checkpoint evaluates at base-model level on TBlite
 
 - **Setup:** the open-instruct eval harness (tmax repo, `beaker_configs/launch_eval.sh`, Vanillux2Agent, vLLM 0.19.1,
