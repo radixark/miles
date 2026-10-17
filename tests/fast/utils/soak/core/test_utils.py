@@ -185,7 +185,9 @@ class TestNoteLaunchOutcome:
         """A launcher that ran the job to its end is recorded as FINISHED under its request id."""
         event_log = EventLog(tmp_path / "events.jsonl")
 
-        outcome = await note_launch_outcome(event_log=event_log, request_id="req-1", launching=_returns())
+        outcome = await note_launch_outcome(
+            event_log=event_log, request_id="req-1", launching=_returns(), accept_replaced=False
+        )
 
         assert outcome is LaunchOutcome.FINISHED
         assert _launch_events(event_log) == [("req-1", LaunchOutcome.FINISHED, None)]
@@ -195,7 +197,10 @@ class TestNoteLaunchOutcome:
         event_log = EventLog(tmp_path / "events.jsonl")
 
         outcome = await note_launch_outcome(
-            event_log=event_log, request_id=None, launching=_raises(RunExitedError(REPLACED_LAUNCH_EXIT_CODE))
+            event_log=event_log,
+            request_id=None,
+            launching=_raises(RunExitedError(REPLACED_LAUNCH_EXIT_CODE)),
+            accept_replaced=True,
         )
 
         assert outcome is LaunchOutcome.REPLACED
@@ -215,7 +220,9 @@ class TestNoteLaunchOutcome:
         event_log = EventLog(tmp_path / "events.jsonl")
 
         with pytest.raises(RuntimeError, match=f"exited with code {error.exit_code}") as info:
-            await note_launch_outcome(event_log=event_log, request_id="req-1", launching=_raises(error))
+            await note_launch_outcome(
+                event_log=event_log, request_id="req-1", launching=_raises(error), accept_replaced=True
+            )
 
         assert info.value.__cause__ is error
         assert _launch_events(event_log) == [("req-1", LaunchOutcome.FAILED, repr(error))]
@@ -226,7 +233,9 @@ class TestNoteLaunchOutcome:
         error = RuntimeError("helm upgrade failed")
 
         with pytest.raises(RuntimeError) as info:
-            await note_launch_outcome(event_log=event_log, request_id="req-1", launching=_raises(error))
+            await note_launch_outcome(
+                event_log=event_log, request_id="req-1", launching=_raises(error), accept_replaced=True
+            )
 
         assert info.value is error
         assert _launch_events(event_log) == [("req-1", LaunchOutcome.FAILED, repr(error))]
@@ -240,7 +249,9 @@ class TestNoteLaunchOutcome:
             started.set()
             await asyncio.Event().wait()
 
-        task = asyncio.create_task(note_launch_outcome(event_log=event_log, request_id="req-1", launching=_hangs()))
+        task = asyncio.create_task(
+            note_launch_outcome(event_log=event_log, request_id="req-1", launching=_hangs(), accept_replaced=False)
+        )
         await started.wait()
         task.cancel()
 
