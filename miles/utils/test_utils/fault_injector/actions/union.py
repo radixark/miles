@@ -3,6 +3,7 @@ from typing import Annotated
 from pydantic import Discriminator
 
 from miles.utils.test_utils.fault_injector.actions.cell import StartCellAction, StopCellAction
+from miles.utils.test_utils.fault_injector.actions.frozen import SleepForeverAction
 from miles.utils.test_utils.fault_injector.actions.process import (
     ExitProcessAction,
     KillProcessAction,
@@ -11,6 +12,12 @@ from miles.utils.test_utils.fault_injector.actions.process import (
 )
 
 FaultAction = Annotated[
-    ObserveAction | KillProcessAction | ExitProcessAction | SegfaultProcessAction | StopCellAction | StartCellAction,
+    ObserveAction
+    | KillProcessAction
+    | ExitProcessAction
+    | SegfaultProcessAction
+    | StopCellAction
+    | StartCellAction
+    | SleepForeverAction,
     Discriminator("kind"),
 ]
