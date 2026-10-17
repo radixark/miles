@@ -101,8 +101,10 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
     Broad scopes are large include sets:
 
     - `run-ci-all` includes every registered label.
-    - Weekly and release cadences include every registered label; release
-      differs from weekly only in never writing the perf baseline.
+    - Weekly and release cadences include every registered label and run
+      each test on every generation it supports, as if both `run-on-hopper`
+      and `run-on-blackwell` were set; release differs from weekly only in
+      never writing the perf baseline.
     - Nightly cadence excludes `long` and `ft-long`.
     - `run-ci-image` excludes `long`, `ft-short`, and `ft-long`.
 
@@ -141,6 +143,9 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
     absorb = bool(dispatch_arches)
     if not dispatch_arches and blackwell_only:
         dispatch_arches = frozenset({"blackwell"})
+    if not dispatch_arches and cadence in {WEEKLY_CADENCE, RELEASE_CADENCE}:
+        dispatch_arches = frozenset(KNOWN_ARCHES)
+        absorb = True
 
     full_cadences = {NIGHTLY_CADENCE, WEEKLY_CADENCE, RELEASE_CADENCE}
     return RunPolicy(
