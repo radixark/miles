@@ -35,7 +35,11 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.session import pause_engines, resume_engines, set_weight_version
+from miles.backends.training_utils.weight_update.session import (
+    maybe_pause_engines,
+    maybe_resume_engines,
+    set_weight_version,
+)
 from miles.utils import async_utils
 from miles.utils.function_registry import load_function
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, build_lora_config
@@ -137,12 +141,12 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         start = time.perf_counter()
         try:
             if should_pause:
-                pause_engines(self.args, engines)
+                maybe_pause_engines(self.args, engines)
             self._load_everywhere(engines, adapter, adapter_dir)
             set_weight_version(engines, weight_version)
         finally:
             if should_pause:
-                resume_engines(engines)
+                maybe_resume_engines(self.args, engines)
         load_s = time.perf_counter() - start
 
         if self._stage_root:

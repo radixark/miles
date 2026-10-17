@@ -84,6 +84,7 @@ def _make_args(tmp_path, **overrides) -> Namespace:
         custom_update_weight_post_write_path=None,
         http_lora_ship="path",
         fully_async=False,
+        colocate=False,
         pause_generation_mode="retract",
     )
     for key, value in overrides.items():
