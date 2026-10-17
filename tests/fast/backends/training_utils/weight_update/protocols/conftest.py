@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import torch
 
+from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfNameMapping
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     assign_rollout_engine_ranks_for_data_replica,
@@ -196,6 +197,7 @@ class _FakeRolloutApi:
         self.unreachable = unreachable
         self.request_failures: dict[str, Exception] = {}
         self.hanging_requests: set[str] = set()
+        self.corrupted_roles: set[str] = set()
         self.cell_id = cell_id
         self.draft_shares_target_weights = draft_shares_target_weights
         self.gpu_count = gpu_count
@@ -205,6 +207,9 @@ class _FakeRolloutApi:
         self.expert_placement = expert_placement or {}
         self.speculative_args = speculative_args or {}
         self.calls: list[str] = []
+        self.check_weights_calls: list[dict[str, Any]] = []
+        self.corrupted_ranks: set[int] = set()
+        self.transfer_engine: _FakeTransferEngine | None = None
 
     def session_id(self, rank: int, runner_role: str = "target") -> str:
         suffix = "" if runner_role == "target" else f"-{runner_role}"
@@ -233,6 +238,26 @@ class _FakeRolloutApi:
     async def get_server_info(self) -> dict:
         await self._before_request("get_server_info")
         return {"moe_runner_backend": self.moe_runner_backend, **self.expert_placement, **self.speculative_args}
+
+    async def check_weights(self, *, action: str, names: list[str], selector: str) -> dict[str, Any]:
+        self.check_weights_calls.append(dict(action=action, names=names, selector=selector))
+        await self._before_request(f"check_weights {selector}")
+        assert self.transfer_engine is not None
+        records = []
+        for rank in range(self.gpu_count):
+            landed: dict[int, list[float]] = {}
+            for session_id, payload in self.transfer_engine.writes:
+                if session_id == self.session_id(rank, selector):
+                    landed.update(payload)
+            if not landed:
+                continue
+            offset = 1.0 if rank in self.corrupted_ranks or selector in self.corrupted_roles else 0.0
+            checksums = {
+                name: hash_tensor_sha256(torch.tensor(landed[self.published_address(rank, name, selector)]) + offset)
+                for name in names
+            }
+            records.append({"checksums": checksums, "parallelism_info": [{"role": "tp", "rank": rank}]})
+        return {"success": True, "ranks": records}
 
     async def _before_request(self, name: str) -> None:
         self.calls.append(name)
@@ -299,13 +324,18 @@ class _P2PSenderHarness:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
 
     def make_protocol(
-        self, *, p2p_transfer_timeout: float = _FAILURE_BOUND, update_weight_buffer_size: int = 1024
+        self,
+        *,
+        p2p_transfer_timeout: float = _FAILURE_BOUND,
+        update_weight_buffer_size: int = 1024,
+        check_weight_transfer_checksum: bool = False,
     ) -> Any:
         args = Namespace(
             hf_checkpoint="/model",
             p2p_transfer_timeout=p2p_transfer_timeout,
             update_weight_engine_request_timeout=_FAILURE_BOUND,
             update_weight_buffer_size=update_weight_buffer_size,
+            check_weight_transfer_checksum=check_weight_transfer_checksum,
             sglang_pp_size=1,
         )
         protocol = self._p2p_protocol.UpdateWeightP2P(args)
@@ -315,6 +345,8 @@ class _P2PSenderHarness:
     def connect(
         self, protocol: Any, apis: list[_FakeRolloutApi], placement: Any = None, selector: str = "all"
     ) -> None:
+        for api in apis:
+            api.transfer_engine = self.transfer_engine
         protocol.connect(
             rollout_engines=apis,
             engine_gpu_counts=[api.gpu_count for api in apis],

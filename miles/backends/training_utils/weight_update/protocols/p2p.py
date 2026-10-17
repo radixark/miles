@@ -9,6 +9,7 @@ import torch.distributed as dist
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update import checksum_utils
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.p2p_rollout_cell_updater import _P2PRolloutCellUpdater
@@ -149,12 +150,17 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 if not remote_shards:
                     continue
                 param_bytes_by_name = target.model_replica.load_into(buffer, param_names, hf_tensors)
+                sent_checksums = (
+                    checksum_utils.compute_send_checksums(param_bytes_by_name, list(param_bytes_by_name))
+                    if self.args.check_weight_transfer_checksum
+                    else None
+                )
                 writes = self._transport.write(
                     remote_shards,
                     param_bytes_by_name,
-                    run_write=lambda remote_shard, write: cell_updaters_of_cell_id[
+                    run_write=lambda remote_shard, write, sent_checksums=sent_checksums: cell_updaters_of_cell_id[
                         engine_cell_ids[remote_shard.rollout_engine_ind]
-                    ].run_write(write),
+                    ].run_write(write, remote_shard=remote_shard, sent_checksums=sent_checksums),
                 )
                 pending_writes = [
                     PendingWrite(

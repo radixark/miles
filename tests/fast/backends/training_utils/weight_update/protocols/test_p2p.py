@@ -453,28 +453,85 @@ class TestHfNames:
         }
 
 
-class TestWriteOrdering:
-    def test_buckets_reach_an_engine_in_submission_order(
+class TestWriteChecksums:
+    @staticmethod
+    def _send(p2p_sender: Any, protocol: Any, apis: list[Any], bucket: list[tuple[str, torch.Tensor]]) -> None:
+        p2p_sender.connect(protocol, apis)
+        p2p_sender.begin_sync(protocol, weight_version=1)
+        protocol.send_bucket(bucket)
+        protocol.after_base_weights()
+
+    def test_every_written_rank_is_verified_against_the_bytes_it_received(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
-        """A later bucket must not overtake an earlier native write on the same engine."""
-        protocol = p2p_sender.make_protocol()
+        """Each rank gets its own shard, so the sent hash must be taken per rank from the reloaded buffer."""
+        protocol = p2p_sender.make_protocol(check_weight_transfer_checksum=True)
+        apis = [make_rollout_api("cell-a", gpu_count=2), make_rollout_api("cell-b", gpu_count=1)]
+
+        self._send(p2p_sender, protocol, apis, make_bucket("hf.w"))
+
+        assert [api.check_weights_calls for api in apis] == [
+            [dict(action="raw_checksum", names=["w"], selector="target")] * 2,
+            [dict(action="raw_checksum", names=["w"], selector="target")],
+        ]
+        assert not any(updater.is_errored for updater in protocol.cell_updaters_of_cell_id.values())
+
+    def test_a_fused_parameter_is_verified_once_under_its_engine_name(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """Only complete, transfer-ready engine tensors are written, so only they may be checked."""
+        protocol = p2p_sender.make_protocol(check_weight_transfer_checksum=True)
         api = make_rollout_api("cell-a", gpu_count=1)
         p2p_sender.connect(protocol, [api])
         p2p_sender.begin_sync(protocol, weight_version=1)
-        hold = p2p_sender.transfer_engine.hold(api.session_id(0))
-        protocol.send_bucket(make_bucket("hf.w"))
-        assert hold.entered.wait(timeout=10)
-        protocol.send_bucket(make_bucket("hf.q", "hf.k"))
-        assert p2p_sender.transfer_engine.writes == []
 
-        hold.release.set()
+        protocol.send_bucket(make_bucket("hf.q"))
+        protocol.send_bucket(make_bucket("hf.k"))
         protocol.after_base_weights()
 
-        assert p2p_sender.transfer_engine.writes == [
-            (api.session_id(0), {api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0]}),
-            (api.session_id(0), {api.target_address(0, "qk"): [5.0, 6.0, 7.0, 8.0]}),
-        ]
+        assert api.check_weights_calls == [dict(action="raw_checksum", names=["qk"], selector="target")]
+        assert not protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+
+    def test_a_corrupted_receiver_fails_only_its_own_cell(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A single engine that received wrong bytes is dropped while its peers keep the update."""
+        protocol = p2p_sender.make_protocol(check_weight_transfer_checksum=True)
+        healthy, corrupted = make_rollout_api("cell-a", gpu_count=1), make_rollout_api("cell-b", gpu_count=1)
+        corrupted.corrupted_ranks.add(0)
+
+        self._send(p2p_sender, protocol, [healthy, corrupted], make_bucket("hf.w"))
+
+        updaters = protocol.cell_updaters_of_cell_id
+        assert (updaters["cell-a"].is_errored, updaters["cell-b"].is_errored) == (False, True)
+        assert "cell-b rank 0" in str(updaters["cell-b"]._error)
+
+    def test_a_mismatch_on_an_early_rank_stops_writing_that_cell(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """The earlier rank is drained before the next one, so its failure must keep later ranks of the cell unwritten."""
+        protocol = p2p_sender.make_protocol(check_weight_transfer_checksum=True)
+        api = make_rollout_api("cell-a", gpu_count=2)
+        api.corrupted_ranks.add(0)
+
+        self._send(p2p_sender, protocol, [api], make_bucket("hf.w"))
+
+        assert protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert p2p_sender.transfer_engine.written_sessions() == [api.session_id(0)]
+
+    def test_disabled_checksums_send_no_request_and_blame_nobody(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """With the flag off even a corrupting receiver is neither asked nor failed."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=2)
+        api.corrupted_ranks.add(0)
+
+        self._send(p2p_sender, protocol, [api], make_bucket("hf.w"))
+
+        assert api.check_weights_calls == []
+        assert not protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert sorted(p2p_sender.transfer_engine.written_sessions()) == [api.session_id(0), api.session_id(1)]
 
 
 class TestReconnectionWithOutstandingWrites:
@@ -525,3 +582,58 @@ class TestReconnectionWithOutstandingWrites:
         assert not protocol.cell_updaters_of_cell_id["cell-a"].is_errored
         assert isinstance(old_cell._error, TimeoutError)
         assert ("unregistered read", old_api.session_id(0)) not in p2p_sender.log
+
+
+class TestDraftChecksumIsolation:
+    @pytest.mark.parametrize("corrupted_role", ["target", "draft"])
+    def test_corruption_in_either_runner_stops_both_roles_of_only_that_cell(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any, corrupted_role: str
+    ) -> None:
+        """Draft and target checksum failures share cell fate while healthy cells keep both roles current."""
+        protocol = p2p_sender.make_protocol(check_weight_transfer_checksum=True)
+        bad = make_rollout_api("bad", gpu_count=1, speculative_args=_EAGLE_MTP, draft_shares_target_weights=False)
+        good = make_rollout_api("good", gpu_count=1, speculative_args=_EAGLE_MTP, draft_shares_target_weights=False)
+        bad.corrupted_roles.add(corrupted_role)
+        p2p_sender.connect(protocol, [bad, good])
+        p2p_sender.begin_sync(protocol, weight_version=1)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+        assert protocol.cell_updaters_of_cell_id["bad"].is_errored
+        assert not protocol.cell_updaters_of_cell_id["good"].is_errored
+        bad_writes = [write for write in p2p_sender.transfer_engine.writes if write[0].startswith("bad-")]
+
+        protocol.send_bucket(make_bucket("hf.q", "hf.k", "hf.mtp"))
+        protocol.after_base_weights()
+
+        assert [write for write in p2p_sender.transfer_engine.writes if write[0].startswith("bad-")] == bad_writes
+        assert good.check_weights_calls == [
+            dict(action="raw_checksum", names=["w"], selector="target"),
+            dict(action="raw_checksum", names=["w"], selector="draft"),
+            dict(action="raw_checksum", names=["qk"], selector="target"),
+            dict(action="raw_checksum", names=["mtp"], selector="draft"),
+        ]
+        assert not protocol.cell_updaters_of_cell_id["good"].is_errored
+
+
+class TestWriteOrdering:
+    def test_buckets_reach_an_engine_in_submission_order(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A later bucket must not overtake an earlier native write on the same engine."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1)
+        p2p_sender.connect(protocol, [api])
+        p2p_sender.begin_sync(protocol, weight_version=1)
+        hold = p2p_sender.transfer_engine.hold(api.session_id(0))
+        protocol.send_bucket(make_bucket("hf.w"))
+        assert hold.entered.wait(timeout=10)
+        protocol.send_bucket(make_bucket("hf.q", "hf.k"))
+        assert p2p_sender.transfer_engine.writes == []
+
+        hold.release.set()
+        protocol.after_base_weights()
+
+        assert p2p_sender.transfer_engine.writes == [
+            (api.session_id(0), {api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0]}),
+            (api.session_id(0), {api.target_address(0, "qk"): [5.0, 6.0, 7.0, 8.0]}),
+        ]
