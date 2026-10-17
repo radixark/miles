@@ -1,14 +1,27 @@
 import random
 
 import pytest
-from tests.fast.utils.soak.k8s_utils.pod_fakes import _api_error, _FakePodApi, _live_pod, _patch_pod_api
+from tests.fast.utils.soak.k8s_utils.pod_fakes import (
+    _api_error,
+    _completed,
+    _FakeKubectlExec,
+    _FakePodApi,
+    _live_pod,
+    _patch_pod_api,
+)
 from tests.fast.utils.soak.soak_fakes import _at, _cell_target, _fault_target, _observation
 from tests.utils.soak.core.types import SoakActionEvidence, SoakActionRequest
+from tests.utils.soak.ft.actions import pod as pod_module
 from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
-from tests.utils.soak.ft.actions.pod import BasePodFaultForm, DeletePodFaultForm
+from tests.utils.soak.ft.actions.pod import BasePodFaultForm, DeletePodFaultForm, ExecSigkillFaultForm
 from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, PodDetails
 from tests.utils.soak.k8s_utils.pod_manipulation import PodDeletedEvidence, SoakPodTarget
-from tests.utils.soak.k8s_utils.pod_processes import ProcessIdentity, ProcessTarget
+from tests.utils.soak.k8s_utils.pod_processes import (
+    ProcessIdentity,
+    ProcessSignal,
+    ProcessSignalReceipt,
+    ProcessTarget,
+)
 
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
@@ -152,9 +165,118 @@ class TestDeletePodFaultForm:
             await _execute(form, _pod_request(form, _pod("pod-a")))
 
 
+class TestExecSignalFaultFormRequest:
+    @pytest.mark.parametrize("form_type", [ExecSigkillFaultForm])
+    def test_only_pods_with_an_observed_engine_target_are_candidates(self, form_type: type[BasePodFaultForm]) -> None:
+        """Pods without the engine container target or with another pattern cannot be signalled."""
+        form = form_type(namespace="ns", run_id=_RUN_ID)
+        good = _pod("pod-good", engine=_engine_target("uid-pod-good"))
+        target = _rollout_with(
+            _pod("pod-none"), _pod("pod-other", engine=_engine_target("uid-pod-other", pattern="python")), good
+        )
+
+        assert {_create(form, target, seed=seed).details.pod.name for seed in range(10)} == {"pod-good"}
+        assert _create(form, _rollout_with(_pod("pod-none"))) is None
+
+    def test_the_form_names_its_operation(self) -> None:
+        """The SIGKILL form carries its own name and operation."""
+        kill = ExecSigkillFaultForm(namespace="ns", run_id=_RUN_ID)
+
+        assert (kill.name, kill.operation) == ("exec_sigkill", ProcessSignal.KILL)
+
+
+class TestExecSignalFaultFormExecute:
+    @pytest.mark.parametrize(("form_type", "operation"), [(ExecSigkillFaultForm, "kill")])
+    async def test_the_exec_runs_the_cli_in_the_engine_container_with_the_target_on_stdin(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        form_type: type[BasePodFaultForm],
+        operation: str,
+    ) -> None:
+        """The command addresses the pod's engine container and passes the operation, request id and target."""
+        engine = _engine_target("uid-pod-a")
+        receipt = ProcessSignalReceipt(request_id="req-1", target=engine, operation=operation, signalled_pids=[42])
+        kubectl = _FakeKubectlExec(replies=[_completed(stdout=receipt.model_dump_json())])
+        monkeypatch.setattr(pod_module, "run_process", kubectl)
+        form = form_type(namespace="ns", run_id=_RUN_ID)
+
+        reported = await _execute(form, _pod_request(form, _pod("pod-a", engine=engine)))
+
+        [call] = kubectl.calls
+        assert call["argv"] == [
+            "kubectl",
+            "exec",
+            "--stdin",
+            "--namespace",
+            "ns",
+            "pod-a",
+            "--container",
+            "engine",
+            "--",
+            "python3",
+            "-m",
+            "tests.utils.soak.k8s_utils.pod_processes_cli",
+            operation,
+            "req-1",
+        ]
+        assert ProcessTarget.model_validate_json(call["input"]) == engine
+        assert call["check"] is False and call["timeout"] is not None
+        assert reported == [receipt]
+
+    @pytest.mark.parametrize(
+        "receipt",
+        [
+            pytest.param({"request_id": "req-other"}, id="other_request"),
+            pytest.param({"operation": ProcessSignal.STOP}, id="stop_receipt_for_kill"),
+            pytest.param({"target": _engine_target("uid-pod-a", pid=43)}, id="other_incarnation"),
+            pytest.param({"signalled_pids": [42, 43]}, id="other_pids"),
+        ],
+    )
+    async def test_a_mismatched_receipt_reports_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, receipt: dict[str, object]
+    ) -> None:
+        """Only a receipt for exactly this request, incarnation and operation proves the kill happened."""
+        engine = _engine_target("uid-pod-a")
+        fields = {"request_id": "req-1", "target": engine, "operation": ProcessSignal.KILL, "signalled_pids": [42]}
+        stdout = ProcessSignalReceipt(**fields | receipt).model_dump_json()
+        monkeypatch.setattr(pod_module, "run_process", _FakeKubectlExec(replies=[_completed(stdout=stdout)]))
+        form = ExecSigkillFaultForm(namespace="ns", run_id=_RUN_ID)
+
+        with pytest.raises(AssertionError):
+            await _execute(form, _pod_request(form, _pod("pod-a", engine=engine)))
+
+    async def test_a_nonzero_exit_reports_nothing_even_with_a_valid_receipt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exit status gates success before stdout is trusted."""
+        engine = _engine_target("uid-pod-a")
+        receipt = ProcessSignalReceipt(
+            request_id="req-1", target=engine, operation=ProcessSignal.KILL, signalled_pids=[42]
+        )
+        reply = _completed(returncode=1, stdout=receipt.model_dump_json(), stderr="boom")
+        monkeypatch.setattr(pod_module, "run_process", _FakeKubectlExec(replies=[reply]))
+        form = ExecSigkillFaultForm(namespace="ns", run_id=_RUN_ID)
+
+        with pytest.raises(AssertionError, match="boom"):
+            await _execute(form, _pod_request(form, _pod("pod-a", engine=engine)))
+
+    async def test_an_engine_target_from_another_pod_incarnation_is_never_executed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Process identities observed in a previous pod UID are stale and must not reach kubectl."""
+        kubectl = _FakeKubectlExec(replies=[])
+        monkeypatch.setattr(pod_module, "run_process", kubectl)
+        form = ExecSigkillFaultForm(namespace="ns", run_id=_RUN_ID)
+
+        with pytest.raises(AssertionError):
+            await _execute(form, _pod_request(form, _pod("pod-a", engine=_engine_target("uid-previous"))))
+
+        assert kubectl.calls == []
+
+
 class TestCreateCellFaultFormsPodForms:
     def test_kubernetes_timer_forms_add_pod_faults_with_unique_names(self) -> None:
-        """Actors and rollouts may lose their pod, each form named once."""
+        """Actors may lose their pod; rollouts may be killed or lose their pod, each form named once."""
         config = command_utils.ExecuteTrainConfig(
             cluster_backend=ClusterBackend.KUBERNETES, namespace="ns", run_id=_RUN_ID
         )
@@ -162,7 +284,7 @@ class TestCreateCellFaultFormsPodForms:
         forms = create_cell_fault_forms(base_url="http://api:18080", config=config)
 
         rollout_names = [form.name for form in forms["rollout"]]
-        assert rollout_names == ["delete_pod"]
+        assert rollout_names == ["exec_sigkill", "delete_pod"]
         assert "delete_pod" in [form.name for form in forms["actor"]]
         for kind_forms in forms.values():
             assert len({form.name for form in kind_forms}) == len(kind_forms)
