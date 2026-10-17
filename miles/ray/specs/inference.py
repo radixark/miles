@@ -136,7 +136,7 @@ def compute_engine_provider(args, *, capability: BackendCapability) -> BaseWorke
 
 
 def backend_inference_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
-    return capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args))
+    return capability.dynamic_worker_provider(pool_ids=None, category=POOL_CATEGORY_INFERENCE_ENGINE)
 
 
 def compute_router_providers(args, *, capability: BackendCapability) -> list[BaseWorkerProvider]:

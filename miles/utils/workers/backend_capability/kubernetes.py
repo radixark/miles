@@ -25,8 +25,15 @@ class KubernetesBackendCapability(BackendCapability):
         self._static_conn_infos = config.static_conn_infos
         self._cell_operations = cell_operations
 
-    def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider:
-        return KubernetesWorkerProvider(run=self._run, pool_ids=list(pool_ids), resync_period=DEFAULT_RESYNC_PERIOD)
+    def dynamic_worker_provider(
+        self, *, pool_ids: Sequence[str] | None, category: str | None = None
+    ) -> BaseWorkerProvider:
+        return KubernetesWorkerProvider(
+            run=self._run,
+            pool_ids=list(pool_ids) if pool_ids is not None else None,
+            category=category,
+            resync_period=DEFAULT_RESYNC_PERIOD,
+        )
 
     def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider:
         config = self._static_conn_infos.get(pool_id)
