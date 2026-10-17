@@ -2,7 +2,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterSnapshot
+from tests.utils.deploy.hot_restart.cluster_observer import ClusterSnapshot
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.comparisons.metrics import read_metric_events

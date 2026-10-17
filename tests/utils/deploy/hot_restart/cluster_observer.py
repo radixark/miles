@@ -19,7 +19,6 @@ from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, HEALTH_PAT
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name, static_worker_host
 from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT
 
-
 # ================================= constants ==================================
 
 

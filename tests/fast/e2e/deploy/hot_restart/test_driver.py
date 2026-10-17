@@ -14,9 +14,9 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     driving_hot_restarts,
     relaunch_with_hot_restart,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, RunProgress
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import NAMESPACE, RELEASE
+from tests.utils.deploy.hot_restart.evidence import HotRestartRecord, RunProgress
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
