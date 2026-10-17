@@ -46,7 +46,8 @@ beaker:
   priority: urgent
   preemptible: true                           # only used without min_runtime (Beaker allows one)
   min_runtime: 8h
-  retries: 5                                  # mason --max_retries 5; a retry resumes from exp_name's checkpoint
+  retries: 10                                 # mason --max_retries 5, raised after the 2026-10-16 run used all 5;
+                                              # a retry resumes from exp_name's checkpoint
   nodes: 4                                    # mason --num_nodes 4
   gpus: 8
   shared_memory: 512GiB

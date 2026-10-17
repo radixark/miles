@@ -244,7 +244,7 @@ flags `run_tmax_qwen3_5.py` adds.
 | `--local_eval_every 10` | None (the prod run has no eval set either) |
 | `--output_dir /output`, `--exp_name` | `output_dir`, `exp_name` (+ the submission's date-time suffix) |
 | holmes `--attn_implementation flash_4` | `--attention-backend flash` |
-| mason `--num_nodes 4 --max_retries 5 --gpus 8 --priority urgent`, holmes `--min_runtime 8h --auto_resume` | `beaker: nodes: 4, retries: 5, gpus: 8, priority: urgent, min_runtime: 8h` (Beaker rejects `preemptible` together with a minimum runtime) |
+| mason `--num_nodes 4 --max_retries 5 --gpus 8 --priority urgent`, holmes `--min_runtime 8h --auto_resume` | `beaker: nodes: 4, retries: 10, gpus: 8, priority: urgent, min_runtime: 8h` (Beaker rejects `preemptible` together with a minimum runtime). Retries raised from 5 after the 2026-10-16 run used all 5 |
 | `SWERL_PODMAN_SERVICE_COUNT=4` | `beaker.sandbox_shards: 4` |
 | `SWERL_DOCKER_START_CONCURRENCY=64`, `SWERL_DOCKER_EXEC_CONCURRENCY=256` | `sandbox_start_concurrency: 64`, `sandbox_exec_concurrency: 256` |
 | `SWERL_RESET_FAILURE_ZERO_REWARD=1` | `start_failure: zero` |
