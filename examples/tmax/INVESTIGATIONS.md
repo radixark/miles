@@ -36,7 +36,7 @@ The options below are the ones presented during the investigations; none is impl
 | H | `PYTHONFAULTHANDLER=1` in the Beaker env | Captures a Python stack if the rollout executor segfaults again | One env var | Bundle with the next restart |
 | I | More episodes in flight (1024, 256 sandboxes per node) | Uses idle engine capacity during long-tail phases | Doubles sandbox load per node, which is the suspected cause of the stalls | Not before A–C |
 | J | Episode wall-clock cap (`episode_timeout_s`) | Bounds long-tail episodes | open-instruct has no cap | Not now |
-| M | Worker replicas' watch on the Ray head. (1) None: workers leave when the head marks the run done, or through Beaker's `propagateFailure` when the head's job fails. (2) open-instruct's: 6 failed `ray status` checks 5 s apart, with no timeout on a check. (3) A ~20-minute tolerance (`HEAD_MISS_LIMIT` 80, `aeb4f9ecd3`) | The ported check (6 misses with a 10 s timeout each, about 90 s) failed three podman attempts on 2026-10-17 while a starved head was slow to answer | (1) relies on Beaker noticing a failed head; a head that hangs without exiting would leave the workers waiting | **(1), taken 2026-10-17 by the user.** Revisit (2) or (3) if workers outlive a dead head |
+| M | Worker replicas' watch on the Ray head. (1) None: workers leave when the head marks the run done, or through Beaker's `propagateFailure` when the head's job fails. (2) open-instruct's: 6 failed `ray status` checks 5 s apart, with no timeout on a check. (3) A ~20-minute tolerance (`HEAD_MISS_LIMIT` 80, `aeb4f9ecd3`) | The ported check (6 misses with a 10 s timeout each, about 90 s) failed three podman attempts on 2026-10-17 while a starved head was slow to answer | (1) relies on Beaker noticing a failed head; a head that hangs without exiting would leave the workers waiting | **(2), taken 2026-10-17 by the user (`ray_node_setup.sh` as written); (1) to explore later** |
 | K | Make a dropped weight-sync reply non-fatal: treat it as "outcome unknown" after a completed broadcast and verify the engines' weight version | Survives the `ReadError` seen once in the old run | Miles core change; check upstream first | Only if it recurs |
 
 Suggested next restart: A + B + F + H (and G once the trainer side exists), validated on a 4-GPU smoke, then
@@ -85,8 +85,8 @@ the backend can be trusted at prod scale.
   were 1–3.5 s, then 53 s at 07:55. A 21-minute sync (1,286 s) after step 170 at 04:03 had not killed it.
 - **Reading:** the entry script's own watchdog, not Ray, ended this attempt: about 90 s of failed `ray status` on a
   starved head. The check was ported from open-instruct's `ray_node_setup.sh`, but with a 10 s timeout on each check
-  that open-instruct does not have, so a slow head counted as a miss. Removed (option M); `aeb4f9ecd3` had first
-  raised it to about 20 minutes.
+  that open-instruct does not have, so a slow head counted as a miss. Now as open-instruct has it (option M);
+  `aeb4f9ecd3` had first raised it to about 20 minutes.
 
 ## 2026-10-17: fleet Redis outage delays the gateway prod run
 

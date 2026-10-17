@@ -166,7 +166,7 @@ malformed and ends the episode on both sides. What differs is tokenization, time
 | Pull credentials | docker-py sends `~/.docker/config.json` with each pull | Sent explicitly with each pull (`TMAX_REGISTRY_*`); podman 4.9 ignores its own login when the request carries none |
 | Code in the job | Baked into the image | `git clone --shared` of the weka checkout at the pinned commit |
 | Secrets | Looked up by Beaker identity, only if they exist, including `BEAKER_TOKEN` | Three fixed names from the local user; no existence check; no `BEAKER_TOKEN` |
-| Multi-node | Replicas with leader selection, host networking, failure and preemption propagation, NCCL over InfiniBand; a worker exits 1 after 6 failed `ray status` checks of the head (`ray_node_setup.sh`) | Same, plus `synchronizedStartTimeout` (1 h) and workers that exit 0 after a successful run; workers do not check the head (removed 2026-10-17, [INVESTIGATIONS.md](../../examples/tmax/INVESTIGATIONS.md) option M) |
+| Multi-node | Replicas with leader selection, host networking, failure and preemption propagation, NCCL over InfiniBand; a worker exits 1 after 6 failed `ray status` checks of the head (`ray_node_setup.sh`) | Same, plus `synchronizedStartTimeout` (1 h) and workers that exit 0 after a successful run; the same head check (an earlier port timed each check out after 10 s, [INVESTIGATIONS.md](../../examples/tmax/INVESTIGATIONS.md) option M) |
 | Result dataset | `/output` | None |
 
 ## Checkpoints, resume and logging

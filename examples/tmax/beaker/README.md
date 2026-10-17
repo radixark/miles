@@ -159,9 +159,10 @@ python examples/tmax/beaker/registry_mirror/registry_mirror.py warm     # open-i
   the podman services, and so every sandbox, under `nice -n 19` (`SANDBOX_NICE`, 0 turns it off), and gives Ray's
   node health check about 20 minutes (`RAY_health_check_timeout_ms` 20000, `RAY_health_check_failure_threshold`
   60) before it declares a node dead; the log shows both (`19 /usr/bin/podman system service`, `ray pid …:
-  RAY_health_check_…`). Worker replicas do not watch the head (open-instruct's do, with `ray status`): they stay
-  until the head marks the run done, and leave through Beaker's `propagateFailure` when the head fails. See
-  [INVESTIGATIONS.md](../INVESTIGATIONS.md) for the node deaths that prompted both, and option M.
+  RAY_health_check_…`). Worker replicas check the head as open-instruct's `ray_node_setup.sh` does: they leave
+  after 6 failed `ray status` checks in a row, 5 s apart, with no timeout on a check (`RAY_HEAD_MONITOR_*`), and
+  each failed check is logged. See [INVESTIGATIONS.md](../INVESTIGATIONS.md) for the node deaths behind these, and
+  option M.
 - **Layout.** With `nodes: N`, replica 0 is the Ray head and runs the launcher; training takes the first nodes and
   SGLang the rest (`async_rollout_gpus` must be whole nodes). The rollout executor, and with it every agent process,
   is pinned to the head (`--pin-rollout-manager-to-head`). The sandboxes still spread: the head drives the other
