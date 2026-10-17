@@ -118,7 +118,15 @@ CUSTOM_ARGS=(
    --custom-rm-path generate_with_search.reward_func
 
    # TIS-related args, recommended to enable when using TIS
-   # --custom-config-path examples/infra_features/train_infer_mismatch_helper/mis.yaml
+   # --use-tis
+   # --use-rs
+   # --tis-level token
+   # --rs-level token
+   # --tis-mode truncate
+   # --tis-lower-bound 0.5
+   # --tis-upper-bound 2.0
+   # --rs-veto-threshold 1.0e-4
+   # --tis-batch-normalize
    # --custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp
 )
 
