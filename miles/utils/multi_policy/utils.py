@@ -2,7 +2,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from miles.backends.megatron_utils.megatron_config import MegatronConfig, compute_trainer_args, resolve_megatron_config
+from miles.backends.megatron_utils.megatron_config import MegatronConfig, compute_trainer_args
 from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.ray.specs.train import compute_trainer_configs
@@ -45,7 +45,7 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         await rollout_executor.set_train_parallel_config(
             await trainer.handle.get_train_parallel_config(), trainer_model_id=model_id
         )
-    leader_model_id = resolve_megatron_config(args).leader_model_id
+    leader_model_id = args.raw_megatron.leader_model_id
     leader_rollout_id = trainers[leader_model_id].start_rollout_id - 1
     if leader_rollout_id >= 0:
         _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
