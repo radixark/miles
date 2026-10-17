@@ -120,12 +120,18 @@ def _build_train_args(
         get_common_train_args(
             ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=debug_rollout_data_dir
         )
-        + get_ft_args(ft_mode, api_server_args=API_SERVER_ARGS)
+        + get_ft_args(
+            ft_mode, api_server_args=API_SERVER_ARGS, extra_ft_components=_compute_extra_ft_components(ft_mode)
+        )
         + get_fully_async_args(fully_async=fully_async)
         + "--mini-ft-controller-enable "
     )
     assert_fresh_dump_dir(Path(dump_dir))
     return train_args
+
+
+def _compute_extra_ft_components(ft_mode: FTTestMode) -> tuple[str, ...]:
+    return ("rollout",) if ft_mode.has_real_rollout and "rollout" not in ft_mode.ft_components else ()
 
 
 def _run_soak(
