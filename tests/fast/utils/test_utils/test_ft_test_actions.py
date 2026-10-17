@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
-from tests.e2e.ft.conftest_ft.execution import DEFAULT_TRAIN_SCRIPT
+from tests.utils.ft.launch import DEFAULT_TRAIN_SCRIPT
 
 from miles.utils.test_utils import ft_test_actions
 from miles.utils.test_utils.ft_test_actions import (
