@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+import numpy as np
 import torch
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
@@ -104,16 +105,15 @@ def convert_samples_to_train_data(
     # TODO: compress the loss mask
     loss_masks = []
     for sample in samples:
-        # always instantiate loss_mask if not provided
-        if sample.loss_mask is None:
-            sample.loss_mask = [1] * sample.response_length
+        # a missing loss_mask means every response token counts
+        loss_mask = sample.loss_mask if sample.loss_mask is not None else [1] * sample.response_length
 
         assert (
-            len(sample.loss_mask) == sample.response_length
-        ), f"loss mask length {len(sample.loss_mask)} != response length {sample.response_length}"
+            len(loss_mask) == sample.response_length
+        ), f"loss mask length {len(loss_mask)} != response length {sample.response_length}"
         if sample.remove_sample:
-            sample.loss_mask = [0] * sample.response_length
-        loss_masks.append(sample.loss_mask)
+            loss_mask = [0] * sample.response_length
+        loss_masks.append(loss_mask)
     train_data["loss_masks"] = loss_masks
 
     train_data["rollout_mask_sums"] = _compute_rollout_mask_sums(train_data["rollout_ids"], loss_masks)
@@ -254,7 +254,7 @@ def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int
     token-weighted mean per rollout even when siblings land in different micro-batches."""
     totals: dict[int, int] = {}
     for rid, mask in zip(rollout_ids, loss_masks, strict=True):
-        totals[rid] = totals.get(rid, 0) + sum(mask)
+        totals[rid] = totals.get(rid, 0) + int(np.sum(mask))
     return [totals[rid] for rid in rollout_ids]
 
 

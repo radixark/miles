@@ -156,10 +156,10 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
             assert sample.metadata["case"] == case
             assert sample.metadata["turns_ok"] == case + 2
             assert sample.reward == 1.0
-            assert sample.tokens == expected["tokens"]
+            assert sample.tokens.tolist() == expected["tokens"]
             assert sample.response_length == len(expected["tokens"]) - expected["prompt_length"]
-            assert sample.rollout_log_probs == expected["log_probs"]
-            assert sample.loss_mask == expected["mask"]
+            assert sample.rollout_log_probs.tolist() == expected["log_probs"]
+            assert sample.loss_mask.tolist() == expected["mask"]
             assert sample.rollout_routed_experts.dtype == np.int32
             np.testing.assert_array_equal(sample.rollout_routed_experts, expected["r3"])
     finally:

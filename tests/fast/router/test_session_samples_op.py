@@ -192,11 +192,11 @@ async def test_assembled_sample_golden(core):
     (m,) = samples
     tokenizer = core.registry.tokenizer
 
-    assert m.tokens == _ACCUMULATED
+    assert m.tokens.tolist() == _ACCUMULATED
     assert m.response == tokenizer.decode([10, 11]) + tokenizer.decode([20, 21]) + tokenizer.decode([30, 31])
     assert m.response_length == 6
-    assert m.loss_mask == [1, 1, 0, 0, 1, 1]
-    assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
+    assert m.loss_mask.tolist() == [1, 1, 0, 0, 1, 1]
+    assert m.rollout_log_probs.tolist() == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
     assert m.status == Sample.Status.COMPLETED
     assert m.weight_versions == [
         WeightVersionsPerCall(
@@ -290,9 +290,9 @@ async def test_truncation_golden(core):
 
     last = samples[-1]
     assert last.status == Sample.Status.TRUNCATED
-    assert last.tokens == _ACCUMULATED[:8]
-    assert last.loss_mask == [1, 1, 0, 0, 1]
-    assert last.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5]
+    assert last.tokens.tolist() == _ACCUMULATED[:8]
+    assert last.loss_mask.tolist() == [1, 1, 0, 0, 1]
+    assert last.rollout_log_probs.tolist() == [-0.125, -0.25, 0.0, 0.0, -0.5]
     assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 8)[:-1])
     assert [segment["turn"] for segment in last.metadata["lifecycle"]] == [1, 2]
 
@@ -363,9 +363,9 @@ async def test_addition_assembled_sample_matches_full_reference(addition_core):
     samples, _ = _new_pipeline(payload, _input_sample())
     (m,) = samples
 
-    assert m.tokens == _ACCUMULATED
-    assert m.loss_mask == [1, 1, 0, 0, 1, 1]
-    assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
+    assert m.tokens.tolist() == _ACCUMULATED
+    assert m.loss_mask.tolist() == [1, 1, 0, 0, 1, 1]
+    assert m.rollout_log_probs.tolist() == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
     assert m.status == Sample.Status.COMPLETED
     assert m.rollout_routed_experts.dtype == np.int32
     assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
@@ -381,7 +381,7 @@ async def test_addition_truncation_golden(addition_core):
 
     last = samples[-1]
     assert last.status == Sample.Status.TRUNCATED
-    assert last.tokens == _ACCUMULATED[:8]
+    assert last.tokens.tolist() == _ACCUMULATED[:8]
     assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 8)[:-1])
 
 
@@ -393,7 +393,7 @@ async def test_addition_turn_boundary_truncation_uses_required_prefix(addition_c
     samples, _ = _new_pipeline(payload, _input_sample())
 
     last = samples[-1]
-    assert last.tokens == _ACCUMULATED[:5]
+    assert last.tokens.tolist() == _ACCUMULATED[:5]
     assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 4))
 
 

@@ -1172,3 +1172,56 @@ class TestReplayArraysViaObjectStore:
             ):
                 assert stored_array.dtype == inline_array.dtype
                 np.testing.assert_array_equal(stored_array, inline_array)
+
+
+# ----------------------------- frozen per-token fields -----------------------------
+
+
+class TestFrozenPerTokenFields:
+    @staticmethod
+    def _samples() -> list[Sample]:
+        samples = make_samples_grouped(n_groups=2, group_size=2, response_length=4)
+        samples[0].loss_mask = [1, 0, 1, 1]
+        samples[1].remove_sample = True
+        for sample in samples:
+            sample.rollout_log_probs = [-0.25 * (i + 1) for i in range(sample.response_length)]
+        return samples
+
+    def test_frozen_samples_produce_the_same_train_data_as_lists(self) -> None:
+        """Freezing changes how a finished sample holds its tokens, not one value the trainer receives."""
+        args = make_args(advantage_estimator="grpo", rewards_normalization=False)
+        frozen_samples = self._samples()
+        for sample in frozen_samples:
+            sample.settle_per_token_fields()
+
+        from_lists, from_frozen = (
+            convert_samples_to_train_data(
+                args,
+                samples,
+                metadata={},
+                custom_convert_samples_to_train_data_func=None,
+                custom_reward_post_process_func=None,
+            )
+            for samples in (self._samples(), frozen_samples)
+        )
+
+        for key in ("tokens", "loss_masks", "rollout_log_probs"):
+            assert [np.asarray(row).tolist() for row in from_frozen[key]] == [
+                np.asarray(row).tolist() for row in from_lists[key]
+            ], key
+        assert from_frozen["rollout_mask_sums"] == from_lists["rollout_mask_sums"]
+
+    def test_conversion_leaves_the_samples_untouched(self) -> None:
+        """The output snapshotter replays these samples; a defaulted or zeroed mask must not leak into them."""
+        args = make_args(advantage_estimator="grpo", rewards_normalization=False)
+        samples = self._samples()
+
+        convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert samples[1].loss_mask is None and samples[2].loss_mask is None

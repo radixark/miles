@@ -66,8 +66,8 @@ def expected_chunk(text: str, loss_mask: int) -> SampleParsedChunk:
 def parse_sample_into_chunks(sample: Sample, tokenizer) -> list[SampleParsedChunk]:
     prompt_len = len(sample.tokens) - sample.response_length
     response_tokens = sample.tokens[prompt_len:]
-    loss_mask = sample.loss_mask or []
-    log_probs = sample.rollout_log_probs or []
+    loss_mask = [] if sample.loss_mask is None else np.asarray(sample.loss_mask).tolist()
+    log_probs = [] if sample.rollout_log_probs is None else np.asarray(sample.rollout_log_probs).tolist()
 
     chunks = []
     idx = 0
@@ -679,7 +679,8 @@ class TestRoutedExpertsMultiTurn:
         sample = result.sample[-1] if isinstance(result.sample, list) else result.sample
         expected_second_turn_log_probs = [-1 / 128 * i for i in range(token_len(S.SECOND_RESPONSE))]
         assert sample.rollout_log_probs is not None
-        assert sample.rollout_log_probs[-len(expected_second_turn_log_probs) :] == expected_second_turn_log_probs
+        second_turn_log_probs = np.asarray(sample.rollout_log_probs[-len(expected_second_turn_log_probs) :]).tolist()
+        assert second_turn_log_probs == expected_second_turn_log_probs
         assert sample.rollout_routed_experts is not None
         assert sample.rollout_routed_experts.shape == second_routed_experts.shape
         np.testing.assert_array_equal(sample.rollout_routed_experts, second_routed_experts)

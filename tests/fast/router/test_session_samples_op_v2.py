@@ -208,11 +208,11 @@ async def test_assembled_samples_golden_merged(core):
     (m,) = samples
     tokenizer = core.registry.tokenizer
 
-    assert m.tokens == _ACCUMULATED
+    assert m.tokens.tolist() == _ACCUMULATED
     assert m.response == tokenizer.decode([10, 11]) + tokenizer.decode([20, 21]) + tokenizer.decode([30, 31])
     assert m.response_length == 6
-    assert m.loss_mask == [1, 1, 0, 0, 1, 1]
-    assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
+    assert m.loss_mask.tolist() == [1, 1, 0, 0, 1, 1]
+    assert m.rollout_log_probs.tolist() == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
     assert m.status == Sample.Status.COMPLETED
     assert m.weight_versions == [
         WeightVersionsPerCall(
@@ -323,9 +323,9 @@ async def test_truncation_golden(core):
 
     (last,) = samples
     assert last.status == Sample.Status.TRUNCATED
-    assert last.tokens == _ACCUMULATED[:8]
-    assert last.loss_mask == [1, 1, 0, 0, 1]
-    assert last.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5]
+    assert last.tokens.tolist() == _ACCUMULATED[:8]
+    assert last.loss_mask.tolist() == [1, 1, 0, 0, 1]
+    assert last.rollout_log_probs.tolist() == [-0.125, -0.25, 0.0, 0.0, -0.5]
     assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 8)[:-1])
 
 
@@ -383,8 +383,8 @@ async def test_addition_assembled_sample_matches_full_reference(addition_core):
     samples, _ = _new_pipeline(payload, _input_sample())
     (m,) = samples
 
-    assert m.tokens == _ACCUMULATED
-    assert m.loss_mask == [1, 1, 0, 0, 1, 1]
+    assert m.tokens.tolist() == _ACCUMULATED
+    assert m.loss_mask.tolist() == [1, 1, 0, 0, 1, 1]
     assert m.status == Sample.Status.COMPLETED
     assert m.rollout_routed_experts.dtype == np.int32
     assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
@@ -435,8 +435,8 @@ async def test_addition_branched_tree_materializes_each_leaf():
         assert status == 200
         reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
         sample_a, sample_b = reply.samples
-        assert sample_a.tokens == leaf_a.token_ids
-        assert sample_b.tokens == leaf_b.token_ids
+        assert sample_a.tokens.tolist() == leaf_a.token_ids
+        assert sample_b.tokens.tolist() == leaf_b.token_ids
         assert np.array_equal(sample_a.rollout_routed_experts, np.concatenate([shared, leaf_a_rows]))
         assert np.array_equal(sample_b.rollout_routed_experts, np.concatenate([shared, leaf_b_rows]))
 
@@ -555,7 +555,7 @@ async def test_rolled_back_leaf_is_trimmed(core):
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
     (m,) = reply.samples
-    assert m.tokens == [1, 2, 3, 10, 11, 21, 31]
+    assert m.tokens.tolist() == [1, 2, 3, 10, 11, 21, 31]
 
 
 @pytest.mark.parametrize("trajectory_reward", [1.0, 0.0])
@@ -594,12 +594,12 @@ async def test_deep_abandoned_branch_survives_and_masks_shared_prefix(core, traj
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
     early_sample, late_sample = reply.samples
-    assert early_sample.tokens == early_leaf.token_ids
-    assert late_sample.tokens == late_leaf.token_ids
+    assert early_sample.tokens.tolist() == early_leaf.token_ids
+    assert late_sample.tokens.tolist() == late_leaf.token_ids
     # The early leaf owns the shared root completion [3,5); the late leaf masks it.
-    assert early_sample.loss_mask[:2] == [1, 1]
-    assert late_sample.loss_mask[:2] == [0, 0]
-    assert late_sample.loss_mask[-1] == 1  # its own completion still trains
+    assert early_sample.loss_mask[:2].tolist() == [1, 1]
+    assert late_sample.loss_mask[:2].tolist() == [0, 0]
+    assert late_sample.loss_mask[-1].tolist() == 1  # its own completion still trains
     assert [sample.reward for sample in reply.samples] == [trajectory_reward, trajectory_reward]
     assert [sample.metadata["reward"] for sample in reply.samples] == [trajectory_reward, trajectory_reward]
 
@@ -665,10 +665,10 @@ async def test_session_rollout_metrics_count_every_tree_node_once(spec_core):
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
     early_sample, late_sample = reply.samples
 
-    assert early_sample.tokens == early_leaf.token_ids
-    assert late_sample.tokens == late_leaf.token_ids
-    assert early_sample.loss_mask[:2] == [1, 1]
-    assert late_sample.loss_mask[:2] == [0, 0]
+    assert early_sample.tokens.tolist() == early_leaf.token_ids
+    assert late_sample.tokens.tolist() == late_leaf.token_ids
+    assert early_sample.loss_mask[:2].tolist() == [1, 1]
+    assert late_sample.loss_mask[:2].tolist() == [0, 0]
     assert early_sample.spec_info.to_dict() == {
         "spec_num_correct_drafts": 9,
         "spec_num_proposed_drafts": 20,
@@ -709,7 +709,7 @@ async def test_session_rollout_metrics_include_node_excluded_by_max_seq_len(spec
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
     (sample,) = reply.samples
 
-    assert sample.tokens == [1, 2, 3, 10, 11]
+    assert sample.tokens.tolist() == [1, 2, 3, 10, 11]
     assert sample.status == Sample.Status.COMPLETED
     assert sample.spec_info.to_dict() == {
         "spec_num_correct_drafts": 1,
@@ -751,7 +751,7 @@ async def test_picker_warns_and_trims_longer_superseded_leaf(core, caplog):
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
     (sample,) = reply.samples
-    assert sample.tokens == replacement.token_ids
+    assert sample.tokens.tolist() == replacement.token_ids
     assert "longer than every later sibling's deepest leaf" in caplog.text
     assert "continuing by seq" in caplog.text
 
@@ -784,7 +784,7 @@ async def test_picker_warns_on_wall_clock_rollback_and_trims_by_seq(core, caplog
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
     (sample,) = reply.samples
-    assert sample.tokens == replacement.token_ids
+    assert sample.tokens.tolist() == replacement.token_ids
     assert "wall-clock rollback" in caplog.text
     assert "continuing by seq" in caplog.text
     assert "longer than every later sibling" not in caplog.text
@@ -802,8 +802,8 @@ async def test_two_roots_yield_two_samples(core):
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
     first, second = reply.samples
-    assert first.tokens == sub.token_ids
-    assert second.tokens == main.token_ids
+    assert first.tokens.tolist() == sub.token_ids
+    assert second.tokens.tolist() == main.token_ids
     tree = reply.session_metadata["tree"]
     assert [n["parent"] for n in tree["nodes"]] == [None, None]
     assert [leaf["node_id"] for leaf in tree["leaves"]] == [main.seq, sub.seq]
@@ -846,7 +846,7 @@ async def test_resent_first_turn_root_is_trimmed(core_name, request):
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
     (sample,) = reply.samples
-    assert sample.tokens == leaf.token_ids
+    assert sample.tokens.tolist() == leaf.token_ids
 
 
 @pytest.mark.parametrize(
@@ -882,7 +882,9 @@ async def test_same_prompt_picker_trims_only_identical_resends(
     status, payload = await _collect_via_op(same_prompt_core, sid)
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
-    assert [sample.tokens for sample in reply.samples] == [leaves[name].token_ids for name in expected_leaf_names]
+    assert [sample.tokens.tolist() for sample in reply.samples] == [
+        leaves[name].token_ids for name in expected_leaf_names
+    ]
 
 
 async def test_picker_orders_by_checkpoint_count_then_latest_commit(core):
@@ -999,12 +1001,12 @@ async def test_custom_picker_keeps_abandoned_leaf(core):
         assert response.status_code == 200
         reply = decode_samples_and_merge_input_sample(bytes(response.body), Sample(), fields=COMPUTED_FIELDS_V2)
         abandoned, replacement = reply.samples
-        assert abandoned.tokens == [1, 2, 3, 10, 11, 20, 30]
-        assert replacement.tokens == [1, 2, 3, 10, 11, 21, 31]
+        assert abandoned.tokens.tolist() == [1, 2, 3, 10, 11, 20, 30]
+        assert replacement.tokens.tolist() == [1, 2, 3, 10, 11, 21, 31]
         # Exactly-once over the SURVIVING set: the abandoned (earlier) leaf now
         # owns the shared root completion; the replacement masks it.
-        assert abandoned.loss_mask[:2] == [1, 1]
-        assert replacement.loss_mask[:2] == [0, 0]
+        assert abandoned.loss_mask[:2].tolist() == [1, 1]
+        assert replacement.loss_mask[:2].tolist() == [0, 0]
 
 
 async def test_custom_picker_reorder_keeps_earliest_leaf_as_owner(core):
@@ -1015,8 +1017,8 @@ async def test_custom_picker_reorder_keeps_earliest_leaf_as_owner(core):
         assert response.status_code == 200
         reply = decode_samples_and_merge_input_sample(bytes(response.body), Sample(), fields=COMPUTED_FIELDS_V2)
         replacement, abandoned = reply.samples
-        assert replacement.loss_mask[:2] == [0, 0]
-        assert abandoned.loss_mask[:2] == [1, 1]
+        assert replacement.loss_mask[:2].tolist() == [0, 0]
+        assert abandoned.loss_mask[:2].tolist() == [1, 1]
 
 
 async def test_custom_postprocessor_cannot_replace_session_rollout_metrics():

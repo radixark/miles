@@ -87,12 +87,12 @@ class TestSamplesWireCodec:
         assert reply.session_metadata == {"max_trim_tokens": 1}
         (out,) = reply.samples
         # computed fields overlaid, with exact types/values
-        assert out.tokens == [1, 2, 3, 10, 11] and type(out.tokens) is list
-        assert out.rollout_log_probs == [-0.5, -0.1234567891234567]
+        assert out.tokens.tolist() == [1, 2, 3, 10, 11]
+        assert out.rollout_log_probs.tolist() == [-0.5, -0.1234567891234567]
         sampling_mask_ids, sampling_mask_offsets = out.rollout_sampling_mask._as_tensors()
         assert sampling_mask_ids.tolist() == [10, 4, 11]
         assert sampling_mask_offsets.tolist() == [0, 2, 3]
-        assert out.loss_mask == [1, 1]
+        assert out.loss_mask.tolist() == [1, 1]
         assert out.response == "[10][11]" and out.response_length == 2
         assert out.status == Sample.Status.COMPLETED
         assert out.weight_versions == [_versions("w1"), _versions("w2")]
@@ -139,10 +139,10 @@ class TestSamplesWireCodec:
         template = Sample(metadata={"input_only": {"value": 1}})
         reply = decode_samples_and_merge_input_sample(encode_samples([a, b], {}, None), template)
         out_a, out_b = reply.samples
-        assert out_a.tokens == a.tokens and out_b.tokens == b.tokens
+        assert out_a.tokens.tolist() == a.tokens and out_b.tokens.tolist() == b.tokens
         assert np.array_equal(out_a.rollout_routed_experts, a.rollout_routed_experts)
         assert np.array_equal(out_b.rollout_routed_experts, b.rollout_routed_experts)
-        assert out_b.rollout_log_probs == [-1.0, -2.0]
+        assert out_b.rollout_log_probs.tolist() == [-1.0, -2.0]
         assert out_a.metadata == {"input_only": {"value": 1}, "server_only": {"sample": "a"}}
         assert out_b.metadata == {"input_only": {"value": 1}, "server_only": {"sample": "b"}}
         out_a.metadata["input_only"]["value"] = 2
@@ -193,8 +193,8 @@ class TestSamplesWireCodec:
         assert tensors["loss_mask.0"].dtype == np.uint8
 
         (out,) = decode_samples_and_merge_input_sample(payload, Sample(), fields=_FIELDS_WITH_SAMPLING_MASK).samples
-        assert out.tokens == sample.tokens and type(out.tokens) is list
-        assert out.rollout_log_probs == sample.rollout_log_probs
+        assert out.tokens.tolist() == sample.tokens
+        assert out.rollout_log_probs.tolist() == sample.rollout_log_probs
         assert out.rollout_routed_experts.dtype == np.int32 and out.rollout_routed_experts.shape == (4, 3, 2)
         assert np.array_equal(out.rollout_routed_experts, routed)
         assert out.rollout_indexer_topk.dtype == np.int32 and np.array_equal(out.rollout_indexer_topk, indexer)
@@ -204,6 +204,26 @@ class TestSamplesWireCodec:
         (out,) = decode_samples_and_merge_input_sample(buffer, Sample()).samples
         assert np.shares_memory(out.rollout_routed_experts, buffer)
         np.testing.assert_array_equal(out.rollout_routed_experts, np.arange(24, dtype=np.int32).reshape(4, 3, 2))
+
+    def test_a_finished_sample_holds_read_only_arrays_that_own_their_bytes(self):
+        """Lists give the GC an object per token; a view would keep the whole reply, routed experts included, alive."""
+        buffer = np.frombuffer(encode_samples([_computed_sample()], {}, None), dtype=np.uint8).copy()
+        (out,) = decode_samples_and_merge_input_sample(buffer, Sample()).samples
+        for name, dtype, expected in (
+            ("tokens", np.int64, [1, 2, 3, 10, 11]),
+            ("loss_mask", np.int32, [1, 1]),
+            ("rollout_log_probs", np.float64, [-0.5, -0.1234567891234567]),
+        ):
+            value = getattr(out, name)
+            assert value.dtype == dtype and not value.flags.writeable
+            assert not np.shares_memory(value, buffer)
+            assert value.tolist() == expected
+
+    def test_an_aborted_sample_keeps_lists(self):
+        (out,) = decode_samples_and_merge_input_sample(
+            encode_samples([_computed_sample(status=Sample.Status.ABORTED)], {}, None), Sample()
+        ).samples
+        assert type(out.tokens) is list and out.tokens == [1, 2, 3, 10, 11]
 
     def test_bytes_payload_decodes_to_writable_tensors(self):
         (out,) = decode_samples_and_merge_input_sample(
@@ -229,7 +249,7 @@ class TestSamplesWireCodec:
         assert isinstance(out.rollout_routed_experts, np.ndarray) and out.rollout_routed_experts.shape == (0, 3, 2)
         assert out.rollout_indexer_topk is None
 
-    def test_null_tokens_restore_fresh_empty_lists(self):
+    def test_null_tokens_restore_fresh_empty_tokens(self):
         # A null marker restores per-sample fresh instances, never one shared list.
         def null_out_tokens(meta, tensors):
             for index, sample_meta in enumerate(meta["samples"]):
@@ -238,7 +258,7 @@ class TestSamplesWireCodec:
 
         payload = _mutated_payload(encode_samples([_computed_sample(), _computed_sample()], {}, None), null_out_tokens)
         out_a, out_b = decode_samples_and_merge_input_sample(payload, Sample()).samples
-        assert out_a.tokens == [] and out_b.tokens == []
+        assert out_a.tokens.tolist() == [] and out_b.tokens.tolist() == []
         assert out_a.tokens is not out_b.tokens
 
     def test_encode_rejects_non_int32_replay_dtype(self):

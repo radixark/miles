@@ -23,20 +23,19 @@ from miles.utils.types import Sample, WeightVersionsPerCall
 class ValueSpec:
     """Wire contract of one computed field."""
 
-    codec: str  # "tensor" | "tensor_list" | "sampling_mask" | "json"
+    codec: str  # "tensor" | "sampling_mask" | "json"
     dtype: np.dtype | None = None  # tensor codecs: pinned on both sides; a mismatch raises instead of converting
     strict: bool = False  # encode never converts, only validates (R3 replay tensors must arrive as int32)
     null: object = None  # decoded value for a null-marked field; copied per sample so no instance is shared
 
 
-# tokens/loss_mask/logprobs are re-materialized as Python lists on decode,
-# exactly like the legacy JSON path (int64/f64 round-trips are lossless).
+# tokens/loss_mask/logprobs take the form Sample.settle_per_token_fields gives them on decode.
 SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
-    "tokens": ValueSpec("tensor_list", np.dtype(np.int64), null=[]),
+    "tokens": ValueSpec("tensor", np.dtype(np.int64), null=[]),
     "response": ValueSpec("json"),
     "response_length": ValueSpec("json"),
-    "loss_mask": ValueSpec("tensor_list", np.dtype(np.uint8)),
-    "rollout_log_probs": ValueSpec("tensor_list", np.dtype(np.float64)),
+    "loss_mask": ValueSpec("tensor", np.dtype(np.uint8)),
+    "rollout_log_probs": ValueSpec("tensor", np.dtype(np.float64)),
     "rollout_topk_token_ids": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "rollout_topk_log_probs": ValueSpec("tensor", np.dtype(np.float32), strict=True),
     "rollout_sampling_mask": ValueSpec("sampling_mask"),
@@ -62,7 +61,7 @@ COMPUTED_FIELDS = tuple(field for field in SAMPLES_VALUE_SPEC if field not in RO
 COMPUTED_FIELDS_V2 = tuple(field for field in SAMPLES_VALUE_SPEC_V2 if field not in ROLLOUT_SAMPLING_MASK_FIELDS)
 
 assert all(
-    spec.codec in ("tensor", "tensor_list", "sampling_mask", "json") for spec in SAMPLES_VALUE_SPEC_V2.values()
+    spec.codec in ("tensor", "sampling_mask", "json") for spec in SAMPLES_VALUE_SPEC_V2.values()
 ), "unknown codec in SAMPLES_VALUE_SPEC"
 
 _TENSOR_FIELDS = frozenset(field for field, spec in SAMPLES_VALUE_SPEC_V2.items() if spec.codec != "json")
@@ -263,7 +262,8 @@ def decode_samples_and_merge_input_sample(
             arr = tensors.pop(f"{field}.{sample_index}")  # KeyError propagates: a promised tensor must exist
             if arr.dtype != spec.dtype:
                 raise ValueError(f"{field} must have dtype {spec.dtype}, got {arr.dtype}")
-            setattr(sample, field, arr.tolist() if spec.codec == "tensor_list" else arr)
+            setattr(sample, field, arr)
+        sample.settle_per_token_fields()
         samples.append(sample)
     if tensors:
         raise ValueError(f"payload carries unreferenced tensors: {sorted(tensors)}")

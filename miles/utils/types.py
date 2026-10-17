@@ -9,6 +9,10 @@ from miles.utils.sampling_mask import RolloutSamplingMask
 
 LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
 
+# A finished sample holds these per-token fields as read-only arrays of these dtypes, so a large backlog of
+# finished samples keeps no per-element Python objects for the garbage collector to walk.
+FROZEN_PER_TOKEN_DTYPES = {"tokens": numpy.int64, "loss_mask": numpy.int32, "rollout_log_probs": numpy.float64}
+
 
 @dataclass(frozen=True)
 class SampleLineage:
@@ -173,7 +177,7 @@ class Sample:
     rollout_id: int | None = None
     # prompt
     prompt: str | list[dict[str, str]] = ""
-    tokens: list[int] = field(default_factory=list)
+    tokens: list[int] | numpy.ndarray = field(default_factory=list)  # see settle_per_token_fields
     multimodal_inputs: dict[str, Any] = None  # raw multimodal data, e.g. images, videos, etc.
     multimodal_train_inputs: dict[str, Any] = None  # processed multimodal data, e.g. pixel_values, etc.
     # response
@@ -181,9 +185,9 @@ class Sample:
     response_length: int = 0
     label: str | None = None
     reward: float | dict[str, Any] | None = None
-    loss_mask: list[int] | None = None
+    loss_mask: list[int] | numpy.ndarray | None = None
     weight_versions: list[WeightVersionsPerCall] = field(default_factory=list)
-    rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
+    rollout_log_probs: list[float] | numpy.ndarray | None = None  # Log probabilities from rollout engine
     rollout_topk_token_ids: numpy.ndarray | None = None  # [response_length, k], int32; -1 pads unused slots
     rollout_topk_log_probs: numpy.ndarray | None = None  # [response_length, k], float32; -inf pads unused slots
     rollout_sampling_mask: RolloutSamplingMask | None = None
@@ -341,7 +345,29 @@ class Sample:
 
     @property
     def effective_response_length(self):
-        return sum(self.loss_mask) if self.loss_mask is not None else self.response_length
+        return int(numpy.sum(self.loss_mask)) if self.loss_mask is not None else self.response_length
+
+    def settle_per_token_fields(self) -> None:
+        """Put the per-token fields in the form generation hands a sample back in.
+
+        A finished sample (completed or truncated) gets read-only arrays in ``FROZEN_PER_TOKEN_DTYPES``;
+        an aborted or failed one keeps lists, since partial rollout resumes it by extending them.
+        Called where generation returns a sample and wherever a finished sample's field is replaced.
+        """
+        finished = self.status in (Sample.Status.COMPLETED, Sample.Status.TRUNCATED)
+        for field_name, dtype in FROZEN_PER_TOKEN_DTYPES.items():
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            if finished:
+                if isinstance(value, numpy.ndarray) and not value.flags.writeable and value.dtype == dtype:
+                    continue
+                # a copy: a view would keep the whole reply buffer it came from alive
+                array = numpy.array(value, dtype=dtype)
+                array.setflags(write=False)
+                setattr(self, field_name, array)
+            elif isinstance(value, numpy.ndarray):
+                setattr(self, field_name, value.tolist())
 
     def validate(self):
         assert self.response_length >= 0, f"response_length must be >= 0, got {self.response_length}"

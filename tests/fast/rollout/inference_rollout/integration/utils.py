@@ -1,3 +1,6 @@
+from dataclasses import replace
+
+import numpy as np
 from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 
@@ -9,7 +12,19 @@ from miles.rollout.base_types import (
 )
 from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
-from miles.utils.types import Sample, SampleLineage, WeightVersionsPerCall
+from miles.utils.types import FROZEN_PER_TOKEN_DTYPES, Sample, SampleLineage, WeightVersionsPerCall
+
+
+def with_list_per_token_fields(sample: Sample) -> Sample:
+    """A copy comparable with `==`: a finished sample's frozen arrays turned back into lists."""
+    return replace(
+        sample,
+        **{
+            name: np.asarray(getattr(sample, name)).tolist()
+            for name in FROZEN_PER_TOKEN_DTYPES
+            if getattr(sample, name) is not None
+        },
+    )
 
 
 def expected_sample(*, group_index: int | None) -> Sample:

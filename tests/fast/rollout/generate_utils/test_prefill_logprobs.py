@@ -42,11 +42,11 @@ async def test_recompute_rollout_logprobs_via_prefill_uses_response_tail(monkeyp
         headers={"X-Test": "1"},
     )
 
-    assert sample.rollout_log_probs == [-0.1, -0.2, -0.3]
+    assert sample.rollout_log_probs.tolist() == [-0.1, -0.2, -0.3]
     assert sample.metadata["rollout_log_probs_source"] == "sglang_prefill_recompute"
     assert seen["url"] == "http://localhost/generate"
     assert seen["headers"] == {"X-Test": "1"}
-    assert seen["payload"]["input_ids"] == sample.tokens
+    assert seen["payload"]["input_ids"] == sample.tokens.tolist()
     assert seen["payload"]["return_logprob"] is True
     assert seen["payload"]["logprob_start_len"] == 2
     assert seen["payload"]["sampling_params"]["max_new_tokens"] == 0

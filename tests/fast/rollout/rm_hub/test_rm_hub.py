@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from miles.rollout.rm_hub import async_rm, batched_async_rm
@@ -81,6 +82,16 @@ class TestAsyncRm:
         samples = [Sample(prompt="", response="same", label="", tokens=[i, i + 1, i + 2]) for i in range(20)]
         rewards = [run(async_rm(mock_args, s)) for s in samples]
         assert 0 in rewards and 1 in rewards
+
+    def test_deterministic_random_rm_is_the_same_for_frozen_tokens(self, mock_args):
+        """A finished sample holds its tokens as an array; the reward must not change with the representation."""
+        mock_args.rm_type = "deterministic_random"
+        samples = [Sample(prompt="", response="same", label="", tokens=[i, i + 300, i + 2]) for i in range(20)]
+        list_rewards = [run(async_rm(mock_args, s)) for s in samples]
+        for sample in samples:
+            sample.tokens = np.array(sample.tokens, dtype=np.int64)
+
+        assert [run(async_rm(mock_args, s)) for s in samples] == list_rewards
 
     def test_rm_type_from_metadata(self, mock_args):
         mock_args.rm_type = None

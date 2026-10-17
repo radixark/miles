@@ -242,7 +242,8 @@ def test_compact_session_object_store_and_iterator(single_rank, ray_local_mode, 
     wire = encode_samples([merged], {}, fields=fields)
     restored = decode_samples_and_merge_input_sample(wire, Sample(), fields=fields).samples[0]
     restored.index, restored.reward = 0, 1.0
-    restored.loss_mask[1] = 0
+    restored.loss_mask = [0 if position == 1 else value for position, value in enumerate(restored.loss_mask.tolist())]
+    restored.settle_per_token_fields()
     other = deepcopy(restored)
     other.index = 1
     args = _args(

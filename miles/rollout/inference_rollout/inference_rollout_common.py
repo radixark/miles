@@ -76,6 +76,7 @@ async def generate_and_rm(
         assert sample.response is not None
         if not args.group_rm:
             assert sample.reward is not None
+        sample.settle_per_token_fields()
         return sample
 
     # dashboard lifecycle probe: the semaphore wait is the queue; attempt_end fires before reward
@@ -106,6 +107,8 @@ async def generate_and_rm(
                 )
             )
             sample = output.samples
+            for generated_sample in sample if isinstance(sample, list) else [sample]:
+                generated_sample.settle_per_token_fields()
             if not evaluation:
                 stamp_sample_lineage(sample, source_sample_index=input_sample_index)
             logger.debug(f"{log_prefix} generate_function returned")

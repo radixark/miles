@@ -72,7 +72,7 @@ def test_multiturn_wire_dp_split_and_training_gradient(single_rank: None, mode: 
         ScoreCenteringInputs(
             train_log_probs=logp.gather(-1, torch.tensor(restored.tokens[2:])[:, None]).squeeze(-1),
             train_head_log_probs=logp.gather(-1, ids.clamp_min(0)),
-            rollout_log_probs=torch.tensor(restored.rollout_log_probs),
+            rollout_log_probs=torch.tensor(restored.rollout_log_probs, dtype=torch.float32),
             rollout_head_log_probs=torch.tensor(restored.rollout_topk_log_probs),
             head_mask=(ids >= 0) & mask[:, None],
             advantages=mask.float() * -0.7,
@@ -86,7 +86,7 @@ def test_multiturn_wire_dp_split_and_training_gradient(single_rank: None, mode: 
     assert (actual[..., 8:] == 0).all()  # padded vocabulary
     # Independent k3 formula checks direction and excludes the masked NaN observation.
     train_logp = logp.gather(-1, torch.tensor(restored.tokens[2:])[:, None]).squeeze(-1).detach()
-    delta = (train_logp[mask] - torch.tensor(restored.rollout_log_probs)[mask]).clamp(-20, 20)
+    delta = (train_logp[mask] - torch.tensor(restored.rollout_log_probs, dtype=torch.float32)[mask]).clamp(-20, 20)
     expected_kl = (delta.exp() - 1 - delta).clamp(-10, 10).mean()
     torch.testing.assert_close(metrics["train_rollout_kl"], expected_kl)
     assert not metrics["train_rollout_kl"].requires_grad

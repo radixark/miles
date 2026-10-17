@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from typing import Any
 
 import aiohttp
+import numpy as np
 import torch
 
 from miles.utils.types import Sample
@@ -100,7 +101,7 @@ def _score_payload(
     extra_key: str | None = None,
 ) -> dict[str, Any]:
     payload = {
-        "input_ids": input_ids,
+        "input_ids": np.asarray(input_ids).tolist(),
         "sampling_params": {
             "temperature": 0,
             "max_new_tokens": 0,

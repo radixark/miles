@@ -351,7 +351,7 @@ async def test_collect_samples_single_post_then_delete(monkeypatch):
         "DELETE http://127.0.0.1:12345/sessions/sid-1",
     ]
     (sample,) = result.samples
-    assert sample.tokens == [1, 2, 10] and sample.status == Sample.Status.COMPLETED
+    assert sample.tokens.tolist() == [1, 2, 10] and sample.status == Sample.Status.COMPLETED
     assert result.session_metadata == {"max_trim_tokens": 1}
 
 

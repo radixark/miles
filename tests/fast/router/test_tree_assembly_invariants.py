@@ -127,7 +127,9 @@ def _oracle_owner(kept):
 
 def _assert_sample_legality(sample: Sample, leaf, owner: dict[int, int]) -> None:
     snapshot = leaf.token_ids
-    assert sample.tokens == snapshot[: len(sample.tokens)], "sample tokens must be a prefix of the leaf snapshot"
+    assert (
+        sample.tokens.tolist() == snapshot[: len(sample.tokens)]
+    ), "sample tokens must be a prefix of the leaf snapshot"
     assert len(sample.loss_mask) == sample.response_length
     assert len(sample.rollout_log_probs) == sample.response_length
 

@@ -994,3 +994,70 @@ class TestTrainingIdentity:
 
         assert restored.index == 101
         assert restored.lineage == identity
+
+
+class TestSettlePerTokenFields:
+    def _finished(self, **overrides) -> Sample:
+        sample = Sample(
+            tokens=[1, 2, 300, 400],
+            response_length=2,
+            loss_mask=[1, 0],
+            rollout_log_probs=[-0.5, -0.1234567891234567],
+            status=Sample.Status.COMPLETED,
+        )
+        for name, value in overrides.items():
+            setattr(sample, name, value)
+        return sample
+
+    @pytest.mark.parametrize("status", [Sample.Status.COMPLETED, Sample.Status.TRUNCATED])
+    def test_a_finished_sample_holds_exact_read_only_arrays(self, status):
+        """No per-token Python objects remain for the garbage collector to walk."""
+        sample = self._finished(status=status)
+
+        sample.settle_per_token_fields()
+
+        for name, dtype, expected in (
+            ("tokens", numpy.int64, [1, 2, 300, 400]),
+            ("loss_mask", numpy.int32, [1, 0]),
+            ("rollout_log_probs", numpy.float64, [-0.5, -0.1234567891234567]),
+        ):
+            value = getattr(sample, name)
+            assert value.dtype == dtype and not value.flags.writeable
+            assert value.tolist() == expected
+
+    def test_a_view_is_copied_so_its_buffer_can_be_freed(self):
+        """A decoded field views the whole reply buffer, routed experts included."""
+        buffer = numpy.arange(8, dtype=numpy.int64)
+        sample = self._finished(tokens=buffer[:4])
+
+        sample.settle_per_token_fields()
+
+        assert not numpy.shares_memory(sample.tokens, buffer)
+
+    @pytest.mark.parametrize("status", [Sample.Status.ABORTED, Sample.Status.FAILED, Sample.Status.PENDING])
+    def test_a_sample_that_may_resume_keeps_lists(self, status):
+        """Partial rollout extends an aborted sample with `tokens + new_tokens`, which arrays would add element-wise."""
+        sample = self._finished(status=status, tokens=numpy.array([1, 2, 300, 400]))
+
+        sample.settle_per_token_fields()
+
+        assert type(sample.tokens) is list and sample.tokens == [1, 2, 300, 400]
+        assert type(sample.loss_mask) is list
+
+    def test_settling_twice_keeps_the_frozen_arrays(self):
+        sample = self._finished()
+        sample.settle_per_token_fields()
+        tokens = sample.tokens
+
+        sample.settle_per_token_fields()
+
+        assert sample.tokens is tokens
+
+    def test_effective_response_length_counts_past_the_wire_dtype(self):
+        """A builtin sum over uint8 elements would wrap at 256."""
+        sample = self._finished(
+            tokens=list(range(301)), response_length=300, loss_mask=[1] * 300, rollout_log_probs=None
+        )
+        sample.settle_per_token_fields()
+
+        assert sample.effective_response_length == 300 and type(sample.effective_response_length) is int

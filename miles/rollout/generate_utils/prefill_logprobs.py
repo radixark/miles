@@ -4,6 +4,8 @@ from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
 
+import numpy as np
+
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_routing_headers, policy_uses_routing_key
 from miles.utils.http_utils import post
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
@@ -31,7 +33,7 @@ def _build_prefill_scoring_payload(
         )
 
     payload = {
-        "input_ids": sample.tokens,
+        "input_ids": np.asarray(sample.tokens).tolist(),
         "sampling_params": {
             **dict(sampling_params),
             "max_new_tokens": 0,
@@ -93,7 +95,7 @@ def _extract_response_logprobs(sample: Sample, meta_info: Mapping[str, Any]) -> 
         raise ValueError("SGLang prefill scoring response did not include input_token_logprobs")
 
     response_items = input_token_logprobs[-sample.response_length :]
-    response_tokens = sample.tokens[-sample.response_length :]
+    response_tokens = np.asarray(sample.tokens[-sample.response_length :]).tolist()
     scored_tokens = [item[1] for item in response_items]
     if scored_tokens != response_tokens:
         raise ValueError(
@@ -121,6 +123,7 @@ async def recompute_rollout_logprobs_via_prefill(
         return
     if sample.response_length == 0:
         sample.rollout_log_probs = []
+        sample.settle_per_token_fields()
         return
     if sample.status == Sample.Status.ABORTED:
         return
@@ -128,6 +131,7 @@ async def recompute_rollout_logprobs_via_prefill(
     payload = _build_prefill_scoring_payload(args, sample, sampling_params)
     output = await post(url, payload, headers=headers)
     sample.rollout_log_probs = _extract_response_logprobs(sample, output["meta_info"])
+    sample.settle_per_token_fields()
     sample.metadata["rollout_log_probs_source"] = "sglang_prefill_recompute"
 
 
@@ -171,6 +175,7 @@ async def recompute_samples_rollout_logprobs_via_prefill(
                 )
             for sample, output in zip(batch_samples, outputs, strict=True):
                 sample.rollout_log_probs = _extract_response_logprobs(sample, output["meta_info"])
+                sample.settle_per_token_fields()
                 sample.metadata["rollout_log_probs_source"] = "sglang_prefill_recompute"
         return
 

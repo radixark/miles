@@ -3,6 +3,7 @@ import hashlib
 import random
 
 import aiohttp
+import numpy as np
 
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
@@ -76,7 +77,7 @@ async def async_rm(args, sample: Sample, **kwargs):
     elif rm_type == "random":
         return random.randint(0, 1)
     elif rm_type == "deterministic_random":
-        content = str(sample.tokens) + response
+        content = str(np.asarray(sample.tokens).tolist()) + response
         content_hash = hashlib.sha256(content.encode()).digest()
         return int(content_hash[0]) % 2
     elif rm_type:

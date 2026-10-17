@@ -5,6 +5,7 @@ from tests.fast.rollout.inference_rollout.integration.utils import (
     MODULAR_ROLLOUT_BASE_ARGV,
     expected_sample,
     load_and_call_train,
+    with_list_per_token_fields,
 )
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput
@@ -50,7 +51,7 @@ def test_train(rollout_env):
     assert len(out.samples) == env.args.rollout_batch_size
     group = out.samples[0]
     assert len(group) == env.args.n_samples_per_prompt
-    assert group[0] == expected_sample(group_index=0)
+    assert with_list_per_token_fields(group[0]) == expected_sample(group_index=0)
 
 
 @pytest.mark.parametrize("rollout_env", _VARIANTS, indirect=True)
@@ -66,4 +67,4 @@ def test_eval(rollout_env):
     samples = out.data["toy"]["samples"]
     assert len(rewards) == len(samples) == env.args.n_samples_per_eval_prompt
     assert rewards[0] == 1
-    assert samples[0] == expected_sample(group_index=None)
+    assert with_list_per_token_fields(samples[0]) == expected_sample(group_index=None)
