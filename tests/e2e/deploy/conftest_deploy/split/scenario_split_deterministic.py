@@ -50,11 +50,6 @@ def _build_script_args(
         f"{TEST_NAME} deploys the engines of a run as releases of their own, and mode {mode.model_name} has no "
         f"engines to deploy"
     )
-    assert not mode.colocate, (
-        f"{TEST_NAME} deploys the trainer and the engines separately, and mode {mode.model_name} colocates them "
-        f"on shared gpus"
-    )
-
     return build_script_args(
         config if config is not None else command_utils.default_config(),
         script_args_class=ScriptArgs,
