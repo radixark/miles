@@ -2,6 +2,10 @@
 
 python scripts/run_glm5_3_flash.py train --model-name GLM-5.3-Flash --num-nodes 8 --num-gpus-per-node 4
 python scripts/run_glm5_3_flash.py train --num-nodes 1 --num-gpus-per-node 8
+
+To initialize directly from Hugging Face weights (e.g. Vera Rubin):
+python scripts/run_glm5_3_flash.py --model-name GLM-5.3-Flash --num-nodes 8 --num-gpus-per-node 4 --direct-hf-init --num-rollout 2
+python scripts/run_glm5_3_flash.py --model-name GLM-5.3-Flash-4layer --num-nodes 1 --num-gpus-per-node 4 --direct-hf-init --num-rollout 10
 """
 
 import os
@@ -27,6 +31,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int = 4
     run_id: str = U.create_run_id()
     hf_checkpoint: str | None = None
+    direct_hf_init: bool = False
     model_dir: str = "/root/models"
     ckpt_dir: str = "/root/ckpt"
     data_dir: str = "/root/datasets"
@@ -44,11 +49,19 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.hf_checkpoint is None:
             self.hf_checkpoint = f"{self.model_dir}/{self.model_name}"
 
+    @property
+    def ref_load(self) -> str:
+        if self.direct_hf_init:
+            return self.hf_checkpoint
+        return f"{self.ckpt_dir}/{_MODEL_REGISTRY[self.model_name]}_torch_dist"
+
 
 def _train(args: ScriptArgs):
     megatron_model_type = _MODEL_REGISTRY[args.model_name]
 
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --ref-load {args.ckpt_dir}/{megatron_model_type}_torch_dist "
+    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --ref-load {args.ref_load} "
+    if args.direct_hf_init:
+        ckpt_args += "--megatron-to-hf-mode raw "
     if not args.skip_saving:
         load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
         ckpt_args += (
@@ -87,11 +100,11 @@ def _train(args: ScriptArgs):
         )
         engine_gpus = 8
     else:
-        assert num_gpus == 8, f"the 4-layer layout is validated on 8 GPUs, got {num_gpus}"
+        assert num_gpus in (4, 8), f"the 4-layer layout requires 4 or 8 GPUs, got {num_gpus}"
         parallel_args = (
             "--tensor-model-parallel-size 2 "
             "--sequence-parallel "
-            "--pipeline-model-parallel-size 2 "
+            f"--pipeline-model-parallel-size {num_gpus // 4} "
             "--context-parallel-size 1 "
             "--expert-model-parallel-size 2 "
             "--expert-tensor-parallel-size 1 "
