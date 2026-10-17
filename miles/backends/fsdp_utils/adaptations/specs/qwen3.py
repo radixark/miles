@@ -12,7 +12,7 @@ from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
 def _uses_formal_contract(args) -> bool:
     return (
         getattr(args, "true_on_policy_mode", False)
-        and getattr(args, "sglang_true_on_policy_contract", None) == QWEN3_DENSE_TRUE_ON_POLICY_V1.name
+        and args.sglang.common_value("true_on_policy_contract") == QWEN3_DENSE_TRUE_ON_POLICY_V1.name
     )
 
 
