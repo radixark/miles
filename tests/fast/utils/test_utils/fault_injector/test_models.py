@@ -8,6 +8,7 @@ from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
 from miles.utils.test_utils.fault_injector.actions.cell import StopCellAction
 from miles.utils.test_utils.fault_injector.actions.process import DeadlockThreadAction, ObserveAction
+from miles.utils.test_utils.fault_injector.actions.remote import ApiServerFaultAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
 from miles.utils.test_utils.fault_injector.models import (
     DeclaredFaultHookTarget,
@@ -170,6 +171,13 @@ class TestFaultHookRequestValidation:
             {"kind": "exit_process"},
             {"kind": "start_cell", "cell_id": "c"},
             {"kind": "sleep_forever"},
+            {
+                "kind": "api_server_fault",
+                "base_url": "http://x",
+                "cell_id": "c",
+                "rank": 0,
+                "inner": {"kind": "observe"},
+            },
         ],
     )
     def test_every_action_kind_round_trips_through_json(self, action: dict[str, object]) -> None:
@@ -177,6 +185,13 @@ class TestFaultHookRequestValidation:
         request = _request(action=action)
         assert FaultHookRequest.model_validate_json(request.model_dump_json()) == request
         assert request.action.kind == action["kind"]
+
+    def test_a_remote_action_cannot_nest_a_cell_action(self) -> None:
+        """The inner action of a remote fault must be a process fault only."""
+        with pytest.raises(ValidationError):
+            ApiServerFaultAction.model_validate(
+                {"base_url": "http://x", "cell_id": "c", "rank": 0, "inner": {"kind": "stop_cell", "cell_id": "c"}}
+            )
 
 
 class TestFaultHookRequestMatches:
