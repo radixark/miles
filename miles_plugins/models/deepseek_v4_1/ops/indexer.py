@@ -14,6 +14,7 @@ from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_fp4
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.deepseek_v4.ops.norm import RMSNorm
+from miles_plugins.models.deepseek_v4_1.ops.topk_dump import maybe_dump_topk
 
 
 def select_candidate_blocks(
@@ -61,11 +62,20 @@ def indexer_select(
     topk_fn,
     allow_deep_select: bool,
     query_chunk: int | None,
+    topk_backend: str = "torch",
+    layer_id: int = -1,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Top-k compressed-key indices ``[bsz, seqlen, topk]`` (int64, ``-1`` = empty slot) and the candidate mask.
+
+    ``topk_backend`` names the configured ``--miles-dsa-topk-backend``: ``deep_select`` replaces ``topk_fn``
+    only for ``torch`` (when ``allow_deep_select`` and the package allow it); ``cake`` and ``flashinfer``
+    always go through ``topk_fn`` on the ``-inf``-padded FP32 score rows.  ``layer_id`` only labels the
+    env-gated diagnostic dump (:mod:`.topk_dump`, ``MILES_DSV41_TOPK_DUMP_DIR``; inert otherwise).
+    """
     bsz, seqlen = q.shape[:2]
     n_kv = index_k.size(1)
     k_t = index_k.transpose(0, 1).contiguous()
-    deep_selecting = allow_deep_select and use_deep_select()
+    deep_selecting = allow_deep_select and topk_backend == "torch" and use_deep_select()
     if deep_selecting:
         # deep_select requires aligned score rows; the padded columns sit past every query's length
         align = deep_select.get_stride_requirement()[0] // 4
@@ -108,13 +118,23 @@ def indexer_select(
             idx = idx.reshape(bsz, e - s, -1)
             if n_kv < topk:
                 idx = torch.nn.functional.pad(idx, (0, topk - n_kv), value=-1)
-            idx_parts.append(idx.sort(dim=-1).values)
+            idx = idx.sort(dim=-1).values
+            idx_parts.append(idx)
+            maybe_dump_topk(topk_backend, layer_id, flat, idx, lens, topk, deep_select=True)
             continue
         if n_kv < topk:
             scores = torch.nn.functional.pad(scores, (0, topk - n_kv), value=-torch.inf)
-        idx = topk_fn(scores.reshape(bsz * (e - s), scores.size(-1)), topk)
-        idx = idx.reshape(bsz, e - s, topk).sort(dim=-1).values.to(torch.int64)
-        idx_parts.append(torch.where(idx < lens.unsqueeze(-1), idx, -1))
+        flat = scores.reshape(bsz * (e - s), scores.size(-1))
+        idx = topk_fn(flat, topk).reshape(bsz, e - s, topk)
+        if topk_backend != "cake":
+            # torch.topk / flashinfer order their picks arbitrarily: canonicalize to ascending index (-1 first).
+            # The cake kernel's slot order (score-descending, ties by ascending index) is part of its contract
+            # and every consumer gathers by slot, so it is kept as is.
+            idx = idx.sort(dim=-1).values
+        idx = idx.to(torch.int64)
+        idx = torch.where(idx < lens.unsqueeze(-1), idx, -1)
+        idx_parts.append(idx)
+        maybe_dump_topk(topk_backend, layer_id, flat, idx, lens, topk)
     idx = idx_parts[0] if len(idx_parts) == 1 else torch.cat(idx_parts, dim=1)
     if is_candidate_source:
         candidates = cand_parts[0] if len(cand_parts) == 1 else torch.cat(cand_parts, dim=1)
@@ -143,6 +163,8 @@ class DeepSeekV41Indexer(MegatronModule):
         self.index_n_heads = config.dsa_indexer_n_heads
         self.index_head_dim = config.dsa_indexer_head_dim
         self.index_topk = config.dsa_indexer_topk
+        # --miles-dsa-topk-backend (set on the config by get_dsv41_spec); ``torch`` keeps the deep_select path.
+        self.topk_backend = getattr(config, "miles_dsa_topk_backend", "torch")
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.softmax_scale = self.index_head_dim**-0.5
         q_lora_rank = config.q_lora_rank if config.q_lora_rank is not None else config.hidden_size
@@ -200,7 +222,7 @@ class DeepSeekV41Indexer(MegatronModule):
         weights, _ = self.linear_weights_proj(x)
         weights = weights * (self.softmax_scale * self.index_n_heads**-0.5)
 
-        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn("torch"), return_probs=False)
+        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
         idx, candidates = indexer_select(
             q,
             index_k,
@@ -215,5 +237,7 @@ class DeepSeekV41Indexer(MegatronModule):
             topk_fn=topk_fn,
             allow_deep_select=not indexer_replay_manager.enabled or indexer_replay_manager.stage == "fallthrough",
             query_chunk=INDEXER_QUERY_CHUNK,
+            topk_backend=self.topk_backend,
+            layer_id=self.layer_id,
         )
         return idx, candidates

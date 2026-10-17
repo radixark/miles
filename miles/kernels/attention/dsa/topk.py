@@ -43,11 +43,28 @@ def flashinfer_dsa_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
     return indices
 
 
+def cake_dsa_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
+    """The generated deterministic top-k of ``miles.kernels.attention.dsa.cake`` (Blackwell SM100a / SM103a).
+
+    FP32 logits of at most 32768 keys per row and ``topk <= 512``; the slots are score-descending (ties:
+    the smaller index first) with a ``-1`` tail and bit-identical across runs. The plugin is imported on
+    the first call, so core Miles keeps no hard dependency on the generated kernels.
+    """
+    from miles.kernels.attention.dsa.cake.ops import cake_topk
+
+    if logits.dim() <= 2:
+        return cake_topk(logits, topk)
+    flat = logits.reshape(-1, logits.shape[-1])
+    return cake_topk(flat, topk).reshape(*logits.shape[:-1], topk)
+
+
 def get_dsa_topk_fn(topk_backend: str):
     if topk_backend == "torch":
         return torch_dsa_topk
     if topk_backend == "flashinfer":
         return flashinfer_dsa_topk
+    if topk_backend == "cake":
+        return cake_dsa_topk
     raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
 
 
