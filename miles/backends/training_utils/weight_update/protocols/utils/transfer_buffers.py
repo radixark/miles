@@ -4,7 +4,7 @@ from concurrent.futures import Future
 
 import torch
 
-from miles.backends.training_utils.weight_update.protocols.transports.mooncake import RemoteShard
+from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import RemoteShard
 
 
 class TransferBuffers:
@@ -83,7 +83,7 @@ def _raise_if_any_write_failed(pending_writes: list[tuple[RemoteShard, Future]],
             continue
         failures.append(
             f"the {remote_shard.runner_role} of rollout engine {remote_shard.rollout_engine_ind} rank "
-            f"{remote_shard.rollout_engine_rank} (session {remote_shard.session_id}): {reason}"
+            f"{remote_shard.rollout_engine_rank} (peer {remote_shard.transport_peer}): {reason}"
         )
     if failures:
         raise RuntimeError(f"{len(failures)} of {len(pending_writes)} p2p writes failed:\n" + "\n".join(failures))

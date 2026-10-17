@@ -12,7 +12,7 @@ def test_a_weight_of_another_size_on_the_shard_is_never_written(p2p_sender: Any,
         rollout_engine_ind=0,
         rollout_engine_rank=0,
         runner_role="target",
-        session_id="cell-a-r0",
+        transport_peer="cell-a-r0",
         weight_locations_by_name={"w": mooncake_module.RemoteWeightLocation(address=0x1000, numel=2, element_size=4)},
     )
 

@@ -11,7 +11,8 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport, RemoteShard
+from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport
+from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import RemoteShard
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfTensorSpec
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
 from miles.backends.training_utils.weight_update.protocols.utils.model_replica import (

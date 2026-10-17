@@ -7,7 +7,7 @@ import pytest
 import torch
 
 import miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers as transfer_buffers_module
-from miles.backends.training_utils.weight_update.protocols.transports.mooncake import RemoteShard
+from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import RemoteShard
 from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import TransferBuffers
 
 _RETURN_TIMEOUT_SECONDS = 10.0
@@ -40,12 +40,12 @@ def make_transfer_buffers(monkeypatch: pytest.MonkeyPatch):
     return make
 
 
-def _remote_shard(session_id: str) -> RemoteShard:
+def _remote_shard(transport_peer: str) -> RemoteShard:
     return RemoteShard(
         rollout_engine_ind=0,
         rollout_engine_rank=0,
         runner_role="target",
-        session_id=session_id,
+        transport_peer=transport_peer,
         weight_locations_by_name={},
     )
 
@@ -86,7 +86,7 @@ def test_a_failed_write_fails_the_next_acquire_of_its_buffer_and_frees_it(make_t
     failed_write.set_exception(RuntimeError("write failed"))
     transfer_buffers.release_after(buffer, [(_remote_shard("session-a"), failed_write)])
 
-    with pytest.raises(RuntimeError, match="session session-a.*write failed"):
+    with pytest.raises(RuntimeError, match="peer session-a.*write failed"):
         transfer_buffers.acquire()
     assert transfer_buffers.acquire() is buffer
 
@@ -98,7 +98,7 @@ def test_a_write_still_running_after_the_timeout_fails_acquire_and_keeps_its_buf
     running_write = Future()
     transfer_buffers.release_after(buffer, [(_remote_shard("session-a"), running_write)])
 
-    with pytest.raises(RuntimeError, match=f"session session-a.*still running after {_STILL_BLOCKED_SECONDS}s"):
+    with pytest.raises(RuntimeError, match=f"peer session-a.*still running after {_STILL_BLOCKED_SECONDS}s"):
         transfer_buffers.acquire()
     with pytest.raises(RuntimeError, match="still running"):
         transfer_buffers.acquire()
