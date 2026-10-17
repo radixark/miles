@@ -197,13 +197,14 @@ beaker:
   - Replicas enforce the limits local podman only requests: 4 GB of RSS and 2,048 processes per container,
     checked by a userspace watchdog every 5 s. They also allow 8 containers per replica and a 2 h idle timeout
     (`session_limits` in the roster).
-  - A container the fleet reports lost ends the episode with reward 0 (`end=sandbox_lost`): `410 sandbox_lost` (a
-    watchdog breach or a stopped container), `410 affinity_owner_lost` (its replica left the roster), or a `404`
+  - A container the fleet reports lost ends the episode (`end=sandbox_lost`): `410 sandbox_lost` (a watchdog
+    breach, a stopped container, or `unknown`), `410 affinity_owner_lost` (its replica left the roster), or a `404`
     for its binding (the gateway no longer knows the container; the keepalive normally prevents this). The trace and
-    the episode metrics record why, as `sandbox_lost_reason` (`memory_limit`, `pids_limit`, `container_stopped`,
-    `affinity_owner_lost`, `binding_lost`). As literegistry prescribes, the episode never continues in a replacement
-    container; local podman instead recreates a vanished container once. See the open decision in
-    [INVESTIGATIONS.md](../INVESTIGATIONS.md#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet).
+    the episode metrics record why, as `sandbox_lost_reason`. A loss the policy caused (`memory_limit`,
+    `pids_limit`, `container_stopped`) scores 0, like an OOM kill; a loss the fleet caused (`unknown`,
+    `affinity_owner_lost`, `binding_lost`) leaves the reward missing, so the missing-reward filter drops the group
+    rather than training on a false 0. As literegistry prescribes, the episode never continues in a replacement
+    container; local podman instead recreates a vanished container once.
   - Transient gateway answers (`408`, `5xx`, a dropped connection) are retried; every request is safe to repeat.
 - **The fleet** is shared and managed outside this job. Its roster is at `<gateway>/v1/models`: on 2026-10-16, 172
   podman replicas, 8 mirrors and the fleet's own gateway.
@@ -302,7 +303,7 @@ What to do when a symptom shows up. Every failure mode seen so far, with its sta
 | `benching sandbox daemon tcp://<node>:2375x … ReadTimeout` | That node's podman daemons too slow to answer | Episodes move to other daemons for about 5 min; repeated benching of one node goes with the starvation above |
 | `!!!!!!! Segfault encountered !!!!!!!` from `RolloutExecutor`, then `EOFError: Ran out of input` from agent processes | A native crash in the rollout executor; no stack in the job log | The retry resumes. Set `PYTHONFAULTHANDLER: "1"` in the config's `env` to capture a stack next time |
 | `gateway http://127.0.0.1:24750: N podman replicas (need M)` and the head exits | Gateway backend: the fleet's registry is unreachable or lists too few replicas | Check the registry path and the fleet's roster (`/v1/models`); see [Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend) |
-| `end=sandbox_lost` in episode logs | Gateway backend: the replica removed or stopped the container (its resource watchdog, or the agent killed PID 1), its replica left, or its binding expired | Scored 0 like an OOM kill; `sandbox_lost_reason` in the trace says which |
+| `end=sandbox_lost` in episode logs | Gateway backend: the replica removed or stopped the container (its resource watchdog, or the agent killed PID 1), its replica left, or its binding expired | `sandbox_lost_reason` in the trace says which: the policy's limits and a stopped container score 0, the fleet's losses drop the group; a burst of `unknown` is the fleet's, see [INVESTIGATIONS.md](../INVESTIGATIONS.md) |
 | `Failed collecting samples: ReadError('')` from `agentic_tool_call.py` | Fetching an episode from the session server failed; the whole group is dropped | 2.5-3% of episodes on the pre-rebase code; none so far on the rebased code (upstream's session-server and transport fixes) |
 | `http_utils.py … Error: , retrying... (attempt 1/60, url=…/sessions` with `starlette.requests.ClientDisconnect` on the session server | A session-create request dropped mid-body | Harmless: retried and succeeded |
 | `AttributeError` mentioning `enable_prefill_weight_versions` at start | Image older than session server v2 needs | Pin `dev-202610151741` or newer |

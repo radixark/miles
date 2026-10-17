@@ -23,9 +23,10 @@ while the container idles through a long generation.
 
 A container the fleet reports lost (``PodmanContainerLostError``: the replica's watchdog removed it past its limits,
 4 GB of RSS or 2048 processes on 2026-10-16, it stopped because its init process died, or its replica left the
-roster) ends the episode with reward 0 (``SandboxLostError``, end reason ``sandbox_lost``, its reason in the trace).
-So does a binding the gateway no longer has (``404``; the keepalive prevents expiry): nothing can reach the container
-again. As literegistry prescribes, the episode does not continue in a replacement container.
+roster) ends the episode (``SandboxLostError``, end reason ``sandbox_lost``, its reason in the trace). So does a
+binding the gateway no longer has (``404``; the keepalive prevents expiry): nothing can reach the container again.
+tmax_agent_function scores the policy's losses 0 and drops the group for the fleet's. As literegistry prescribes,
+the episode does not continue in a replacement container.
 """
 
 import asyncio

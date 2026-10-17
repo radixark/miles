@@ -22,6 +22,7 @@ from aiohttp.test_utils import TestServer  # noqa: E402
 TMAX_DIR = Path(__file__).resolve().parents[4] / "examples" / "tmax"
 sys.path.insert(0, str(TMAX_DIR))
 
+import tmax_agent_function  # noqa: E402
 import tmax_gateway  # noqa: E402
 import tmax_sandbox  # noqa: E402
 
@@ -312,3 +313,18 @@ def test_missing_gateway_url_is_a_configuration_error(gateway, task_dir, monkeyp
     tmax_sandbox._settings.cache_clear()
     with pytest.raises(ValueError):
         tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir)
+
+
+@pytest.mark.parametrize(
+    "reason, reward",
+    [
+        ("unknown", None),
+        ("affinity_owner_lost", None),
+        ("binding_lost", None),
+        ("memory_limit", 0.0),
+        ("pids_limit", 0.0),
+        ("container_stopped", 0.0),
+    ],
+)
+def test_fleet_losses_drop_the_group_policy_losses_score_zero(reason, reward):
+    assert tmax_agent_function._lost_sandbox_reward(reason) == reward

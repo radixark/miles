@@ -357,10 +357,12 @@ def execute(args: ScriptArgs):
     )
     if not args.recipe.enable_thinking:
         agent_args += """--apply-chat-template-kwargs '{"enable_thinking": false}' """
-    # tmax_metrics' filter hooks record every group before the zero-variance filter (Miles's, applied when
-    # filter_zero_std), and its log hook logs rollout/{agent,tools,unfiltered,trained}/* once per batch, in sync and
-    # fully-async mode alike (--fully-async rejects --rollout-function-path, so a rollout function cannot).
-    group_filter = "nonzero_std_filter" if args.filter_zero_std else "keep_all_filter"
+    # tmax_metrics' filter hooks record every group before the filter, then apply Miles's: the zero-variance filter
+    # when filter_zero_std (which also drops groups with a missing reward), else the missing-reward filter alone, so
+    # a sandbox the fleet lost drops its group rather than training on a false 0. Its log hook logs
+    # rollout/{agent,tools,unfiltered,trained}/* once per batch, in sync and fully-async mode alike (--fully-async
+    # rejects --rollout-function-path, so a rollout function cannot).
+    group_filter = "nonzero_std_filter" if args.filter_zero_std else "missing_reward_filter"
     agent_args += (
         f"--dynamic-sampling-filter-path tmax_metrics.{group_filter} "
         "--custom-rollout-log-function-path tmax_metrics.log_rollout_data "

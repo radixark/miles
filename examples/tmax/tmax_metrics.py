@@ -2,7 +2,7 @@
 
 Two hooks, both running in the rollout process:
 
-* `nonzero_std_filter` / `keep_all_filter` (``--dynamic-sampling-filter-path``) see every finished group before
+* `nonzero_std_filter` / `missing_reward_filter` (``--dynamic-sampling-filter-path``) see every finished group before
   Miles's zero-variance filter decides, so they record the group's solve rate and its episodes' agent metrics;
 * `log_rollout_data` (``--custom-rollout-log-function-path``) runs once per trained batch, in synchronous and in
   fully-async mode alike, and logs what was recorded since the previous batch together with metrics of the trained
@@ -24,7 +24,7 @@ from collections.abc import Iterable
 from statistics import mean
 
 from miles.rollout.filter_hub.base_types import FilterOutput, iter_samples
-from miles.rollout.filter_hub.common_filters import apply_reward_nonzero_std_filter
+from miles.rollout.filter_hub.common_filters import apply_missing_reward_filter, apply_reward_nonzero_std_filter
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
@@ -52,10 +52,11 @@ def nonzero_std_filter(args, samples, **kwargs) -> FilterOutput:
     return apply_reward_nonzero_std_filter(args, samples, **kwargs)
 
 
-def keep_all_filter(args, samples, **kwargs) -> FilterOutput:
-    """Keeps every group, after recording it (filter_zero_std off, as in smoke tests)."""
+def missing_reward_filter(args, samples, **kwargs) -> FilterOutput:
+    """Miles's missing-reward filter alone, after recording the group (filter_zero_std off, as in smoke tests): a
+    group with a sample the sandbox failed to score (reward None) is dropped rather than trained on a false 0."""
     _record_group(args, samples)
-    return FilterOutput(keep=True)
+    return apply_missing_reward_filter(args, samples, **kwargs)
 
 
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool:

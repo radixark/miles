@@ -340,9 +340,12 @@ the backend can be trusted at prod scale.
   - `literegistry-podman-client` 0.1.4 raises `PodmanContainerLostError` for `410 sandbox_lost` (reasons
     `memory_limit`, `pids_limit`, `container_stopped`, `unknown`) and `410 affinity_owner_lost`. It treats a generic
     404 or 503 as a gateway error, not a loss; the port treats a 404 as one (see above).
-- **Open decision, how a lost container scores:** today any loss ends the episode with reward 0, like an OOM kill.
-  `affinity_owner_lost`, a replica dying, is infrastructure rather than the policy's doing. Marking such a sample
-  aborted instead would drop its group, so an infrastructure loss never reaches the policy as a 0.
+- **Decided 2026-10-17, how a lost container scores:** the policy's losses (`memory_limit`, `pids_limit`,
+  `container_stopped`) score 0, like an OOM kill; the fleet's (`unknown`, `affinity_owner_lost`, `binding_lost`)
+  leave the reward missing, so the group is dropped. Prompted by the 4-node gateway run (Beaker
+  `01M54060ECZQ0CN4XF1A5FZPZ6`, `prod_4node_gateway.yaml`): from 06:08 to 06:11 UTC on 2026-10-17, 309 of its
+  containers were lost in bursts (153, 75 and 81 a minute) for reason `unknown`, with every fleet replica job still
+  up, against about 0.5% of episodes outside the bursts.
 - **Open questions:**
   - Fleet capacity when 512 of our episodes share it with other users' jobs.
   - Whether cross-cluster latency (holmes to jupiter/neptune) adds up over 64-step episodes.

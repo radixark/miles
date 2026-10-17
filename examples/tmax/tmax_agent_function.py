@@ -24,8 +24,10 @@ Failure semantics:
   so the sample is ABORTED and the whole group is dropped;
 * a bash command or the tests failing for infra reasons: the error is the
   observation and the episode continues (a vanished container is recreated once);
-* sandbox OOM, a remote sandbox removed under the episode (gateway backend), or the optional episode
-  wall-clock cap: reward 0;
+* sandbox OOM, a remote sandbox the policy got removed (gateway backend: over its memory or process
+  limit, or stopped), or the optional episode wall-clock cap: reward 0;
+* a remote sandbox the fleet lost (gateway backend: its replica left, its binding expired, or it vanished
+  for a reason the replica cannot name): ``reward=None``, so the missing-reward filter drops the group;
 * over-sampling abort: ``reward=None``; the group is discarded anyway.
 
 Each call runs in its own process under ``--custom-agent-function-mode subproc``
@@ -99,6 +101,16 @@ _FORMAT_ERROR = (
 )
 
 _ABORT_POLL_S = 1.0
+
+
+# Losses the fleet caused rather than the policy; a lost episode scores 0 for any other reason (memory_limit,
+# pids_limit, container_stopped: the agent can stop its own container).
+_FLEET_LOSS_REASONS = frozenset({"unknown", "affinity_owner_lost", "binding_lost"})
+
+
+def _lost_sandbox_reward(reason: str) -> float | None:
+    """None (drop the group) for a loss the fleet caused, 0 for one the policy did."""
+    return None if reason in _FLEET_LOSS_REASONS else 0.0
 
 
 class _Aborted(Exception):
@@ -201,7 +213,8 @@ async def _run_episode(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox,
     except TimeoutError:
         episode.end_reason, episode.reward = "episode_timeout", 0.0
     except SandboxLostError as e:  # the remote container was removed or lost under the episode
-        episode.end_reason, episode.reward, episode.sandbox_lost_reason = "sandbox_lost", 0.0, e.reason
+        episode.end_reason, episode.sandbox_lost_reason = "sandbox_lost", e.reason
+        episode.reward = _lost_sandbox_reward(e.reason)
     except SandboxOOMError:
         episode.end_reason, episode.reward = "oom", 0.0
     except _Aborted:
