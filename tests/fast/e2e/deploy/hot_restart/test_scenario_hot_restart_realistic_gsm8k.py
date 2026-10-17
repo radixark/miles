@@ -11,6 +11,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HotRestartFa
 from tests.e2e.ft.conftest_ft import scenario_realistic_gsm8k
 from tests.e2e.ft.conftest_ft.fault_injection.state import InjectionEvent
 from tests.utils.deploy.hot_restart.evidence import HotRestartRecord
+from tests.utils.soak.recipes import gsm8k
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
@@ -19,8 +20,8 @@ from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainCo
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
 
 
-def _run(dump_dir: str) -> scenario_realistic_gsm8k.Gsm8kRun:
-    return scenario_realistic_gsm8k.Gsm8kRun(
+def _run(dump_dir: str) -> gsm8k.Gsm8kRun:
+    return gsm8k.Gsm8kRun(
         base_url="http://orchestrator:18080",
         config=ExecuteTrainConfig(run_id="demo", namespace="rl"),
         dump_dir=dump_dir,
@@ -64,7 +65,7 @@ class TestTheRecipeIsTheOneFtConverges:
     def test_the_shared_recipe_can_keep_its_api_without_enabling_training_ft(self):
         """Hot restart uses the cell API for injection without combining with automatic FT recovery."""
         argv = shlex.split(
-            scenario_realistic_gsm8k.get_gsm8k_train_args(
+            gsm8k.get_gsm8k_train_args(
                 config=ExecuteTrainConfig(run_id="260101-000000-000", namespace="miles-e2e"),
                 seed=scenario.DEFAULT_SEED,
                 num_rollout=scenario.DEFAULT_NUM_ROLLOUT,

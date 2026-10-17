@@ -16,7 +16,6 @@ from tests.e2e.ft.conftest_ft.scenario_realistic_gsm8k import (
     DEFAULT_METRIC_THRESHOLD,
     DEFAULT_NUM_ROLLOUT,
     DEFAULT_SEED,
-    Gsm8kRun,
     run_realistic_gsm8k,
 )
 from tests.utils.deploy.hot_restart.cluster_observer import ClusterObserver, observing_cluster
@@ -27,6 +26,7 @@ from tests.utils.deploy.hot_restart.evidence import (
     read_step_events,
 )
 from tests.utils.soak.deploy.checkers.takeover_scope import assert_take_overs_replaced_only_script
+from tests.utils.soak.recipes.gsm8k import Gsm8kRun
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
