@@ -35,7 +35,7 @@ from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args, validate_lora_args_after_megatron
-from miles.utils.lora.utils import is_lora_enabled
+from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.object_store_config import (
@@ -379,6 +379,29 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--offload-train-process-groups",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help=(
+                    "Destroy the training actor's NCCL process groups when it offloads and rebuild them "
+                    "when it wakes up (with --offload-train). Destroying frees the communicators' buffers, "
+                    "a few GB per rank; rebuilding makes the first collectives and P2P pairs after every "
+                    "wake-up initialize lazily, which on a large PP job adds tens of seconds to the "
+                    "log-probs pass. --no-offload-train-process-groups keeps them alive across offload."
+                ),
+            )
+            parser.add_argument(
+                "--offload-train-params",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help=(
+                    "Offload the training actor's parameters with the rest of the actor (with --offload-train). "
+                    "--no-offload-train-params keeps the parameters on GPU across offload and releases only the "
+                    "gradient buffers and the allocator cache, so wake-up and sleep move no weights. LoRA only "
+                    "(the frozen base and the adapter stay resident); the rollout engines must fit next to them."
+                ),
+            )
+            parser.add_argument(
                 "--stream-optimizer-state-to-disk",
                 action="store_true",
                 help=(
@@ -483,6 +506,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Backend for Qwen GDN linear-attention layers. "
                     "'fla' (flash-linear-attention) is portable and runs on any supported GPU. "
                     "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+."
+                ),
+            )
+            parser.add_argument(
+                "--kimi-k3-situ-backend",
+                type=str,
+                choices=["eager", "fused"],
+                default="eager",
+                help=(
+                    "Implementation of Kimi-K3's SiTU-and-mul expert activation in the trainer. 'eager' composes "
+                    "PyTorch elementwise ops (about ten kernels forward, fifteen backward). 'fused' runs forward "
+                    "and backward as one Triton pass each: the forward stays within one bf16 ulp of eager and the "
+                    "closed-form backward within a few ulp."
                 ),
             )
             parser.add_argument(
@@ -3885,6 +3920,24 @@ def miles_validate_args(args):
     ):
         uid = os.getuid() if hasattr(os, "getuid") else 0
         args.offload_train_disk_dir = os.path.join(os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}")
+
+    if not args.offload_train_process_groups:
+        assert args.offload_train, "--no-offload-train-process-groups only applies with --offload-train"
+        assert (
+            args.train_backend == "megatron"
+        ), "--no-offload-train-process-groups is only supported on the megatron backend"
+
+    if not args.offload_train_params:
+        assert args.offload_train, "--no-offload-train-params only applies with --offload-train"
+        assert args.train_backend == "megatron", "--no-offload-train-params is only supported on the megatron backend"
+        assert lora_rollout_enabled(args), (
+            "--no-offload-train-params keeps the frozen base and the adapter resident; it requires LoRA "
+            "with the rollout side enabled"
+        )
+        assert not args.rematerialize_param_from_master_weight, (
+            "--no-offload-train-params and --rematerialize-param-from-master-weight both manage the "
+            "parameter buffers across offload"
+        )
 
     if args.offload_train_target == "disk":
         assert args.offload_train, "--offload-train-target=disk requires --offload-train"

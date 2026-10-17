@@ -7,7 +7,7 @@ import math
 import os
 from abc import abstractmethod
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 import torch
 import torch.distributed as dist
@@ -40,21 +40,32 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
 
     def _iter_hf_adapter_units(self, adapter, *, materialize):
         """Both megatron exporters are PP-local after gathering TP/EP; the PP
-        gather runs only where the resolved placement asks for it."""
+        gather runs only where the resolved placement asks for it, one owner stage
+        at a time, so a rank holds at most one stage's share of the adapter in
+        flight instead of the whole adapter (tens of GB for a large MoE)."""
         named_tensors = self._export_pp_local_lora(adapter)
         # TODO: the PP-local branch is unreachable until validate_native_lora_args lifts its
         # colocate-only guard; add an e2e for native-LoRA disaggregate when it does
         if self.placement.gather_pp:
-            named_tensors = _gather_pp_full_adapter(named_tensors)
-        if not materialize:
-            return
-        if not named_tensors:
-            raise RuntimeError("LoRA weight sync failed: the adapter export produced zero tensors")
-        if not any(is_lora_weight_name(name) for name, _ in named_tensors):
-            raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
-        while named_tensors:
-            hf_name, tensor = named_tensors.pop(0)
-            yield [(hf_name, tensor)]
+            layout = _gather_pp_adapter_layout(named_tensors)
+            names = [name for stage in layout for name, _, _ in stage]
+            stages = _iter_pp_adapter_stages(named_tensors, layout)
+        else:
+            names = [name for name, _ in named_tensors]
+            stages = iter([named_tensors])
+        del named_tensors
+        if materialize:
+            if not names:
+                raise RuntimeError("LoRA weight sync failed: the adapter export produced zero tensors")
+            if not any(is_lora_weight_name(name) for name in names):
+                raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
+        for stage in stages:
+            # every rank drains the stages in lockstep: each one is a PP broadcast
+            if not materialize:
+                continue
+            while stage:
+                hf_name, tensor = stage.pop(0)
+                yield [(hf_name, tensor)]
 
     @abstractmethod
     def _export_pp_local_lora(self, adapter) -> list[tuple[str, torch.Tensor]]:
@@ -95,27 +106,40 @@ def get_packed_weight_basenames(hf_checkpoint: str) -> set[str]:
     return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
 
 
-def _gather_pp_full_adapter(
+def _gather_pp_adapter_layout(
     hf_named_tensors: Sequence[tuple[str, torch.Tensor]],
-) -> list[tuple[str, torch.Tensor]]:
-    """Gather the complete adapter onto every PP rank: exchange metadata, then
-    one flat broadcast per (owner, dtype)."""
+) -> list[list[tuple[str, tuple[int, ...], torch.dtype]]]:
+    """(name, shape, dtype) of every PP stage's adapter tensors, on every PP rank."""
     pp = get_parallel_state().pp
     if pp.size == 1:
-        return list(hf_named_tensors)
-    global_ranks = dist.get_process_group_ranks(pp.group)
-    device = torch.cuda.current_device()
-
+        return [[(n, tuple(t.shape), t.dtype) for n, t in hf_named_tensors]]
     local_meta = [(n, tuple(t.shape), t.dtype) for n, t in hf_named_tensors]
     all_meta: list = [None] * pp.size
     dist.all_gather_object(all_meta, local_meta, group=pp.group)
+    return all_meta
 
+
+def _iter_pp_adapter_stages(
+    hf_named_tensors: Sequence[tuple[str, torch.Tensor]],
+    layout: list[list[tuple[str, tuple[int, ...], torch.dtype]]],
+) -> Iterator[list[tuple[str, torch.Tensor]]]:
+    """Gather the complete adapter onto every PP rank one owner stage at a time
+    (one flat broadcast per (owner, dtype)), yielding that stage's tensors sorted
+    by name. A stage's buffers are released once its consumer drops the tensors,
+    before the next stage is broadcast."""
+    pp = get_parallel_state().pp
+    if pp.size == 1:
+        # the export itself, drained in place by the consumer (export order, no copy)
+        yield hf_named_tensors if isinstance(hf_named_tensors, list) else list(hf_named_tensors)
+        return
+    global_ranks = dist.get_process_group_ranks(pp.group)
+    device = torch.cuda.current_device()
     local_by_name = {n: t for n, t in hf_named_tensors}
-    merged: dict[str, torch.Tensor] = {}
-    for src, meta in enumerate(all_meta):
+    for src, meta in enumerate(layout):
         by_dtype: dict = {}
         for n, shape, dtype in meta:
             by_dtype.setdefault(dtype, []).append((n, shape))
+        stage: list[tuple[str, torch.Tensor]] = []
         for dtype, entries in by_dtype.items():
             numel = sum(math.prod(shape) for _, shape in entries)
             flat = torch.empty(numel, dtype=dtype, device=device)
@@ -129,9 +153,12 @@ def _gather_pp_full_adapter(
             off = 0
             for n, shape in entries:
                 k = math.prod(shape)
-                merged[n] = flat[off : off + k].view(shape)
+                stage.append((n, flat[off : off + k].view(shape)))
                 off += k
-    return sorted(merged.items())
+            del flat
+        stage.sort(key=lambda item: item[0])
+        yield stage
+        del stage
 
 
 def _iter_mm_tower_units(args, *, materialize):
