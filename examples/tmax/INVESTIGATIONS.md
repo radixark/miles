@@ -18,6 +18,7 @@ Runs referred to:
 - **Resume:** submitted on the podman backend with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037`, continuing
   from `iter_0000149`, off `holmes-cs-aus-556` and `holmes-cs-aus-500` (`--exclude-host`), with `retries: 10`. A first
   submission (`01M53JRRQ310SG0GDCF249TW1A`, 5 retries) was stopped before it started.
+- **Gateway runs:** `tmax_prod4node_gateway_qwen35_9b_20261017_035830` (v1) and `..._20261017_074752` (v2), stopped.
 
 ## Open decisions
 
@@ -43,6 +44,36 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 ## Ideas to explore
 
 Larger directions to evaluate against the evidence below. Add yours here.
+
+## 2026-10-17: the gateway backend at prod scale (two 4-node runs)
+
+Two runs of `prod_4node_gateway.yaml` (branch `shashank/tmax-gateway`) alongside the podman resume, to see whether
+the backend can be trusted at prod scale.
+
+- **v1** (`01M54060ECZQ0CN4XF1A5FZPZ6`, from 03:58): the fleet's Redis outage cost a retry (entry below). It then
+  trained steps 0 to about 12 at about 2.6 minutes a step, with 1–1.3 s weight syncs (podman: about 5 minutes and
+  2–8 s). But from 06:08 to 06:11 bursts lost 309 containers (153, 75, 81 a minute; reason `unknown`) with every
+  fleet replica job up, 7–17% of the episodes, each scored 0. Stopped, and the scoring changed (`a0e7785296`: the
+  fleet's losses drop the group).
+- **v2** (`01M54D9TWBNSMVE29GCV6T4G7H`, from 07:48, `a0e7785296`): trained no step in 8 h 47 m. Its first rollout
+  began at 08:06; within 15 minutes the sandbox time per episode went from 60 s to 750 s, against a steady ~60 `503`s
+  a minute from the fleet; the episode rate fell from about 25 to under 1 a minute (1,983 in all), later with
+  containers failing to start. Beaker preempted it at 16:39 to rebalance workspace groups (`ai2/omai-agents` 23% over
+  target), after its 8 h minimum runtime; stopped at 17:30.
+- **The roster looked healthy throughout** (253–255 replicas, at least 1,669 free sessions). So the slowdown is in
+  the request path, the head's own gateway, the fleet's replicas or the network from holmes, and our logs cannot
+  tell which: the client records only the status code, and the head's gateway log stays in the job.
+- **Reading:** the backend cannot currently sustain a prod run on this fleet. Before another attempt: log the `503`s'
+  code and `execution_outcome`, per-request latency and the head gateway's log; and check the fleet with its owner.
+
+## 2026-10-17: the podman resume keeps losing nodes (retries 2–4)
+
+- **Retry 2** (08:24–12:13): Ray marked node `10.93.1.246` dead (missed heartbeats); the trainer controller gave up.
+- **Retry 3** (12:32–14:04): Ray marked node `10.93.2.18` dead.
+- **Retry 4** (14:57–15:30): a worker replica left, `Ray head 10.93.1.234:6379 unreachable 6 times in a row`.
+- **Retry 5** from 17:21; the latest checkpoint is `iter_0000224`, so the run went from step 160 to 224 in 17 hours.
+- Each is what `f5ef1f8273` (Ray's health check) and `aeb4f9ecd3` (the worker watchdog) address; the user chose to
+  keep retrying on the old code.
 
 ## 2026-10-17: a worker replica gives up on a starved head (resume, retry 1)
 
