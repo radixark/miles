@@ -61,6 +61,9 @@ class FakeFiniteOptimizer(FakeNonfiniteOptimizer):
         self.step_count += 1
         return True, 1.0, 0
 
+    def offload_optimizer_state_for_forward(self) -> None:
+        pass
+
 
 class FakeScheduler:
     def step(self, *, increment: int) -> None:
@@ -164,6 +167,36 @@ class TestTrainOneStepStructuredLog:
             )
 
         assert "train op=train_step rollout=7 step=3 attempt=2 outcome=NORMAL valid_step=true" in caplog.messages
+
+
+class TestTrainOneStepOptimizerStateOffload:
+    def test_a_successful_step_hands_the_optimizer_state_back_before_the_next_forward(
+        self, train_one_step_env: TrainOneStepEnv
+    ):
+        """--chunked-optimizer-state-offload leaves the masters on GPU after a step; Megatron's loop moves them back
+        before its next forward and ours has no other point to do it, so the fwd/bwd window would hold them."""
+        from miles.backends.megatron_utils.model import train_one_step
+
+        calls = []
+        optimizer = Mock()
+        optimizer.step.side_effect = lambda: calls.append("step") or (True, 1.0, 0)
+        optimizer.offload_optimizer_state_for_forward.side_effect = lambda: calls.append("offload")
+
+        train_one_step(
+            args=train_one_step_env.args,
+            rollout_id=0,
+            step_id=0,
+            data_iterator=train_one_step_env.data_iterator,
+            model=train_one_step_env.model,
+            optimizer=optimizer,
+            opt_param_scheduler=Mock(),
+            num_microbatches=1,
+            num_rollouts=1,
+            witness_info=None,
+            attempt=0,
+        )
+
+        assert calls == ["step", "offload"]
 
 
 def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampling_support(monkeypatch):

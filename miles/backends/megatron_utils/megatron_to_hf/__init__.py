@@ -15,6 +15,7 @@ from .qwen3_5 import convert_qwen3_5_to_hf
 from .qwen3_8_next import convert_qwen3_8_next_to_hf
 from .qwen3_next import convert_qwen3_next_to_hf
 from .qwen3moe import convert_qwen3moe_to_hf
+from .step5 import convert_step5_to_hf
 
 
 # TODO unify w/ `convert_to_hf`
@@ -46,7 +47,9 @@ def convert_to_hf_names(args, model_name, name, param) -> list[str]:
 
 def _convert_to_hf_core(args, model_name, name, param):
     model_name = model_name.lower()
-    if "glm5_next" in model_name or "glm5next" in model_name:
+    if "step5" in model_name:
+        converted_named_tensors = convert_step5_to_hf(args, name, param)
+    elif "glm5_next" in model_name or "glm5next" in model_name:
         converted_named_tensors = convert_glm5_next_to_hf(args, name, param)
     elif (
         "glm4moelite" in model_name

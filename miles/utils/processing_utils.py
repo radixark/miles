@@ -1,6 +1,7 @@
 import base64
 import inspect
 import io
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -144,6 +145,13 @@ def extract_multimodal_train_inputs(processor_output: Mapping[str, Any]) -> dict
     return {key: value for key, value in processor_output.items() if key not in excluded_keys} or None
 
 
+def _checkpoint_model_type(name_or_path: str) -> str | None:
+    config_path = Path(name_or_path) / "config.json"
+    if not config_path.is_file():
+        return None
+    return json.loads(config_path.read_text(encoding="utf-8")).get("model_type")
+
+
 def load_processor(name_or_path: str, **kwargs):
     from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
 
@@ -151,6 +159,11 @@ def load_processor(name_or_path: str, **kwargs):
         from miles_plugins.models.inkling.mm_processor import InklingTrainProcessor
 
         return InklingTrainProcessor(name_or_path)
+
+    if _checkpoint_model_type(name_or_path) == "step5_vl":
+        from miles_plugins.models.step5.processor import Step5TrainProcessor
+
+        return Step5TrainProcessor(load_tokenizer(name_or_path, trust_remote_code=True))
 
     try:
         proc = AutoProcessor.from_pretrained(name_or_path, **kwargs)

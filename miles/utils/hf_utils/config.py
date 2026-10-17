@@ -109,6 +109,18 @@ def register_hf_config_aliases() -> None:
     except ImportError:
         pass
 
+    _register_sglang_step5_configs()
+
+
+def _register_sglang_step5_configs() -> None:
+    """Step5 checkpoints (``step5_vl`` wrapping a ``step5`` text config) are read with SGLang's config classes."""
+    try:
+        from sglang.srt.configs.step5 import Step5Config, Step5VLConfig
+    except ImportError:
+        return
+    for config_class in (Step5Config, Step5VLConfig):
+        AutoConfig.register(config_class.model_type, config_class, exist_ok=True)
+
 
 def load_hf_config(
     checkpoint_path: str,

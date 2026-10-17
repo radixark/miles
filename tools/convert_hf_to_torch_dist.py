@@ -55,8 +55,8 @@ def add_conversion_args(parser):
     return parser
 
 
-def get_args():
-    args = parse_args(add_conversion_args)
+def get_args(extra_args_provider=add_conversion_args):
+    args = parse_args(extra_args_provider)
     args = set_default_megatron_args(args)
 
     args.debug_deterministic_collective = False

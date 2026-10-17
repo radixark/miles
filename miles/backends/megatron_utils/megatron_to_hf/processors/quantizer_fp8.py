@@ -25,6 +25,13 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         ignored_layers.extend((name, f"model.{name}"))
     packed_modules_mapping = quantization_config.get("packed_modules_mapping") or {}
 
+    # A checkpoint that keeps some linears in BF16 (Step5: all but the routed experts) lists them here.
+    not_converted = set(quantization_config.get("modules_to_not_convert") or ())
+    kept = [name for name, _ in converted_named_params if name.removesuffix(".weight") in not_converted]
+    if kept:
+        assert len(kept) == len(converted_named_params), f"{megatron_name} maps to both FP8 and BF16 modules: {kept}"
+        return converted_named_params
+
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, megatron_name)
 

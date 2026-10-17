@@ -16,6 +16,7 @@ def test_native_generate_producer_appends_each_call() -> None:
     args = _args(
         rollout_max_response_len=20,
         rollout_max_context_len=None,
+        eval_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         sglang_speculative_algorithm=None,
@@ -44,6 +45,7 @@ def test_filtered_native_generation_records_post_filter_distribution(candidate_c
         use_sampling_support_replay=True,
         rollout_max_response_len=20,
         rollout_max_context_len=None,
+        eval_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         sglang_speculative_algorithm=None,
@@ -76,6 +78,7 @@ def test_greedy_evaluation_does_not_collect_training_candidates() -> None:
     args = _args(
         rollout_max_response_len=20,
         rollout_max_context_len=None,
+        eval_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         sglang_speculative_algorithm=None,

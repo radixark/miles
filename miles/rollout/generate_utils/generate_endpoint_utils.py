@@ -65,7 +65,9 @@ def compute_request_payload(
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
-    if x := args.rollout_max_context_len:
+    # Eval samples never reach the trainer, so a context cap the trainer imposes on rollouts need not bind them;
+    # --eval-max-context-len defaults to --rollout-max-context-len.
+    if x := (args.eval_max_context_len if evaluation else args.rollout_max_context_len):
         max_new_tokens = min(max_new_tokens, x - len(input_ids))
     if max_new_tokens <= 0:
         return None, Sample.Status.TRUNCATED
@@ -136,11 +138,22 @@ async def update_sample_from_response(
         sample.loss_mask += [1] * len(new_response_tokens)
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
-    sample.rollout_routed_experts = get_routed_experts_from_response(args, output, len(sample.tokens) - 1)
+    sample.rollout_routed_experts = _routed_experts_of_call(args, output, num_new_tokens=len(new_response_tokens))
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
+
+
+def _routed_experts_of_call(args, output: dict, *, num_new_tokens: int) -> np.ndarray | None:
+    """One routing row per token the engine ran but the last: its prompt as it expanded it, then the new tokens.
+
+    The engine expands media placeholders itself, so the request's own length undercounts an image prompt.
+    """
+    meta_info = output["meta_info"]
+    if meta_info.get("routed_experts") is None:
+        return None
+    return get_routed_experts_from_response(args, output, meta_info["prompt_tokens"] + num_new_tokens - 1)
 
 
 def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) -> np.ndarray:
