@@ -185,7 +185,80 @@ weight sync, the adapter export is leaking and the run will die later rather tha
   `miles/backends/megatron_utils/megatron_to_hf/kimi_k3.py`, and the model itself in
   `miles_plugins/models/kimi_k3/`.
 
-## 6. Pairs Well With
+## 6. TorchTitan support
+
+The TorchTitan model adapter lives entirely under
+`miles/backends/torchtitan_utils/models/kimi_k3/`. It follows the Miles `ModelSpec`
+interface and reads architecture dimensions and the KDA/MLA layer lists from the HF
+`text_config`. `--titan-model-flavor hf` labels the run; it does not select hard-coded sizes.
+The adapter supports full-parameter training. Image inputs, LoRA and MTP are outside
+this adapter's scope. Rollout still uses Miles' SGLang integration.
+
+Prepare a BF16 HF checkpoint with the existing commands:
+
+```bash
+python scripts/run_kimi_k3.py prepare-download --model-name Kimi-K3-4layer-64experts --task gsm8k
+python scripts/run_kimi_k3.py prepare-bf16 --model-name Kimi-K3-4layer-64experts
+```
+
+Select the model through the standard TorchTitan training arguments below, alongside
+your rollout, data and GPU-layout arguments. This is an argument fragment, not a
+standalone launch command; `run_kimi_k3.py train` remains the Megatron recipe.
+
+```bash
+--train-backend torchtitan \
+--titan-model-name kimi_k3 --titan-model-flavor hf \
+--hf-checkpoint /root/models/Kimi-K3-4layer-64experts-bf16 \
+--tensor-model-parallel-size 8 --expert-model-parallel-size 8 \
+--pipeline-model-parallel-size 1 --context-parallel-size 1 \
+--gradient-checkpointing
+```
+
+The trainer loads the BF16 HF checkpoint into FP32 master parameters; no `torch_dist`
+conversion is needed. With the default TorchTitan mixed-precision settings, FSDP uses
+BF16 parameters for forward/backward computation and FP32 gradient reductions; the
+optimizer updates the FP32 master parameters. KDA core, short-convolution and output
+normalization parameters retain FP32 precision during computation as well.
+
+Use that same BF16 checkpoint directory for SGLang. Raw MXFP4 checkpoints are rejected
+before model allocation. The adapter exports HF-named training weights through the
+existing Miles weight-sync path and leaves frozen multimodal towers to that shared path.
+
+The eight-GPU smoke test downloads and converts the four-layer checkpoint, then
+runs two synchronous colocated rollouts with full-parameter updates:
+
+```bash
+python tests/e2e/torchtitan/test_kimi_k3_4layer_ep.py
+# The same workload with trainer CP2 and EP8:
+python tests/e2e/torchtitan/test_kimi_k3_4layer_cp.py
+```
+
+K3 hot weight updates require SGLang to refresh the attention-residual score cache
+after loading weights. Disabling CUDA graphs alone does not fix that stale cache.
+The smoke test disables CUDA graphs; enabling them also requires preserving the
+MLA absorbed-buffer storage across reloads, addressed by
+[the SGLang MLA reload fix](https://github.com/sgl-project/sglang/pull/43675).
+These SGLang changes are prerequisites, not installed by the test.
+
+The implementation includes FSDP, TP/sequence parallelism, EP and CP. For TP greater
+than one, use EP=TP, with head/expert counts divisible by those degrees. CP uses
+TorchTitan's `headtail` load balancing and expects one flattened packed row, as
+produced by the Miles trainer. PP and `torch.compile` are rejected. Validation uses
+the four-layer, 64-expert BF16 checkpoint and synthetic K3 configurations with reduced
+dimensions; the full 93-layer model, long-context behavior and convergence remain unvalidated.
+
+CP converts headtail shards into contiguous segments for FLA's recurrent-state and
+convolution-halo exchange, then restores the original layout. MLA retains local
+queries and gathers keys and values with gradients summed back to their owners.
+
+KDA and short convolution use existing FLA operations; MLA uses PyTorch SDPA. The
+adapter reconstructs packed-document boundaries from the trainer's position IDs,
+including single-token samples and padding, without changing the shared trainer.
+MLA currently materializes a dense attention mask
+(local queries by global keys under CP), so long-context performance and memory still need work. This adapter does not include
+new GPU kernels or the separate FSDP/performance experiments.
+
+## 7. Pairs Well With
 
 - [LoRA](/advanced/lora)
 - [Backends Beyond Megatron](/advanced/architecture-support)
