@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
-from tests.utils.soak.ft.checkers.reconfigure import assert_reconfigure_events
+from tests.utils.soak.ft.checkers.reconfigure import ReconfigureInfo, assert_reconfigure_events
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.test_utils.comparisons.dumps import (
@@ -28,10 +28,11 @@ def compare_deterministic_sides(
     baseline_dir: str,
     target_dir: str,
     min_trained_rollouts: int,
+    expected_target_reconfigures: list[ReconfigureInfo],
     exclude_keys: list[str] | None = None,
 ) -> None:
-    for side_dir in (baseline_dir, target_dir):
-        assert_reconfigure_events(Path(side_dir) / EVENTS_DIRNAME, expected=[])
+    assert_reconfigure_events(Path(baseline_dir) / EVENTS_DIRNAME, expected=[])
+    assert_reconfigure_events(Path(target_dir) / EVENTS_DIRNAME, expected=expected_target_reconfigures)
 
     for side_dir in (baseline_dir, target_dir):
         assert_metrics_classified(side_dir, compared=COMPARED_METRIC_PREFIXES, ignored=UNCOMPARED_METRIC_PREFIXES)

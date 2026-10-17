@@ -18,7 +18,7 @@ from tests.utils.ft.launch import (
     launch_training,
     resolve_config,
 )
-from tests.utils.soak.core.utils import DATA_DIR, MODEL_DIR, get_dumps_root
+from tests.utils.soak.core.utils import API_SERVER_ARGS, DATA_DIR, MODEL_DIR, get_dumps_root
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
@@ -174,6 +174,28 @@ def get_ft_args(mode: FTTestMode, *, api_server_args: str = "--api-server-port 0
 DETERMINISTIC_ROLLOUT_ARGS: str = (
     "--sglang-enable-deterministic-inference --sglang-attention-backend flashinfer --deterministic-mode "
 )
+DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {
+    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false",
+    "SGLANG_ENABLE_JIT_DEEPGEMM": "false",
+}
+ROLLOUT_HEALTH_CHECK_INTERVAL_SECONDS: float = 1.0
+
+
+def get_deterministic_p2p_train_args(
+    mode: FTTestMode, *, dump_dir: str, num_steps: int, enable_dumper: bool, test_name: str
+) -> str:
+    assert mode.has_real_rollout, f"{test_name} transfers weights to engines, but mode {mode.model_name} has none"
+
+    args = get_common_train_args(mode, dump_dir=dump_dir, num_steps=num_steps, enable_dumper=enable_dumper)
+    args += get_ft_args(mode, api_server_args=API_SERVER_ARGS)
+    args += "--mini-ft-controller-enable "
+    args += "--debug-deterministic-collective "
+    args += "--sglang-disable-radix-cache "
+    args += "--update-weight-transfer-mode p2p --sglang-router-policy round_robin "
+    args += f"--rollout-health-check-interval {ROLLOUT_HEALTH_CHECK_INTERVAL_SECONDS} "
+    args += "--weight-decay 0 "
+    args += get_train_env_vars_arg(mode, deterministic=True, extra_env_vars=DETERMINISTIC_INFERENCE_ENV_VARS)
+    return args
 
 
 def get_train_env_vars_arg(
