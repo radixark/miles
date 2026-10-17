@@ -23,7 +23,9 @@ class SoakTailConfig(FrozenStrictBaseModel):
 
     @classmethod
     def create(cls, *, num_rollout: int, min_tail_rollouts: int = 3) -> "SoakTailConfig":
-        raise NotImplementedError
+        if min_tail_rollouts < 3 or num_rollout <= min_tail_rollouts:
+            raise ValueError("A soak needs an injection rollout followed by its complete recovery tail")
+        return cls(close_after_rollout_id=num_rollout - max(min_tail_rollouts, num_rollout // 5) - 1)
 
 
 class SoakRunnerConfig(FrozenStrictBaseModel):

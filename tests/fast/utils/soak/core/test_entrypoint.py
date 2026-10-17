@@ -118,3 +118,14 @@ class TestRunSoak:
         ]
         assert rollouts == list(range(len(rollouts)))
         assert len(rollouts) >= 4
+
+    async def test_a_run_without_progress_after_admission_closed_is_rejected(
+        self, tmp_path: Path, processes: _RecordingProcesses
+    ) -> None:
+        """Training that stops advancing at the closing rollout cannot prove recovery, yet evidence is closed."""
+        world = _SoakWorld(tmp_path, last_step_rollout=1)
+
+        with pytest.raises(AssertionError, match="Soak tail has no successful training progress"):
+            await world.run()
+        assert isinstance(world.event_log.events[-1], SoakCollectionClosedEvent)
+        assert processes.calls
