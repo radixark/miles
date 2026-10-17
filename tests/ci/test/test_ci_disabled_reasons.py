@@ -39,8 +39,6 @@ _UNLINKED_BEFORE_THE_RULE: frozenset[tuple[str, str]] = frozenset(
             "tests/e2e/ft/test_random_crash__kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer.py",
             "stage-c-8-gpu-h200",
         ),
-        ("tests/e2e/ft/test_random_crash__kill_train_rollout__dp2_cp2.py", "stage-c-8-gpu-h200"),
-        ("tests/e2e/ft/test_random_crash_fully_async__kill_train_rollout__dp2_cp2.py", "stage-c-8-gpu-h200"),
         ("tests/e2e/ft/test_realistic_gsm8k__kill_train_rollout.py", "stage-c-8-gpu-h200"),
         ("tests/e2e/ft/test_realistic_gsm8k_fully_async__kill_train_rollout.py", "stage-c-8-gpu-h200"),
         ("tests/e2e/ft/test_trainer_deterministic__kill_train__dp2_cp2__moe_5layer.py", "stage-c-8-gpu-h200"),

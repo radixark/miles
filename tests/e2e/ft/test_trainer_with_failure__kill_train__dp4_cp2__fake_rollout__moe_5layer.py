@@ -10,6 +10,7 @@ register_cuda_ci(
     est_time=2300,
     suite="stage-c-8-gpu-h200",
     labels=["ft-short"],
+    hardware=["hopper", "blackwell"],
 )
 
 _MODE: str = "kill_train__dp4_cp2__fake_rollout__moe_5layer"

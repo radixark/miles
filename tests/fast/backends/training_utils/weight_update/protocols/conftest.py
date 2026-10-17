@@ -486,3 +486,29 @@ def make_cell_updater(p2p_protocol: ModuleType) -> Callable[..., Any]:
         )
 
     return make
+
+
+@pytest.fixture
+def make_remote_shard(mooncake_module: ModuleType) -> Callable[..., Any]:
+    def make(cell_id: str = "cell-a", rank: int = 0, runner_role: str = "target") -> Any:
+        return mooncake_module.RemoteShard(
+            cell_id=cell_id,
+            rollout_engine_ind=0,
+            rollout_engine_rank=rank,
+            runner_role=runner_role,
+            session_id=f"{cell_id}-{runner_role}-r{rank}",
+            weight_locations_by_name={
+                "w": mooncake_module.RemoteWeightLocation(address=0x1000, numel=4, element_size=4)
+            },
+        )
+
+    return make
+
+
+@pytest.fixture
+def transport(p2p_sender: Any, mooncake_module: ModuleType) -> Iterator[Any]:
+    transport = mooncake_module.MooncakeTransport()
+    yield transport
+    p2p_sender.transfer_engine.release_all()
+    for executor in transport._write_executors_by_rollout_engine_ind.values():
+        executor.shutdown(wait=True)

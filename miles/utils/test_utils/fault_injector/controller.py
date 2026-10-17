@@ -76,6 +76,9 @@ class _FaultHookController:
         finally:
             self._context = None
 
+    def current_context(self) -> FaultHookContext:
+        return self._current_context({})
+
     def apply(self, command: FaultHookCommand) -> FaultHookRecord:
         with self._lock:
             self._drop_expired()
