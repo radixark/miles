@@ -14,6 +14,7 @@ from tests.fast.charts.utils import NAMESPACE, RUN_CHART_DIR, RUN_ID, RUN_RELEAS
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER, assert_matches_snapshot
 
 from miles.ray.specs.entrypoint import compute_specs
+from miles.utils import compile_cache_utils
 from miles.utils.arguments import parse_args
 from miles.utils.external_utils.command_utils.common import rsync_cmd
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
@@ -159,6 +160,9 @@ SCENARIO_ARGV = [
 def parser_process_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for name, value in PARSER_ENV.items():
         monkeypatch.setenv(name, value)
+    for name in compile_cache_utils.NODE_LOCAL_COMPILE_CACHE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(compile_cache_utils, "_user", lambda: "snapshot")
     tuning_env_name = "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"
     tuning_env_value = os.environ.pop(tuning_env_name, None)
     # megatron validates the arguments against the local accelerator, which the cpu lane that
