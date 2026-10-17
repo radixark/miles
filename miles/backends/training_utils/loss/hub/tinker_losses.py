@@ -113,14 +113,10 @@ def _gather_per_datum_outputs(
 def _sum_loss_and_outputs(
     args: Namespace,
     batch: RolloutBatch,
-    logits: torch.Tensor,
     log_probs: list[torch.Tensor],
     per_datum_losses: list[torch.Tensor],
 ) -> tuple[torch.Tensor, dict]:
-    if any(log_prob.numel() for log_prob in log_probs):
-        loss = torch.stack(per_datum_losses).sum()
-    else:
-        loss = logits[..., :0].sum(dtype=torch.float32)  # zero, but still connected to logits for backward
+    loss = torch.stack(per_datum_losses).sum()
     per_datum = _gather_per_datum_outputs(args, batch, log_probs, per_datum_losses)
     return loss, {"loss": loss.detach(), "per_datum": per_datum}
 
@@ -141,7 +137,7 @@ def cross_entropy_loss_function(
             strict=True,
         )
     ]
-    return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
+    return _sum_loss_and_outputs(args, batch, log_probs, per_datum_losses)
 
 
 def importance_sampling_loss_function(
@@ -161,7 +157,7 @@ def importance_sampling_loss_function(
     ):
         ratio = torch.exp(log_prob - _as_tensor_like(sampling_log_prob, log_prob))
         per_datum_losses.append(-(ratio * _as_tensor_like(advantage, log_prob) * mask).sum())
-    return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
+    return _sum_loss_and_outputs(args, batch, log_probs, per_datum_losses)
 
 
 def ppo_loss_function(
@@ -186,7 +182,7 @@ def ppo_loss_function(
         advantages = _as_tensor_like(advantage, log_prob)
         objective = torch.minimum(ratio * advantages, torch.clamp(ratio, clip_low, clip_high) * advantages)
         per_datum_losses.append(-(objective * mask).sum())
-    return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
+    return _sum_loss_and_outputs(args, batch, log_probs, per_datum_losses)
 
 
 def cispo_loss_function(
@@ -210,7 +206,7 @@ def cispo_loss_function(
         ratio = torch.exp(log_prob - _as_tensor_like(sampling_log_prob, log_prob))
         coefficient = torch.clamp(ratio, clip_low, clip_high).detach()
         per_datum_losses.append(-(coefficient * log_prob * _as_tensor_like(advantage, log_prob) * mask).sum())
-    return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
+    return _sum_loss_and_outputs(args, batch, log_probs, per_datum_losses)
 
 
 def dro_loss_function(
@@ -233,7 +229,7 @@ def dro_loss_function(
         divergence = log_prob - _as_tensor_like(sampling_log_prob, log_prob)
         objective = log_prob * _as_tensor_like(advantage, log_prob) - 0.5 * beta * divergence**2
         per_datum_losses.append(-(objective * mask).sum())
-    return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
+    return _sum_loss_and_outputs(args, batch, log_probs, per_datum_losses)
 
 
 TINKER_LOSS_FUNCTIONS = {

@@ -68,7 +68,7 @@ def main() -> None:
     print(f"{torch.cuda.get_device_name(device)} ({family}): [{args.rows}, {args.vocab}] bf16 logits")
     print(f"  device copy {copy_tbps:5.2f} TB/s")
 
-    vocab = kernels.VocabRange(start=0, n_unpadded=logits.size(1))
+    vocab = kernels.VocabRange(start=0, n_unpadded=logits.size(1), size=logits.size(1))
 
     def stats(launch):
         for with_entropy in (False, True):

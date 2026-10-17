@@ -1676,6 +1676,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Path to the custom loss function, if the loss_type is `custom_loss`, "
                     "we will use this function to calculate the loss. "
+                    "Under context parallelism the returned loss must stay connected to `logits` on every rank, "
+                    "even one holding no response rows (build it from the hub's log-probs, which are), or that "
+                    "rank skips the model backward and the other ranks hang in its collectives."
                 ),
             )
             parser.add_argument(
@@ -3337,6 +3340,11 @@ def validate_log_probs_backend_args(args) -> None:
             "--log-probs-backend fused does not support sampling-support replay "
             f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
             "use --log-probs-backend torch."
+        )
+    if args.debug_unified_grad_fused_logprob:
+        raise ValueError(
+            "--debug-unified-grad-fused-logprob applies to --log-probs-backend torch only; the fused backend's "
+            "no-grad log-probs already equal its training forward's bit for bit, so drop the flag."
         )
     # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
     if args.train_backend == "megatron" and args.vocab_size is None:

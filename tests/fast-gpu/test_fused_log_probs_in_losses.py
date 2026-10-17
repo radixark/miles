@@ -47,15 +47,17 @@ def _to_cuda(value):
 _LOSS_VOCAB = 4096
 
 
+@pytest.mark.parametrize("qkv_format", ["thd", "bshd"])
 @pytest.mark.parametrize("loss_type", ["policy_loss", "sft_loss"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_losses_match_the_torch_backend(nccl_world, loss_type, dtype):
+def test_losses_match_the_torch_backend(nccl_world, loss_type, dtype, qkv_format):
     make_parallel_state()
     prompt_lens, response_lens = [5, 9, 3], [7, 4, 6]
     results = {}
     for backend in ("torch", "fused"):
         args = make_args(
             loss_type=loss_type,
+            qkv_format=qkv_format,
             true_on_policy_mode=False,
             log_probs_backend=backend,
             rollout_temperature=0.8,

@@ -9,7 +9,7 @@ from miles.backends.training_utils.data.context_parallel import (
     iter_local_response_rows,
 )
 from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask
-from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy, scaling_temperature
 from miles.backends.training_utils.loss.hub.score_centering import selected_log_probs_and_entropy
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.sampling_mask import RolloutSamplingMask
@@ -95,8 +95,9 @@ def _iter_response_chunks(
     )
 
     if args.true_on_policy_mode:
-        if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
-            logits = logits.div(args.rollout_temperature)
+        temperature = scaling_temperature(args.rollout_temperature)
+        if logits.size(-1) > 1 and temperature != 1.0:
+            logits = logits.div(temperature)
         if getattr(args, "bf16", False):
             logits = logits.to(torch.bfloat16)
         elif getattr(args, "fp16", False):
@@ -279,7 +280,7 @@ def _torch_log_probs_and_entropy(
                 true_on_policy=args.true_on_policy_mode,
                 vocab_size=getattr(args, "vocab_size", None),
                 sampling_mask=sampling_mask,
-                temperature=1.0 if args.true_on_policy_mode else args.rollout_temperature,
+                temperature=1.0 if args.true_on_policy_mode else scaling_temperature(args.rollout_temperature),
                 debug_unified_grad_fused_logprob=args.debug_unified_grad_fused_logprob,
             )
 
@@ -335,7 +336,7 @@ def _fused_log_probs_and_entropy(
         torch.cat(targets).to(device),
         tp_group=get_parallel_state().tp.group,
         vocab_size=getattr(args, "vocab_size", None),  # a Megatron flag; other backends' logits are unpadded
-        temperature=args.rollout_temperature,
+        temperature=scaling_temperature(args.rollout_temperature),
         with_entropy=with_entropy,
         entropy_requires_grad=entropy_requires_grad,
         # the checkpointed loss replays its forward on these logits during backward

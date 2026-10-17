@@ -958,11 +958,21 @@ def chunked_gae(
     return advantages, returns
 
 
+def true_vocab_size(vocab_size: int | None, shard_width: int, tp_size: int) -> int:
+    """Megatron's ``--vocab-size``, or, unset, every column of the TP-sharded logits."""
+    return vocab_size if vocab_size is not None else shard_width * tp_size
+
+
+def scaling_temperature(sampling_temperature: float) -> float:
+    """The temperature the logits are divided by: the sampling one, or 1 for greedy sampling (0)."""
+    return float(sampling_temperature) if sampling_temperature > 0 else 1.0
+
+
 def _upcast_chunk_to_fp32(logits_chunk: torch.Tensor, temperature: float) -> torch.Tensor:
     # copy=True: the TP cross-entropy mutates its input. Scaling after the upcast
     # keeps the division in fp32 when the caller hands model-precision logits.
     chunk = logits_chunk.to(torch.float32, copy=True)
-    if temperature > 0 and temperature != 1.0:
+    if temperature != 1.0:
         chunk.div_(temperature)
     return chunk
 
@@ -1040,11 +1050,22 @@ def calculate_log_probs_and_entropy(
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
-        log_prob = logits.new_zeros((0,), dtype=torch.float32)
-        if with_entropy:
-            entropy = logits.new_zeros((0,), dtype=torch.float32)
+        log_prob, entropy = _empty_log_probs_and_entropy(
+            logits, with_entropy=with_entropy, entropy_requires_grad=entropy_requires_grad, dtype=torch.float32
+        )
 
     return log_prob, entropy
+
+
+def _empty_log_probs_and_entropy(
+    logits: torch.Tensor, *, with_entropy: bool, entropy_requires_grad: bool, dtype: torch.dtype | None = None
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """``[0]`` outputs for a rank with no rows, still in the graph: that rank must backprop into its
+    logits, or the CP collectives in the model's backward hang."""
+    empty = logits.sum(-1, dtype=dtype)
+    if not with_entropy:
+        return empty, None
+    return empty, (empty if entropy_requires_grad else empty.detach())
 
 
 def _calculate_log_probs_and_entropy_true_on_policy(
@@ -1079,9 +1100,9 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         and *entropy* has shape ``[R]`` or is ``None``.
     """
     if logits.size(0) == 0:
-        log_prob = logits.new_zeros((0,))
-        entropy = logits.new_zeros((0,)) if with_entropy else None
-        return log_prob, entropy
+        return _empty_log_probs_and_entropy(
+            logits, with_entropy=with_entropy, entropy_requires_grad=entropy_requires_grad
+        )
 
     log_prob_logits = _apply_sampling_mask(logits, sampling_mask)
     full_logits = _gather_true_on_policy_full_logits(log_prob_logits, tp_group, vocab_size=vocab_size)

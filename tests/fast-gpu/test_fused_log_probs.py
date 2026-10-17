@@ -9,6 +9,7 @@ register_cuda_ci(
 )
 
 import os
+import subprocess
 
 import pytest
 import torch
@@ -117,6 +118,38 @@ def test_true_vocab_bound_excludes_the_padding_columns(inplace_backward):
     torch.testing.assert_close(entropy, ref_entropy.detach(), rtol=1e-5, atol=5e-5)
     torch.testing.assert_close(leaf.grad.float(), ref_leaf.grad.float(), rtol=1e-2, atol=1e-3)
     assert (leaf.grad[:, vocab_size:] == 0).all()
+
+
+@pytest.mark.parametrize("inplace_backward", [True, False])
+def test_minus_inf_logits_score_like_log_softmax(inplace_backward):
+    """Masked logits are -inf: a first block of only -inf must not turn the running sums into NaN, and
+    a -inf column has zero probability, so it adds nothing to the entropy or its gradient."""
+    logits, rows, _ = _inputs(64, 50_001, torch.float32, "cuda", seed=27)
+    gen = torch.Generator(device="cuda").manual_seed(28)
+    logits[:, :9_000] = -torch.inf  # wider than any launch shape's block
+    logits[torch.rand(logits.shape, device="cuda", generator=gen) < 0.1] = -torch.inf
+    finite = logits.index_select(0, rows).isfinite()
+    targets = torch.multinomial(finite.float(), 1, generator=gen).squeeze(1)
+    g = torch.randn(rows.numel(), device="cuda", generator=gen)
+    c = torch.randn(rows.numel(), device="cuda", generator=gen)
+
+    ref_leaf = logits.clone().requires_grad_(True)
+    log_softmax = torch.log_softmax(ref_leaf.index_select(0, rows) / 0.8, dim=-1)
+    p = log_softmax.exp()
+    ref_entropy = -(p * torch.where(p > 0, log_softmax, 0.0)).sum(dim=-1)
+    ref_log_probs = log_softmax.gather(1, targets.unsqueeze(1)).squeeze(1)
+    ((ref_log_probs * g).sum() + (ref_entropy * c).sum()).backward()
+
+    leaf = logits.clone().requires_grad_(True)
+    log_probs, entropy = fused_log_probs_and_entropy(
+        leaf * 1, rows, targets, tp_group=None, temperature=0.8, with_entropy=True, inplace_backward=inplace_backward
+    )
+    ((log_probs * g).sum() + (entropy * c).sum()).backward()
+
+    torch.testing.assert_close(log_probs, ref_log_probs.detach(), rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(entropy, ref_entropy.detach(), rtol=1e-5, atol=5e-5)
+    torch.testing.assert_close(leaf.grad, ref_leaf.grad, rtol=1e-5, atol=1e-5)
+    assert (leaf.grad.index_select(0, rows)[~finite] == 0).all()
 
 
 @pytest.fixture
@@ -271,6 +304,24 @@ def test_no_rows_still_gives_the_logits_a_gradient():
     log_probs, _ = fused_log_probs_and_entropy(leaf * 1, empty, empty, tp_group=None, inplace_backward=True)
     log_probs.sum().backward()
     assert leaf.grad is not None and (leaf.grad == 0).all()
+
+
+@pytest.mark.parametrize("target", [-1, 4_000], ids=["negative", "past_the_vocabulary"])
+def test_a_target_outside_the_vocabulary_fails(target):
+    """No shard holds such a target, so without the check it would score a plausible -log S. The check
+    is a device-side assert, which leaves the CUDA context unusable, so it runs in its own process."""
+    script = (
+        "import torch\n"
+        "from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy\n"
+        "logits = torch.randn(4, 4096, device='cuda')\n"
+        "rows = torch.arange(4, device='cuda')\n"
+        f"targets = torch.tensor([1, 2, 3, {target}], device='cuda')\n"
+        "fused_log_probs_and_entropy(logits, rows, targets, tp_group=None, vocab_size=3_000)\n"
+        "torch.cuda.synchronize()\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300)
+    assert result.returncode != 0, result.stdout
+    assert "device-side assert" in result.stderr, result.stderr[-2000:]
 
 
 def test_cpu_logits_are_rejected():
