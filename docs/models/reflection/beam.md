@@ -4,9 +4,9 @@ sidebarTitle: Beam 1.0
 description: Launch recipes for Reflection's Beam 1.0 (501B MoE, 23B active) — full-parameter BF16 GRPO on 96 or 64 H200 GPUs, and LoRA on 32.
 ---
 The complete Beam RL implementation is open at the Miles pull request:
-[`radixark/miles#4137`](https://github.com/radixark/miles/pull/4137), branch
-[`zhihengy/beam-support`](https://github.com/radixark/miles/tree/zhihengy/beam-support). The
-scripts and image below come from that branch.
+[`radixark/miles#4149`](https://github.com/radixark/miles/pull/4149), branch
+[`beam-support`](https://github.com/radixark/miles/tree/beam-support). The scripts and image
+below come from that branch.
 
 ## 1. Model Introduction
 
