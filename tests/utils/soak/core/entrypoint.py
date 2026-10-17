@@ -7,6 +7,7 @@ from tests.utils.soak.core.config import SoakRunnerConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import SoakRunContext, SoakRunContextEvent
 from tests.utils.soak.core.runner import SoakRunner
+from tests.utils.soak.core.scheduler import SoakActionScheduler
 from tests.utils.soak.core.sut_events import SutEventFeed
 from tests.utils.soak.core.teardown import teardown_run
 from tests.utils.soak.core.types import SoakForms, SoakObserver
@@ -71,6 +72,7 @@ def _create_runner(
 
     return SoakRunner(
         observer=observer,
+        scheduler=SoakActionScheduler(forms=forms, config=runner_config),
         forms=forms,
         event_log=event_log,
         config=runner_config,
