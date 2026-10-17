@@ -64,7 +64,7 @@ The rest follows from that split:
 | Activation recompute | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` | `--gradient-checkpointing` |
 | Optimizer on CPU | `--optimizer-cpu-offload` | `--fsdp-cpu-offload` | Not supported |
 | Offload beyond host RAM | `--offload-train-target disk`, `--stream-optimizer-state-to-disk` | Not supported | Not supported |
-| LoRA | Supported | Not supported | Not supported |
+| LoRA | Supported | Not supported | Linear projections, single adapter |
 
 ---
 
@@ -482,7 +482,7 @@ Attention needs none of this. `--attn-implementation` is passed straight to `fro
 
 **No TP / PP / CP / EP.** The model must fit under `dp_replicate` × `dp_shard`.
 
-**No LoRA.** [LoRA](/advanced/lora) is Megatron-only.
+**No LoRA.** [LoRA](/advanced/lora) needs Megatron-LM or torchtitan.
 
 </Warning>
 
@@ -627,8 +627,15 @@ because that check compares the engine against the original HF checkpoint.
 `miles/backends/torchtitan_utils/models/`.** There is no per-architecture spec to write; a
 new model is a Python package that assembles torchtitan's own blocks.
 
-**No LoRA, no optimizer CPU offload, no disk offload, no on-policy distillation, and
+**No optimizer CPU offload, no disk offload, no on-policy distillation, and
 `--ref-update-interval` is rejected** rather than silently ignored.
+
+**[LoRA](/advanced/lora) covers Linear projections only.** torchtitan's converter adapts a
+projection by name in every layer at once, so MoE routed experts and per-layer target sets
+are refused at launch; use `--target-modules attn` on MoE models (not yet run end to end). Expert LoRA
+([pytorch/torchtitan#4877](https://github.com/pytorch/torchtitan/pull/4877)) and per-module
+targeting ([pytorch/torchtitan#5095](https://github.com/pytorch/torchtitan/pull/5095)) are on
+upstream torchtitan main; both need a torchtitan version bump in miles.
 
 </Warning>
 

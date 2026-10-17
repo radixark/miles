@@ -16,6 +16,7 @@ from miles.backends.training_utils.replay.routing_replay import enable as enable
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
 from miles.utils.context_utils import with_defer
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.memory_utils import clear_memory
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.timer import Timer
@@ -57,6 +58,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             hf_assets_path=args.hf_checkpoint,
             lr_total_steps=args.num_rollout * _steps_per_rollout(args),
             dump_subdir="actor",
+            with_lora=is_lora_enabled(args),
         )
 
         enable_routing_replay(args)
