@@ -8,13 +8,27 @@ import torch
 _E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 
 
+def _even_scale_exponent(amax: torch.Tensor) -> torch.Tensor:
+    """E8M0 block exponent: round amax to one mantissa bit, then floor(log2) minus the E2M1 emax (2).
+
+    The scale steps up at amax = 7 * 2^s, halfway between the grid maxima 6 and 8, so no grid value sits on a
+    boundary: a block whose max is 4 * 2^s or 6 * 2^s (every block of a checkpoint quantized this way or by
+    floor(log2(amax)) - 2) keeps its scale while a trained weight drifts either way. ceil(log2(amax / 6)) doubles
+    the scale on the first BF16 ULP of growth above 6 * 2^s, and plain floor halves it on the first ULP below
+    4 * 2^s; either requantizes the block, so every weight sync moves the rollout experts away from the trained
+    ones. Elements above 6 encode as 6. Same rule as torchao's ScaleCalculationMode.EVEN.
+    """
+    exponent = ((amax.contiguous().view(torch.int32) + 0x200000) & 0x7F800000) >> 23
+    return (exponent - 127 - 2).clamp_(-127, 127).to(torch.float32)
+
+
 def quantize_mxfp4(weight, group_size):
     assert weight.shape[-1] % group_size == 0
     assert weight.shape[-1] % 2 == 0
 
     blocks = weight.reshape(-1, group_size)
     amax = blocks.abs().amax(dim=-1, keepdim=True).float()
-    scale_exp = torch.ceil(torch.log2(amax / 6.0)).clamp_(-127, 127)
+    scale_exp = _even_scale_exponent(amax)
     normalized = blocks.float() * torch.exp2(-scale_exp)
 
     magnitude = torch.zeros_like(normalized, dtype=torch.uint8)
@@ -66,3 +80,12 @@ def dequantize_mxfp4(
     dequantized = dequantized.reshape(-1, group_size)
     scales = torch.exp2(weight_scale.float().reshape(-1, 1) - 127.0)
     return (dequantized * scales).reshape(unpacked.shape).to(torch.bfloat16).contiguous()
+
+
+def project_mxfp4(weight: torch.Tensor, group_size: int) -> torch.Tensor:
+    """The BF16 values the MXFP4 encoding of ``weight`` decodes to, i.e. what an MXFP4 engine serves.
+
+    Idempotent: a projected weight re-encodes to the same values, so a trainer that computes with projected
+    weights hands the engine exactly what it trains.
+    """
+    return dequantize_mxfp4(*quantize_mxfp4(weight, group_size), group_size)

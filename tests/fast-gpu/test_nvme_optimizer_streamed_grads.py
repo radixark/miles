@@ -67,6 +67,7 @@ def _setup(tmp_path, clip_grad: float):
     store.dist_opt, store.buckets = dist_opt, buckets
     store._fp32_adam, store._fp32_group_indices = None, []
     store._grad_norm = None
+    store._mxfp4_projected = set()
     store.initialize_main_from_model_params()
     return store, model_params, entries, param_data
 
