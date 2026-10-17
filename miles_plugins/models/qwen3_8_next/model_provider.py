@@ -3,6 +3,7 @@ n-gram side channel (input token ids never reach a transformer layer).
 """
 
 import logging
+from typing import TYPE_CHECKING
 
 from megatron.core.models.gpt import GPTModel
 
@@ -12,6 +13,9 @@ from miles_plugins.models.qwen3_8_next.ops.ple import (
     clear_ple_batch,
     publish_ple_batch,
 )
+
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import TrainerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -51,18 +55,14 @@ def _install_ple_context_hooks(model: GPTModel) -> None:
     logger.info("PLE n-gram context hooks installed on the stage hosting the PLE layer")
 
 
-def get_qwen3_8_next_model_provider(pre_process: bool = True, post_process: bool = True, vp_stage=None):
-    from megatron.training import get_args
-
+def get_qwen3_8_next_model_provider(
+    pre_process: bool = True, post_process: bool = True, vp_stage=None, *, args: "TrainerConfig"
+):
     from miles.backends.megatron_utils.model_provider import get_model_provider_func
 
-    args = get_args()
-    saved = args.custom_model_provider_path
-    args.custom_model_provider_path = None
-    try:
-        base_provider = get_model_provider_func(args)
-    finally:
-        args.custom_model_provider_path = saved
+    base_provider = get_model_provider_func(
+        type(args).model_validate(dict(args) | {"custom_model_provider_path": None})
+    )
 
     model = base_provider(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
     _install_ple_context_hooks(model)

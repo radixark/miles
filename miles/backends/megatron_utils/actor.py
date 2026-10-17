@@ -644,6 +644,7 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self.args.loss_type == "value_loss"
         self._log_first_train_config()
         train_step_outcome: TrainStepOutcome = train(
+            self.args,
             rollout_id,
             self.model,
             self.optimizer,
@@ -782,6 +783,7 @@ class MegatronTrainRayActor(TrainRayActor):
             with timer("actor_train"):
                 self._log_first_train_config()
                 train_step_outcome = train(
+                    self.args,
                     rollout_id,
                     self.model,
                     self.optimizer,
@@ -858,6 +860,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self._finalize_pending_async_save()
 
         save(
+            self.args,
             rollout_id,
             self.model,
             self.optimizer,
@@ -1036,6 +1039,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 None,
                 None,
                 checkpointing_context={},
+                args=self.args,
                 skip_load_to_model_and_opt=False,
             )
             (
@@ -1061,6 +1065,7 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self._last_rollout_id is not None, "healing before the first train step is unsupported"
 
         _send_ckpt(
+            args=self.args,
             indep_dp=get_parallel_state().indep_dp,
             model=self.model,
             optimizer=self.optimizer,
