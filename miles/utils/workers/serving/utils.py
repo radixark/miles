@@ -7,8 +7,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from miles.utils.function_registry import load_function
-from miles.utils.workers.worker_spec import BaseServeSpec
+from miles.utils.workers.serving.worker_config import ServeWorkerConfig
 
 IPV4_WILDCARD_HOST = "0.0.0.0"
 IPV6_WILDCARD_HOST = "::"
@@ -58,19 +57,9 @@ def split_worker_argv(argv: list[str]) -> tuple[list[str], list[str]]:
 
 def parse_own_args(own_argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve one pool of a miles run")
-    parser.add_argument("--specs", required=True, help="Spec table of the run as 'package.module.callable'")
-    parser.add_argument("--pool-id", required=True, help="Which pool of that run this process serves")
+    parser.add_argument("--config", required=True, help="Runtime config of this pool as serialized ServeWorkerConfig")
     return parser.parse_args(own_argv)
 
 
-def compute_serve_worker_spec(*, specs_fn: str, pool_id: str, worker_argv: list[str]) -> BaseServeSpec:
-    specs = load_function(specs_fn)(worker_argv)
-    matched = [spec for spec in specs if spec.name == pool_id]
-    assert len(matched) == 1, (
-        f"the run described by this pod's argv has {[spec.name for spec in specs]}, not one spec named "
-        f"'{pool_id}'; the pod and the launcher disagree about what this run is"
-    )
-
-    spec = matched[0]
-    assert isinstance(spec, BaseServeSpec), f"spec '{pool_id}' is a {type(spec).__name__}, which is not served"
-    return spec
+def parse_serve_worker_config(value: str) -> ServeWorkerConfig:
+    return ServeWorkerConfig.model_validate_json(value)

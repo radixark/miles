@@ -7,10 +7,19 @@ from miles.ray.specs.inference import (
 )
 from miles.ray.specs.rollout import RolloutExecutorSpec
 from miles.ray.specs.train import TrainerControllerSpec, TrainerSpec
-from miles.utils.arguments import parse_args
-from miles.utils.workers.serving.utils import override_argv
 from miles.utils.workers.types import DeployComponent
-from miles.utils.workers.worker_spec import BaseSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, BaseSpec
+
+SERVE_SPEC_CLASSES: dict[str, type[BaseServeSpec]] = {
+    cls.worker_type: cls
+    for cls in (
+        RolloutExecutorSpec,
+        InferenceControllerSpec,
+        InferenceRegistrationReporterSpec,
+        TrainerControllerSpec,
+        TrainerSpec,
+    )
+}
 
 
 def compute_specs(args) -> list[BaseSpec]:
@@ -36,8 +45,3 @@ def _compute_all_specs(args) -> list[BaseSpec]:
 
 def _as_list(specs: BaseSpec | list[BaseSpec]) -> list[BaseSpec]:
     return specs if isinstance(specs, list) else [specs]
-
-
-def compute_specs_from_argv(argv: list[str]) -> list[BaseSpec]:
-    with override_argv(argv):
-        return compute_specs(parse_args())

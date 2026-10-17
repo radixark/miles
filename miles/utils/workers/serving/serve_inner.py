@@ -6,19 +6,13 @@ from typing import Any
 
 import uvicorn
 
-from miles.utils.arguments import parse_args
+from miles.ray.specs.entrypoint import SERVE_SPEC_CLASSES
 from miles.utils.function_registry import load_function
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.factory import get_backend_capability
-from miles.utils.workers.connection_config import build_static_conn_config
+from miles.utils.workers.connection_config import StaticConnConfig
 from miles.utils.workers.rpc.server.app import create_rpc_app
-from miles.utils.workers.serving.utils import (
-    compute_serve_worker_spec,
-    create_server_socket,
-    override_argv,
-    parse_own_args,
-    split_worker_argv,
-)
+from miles.utils.workers.serving.utils import create_server_socket, parse_own_args, parse_serve_worker_config
 from miles.utils.workers.serving.worker_identity import (
     read_worker_identity,
     read_worker_in_pod_index,
@@ -29,13 +23,13 @@ from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseServeSpec, PortIn
 
 
 def main() -> None:
-    own_argv, worker_argv = split_worker_argv(sys.argv[1:])
-    args = parse_own_args(own_argv)
-    _log(f"start own_argv={own_argv} worker_argv={worker_argv}")
+    own_args = parse_own_args(sys.argv[1:])
 
-    spec = compute_serve_worker_spec(specs_fn=args.specs, pool_id=args.pool_id, worker_argv=worker_argv)
-    worker = create_worker(spec, specs_fn=args.specs, worker_argv=worker_argv)
-    _log(f"pool_id={args.pool_id} worker_class={spec.worker_class}")
+    worker_config = parse_serve_worker_config(own_args.config)
+    spec_class = SERVE_SPEC_CLASSES[worker_config.worker_type]
+    spec = spec_class.create(spec_class.config_class.model_validate(worker_config.args))
+    worker = create_worker(spec, static_connections=worker_config.static_connections)
+    _log(f"pool_id={spec.name} worker_class={spec.worker_class}")
 
     port = _rpc_port_of(spec).effective_static_port(worker_in_pod_index=read_worker_in_pod_index(os.environ))
     app = create_rpc_app(worker)
@@ -44,19 +38,16 @@ def main() -> None:
         uvicorn.Server(uvicorn.Config(app)).run(sockets=[server_socket])
 
 
-def create_worker(spec: BaseServeSpec, *, specs_fn: str, worker_argv: list[str]) -> Any:
+def create_worker(spec: BaseServeSpec, *, static_connections: StaticConnConfig) -> Any:
     identity = read_worker_identity(os.environ)
     _log(f"identity={identity}")
-    capability = DeferredBackendCapability(create=lambda: _backend_capability(specs_fn, worker_argv))
+    capability = DeferredBackendCapability(create=lambda: _backend_capability(spec, static_connections))
     context = identity.ctor_context(args=spec.args, capability=capability)
     return load_function(spec.worker_class)(**spec.ctor_kwargs(context))
 
 
-def _backend_capability(specs_fn: str, worker_argv: list[str]) -> BackendCapability:
-    with override_argv(worker_argv):
-        cluster_backend = ClusterBackend(parse_args().cluster_backend)
-    specs = load_function(specs_fn)(worker_argv)
-    static_connections = build_static_conn_config(specs=specs)
+def _backend_capability(spec: BaseServeSpec, static_connections: StaticConnConfig) -> BackendCapability:
+    cluster_backend = ClusterBackend(spec.args.cluster_backend)
     return get_backend_capability(cluster_backend=cluster_backend, static_connections=static_connections)
 
 
