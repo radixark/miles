@@ -376,8 +376,9 @@ Architecture (external fault injection, not inside the training loop):
      a. Observe the targeted cells and append the snapshot to the event log
      b. Admit nothing until every earlier action has recovered
      c. Collect the cell kinds whose own schedule is due; stop here if none
-     d. A due kind is ready only at a quiescent point: every expected replica present and
-        Healthy for 60 consecutive polls (~120s); every request resets its kind's streak
+     d. A due kind is ready only at a quiescent point: every expected replica present, Running and
+        not failing its health check for 60 consecutive polls (~120s); a checker paused by a
+        weight update reads Unknown, which is not a failure; every request resets its kind's streak
      e. Draw a ready kind and one of its fault forms - preferring one the log shows has never
         worked - then a cell that form may hit: all replicas ready, >= 2 of them when the
         form harms its target
