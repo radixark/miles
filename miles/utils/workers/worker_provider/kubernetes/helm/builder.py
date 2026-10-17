@@ -23,9 +23,7 @@ def compute_helm_backend_capability(*, specs: list[BaseSpec], config: StaticConn
         release=release,
         config=config,
         cell_operations=KubernetesCellOperations(
-            provider=KubernetesWorkerProvider(
-                run=run, pool_ids=sorted(run.specs), resync_period=DEFAULT_RESYNC_PERIOD
-            ),
+            provider=KubernetesWorkerProvider(run=run, pool_ids=None, resync_period=DEFAULT_RESYNC_PERIOD),
             namespace=run.namespace,
         ),
     )

@@ -49,14 +49,14 @@ class RayWorkerProvider(BaseWorkerProvider):
         }
 
     async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
-        pool_ids = self._watched_pool_ids()
+        pool_ids = self._pool_ids
         loop = PollingReconcileLoop(
             list_cells=partial(self._list_alive_cells, pool_ids=pool_ids),
             poll_interval_seconds=self._poll_interval_seconds,
         )
         return await loop.start(reconcile)
 
-    async def _list_alive_cells(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
+    async def _list_alive_cells(self, *, pool_ids: list[str] | None) -> dict[str, CellInfo]:
         all_infos = await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids)
         return {cell_id: info for cell_id, info in all_infos.items() if info.alive}
 
@@ -66,7 +66,3 @@ class RayWorkerProvider(BaseWorkerProvider):
             for info in infos
         ]
         return {info.name: handle for info, handle in zip(infos, ray.get(refs), strict=True)}
-
-    def _watched_pool_ids(self) -> list[str]:
-        assert self._pool_ids is not None, "this provider was built without the pool_ids it is meant to observe"
-        return self._pool_ids

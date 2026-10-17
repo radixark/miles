@@ -27,7 +27,13 @@ class KubernetesRunInfo(FrozenStrictBaseModel):
 
 
 class KubernetesWorkerProvider(BaseWorkerProvider):
-    def __init__(self, *, run: KubernetesRunInfo, pool_ids: list[str], resync_period: float | None) -> None:
+    def __init__(
+        self,
+        *,
+        run: KubernetesRunInfo,
+        pool_ids: list[str] | None,
+        resync_period: float | None,
+    ) -> None:
         self._run = run
         self._pool_ids = pool_ids
         self._resync_period = resync_period
@@ -85,7 +91,9 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
 
     def _cell_id_of_pod(self, pod: Pod) -> str | None:
         parsed = pod_view.parse_pod(pod, self._run.label_keys)
-        if parsed is None or parsed.pool_id not in self._pool_ids:
+        if parsed is None or (self._pool_ids is not None and parsed.pool_id not in self._pool_ids):
+            return None
+        if parsed.pool_id not in self._run.specs:
             return None
         return parsed.cell_id
 
@@ -106,7 +114,9 @@ async def _kubernetes_pod_api() -> AsyncIterator[KubernetesAsyncioPodApi]:
         yield KubernetesAsyncioPodApi(core_v1_api=api)
 
 
-def _watched_pods_selector(*, base_selector: str, pool_label_key: str, pool_ids: list[str]) -> str:
+def _watched_pods_selector(*, base_selector: str, pool_label_key: str, pool_ids: list[str] | None) -> str:
+    if pool_ids is None:
+        return base_selector
     if not pool_ids:
         return f"{base_selector},{_NO_POD_CARRIES_THIS_LABEL}"
     wanted = ",".join(sorted(pool_ids))
