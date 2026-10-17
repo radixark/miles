@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+from argparse import Namespace
 from dataclasses import dataclass
 
 import pydantic
@@ -278,6 +279,10 @@ class SglangConfig(FrozenStrictBaseModel):
     models: list[ModelConfig]
 
     @classmethod
+    def parse_args(cls, args: Namespace) -> "SglangConfig":
+        return cls.resolve(raw=_compute_raw_sglang_config(args), args=args)
+
+    @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         add_sglang_router_arguments(parser)
         parser.add_argument("--sglang-server-concurrency", type=int, default=512)
@@ -326,12 +331,6 @@ class SglangConfig(FrozenStrictBaseModel):
 class _OffsetCursor:
     gpu: int
     engine: int
-
-
-def resolve_sglang_config(args) -> SglangConfig:
-    """Build a SglangConfig from args, choosing the right source."""
-    raw = _compute_raw_sglang_config(args)
-    return SglangConfig.resolve(raw, args)
 
 
 def _compute_raw_sglang_config(args) -> _RawSglangConfig:
