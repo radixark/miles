@@ -20,6 +20,7 @@
 #   DOCKER_PAT, DOCKERHUB_USERNAME   Docker Hub login for the sandbox image pulls
 #   SANDBOX_NICE              niceness of the podman services, inherited by every sandbox   (default: 19)
 #   RAY_health_check_timeout_ms, RAY_health_check_failure_threshold   Ray's node health check (default: 20000, 60)
+#   HEAD_MISS_LIMIT           failed checks of the Ray head before a worker replica leaves  (default: 80, ~20 min)
 set -euxo pipefail
 
 REPO=$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)
@@ -128,18 +129,21 @@ if [ "$NUM_NODES" -gt 1 ] && [ "$RANK" != 0 ]; then
     # the run successful, so a finished experiment is not failed and retried.
     trap 'ray stop --force >/dev/null 2>&1 || true; exit 1' TERM INT HUP EXIT
     set +x
+    # A starved head can miss checks for minutes and recover (2026-10-17: a worker left after 6 misses, about 90 s,
+    # failing the job). Leave only after about as long as Ray's own health check tolerates (HEAD_MISS_LIMIT checks,
+    # up to 15 s each).
     misses=0
     while sleep 5; do
         if timeout 10 ray status --address="$HEAD_IP:$RAY_PORT" >/dev/null 2>&1; then
             misses=0
-        elif [ $((misses += 1)) -ge 6 ]; then
+        elif [ $((misses += 1)) -ge "${HEAD_MISS_LIMIT:-80}" ]; then
             if [ -f "$HEAD_DONE" ]; then
                 echo "Ray head $HEAD_IP:$RAY_PORT finished training; leaving"
                 trap - TERM INT HUP EXIT
                 ray stop --force >/dev/null 2>&1 || true
                 exit 0
             fi
-            echo "Ray head $HEAD_IP:$RAY_PORT unreachable 6 times in a row; leaving"
+            echo "Ray head $HEAD_IP:$RAY_PORT unreachable $misses times in a row; leaving"
             exit 1
         fi
     done
