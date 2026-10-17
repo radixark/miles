@@ -25,6 +25,7 @@ from miles.ray.specs.train import (
     create_trainer_controller_handle,
     external_trainer_controller_addrs,
 )
+from miles.ray.train_actor import WeightUpdateOutput
 from miles.ray.wiring import get_backend_capability
 from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -308,18 +309,20 @@ async def update_weights(
 
     info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
     try:
-        weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+        output: WeightUpdateOutput = await actor_model.update_weights(info=info, rollout_id=rollout_id)
     except BaseException:
         await inference_controller.abort_update_weights()
         raise
-    await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+    await inference_controller.end_update_weights(
+        snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes, failed_cell_ids=output.failed_cell_ids
+    )
 
     await _maybe_log_inference_engine_weight_checksums(
         args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
     )
 
-    if weight_version is not None:
-        await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
+    if output.weight_version is not None:
+        await rollout_executor.set_weight_version(output.weight_version, trainer_model_id=trainer_model_id)
 
 
 async def _maybe_log_inference_engine_weight_checksums(

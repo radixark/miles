@@ -274,7 +274,8 @@ class TestPublishedWeightVersion:
         result = TorchNativeTrainRayActor.update_weights.__wrapped__(actor, info)
 
         expected_version = previous_version + int(completed)
-        assert result == expected_version
+        assert result.weight_version == expected_version
+        assert result.failed_cell_ids == ()
         assert actor._published_weight_version == expected_version
         actor.weight_updater.update_weights.assert_called_once_with(weight_version=previous_version + 1)
         if expected_version:
