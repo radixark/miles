@@ -68,7 +68,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         if self.args.debug_rollout_only:
             return 0
 
-        self.fsdp_cpu_offload = getattr(self.args, "fsdp_cpu_offload", False)
+        self.fsdp_cpu_offload = self.args.fsdp_cpu_offload
         # Offload train and fsdp cpu offload cannot be used together, fsdp_cpu_offload is more aggressive
         if self.args.offload_train and self.fsdp_cpu_offload:
             self.args.offload_train = False
@@ -76,7 +76,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         if dist.get_rank() == 0:
             init_tracking(args, primary=False)
 
-        if getattr(self.args, "start_rollout_id", None) is None:
+        if self.args.start_rollout_id is None:
             self.args.start_rollout_id = 0
 
         self.prof = TrainProfiler(args)
@@ -163,7 +163,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         self.prof.on_init_end()
 
-        return int(getattr(self.args, "start_rollout_id", 0))
+        return int(self.args.start_rollout_id)
 
     def _has_image_text_to_text_impl(self) -> bool:
         if not hasattr(self.hf_config, "vision_config"):

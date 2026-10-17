@@ -203,7 +203,7 @@ def setup_model_and_optimizer(
             from miles_plugins.optimizers.nvme_stream import setup_muon_state_on_disk
 
             setup_muon_state_on_disk(args)
-        if config.muon_split_qkv and "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
+        if config.muon_split_qkv and "inkling" in (args.custom_model_provider_path or ""):
             if is_first_replica_megatron_main_rank():
                 logger.info(
                     "Inkling fused qkvr detected: forcing muon_split_qkv=False " "(whole-matrix orthogonalization)."
@@ -631,7 +631,7 @@ def train_one_step(
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
             valid_step = False
 
-    if (not disable_optimizer) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
+    if (not disable_optimizer) and (not args.check_for_nan_in_loss_and_grad):
         found_inf_flag = optimizer.prepare_grads()
         if found_inf_flag:
             valid_step = False
@@ -1009,7 +1009,7 @@ def load_model_state(
     else:
         load_ctx = nullcontext()
 
-    load_dir = getattr(args, "load", None)
+    load_dir = args.load
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     if load_dir is None or _has_loadable_ckpt(load_dir):
         with load_ctx:

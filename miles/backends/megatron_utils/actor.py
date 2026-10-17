@@ -984,7 +984,7 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.args.ci_test and not is_lora_enabled(self.args):
                 self.weight_updater.verify_engine_version(updated_engines, weight_version=weight_version)
 
-            if getattr(self.args, "keep_old_actor", False):
+            if self.args.keep_old_actor:
                 if self.args.update_weights_interval == 1:
                     logger.info("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
                     # Queue-style update: rollout_actor params -> old_actor, actor params -> rollout_actor

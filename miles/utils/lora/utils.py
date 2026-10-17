@@ -19,7 +19,7 @@ def is_lora_weight_name(name: str) -> bool:
 
 def is_lora_enabled(args: Namespace) -> bool:
     """Check if LoRA is enabled based on arguments."""
-    return getattr(args, "lora_rank", 0) > 0 or getattr(args, "lora_adapter_path", None) is not None
+    return args.lora_rank > 0 or args.lora_adapter_path is not None
 
 
 def lora_rollout_enabled(args: Namespace) -> bool:
@@ -28,7 +28,7 @@ def lora_rollout_enabled(args: Namespace) -> bool:
     Gates everything rollout-facing: SGLang's ``enable_lora``, the per-request
     ``lora_path``, and the adapter weight sync. Training-side LoRA is unaffected.
     """
-    return is_lora_enabled(args) and not getattr(args, "lora_train_only", False)
+    return is_lora_enabled(args) and not args.lora_train_only
 
 
 def engine_loads_adapter_from_disk(args: Namespace) -> bool:
@@ -38,7 +38,7 @@ def engine_loads_adapter_from_disk(args: Namespace) -> bool:
 
 def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     """LoRA + --colocate + --lora-base-cpu-backup all set."""
-    return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
+    return is_lora_enabled(args) and args.colocate and args.lora_base_cpu_backup
 
 
 def save_adapter_to_disk(out_dir, config: dict, tensors: dict) -> None:
@@ -77,7 +77,7 @@ class AdapterSpec:
 
 
 def is_multi_lora_enabled(args: Any) -> bool:
-    return getattr(args, "multi_lora", False)
+    return args.multi_lora
 
 
 # Leaf module names that can live inside MoE experts (they also name the dense MLP

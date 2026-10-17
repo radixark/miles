@@ -207,7 +207,7 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append("--debug-rollout-only")
     if ns.ci_test:
         parts.append("--ci-test")
-    if getattr(ns, "ci_tito_special_token_count_threshold", 0.0):
+    if ns.ci_tito_special_token_count_threshold:
         parts.append(f"--ci-tito-special-token-count-threshold {ns.ci_tito_special_token_count_threshold}")
     if not ns.enable_sample_ownership_checker:
         parts.append("--no-enable-sample-ownership-checker")
@@ -281,7 +281,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
         assert_session_verify_metrics(
             metrics_path,
             assistant_text_threshold=args.assistant_text_threshold,
-            special_token_count_threshold=getattr(args, "ci_tito_special_token_count_threshold", 0.0),
+            special_token_count_threshold=args.ci_tito_special_token_count_threshold,
             require_append_tool=wire_format == "openai",
         )
     except Exception:

@@ -280,7 +280,7 @@ def _compute_trainers(args: Namespace) -> list[MegatronTrainerConfig]:
         trainers = [MegatronTrainerConfig.resolve(raw=t) for t in raw.trainers]
         assert trainers, "--megatron-config must declare at least one trainer"
 
-    if getattr(args, "use_critic", False):
+    if args.use_critic:
         assert (
             len({trainer.model_id for trainer in trainers}) == 1
         ), "training several policy models does not support --use-critic"

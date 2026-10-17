@@ -32,10 +32,8 @@ def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
     # Spec fields win when set; unset/empty fields fall back to sample metadata and process-wide args.
     spec = sample.reward_spec
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
-    custom_rm_path = (spec.custom_rm_path if spec is not None else None) or getattr(args, "custom_rm_path", None)
-    rm_type = (
-        (spec.rm_type if spec is not None else None) or metadata.get("rm_type") or getattr(args, "rm_type", None) or ""
-    ).strip()
+    custom_rm_path = (spec.custom_rm_path if spec is not None else None) or args.custom_rm_path
+    rm_type = ((spec.rm_type if spec is not None else None) or metadata.get("rm_type") or args.rm_type or "").strip()
     return custom_rm_path, rm_type
 
 
