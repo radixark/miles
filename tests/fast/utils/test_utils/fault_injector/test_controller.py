@@ -51,6 +51,20 @@ def _statuses(records: list[FaultHookRecord], request_id: str) -> list[FaultHook
 
 
 class TestRuntimeSetAndClear:
+    def test_an_immediate_request_fires_on_set_and_frees_its_id(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """A request without a hook must fire once when set and leave its ID reusable."""
+        record = _set(runtime_hooks, _stop(hook_name=None))
+        assert record.status == FaultHookStatus.FIRED
+        assert operations.stopped == ["cell-0"]
+        _set(runtime_hooks, _stop(hook_name=None, cell_id="cell-1"))
+        assert operations.stopped == ["cell-0", "cell-1"]
+        assert _statuses(hook_records(), "stop") == [FaultHookStatus.PENDING, FaultHookStatus.FIRED] * 2
+
     def test_a_duplicate_id_is_rejected_and_leaves_the_original_armed(
         self, runtime_hooks: _FaultHookController, operations: _CellOperations
     ) -> None:
@@ -260,8 +274,7 @@ class TestReachEntries:
 
         monkeypatch.setattr(request_executor, "is_event_logger_initialized", lambda: True)
         monkeypatch.setattr(request_executor, "get_event_logger", broken)
-        _set(runtime_hooks, _stop(rollout_id=3))
-        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        _set(runtime_hooks, _stop(hook_name=None))
         assert operations.stopped == ["cell-0"]
 
 
@@ -300,3 +313,13 @@ class TestWithContext:
                 raise ValueError("update failed")
         await runtime_hooks._reach_async(_SEND, {})
         assert operations.stopped == []
+
+    def test_an_immediate_request_set_inside_an_update_records_its_context(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations
+    ) -> None:
+        """An immediate request must be recorded with the context of the update it interrupted."""
+        context = FaultHookContext(weight_version=7, rollout_id=3)
+        with runtime_hooks.with_context(context):
+            record = _set(runtime_hooks, _stop(hook_name=None))
+        assert record.context == context
+        assert operations.stopped == ["cell-0"]
