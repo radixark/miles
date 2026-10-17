@@ -56,6 +56,7 @@
 - **The scheme is enforced, not remembered**: `compute_mode_name` derives a mode's name from its fields against an explicit naming-default table, and `tests/fast/e2e/ft/test_naming_scheme.py` fails when a name drifts from it.
 - **Declared per mode**: cell count, parallelism, model, train/rollout GPU split, `ft_components` (default `("train",)`). Every mode is disaggregated: training and rollout hold gpus of their own.
 - **No rollout engines**: modes with `rollout_num_engines == 0` train on pre-recorded debug rollout data.
+- **Witness records**: `get_ft_args` enables both the event analyzer and witness recording, including rollout-only FT modes. The analyzer requires a witness snapshot for every normal training step; rollout-only FT does not enable recording through trainer-FT defaults.
 
 | Mode | Nodes | GPUs (train + rollout) | DP cells | Parallelism | Rollout | Model | `ft_components` | Why it exists |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -369,6 +370,9 @@ Type: comparison; both sides run the deterministic P2P recipe of scenario_rollou
 Entry: test_trainer_all_gather_fault__kill_train__dp2_tp2.py, ft-short
 Steps: 8 rollouts (NUM_ROLLOUTS)
 Requires: mode.has_real_rollout, and ft_components == ("train",) exactly
+Extra ft: the target also enables rollout ft (extra_ft_components): an engine a faulted trainer
+          never finished sending to is marked errored, and only rollout ft replaces it; no rollout
+          fault is declared, so the mode name still says the run crashes only trainers
 Compare: dumps rel <= 0 (bitwise); metrics rtol=0 / atol=0 over train/* and rollout/*
 
 Faults (target side only), declared at launch, all on the last cell's rank 0 at
@@ -499,6 +503,8 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 - **Evidence**: typed events in `<dump_dir>-soak/<session_id>/events.jsonl`, requests flushed before dispatch; after teardown the training-event logs, discarded generations included, are copied under `sources/` with SHA-256 digests, and the checks read those copies.
 - **Code**: the soak engine lives in `tests/utils/soak/core/`, the FT forms, observers and checkers in `tests/utils/soak/ft/`.
 - **Random transfer coverage**: every real-rollout random soak uses P2P weight transfer; fake-rollout modes keep trainer-only coverage and never exercise weight transfer.
+- **Checksum observation**: the harness requests an event directory with `--save-debug-event-data`, which turns `--log-inference-engine-weight-checksums` on by default, so in real-rollout modes each published weight version records per-tensor engine checksums bound to its version, update and engine incarnation, collected under a five-second timeout; a missed observation loses evidence and fails the test, not training. Small observation overhead is accepted; production recovery and ordering remain unchanged.
+- **Checksum witness**: the analyzer rule `inference_engine_weight_checksum_coverage` requires every settled published weight update to carry exactly one checksum record covering the engine incarnations it updated, and `inference_engine_weight_checksum_consistency` requires same-version engines to agree; both run before every training step, so a run's last publication is the one publication no rule sees.
 
 ### `scenario_realistic_gsm8k`
 
