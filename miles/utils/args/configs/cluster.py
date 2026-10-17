@@ -94,20 +94,6 @@ class ClusterConfig(BaseConfig):
             )
         ),
     ] = None
-    actor_num_nodes: A[int, Arg(help="Number of nodes for training actor")] = 1
-    actor_num_gpus_per_node: A[int, Arg(help="Number of gpus per node for training actor")] = 8
-    critic_num_nodes: A[int | None, Arg(help="Number of nodes for training actor")] = None
-    critic_num_gpus_per_node: A[int | None, Arg(help="Number of gpus per node for training actor")] = None
-    rollout_num_gpus: A[
-        int | None,
-        Arg(
-            help=(
-                "Number of GPUs for inference. Note that when using --colocate, "
-                "i.e. the training and the inference engines are on the same gpus, this param will be ignored and will be set as "
-                "actor_num_gpus_per_node * actor_num_nodes."
-            )
-        ),
-    ] = None
     rollout_num_gpus_per_engine: A[
         int, Arg(help="Number of GPUs per inference engine, just like the tp_size in sglang.")
     ] = 1

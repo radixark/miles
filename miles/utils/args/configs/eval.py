@@ -56,23 +56,6 @@ class EvalConfig(BaseConfig):
     eval_max_prompt_len: A[int | None, Arg()] = None
     eval_min_new_tokens: A[int | None, Arg()] = None
     eval_max_context_len: A[int | None, Arg()] = None
-    eval_num_gpus: A[
-        int,
-        Arg(
-            help=(
-                "Number of GPUs for a dedicated eval engine fleet. When > 0, eval runs on "
-                "its own engines behind its own router, synced by loading HF checkpoint "
-                "snapshots (never by joining training weight updates). 0 disables the "
-                "fleet and keeps today's shared-engine eval behavior. The fleet's engine "
-                "settings inherit every --sglang-* value; override individually with "
-                "--eval-sglang-* (e.g. --eval-sglang-mem-fraction-static 0.9)."
-            )
-        ),
-    ] = 0
-    eval_num_gpus_per_engine: A[
-        int,
-        Arg(help="GPUs per eval engine (TP size), independent of --rollout-num-gpus-per-engine."),
-    ] = 1
     eval_hf_dir: A[
         str | None,
         Arg(
