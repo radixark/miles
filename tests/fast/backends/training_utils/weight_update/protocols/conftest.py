@@ -276,6 +276,8 @@ class _P2PSenderHarness:
         self._protocols: list[Any] = []
         self.assignment_inputs: list[tuple[Any, list[int]]] = []
         self.first_passes = 0
+        self.data_replica_rank = 0
+        self.data_replica_size = 1
 
         mooncake_transport = sys.modules[p2p_protocol.MooncakeTransport.__module__]
         monkeypatch.setattr(mooncake_transport, "_create_transfer_engine", self._create_transfer_engine)
@@ -351,8 +353,8 @@ class _P2PSenderHarness:
     ) -> list[Any]:
         self.assignment_inputs.append((placement, list(engine_gpu_counts)))
         return assign_rollout_engine_ranks_for_data_replica(
-            data_replica_rank=0,
-            data_replica_size=1,
+            data_replica_rank=self.data_replica_rank,
+            data_replica_size=self.data_replica_size,
             engine_gpu_counts=engine_gpu_counts,
         )
 
@@ -479,6 +481,8 @@ def make_bucket() -> Callable[..., list[tuple[str, torch.Tensor]]]:
 @pytest.fixture
 def make_cell_updater(p2p_protocol: ModuleType) -> Callable[..., Any]:
     def make(cell_id: str = "cell-a", api_client: Any = None) -> Any:
-        return p2p_protocol._P2PRolloutCellUpdater(cell_id=cell_id, api_client=api_client)
+        return p2p_protocol._P2PRolloutCellUpdater(
+            args=Namespace(update_weight_engine_request_timeout=0.05), cell_id=cell_id, api_client=api_client
+        )
 
     return make
