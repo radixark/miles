@@ -11,6 +11,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.protocols.p2p_rollout_cell_updater import _P2PRolloutCellUpdater
 from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport, RemoteShard
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfTensorSpec
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
@@ -27,7 +28,7 @@ from miles.backends.training_utils.weight_update.protocols.utils.model_replica i
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     assign_rollout_engine_ranks,
 )
-from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import TransferBuffers
+from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import PendingWrite, TransferBuffers
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,9 @@ class _RunnerSender:
         return hf_name in self.model_replicas.hf_name_mapping.param_names_by_hf_name
 
 
+# ============================== transfer protocol ==============================
+
+
 class UpdateWeightP2P(WeightTransferProtocol):
     """Write target and supported MTP draft weights to published GPU addresses over Mooncake."""
 
@@ -66,6 +70,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self._transport: MooncakeTransport | None = None
         self._transfer_buffers: TransferBuffers | None = None
         self._runner_senders: list[_RunnerSender] = []
+        self._cell_updaters_of_rollout_engine_ind: dict[int, _P2PRolloutCellUpdater] = {}
 
     def begin_sync(
         self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
@@ -122,6 +127,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
     def _send_runner_bucket(
         self, runner_sender: _RunnerSender, converted_named_tensors: list[tuple[str, torch.Tensor]]
     ) -> None:
+        cell_updaters_of_cell_id = self._cell_updaters_of_rollout_engine_ind
+
         ready_hf_tensors_by_param_group = runner_sender.model_param_stager.stage(converted_named_tensors)
         for param_groups in pack_into_buffers(
             ready_hf_tensors_by_param_group,
@@ -134,9 +141,23 @@ class UpdateWeightP2P(WeightTransferProtocol):
             ]
             for target in runner_sender.replica_targets:
                 buffer = self._transfer_buffers.acquire()
+                remote_shards = target.remote_shards
                 param_bytes_by_name = target.model_replica.load_into(buffer, param_names, hf_tensors)
-                writes = self._transport.write(target.remote_shards, param_bytes_by_name)
-                self._transfer_buffers.release_after(buffer, list(zip(target.remote_shards, writes, strict=True)))
+                writes = self._transport.write(
+                    remote_shards,
+                    param_bytes_by_name,
+                    run_write=lambda remote_shard, write: cell_updaters_of_cell_id[
+                        remote_shard.rollout_engine_ind
+                    ].run_write(write),
+                )
+                pending_writes = [
+                    PendingWrite(
+                        future=write,
+                        remote_shard=shard,
+                    )
+                    for shard, write in zip(remote_shards, writes, strict=True)
+                ]
+                self._transfer_buffers.release_after(buffer, pending_writes)
 
     def connect(
         self,
@@ -149,6 +170,10 @@ class UpdateWeightP2P(WeightTransferProtocol):
     ) -> None:
         """Assign and validate write targets, reusing replicas, mappings, transport and buffers across reconnects."""
         self.rollout_engines = rollout_engines
+        self._cell_updaters_of_rollout_engine_ind = {
+            rollout_engine_ind: _P2PRolloutCellUpdater(rollout_engine_ind=rollout_engine_ind)
+            for rollout_engine_ind in range(len(rollout_engines))
+        }
         assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
         self.is_sender = bool(assignments)
 

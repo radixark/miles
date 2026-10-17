@@ -1,6 +1,7 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, NamedTuple
 
 import ray
@@ -93,7 +94,13 @@ class MooncakeTransport:
         if ret != 0:
             raise RuntimeError(f"Mooncake could not unregister the memory at {tensor.data_ptr():#x}: error {ret}")
 
-    def write(self, remote_shards: Sequence[RemoteShard], tensors_by_name: dict[str, torch.Tensor]) -> list[Future]:
+    def write(
+        self,
+        remote_shards: Sequence[RemoteShard],
+        tensors_by_name: dict[str, torch.Tensor],
+        *,
+        run_write: Callable[[RemoteShard, Callable[[], None]], None],
+    ) -> list[Future[None]]:
         """Writes each tensor into the weight of the same name on every shard; returns one future per shard.
 
         The tensors must lie in registered memory and stay unchanged until their futures are done. Raises before
@@ -103,7 +110,7 @@ class MooncakeTransport:
             _assert_tensors_fit(remote_shard, tensors_by_name)
         return [
             self._write_executor(remote_shard.rollout_engine_ind).submit(
-                self._write_shard, remote_shard, tensors_by_name
+                run_write, remote_shard, partial(self._write_shard, remote_shard, tensors_by_name)
             )
             for remote_shard in remote_shards
         ]

@@ -8,7 +8,7 @@ import torch
 
 import miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers as transfer_buffers_module
 from miles.backends.training_utils.weight_update.protocols.transports.mooncake import RemoteShard
-from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import TransferBuffers
+from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import PendingWrite, TransferBuffers
 
 _RETURN_TIMEOUT_SECONDS = 10.0
 _STILL_BLOCKED_SECONDS = 0.2
@@ -50,6 +50,10 @@ def _remote_shard(session_id: str) -> RemoteShard:
     )
 
 
+def _pending_write(session_id: str, future: Future[None]) -> PendingWrite:
+    return PendingWrite(remote_shard=_remote_shard(session_id), future=future)
+
+
 def _start_in_thread(target) -> threading.Event:
     returned = threading.Event()
 
@@ -66,7 +70,7 @@ def test_a_buffer_is_not_handed_out_while_a_write_still_reads_it(make_transfer_b
     transfer_buffers, _ = make_transfer_buffers(num_buffers=2)
     first_buffer = transfer_buffers.acquire()
     pending_write = Future()
-    transfer_buffers.release_after(first_buffer, [(_remote_shard("session-a"), pending_write)])
+    transfer_buffers.release_after(first_buffer, [_pending_write("session-a", pending_write)])
     transfer_buffers.release_after(transfer_buffers.acquire(), [])
 
     acquired: list[torch.Tensor] = []
@@ -84,7 +88,7 @@ def test_a_failed_write_fails_the_next_acquire_of_its_buffer_and_frees_it(make_t
     buffer = transfer_buffers.acquire()
     failed_write = Future()
     failed_write.set_exception(RuntimeError("write failed"))
-    transfer_buffers.release_after(buffer, [(_remote_shard("session-a"), failed_write)])
+    transfer_buffers.release_after(buffer, [_pending_write("session-a", failed_write)])
 
     with pytest.raises(RuntimeError, match="session session-a.*write failed"):
         transfer_buffers.acquire()
@@ -96,7 +100,7 @@ def test_a_write_still_running_after_the_timeout_fails_acquire_and_keeps_its_buf
     transfer_buffers, _ = make_transfer_buffers(num_buffers=1, write_timeout=_STILL_BLOCKED_SECONDS)
     buffer = transfer_buffers.acquire()
     running_write = Future()
-    transfer_buffers.release_after(buffer, [(_remote_shard("session-a"), running_write)])
+    transfer_buffers.release_after(buffer, [_pending_write("session-a", running_write)])
 
     with pytest.raises(RuntimeError, match=f"session session-a.*still running after {_STILL_BLOCKED_SECONDS}s"):
         transfer_buffers.acquire()
@@ -117,3 +121,31 @@ def test_each_buffer_is_registered_once_over_its_whole_allocation(make_transfer_
         transfer_buffers.release_after(buffer, [])
 
     assert sorted(registered) == sorted({(buffer.data_ptr(), 64) for buffer in buffers})
+
+
+def test_release_waits_for_every_cell_even_if_another_write_has_failed(make_transfer_buffers) -> None:
+    """A failed completed write cannot hide another cell that is still reading the allocation."""
+    buffers, registered = make_transfer_buffers(num_buffers=1, write_timeout=0.01)
+    buffer = buffers.acquire()
+    failed, running = Future(), Future()
+    failed.set_exception(RuntimeError("failed"))
+    buffers.release_after(buffer, [_pending_write("failed", failed), _pending_write("running", running)])
+
+    with pytest.raises(RuntimeError, match="still running"):
+        buffers.release()
+    assert registered == [(buffer.data_ptr(), buffer.numel())]
+    running.set_result(None)
+    buffers.release()
+    assert registered == []
+
+
+def test_cancelled_queued_writes_do_not_prevent_releasing_memory(make_transfer_buffers) -> None:
+    """A cancelled task never reads the buffer and must not be mistaken for a running native write."""
+    buffers, registered = make_transfer_buffers(num_buffers=1, write_timeout=0)
+    buffer = buffers.acquire()
+    cancelled = Future()
+    cancelled.cancel()
+    buffers.release_after(buffer, [_pending_write("cancelled", cancelled)])
+
+    buffers.release()
+    assert registered == []

@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 from typing import Any
+
 import pytest
 import torch
 
@@ -258,6 +259,7 @@ class _P2PSenderHarness:
         self.replicas_created: list[_FakeModelReplica] = []
         self._loaded_events: dict[int, threading.Event] = {}
         self._calls: list[_ProtocolCall] = []
+        self._protocols: list[Any] = []
         self.assignment_inputs: list[tuple[Any, list[int]]] = []
         self.first_passes = 0
 
@@ -290,7 +292,9 @@ class _P2PSenderHarness:
             update_weight_buffer_size=update_weight_buffer_size,
             sglang_pp_size=1,
         )
-        return self._p2p_protocol.UpdateWeightP2P(args)
+        protocol = self._p2p_protocol.UpdateWeightP2P(args)
+        self._protocols.append(protocol)
+        return protocol
 
     def connect(
         self, protocol: Any, apis: list[_FakeRolloutApi], placement: Any = None, selector: str = "all"
@@ -322,6 +326,10 @@ class _P2PSenderHarness:
         self.transfer_engine.release_all()
         for call in self._calls:
             call.join()
+        for protocol in self._protocols:
+            if protocol._transport is not None:
+                for executor in protocol._transport._write_executors_by_rollout_engine_ind.values():
+                    executor.shutdown(wait=True)
 
     def _assign_rollout_engine_ranks(
         self, parallel_state: Any, placement: Any, engine_gpu_counts: list[int]

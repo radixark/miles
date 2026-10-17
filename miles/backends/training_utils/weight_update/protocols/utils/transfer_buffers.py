@@ -1,10 +1,17 @@
 import concurrent.futures
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future
+from dataclasses import dataclass
 
 import torch
 
 from miles.backends.training_utils.weight_update.protocols.transports.mooncake import RemoteShard
+
+
+@dataclass(frozen=True)
+class PendingWrite:
+    remote_shard: RemoteShard
+    future: Future[None]
 
 
 class TransferBuffers:
@@ -33,7 +40,7 @@ class TransferBuffers:
         self._buffers = [_allocate_transfer_buffer(buffer_nbytes, device) for _ in range(num_buffers)]
         for buffer in self._buffers:
             register_memory(buffer)
-        self._pending_writes_by_buffer_index: list[list[tuple[RemoteShard, Future]]] = [[] for _ in self._buffers]
+        self._pending_writes_by_buffer_index: list[list[PendingWrite]] = [[] for _ in self._buffers]
         self._next_buffer_index = 0
 
     def acquire(self) -> torch.Tensor:
@@ -43,7 +50,7 @@ class TransferBuffers:
         self._wait_for_writes_reading([buffer_index])
         return self._buffers[buffer_index]
 
-    def release_after(self, buffer: torch.Tensor, pending_writes: Sequence[tuple[RemoteShard, Future]]) -> None:
+    def release_after(self, buffer: torch.Tensor, pending_writes: Sequence[PendingWrite]) -> None:
         """Records the writes that read `buffer`; `acquire` hands it out again only after they return."""
         (buffer_index,) = [index for index, candidate in enumerate(self._buffers) if candidate is buffer]
         self._pending_writes_by_buffer_index[buffer_index] += pending_writes
@@ -54,7 +61,10 @@ class TransferBuffers:
 
     def release(self) -> None:
         """Waits for every write still reading a buffer, then unregisters the buffers from the transport."""
-        self.wait_for_all_writes()
+        writes = [write.future for pending in self._pending_writes_by_buffer_index for write in pending]
+        concurrent.futures.wait([write for write in writes if not write.done()], timeout=self._write_timeout)
+        if any(not write.done() for write in writes):
+            raise RuntimeError("Cannot release transfer buffers while Mooncake writes are still running")
         for buffer in self._buffers:
             self._unregister_memory(buffer)
 
@@ -65,16 +75,16 @@ class TransferBuffers:
         finally:
             for index in buffer_indices:
                 self._pending_writes_by_buffer_index[index] = [
-                    (remote_shard, write)
-                    for remote_shard, write in self._pending_writes_by_buffer_index[index]
-                    if not write.done()
+                    write for write in self._pending_writes_by_buffer_index[index] if not write.future.done()
                 ]
 
 
-def _raise_if_any_write_failed(pending_writes: list[tuple[RemoteShard, Future]], timeout: float) -> None:
-    _, unfinished_writes = concurrent.futures.wait([write for _, write in pending_writes], timeout=timeout)
+def _raise_if_any_write_failed(pending_writes: list[PendingWrite], timeout: float) -> None:
+    _, unfinished_writes = concurrent.futures.wait([write.future for write in pending_writes], timeout=timeout)
     failures = []
-    for remote_shard, write in pending_writes:
+    for pending_write in pending_writes:
+        remote_shard = pending_write.remote_shard
+        write = pending_write.future
         if write in unfinished_writes:
             reason = f"still running after {timeout}s"
         elif write.exception() is not None:

@@ -19,5 +19,5 @@ def test_a_weight_of_another_size_on_the_shard_is_never_written(p2p_sender: Any,
     with pytest.raises(
         AssertionError, match="w is 16 bytes here but 8 bytes on the target of rollout engine 0 rank 0"
     ):
-        transport.write([remote_shard], {"w": torch.zeros(4)})
+        transport.write([remote_shard], {"w": torch.zeros(4)}, run_write=lambda shard, write: write())
     assert p2p_sender.transfer_engine.writes == []
