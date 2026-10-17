@@ -4,7 +4,6 @@ from typing import Any
 import torch
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
-from miles.utils import object_store
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 from miles.utils.lora.utils import is_multi_lora_enabled
@@ -359,7 +358,7 @@ def _post_process_rewards(
 
 
 def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: dict | None):
-    """Split the train data across DP ranks and put the shards into the object store.
+    """Split the train data across DP ranks.
 
     When the training backend can consume a rollout-side schedule, the shards
     also carry the precomputed micro-batch layout; otherwise this falls back to
@@ -368,8 +367,7 @@ def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: di
         shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     else:
         shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
-    store = object_store.get_instance()
-    return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+    return shards
 
 
 def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_config: dict | None) -> bool:

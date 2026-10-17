@@ -284,6 +284,11 @@ def _load_executor_state(directory: Path, *, rollout_id: int) -> dict:
     return torch.load(path, weights_only=False)
 
 
+class _FakeObjectStore:
+    def put(self, *, value, value_spec):
+        return value
+
+
 def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExecutor:
     executor = RolloutExecutor.__new__(RolloutExecutor)
     executor.args = make_args(load=str(tmp_path), save=str(tmp_path))
@@ -407,7 +412,8 @@ class TestOutputSnapshotReplay:
             return {"sample_indices": [sample.index for sample in data]}
 
         monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", convert)
-        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: None)
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: [])
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", _FakeObjectStore)
         assert (await restored.get(rollout_id=3)).sample_indices == [7]
         await restored.save(2)
         resumed_again = _make_executor(tmp_path, _CountingRolloutFn())
@@ -431,7 +437,8 @@ class TestOutputSnapshotReplay:
 
         monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
         monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", lambda *_args, **_kw: {})
-        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: None)
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: [])
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", _FakeObjectStore)
         saving = asyncio.create_task(save_once_generated())
         await asyncio.sleep(0)
 
@@ -457,7 +464,8 @@ class TestOutputSnapshotReplay:
 
         monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
         monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", lambda *_args, **_kw: {})
-        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: None)
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: [])
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", _FakeObjectStore)
         fetching = asyncio.create_task(executor.get(rollout_id=3))
         await entered.wait()
         await executor.save(2)
