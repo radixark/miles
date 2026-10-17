@@ -127,6 +127,7 @@ class TestTheLaunchedTrainArguments:
 
         (launch,) = harness.launches
         assert launch.value_of("--update-weight-transfer-mode") == "p2p"
+        assert "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine" in launch.argv
         assert launch.value_of("--num-rollout") == "9"
         assert launch.request.train_script.endswith("/train.py")
 
@@ -150,6 +151,7 @@ class TestTheLaunchedTrainArguments:
         (launch,) = harness.launches
         assert launch.value_of("--load-debug-rollout-data") == f"{tmp_path / 'cyclic-9'}/{{rollout_id}}.pt"
         assert "--update-weight-transfer-mode" not in launch.argv
+        assert "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine" not in launch.argv
 
     def test_a_fully_async_run_launches_the_async_driver_under_a_name_of_its_own(
         self, harness: ScenarioHarness

@@ -106,6 +106,7 @@ class TestGetGsm8kTrainArgs:
         for args in (enabled, disabled):
             assert "--api-server-port" in args
             assert _value_of(" ".join(args), "--update-weight-transfer-mode") == "p2p"
+            assert "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine" in args
 
     def test_only_a_fully_async_run_gets_the_fully_async_flags(self) -> None:
         """The sync driver must not receive fully-async arguments it would silently ignore."""
