@@ -265,6 +265,7 @@
        "examples/geo3k-vlm",
        "examples/geo3k-vlm/multi-turn",
        "examples/multi-lora",
+       "examples/multi-lora/harbor-tinker",
        "examples/multi-lora/tinker-agent",
        "examples/multi-policy",
        "examples/on-policy-distillation",
