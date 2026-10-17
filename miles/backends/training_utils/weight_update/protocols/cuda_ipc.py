@@ -13,6 +13,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.utils import async_utils
 from miles.utils.lora.utils import lora_base_cpu_backup_enabled, lora_rollout_enabled
@@ -74,6 +75,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         for distributed. Map ranks to colocated IPC engines.
         """
         self.rollout_engines = rollout_engines
+        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.rollout_engines, engine_cell_ids)
         self._selector = selector
 
         if engine_gpu_counts is None:
@@ -100,6 +102,9 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
 
         if self.use_distribute:
             self.rollout_engines = rollout_engines[:colocate_engine_nums]
+            self.cell_updaters_of_cell_id = create_rollout_cell_updaters(
+                self.rollout_engines, engine_cell_ids[:colocate_engine_nums]
+            )
             self.distributed_rollout_engines = rollout_engines[colocate_engine_nums:]
             distributed_gpu_counts = engine_gpu_counts[colocate_engine_nums:]
             self._is_distributed_src_rank = (

@@ -1,3 +1,4 @@
+import asyncio
 import ctypes
 import dataclasses
 import importlib
@@ -190,7 +191,11 @@ class _FakeRolloutApi:
         expert_placement: dict | None = None,
         speculative_args: dict | None = None,
         draft_shares_target_weights: bool = True,
+        unreachable: bool = False,
     ) -> None:
+        self.unreachable = unreachable
+        self.request_failures: dict[str, Exception] = {}
+        self.hanging_requests: set[str] = set()
         self.cell_id = cell_id
         self.draft_shares_target_weights = draft_shares_target_weights
         self.gpu_count = gpu_count
@@ -214,7 +219,7 @@ class _FakeRolloutApi:
         return hash((self.session_id(rank, address_role), name)) & 0xFFFFFFFF
 
     async def get_remote_instance_transfer_engine_info(self, rank: int, role: str) -> tuple[str, dict]:
-        self.calls.append(f"get_remote_instance_transfer_engine_info {role}")
+        await self._before_request(f"get_remote_instance_transfer_engine_info {role}")
         weights = {
             name: (self.published_address(rank, name, role), self.published_weight_numel, 4)
             for name in _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE[role]
@@ -222,12 +227,21 @@ class _FakeRolloutApi:
         return self.session_id(rank, role), weights
 
     async def get_parallelism_info(self, rank: int, role: str) -> dict:
-        self.calls.append(f"get_parallelism_info {role}")
+        await self._before_request(f"get_parallelism_info {role}")
         return {"tp_rank": rank, "global_rank": 10 * self.generation + rank}
 
     async def get_server_info(self) -> dict:
-        self.calls.append("get_server_info")
+        await self._before_request("get_server_info")
         return {"moe_runner_backend": self.moe_runner_backend, **self.expert_placement, **self.speculative_args}
+
+    async def _before_request(self, name: str) -> None:
+        self.calls.append(name)
+        if self.unreachable:
+            raise ConnectionError("engine unreachable")
+        if name in self.request_failures:
+            raise self.request_failures[name]
+        if name in self.hanging_requests:
+            await asyncio.Event().wait()
 
 
 class _ProtocolCall:
@@ -460,3 +474,11 @@ def make_bucket() -> Callable[..., list[tuple[str, torch.Tensor]]]:
         return [(name, torch.tensor(_BUCKET_VALUES[name])) for name in names]
 
     return _make
+
+
+@pytest.fixture
+def make_cell_updater(p2p_protocol: ModuleType) -> Callable[..., Any]:
+    def make(cell_id: str = "cell-a", api_client: Any = None) -> Any:
+        return p2p_protocol._P2PRolloutCellUpdater(cell_id=cell_id, api_client=api_client)
+
+    return make

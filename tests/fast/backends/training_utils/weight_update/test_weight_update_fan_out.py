@@ -1,151 +1,136 @@
-import asyncio
-import concurrent.futures
 import threading
-from unittest.mock import patch
+from argparse import Namespace
+from typing import Any
 
 import pytest
 
-from miles.backends.training_utils.weight_update.session import begin_weight_update, end_weight_update
-from miles.utils import async_utils
+from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
+from miles.backends.training_utils.weight_update.session import (
+    begin_weight_update,
+    end_weight_update,
+    maybe_pause_engines,
+    maybe_resume_engines,
+    set_weight_version,
+)
 
-_SESSION_MODULE = "miles.backends.training_utils.weight_update.session"
+
+def _make_args(
+    *, fully_async: bool = False, colocate: bool = False, pause_generation_mode: str = "abort"
+) -> Namespace:
+    return Namespace(
+        fully_async=fully_async,
+        colocate=colocate,
+        pause_generation_mode=pause_generation_mode,
+    )
 
 
 class _RecordingClient:
-    def __init__(self, calls: list[str], engine_index: int, selectors: list[str] | None = None):
-        self._calls = calls
-        self._engine_index = engine_index
-        self._selectors = selectors if selectors is not None else []
-
-    async def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
-        self._calls.append(f"begin-{self._engine_index}")
-        self._selectors.append(selector)
-        return {"success": True}
-
-    async def end_weight_update(self, expected_lora_checksums=None):
-        self._calls.append(f"end-{self._engine_index}")
-        return {"success": True}
-
-
-class _FailingClient:
-    def __init__(self, calls: list[str], engine_index: int, gate: threading.Event | None = None):
-        self._calls = calls
-        self._engine_index = engine_index
+    def __init__(self, *, result: Any = None, gate: threading.Event | None = None) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self._result = result if result is not None else {"success": True}
         self._gate = gate
 
-    async def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
-        if self._gate is not None:
-            self._gate.wait(timeout=30)
-            self._calls.append(f"slow-{self._engine_index}")
-            return {"success": True}
-        raise RuntimeError("boom")
+    def __getattr__(self, name: str):
+        async def method(**kwargs: Any) -> Any:
+            if self._gate is not None:
+                assert self._gate.wait(timeout=30)
+            self.calls.append((name, kwargs))
+            return self._result
 
-    async def end_weight_update(self, expected_lora_checksums=None):
-        return {"success": True}
+        return method
 
-
-class _EndFailingClient:
-    def __init__(self, calls: list[str], engine_index: int):
-        self._calls = calls
-        self._engine_index = engine_index
-
-    async def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
-        self._calls.append(f"begin-{self._engine_index}")
-        return {"success": True}
-
-    async def end_weight_update(self, expected_lora_checksums=None):
-        raise RuntimeError("close failed")
+    @property
+    def call_names(self) -> list[str]:
+        return [name for name, _ in self.calls]
 
 
-class _GatedEndClient:
-    def __init__(self, calls: list[str], engine_index: int, gate: threading.Event):
-        self._calls = calls
-        self._engine_index = engine_index
-        self._gate = gate
-
-    async def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
-        self._calls.append(f"begin-{self._engine_index}")
-        return {"success": True}
-
-    async def end_weight_update(self, expected_lora_checksums=None):
-        if not await asyncio.to_thread(self._gate.wait, 5):
-            raise TimeoutError("end_weight_update gate timed out")
-        self._calls.append(f"end-{self._engine_index}")
-        return {"success": True}
-
-
-class _ObservedFuture:
-    def __init__(self, future: concurrent.futures.Future, result_started: threading.Event):
-        self._future = future
-        self._result_started = result_started
-
-    def result(self):
-        self._result_started.set()
-        return self._future.result()
+def _make_updaters(clients: list[Any]) -> list[Any]:
+    cell_ids = [f"cell-{index}" for index in range(len(clients))]
+    return list(create_rollout_cell_updaters(clients, cell_ids).values())
 
 
 class TestWeightUpdateSessionFanOut:
-    """The session brackets must reach every engine, not just the first."""
-
-    def test_begin_and_end_reach_every_engine(self):
+    def test_begin_and_end_reach_every_cell(self) -> None:
         """A missed engine would load weights outside a session and corrupt them."""
-        calls: list[str] = []
-        clients = [_RecordingClient(calls, i) for i in range(4)]
+        clients = [_RecordingClient() for _ in range(4)]
+        updaters = _make_updaters(clients)
 
-        begin_weight_update(clients)
-        end_weight_update(clients)
+        begin_weight_update(updaters)
+        end_weight_update(updaters)
 
-        assert sorted(calls[:4]) == ["begin-0", "begin-1", "begin-2", "begin-3"]
-        assert sorted(calls[4:]) == ["end-0", "end-1", "end-2", "end-3"]
+        assert all(client.call_names == ["begin_weight_update", "end_weight_update"] for client in clients)
 
-    def test_a_failing_engine_fails_the_session(self):
-        """A silently swallowed failure would leave that engine loading outside a session."""
-        calls: list[str] = []
+    def test_the_selector_and_the_base_sync_decision_reach_every_cell(self) -> None:
+        """An adapter-only session on one engine and a base session on another would diverge the fleet."""
+        clients = [_RecordingClient() for _ in range(2)]
 
-        with pytest.raises(RuntimeError, match="boom"):
-            begin_weight_update([_RecordingClient(calls, 0), _FailingClient(calls, 1)])
+        begin_weight_update(_make_updaters(clients), "draft", sync_base=False)
 
-        assert calls == ["begin-0"]
+        for client in clients:
+            assert client.calls == [("begin_weight_update", {"selector": "draft", "sync_base": False})]
 
-    def test_every_engine_is_asked_before_the_failure_surfaces(self):
-        """A later engine must already be in flight when an earlier engine fails."""
-        calls: list[str] = []
-        gate = threading.Event()
-        gate.set()
-        clients = [_FailingClient(calls, 0), _FailingClient(calls, 1, gate=gate)]
+    def test_the_lora_checksum_manifest_reaches_every_cell(self) -> None:
+        """An unverified engine could serve an adapter that never finished streaming."""
+        clients = [_RecordingClient(), _RecordingClient()]
+        checksums = {"adapter": {"weight": "abc"}}
 
-        with pytest.raises(RuntimeError, match="boom"):
-            begin_weight_update(clients)
+        end_weight_update(_make_updaters(clients), expected_lora_checksums=checksums)
 
-        assert calls == ["slow-1"]
+        for client in clients:
+            assert client.calls == [("end_weight_update", {"expected_lora_checksums": checksums})]
 
-    def test_end_failure_propagates_after_every_engine_has_settled(self):
-        """A failure must surface only after every engine has finished closing its session."""
-        calls: list[str] = []
-        gate = threading.Event()
-        result_started = threading.Event()
-        clients = [_EndFailingClient(calls, 0), _GatedEndClient(calls, 1, gate)]
-        original_submit = async_utils.submit
-        submission_count = 0
 
-        def observed_submit(coro):
-            nonlocal submission_count
-            future = original_submit(coro)
-            submission_count += 1
-            return _ObservedFuture(future, result_started) if submission_count == 2 else future
+class TestSetWeightVersion:
+    def test_every_cell_learns_the_new_version(self) -> None:
+        """An engine left on the old version would be reported as serving stale weights."""
+        clients = [_RecordingClient(), _RecordingClient()]
 
-        with patch(f"{_SESSION_MODULE}.async_utils.submit", side_effect=observed_submit):
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                outcome = executor.submit(end_weight_update, clients)
-                try:
-                    assert result_started.wait(timeout=5)
-                    assert not outcome.done()
-                    assert calls == []
-                    gate.set()
-                    with pytest.raises(RuntimeError, match="close failed"):
-                        outcome.result(timeout=5)
-                finally:
-                    gate.set()
+        set_weight_version(_make_updaters(clients), 11)
 
-        assert submission_count == 2
-        assert calls == ["end-1"]
+        for client in clients:
+            assert client.calls == [("update_weight_version", {"weight_version": "11"})]
+
+
+class TestPauseAndResume:
+    @pytest.mark.parametrize("mode", ["abort", "stop"])
+    def test_a_pause_that_discards_the_cache_flushes_every_cell(self, mode: str) -> None:
+        """Weights written under a stale kv cache would be served with the old activations."""
+        args = _make_args(pause_generation_mode=mode)
+        clients = [_RecordingClient(), _RecordingClient()]
+
+        maybe_pause_engines(args, _make_updaters(clients))
+
+        for client in clients:
+            assert client.call_names == ["pause_generation", "flush_cache"]
+            assert client.calls[0][1] == {"mode": mode}
+
+    def test_an_in_place_pause_keeps_the_cache_it_exists_to_preserve(self) -> None:
+        """Flushing would discard exactly the kv cache that in_place pausing resumes against."""
+        args = _make_args(pause_generation_mode="in_place")
+        clients = [_RecordingClient(), _RecordingClient()]
+
+        maybe_pause_engines(args, _make_updaters(clients))
+
+        for client in clients:
+            assert client.call_names == ["pause_generation"]
+
+    def test_the_engines_are_left_alone_when_the_driver_owns_the_pause(self) -> None:
+        """Pausing twice from two owners would resume generation while the weights are still moving."""
+        args = _make_args(fully_async=True, colocate=True)
+        clients = [_RecordingClient()]
+        updaters = _make_updaters(clients)
+
+        maybe_pause_engines(args, updaters)
+        maybe_resume_engines(args, updaters)
+
+        assert clients[0].calls == []
+
+    def test_resume_reaches_every_cell(self) -> None:
+        """An engine left paused would stop serving rollouts for the rest of the run."""
+        args = _make_args()
+        clients = [_RecordingClient(), _RecordingClient(), _RecordingClient()]
+
+        maybe_resume_engines(args, _make_updaters(clients))
+
+        for client in clients:
+            assert client.call_names == ["continue_generation"]
