@@ -19,6 +19,10 @@ Runs referred to:
   from `iter_0000149`, off `holmes-cs-aus-556` and `holmes-cs-aus-500` (`--exclude-host`), with `retries: 10`. A first
   submission (`01M53JRRQ310SG0GDCF249TW1A`, 5 retries) was stopped before it started.
 - **Gateway runs:** `tmax_prod4node_gateway_qwen35_9b_20261017_035830` (v1) and `..._20261017_074752` (v2), stopped.
+- **Resume 3/4 (hardened, commit `6fb5cb00d8`):** resume 3 (`01M55HZB5SVPMEV5W9C0RBRX2S`) crash-looped from 20:25 on
+  2026-10-17: `apt-get update` failed with `At least one invalid signature was encountered` for every repository on
+  `holmes-cs-aus-498` and `holmes-cs-aus-527` (exit 100 within 6 s, three retries in 12 minutes), stopped. Resume 4
+  (`01M55SE04SXJGSEM0WQEQA79GD`) excludes those two as well as `-556` and `-500`.
 
 ## Open decisions
 
