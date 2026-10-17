@@ -13,12 +13,6 @@ class RewardModelConfig(BaseConfig):
             )
         ),
     ] = None
-    eval_reward_key: A[str | None, Arg(help="The eval variant for --reward-key")] = None
-    group_rm: A[bool, Arg(help="Whether to do rm on a whole group.")] = False
-    rm_url: A[
-        str | None,
-        Arg(help="URL for the reward model service for --rm-type remote_rm, e.g. http://localhost:8000"),
-    ] = None
     custom_rm_path: A[
         CustomFunctionConfig | None,
         Arg(
@@ -28,6 +22,15 @@ class RewardModelConfig(BaseConfig):
                 "The function should have the signature `def custom_rm(args, sample) -> float`."
             ),
         ),
+    ] = None
+
+
+class RewardModelRolloutOnlyConfig(BaseConfig):
+    eval_reward_key: A[str | None, Arg(help="The eval variant for --reward-key")] = None
+    group_rm: A[bool, Arg(help="Whether to do rm on a whole group.")] = False
+    rm_url: A[
+        str | None,
+        Arg(help="URL for the reward model service for --rm-type remote_rm, e.g. http://localhost:8000"),
     ] = None
     custom_reward_post_process_path: A[
         CustomFunctionConfig | None,

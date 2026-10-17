@@ -7,6 +7,7 @@ from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
@@ -201,7 +202,7 @@ class RouterSpec(BaseCommandSpec):
         if args.use_miles_router:
             assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
             router_config = compute_miles_router_config(
-                args, host=primary.host, port=primary.port, num_engines=model_cfg.num_server_cells
+                args, host=primary.host, port=primary.port, num_engines=args.sglang_scaling.num_server_cells(model_cfg)
             )
             launch_argv = [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
         else:
@@ -315,6 +316,7 @@ class InferenceEngineSpec(BaseCommandSpec):
     deploy_component: DeployComponent = DeployComponent.INFERENCE
     model_cfg: ModelConfig
     server_group_config: ServerGroupConfig
+    group_scaling: ServerGroupScalingConfig
     interpreter_prefix: list[str]
 
     @classmethod
@@ -328,6 +330,7 @@ class InferenceEngineSpec(BaseCommandSpec):
                 group_index=group_index,
                 model_cfg=model_cfg,
                 server_group_config=server_group_config,
+                group_scaling=config.sglang_scaling.group(model_name=model_cfg.name, group_index=group_index),
             )
             for model_idx, model_cfg in enumerate(config.sglang.models)
             for group_index, server_group_config in enumerate(model_cfg.server_groups)
@@ -335,7 +338,9 @@ class InferenceEngineSpec(BaseCommandSpec):
         ]
 
     def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
-        return _compute_inference_engine_scheduling(self.args, server_group_config=self.server_group_config)
+        return _compute_inference_engine_scheduling(
+            self.args, server_group_config=self.server_group_config, group_scaling=self.group_scaling
+        )
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
         return compute_inference_engine_env_vars(ctx.args)
@@ -349,7 +354,7 @@ class InferenceEngineSpec(BaseCommandSpec):
         # TODO: only node 0's seed is used by sglang; node != 0 should get node 0's number
         random_seed = (
             args.seed
-            + server_group_config.engine_offset
+            + self.group_scaling.engine_offset
             + ctx.cell_index * num_workers_per_cell
             + ctx.worker_in_cell_index
         )
@@ -373,16 +378,18 @@ class InferenceEngineSpec(BaseCommandSpec):
         )
 
 
-def _compute_inference_engine_scheduling(args, *, server_group_config: ServerGroupConfig) -> SchedulingSpec:
+def _compute_inference_engine_scheduling(
+    args, *, server_group_config: ServerGroupConfig, group_scaling: ServerGroupScalingConfig
+) -> SchedulingSpec:
     return SchedulingSpec(
-        num_cells=server_group_config.num_gpus // server_group_config.num_gpus_per_engine,
+        num_cells=group_scaling.num_gpus // server_group_config.num_gpus_per_engine,
         num_workers_per_cell=max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node),
         # TODO: may need real num for k8s native mode
         num_gpus_per_worker=0.2,
         num_gpu_slots_per_worker=min(server_group_config.num_gpus_per_engine, args.num_gpus_per_node),
         num_gpus_per_node=args.num_gpus_per_node,
         pg_name="rollout",
-        pg_slot_offset=server_group_config.gpu_offset,
+        pg_slot_offset=group_scaling.gpu_offset,
     )
 
 
@@ -392,6 +399,7 @@ def _compute_spec_inference_engine(
     group_index: int,
     model_cfg: ModelConfig,
     server_group_config: ServerGroupConfig,
+    group_scaling: ServerGroupScalingConfig,
 ) -> InferenceEngineSpec:
     num_gpus_per_engine = server_group_config.num_gpus_per_engine
     assert num_gpus_per_engine <= args.num_gpus_per_node or num_gpus_per_engine % args.num_gpus_per_node == 0, (
@@ -399,9 +407,11 @@ def _compute_spec_inference_engine(
         f"{args.num_gpus_per_node} gpus nor tiles whole nodes, so its ranks would never all be launched"
     )
 
-    scheduling = _compute_inference_engine_scheduling(args, server_group_config=server_group_config)
+    scheduling = _compute_inference_engine_scheduling(
+        args, server_group_config=server_group_config, group_scaling=group_scaling
+    )
 
-    num_workers_total = server_group_config.num_gpus // scheduling.num_gpu_slots_per_worker
+    num_workers_total = group_scaling.num_gpus // scheduling.num_gpu_slots_per_worker
     assert num_workers_total % scheduling.num_workers_per_cell == 0, (
         f"group '{server_group_config.worker_type.value}' has {num_workers_total=} which is not a whole number of "
         f"{scheduling.num_workers_per_cell}-worker engines; the trailing engine would have no node to run its "
@@ -412,6 +422,7 @@ def _compute_spec_inference_engine(
         args=args,
         model_cfg=model_cfg,
         server_group_config=server_group_config,
+        group_scaling=group_scaling,
         interpreter_prefix=python_argv_prefix(),
         name=compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index),
         category=POOL_CATEGORY_INFERENCE_ENGINE,
@@ -444,7 +455,7 @@ def _compute_spec_inference_engine(
                 needs_offload=server_group_config.needs_offload,
                 update_weights=model_cfg.update_weights,
             ),
-            gpu_offset_base=server_group_config.gpu_offset,
+            gpu_offset_base=group_scaling.gpu_offset,
             gpu_offset_stride_per_cell=scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker,
         ),
     )

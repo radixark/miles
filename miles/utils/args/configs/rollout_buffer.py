@@ -9,6 +9,23 @@ class RolloutBufferConfig(BaseConfig):
     ] = -1
     min_batch_collection_ratio: A[float, Arg(help="Minimum batch collection ratio")] = 1
     rollout_task_type: A[str, Arg()] = "math"
+    data_pad_size_multiplier: A[
+        int,
+        Arg(help="Multiplier for data padding size in data processing."),
+    ] = 128
+    disable_rollout_trim_samples: A[
+        bool,
+        Arg(help="disable trim samples in rollout buffer when converting samples to train data"),
+    ] = False
+    use_dynamic_global_batch_size: A[
+        bool,
+        Arg(
+            help="enable dynamic global batch size, disable trim samples in rollout buffer when converting samples to train data"
+        ),
+    ] = False
+
+
+class RolloutBufferRolloutOnlyConfig(BaseConfig):
     loss_mask_type: A[
         str,
         Arg(
@@ -16,10 +33,6 @@ class RolloutBufferConfig(BaseConfig):
             help="Loss mask type",
         ),
     ] = "qwen"
-    data_pad_size_multiplier: A[
-        int,
-        Arg(help="Multiplier for data padding size in data processing."),
-    ] = 128
     rollout_sample_filter_path: A[
         str | None,
         Arg(
@@ -42,13 +55,3 @@ class RolloutBufferConfig(BaseConfig):
             )
         ),
     ] = None
-    disable_rollout_trim_samples: A[
-        bool,
-        Arg(help="disable trim samples in rollout buffer when converting samples to train data"),
-    ] = False
-    use_dynamic_global_batch_size: A[
-        bool,
-        Arg(
-            help="enable dynamic global batch size, disable trim samples in rollout buffer when converting samples to train data"
-        ),
-    ] = False
