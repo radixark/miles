@@ -184,17 +184,20 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         group_abs_start = rollout_pg_offset + gpu_offset
         needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
 
+        num_gpus_per_engine = x if (x := raw.num_gpus_per_engine) is not None else default_gpus_per_engine
+        overrides = {
+            "model_path": default_model_path,
+            **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
+            **raw.overrides,
+        }
+
         ans = cls(
             worker_type=raw.worker_type,
             num_gpus=raw.num_gpus,
-            num_gpus_per_engine=x if (x := raw.num_gpus_per_engine) is not None else default_gpus_per_engine,
+            num_gpus_per_engine=num_gpus_per_engine,
             gpu_offset=gpu_offset,
             engine_offset=offset_cursor.engine,
-            overrides={
-                "model_path": default_model_path,
-                **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
-                **raw.overrides,
-            },
+            overrides=overrides,
             needs_offload=needs_offload,
         )
 
