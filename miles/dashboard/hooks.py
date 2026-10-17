@@ -22,6 +22,8 @@ from miles.dashboard.store import (
     EngineInfo,
     PhaseEvent,
     Role,
+    SandboxEvent,
+    SandboxStage,
     TopologySnapshot,
     TrajectoryEvent,
     TrajectoryEventKind,
@@ -360,6 +362,41 @@ def report_data_buffer(length: int | None) -> None:
         handle.push_data_buffer.remote(DataBufferSample(ts=time.time(), length=length))
     except Exception:
         _warner.warn("dashboard data-buffer report failed")
+
+
+def report_sandbox_event(
+    trial_id: str,
+    stage: SandboxStage,
+    *,
+    task: str = "",
+    exception_type: str | None = None,
+    provider: str | None = None,
+    sandbox_id: str | None = None,
+    reward: float | None = None,
+) -> None:
+    """Record one sandbox lifecycle step for the dashboard's Sandboxes view.
+
+    Meant to be called from agent / custom generate functions running in the
+    rollout manager process; a no-op when the dashboard is disabled there."""
+    from miles.dashboard import backend
+
+    handle = backend.current_collector()
+    if handle is None:
+        return
+    try:
+        event = SandboxEvent(
+            ts=time.time(),
+            trial_id=trial_id,
+            task=task,
+            stage=SandboxStage(stage).value,
+            exception_type=exception_type,
+            provider=provider,
+            sandbox_id=sandbox_id,
+            reward=reward,
+        )
+        handle.push_sandbox_events.remote([event])
+    except Exception:
+        _warner.warn("dashboard sandbox event report failed")
 
 
 def _alive_engine_cells(servers) -> list:

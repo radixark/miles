@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -29,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 
 from miles.dashboard.advisory import DEFAULT_LOW_MFU, compute_advisories, mfu_summary
 from miles.dashboard.dump_reader import STEP_AGGREGATE_METRICS, DumpReader, DumpStillWriting
+from miles.dashboard.sandbox_status import sandbox_status
 from miles.dashboard.store import MetricStore, Stream
 
 DUMP_METRIC_PREFIX = "dump/"
@@ -109,6 +111,7 @@ def make_app(
                 has_tokenizer=(reader.dump_dir / "tokenizer").is_dir(),
                 has_timeline=store.has_stream(Stream.PHASES) or store.has_stream(Stream.GPU_UTIL),
                 has_engine_series=store.has_stream(Stream.ENGINE_SERIES),
+                has_sandbox_events=store.has_stream(Stream.SANDBOX_EVENTS),
                 max_window_s=MetricStore.MAX_WINDOW_S,
                 use_utilization_overview=use_utilization_overview,
             ),
@@ -236,6 +239,16 @@ def make_app(
             return dict(
                 series=store.engine_series(metric, t0=t0, t1=t1, max_points=max_points, per_dp_rank=per_dp_rank)
             )
+
+    @app.get("/api/sandboxes")
+    def sandboxes(stale_after_s: float = 600.0, bucket_s: float = 60.0):
+        with _translate_errors():
+            if stale_after_s <= 0 or bucket_s <= 0:
+                raise ValueError(f"{stale_after_s=} and {bucket_s=} must be positive")
+            events = store.records[Stream.SANDBOX_EVENTS]
+            # a finished run is judged at its last event, not at viewing time
+            now = time.time() if follow or not events else max(event.ts for event in events)
+            return sandbox_status(events, now=now, stale_after_s=stale_after_s, bucket_s=bucket_s)
 
     @app.get("/api/timeline/bubbles")
     def timeline_bubbles():

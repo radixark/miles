@@ -38,6 +38,8 @@ from miles.dashboard.store import (
     MetricStore,
     PhaseEvent,
     Role,
+    SandboxEvent,
+    SandboxStage,
     TopologySnapshot,
     TrajectoryEvent,
     TrajectoryEventKind,
@@ -116,6 +118,37 @@ def _trajectory_events(store: MetricStore, truth: DummyTelemetryTruth, samples_p
                 emit(TrajectoryEventKind.GEN_START, start + 9.0, turn=2, version=bumped)
                 emit(TrajectoryEventKind.GEN_END, start + 14.0, turn=2, version=bumped)
             emit(TrajectoryEventKind.ATTEMPT_END, start + (15.0 if agentic else 7.0), detail="completed")
+
+
+def _sandbox_events(store: MetricStore, truth: DummyTelemetryTruth, samples_per_step: int) -> None:
+    """Some trials fail with one of two exception types; the first trial never finishes."""
+    for step in range(truth.steps):
+        rollout_t0, rollout_t1 = truth.rollout_interval(step)
+        for i in range(samples_per_step):
+            trial_id = f"trial-{step}-{i}"
+            t0 = rollout_t0 + (rollout_t1 - rollout_t0) * i / samples_per_step
+            stages = [SandboxStage.CREATED, SandboxStage.SETUP_DONE, SandboxStage.AGENT_STARTED]
+            stuck = step == 0 and i == 0
+            exception_type = (
+                "SandboxTimeoutError" if i % 8 == 7 else "ConnectionResetError" if i % (5 + step) == 2 else None
+            )
+            if exception_type and not stuck:
+                stages.append(SandboxStage.FAILED)
+            elif not stuck:
+                stages += [SandboxStage.AGENT_DONE, SandboxStage.VERIFIER_DONE, SandboxStage.TORN_DOWN]
+            for k, stage in enumerate(stages):
+                store.append(
+                    SandboxEvent(
+                        ts=t0 + k,
+                        trial_id=trial_id,
+                        task=f"task-{i % 4}",
+                        stage=stage.value,
+                        exception_type=exception_type if stage == SandboxStage.FAILED else None,
+                        provider="docker",
+                        sandbox_id=f"sbx-{step}-{i}",
+                        reward=1.0 if stage == SandboxStage.VERIFIER_DONE else None,
+                    )
+                )
 
 
 def dump_dummy_telemetry(
@@ -261,5 +294,6 @@ def dump_dummy_telemetry(
                 )
 
     _trajectory_events(store, truth, samples_per_step)
+    _sandbox_events(store, truth, samples_per_step)
     store.flush()
     return truth

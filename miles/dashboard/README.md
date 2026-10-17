@@ -61,6 +61,49 @@ Views:
   first generated token, + a selectable metric-vs-position chart, loss-masked
   regions dimmed).
 
+- **Sandboxes** — shown once an agent function reports sandbox events (see
+  below): trials per current stage, failures per exception type over time,
+  and stale trials (no event for longer than a configurable number of
+  minutes, also settable as `#/sandboxes?stale_min=N`; for a finished run,
+  measured from its last event).
+
+## Report sandbox events
+
+Agentic rollouts that run each trial in a sandbox can make the trial's
+lifecycle visible by calling `report_sandbox_event` from the agent / custom
+generate function. The call is fire-and-forget and a no-op when the
+dashboard is disabled. It works with any sandbox backend: `provider` and
+`sandbox_id` are free-form labels, and miles never talks to the provider.
+
+```python
+from miles.dashboard.hooks import report_sandbox_event
+from miles.dashboard.store import SandboxStage
+
+
+async def run_trial(trial_id: str, task: str, env) -> float:
+    report_sandbox_event(trial_id, SandboxStage.CREATED, task=task, provider=env.name, sandbox_id=env.id)
+    try:
+        await env.setup()
+        report_sandbox_event(trial_id, SandboxStage.SETUP_DONE, task=task)
+        report_sandbox_event(trial_id, SandboxStage.AGENT_STARTED, task=task)
+        await run_agent(env)
+        report_sandbox_event(trial_id, SandboxStage.AGENT_DONE, task=task)
+        reward = await verify(env)
+        report_sandbox_event(trial_id, SandboxStage.VERIFIER_DONE, task=task, reward=reward)
+    except Exception as e:
+        await env.close()
+        report_sandbox_event(trial_id, SandboxStage.FAILED, task=task, exception_type=type(e).__name__)
+        raise
+    await env.close()
+    report_sandbox_event(trial_id, SandboxStage.TORN_DOWN, task=task)
+    return reward
+```
+
+A trial's current stage is its latest event, so a failed trial reports
+`FAILED` after its teardown. Events land in
+`{dump-details}/dashboard/sandbox_events.jsonl`; `/api/sandboxes` serves the
+aggregate (`stale_after_s`, `bucket_s` query parameters).
+
 ## Develop
 
 ```bash

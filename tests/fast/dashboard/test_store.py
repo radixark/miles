@@ -11,6 +11,7 @@ from miles.dashboard.store import (
     MetricsRecord,
     MetricStore,
     PhaseEvent,
+    SandboxEvent,
     Stream,
     TopologySnapshot,
     TrajectoryEvent,
@@ -49,6 +50,9 @@ def _one_of_each() -> list:
         EngineSample(ts=10.6, addr="http://10.0.0.2:15000", metric="sglang_num_running_reqs", labels={}, value=42.0),
         GpuProcessSample(ts=10.8, node="10.0.0.2", gpu=0, pid=4321, name="sglang", mem_mb=40960),
         DataBufferSample(ts=10.9, length=5),
+        SandboxEvent(
+            ts=11.0, trial_id="t-1", task="task", stage="failed", exception_type="OSError", provider="docker"
+        ),
     ]
 
 

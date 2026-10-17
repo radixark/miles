@@ -1,6 +1,7 @@
 import { getMeta } from "./api.js";
 import { renderMetrics } from "./views_metrics.js";
 import { renderRollout } from "./views_rollout.js";
+import { renderSandboxes } from "./views_sandboxes.js";
 import { renderTimeline } from "./views_timeline.js";
 import { renderTokens } from "./views_tokens.js";
 
@@ -46,6 +47,9 @@ function parseRoute() {
   if (segments[0] === "timeline") {
     return { view: "timeline", lanes: params.get("lanes") };
   }
+  if (segments[0] === "sandboxes") {
+    return { view: "sandboxes", staleMinutes: params.get("stale_min") };
+  }
   if (segments[0] === "rollout" && segments.length >= 2) {
     const evaluation = params.get("eval") === "1";
     // "latest" is resolved against the dump at render time rather than baked
@@ -85,6 +89,9 @@ function crumbs(route, meta) {
       location.replace("#/rollout/latest");
     };
     parts.push(nav("Rollouts", "#/rollout/latest", onRollout, onRollout ? replaceInPlace : null));
+  }
+  if (meta.capabilities.has_sandbox_events) {
+    parts.push(nav("Sandboxes", "#/sandboxes", route.view === "sandboxes"));
   }
   if ((route.view === "rollout" || route.view === "tokens") && route.rolloutId !== null) {
     const evalSuffix = route.evaluation ? "?eval=1" : "";
@@ -128,6 +135,7 @@ async function render() {
     if (route.view === "metrics") await renderMetrics(view, meta);
     else if (route.view === "timeline") await renderTimeline(view, meta, route);
     else if (route.view === "rollout") await renderRollout(view, meta, route);
+    else if (route.view === "sandboxes") await renderSandboxes(view, meta, route);
     else await renderTokens(view, meta, route);
   } catch (err) {
     view.replaceChildren(el("div", { class: "error" }, [String(err)]));

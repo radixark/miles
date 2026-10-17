@@ -54,6 +54,7 @@ class Stream(StrEnum):
     TRAJECTORIES = "trajectories"
     GPU_PROCESSES = "gpu_processes"
     DATA_BUFFER = "data_buffer"
+    SANDBOX_EVENTS = "sandbox_events"
 
     @property
     def filename(self) -> str:
@@ -161,6 +162,33 @@ class DataBufferSample(Record):
     length: int
 
 
+class SandboxStage(StrEnum):
+    CREATED = "created"
+    SETUP_DONE = "setup_done"
+    AGENT_STARTED = "agent_started"
+    AGENT_DONE = "agent_done"
+    VERIFIER_DONE = "verifier_done"
+    TORN_DOWN = "torn_down"
+    FAILED = "failed"
+
+
+@dataclass
+class SandboxEvent(Record):
+    """One lifecycle step of one agent trial's sandbox, reported by the agent
+    function. Provider-neutral: ``provider`` and ``sandbox_id`` are free-form
+    labels, so any sandbox backend can report without miles knowing its SDK."""
+
+    stream: ClassVar[Stream] = Stream.SANDBOX_EVENTS
+    ts: float
+    trial_id: str
+    task: str
+    stage: str  # a SandboxStage value
+    exception_type: str | None = None
+    provider: str | None = None
+    sandbox_id: str | None = None
+    reward: float | None = None
+
+
 class TrajectoryEventKind(StrEnum):
     ATTEMPT_START = "attempt_start"
     GEN_START = "gen_start"
@@ -242,6 +270,7 @@ _RECORD_TYPE_OF_STREAM: dict[Stream, type[Record]] = {
         TrajectoryEvent,
         GpuProcessSample,
         DataBufferSample,
+        SandboxEvent,
     )
 }
 

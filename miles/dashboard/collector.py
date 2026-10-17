@@ -40,6 +40,7 @@ from miles.dashboard.store import (
     MetricStore,
     PhaseEvent,
     Record,
+    SandboxEvent,
     TopologySnapshot,
     TrajectoryEvent,
 )
@@ -204,6 +205,10 @@ class DashboardCollector:
             self._append(event)
 
     def push_trajectories(self, batch: list[TrajectoryEvent]) -> None:
+        for event in batch:
+            self._append(event)
+
+    def push_sandbox_events(self, batch: list[SandboxEvent]) -> None:
         for event in batch:
             self._append(event)
 
