@@ -185,7 +185,21 @@ SGLANG_ARGS=(
 
 The launcher sets the required env vars for you: `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, `SGLANG_HEALTH_CHECK_TIMEOUT=120`, `SGLANG_DG_CACHE_DIR_PER_PROCESS=1`, and `SGLANG_OPT_FP8_WO_A_GEMM=0`. Because `--train-deterministic` defaults to on, a stock run also gets `--deterministic-mode` plus `NCCL_ALGO=Ring`, `NVTE_ALLOW_NONDETERMINISTIC_ALGO=0` and `CUBLAS_WORKSPACE_CONFIG=:4096:8`; pass `--no-train-deterministic` to drop those four.
 
-On the Megatron side, V4 needs `--qkv-format bshd` with CP-aware data slicing. The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
+On the Megatron side, V4 needs `--qkv-format bshd` with CP-aware data slicing. With `--dsv4-impl miles`, `--dsa-attention-backend {tilelang,cake}` picks the indexer + sparse-attention kernels: `tilelang` (default) runs the per-sample TileLang kernels, `cake` the generated deterministic kernels in `miles/kernels/attention/dsa/cake` (Blackwell SM100a / SM103a) — the batched indexer in one launch, `bshd` sparse attention with the FP32 attention sink, and bit-identical gradients across calls (`tests/e2e/megatron/test_deepseek_v4_flash_4layer_dsa_cake.py`). The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
+
+**Measured kernel speed of `--dsa-attention-backend cake`** at the DeepSeek-V4-Flash training shapes (64 attention heads, 512 selected + 128 window slots, `bshd`; `sbhd` indexer with compress ratio 4; `r` = query rows per rank). CUPTI device time of the kernel launches, cold L2, median; ratio = TileLang time / cake time, > 1 = cake faster. The forward runs the tcgen05 stages on 16 / 32 / 64 local heads; the backward runs a tcgen05 rows kernel on 64 local heads (one CTA per query row, the key-side gradient accumulated over the heads in tensor memory) and the register-MMA rows kernels otherwise, and reduces its key-side partials with a fixed 4-way FP32 tree (no floating-point atomics), so both stay bit-deterministic run to run.
+
+| kernel | local heads | B200 r2048 / r4096 | GB300 r2048 / r4096 | numerics vs the register-MMA stages |
+|---|---|---|---|---|
+| attention fwd | 64 (TP 1) | 3.88x / 3.93x | 4.25x / 4.14x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
+| attention fwd | 32 (TP 2) | 2.09x / 2.06x | 2.36x / 2.27x | fixed-order FP32 |
+| attention fwd | 16 (TP 4) | 1.54x / 1.52x | 1.80x / 1.71x | fixed-order FP32 |
+| attention bwd | 64 (TP 1) | 1.95x / 1.77x | 1.76x / 1.73x | fixed-order FP32 (tcgen05 rows kernel: dKV over the 64 heads in tensor memory; delta kernel) |
+| attention bwd | 32 (TP 2) | 1.44x / 1.14x | 1.26x / 1.08x | fixed-order FP32 (delta kernel; dq / dkv rows kernels bit-identical) |
+| attention bwd | 16 (TP 4) | 1.55x / 1.13x | 1.29x / 1.04x | fixed-order FP32 |
+| indexer logits (`sbhd`) | 64 index heads | 1.43x / 1.47x | 1.44x / 1.48x | bit-identical (sources unchanged) |
+
+Every shape is faster than TileLang on both architectures. `tests/manual/kernels/dsa/bench_dsa_backends.py` reproduces the comparison with its own timer.
 
 ### 5.4 Optimizer
 
