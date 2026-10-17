@@ -82,6 +82,8 @@ class TransferBuffers:
 def _wait_for_healthy_cells(pending_writes: list[PendingWrite], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     for write in pending_writes:
+        if write.cell_updater.is_errored:
+            continue
         try:
             write.future.result(timeout=max(0, deadline - time.monotonic()))
         except Exception as error:
