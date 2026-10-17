@@ -10,6 +10,7 @@ from pydantic import Discriminator, Field, model_validator
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
 from miles.utils.test_utils.fault_injector.actions.frozen import SleepForeverAction
+from miles.utils.test_utils.fault_injector.actions.process import DeadlockThreadAction
 from miles.utils.test_utils.fault_injector.actions.union import FaultAction
 
 
@@ -87,8 +88,8 @@ class FaultHookRequest(FrozenStrictBaseModel):
 
     @model_validator(mode="after")
     def _validate_delay(self) -> "FaultHookRequest":
-        if isinstance(self.action, SleepForeverAction) and self.delay_ms > 0:
-            raise ValueError("Training-thread indefinite sleep requires immediate hook execution")
+        if isinstance(self.action, (DeadlockThreadAction, SleepForeverAction)) and self.delay_ms > 0:
+            raise ValueError("Training-thread deadlock or indefinite sleep requires immediate hook execution")
         return self
 
     @model_validator(mode="after")
