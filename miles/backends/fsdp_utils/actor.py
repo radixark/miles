@@ -120,6 +120,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         )
 
         self.model = model
+        self.position_ids_builder = self.arch_adapter.position_ids_builder(self.model)
 
         if args.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()

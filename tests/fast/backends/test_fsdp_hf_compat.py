@@ -471,6 +471,348 @@ def test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs(monkeypat
     assert "seq_idx" not in call
 
 
+_TINY_QWEN3_VL_TEXT = dict(
+    vocab_size=64,
+    hidden_size=32,
+    intermediate_size=64,
+    num_hidden_layers=2,
+    num_attention_heads=4,
+    num_key_value_heads=2,
+    head_dim=8,
+    rope_scaling={"rope_type": "default", "mrope_section": [1, 1, 2], "mrope_interleaved": True},
+)
+_TINY_QWEN3_VL_VISION = dict(
+    depth=2,
+    hidden_size=16,
+    intermediate_size=32,
+    num_heads=2,
+    patch_size=2,
+    temporal_patch_size=2,
+    spatial_merge_size=2,
+    in_channels=3,
+    out_hidden_size=32,
+    num_position_embeddings=16,
+    deepstack_visual_indexes=[0],
+)
+_IMAGE_TOKEN_ID = 60
+_IMAGE_GRID = (1, 4, 4)
+
+
+@pytest.fixture(scope="module")
+def tiny_qwen3_vl():
+    from transformers import Qwen3VLConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
+
+    cfg = Qwen3VLConfig(
+        text_config=_TINY_QWEN3_VL_TEXT,
+        vision_config=_TINY_QWEN3_VL_VISION,
+        image_token_id=_IMAGE_TOKEN_ID,
+        video_token_id=61,
+        vision_start_token_id=62,
+        vision_end_token_id=63,
+    )
+    torch.manual_seed(0)
+    model = Qwen3VLForConditionalGeneration(cfg).eval()
+    model.config.text_config._attn_implementation = "eager"
+    model.config.vision_config._attn_implementation = "eager"
+    return model
+
+
+def _image_document(seed):
+    torch.manual_seed(seed)
+    t, h, w = _IMAGE_GRID
+    merge = _TINY_QWEN3_VL_VISION["spatial_merge_size"]
+    placeholders = [_IMAGE_TOKEN_ID] * (t * (h // merge) * (w // merge))
+    tokens = torch.tensor([1, 2, 3, 62, *placeholders, 63, 4, 5])
+    mm_inputs = {
+        "pixel_values": torch.randn(t * h * w, _TINY_QWEN3_VL_VISION["in_channels"] * 2 * 2 * 2),
+        "image_grid_thw": torch.tensor([_IMAGE_GRID]),
+    }
+    return tokens, mm_inputs
+
+
+def _hf_reference_logits(model, tokens, mm_inputs):
+    mm_token_type_ids = torch.zeros_like(tokens)
+    mm_token_type_ids[tokens == _IMAGE_TOKEN_ID] = 1
+    mm_token_type_ids[tokens == 61] = 2
+    with torch.no_grad():
+        return model(
+            input_ids=tokens.unsqueeze(0),
+            mm_token_type_ids=mm_token_type_ids.unsqueeze(0),
+            use_cache=False,
+            **mm_inputs,
+        ).logits
+
+
+def _on_cpu(monkeypatch):
+    from miles.backends.training_utils.data import context_parallel
+    from miles.backends.training_utils.data import rollout as data_utils
+
+    state = SimpleNamespace(cp=SimpleNamespace(rank=0, size=1), tp=SimpleNamespace(rank=0, size=1))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *_args, **_kwargs: self)
+    monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: state)
+    return data_utils
+
+
+def test_qwen3_vl_position_ids_run_mrope_on_every_packed_document(tiny_qwen3_vl, monkeypatch):
+    data_utils = _on_cpu(monkeypatch)
+
+    first_tokens, first_mm = _image_document(seed=1)
+    second_tokens, second_mm = _image_document(seed=2)
+    text_tokens = torch.tensor([7, 8, 9, 10, 11])
+    documents = [first_tokens, second_tokens, text_tokens]
+    rollout = {
+        "tokens": documents,
+        "loss_masks": [torch.ones(2, dtype=torch.int) for _ in documents],
+        "total_lengths": [d.numel() for d in documents],
+        "response_lengths": [2] * len(documents),
+        "multimodal_train_inputs": [first_mm, second_mm, None],
+    }
+
+    actor = object.__new__(FSDPTrainRayActor)
+    actor.args = SimpleNamespace(data_pad_size_multiplier=8, qkv_format="thd")
+    actor.arch_adapter = _adapter("qwen3_vl")
+    actor.position_ids_builder = actor.arch_adapter.position_ids_builder(tiny_qwen3_vl)
+
+    iterator = data_utils.DataIterator(rollout, micro_batch_size=len(documents))
+    (batch,) = actor._fetch_batches(range(1), iterator, list(rollout))
+    with torch.no_grad():
+        logits = tiny_qwen3_vl(**actor._get_model_inputs_args(batch)).logits
+
+    position_ids = batch["position_ids"]
+    packed_len = sum(len(document) for document in documents)
+    assert position_ids.shape == (4, 1, batch["tokens"].size(1))
+    assert position_ids[0, 0, :packed_len].tolist() == list(range(11)) * 2 + list(range(5))
+    assert not torch.equal(position_ids[1], position_ids[0])
+
+    start = 0
+    for tokens, mm_inputs in zip(documents, [first_mm, second_mm, {}], strict=True):
+        reference = _hf_reference_logits(tiny_qwen3_vl, tokens, mm_inputs)
+        assert torch.allclose(logits[:, start : start + tokens.numel()], reference, atol=1e-5), f"document at {start}"
+        start += tokens.numel()
+
+
+def test_the_linear_ramp_this_replaces_diverges_from_hf(tiny_qwen3_vl):
+    tokens, mm_inputs = _image_document(seed=1)
+
+    with torch.no_grad():
+        ramped = tiny_qwen3_vl(
+            input_ids=tokens.unsqueeze(0),
+            position_ids=torch.arange(tokens.numel()).unsqueeze(0),
+            use_cache=False,
+            **mm_inputs,
+        ).logits
+
+    assert (ramped - _hf_reference_logits(tiny_qwen3_vl, tokens, mm_inputs)).abs().max() > 1e-2
+
+
+def _media_document(spec):
+    merge = _TINY_QWEN3_VL_VISION["spatial_merge_size"]
+    patch_dim = _TINY_QWEN3_VL_VISION["in_channels"] * 2 * 2 * 2
+    tokens, mm_inputs = [1, 2], {}
+    for token_id, pixel_key, grid_key, grids in spec:
+        for t, h, w in grids:
+            for _ in range(t):
+                tokens += [62, *([token_id] * ((h // merge) * (w // merge))), 63, 9]
+        mm_inputs[grid_key] = torch.tensor(grids)
+        mm_inputs[pixel_key] = torch.randn(sum(t * h * w for t, h, w in grids), patch_dim)
+    return torch.tensor(tokens), mm_inputs
+
+
+_TWO_IMAGES = [(_IMAGE_TOKEN_ID, "pixel_values", "image_grid_thw", [(1, 4, 4), (1, 2, 4)])]
+_ONE_VIDEO = [(61, "pixel_values_videos", "video_grid_thw", [(2, 4, 4)])]
+
+
+@pytest.mark.parametrize(
+    "spec", [_TWO_IMAGES, _ONE_VIDEO, _TWO_IMAGES + _ONE_VIDEO], ids=["two images", "a video", "both"]
+)
+def test_qwen3_vl_position_ids_match_hf_for_every_media_layout(tiny_qwen3_vl, spec):
+    torch.manual_seed(5)
+    tokens, mm_inputs = _media_document(spec)
+
+    rows = _adapter("qwen3_vl").position_ids_builder(tiny_qwen3_vl)(tokens, mm_inputs)
+    with torch.no_grad():
+        logits = tiny_qwen3_vl(
+            input_ids=tokens.unsqueeze(0), position_ids=rows.unsqueeze(1), use_cache=False, **mm_inputs
+        ).logits
+
+    assert torch.allclose(logits, _hf_reference_logits(tiny_qwen3_vl, tokens, mm_inputs), atol=1e-5)
+
+
+def test_a_text_only_qwen3_vl_document_keeps_the_linear_ramp(tiny_qwen3_vl):
+    rows = _adapter("qwen3_vl").position_ids_builder(tiny_qwen3_vl)(torch.arange(5) + 7, None)
+
+    assert torch.equal(rows, torch.arange(5).expand(4, -1))
+
+
+def test_qwen3_vl_rejects_grids_that_disagree_with_the_placeholders(tiny_qwen3_vl):
+    tokens, mm_inputs = _image_document(seed=1)
+    understated = {**mm_inputs, "image_grid_thw": torch.tensor([[1, 2, 2]])}
+
+    with pytest.raises(RuntimeError):
+        _adapter("qwen3_vl").position_ids_builder(tiny_qwen3_vl)(tokens, understated)
+
+
+_MROPE_MODEL_TYPES = (
+    "qwen2_vl", "qwen2_5_vl", "qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe",
+    "glm4v", "glm4v_moe", "glm46v", "glmga", "glm_ocr", "paddleocr_vl", "ernie4_5_vl_moe", "cosmos3_omni",
+)  # fmt: skip
+
+
+def test_only_archs_with_a_vision_tower_build_their_own_position_ids():
+    for model_type in _MROPE_MODEL_TYPES:
+        assert _adapter(model_type).position_ids_builder(SimpleNamespace(model=None)) is not None, model_type
+    text_only = ("qwen3_5_text", "qwen3_5_moe_text", "qwen3_next", "nemotron_h", "qwen3", "qwen3_moe", "some_lm")
+    for model_type in (*text_only, "glm4_moe_lite"):
+        assert _adapter(model_type).position_ids_builder(SimpleNamespace(model=None)) is None, model_type
+
+
+_TINY_QWEN3_5_MROPE_TEXT = dict(
+    _TINY_QWEN3_5_TEXT,
+    hidden_size=32,
+    num_attention_heads=4,
+    num_key_value_heads=2,
+    head_dim=16,
+    linear_key_head_dim=8,
+    linear_value_head_dim=8,
+    rope_parameters={
+        "rope_type": "default",
+        "rope_theta": 10000.0,
+        "partial_rotary_factor": 0.5,
+        "mrope_section": [2, 1, 1],
+        "mrope_interleaved": True,
+    },
+)
+
+
+def _tiny_qwen3_5(model_type):
+    from transformers import Qwen3_5Config, Qwen3_5MoeConfig
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForConditionalGeneration
+
+    if model_type == "qwen3_5_moe":
+        config_cls, model_cls = Qwen3_5MoeConfig, Qwen3_5MoeForConditionalGeneration
+        text_config = dict(
+            _TINY_QWEN3_5_MROPE_TEXT,
+            num_experts=4,
+            num_experts_per_tok=2,
+            moe_intermediate_size=16,
+            shared_expert_intermediate_size=16,
+        )
+    else:
+        config_cls, model_cls, text_config = Qwen3_5Config, Qwen3_5ForConditionalGeneration, _TINY_QWEN3_5_MROPE_TEXT
+    cfg = config_cls(
+        text_config=text_config,
+        vision_config=dict(_TINY_QWEN3_VL_VISION, depth=1, deepstack_visual_indexes=[]),
+        image_token_id=_IMAGE_TOKEN_ID,
+        video_token_id=61,
+        vision_start_token_id=62,
+        vision_end_token_id=63,
+    )
+    torch.manual_seed(0)
+    model = model_cls(cfg).eval()
+    model.config.text_config._attn_implementation = "eager"
+    model.config.vision_config._attn_implementation = "eager"
+    return model
+
+
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
+def test_qwen3_5_takes_the_same_mrope_fix(model_type):
+    model = _tiny_qwen3_5(model_type)
+    tokens, mm_inputs = _image_document(seed=3)
+
+    rows = _adapter(model_type).position_ids_builder(model)(tokens, mm_inputs)
+    with torch.no_grad():
+        fixed = model(input_ids=tokens.unsqueeze(0), position_ids=rows.unsqueeze(1), use_cache=False, **mm_inputs)
+        ramped = model(
+            input_ids=tokens.unsqueeze(0),
+            position_ids=torch.arange(tokens.numel()).unsqueeze(0),
+            use_cache=False,
+            **mm_inputs,
+        )
+    reference = _hf_reference_logits(model, tokens, mm_inputs)
+
+    assert torch.equal(fixed.logits, reference)
+    assert (ramped.logits - reference).abs().max() > 1e-3
+
+
+_TINY_VIDEO_VISION = dict(
+    depth=1, hidden_size=32, intermediate_size=32, num_heads=4, patch_size=14, temporal_patch_size=2,
+    spatial_merge_size=1, in_channels=3, out_hidden_size=32,
+)  # fmt: skip
+
+
+def _tiny_video_model(model_type):
+    from transformers import Glm4vConfig, Qwen2_5_VLConfig
+    from transformers.models.glm4v.modeling_glm4v import Glm4vForConditionalGeneration
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+
+    text = dict(
+        vocab_size=99, hidden_size=32, intermediate_size=37, num_hidden_layers=2, num_attention_heads=4,
+        num_key_value_heads=2, rope_parameters={"rope_type": "default", "rope_theta": 10000, "mrope_section": [2, 1, 1]},
+    )  # fmt: skip
+    if model_type == "qwen2_5_vl":
+        cfg = Qwen2_5_VLConfig(
+            text_config=text,
+            vision_config=dict(_TINY_VIDEO_VISION, window_size=112, fullatt_block_indexes=[0], tokens_per_second=2),
+            image_token_id=4, video_token_id=5, vision_start_token_id=3, vision_end_token_id=6,
+        )  # fmt: skip
+        model_cls = Qwen2_5_VLForConditionalGeneration
+    else:
+        cfg = Glm4vConfig(
+            text_config=text,
+            vision_config=dict(_TINY_VIDEO_VISION, image_size=336),
+            image_token_id=7, video_token_id=8, image_start_token_id=5, image_end_token_id=6,
+            video_start_token_id=3, video_end_token_id=4,
+        )  # fmt: skip
+        model_cls = Glm4vForConditionalGeneration
+    torch.manual_seed(0)
+    model = model_cls(cfg).eval()
+    for sub in (model.config, model.config.text_config, model.config.vision_config):
+        sub._attn_implementation = "eager"
+    return model
+
+
+def _video_document(model_type):
+    torch.manual_seed(2)
+    video_grid = (2, 2, 4)
+    patch_dim = 3 * 2 * 14 * 14
+    frame_tokens = video_grid[1] * video_grid[2]
+    media = {
+        "pixel_values_videos": torch.randn(video_grid[0] * video_grid[1] * video_grid[2], patch_dim),
+        "video_grid_thw": torch.tensor([video_grid]),
+    }
+    if model_type == "qwen2_5_vl":
+        image, video = 4, 5
+        tokens = [1, 2, 3, *[image] * 8, 6, 9, 3, *[video] * (video_grid[0] * frame_tokens), 6, 10]
+        mm_types = [1 if t == image else 2 if t == video else 0 for t in tokens]
+        media |= {"pixel_values": torch.randn(8, patch_dim), "image_grid_thw": torch.tensor([(1, 2, 4)])}
+        media |= {"second_per_grid_ts": torch.tensor([0.5])}
+    else:
+        image, start, end = 7, 3, 4
+        tokens, mm_types = [1, 2, start], [0, 0, 0]
+        for _ in range(video_grid[0]):
+            tokens += [5, *[image] * frame_tokens, 6, 11]
+            mm_types += [0, *[2] * frame_tokens, 0, 0]
+        tokens, mm_types = tokens + [end, 10], mm_types + [0, 0]
+    return torch.tensor(tokens), torch.tensor(mm_types), media
+
+
+@pytest.mark.parametrize("model_type", ["qwen2_5_vl", "glm4v"])
+def test_video_positions_match_hf_where_the_families_lay_videos_out_differently(model_type):
+    model = _tiny_video_model(model_type)
+    tokens, mm_types, media = _video_document(model_type)
+
+    rows = _adapter(model_type).position_ids_builder(model)(tokens, media)
+    with torch.no_grad():
+        fixed = model(input_ids=tokens[None], position_ids=rows[:, None], use_cache=False, **media).logits
+        reference = model(input_ids=tokens[None], mm_token_type_ids=mm_types[None], use_cache=False, **media).logits
+
+    assert torch.equal(fixed, reference)
+
+
 import transformers
 from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 from miles.backends.fsdp_utils.actor import FSDPTrainRayActor

@@ -101,3 +101,11 @@ class TestFSDPModelInputs:
         assert model_args["cu_seq_lens_q"] is batch["cu_seqlens"]
         assert model_args["max_length_q"] == 3
         assert model_args["seq_idx"].tolist() == [[0, 0, 0, 1, 1, 2, 2, 2]]
+
+
+class TestFSDPPositionIds:
+    def test_an_arch_without_a_builder_leaves_get_batch_on_its_ramp(self) -> None:
+        actor = object.__new__(actor_module.FSDPTrainRayActor)
+
+        assert actor.position_ids_builder is None
+        assert resolve_arch_adapter(SimpleNamespace(model_type="qwen3")).position_ids_builder(object()) is None
