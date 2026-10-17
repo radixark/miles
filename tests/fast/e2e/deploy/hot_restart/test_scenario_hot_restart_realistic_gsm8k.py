@@ -66,7 +66,6 @@ class TestTheRecipeIsTheOneFtConverges:
         """Hot restart uses the cell API for injection without combining with automatic FT recovery."""
         argv = shlex.split(
             gsm8k.get_gsm8k_train_args(
-                config=ExecuteTrainConfig(run_id="260101-000000-000", namespace="miles-e2e"),
                 seed=scenario.DEFAULT_SEED,
                 num_rollout=scenario.DEFAULT_NUM_ROLLOUT,
                 metric_threshold=scenario.DEFAULT_METRIC_THRESHOLD,
