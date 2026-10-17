@@ -35,7 +35,12 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.session import pause_engines, resume_engines, set_weight_version
+from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
+from miles.backends.training_utils.weight_update.session import (
+    maybe_pause_engines,
+    maybe_resume_engines,
+    set_weight_version,
+)
 from miles.utils import async_utils
 from miles.utils.function_registry import load_function
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, build_lora_config
@@ -100,6 +105,7 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
@@ -107,6 +113,7 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         assert placement.gather_pp, "http-lora needs the full adapter on one rank"
         assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
         self.rollout_engines = rollout_engines
+        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
         self._engine_gpu_counts = list(engine_gpu_counts)
         self.is_sender = dist.get_rank() == 0
         self._adapter.clear()
@@ -134,15 +141,16 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
 
         # The unload fallback waits for in-flight requests to finish, which a paused engine never does.
         should_pause = self._upsert_supported is not False
+        cell_updaters = list(self.cell_updaters_of_cell_id.values())
         start = time.perf_counter()
         try:
             if should_pause:
-                pause_engines(self.args, engines)
+                maybe_pause_engines(self.args, cell_updaters)
             self._load_everywhere(engines, adapter, adapter_dir)
-            set_weight_version(engines, weight_version)
+            set_weight_version(cell_updaters, weight_version)
         finally:
             if should_pause:
-                resume_engines(engines)
+                maybe_resume_engines(self.args, cell_updaters)
         load_s = time.perf_counter() - start
 
         if self._stage_root:
