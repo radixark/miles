@@ -12,7 +12,8 @@ from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
 from miles.kernels.attention.qsa import qsa_block_sparse_attention, qsa_sparse_attention
-from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout, Qwen38NextQSAIndexer
+from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import Qwen38NextQSAIndexer
+from miles_plugins.models.qwen3_8_next.ops.qsa_selection import build_block_form, merge_tail_and_clip
 
 
 class Qwen38NextQSACoreAttention(MegatronModule):
@@ -122,53 +123,13 @@ class Qwen38NextAttention(SelfAttention):
             raise RuntimeError("the QSA indexer reuses the attention RoPE, but no rotary_pos_emb was passed")
         with torch.no_grad():
             selection = self.indexer(indexer_states[:, 0], positions, rotary_pos_emb, cu_seqlens=self._qsa_cu_seqlens)
-            seq_start = torch.arange(seq, device=positions.device) - positions
-            r = self.compress_ratio
-            tail_in_seq = (positions + 1) // r * r
-            offs = torch.arange(r, device=positions.device)
-            tail_pos = tail_in_seq.unsqueeze(1) + offs.unsqueeze(0)  # in-seq
-            tail_idx = seq_start.unsqueeze(1) + tail_pos  # pack index
-            tail_idx = torch.where(
-                tail_pos <= positions.unsqueeze(1),
-                tail_idx,
-                torch.full_like(tail_idx, -1),
+            self._qsa_selection, seq_start = merge_tail_and_clip(selection, positions, self.compress_ratio)
+            self._qsa_block_form = build_block_form(
+                self._qsa_selection, positions, seq_start, self._qsa_cu_seqlens, self.compress_ratio
             )
-            merged = torch.cat([selection, tail_idx.to(selection.dtype)], dim=1)
-            pack_pos = torch.arange(seq, device=positions.device).unsqueeze(1)
-            seg_lo = seq_start.unsqueeze(1)
-            ok = (merged >= seg_lo) & (merged <= pack_pos) & (merged >= 0)
-            self._qsa_selection = torch.where(ok, merged, torch.full_like(merged, -1))
-            self._qsa_block_form = self._publish_block_form(self._qsa_selection, positions, seq_start, seq)
         try:
             return super().forward(hidden_states, *args, **kwargs)
         finally:
             self._qsa_selection = None
             self._qsa_cu_seqlens = None
             self._qsa_block_form = None
-
-    def _publish_block_form(self, selection: Tensor, positions: Tensor, seq_start: Tensor, seq: int):
-        """Selection rows -> the block form the tensor-core kernel consumes.
-
-        Block ids come from the indexer's per-sequence grid (``PackedBlockLayout``); a
-        ceil(seq_start / ratio) base collides across sequences for some lengths.
-        """
-        ratio = self.compress_ratio
-        cu = self._qsa_cu_seqlens
-        if cu is None or cu.numel() <= 2:
-            cu = torch.tensor([0, seq], device=selection.device)
-        layout = PackedBlockLayout(cu, positions, ratio)
-        blk_base = layout.token_block_start.to(torch.int32)
-        tok_base = layout.token_start.to(torch.int32)
-        num_blocks = layout.num_blocks
-
-        sel_bitmap = torch.zeros(seq, num_blocks, dtype=torch.uint8, device=selection.device)
-        valid = selection >= 0
-        if bool(valid.any()):
-            rows = torch.arange(seq, device=selection.device).unsqueeze(1).expand_as(selection)
-            blk = blk_base.unsqueeze(1).long() + (selection - tok_base.unsqueeze(1)).div(ratio, rounding_mode="floor")
-            sel_bitmap[rows[valid], blk[valid].long().clamp_(0, num_blocks - 1)] = 1
-        lo = tok_base
-        hi = (positions + seq_start).to(torch.int32)
-        block_first = layout.block_first_token.to(torch.int32)
-        block_last = layout.block_last_token.to(torch.int32)
-        return sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, ratio

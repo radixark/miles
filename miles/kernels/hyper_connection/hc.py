@@ -196,32 +196,40 @@ class _HCMixInject(torch.autograd.Function):
 
 
 class _HCCombine(torch.autograd.Function):
-    """out = residual + h_post[:, c, None] * y  (flattened [T, n*C])."""
+    """out = residual + h_post[..., c, None] * y.
+
+    Takes and returns the caller's shapes (``[..., n*C]``, ``[..., C]``, ``[..., n]``, all
+    contiguous): the kernels index flat memory, so no reshape is needed, and the output is
+    not a view. FSDP2 warns about a wrapped block returning a view, since an in-place op on
+    it would skip the pre-backward all-gather.
+    """
 
     @staticmethod
-    def forward(ctx, residual2d, y2d, h_post, n):
-        T, W = residual2d.shape
+    def forward(ctx, residual, y, h_post, n):
+        W = residual.shape[-1]
+        T = residual.numel() // W
         C = W // n
         ctx.h_post_dtype = h_post.dtype
         h_post = h_post.float().contiguous()
-        out = torch.empty_like(residual2d)
+        out = torch.empty_like(residual)
         if T > 0:
-            _combine_fwd_kernel[(T * n,)](residual2d, y2d, h_post, out, T, N=n, C=C, BLOCK_C=block_c(C))
-        ctx.save_for_backward(y2d, h_post)
+            _combine_fwd_kernel[(T * n,)](residual, y, h_post, out, T, N=n, C=C, BLOCK_C=block_c(C))
+        ctx.save_for_backward(y, h_post)
         ctx.n = n
         return out
 
     @staticmethod
     def backward(ctx, dout):
-        y2d, h_post = ctx.saved_tensors
+        y, h_post = ctx.saved_tensors
         n = ctx.n
-        T, W = dout.shape
+        W = dout.shape[-1]
+        T = dout.numel() // W
         C = W // n
         dout = dout.contiguous()
-        dy = torch.empty_like(y2d)
-        dh_post = torch.empty(T, n, dtype=torch.float32, device=dout.device)
+        dy = torch.empty_like(y)
+        dh_post = torch.empty(h_post.shape, dtype=torch.float32, device=dout.device)
         if T > 0:
-            _combine_bwd_kernel[(T,)](dout, y2d, h_post, dy, dh_post, T, N=n, C=C, BLOCK_C=block_c(C))
+            _combine_bwd_kernel[(T,)](dout, y, h_post, dy, dh_post, T, N=n, C=C, BLOCK_C=block_c(C))
         return dout, dy, dh_post.to(ctx.h_post_dtype), None
 
 
@@ -238,9 +246,4 @@ def hc_mix_inject(x, weight, w_down, w_up, w_inject, n: int, eps: float):
 
 def hc_combine(residual, block_output, h_post, n: int):
     """``X'_c = X_c + a_c * y`` -- fused elementwise."""
-    lead = residual.shape[:-1]
-    r2d = residual.reshape(-1, residual.shape[-1]).contiguous()
-    y2d = block_output.reshape(-1, block_output.shape[-1]).contiguous()
-    hp2d = h_post.reshape(-1, n)
-    out = _HCCombine.apply(r2d, y2d, hp2d, n)
-    return out.reshape(*lead, -1)
+    return _HCCombine.apply(residual.contiguous(), block_output.contiguous(), h_post, n)

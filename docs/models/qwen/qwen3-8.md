@@ -93,6 +93,25 @@ Measured on 1 × 8 H200 with the recipe below, `rollout-batch-size 32`,
 agree closely — see [True On-Policy](/examples/infra-features/true-on-policy) for what that
 metric does and does not tell you.
 
+### 4.3 On the torchtitan backend
+
+```bash
+cd /root/miles
+python scripts/run_qwen3_8_27b_torchtitan.py
+```
+
+torchtitan trains Qwen3.8-27B as its own `qwen3_5` / `27B` flavor, since the two models
+share a `config.json`, and loads the HF directory directly: no `torch_dist` conversion and
+no reference checkpoint (the recipe runs at `--kl-loss-coef 0`). Rollout, eval and SGLang
+settings are the Megatron recipe's, so the curves compare; the trainer is FSDP over the
+eight GPUs (`--tp-size` / `--pp-size` are available; context parallelism is not, for
+`qwen3_5`). torchtitan has no CPU optimizer, so the fp32 master weights and Adam state —
+about 54 GB per GPU — stay on the GPUs during training and sleep to host RAM for rollout.
+
+On 1 × 8 H200, step 0 and step 1 reported `train/train_rollout_logprob_abs_diff` 0.0104
+and 0.0105, matching the Megatron recipe's 0.010, with `rollout/raw_reward` 0.64 at
+step 0.
+
 ## 5. Recipe Configuration
 
 ### 5.1 Parallelism

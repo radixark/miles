@@ -40,7 +40,7 @@ def _patch_pipeline_schedule_microbatch_api() -> None:
             losses=None,
             return_outputs=True,
             loss_kwargs=None,
-            **kwargs
+            **kwargs,
         ):
             if arg_mbs is None and kwarg_mbs is None and target_mbs is None:
                 return original_step(
@@ -97,3 +97,22 @@ def _patch_fsdp2_grad_accumulation_attr_error() -> None:
 
     FSDPParam.to_accumulated_grad_if_needed = to_accumulated_grad_if_needed
     logger.info("Patched FSDPParam.to_accumulated_grad_if_needed with the upstream getattr guard")
+
+
+def drop_model_state_cache(trainer) -> None:
+    """Release the parameter storage torchtitan's checkpointer holds through its state-dict cache.
+
+    ``ModelWrapper.cached_state_dict`` keeps ``model.state_dict()``'s detached views, which
+    share storage with the parameters. Moving the parameters swaps their ``.data`` but the
+    cache keeps the old copy alive, so a sleeping trainer would leave its weights on the GPU.
+    The wrapper refills the cache the next time the state dict is read.
+    """
+    from torchtitan.components import checkpoint as titan_checkpoint
+
+    wrapper = trainer.checkpointer.states[titan_checkpoint.MODEL]
+    if not isinstance(getattr(wrapper, "cached_state_dict", None), dict):
+        raise RuntimeError(
+            f"{type(wrapper).__name__} no longer has a cached_state_dict dict; re-check whether this torchtitan "
+            "still pins moved parameters through its checkpointer before dropping this workaround"
+        )
+    wrapper.cached_state_dict.clear()

@@ -4,7 +4,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import apply_indexer_rope  # noqa: E402
+from miles_plugins.models.qwen3_8_next.ops.qsa_selection import apply_indexer_rope  # noqa: E402
 
 BASE = 1e7
 ROTARY_DIM = 64  # head_dim 256 * partial_rotary_factor 0.25

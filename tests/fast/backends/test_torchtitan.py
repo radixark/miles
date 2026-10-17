@@ -1,4 +1,6 @@
 import json
+import os
+import threading
 from argparse import Namespace
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -373,3 +375,228 @@ def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
 
     adapter = spec.state_dict_adapter(model, None)
     assert set(_GLM47_FLASH_CHECKPOINT_KEYS) <= set(adapter.from_hf_map)
+
+
+# Recorded from Qwen/Qwen3.8-Flash-Next config.json (text_config).
+_QWEN38_NEXT_HF_CONFIG = dict(
+    hidden_size=2560,
+    vocab_size=248320,
+    num_hidden_layers=48,
+    hc_count=4,
+    hc_lowrank=320,
+    num_attention_heads=24,
+    num_key_value_heads=2,
+    head_dim=256,
+    partial_rotary_factor=0.25,
+    rope_theta=10000000,
+    full_attention_interval=4,
+    num_experts=512,
+    num_experts_per_tok=10,
+    moe_intermediate_size=640,
+    shared_expert_intermediate_size=640,
+    ple_layer_ids=[2],
+    ngram_size=3,
+    heads_per_ngram=8,
+    indexer_budget=2048,
+    indexer_compress_ratio=4,
+    indexer_n_heads=4,
+    indexer_head_dim=128,
+    eos_token_id=248044,
+)
+
+# Recorded from the safetensors headers of CharyZeng/Qwen3.8-Flash-Next-4layer, per layer kind;
+# mtp.*, model.visual.* and the frozen ple_embedding.* are deliberately not loaded.
+_QWEN38_NEXT_HC_SHAPES = {
+    "block_inject_weight.weight": [4, 10240],
+    "hc_norm.weight": [10240],
+    "input_mix_weight_down.weight": [320, 10240],
+    "input_mix_weight_up.weight": [10240, 320],
+}
+_QWEN38_NEXT_LAYER_SHAPES = {
+    **{
+        f"{site}.{k}": v
+        for site in ("attn_hyper_connection", "mlp_hyper_connection")
+        for k, v in _QWEN38_NEXT_HC_SHAPES.items()
+    },
+    "mlp.experts.down_proj": [512, 2560, 640],
+    "mlp.experts.gate_up_proj": [512, 1280, 2560],
+    "mlp.gate.weight": [512, 2560],
+    "mlp.shared_expert.down_proj.weight": [2560, 640],
+    "mlp.shared_expert.gate_proj.weight": [640, 2560],
+    "mlp.shared_expert.up_proj.weight": [640, 2560],
+    "mlp.shared_expert_gate.weight": [1, 2560],
+}
+_QWEN38_NEXT_GDN_SHAPES = {
+    "linear_attn.A_log": [48],
+    "linear_attn.conv1d.weight": [10240, 1, 4],
+    "linear_attn.dt_bias": [48],
+    "linear_attn.in_proj_a.weight": [48, 2560],
+    "linear_attn.in_proj_b.weight": [48, 2560],
+    "linear_attn.in_proj_qkv.weight": [10240, 2560],
+    "linear_attn.in_proj_z.weight": [6144, 2560],
+    "linear_attn.norm.weight": [128],
+    "linear_attn.out_proj.weight": [2560, 6144],
+}
+_QWEN38_NEXT_QSA_SHAPES = {
+    "self_attn.indexer.index_qk_proj.weight": [640, 2560],
+    "self_attn.indexer.k_layernorm.weight": [128],
+    "self_attn.indexer.q_layernorm.weight": [128],
+    "self_attn.k_norm.weight": [256],
+    "self_attn.k_proj.weight": [512, 2560],
+    "self_attn.o_proj.weight": [2560, 6144],
+    "self_attn.q_norm.weight": [256],
+    "self_attn.q_proj.weight": [12288, 2560],
+    "self_attn.v_proj.weight": [512, 2560],
+}
+_QWEN38_NEXT_PLE_SHAPES = {
+    "ple.conv1d.weight": [10240, 1, 4],
+    "ple.key_proj.weight": [10240, 2560],
+    "ple.norm_conv.weight": [10240],
+    "ple.norm_key.weight": [10240],
+    "ple.norm_query.weight": [10240],
+    "ple.value_proj.weight": [2560, 2560],
+}
+_QWEN38_NEXT_GLOBAL_SHAPES = {
+    "lm_head.weight": [248320, 2560],
+    "model.language_model.embed_tokens.weight": [248320, 2560],
+    "model.language_model.hyper_connection_mixer.hc_norm.weight": [10240],
+    "model.language_model.hyper_connection_mixer.input_mix_weight_down.weight": [320, 10240],
+    "model.language_model.hyper_connection_mixer.input_mix_weight_up.weight": [10240, 320],
+}
+
+
+def _qwen38_next_checkpoint_shapes(n_layers: int) -> dict[str, list[int]]:
+    hf = _QWEN38_NEXT_HF_CONFIG
+    ple_layers = {i - 1 for i in hf["ple_layer_ids"]}
+    shapes = dict(_QWEN38_NEXT_GLOBAL_SHAPES)
+    for layer in range(n_layers):
+        full = (layer + 1) % hf["full_attention_interval"] == 0
+        suffixes = {
+            **_QWEN38_NEXT_LAYER_SHAPES,
+            **(_QWEN38_NEXT_QSA_SHAPES if full else _QWEN38_NEXT_GDN_SHAPES),
+            **(_QWEN38_NEXT_PLE_SHAPES if layer in ple_layers else {}),
+        }
+        shapes.update({f"model.language_model.layers.{layer}.{k}": v for k, v in suffixes.items()})
+    return shapes
+
+
+@pytest.mark.parametrize("flavor, n_layers", [("Flash-Next-4layer", 4), ("Flash-Next", 48)])
+def test_qwen3_8_flash_next_flavor_exports_exactly_the_checkpoint_shapes(flavor, n_layers):
+    pytest.importorskip("torchtitan")
+    pytest.importorskip("triton")
+    from miles.backends.torchtitan_utils.config import resolve_model_spec
+
+    spec = resolve_model_spec(_args(titan_model_name="qwen3_8_next", titan_model_flavor=flavor))
+    hf = _QWEN38_NEXT_HF_CONFIG
+    attention = spec.model.layers[hf["full_attention_interval"] - 1].attention
+    assert (attention.n_heads, attention.n_kv_heads, attention.head_dim) == (
+        hf["num_attention_heads"],
+        hf["num_key_value_heads"],
+        hf["head_dim"],
+    )
+    assert attention.rotary_dim == hf["head_dim"] * hf["partial_rotary_factor"]
+    assert attention.rope.theta == hf["rope_theta"] == attention.indexer_rope_theta
+    assert (attention.indexer_budget, attention.indexer_compress_ratio) == (
+        hf["indexer_budget"],
+        hf["indexer_compress_ratio"],
+    )
+    moe = spec.model.layers[0].moe
+    assert (moe.router.top_k, moe.router.score_func, moe.router.route_norm) == (
+        hf["num_experts_per_tok"],
+        "softmax",
+        True,
+    )
+    # sglang routes without an expert bias; torchtitan's default would learn one
+    assert moe.load_balance_coeff is None
+    assert [layer.ple is not None for layer in spec.model.layers] == [
+        i + 1 in hf["ple_layer_ids"] for i in range(n_layers)
+    ]
+
+    with torch.device("meta"):
+        model = spec.model.build()
+    exported = spec.state_dict_adapter(spec.model, None).to_hf(model.state_dict())
+    assert {k: list(v.shape) for k, v in exported.items()} == _qwen38_next_checkpoint_shapes(n_layers)
+
+    reloaded = spec.state_dict_adapter(spec.model, None).from_hf(exported)
+    assert set(reloaded) == {name for name, _ in model.named_parameters()}
+
+
+def _fake_ple_checkpoint(path, *, rows_per_shard=3, dim=4, shards=2):
+    from safetensors.torch import save_file
+
+    prefix = "model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_"
+    tensors = {
+        f"{prefix}{i}.weight": torch.arange(rows_per_shard * dim, dtype=torch.bfloat16).reshape(rows_per_shard, dim)
+        + i
+        for i in range(shards)
+    }
+    save_file(tensors, str(path / "model.safetensors"))
+    (path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {k: "model.safetensors" for k in tensors}})
+    )
+    return tensors
+
+
+@pytest.fixture
+def ple_module(tmp_path, monkeypatch):
+    pytest.importorskip("torchtitan")
+    pytest.importorskip("triton")
+    from miles.backends.torchtitan_utils.models.qwen3_8_next import ple
+
+    shm = tmp_path / "shm"
+    shm.mkdir()
+    monkeypatch.setattr(ple, "_SHM_DIR", str(shm))
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    return ple, ckpt, shm
+
+
+def test_qwen3_8_next_ple_table_is_written_once_and_superseded_when_the_checkpoint_changes(ple_module):
+    ple, ckpt, shm = ple_module
+    tensors = _fake_ple_checkpoint(ckpt)
+    shards = ple.ple_table_shards(str(ckpt), 1)
+    path = ple._shm_path(str(ckpt), 1, shards)
+    ple._materialize_once(path, shards, rows=6, dim=4)
+    table = torch.from_file(path, shared=False, size=24, dtype=torch.bfloat16).view(6, 4)
+    assert torch.equal(table, torch.cat(list(tensors.values())))
+
+    os.utime(ckpt / "model.safetensors", ns=(1, 1))  # the checkpoint's contents changed in place
+    new_path = ple._shm_path(str(ckpt), 1, ple.ple_table_shards(str(ckpt), 1))
+    assert new_path != path
+    ple._materialize_once(new_path, shards, rows=6, dim=4)
+    assert sorted(os.listdir(shm)) == [os.path.basename(new_path)]
+
+
+def test_qwen3_8_next_ple_waiters_fail_fast_when_the_writer_gives_up(ple_module):
+    ple, _, shm = ple_module
+    path = str(shm / "table.bf16")
+    open(f"{path}.lock", "w").close()
+    # the writer drops its lock without renaming the table into place
+    threading.Timer(0.5, os.remove, args=(f"{path}.lock",)).start()
+    with pytest.raises(RuntimeError, match="gave up"):
+        ple._wait_for_writer(path, f"{path}.lock")
+
+
+def test_qwen3_8_next_ple_truncated_shard_raises_and_leaves_no_temp_file(ple_module):
+    ple, ckpt, shm = ple_module
+    _fake_ple_checkpoint(ckpt)
+    shards = ple.ple_table_shards(str(ckpt), 1)
+    with open(ckpt / "model.safetensors", "r+b") as f:
+        f.truncate(shards[-1].end - 4)  # an interrupted download
+    path = str(shm / "table.bf16")
+    with pytest.raises(OSError, match="download complete"):
+        ple._materialize_once(path, shards, rows=6, dim=4)
+    assert os.listdir(shm) == []
+
+
+def test_qwen3_8_next_rejects_pipeline_parallelism():
+    pytest.importorskip("torchtitan")
+    pytest.importorskip("triton")
+    from torchtitan.config import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import resolve_model_spec
+
+    spec = resolve_model_spec(_args(titan_model_name="qwen3_8_next", titan_model_flavor="Flash-Next-4layer"))
+    config = SimpleNamespace(parallelism=ParallelismConfig(pipeline_parallel_degree=2), hf_assets_path=None)
+    with pytest.raises(NotImplementedError, match="pipeline parallelism"):
+        spec.model.update_from_config(config=config)
