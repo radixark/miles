@@ -1,5 +1,4 @@
 import subprocess
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -13,11 +12,13 @@ from tests.fast.utils.soak.soak_fakes import (
     _process_target,
 )
 from tests.utils.soak.ft import observers as observers_module
+from tests.utils.soak.ft.actions.inject_fault import InjectFaultForm
 from tests.utils.soak.ft.observers import CellObserver, create_cell_observer
 from tests.utils.soak.ft.types import CellTarget
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.ft_utils.api_server.models import TriState
+from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.types import ClusterBackend
 
@@ -265,7 +266,7 @@ class TestCreateCellObserver:
         observer = create_cell_observer(
             base_url=_BASE_URL,
             cell_types={"actor"},
-            forms={"actor": [SimpleNamespace(needs_fault_target=True, process_patterns={})]},
+            forms={"actor": [InjectFaultForm(base_url=_BASE_URL, failure_mode=FailureMode.SIGKILL)]},
             config=ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY, run_id="260926-120000-000"),
         )
 
