@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -28,7 +27,6 @@ SLEEP_FOREVER_INTERVAL_SECONDS: float = 60.0
 _CELL_RESUME_OBSERVED_TIMEOUT_SECONDS = 300.0
 
 _CONTROLLER_ACTIONS = {"stop_cell_at_end", "start_cell_at_end"}
-_ACTOR_ACTIONS = {"crash_before_allreduce"}
 _ORCHESTRATION_ACTIONS = {SLEEP_FOREVER_AT_END_ACTION}
 
 SleepFn = Callable[[float], Awaitable[None]]
@@ -36,10 +34,8 @@ SleepFn = Callable[[float], Awaitable[None]]
 
 class FTTestAction(FrozenStrictBaseModel):
     at_rollout: int
-    action: Literal["stop_cell_at_end", "start_cell_at_end", "crash_before_allreduce", "sleep_forever_at_end"]
+    action: Literal["stop_cell_at_end", "start_cell_at_end", "sleep_forever_at_end"]
     cell_id: str | None = None
-    rank: int = 0  # for actor-level actions: which rank within the cell
-    attempt: int = 0  # for actor-level actions: which attempt (0 = first try)
 
     @model_validator(mode="after")
     def _check_cell_name_matches_action(self) -> "FTTestAction":
@@ -126,42 +122,6 @@ class FTTestActionControllerExecutor:
             f"FT test action targets cell index {parsed.cell_index} but the pool only has "
             f"{self._controller.expected_num_cells} cells (action={action})"
         )
-
-
-class FTTestActionActorExecutor:
-    def __init__(self, *, actions: list[FTTestAction], cell_id: str, rank: int) -> None:
-        self._actions = actions
-        self._cell_id = cell_id
-        self._rank = rank
-
-    @staticmethod
-    def from_args(
-        args: object,
-        *,
-        cell_id: str,
-        rank: int,
-    ) -> "FTTestActionActorExecutor":
-        return FTTestActionActorExecutor(
-            actions=_load_actions(args, _ACTOR_ACTIONS),
-            cell_id=cell_id,
-            rank=rank,
-        )
-
-    def maybe_crash(self, *, rollout_id: int, attempt: int) -> None:
-        for action in self._actions:
-            if (
-                action.at_rollout == rollout_id
-                and action.attempt == attempt
-                and action.cell_id == self._cell_id
-                and action.rank == self._rank
-            ):
-                msg = (
-                    f"FT test action: crash_before_allreduce at rollout {rollout_id} "
-                    f"attempt {attempt} cell {self._cell_id} rank {self._rank} — calling os._exit(1)"
-                )
-                logger.warning(msg)
-                print(msg, flush=True)
-                os._exit(1)
 
 
 class FTTestActionOrchestrationExecutor:

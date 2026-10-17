@@ -49,3 +49,28 @@ class ObserveAction(BaseFaultAction):
 
     async def __call__(self, *, context: FaultHookContext, resources: FaultHookResources) -> None:
         return None
+
+
+class KillProcessAction(BaseFaultAction):
+    kind: Literal["kill_process"] = "kill_process"
+
+    async def __call__(self, *, context: FaultHookContext, resources: FaultHookResources) -> None:
+        _signal_process(signal.SIGKILL)
+
+
+class ExitProcessAction(BaseFaultAction):
+    kind: Literal["exit_process"] = "exit_process"
+
+    async def __call__(self, *, context: FaultHookContext, resources: FaultHookResources) -> None:
+        os._exit(1)
+
+
+class SegfaultProcessAction(BaseFaultAction):
+    kind: Literal["segfault_process"] = "segfault_process"
+
+    async def __call__(self, *, context: FaultHookContext, resources: FaultHookResources) -> None:
+        ctypes.CFUNCTYPE(None)()()
+
+
+def _signal_process(signum: signal.Signals) -> None:
+    os.kill(os.getpid(), signum)
