@@ -84,6 +84,8 @@ def _dump_one_process(pid: int, cmdline: str) -> None:
             print(f"----- [debug-pyspy] pid={pid} cmd={cmdline}\n{result.stdout}", flush=True)
             return
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            stderr = (getattr(e, "stderr", "") or "").strip()
+            stderr = (
+                getattr(e, "stderr", "") or ""
+            ).strip()  # config-access-exempt: subprocess exceptions differ in captured stderr support
             if native_flag == "":
                 print(f"----- [debug-pyspy] pid={pid} cmd={cmdline} DUMP FAILED: {stderr[:200]}", flush=True)

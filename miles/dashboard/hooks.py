@@ -200,7 +200,9 @@ class TrajectorySink:
                     self._emit(TrajectoryEventKind.GEN_START, sample, ts=segment["t0"], turn=segment["turn"])
                 self._emit(TrajectoryEventKind.GEN_END, sample, ts=segment["t1"], turn=segment["turn"])
         last = samples[-1]
-        status = last.status.value if getattr(last, "status", None) is not None else ""
+        status = (
+            last.status.value if getattr(last, "status", None) is not None else ""
+        )  # config-access-exempt: accept legacy samples with optional status and weight-span metadata
         self._emit(TrajectoryEventKind.ATTEMPT_END, last, detail=status)
 
     def gen_span(self, sample, t0: float, t1: float, turn: int, detail: str = "") -> None:
@@ -215,7 +217,9 @@ class TrajectorySink:
 
     def _emit(self, kind: str, sample, *, ts: float | None = None, turn: int = -1, detail: str = "") -> None:
         try:
-            versions = [span.version for span in getattr(sample, "all_weight_version_spans", None) or []]
+            versions = [
+                span.version for span in getattr(sample, "all_weight_version_spans", None) or []
+            ]  # config-access-exempt: accept legacy samples with optional status and weight-span metadata
             event = TrajectoryEvent(
                 ts=time.time() if ts is None else ts,
                 kind=kind,

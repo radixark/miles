@@ -24,7 +24,9 @@ def build_fsdp_meshes(
     )
     fsdp_mesh = dp_mesh
     if dp_replicate_size > 1:
-        if hasattr(dp_mesh, "_unflatten"):
+        if hasattr(
+            dp_mesh, "_unflatten"
+        ):  # config-access-exempt: DeviceMesh unflatten support varies by PyTorch version
             fsdp_mesh = dp_mesh._unflatten(
                 0,
                 (dp_replicate_size, world_size // dp_replicate_size),

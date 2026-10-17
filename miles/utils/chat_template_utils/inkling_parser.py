@@ -44,11 +44,15 @@ class InklingResponseParser:
         # Treat every tokenizer-native special ID as framing.  This rejects a
         # real control token in payload while preserving marker-looking text
         # that the model spelled with ordinary BPE tokens.
-        self._control_ids = frozenset({*self.ids.values(), *getattr(tokenizer, "all_special_ids", [])})
+        self._control_ids = frozenset(
+            {*self.ids.values(), *getattr(tokenizer, "all_special_ids", [])}
+        )  # config-access-exempt: custom tokenizers may omit special-token metadata
 
     def _single_token_id(self, literal: str) -> int:
         token_id = self.tokenizer.convert_tokens_to_ids(literal)
-        if token_id is None or token_id == getattr(self.tokenizer, "unk_token_id", None):
+        if token_id is None or token_id == getattr(
+            self.tokenizer, "unk_token_id", None
+        ):  # config-access-exempt: custom tokenizers may omit special-token metadata
             encoded = self.tokenizer.encode(literal, add_special_tokens=False)
             if len(encoded) != 1:
                 raise ValueError(f"Inkling control token {literal!r} did not encode to one ID: {encoded}")

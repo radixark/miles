@@ -163,7 +163,9 @@ def get_inkling_block_spec(config, vp_stage=None):
     from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
     base = _get_block_submodules(config, get_inkling_layer_spec(config), vp_stage)
-    dense_idx = getattr(config.inkling, "dense_mlp_idx", 0)
+    dense_idx = getattr(
+        config.inkling, "dense_mlp_idx", 0
+    )  # config-access-exempt: Inkling checkpoint configs may omit dense-layer count
     if dense_idx <= 0:
         return base
     offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
@@ -191,26 +193,36 @@ def get_inkling_spec(args, config, vp_stage=None):
 class InklingGPTModel(GPTModel):
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
-        if getattr(self, "pre_process", False) and getattr(self.config.inkling, "use_embed_norm", False):
+        if getattr(self, "pre_process", False) and getattr(
+            self.config.inkling, "use_embed_norm", False
+        ):  # config-access-exempt: pipeline stages and checkpoint variants expose different embedding features
             emb = self.embedding
             emb.embed_norm = te.RMSNorm(
                 self.config.hidden_size, eps=self.config.inkling.rms_norm_eps, params_dtype=self.config.params_dtype
             )
             _orig_emb_forward = emb.forward
 
-            _fp32res = bool(getattr(self.config, "fp32_residual_connection", False))
+            _fp32res = bool(
+                getattr(self.config, "fp32_residual_connection", False)
+            )  # config-access-exempt: upstream TransformerConfig variants may omit FP32 residual mode
 
             def _emb_forward(*a, _orig=_orig_emb_forward, _norm=emb.embed_norm, _fp32=_fp32res, **k):
                 out = _orig(*a, **k)
                 if _fp32:
                     h = out.float()
-                    h = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + getattr(_norm, "eps", 1e-6))
+                    h = h * torch.rsqrt(
+                        h.pow(2).mean(-1, keepdim=True) + getattr(_norm, "eps", 1e-6)
+                    )  # config-access-exempt: normalization implementations expose different epsilon attributes
                     return (h * _norm.weight.float()).bfloat16().float()
                 return _norm(out)
 
             emb.forward = _emb_forward
-        if getattr(self, "post_process", False) and bool(getattr(self.config, "fp32_residual_connection", False)):
-            fln = getattr(self.decoder, "final_layernorm", None)
+        if getattr(self, "post_process", False) and bool(
+            getattr(self.config, "fp32_residual_connection", False)
+        ):  # config-access-exempt: pipeline stages and upstream configs expose different residual features
+            fln = getattr(
+                self.decoder, "final_layernorm", None
+            )  # config-access-exempt: non-final pipeline stages may omit final normalization
             if fln is not None:
                 _orig_fln = fln.forward
                 _pdt = self.config.params_dtype
@@ -219,8 +231,12 @@ class InklingGPTModel(GPTModel):
                     return _orig(x.to(_dt) if x.dtype != _dt else x, *a, **k)
 
                 fln.forward = _fln_forward
-        mup = getattr(self.config.inkling, "logits_mup_width_multiplier", None)
-        if getattr(self, "post_process", False) and mup:
+        mup = getattr(
+            self.config.inkling, "logits_mup_width_multiplier", None
+        )  # config-access-exempt: Inkling checkpoint configs may omit the MuP multiplier
+        if (
+            getattr(self, "post_process", False) and mup
+        ):  # config-access-exempt: only final pipeline stages apply logits scaling
             _ol = self.output_layer
             _orig_ol_forward = _ol.forward
             _mup = float(mup)
@@ -234,7 +250,9 @@ class InklingGPTModel(GPTModel):
     def _freeze_global_scale(self):
         """Freeze per-layer global_scale params per config.inkling.freeze_global_scale
         (all | router | none; router = the MoE gate scale only)."""
-        mode = getattr(self.config.inkling, "freeze_global_scale", "all")
+        mode = getattr(
+            self.config.inkling, "freeze_global_scale", "all"
+        )  # config-access-exempt: Inkling checkpoint configs may omit global-scale freezing mode
         if mode == "none":
             return
         n = 0

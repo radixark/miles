@@ -36,7 +36,9 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
         marked = []
         for chunk in model:
             for param in chunk.parameters():
-                group_name = getattr(param, "_lora_grad_sum_group", None)
+                group_name = getattr(
+                    param, "_lora_grad_sum_group", None
+                )  # config-access-exempt: _lora_grad_sum_group is optional backend-attached tensor metadata
                 if group_name is not None and param.requires_grad:
                     marked.append((param, group_name))
         _marked_lora_grad_params_cache[key] = marked
@@ -54,7 +56,9 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
         for param, g_name in marked:
             if g_name != group_name:
                 continue
-            grad = getattr(param, "main_grad", None)
+            grad = getattr(
+                param, "main_grad", None
+            )  # config-access-exempt: main_grad is optional backend-attached tensor metadata
             if grad is None:
                 grad = param.grad
             if grad is not None:
@@ -176,7 +180,9 @@ def create_lora_instance(args: Namespace, *, target_modules):
         lora_A_init_method=args.lora_A_init_method,
         lora_B_init_method=args.lora_B_init_method,
     )
-    if "share_expert_adapters" in getattr(lora_cls, "__dataclass_fields__", {}):
+    if "share_expert_adapters" in getattr(
+        lora_cls, "__dataclass_fields__", {}
+    ):  # config-access-exempt: Megatron-Bridge versions differ in LoRA dataclass fields
         lora_kwargs["share_expert_adapters"] = False
     # shared-outer grouped-expert LoRA (SGLang PR #21466); per-expert is the default
     if args.experts_shared_outer_loras:

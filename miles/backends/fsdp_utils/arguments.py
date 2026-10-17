@@ -87,7 +87,9 @@ def build_dataclass_parser(
             continue
 
         # Handle union types like int | None, str | None, etc.
-        if hasattr(f.type, "__args__"):  # Check if it's a Union type
+        if hasattr(
+            f.type, "__args__"
+        ):  # Check if it's a Union type  # config-access-exempt: inspect union type arguments when deriving dataclass CLI types
             # For T | None, use T as the type
             non_none_types = [t for t in f.type.__args__ if t is not type(None)]
             arg_type = non_none_types[0] if non_none_types else str

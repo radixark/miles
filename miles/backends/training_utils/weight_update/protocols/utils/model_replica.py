@@ -293,7 +293,7 @@ class ModelReplica:
         transfer_buffer_device: torch.device,
     ) -> None:
         # some models call it from their own load_weights; the engine runs it after the writes
-        if hasattr(model, "post_load_weights"):
+        if hasattr(model, "post_load_weights"):  # config-access-exempt: optional inference-model post-load callback
             model.post_load_weights = lambda *args, **kwargs: None
         self._model = model
         self._config = config

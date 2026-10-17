@@ -68,7 +68,9 @@ def _reference_proj_rms(x, weight, eps):
 
 
 def _patch_reference_proj_rms() -> None:
-    if getattr(hyper_connection, "_glm5_next_reference_proj_rms_patched", False):
+    if getattr(
+        hyper_connection, "_glm5_next_reference_proj_rms_patched", False
+    ):  # config-access-exempt: the shim marker exists only after patch installation
         return
 
     original_init = HyperConnectionModule.__init__

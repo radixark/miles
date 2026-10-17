@@ -1251,7 +1251,7 @@ def fake_nvfp4_quantization_ste(x: torch.Tensor, config: NVFP4QDQConfig | None =
         config = current_nvfp4_qdq_config()
     amax = compute_nvfp4_amax(x)
     output = _FusedNVFP4QDQSTE.apply(x, amax, config)
-    if hasattr(x, "main_grad"):
+    if hasattr(x, "main_grad"):  # config-access-exempt: main_grad is optional backend-attached tensor metadata
         output.main_grad = x.main_grad
     return output
 

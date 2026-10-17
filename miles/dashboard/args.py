@@ -57,7 +57,9 @@ def collector_config_from_args(args, *, start_ts: float) -> CollectorConfig:
         assert whitelist, f"empty --dashboard-sglang-metrics: {args.dashboard_sglang_metrics!r}"
     else:
         whitelist = DEFAULT_METRIC_WHITELIST
-    snapshot = {key: getattr(args, key) for key in _SNAPSHOT_KEYS if hasattr(args, key)}
+    snapshot = {
+        key: getattr(args, key) for key in _SNAPSHOT_KEYS if hasattr(args, key)
+    }  # config-access-exempt: attribute selected at runtime from key
     return CollectorConfig(
         dashboard_dir=f"{args.dump_details}/dashboard",
         run_name=args.wandb_group or "miles-run",
