@@ -38,14 +38,17 @@ def assert_unsaved_run_redone_from_scratch(
         f"run standing at step {record.frozen_rollout_id}: the freeze never pinned where it landed"
     )
 
-    discarded_dirs = read_discarded_event_dirs(dump_dir)
-    assert len(discarded_dirs) == 1, (
+    discarded_logs = {
+        directory.name: log
+        for directory in read_discarded_event_dirs(dump_dir)
+        if (log := read_finished_steps_once(directory, what=directory.name))
+    }
+    assert len(discarded_logs) == 1, (
         f"the take-over of a run holding no checkpoint starts it over, and the log of what it threw away is moved "
-        f"aside; {[one.name for one in discarded_dirs]} was left behind instead of exactly one"
+        f"aside; {list(discarded_logs)} contains completed training steps instead of exactly one discarded log"
     )
-    [discarded_dir] = discarded_dirs
+    [discarded_log] = discarded_logs.values()
 
-    discarded_log = read_finished_steps_once(discarded_dir, what=discarded_dir.name)
     assert sorted(discarded_log) == list(range(scheduled.frozen_rollout_id + 1)), (
         f"the run was frozen after step {scheduled.frozen_rollout_id}, and the log moved aside describes "
         f"{sorted(discarded_log)}: what the take-over threw away is every step the frozen run had trained"

@@ -1,0 +1,16 @@
+base: fsdp
+base_sha256: c8002bda7c293c7105fe399d2fe5a39fd0d55652f9ab9836e28a19c39fbdb086
+edits:
+- at: 65
+  delete: 1
+  insert: |2
+      custom_inference_engine_provider_path: {config: null, path: miles.ray.rollout.external_engine_provider.static_inference_engine_provider}
+- at: 163
+  delete: 1
+  insert: |2
+      init_expected_num_cells: null
+- at: 292
+  delete: 2
+  insert: |2
+      rollout_external: true
+      rollout_external_engine_addrs: ['127.0.0.1:30000']

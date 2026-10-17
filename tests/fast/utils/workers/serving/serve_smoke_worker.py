@@ -1,13 +1,19 @@
 import os
+from typing import Any, ClassVar, Self
 
-from tests.fast.utils.workers.import_probe import report_imported_top_level_modules
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.args.runtime_base import BaseLeafConfig
+from miles.utils.workers.worker_spec import (
+    RPC_PORT_NAME,
+    BaseServeSpec,
+    PortInfo,
+    SchedulingSpec,
+    WorkerCtorContext,
+    WorkerLaunchContext,
+)
 
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
-
-IMPORTED_MODULES_ENV_VAR = "MILES_SERVE_SMOKE_IMPORTED_MODULES"
 SMOKE_EXTRA_ENV_VAR = "MILES_SERVE_SMOKE_EXTRA_ENV_NAME"
 POOL_ID = "e2e-pool"
-RPC_PORT_FLAG = "--rpc-port"
 
 
 class SmokeWorker:
@@ -24,24 +30,31 @@ class SmokeWorker:
         return os.environ.get(name)
 
 
-def compute_specs(worker_argv: list[str]) -> list[ServeWorkerSpec]:
-    return [
-        ServeWorkerSpec(
-            name=POOL_ID,
-            port_infos=[PortInfo(name="rpc", static_port=rpc_port_of(worker_argv))],
-            env_var=lambda context: {
-                "MILES_SERVE_SMOKE_ENV": ",".join(worker_argv),
-                "MILES_SERVE_SMOKE_POOL_ID": POOL_ID,
-                IMPORTED_MODULES_ENV_VAR: report_imported_top_level_modules(),
-                **({name: "0"} if (name := os.environ.get(SMOKE_EXTRA_ENV_VAR)) else {}),
-            },
-            scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
-            worker_class=f"{__name__}.SmokeWorker",
-            ctor_kwargs=lambda context: dict(argv=worker_argv),
-        )
-    ]
+class SmokeWorkerConfig(BaseLeafConfig):
+    rpc_port: int
+    worker_argv: list[str]
 
 
-def rpc_port_of(worker_argv: list[str]) -> int:
-    assert RPC_PORT_FLAG in worker_argv, f"the smoke run's argv must carry {RPC_PORT_FLAG}, got {worker_argv}"
-    return int(worker_argv[worker_argv.index(RPC_PORT_FLAG) + 1])
+class SmokeServeSpec(BaseServeSpec):
+    worker_type: ClassVar[str] = "serve-smoke"
+    config_class: ClassVar[type[BaseLeafConfig]] = SmokeWorkerConfig
+    args: SmokeWorkerConfig
+    name: str = POOL_ID
+    worker_class: str = f"{__name__}.SmokeWorker"
+
+    @classmethod
+    def create(cls, config: SmokeWorkerConfig) -> Self:
+        return cls(args=config, port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=config.rpc_port)])
+
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0)
+
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        return {
+            "MILES_SERVE_SMOKE_ENV": ",".join(self.args.worker_argv),
+            "MILES_SERVE_SMOKE_POOL_ID": POOL_ID,
+            **({name: "0"} if (name := os.environ.get(SMOKE_EXTRA_ENV_VAR)) else {}),
+        }
+
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
+        return dict(argv=self.args.worker_argv)

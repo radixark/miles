@@ -1,6 +1,7 @@
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 MOONCAKE_MASTER_PORT = 50051
@@ -8,6 +9,11 @@ MOONCAKE_MASTER_ADDRESS_KEY = "master_server_address"
 
 _GLOBAL_SEGMENT_SIZE_KEY = "global_segment_size"
 _MISSING = object()
+
+
+class ObjectStoreBackend(Enum):
+    RAY = "ray"
+    MOONCAKE = "mooncake"
 
 
 def compute_mooncake_init_kwargs_vanilla(*, host: str = "127.0.0.1", master_port: int = MOONCAKE_MASTER_PORT) -> dict:

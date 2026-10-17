@@ -6,7 +6,10 @@ delegates to ``convert_qwen3_5_to_hf``.
 
 import re
 
-from .qwen3_5 import convert_qwen3_5_to_hf
+import torch
+
+from miles.backends.megatron_utils.megatron_to_hf.qwen3_5 import convert_qwen3_5_to_hf
+from miles.utils.args.runtime import TrainerConfig
 
 # mcore suffix (under decoder.layers.N.) -> HF suffix (under the HF layer prefix)
 _HC_SUFFIX_MAPPING = {
@@ -44,7 +47,7 @@ _HF_LAYOUT_GDN = ("self_attention.linear_attn.in_proj_qkv.weight", "self_attenti
 _LAYER_PATTERN = re.compile(r"module\.module\.decoder\.layers\.(\d+)\.(.+)")
 
 
-def convert_qwen3_8_next_to_hf(args, name, param):
+def convert_qwen3_8_next_to_hf(args: TrainerConfig, name: str, param: torch.Tensor) -> list[tuple[str, torch.Tensor]]:
     if name in _HEAD_CONTRACTION_MAPPING:
         return [(_HEAD_CONTRACTION_MAPPING[name], param)]
 

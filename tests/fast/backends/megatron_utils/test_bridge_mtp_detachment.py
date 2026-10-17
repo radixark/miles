@@ -10,6 +10,8 @@ import pytest
 
 from tests.ci.ci_register import register_cpu_ci
 
+from miles.utils.args.runtime import TrainerConfig
+
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 
@@ -21,14 +23,14 @@ def apply_bridge_runtime_config() -> Callable:
     function = next(
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_apply_bridge_runtime_config"
     )
-    namespace = {"argparse": argparse}
+    namespace = {"argparse": argparse, "TrainerConfig": TrainerConfig}
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
     return namespace["_apply_bridge_runtime_config"]
 
 
 @pytest.fixture
 def runtime_args() -> argparse.Namespace:
-    return argparse.Namespace(
+    backend = argparse.Namespace(
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         expert_model_parallel_size=1,
@@ -54,7 +56,12 @@ def runtime_args() -> argparse.Namespace:
         mtp_num_layers=1,
         mtp_detach_heads=True,
         moe_token_dispatcher_type="alltoall",
+        decoder_first_pipeline_num_layers=None,
+        decoder_last_pipeline_num_layers=None,
+        moe_router_bias_update_rate=None,
+        moe_aux_loss_coeff=None,
     )
+    return argparse.Namespace(backend=backend, dsa_attention_backend=None, enable_mtp_training=False)
 
 
 @pytest.mark.parametrize(
@@ -68,7 +75,7 @@ def test_bridge_mtp_detachment(
     initial_detach: bool,
 ) -> None:
     """The provider takes --mtp-detach-heads from args, whatever the bridge's HF config set."""
-    runtime_args.mtp_detach_heads = detach
+    runtime_args.backend.mtp_detach_heads = detach
     provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=initial_detach)
 
     apply_bridge_runtime_config(provider, runtime_args)
@@ -83,8 +90,7 @@ def test_bridge_mtp_detachment(
     ids=["absent", "disabled", "enabled"],
 )
 def test_bridge_mtp_runtime_depth(apply_bridge_runtime_config, runtime_args, mtp_args, expected_layers):
-    del runtime_args.mtp_num_layers
-    vars(runtime_args).update(mtp_args)
+    vars(runtime_args.backend).update(mtp_args)
     provider = SimpleNamespace(mtp_num_layers=1)
 
     apply_bridge_runtime_config(provider, runtime_args)

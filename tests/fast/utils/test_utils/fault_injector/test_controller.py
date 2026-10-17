@@ -537,7 +537,7 @@ class TestWithContext:
 
 
 class TestDelayedRequests:
-    def test_a_delayed_request_schedules_one_timer_for_its_exact_delay(
+    async def test_a_delayed_request_schedules_one_timer_for_its_exact_delay(
         self,
         runtime_hooks: _FaultHookController,
         operations: _CellOperations,
@@ -557,7 +557,7 @@ class TestDelayedRequests:
         assert scheduled.status == FaultHookStatus.SCHEDULED
         assert scheduled.reached_at == 100.0 and scheduled.due_at == 100.25
 
-    def test_the_due_callback_fires_exactly_once(
+    async def test_the_due_callback_fires_exactly_once(
         self,
         runtime_hooks: _FaultHookController,
         operations: _CellOperations,
@@ -569,8 +569,8 @@ class TestDelayedRequests:
         _set(runtime_hooks, _stop(rollout_id=3, delay_ms=250))
         runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
         clock.advance(0.25)
-        timers[0].fire()
-        timers[0].fire()
+        await asyncio.to_thread(timers[0].fire)
+        await asyncio.to_thread(timers[0].fire)
         assert operations.stopped == ["cell-0"]
         assert _statuses(hook_records(), "stop") == [
             FaultHookStatus.PENDING,
@@ -578,7 +578,7 @@ class TestDelayedRequests:
             FaultHookStatus.FIRED,
         ]
 
-    def test_a_cleared_request_ignores_its_late_callback(
+    async def test_a_cleared_request_ignores_its_late_callback(
         self,
         runtime_hooks: _FaultHookController,
         operations: _CellOperations,
@@ -592,7 +592,7 @@ class TestDelayedRequests:
         runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
         _clear(runtime_hooks, request)
         assert timers[0].cancelled
-        timers[0].fire()
+        await asyncio.to_thread(timers[0].fire)
         assert operations.stopped == []
         assert _statuses(hook_records(), "stop") == [
             FaultHookStatus.PENDING,
@@ -600,7 +600,7 @@ class TestDelayedRequests:
             FaultHookStatus.CLEARED,
         ]
 
-    def test_a_stale_callback_cannot_fire_the_request_rearmed_under_its_id(
+    async def test_a_stale_callback_cannot_fire_the_request_rearmed_under_its_id(
         self,
         runtime_hooks: _FaultHookController,
         operations: _CellOperations,
@@ -613,15 +613,15 @@ class TestDelayedRequests:
         runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
         _clear(runtime_hooks, first)
         _set(runtime_hooks, _stop(rollout_id=4, delay_ms=250, cell_id="cell-1"))
-        timers[0].fire()
+        await asyncio.to_thread(timers[0].fire)
         assert operations.stopped == []
         runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 4})
-        timers[0].fire()
+        await asyncio.to_thread(timers[0].fire)
         assert operations.stopped == []
-        timers[1].fire()
+        await asyncio.to_thread(timers[1].fire)
         assert operations.stopped == ["cell-1"]
 
-    def test_a_failing_due_action_is_recorded_failed(
+    async def test_a_failing_due_action_is_recorded_failed(
         self,
         runtime_hooks: _FaultHookController,
         operations: _CellOperations,
@@ -634,8 +634,8 @@ class TestDelayedRequests:
         _set(runtime_hooks, _stop(rollout_id=3, delay_ms=250))
         runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
         with pytest.raises(RuntimeError, match="rejected the stop"):
-            timers[0].fire()
-        timers[0].fire()
+            await asyncio.to_thread(timers[0].fire)
+        await asyncio.to_thread(timers[0].fire)
         assert operations.entered == ["cell-0"]
         assert _statuses(hook_records(), "stop") == [
             FaultHookStatus.PENDING,
@@ -644,7 +644,7 @@ class TestDelayedRequests:
             FaultHookStatus.FAILED,
         ]
 
-    def test_an_immediate_request_with_a_delay_is_scheduled_on_set(
+    async def test_an_immediate_request_with_a_delay_is_scheduled_on_set(
         self,
         runtime_hooks: _FaultHookController,
         operations: _CellOperations,
@@ -655,10 +655,10 @@ class TestDelayedRequests:
         assert _set(runtime_hooks, _stop(hook_name=None, delay_ms=100)).status == FaultHookStatus.SCHEDULED
         assert operations.stopped == []
         assert timers[0].interval == pytest.approx(0.1)
-        timers[0].fire()
+        await asyncio.to_thread(timers[0].fire)
         assert operations.stopped == ["cell-0"]
 
-    def test_a_scheduled_request_still_holds_its_trigger(
+    async def test_a_scheduled_request_still_holds_its_trigger(
         self,
         runtime_hooks: _FaultHookController,
         clock: _Clock,
@@ -669,7 +669,7 @@ class TestDelayedRequests:
         runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
         with pytest.raises(FaultHookConflictError):
             _set(runtime_hooks, _stop("b", rollout_id=3, delay_ms=250))
-        timers[0].fire()
+        await asyncio.to_thread(timers[0].fire)
         assert _set(runtime_hooks, _stop("b", rollout_id=3, delay_ms=250)).status == FaultHookStatus.PENDING
 
 
@@ -722,7 +722,7 @@ class TestLifetime:
             FaultHookStatus.FIRED,
         ]
 
-    def test_a_scheduled_request_that_outlives_its_lifetime_never_fires(
+    async def test_a_scheduled_request_that_outlives_its_lifetime_never_fires(
         self,
         runtime_hooks: _FaultHookController,
         operations: _CellOperations,
@@ -735,7 +735,7 @@ class TestLifetime:
         clock.advance(4.5)
         runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
         clock.advance(1.0)
-        timers[0].fire()
+        await asyncio.to_thread(timers[0].fire)
         assert operations.stopped == []
         assert timers[0].cancelled
         assert _statuses(hook_records(), "stop") == [

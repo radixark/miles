@@ -14,6 +14,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 
+
 try:
     from fla.ops.cp import build_cp_context as _fla_build_cp_context
 except ImportError:
@@ -45,7 +46,9 @@ def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: to
 
     Returns ``None`` when CP is not configured on the module (``cp_group`` not set).
     """
-    cp_group = getattr(module, "cp_group", None)
+    cp_group = getattr(
+        module, "cp_group", None
+    )  # config-access-exempt: context parallel groups are attached only to participating model modules
     if cp_group is None:
         return None
     return build_fla_cp_context(cu_seqlens, cp_group, module.conv_kernel_size, device)

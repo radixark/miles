@@ -1,0 +1,23 @@
+base: megatron
+base_sha256: ebd030be45f1499e7bc51665e4d4216277a0d2c7e3b4e114b2651c47811e1b61
+edits:
+- at: 4
+  delete: 1
+  insert: |2
+      actor_num_gpus_per_node: 2
+- at: 157
+  delete: 1
+  insert: |2
+      indep_dp: true
+- at: 176
+  delete: 1
+  insert: |2
+      log_probs_max_tokens_per_gpu: 4096
+- at: 192
+  delete: 1
+  insert: |2
+      max_tokens_per_gpu: 4096
+- at: 1831
+  delete: 1
+  insert: |2
+      use_dynamic_batch_size: true

@@ -15,6 +15,7 @@ class SessionServerConfig(FrozenStrictBaseModel):
     apply_chat_template_kwargs: dict[str, Any] | None
     use_rollout_routing_replay: bool
     use_rollout_indexer_replay: bool
+    rollout_indexer_topk_num_streams: int | None
     use_sampling_support_replay: bool
     sglang_speculative_algorithm: str | None
     num_layers: int | None
@@ -48,20 +49,23 @@ def compute_session_server_config(
         apply_chat_template_kwargs=args.apply_chat_template_kwargs,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
         use_rollout_indexer_replay=args.use_rollout_indexer_replay,
+        rollout_indexer_topk_num_streams=args.rollout_indexer_topk_num_streams,
         use_sampling_support_replay=args.use_sampling_support_replay,
-        sglang_speculative_algorithm=args.sglang_speculative_algorithm,
-        num_layers=getattr(args, "num_layers", None),
-        moe_router_topk=getattr(args, "moe_router_topk", None),
+        sglang_speculative_algorithm=args.sglang.common_value("speculative_algorithm"),
+        num_layers=args.num_layers,
+        moe_router_topk=args.raw_megatron.base_args.get("moe_router_topk"),
         save_debug_trajectory_data=args.save_debug_trajectory_data,
         lora_rank=args.lora_rank,
         lora_adapter_path=args.lora_adapter_path,
-        lora_train_only=getattr(args, "lora_train_only", False),
-        use_session_server=getattr(args, "use_session_server", None),
-        session_message_matcher=getattr(args, "session_message_matcher", "strict"),
-        pause_generation_mode=getattr(args, "pause_generation_mode", None),
-        session_sample_picker_path=getattr(args, "session_sample_picker_path", None),
-        session_sample_postprocessor_path=getattr(args, "session_sample_postprocessor_path", None),
+        lora_train_only=args.lora_train_only,
+        use_session_server=args.use_session_server,
+        session_message_matcher=args.session_message_matcher,
+        pause_generation_mode=args.pause_generation_mode,
+        session_sample_picker_path=args.session_sample_picker_path,
+        session_sample_postprocessor_path=args.session_sample_postprocessor_path,
         rollout_top_logprobs_num=args.rollout_top_logprobs_num,
         rollout_sampling_logprobs_mode=args.rollout_sampling_logprobs_mode,
-        rollout_temperature=getattr(args, "rollout_temperature", 1.0),
+        rollout_temperature=getattr(
+            args, "rollout_temperature", 1.0
+        ),  # config-access-exempt: legacy session inputs omit rollout_temperature
     )

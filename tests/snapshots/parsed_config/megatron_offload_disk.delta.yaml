@@ -1,0 +1,20 @@
+base: megatron
+base_sha256: ebd030be45f1499e7bc51665e4d4216277a0d2c7e3b4e114b2651c47811e1b61
+edits:
+- at: 232
+  delete: 1
+  insert: |2
+      offload_train: true
+- at: 234
+  delete: 2
+  insert: |2
+      offload_train_disk_dir: $FIXTURES/offload
+      offload_train_target: disk
+- at: 398
+  delete: 1
+  insert: |2
+          disable_grad_buffers_cpu_backup: true
+- at: 401
+  delete: 1
+  insert: |2
+          disable_param_buffers_cpu_backup: true

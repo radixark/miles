@@ -1,75 +1,48 @@
-"--disable-bias-linear"
-"--num-layers"
-"40"
-"--hidden-size"
-"2048"
-"--ffn-hidden-size"
-"7168"
-"--num-attention-heads"
-"32"
-"--kv-channels"
-"128"
-"--normalization"
-"RMSNorm"
-"--position-embedding-type"
-"rope"
-"--rope-type"
-"rope"
-"--norm-epsilon"
-"1e-6"
-"--swiglu"
-"--untie-embeddings-and-output-weights"
-"--vocab-size"
-"129280"
-"--multi-latent-attention"
-"--q-lora-rank"
-"1536"
-"--kv-lora-rank"
-"512"
-"--qk-head-dim"
-"128"
-"--qk-pos-emb-head-dim"
-"64"
-"--v-head-dim"
-"128"
-"--qk-layernorm"
-"--rotary-base"
-"32000000"
-"--mscale"
-"1.0"
-"--mscale-all-dim"
-"1.0"
-"--attention-softmax-in-fp32"
-"--no-rope-fusion"
-"--num-experts"
-"256"
-"--moe-layer-freq"
-"[0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]"
-"--moe-ffn-hidden-size"
-"768"
-"--moe-router-topk"
-"8"
-"--moe-shared-expert-intermediate-size"
-"768"
-"--moe-router-pre-softmax"
-"--moe-router-score-function"
-"sigmoid"
-"--moe-router-enable-expert-bias"
-"--moe-router-load-balancing-type"
-"seq_aux_loss"
-"--moe-token-dispatcher-type"
-"alltoall"
-"--moe-aux-loss-coeff"
-"0"
-"--moe-router-bias-update-rate"
-"0"
-"--moe-router-group-topk"
-"1"
-"--moe-router-num-groups"
-"1"
-"--moe-grouped-gemm"
-"--moe-router-topk-scaling-factor"
-"2.5"
-"--moe-router-dtype"
-"fp32"
-"--moe-permute-fusion"
+# miles-snapshot-delta-v1
+base: deepseek-v3.txt
+base_sha256: 917e9b47d19aa1918a221efb5ceaab52f28835a9f9fd5f73e60ef41371478540
+edits:
+- at: 2
+  delete: 1
+  insert: |
+    "40"
+- at: 4
+  delete: 0
+  insert: |
+    "2048"
+    "--ffn-hidden-size"
+- {at: 5, delete: 2, insert: ''}
+- at: 8
+  delete: 1
+  insert: |
+    "32"
+- at: 14
+  delete: 0
+  insert: |
+    "rope"
+    "--rope-type"
+- {at: 33, delete: 2, insert: ''}
+- at: 36
+  delete: 1
+  insert: |
+    "32000000"
+- at: 46
+  delete: 1
+  insert: |
+    "[0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]"
+- at: 48
+  delete: 1
+  insert: |
+    "768"
+- at: 52
+  delete: 1
+  insert: |
+    "768"
+- at: 66
+  delete: 1
+  insert: |
+    "1"
+- at: 68
+  delete: 1
+  insert: |
+    "1"

@@ -1,0 +1,19 @@
+base: fsdp
+base_sha256: c8002bda7c293c7105fe399d2fe5a39fd0d55652f9ab9836e28a19c39fbdb086
+edits:
+- at: 55
+  delete: 1
+  insert: |2
+      critic_lr: 7.0e-06
+- at: 265
+  delete: 1
+  insert: |2
+        bf16: true, calculate_per_token_loss: false, clip_grad: 1.0, config: $FIXTURES/fsdp.yaml, context_parallel_size: 1, deterministic_mode: false,
+- at: 268
+  delete: 1
+  insert: |2
+        lr: 7.0e-06, lr_decay_iters: null, lr_decay_style: constant, lr_warmup_fraction: null, lr_warmup_init: 0.0, lr_warmup_iters: 0,
+- at: 272
+  delete: 1
+  insert: |2
+        use_checkpoint_lr_scheduler: true, use_pytorch_profiler: false, wandb_run_name: null, warmup_ratio: 0.03, weight_decay: 0.2,

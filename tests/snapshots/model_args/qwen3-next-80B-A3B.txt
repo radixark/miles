@@ -1,59 +1,33 @@
-"--spec"
-"miles_plugins.models.qwen3_next"
-"get_qwen3_next_spec"
-"--disable-bias-linear"
-"--qk-layernorm"
-"--group-query-attention"
-"--num-attention-heads"
-"16"
-"--num-query-groups"
-"2"
-"--kv-channels"
-"256"
-"--num-layers"
-"48"
-"--hidden-size"
-"2048"
-"--ffn-hidden-size"
-"5120"
-"--normalization"
-"RMSNorm"
-"--apply-layernorm-1p"
-"--position-embedding-type"
-"rope"
-"--norm-epsilon"
-"1e-6"
-"--rotary-percent"
-"0.25"
-"--swiglu"
-"--untie-embeddings-and-output-weights"
-"--vocab-size"
-"151936"
-"--rotary-base"
-"10000000"
-"--moe-ffn-hidden-size"
-"512"
-"--moe-shared-expert-intermediate-size"
-"512"
-"--moe-router-score-function"
-"softmax"
-"--moe-token-dispatcher-type"
-"alltoall"
-"--moe-router-topk"
-"10"
-"--moe-layer-freq"
-"[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]"
-"--num-experts"
-"512"
-"--moe-grouped-gemm"
-"--moe-token-drop-policy"
-"probs"
-"--moe-router-dtype"
-"fp32"
-"--moe-permute-fusion"
-"--moe-aux-loss-coeff"
-"0"
-"--attention-output-gate"
-"--moe-shared-expert-gate"
-"--mtp-num-layers"
-"1"
+# miles-snapshot-delta-v1
+base: qwen3.5-35B-A3B.txt
+base_sha256: 66d15be8604204e4cf4e45fac70eef2b5f371df42a0ceb68e2cb8f328583c3a9
+edits:
+- at: 1
+  delete: 2
+  insert: |
+    "miles_plugins.models.qwen3_next"
+    "get_qwen3_next_spec"
+- at: 13
+  delete: 1
+  insert: |
+    "48"
+- at: 17
+  delete: 1
+  insert: |
+    "5120"
+- at: 30
+  delete: 1
+  insert: |
+    "151936"
+- at: 42
+  delete: 1
+  insert: |
+    "10"
+- at: 44
+  delete: 1
+  insert: |
+    "[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]"
+- at: 46
+  delete: 1
+  insert: |
+    "512"

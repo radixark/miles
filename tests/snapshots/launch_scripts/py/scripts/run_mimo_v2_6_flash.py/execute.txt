@@ -1,103 +1,84 @@
-### 0
-pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
-
-### 1
-export PYTHONUNBUFFERED=1 && ray start
-  --head
-  --node-ip-address 127.0.0.1
-  --num-gpus 8
-  --disable-usage-stats
-
-### 2
-nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
-
-### 3
-export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
-  --address="http://127.0.0.1:8265"
-  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
-  -- python3 <REPO_ROOT>/train.py
-  --num-layers 4
-  --hidden-size 4096
-  --ffn-hidden-size 16384
-  --num-attention-heads 64
-  --group-query-attention
-  --num-query-groups 4
-  --kv-channels 192
-  --position-embedding-type rope
-  --rotary-percent 0.334
-  --rotary-base 10000000
-  --no-rope-fusion
-  --max-position-embeddings 1048576
-  --normalization RMSNorm
-  --norm-epsilon 1e-6
-  --swiglu
-  --disable-bias-linear
-  --untie-embeddings-and-output-weights
-  --vocab-size 152576
-  --moe-layer-freq '[0,1,1,1]'
-  --num-experts 256
-  --moe-router-topk 8
-  --moe-ffn-hidden-size 2048
-  --moe-router-score-function sigmoid
-  --moe-router-enable-expert-bias
-  --moe-router-bias-update-rate 0
-  --moe-router-load-balancing-type none
-  --moe-aux-loss-coeff 0
-  --moe-router-dtype fp32
-  --moe-grouped-gemm
-  --hf-checkpoint <SANDBOX>/models/mimo26-p4-bf16
-  --megatron-to-hf-mode bridge 
-  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
-  --input-key prompt
-  --label-key label
-  --apply-chat-template
-  --rollout-shuffle
-  --rm-type math
-  --num-rollout 4
-  --rollout-batch-size 16
-  --n-samples-per-prompt 8
-  --rollout-max-response-len 8192
-  --rollout-temperature 1.0
-  --rollout-top-p 1.0
-  --num-steps-per-rollout 1
-  --advantage-estimator grpo
-  --entropy-coef 0.00
-  --eps-clip 0.2
-  --eps-clip-high 0.28 
-  --optimizer adam
-  --lr 1e-6
-  --lr-decay-style constant
-  --weight-decay 0.1
-  --adam-beta1 0.9
-  --adam-beta2 0.98
-  --accumulate-allreduce-grads-in-fp32 
-  --use-wandb
-  --wandb-project miles-run_mimo_v2_6_flash
-  --wandb-group 260101-000000-000
-  --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix 
-  --tensor-model-parallel-size 2
-  --sequence-parallel
-  --pipeline-model-parallel-size 2
-  --context-parallel-size 1
-  --expert-model-parallel-size 2
-  --expert-tensor-parallel-size 1
-  --use-dynamic-batch-size
-  --max-tokens-per-gpu 9216
-  --recompute-granularity full
-  --recompute-method uniform
-  --recompute-num-layers 1 
-  --rollout-num-gpus-per-engine 4
-  --sglang-dtype bfloat16
-  --sglang-mem-fraction-static 0.6
-  --sglang-decode-log-interval 1000 
-  --attention-dropout 0.0
-  --hidden-dropout 0.0
-  --attention-softmax-in-fp32
-  --attention-backend fused
-  --actor-num-nodes 1
-  --actor-num-gpus-per-node 8
-  --num-gpus-per-node 8
-  --colocate   
-  --deploy-component all
+# miles-snapshot-delta-v1
+base: ../run_qwen3_30b_a3b.py/execute.txt
+base_sha256: 935cc23db0cc766fb57d65cc8f2e01fe8d62300c90074fe27e5af68dc5872064
+edits:
+- at: 19
+  delete: 0
+  insert: |2
+      --num-layers 4
+      --hidden-size 4096
+      --ffn-hidden-size 16384
+      --num-attention-heads 64
+      --group-query-attention
+      --num-query-groups 4
+      --kv-channels 192
+      --position-embedding-type rope
+      --rotary-percent 0.334
+      --rotary-base 10000000
+      --no-rope-fusion
+      --max-position-embeddings 1048576
+      --normalization RMSNorm
+      --norm-epsilon 1e-6
+      --swiglu
+- {at: 20, delete: 13, insert: ''}
+- at: 34
+  delete: 5
+  insert: |2
+      --vocab-size 152576
+      --moe-layer-freq '[0,1,1,1]'
+      --num-experts 256
+- at: 40
+  delete: 2
+  insert: |2
+      --moe-ffn-hidden-size 2048
+      --moe-router-score-function sigmoid
+      --moe-router-enable-expert-bias
+      --moe-router-bias-update-rate 0
+      --moe-router-load-balancing-type none
+      --moe-aux-loss-coeff 0
+      --moe-router-dtype fp32
+- at: 43
+  delete: 10
+  insert: "  --hf-checkpoint <SANDBOX>/models/mimo26-p4-bf16\n  --megatron-to-hf-mode bridge \n"
+- at: 58
+  delete: 3
+  insert: |2
+      --rm-type math
+      --num-rollout 4
+      --rollout-batch-size 16
+- at: 63
+  delete: 3
+  insert: "  --rollout-temperature 1.0\n  --rollout-top-p 1.0\n  --num-steps-per-rollout 1\n  --advantage-estimator grpo\n\
+    \  --entropy-coef 0.00\n  --eps-clip 0.2\n  --eps-clip-high 0.28 \n"
+- at: 72
+  delete: 10
+  insert: "  --accumulate-allreduce-grads-in-fp32 \n"
+- at: 83
+  delete: 1
+  insert: |2
+      --wandb-project miles-run_mimo_v2_6_flash
+- at: 87
+  delete: 0
+  insert: |2
+      --tensor-model-parallel-size 2
+      --sequence-parallel
+      --pipeline-model-parallel-size 2
+      --context-parallel-size 1
+      --expert-model-parallel-size 2
+      --expert-tensor-parallel-size 1
+      --use-dynamic-batch-size
+      --max-tokens-per-gpu 9216
+- at: 89
+  delete: 17
+  insert: "  --recompute-num-layers 1 \n  --rollout-num-gpus-per-engine 4\n  --sglang-dtype bfloat16\n  --sglang-mem-fraction-static\
+    \ 0.6\n  --sglang-decode-log-interval 1000 \n"
+- {at: 108, delete: 1, insert: ''}
+- at: 110
+  delete: 1
+  insert: |2
+      --attention-backend fused
+- at: 112
+  delete: 0
+  insert: |2
+      --actor-num-gpus-per-node 8
+- {at: 113, delete: 2, insert: ''}

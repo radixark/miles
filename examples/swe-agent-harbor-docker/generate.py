@@ -62,9 +62,7 @@ def _agg_mean(metrics: dict, all_metrics: list[dict], keys: list[str], prefix: s
 def aggregate_agent_metrics(samples: list[Sample]) -> dict:
     """Aggregate agent metrics across samples for logging."""
     all_metrics = [
-        s.metadata.get("agent_metrics", {})
-        for s in samples
-        if hasattr(s, "metadata") and s.metadata and s.metadata.get("agent_metrics")
+        s.metadata.get("agent_metrics", {}) for s in samples if s.metadata and s.metadata.get("agent_metrics")
     ]
     if not all_metrics:
         return {}

@@ -10,7 +10,7 @@ from tau_bench.agents.tool_calling_agent import RESPOND_ACTION_NAME, ToolCalling
 from tau_bench.types import Action, RunConfig
 from transformers import AutoTokenizer
 
-from miles.rollout.sglang_rollout import GenerateState
+from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.http_utils import post
 
 # Set up logger for this module
@@ -180,6 +180,8 @@ class TrainableAgentMixin:
         sampling_params: dict[str, Any],
         task_index: int | None = None,
         max_num_steps: int = 30,
+        *,
+        state: GenerateState,
     ) -> InteractionResult:
         """
         Execute async agent-environment interaction for training.
@@ -199,7 +201,6 @@ class TrainableAgentMixin:
             InteractionResult containing the complete interaction trajectory
         """
         # Initialize environment and state
-        state = GenerateState(rollout_args)
         url = f"http://{rollout_args.sglang_router_ip}:" f"{rollout_args.sglang_router_port}/generate"
 
         # Get initial environment state

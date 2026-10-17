@@ -1,0 +1,11 @@
+base: fsdp
+base_sha256: c8002bda7c293c7105fe399d2fe5a39fd0d55652f9ab9836e28a19c39fbdb086
+edits:
+- at: 87
+  delete: 1
+  insert: |2
+      debug_disable_optimizer: true
+- at: 270
+  delete: 1
+  insert: |2
+        mtp_num_layers: null, no_load_optim: true, no_load_rng: true, no_save_optim: true, optimizer: adam, override_lr_scheduler: false,

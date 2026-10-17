@@ -1,0 +1,15 @@
+base: megatron
+base_sha256: ebd030be45f1499e7bc51665e4d4216277a0d2c7e3b4e114b2651c47811e1b61
+edits:
+- at: 123
+  delete: 1
+  insert: |2
+      eval_function_path: &id002 {config: {custom_async_data_buffer_path_per_model: null}, path: miles.rollout.fully_async_rollout.FullyAsyncRolloutFn}
+- at: 149
+  delete: 1
+  insert: |2
+      fully_async: true
+- at: 250
+  delete: 1
+  insert: |2
+      pause_generation_mode: in_place

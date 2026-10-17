@@ -1,0 +1,20 @@
+base: fsdp
+base_sha256: fcf15d6a01a91c8f875a2c1ead782318a1bdb9038cc947e3e0e6d65b92f97288
+edits:
+- at: 11
+  delete: 0
+  insert: |
+    - --custom-inference-engine-provider-path
+    - tests.fast.argument_snapshot.argparser.scenarios._Hook
+- at: 90
+  delete: 1
+  insert: |2
+        custom_inference_engine_provider_path: tests.fast.argument_snapshot.argparser.scenarios._Hook
+- at: 985
+  delete: 0
+  insert: |2
+        snapshot_hook: 23
+- at: 11666
+  delete: 0
+  insert: |2
+          - {default: 23, dest: snapshot_hook, group: options, help: null, option_strings: [--snapshot-hook], type: {$callable: builtins.int}}

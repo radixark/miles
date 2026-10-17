@@ -7,7 +7,6 @@ forward / backward / optimizer logic.
 from __future__ import annotations
 
 import logging
-from argparse import Namespace
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -24,6 +23,7 @@ from miles.backends.megatron_utils.lora.utils import (
     patch_param_grad_buffer_for_colocate_mode_lora,
 )
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
@@ -86,26 +86,34 @@ def _get_model_config_from_wrapped(model):
     return get_attr_wrapped_model(model, "config", allow_none=False)
 
 
-def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
+def _validate_multi_lora_moe_support(args: TrainerConfig, provider) -> None:
     """Reject MoE configs the multi-slot grouped-expert adapter cannot serve (checked
     post-finalize because they depend on the resolved provider, not the CLI)."""
-    if not getattr(provider, "num_moe_experts", None):
+    if not getattr(
+        provider, "num_moe_experts", None
+    ):  # config-access-exempt: third-party providers differ in num_moe_experts support
         return
     if not targets_expert_leaves(args.hf_lora_targets):
         logger.info("[multilora] MoE model with no expert leaves in --target-modules; experts stay frozen")
         return
 
     # Checked on the provider: --expert-tensor-parallel-size stays None until Megatron resolves it.
-    expert_tp = getattr(provider, "expert_tensor_parallel_size", 1) or 1
+    expert_tp = (
+        getattr(provider, "expert_tensor_parallel_size", 1) or 1
+    )  # config-access-exempt: third-party providers differ in expert_tensor_parallel_size support
     assert expert_tp == 1, (
         f"Multi-LoRA on MoE experts requires expert_tensor_parallel_size=1 (resolved to "
         f"{expert_tp}); set --expert-tensor-parallel-size 1."
     )
-    assert getattr(provider, "moe_grouped_gemm", False), (
+    assert getattr(
+        provider, "moe_grouped_gemm", False
+    ), (  # config-access-exempt: third-party providers differ in moe_grouped_gemm support
         "Multi-LoRA on MoE experts requires moe_grouped_gemm=True (SequentialMLP expert "
         "linears are skipped, so the experts would train no adapter)."
     )
-    assert not getattr(provider, "fp8", None) and not getattr(provider, "fp4", None), (
+    assert not getattr(provider, "fp8", None) and not getattr(
+        provider, "fp4", None
+    ), (  # config-access-exempt: third-party providers differ in fp8 support; third-party providers differ in fp4 support
         "Multi-LoRA on MoE experts does not support fp8/fp4 experts (quantization padding "
         "desynchronizes the dispatched token order)."
     )
@@ -120,15 +128,17 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
             f"--target-modules (got {sorted(served & expert_pair)}); a one-sided expert "
             f"target is dropped at rollout time."
         )
-    assert not getattr(
-        provider, "moe_pad_expert_input_to_capacity", False
-    ), "Multi-LoRA on MoE experts does not support --moe-pad-expert-input-to-capacity."
-    assert not getattr(
+    assert (
+        not getattr(  # config-access-exempt: third-party providers differ in moe_pad_expert_input_to_capacity support
+            provider, "moe_pad_expert_input_to_capacity", False
+        )
+    ), ("Multi-LoRA on MoE experts does not support --moe-pad-expert-input-to-capacity.")
+    assert not getattr(  # config-access-exempt: third-party providers differ in moe_permute_fusion support
         provider, "moe_permute_fusion", False
     ), "Multi-LoRA on MoE experts requires moe_permute_fusion=False."
 
 
-def _setup_lora_model_via_bridge(args: Namespace) -> list:
+def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
     """Build Megatron model with LoRA using Megatron-Bridge.
 
     This handles:
@@ -152,27 +162,27 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
     provider = bridge.to_megatron_provider(load_weights=False)
 
-    provider.tensor_model_parallel_size = args.tensor_model_parallel_size
-    provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
-    provider.expert_model_parallel_size = args.expert_model_parallel_size
-    provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
-    provider.sequence_parallel = args.sequence_parallel
-    provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
-    provider.context_parallel_size = args.context_parallel_size
-    provider.gradient_accumulation_fusion = args.gradient_accumulation_fusion
-    provider.recompute_granularity = args.recompute_granularity
-    provider.recompute_method = args.recompute_method
-    provider.recompute_num_layers = args.recompute_num_layers
-    provider.recompute_modules = args.recompute_modules
-    provider.distribute_saved_activations = args.distribute_saved_activations
-    provider.attention_backend = args.attention_backend
-    provider.apply_rope_fusion = args.apply_rope_fusion
+    provider.tensor_model_parallel_size = args.backend.tensor_model_parallel_size
+    provider.pipeline_model_parallel_size = args.backend.pipeline_model_parallel_size
+    provider.expert_model_parallel_size = args.backend.expert_model_parallel_size
+    provider.expert_tensor_parallel_size = args.backend.expert_tensor_parallel_size
+    provider.sequence_parallel = args.backend.sequence_parallel
+    provider.virtual_pipeline_model_parallel_size = args.backend.virtual_pipeline_model_parallel_size
+    provider.context_parallel_size = args.backend.context_parallel_size
+    provider.gradient_accumulation_fusion = args.backend.gradient_accumulation_fusion
+    provider.recompute_granularity = args.backend.recompute_granularity
+    provider.recompute_method = args.backend.recompute_method
+    provider.recompute_num_layers = args.backend.recompute_num_layers
+    provider.recompute_modules = args.backend.recompute_modules
+    provider.distribute_saved_activations = args.backend.distribute_saved_activations
+    provider.attention_backend = args.backend.attention_backend
+    provider.apply_rope_fusion = args.backend.apply_rope_fusion
     # Custom providers can bypass GPTModelProvider.provide() and its fusion checks.
     if not validate_rope_fusion_compatibility(provider):
         provider.apply_rope_fusion = False
-    provider.bias_activation_fusion = args.bias_swiglu_fusion
-    provider.moe_router_dtype = args.moe_router_dtype
-    provider.moe_router_use_torch_mm = args.moe_router_use_torch_mm
+    provider.bias_activation_fusion = args.backend.bias_swiglu_fusion
+    provider.moe_router_dtype = args.backend.moe_router_dtype
+    provider.moe_router_use_torch_mm = args.backend.moe_router_use_torch_mm
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
@@ -182,16 +192,18 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if is_multi_lora_enabled(args) and targets_expert_leaves(args.hf_lora_targets):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
         # MoE providers default the fusion on — so turn it off rather than refuse to build.
-        if getattr(provider, "moe_permute_fusion", False):
+        if getattr(
+            provider, "moe_permute_fusion", False
+        ):  # config-access-exempt: third-party providers differ in moe_permute_fusion support
             logger.info(
                 "[multilora] disabling moe_permute_fusion: expert adapters replay the "
                 "dispatcher's permutation, which the fused kernel does not expose"
             )
         provider.moe_permute_fusion = False
-    if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
-        provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
-    if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
-        provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+    if args.backend.decoder_first_pipeline_num_layers is not None:
+        provider.num_layers_in_first_pipeline_stage = args.backend.decoder_first_pipeline_num_layers
+    if args.backend.decoder_last_pipeline_num_layers is not None:
+        provider.num_layers_in_last_pipeline_stage = args.backend.decoder_last_pipeline_num_layers
     apply_dsa_backend_args(provider, args)
     provider.finalize()
 
@@ -244,17 +256,19 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         or "ForSequenceClassification" in hf_config.architectures[0]
     )
     if is_value_model:
-        hidden_size = hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
+        hidden_size = (
+            hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
+        )  # config-access-exempt: model-family schemas differ in optional text_config metadata
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size))
 
-    use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
+    use_distributed_optimizer = "muon" not in (args.backend.optimizer or "").lower()
     if is_multi_lora_enabled(args):
         # Per-slot LayerWise optimizers: plain DDP all-reduce keeps full grads on
         # every rank (whole-param sharding + retained-gradient idempotency).
         use_distributed_optimizer = False
     ddp_config = DistributedDataParallelConfig(
         use_distributed_optimizer=use_distributed_optimizer,
-        grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
+        grad_reduce_in_fp32=args.backend.accumulate_allreduce_grads_in_fp32,
     )
     ddp_config.finalize()
 

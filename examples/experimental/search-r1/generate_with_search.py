@@ -6,7 +6,7 @@ import re
 
 from qa_em_format import compute_score_em
 
-from miles.rollout.sglang_rollout import GenerateState
+from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
@@ -142,10 +142,11 @@ If I want to give the final answer, I should put the answer between <answer> and
     return next_obs, done
 
 
-async def generate(args, sample: Sample, sampling_params) -> Sample:
+async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+    args, sample, sampling_params = input.args, input.sample, input.sampling_params
     assert not args.partial_rollout, "Partial rollout is not supported for this function at the moment."
 
-    state = GenerateState(args)
+    state = input.state
 
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
@@ -171,7 +172,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         # abort
         if output["meta_info"]["finish_reason"]["type"] == "abort":
             sample.status = Sample.Status.ABORTED
-            return sample
+            return GenerateFnOutput(samples=sample)
 
         cur_response = output["text"]
 
@@ -244,7 +245,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
         case "stop":
             sample.status = Sample.Status.COMPLETED
 
-    return sample
+    return GenerateFnOutput(samples=sample)
 
 
 async def reward_func(args, sample, **kwargs):

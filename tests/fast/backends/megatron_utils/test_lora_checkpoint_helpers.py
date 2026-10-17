@@ -5,10 +5,10 @@ save_checkpoint_with_lora / load_checkpoint — the latter using mocks to avoid
 GPU / distributed requirements.
 """
 
-from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests.fast.fixtures.args_fixtures import make_trainer_args
 
 from miles.backends.megatron_utils.checkpoint import _is_megatron_checkpoint, save_checkpoint_with_lora
 
@@ -69,28 +69,26 @@ class TestIsMegatronCheckpoint:
 
 
 class TestSaveCheckpointWithLoRA:
-    @patch("miles.backends.megatron_utils.checkpoint.get_args")
     @patch("miles.backends.megatron_utils.checkpoint.save_lora_checkpoint")
     @patch("miles.backends.megatron_utils.checkpoint.is_lora_model", return_value=True)
-    def test_lora_model_saves_adapter(self, mock_is_lora, mock_save_lora, mock_get_args, tmp_path):
-        mock_get_args.return_value = Namespace(save=str(tmp_path))
+    def test_lora_model_saves_adapter(self, mock_is_lora, mock_save_lora, tmp_path):
+        args = make_trainer_args(save=str(tmp_path))
         model = [MagicMock()]
 
         publisher = MagicMock()
-        save_checkpoint_with_lora(42, model, MagicMock(), MagicMock(), publisher=publisher)
+        save_checkpoint_with_lora(42, model, MagicMock(), MagicMock(), args=args, publisher=publisher)
 
         mock_save_lora.assert_called_once()
         call_args = mock_save_lora.call_args
         assert call_args.kwargs["publisher"] is publisher
         assert "adapter" in call_args[1].get("save_dir", call_args[0][2] if len(call_args[0]) > 2 else "")
 
-    @patch("miles.backends.megatron_utils.checkpoint.get_args")
     @patch("miles.backends.megatron_utils.checkpoint.save_checkpoint")
     @patch("miles.backends.megatron_utils.checkpoint.is_lora_model", return_value=False)
-    def test_non_lora_model_saves_regular(self, mock_is_lora, mock_save_ckpt, mock_get_args, tmp_path):
-        mock_get_args.return_value = Namespace(save=str(tmp_path))
+    def test_non_lora_model_saves_regular(self, mock_is_lora, mock_save_ckpt, tmp_path):
+        args = make_trainer_args(save=str(tmp_path))
         model = [MagicMock()]
 
-        save_checkpoint_with_lora(42, model, MagicMock(), MagicMock())
+        save_checkpoint_with_lora(42, model, MagicMock(), MagicMock(), args=args)
 
         mock_save_ckpt.assert_called_once()

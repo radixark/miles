@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from miles.utils.args.runtime import RolloutConfig
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 
 
@@ -26,27 +27,34 @@ def make_args(
     max_tokens_per_gpu=None,
     balance_data=False,
     balance_by_flops=False,
+    allow_partial_train_step=False,
 ):
-    return SimpleNamespace(
+    return RolloutConfig.model_construct(
         micro_batch_size=micro_batch_size,
         use_dynamic_batch_size=use_dynamic_batch_size,
         max_tokens_per_gpu=max_tokens_per_gpu,
         balance_data=balance_data,
         balance_by_flops=balance_by_flops,
+        allow_partial_train_step=allow_partial_train_step,
+        train_backend="megatron",
         # Minimal model config for calculate_fwd_flops (balance_by_flops path).
-        hidden_size=16,
-        num_attention_heads=2,
-        num_query_groups=2,
-        vocab_size=32,
-        ffn_hidden_size=64,
-        num_experts=None,
-        num_layers=2,
-        kv_channels=8,
-        q_lora_rank=None,  # no MLA in the stub config
-        kv_lora_rank=None,
-        qk_pos_emb_head_dim=0,
-        qk_head_dim=8,
-        v_head_dim=8,
+        raw_megatron=SimpleNamespace(
+            base_args=dict(
+                hidden_size=16,
+                num_attention_heads=2,
+                num_query_groups=2,
+                vocab_size=32,
+                ffn_hidden_size=64,
+                num_experts=None,
+                num_layers=2,
+                kv_channels=8,
+                q_lora_rank=None,  # no MLA in the stub config
+                kv_lora_rank=None,
+                qk_pos_emb_head_dim=0,
+                qk_head_dim=8,
+                v_head_dim=8,
+            )
+        ),
     )
 
 
@@ -303,8 +311,7 @@ def test_partial_final_step_opt_in():
     step of the trailing rollout, covering every sample."""
     rollout_indices = [0, 0, 1, 2, 2, 3, 4, 4]
     total_lengths = [3] * 8
-    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
-    args.allow_partial_train_step = True
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12, allow_partial_train_step=True)
     tp = make_tp(dp_size=1)
 
     partitions, mbi, nmb, num_rollouts_per_step = build_dp_schedule(
@@ -328,8 +335,7 @@ def test_partial_final_step_skipped_when_below_dp_size():
     """A trailing rollout with fewer samples than dp_size cannot form a step."""
     rollout_indices = [0, 0, 1, 1, 2]
     total_lengths = [3] * 5
-    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
-    args.allow_partial_train_step = True
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12, allow_partial_train_step=True)
     tp = make_tp(dp_size=2)
 
     _, _, nmb, num_rollouts_per_step = build_dp_schedule(

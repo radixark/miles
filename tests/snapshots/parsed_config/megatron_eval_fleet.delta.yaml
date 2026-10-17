@@ -1,0 +1,84 @@
+base: megatron
+base_sha256: ebd030be45f1499e7bc51665e4d4216277a0d2c7e3b4e114b2651c47811e1b61
+edits:
+- at: 1
+  delete: 1
+  insert: |2
+      <<:
+      - &id002 {async_save: false, ckpt_step: null, distributed_backend: nccl, distributed_timeout_minutes: 10, eval_interval: 2,
+- at: 4
+  delete: 0
+  insert: |2
+      - &id001 {custom_generate_function_path: null, input_key: input, label_key: null, metadata_key: metadata, n_samples_per_eval_prompt: 1,
+        rm_type: null, tool_key: tools}
+- {at: 65, delete: 1, insert: ''}
+- at: 122
+  delete: 3
+  insert: |2
+      eval_datasets:
+      - <<: *id001
+        max_response_len: null
+        metadata_overrides: {}
+        min_new_tokens: null
+        name: aime
+        path: $FIXTURES/data.jsonl
+        stop: null
+        stop_token_ids: null
+        temperature: 1.0
+        top_k: -1
+        top_p: 1.0
+      eval_function_path: &id003 {config: null, path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn}
+      eval_hf_dir: $FIXTURES/eval-hf
+- at: 133
+  delete: 1
+  insert: |2
+      eval_num_gpus: 1
+- at: 136
+  delete: 1
+  insert: |2
+      eval_prompt_data: [aime, $FIXTURES/data.jsonl]
+- at: 142
+  delete: 1
+  insert: |2
+      eval_uses_snapshots: true
+- at: 160
+  delete: 2
+  insert: |2
+      init_expected_num_cells: {eval: 1}
+- {at: 166, delete: 1, insert: ''}
+- {at: 198, delete: 1, insert: ''}
+- {at: 218, delete: 1, insert: ''}
+- at: 261
+  delete: 1
+  insert: |2
+          <<: *id002
+- {at: 1132, delete: 1, insert: ''}
+- at: 1141
+  delete: 1
+  insert: |2
+      rollout_function_path: *id003
+- at: 1166
+  delete: 1
+  insert: |2
+        <<: &id004 {api_key: null, enable_trace: false, log_level: info, otlp_traces_endpoint: 'localhost:4317', reasoning_parser: null,
+- at: 1283
+  delete: 1
+  insert: |2
+          <<: *id004
+- at: 1781
+  delete: 1
+  insert: |2
+        models:
+        - model_path: null
+          name: eval
+          server_groups:
+          - needs_offload: false
+            num_gpus_per_engine: 1
+            overrides: {enable_metrics: true, enable_return_indexer_topk: false, enable_return_routed_experts: false, model_path: null}
+            worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+          update_weights: false
+- at: 1788
+  delete: 1
+  insert: |2
+      sglang_scaling: {groups: {eval: [{engine_offset: 0, gpu_offset: 0, num_gpus: 1}]}}
+- {at: 1807, delete: 1, insert: ''}

@@ -1,53 +1,34 @@
-"--disable-bias-linear"
-"--group-query-attention"
-"--num-attention-heads"
-"96"
-"--num-query-groups"
-"8"
-"--kv-channels"
-"128"
-"--num-layers"
-"46"
-"--hidden-size"
-"4096"
-"--ffn-hidden-size"
-"10944"
-"--add-qkv-bias"
-"--normalization"
-"RMSNorm"
-"--position-embedding-type"
-"rope"
-"--rotary-percent"
-"0.5"
-"--swiglu"
-"--untie-embeddings-and-output-weights"
-"--vocab-size"
-"151552"
-"--rotary-base"
-"1000000"
-"--moe-ffn-hidden-size"
-"1408"
-"--moe-shared-expert-intermediate-size"
-"1408"
-"--moe-router-pre-softmax"
-"--moe-router-score-function"
-"sigmoid"
-"--moe-router-enable-expert-bias"
-"--moe-router-bias-update-rate"
-"0"
-"--moe-router-load-balancing-type"
-"seq_aux_loss"
-"--moe-token-dispatcher-type"
-"alltoall"
-"--moe-router-topk"
-"8"
-"--moe-layer-freq"
-"[0]*1+[1]*45"
-"--num-experts"
-"128"
-"--moe-grouped-gemm"
-"--moe-router-dtype"
-"fp32"
-"--moe-permute-fusion"
-"--moe-aux-loss-coeff"
-"0"
+# miles-snapshot-delta-v1
+base: glm4.5-355B-A32B.txt
+base_sha256: d777fb59697c80aaf8c38b1287f6bb01206047b0ed41dbecf4d984e3123518c0
+edits:
+- {at: 1, delete: 1, insert: ''}
+- at: 10
+  delete: 1
+  insert: |
+    "46"
+- at: 12
+  delete: 1
+  insert: |
+    "4096"
+- at: 14
+  delete: 1
+  insert: |
+    "10944"
+- at: 29
+  delete: 1
+  insert: |
+    "1408"
+- at: 31
+  delete: 1
+  insert: |
+    "1408"
+- {at: 44, delete: 2, insert: ''}
+- at: 47
+  delete: 1
+  insert: |
+    "[0]*1+[1]*45"
+- at: 49
+  delete: 1
+  insert: |
+    "128"

@@ -8,6 +8,7 @@ import torch
 from tests.ci.ci_register import register_cpu_ci
 
 from miles.backends.torchtitan_utils import parallel as tp
+from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
 
 register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
@@ -64,7 +65,7 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
         validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
 
 
-def _config_args(**overrides) -> Namespace:
+def _config_args(**overrides: object) -> Namespace:
     base = dict(
         optimizer="adam",
         titan_model_name="qwen3",
@@ -91,7 +92,7 @@ def _config_args(**overrides) -> Namespace:
         save=None,
         load=None,
     )
-    return Namespace(**{**base, **overrides})
+    return Namespace(backend=TorchtitanArgsNamespace(**{**base, **overrides}))
 
 
 def _checkpoint_dir(tmp_path, **config) -> str:
@@ -332,14 +333,14 @@ def test_unknown_model_names_name_both_package_roots():
     from miles.backends.torchtitan_utils.config import resolve_model_spec
 
     with pytest.raises(ValueError, match="miles.backends.torchtitan_utils.models.nope.*torchtitan.models.nope"):
-        resolve_model_spec(_args(titan_model_name="nope", titan_model_flavor="x"))
+        resolve_model_spec(_config_args(titan_model_name="nope", titan_model_flavor="x"))
 
 
 def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.config import resolve_model_spec
 
-    spec = resolve_model_spec(_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"))
+    spec = resolve_model_spec(_config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"))
     hf = _GLM47_FLASH_HF_CONFIG
     model = spec.model
     assert (model.dim, model.vocab_size, len(model.layers)) == (

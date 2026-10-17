@@ -1,0 +1,22 @@
+base: fsdp
+base_sha256: c8002bda7c293c7105fe399d2fe5a39fd0d55652f9ab9836e28a19c39fbdb086
+edits:
+- at: 236
+  delete: 1
+  insert: |2
+      offload_rollout: true
+- at: 238
+  delete: 1
+  insert: |2
+      offload_train: true
+- at: 266
+  delete: 8
+  insert: |2
+        disable_grad_buffers_cpu_backup: true, disable_param_buffers_cpu_backup: true, dp_replicate_size: 1, finetune: true, fp16: false,
+        fsdp_cpu_backend: gloo, fsdp_cpu_offload: false, fsdp_state_dict_cpu_offload: true, gradient_checkpointing: false, keep_fp32_master: true,
+        kernel_backend: native, kernel_mapping_path: '', kernel_strict: false, lr: 1.0e-06, lr_decay_iters: null, lr_decay_style: constant,
+        lr_warmup_fraction: null, lr_warmup_init: 0.0, lr_warmup_iters: 0, lr_wsd_decay_iters: null, lr_wsd_decay_style: null,
+        memory_snapshot_path: snapshot.pickle, min_lr: 0.0, mtp_loss_scaling_factor: 0.2, mtp_num_layers: null, no_load_optim: true,
+        no_load_rng: true, no_save_optim: false, optimizer: adam, override_lr_scheduler: false, profile_step_end: 12, profile_step_start: 10,
+        rank: 0, recompute_granularity: null, record_memory_history: false, tensorboard_dir: null, use_checkpoint_lr_scheduler: true,
+        use_pytorch_profiler: false, wandb_run_name: null, warmup_ratio: 0.03, weight_decay: 0.0, world_size: 1}

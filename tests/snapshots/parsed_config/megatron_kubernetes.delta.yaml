@@ -1,0 +1,19 @@
+base: megatron
+base_sha256: ebd030be45f1499e7bc51665e4d4216277a0d2c7e3b4e114b2651c47811e1b61
+edits:
+- at: 50
+  delete: 1
+  insert: |2
+      cluster_backend: kubernetes
+- at: 214
+  delete: 1
+  insert: |2
+      mooncake_store_init_kwargs: {master_server_address: 'localhost:50051'}
+- at: 227
+  delete: 1
+  insert: |2
+      object_store_backend: mooncake
+- at: 1864
+  delete: 1
+  insert: |2
+      worker_comm_backend: rpc

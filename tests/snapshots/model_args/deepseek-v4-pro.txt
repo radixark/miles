@@ -1,99 +1,56 @@
-"--disable-bias-linear"
-"--num-layers"
-"61"
-"--hidden-size"
-"7168"
-"--ffn-hidden-size"
-"3072"
-"--num-attention-heads"
-"128"
-"--normalization"
-"RMSNorm"
-"--position-embedding-type"
-"rope"
-"--norm-epsilon"
-"1e-6"
-"--swiglu"
-"--untie-embeddings-and-output-weights"
-"--vocab-size"
-"129280"
-"--hidden-dropout"
-"0.0"
-"--attention-dropout"
-"0.0"
-"--multi-latent-attention"
-"--q-lora-rank"
-"1536"
-"--kv-lora-rank"
-"512"
-"--qk-head-dim"
-"512"
-"--qk-pos-emb-head-dim"
-"64"
-"--v-head-dim"
-"512"
-"--qk-layernorm"
-"--rotary-scaling-factor"
-"16"
-"--rotary-base"
-"10000"
-"--original-max-position-embeddings"
-"65536"
-"--beta-fast"
-"32"
-"--beta-slow"
-"1"
-"--attention-softmax-in-fp32"
-"--no-rope-fusion"
-"--num-experts"
-"384"
-"--moe-layer-freq"
-"[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]"
-"--moe-ffn-hidden-size"
-"3072"
-"--moe-router-topk"
-"6"
-"--moe-shared-expert-intermediate-size"
-"3072"
-"--moe-router-pre-softmax"
-"--moe-router-score-function"
-"sqrtsoftplus"
-"--moe-router-enable-expert-bias"
-"--moe-router-load-balancing-type"
-"seq_aux_loss"
-"--moe-token-dispatcher-type"
-"alltoall"
-"--moe-aux-loss-coeff"
-"0"
-"--moe-grouped-gemm"
-"--moe-router-topk-scaling-factor"
-"2.5"
-"--num-residual-streams"
-"4"
-"--mhc-sinkhorn-iterations"
-"20"
-"--csa-compress-ratios"
-"[128,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,0]"
-"--csa-compress-rotary-base"
-"160000"
-"--o-groups"
-"16"
-"--o-lora-rank"
-"1024"
-"--moe-n-hash-layers"
-"3"
-"--csa-window-size"
-"128"
-"--dsa-indexer-n-heads"
-"64"
-"--dsa-indexer-head-dim"
-"128"
-"--dsa-indexer-topk"
-"1024"
-"--spec"
-"miles_plugins.models.deepseek_v4.deepseek_v4"
-"get_dsv4_spec"
-"--activation-func-clamp-value"
-"10"
-"--no-bias-swiglu-fusion"
-"--no-activation-func-clamp-shared-expert"
+# miles-snapshot-delta-v1
+base: deepseek-v4-flash.txt
+base_sha256: ba22779dc0cc96e4e319f3d94e14d124aa88ae0ae5ff9175df0abc592c615574
+edits:
+- at: 2
+  delete: 1
+  insert: |
+    "61"
+- at: 4
+  delete: 1
+  insert: |
+    "7168"
+- at: 6
+  delete: 1
+  insert: |
+    "3072"
+- at: 8
+  delete: 1
+  insert: |
+    "128"
+- at: 25
+  delete: 1
+  insert: |
+    "1536"
+- at: 48
+  delete: 1
+  insert: |
+    "384"
+- at: 50
+  delete: 1
+  insert: |
+    "[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]"
+- at: 52
+  delete: 1
+  insert: |
+    "3072"
+- at: 56
+  delete: 1
+  insert: |
+    "3072"
+- at: 69
+  delete: 1
+  insert: |
+    "2.5"
+- at: 75
+  delete: 1
+  insert: |
+    "[128,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,0]"
+- at: 79
+  delete: 1
+  insert: |
+    "16"
+- at: 91
+  delete: 1
+  insert: |
+    "1024"

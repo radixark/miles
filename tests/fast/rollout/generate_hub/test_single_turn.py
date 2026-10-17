@@ -287,21 +287,19 @@ class TestRoutedExperts:
         "generation_env",
         [
             {
-                "args_kwargs": {"use_rollout_routing_replay": True},
+                "args_kwargs": {"use_rollout_routing_replay": True, "num_layers": 2},
                 "process_fn_kwargs": {"routed_experts": "placeholder"},
             }
         ],
         indirect=True,
     )
     def test_routed_experts_enabled_and_parsed(self, variant, generation_env):
-        num_layers, moe_router_topk = 2, 4
+        num_layers, moe_router_topk = generation_env.args.num_layers, 4
         num_tokens = len(PROMPT_TOKENS) + len(RESPONSE_TOKENS)
         routed_experts_array = np.arange((num_tokens - 1) * num_layers * moe_router_topk, dtype=np.int32).reshape(
             num_tokens - 1, num_layers, moe_router_topk
         )
 
-        generation_env.args.num_layers = num_layers
-        generation_env.args.moe_router_topk = moe_router_topk
         routed_experts_str = pybase64.b64encode(routed_experts_array.tobytes()).decode("ascii")
         generation_env.mock_server.process_fn = lambda _: ProcessResult(
             text=RESPONSE_TEXT,

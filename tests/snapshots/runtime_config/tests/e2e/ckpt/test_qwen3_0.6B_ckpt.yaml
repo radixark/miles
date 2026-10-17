@@ -1,0 +1,275 @@
+processes:
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0000/all/default/actor_cell00000:
+    diffs: &id014
+      checkpoint_load-0000:
+        set:
+          <<: &id001 {/args/backend/lr_decay_iters: 2, /args/backend/model_type: {$enum: megatron.core.enums.ModelType, name: encoder_or_decoder},
+            /args/backend/train_iters: 2}
+          /args/backend/ckpt_step: null
+          /args/backend/finetune: true
+          /args/backend/load: /root/models/Qwen3-0.6B_torch_dist
+          /args/backend/no_load_optim: true
+          /args/backend/no_load_rng: true
+          /load: /root/models/Qwen3-0.6B_torch_dist
+          /local_checkpoint_manager: false
+      train_first_step-0000: {set: {<<: *id001, /role: actor}}
+    overrides:
+      set: {<<: [&id007 {/args/backend/save: /root/checkpoints/Qwen3-0.6B_miles, /args/backend/save_interval: 1, /args/critic_load: null},
+          &id002 {/args/ci_save_model_hash: true, /args/critic_save: /root/checkpoints/Qwen3-0.6B_miles_critic, /args/log_inference_engine_weight_checksums: true,
+            /args/save_debug_event_data: /root/checkpoints/Qwen3-0.6B_miles/events}], /args/config_snapshot_name: tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0000}
+    ranks: [0, 1]
+    template: trainer-megatron-02
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0000/all/default/inference_controller:
+    diffs: &id005 {router_endpoints-0000: {set: {<<: &id003 {/args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}},
+            /args/sglang_router_ip: $HOST, /args/sglang_router_port: $PORT}}}}
+    overrides:
+      set: {<<: [*id002, &id004 {/args/save: /root/checkpoints/Qwen3-0.6B_miles, /args/save_interval: 1}], /args/config_snapshot_name: tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0000}
+    template: inference_controller-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0000/all/default/main:
+    <<: &id010
+      diffs:
+        router_endpoints-0000: {set: {<<: *id003, /args/wandb_run_id: $WANDB_RUN_ID_0000}}
+        tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+      template: main-01
+    overrides: &id006
+      set: {<<: [*id002, *id004, &id016 {/args/raw_megatron/base_args/load: null, /args/raw_megatron/base_args/save: /root/checkpoints/Qwen3-0.6B_miles,
+            /args/raw_megatron/base_args/save_interval: 1}], /args/config_snapshot_name: tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0000}
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0000/all/default/rollout_executor:
+    diffs: *id005
+    overrides: *id006
+    template: rollout_executor-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0000/all/default/trainer_controller_actor:
+    overrides:
+      set: {<<: [*id007, *id002], /args/backend/rank: 0, /args/config_snapshot_name: tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0000}
+    template: trainer-megatron-02
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0000/all/default/worker_manager:
+    overrides: *id006
+    template: worker_manager-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0001/all/default/actor_cell00000:
+    diffs: &id019
+      checkpoint_load-0000:
+        set:
+          <<: *id001
+          /args/backend/ckpt_step: 1
+          /args/backend/finetune: false
+          /args/backend/load: /root/checkpoints/Qwen3-0.6B_miles
+          /args/backend/no_load_optim: null
+          /args/backend/no_load_rng: null
+          /load: /root/checkpoints/Qwen3-0.6B_miles
+          /local_checkpoint_manager: false
+    overrides:
+      set: {<<: [&id008 {/args/ci_check_model_hash: true, /args/critic_load: /root/checkpoints/Qwen3-0.6B_miles}, &id009 {
+            /args/config_snapshot_name: tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0001, /args/wandb_group: $RUN_ID_0004_$CI_COMMIT_NAME_github}],
+        /args/backend/low_memory_resume: true}
+    ranks: [0, 1]
+    template: trainer-megatron-02
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0001/all/default/inference_controller:
+    diffs: *id005
+    overrides:
+      set: {<<: [*id008, *id009, &id011 {/args/ckpt_step: 1, /args/low_memory_resume: true}]}
+    template: inference_controller-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0001/all/default/main:
+    <<: *id010
+    overrides: &id013
+      set: {<<: [*id008, *id009, *id011, &id021 {/args/load: /root/checkpoints/Qwen3-0.6B_miles, /args/requested_load: /root/checkpoints/Qwen3-0.6B_miles},
+          &id012 {/args/raw_megatron/base_args/ckpt_step: 1, /args/raw_megatron/base_args/load: /root/checkpoints/Qwen3-0.6B_miles,
+            /args/raw_megatron/base_args/low_memory_resume: true}]}
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0001/all/default/rollout_executor:
+    diffs: *id005
+    overrides:
+      set: {<<: [*id008, *id009, *id011, *id012]}
+    template: rollout_executor-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0001/all/default/trainer_controller_actor:
+    overrides:
+      set: {<<: [*id008, *id009], /args/backend/low_memory_resume: true, /args/backend/rank: 0}
+    template: trainer-megatron-02
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0001/all/default/worker_manager:
+    overrides: *id013
+    template: worker_manager-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0002/all/default/actor_cell00000:
+    diffs: *id014
+    overrides:
+      set: {<<: [*id007, *id002, &id018 {/args/backend/async_save: true, /args/backend/async_strategy: nvrx, /args/backend/use_persistent_ckpt_worker: true},
+          &id015 {/args/config_snapshot_name: tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0002, /args/wandb_group: $RUN_ID_0006_$CI_COMMIT_NAME_github}]}
+    ranks: [0, 1]
+    template: trainer-megatron-02
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0002/all/default/inference_controller:
+    diffs: *id005
+    overrides:
+      set: {<<: [*id002, *id004, *id015], /args/async_save: true}
+    template: inference_controller-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0002/all/default/main:
+    <<: *id010
+    overrides: &id017
+      set: {<<: [*id002, *id004, *id016, *id015], /args/async_save: true, /args/raw_megatron/base_args/async_save: true, /args/raw_megatron/base_args/async_strategy: nvrx,
+        /args/raw_megatron/base_args/use_persistent_ckpt_worker: true}
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0002/all/default/rollout_executor:
+    diffs: *id005
+    overrides: *id017
+    template: rollout_executor-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0002/all/default/trainer_controller_actor:
+    overrides:
+      set: {<<: [*id007, *id002, *id018, *id015], /args/backend/rank: 0}
+    template: trainer-megatron-02
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0002/all/default/worker_manager:
+    overrides: *id017
+    template: worker_manager-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0003/all/default/actor_cell00000:
+    diffs: *id019
+    overrides:
+      set: {<<: [*id008, &id020 {/args/config_snapshot_name: tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0003, /args/wandb_group: $RUN_ID_0008_$CI_COMMIT_NAME_github}],
+        /args/backend/low_memory_resume: true}
+    ranks: [0, 1]
+    template: trainer-megatron-02
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0003/all/default/inference_controller:
+    diffs: *id005
+    overrides:
+      set: {<<: [*id008, *id011, *id020]}
+    template: inference_controller-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0003/all/default/main:
+    <<: *id010
+    overrides: &id022
+      set: {<<: [*id008, *id011, *id021, *id012, *id020]}
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0003/all/default/rollout_executor:
+    diffs: *id005
+    overrides:
+      set: {<<: [*id008, *id011, *id012, *id020]}
+    template: rollout_executor-01
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0003/all/default/trainer_controller_actor:
+    overrides:
+      set: {<<: [*id008, *id020], /args/backend/low_memory_resume: true, /args/backend/rank: 0}
+    template: trainer-megatron-02
+  tests/e2e/ckpt/test_qwen3_0.6B_ckpt/run-0003/all/default/worker_manager:
+    overrides: *id022
+    template: worker_manager-01
+shared_overrides:
+  inference_controller-01:
+    remove: &id025 [/args/ci_logprobs_checker_abs_tol, /args/freeze_indexer, /args/load, /args/requested_load, /args/sglang/base_args/elastic_ep_rejoin,
+      /args/sglang/base_args/keep_mm_feature_on_device]
+    set:
+      <<:
+      - &id023 {/args/balance_data: true, /args/global_batch_size: 8, /args/init_expected_num_cells/default: 1, /args/input_key: prompt,
+        /args/num_layers: 28, /args/num_rollout: 2, /args/rollout_max_response_len: 1024, /args/rollout_temperature: 0.8,
+        /args/wandb_project: miles-test_qwen3_0.6B_ckpt}
+      - &id024
+        /args/ci_event_root: null
+        /args/dsa_impl: miles
+        /args/eps_clip_high: 0.2
+        /args/hf_checkpoint: /root/models/Qwen3-0.6B/
+        /args/kl_loss_type: k1
+        /args/log_probs_max_tokens_per_gpu: 16384
+        /args/max_tokens_per_gpu: 16384
+        /args/n_samples_per_prompt: 2
+        /args/ref_load: /root/models/Qwen3-0.6B_torch_dist
+        /args/rollout_batch_size: 4
+        /args/rollout_num_gpus_per_engine: 2
+        /args/rollout_sampling_logprobs_mode: selected
+        /args/rollout_top_logprobs_num: 0
+        /args/score_centering_is: none
+        /args/score_centering_mis_high: 5.0
+        /args/score_centering_mis_low: 0.5
+        /args/score_centering_tis_clip: 2.0
+        /args/sglang/base_args/boundary_reduction: auto
+        /args/sglang/base_args/constrained_json_max_whitespace_cnt: null
+        /args/sglang/base_args/cuda_graph_bs_decode: [1, 2, 4, 8, 16]
+        /args/sglang/base_args/cuda_graph_max_seq_len_prefill: null
+        /args/sglang/base_args/cuda_graph_prefill_max_context: null
+        /args/sglang/base_args/disable_aiter_allreduce_fusion_in_decode: false
+        /args/sglang/base_args/disable_aiter_allreduce_fusion_in_prefill: false
+        /args/sglang/base_args/disaggregation_decode_host_receive_threshold: 0.0
+        /args/sglang/base_args/disaggregation_enable_kv_checksum: false
+        /args/sglang/base_args/enable_decoder_swa_bounded_replay: false
+        /args/sglang/base_args/enable_encoder_swa_bounded_replay: false
+        /args/sglang/base_args/enable_linker_mla_dedup: false
+        /args/sglang/base_args/enable_pd_role_switch: false
+        /args/sglang/base_args/grpc_response_timeout_secs: 300
+        /args/sglang/base_args/hicache_host_memory_fraction: 0.8
+        /args/sglang/base_args/otlp_service_name: null
+        /args/sglang/base_args/prefill_kv_cache_dequant_dtype: auto
+        /args/sglang/base_args/shared_experts_tp_size: null
+        /args/sglang/base_args/speculative_draft_sink_size: null
+        /args/sglang/base_args/swa_prefix_tails: null
+        /args/sglang/base_args/tp_size: 2
+        /args/sglang/base_args/trust_request_chat_template: false
+        /args/sglang/models:
+        - model_path: null
+          name: default
+          server_groups:
+          - {needs_offload: true, num_gpus_per_engine: 2, overrides: {model_path: /root/models/Qwen3-0.6B/}, worker_type: {
+              $enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}}
+          update_weights: true
+        /args/start_rollout_id: null
+        /args/wandb_key: $WANDB_KEY_environment
+  main-01:
+    remove: &id027 [/args/ci_logprobs_checker_abs_tol, /args/freeze_indexer, /args/sglang/base_args/elastic_ep_rejoin, /args/sglang/base_args/keep_mm_feature_on_device]
+    set:
+      <<:
+      - *id023
+      - *id024
+      - &id026 {/args/raw_megatron/base_args/dsa_cp_balance_indexer: false, /args/raw_megatron/base_args/dsa_indexer_precision: bf16,
+        /args/raw_megatron/base_args/dsa_indexer_topk_backend: null, /args/raw_megatron/base_args/dsa_indexer_topk_deterministic: false,
+        /args/raw_megatron/base_args/dsa_indexer_topk_tie_break: 0, /args/raw_megatron/base_args/dsa_indexer_weights_proj_output_dtype: bf16,
+        /args/raw_megatron/base_args/dsa_indexer_weights_proj_use_quantization: true, /args/raw_megatron/base_args/encoder_num_layers: 28,
+        /args/raw_megatron/base_args/eval_global_batch_size: 8, /args/raw_megatron/base_args/expert_tensor_parallel_size: 2,
+        /args/raw_megatron/base_args/ffn_hidden_size: 3072, /args/raw_megatron/base_args/finetune: false, /args/raw_megatron/base_args/global_batch_size: 8,
+        /args/raw_megatron/base_args/hidden_size: 1024, /args/raw_megatron/base_args/no_load_optim: null, /args/raw_megatron/base_args/no_load_rng: null,
+        /args/raw_megatron/base_args/num_attention_heads: 16, /args/raw_megatron/base_args/num_layers: 28, /args/raw_megatron/base_args/num_query_groups: 8,
+        /args/raw_megatron/base_args/padded_vocab_size: 152064, /args/raw_megatron/base_args/tensor_model_parallel_size: 2,
+        /args/raw_megatron/base_args/tokenizer_model: /root/models/Qwen3-0.6B/, /args/raw_megatron/base_args/untie_embeddings_and_output_weights: false,
+        /args/raw_megatron/base_args/wandb_project: miles-test_qwen3_0.6B_ckpt, /args/raw_megatron/base_args/world_size: 2,
+        /args/raw_torchtitan: null}
+  rollout_executor-01:
+    remove: *id025
+    set:
+      <<:
+      - *id023
+      - *id024
+      - *id026
+      /args/over_sampling_batch_size: 4
+  trainer-megatron-02:
+    remove:
+    - /args/backend/ckpt_step
+    - /args/backend/finetune
+    - /args/backend/load
+    - /args/backend/no_load_optim
+    - /args/backend/no_load_rng
+    - /args/ci_logprobs_checker_abs_tol
+    - /args/freeze_indexer
+    - /args/requested_load
+    - /args/sglang/base_args/elastic_ep_rejoin
+    - /args/sglang/base_args/keep_mm_feature_on_device
+    set:
+      <<: *id024
+      /args/backend/dsa_cp_balance_indexer: false
+      /args/backend/dsa_indexer_precision: bf16
+      /args/backend/dsa_indexer_topk_backend: null
+      /args/backend/dsa_indexer_topk_deterministic: false
+      /args/backend/dsa_indexer_topk_tie_break: 0
+      /args/backend/dsa_indexer_weights_proj_output_dtype: bf16
+      /args/backend/dsa_indexer_weights_proj_use_quantization: true
+      /args/backend/encoder_num_layers: 28
+      /args/backend/eval_global_batch_size: 8
+      /args/backend/expert_tensor_parallel_size: 2
+      /args/backend/ffn_hidden_size: 3072
+      /args/backend/global_batch_size: 8
+      /args/backend/hidden_size: 1024
+      /args/backend/num_attention_heads: 16
+      /args/backend/num_layers: 28
+      /args/backend/padded_vocab_size: 152064
+      /args/backend/tensor_model_parallel_size: 2
+      /args/backend/tokenizer_model: /root/models/Qwen3-0.6B/
+      /args/backend/wandb_project: miles-test_qwen3_0.6B_ckpt
+      /args/backend/world_size: 2
+      /args/use_kl_loss: false
+  worker_manager-01:
+    remove: *id027
+    set:
+      <<:
+      - *id023
+      - *id024
+      - *id026
+      /args/actor_num_gpus_per_node: 2
+      /args/over_sampling_batch_size: 4
+      /args/rollout_num_gpus: 2
+      /args/sglang_scaling/groups/default:
+      - {engine_offset: 0, gpu_offset: 0, num_gpus: 2}

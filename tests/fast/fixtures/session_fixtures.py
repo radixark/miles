@@ -18,6 +18,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         apply_chat_template_kwargs=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        rollout_indexer_topk_num_streams=None,
         use_sampling_support_replay=False,
         sglang_speculative_algorithm=None,
         num_layers=None,

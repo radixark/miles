@@ -22,6 +22,7 @@ from miles.rollout.generate_hub.single_turn import generate
 from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
+from miles.utils.async_utils import DynamicLimitSemaphore
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample, SampleLineage
@@ -38,8 +39,8 @@ class GenerateState:
         )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
-        self.generate_fn_semaphore = asyncio.Semaphore(
-            args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+        self.generate_fn_semaphore = DynamicLimitSemaphore(
+            lambda: args.sglang_server_concurrency * max(args.inference_runtime_mut_state.engine_count, 1)
         )
         self.sampling_params: dict[str, Any] = compute_sampling_params(
             args,
@@ -83,7 +84,7 @@ async def generate_and_rm(
         sink.attempt_start(sample)
 
     # generate
-    log_prefix = f"[sample={getattr(sample, 'index', '?')}]"
+    log_prefix = f"[sample={sample.index}]"
     logger.debug(f"{log_prefix} Waiting for semaphore...")
     try:
         async with state.generate_fn_semaphore:
@@ -156,12 +157,12 @@ async def generate_and_rm_group(
             if sample.routing_key is None:
                 sample.routing_key = str(uuid.uuid4())
 
-    log_prefix = f"[group indices={[getattr(s, 'index', '?') for s in group]}]"
+    log_prefix = f"[group indices={[s.index for s in group]}]"
     logger.debug(f"{log_prefix} Starting group with {len(group)} samples")
     tasks = []
     for idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()
-        if getattr(args, "sglang_enable_deterministic_inference", False):
+        if args.sglang.common_value("enable_deterministic_inference"):
             current_sampling_params["sampling_seed"] = args.rollout_seed + idx
         task = asyncio.create_task(generate_and_rm(state, sample, current_sampling_params, evaluation=evaluation))
         if sample_done_callback is not None:

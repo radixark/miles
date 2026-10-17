@@ -70,7 +70,8 @@ def test_four_layer_rollout_tp_can_span_nodes():
 
 
 def test_checkpoint_paths_derive_from_the_model_name():
+    """Keep converted KDA checkpoints separate from incompatible attention layouts."""
     args = _four_layer(model_dir="/m")
     assert args.hf_checkpoint == "/m/Kimi-K3-4layer"
     assert args.bf16_checkpoint == "/m/Kimi-K3-4layer-bf16"
-    assert args.ref_load == "/m/Kimi-K3-4layer-bf16_torch_dist"
+    assert args.ref_load == "/m/Kimi-K3-4layer-bf16-kda-direct-v1_torch_dist"

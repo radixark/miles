@@ -84,7 +84,10 @@ class TestTheReceiverFaultRun:
         scenario_p2p_send_receiver_fault.run_ci(_MODE)
 
         for launch in harness.launches:
-            assert parse_fault_tolerance_args(launch.request.train_args).ft_components == ["rollout"]
+            parsed = parse_fault_tolerance_args(launch.request.train_args)
+            assert parsed.ft_components == ["rollout"]
+            assert parsed.namespace.enable_event_analyzer
+            assert parsed.namespace.enable_witness
         ((_, compare_kwargs),) = harness.calls_of("compare")
         assert compare_kwargs["expected_target_reconfigures"] == []
         ((_, fired_kwargs),) = harness.calls_of("fired")

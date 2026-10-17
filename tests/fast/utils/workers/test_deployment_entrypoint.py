@@ -40,7 +40,9 @@ def _injected(monkeypatch, fake: _FakeDeployment) -> None:
     monkeypatch.setattr(deployment_entrypoint, "start_api_server", fake.start_api_server)
     monkeypatch.setattr(deployment_entrypoint, "maybe_start_mini_ft_controller", fake.maybe_start_mini_ft_controller)
     monkeypatch.setattr(
-        deployment_entrypoint, "get_backend_capability", lambda args: SimpleNamespace(cell_operations=lambda: "ops")
+        deployment_entrypoint,
+        "compute_backend_capability",
+        lambda args: SimpleNamespace(cell_operations=lambda: "ops"),
     )
     monkeypatch.setattr(
         deployment_entrypoint, "create_trainer_controller_handle", lambda *_args, **_kwargs: "trainer-handle"

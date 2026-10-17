@@ -1,0 +1,2 @@
+{error: {message: '--fully-async cannot use --pause-generation-mode abort: generation is always in flight, so every weight
+      update would kill it and force a full regeneration', type: AssertionError}}

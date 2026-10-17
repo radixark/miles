@@ -1,6 +1,9 @@
-from tests.fast.ray.specs.test_train import _controller_context, _controller_providers, _make_args
-
-from miles.ray.specs.train import specs_trainer_controller
+from tests.fast.ray.specs.test_train import (
+    _controller_context,
+    _controller_providers,
+    _make_args,
+    specs_trainer_controller,
+)
 
 
 class TestTrainerControllerDeploymentIdentity:
@@ -9,6 +12,6 @@ class TestTrainerControllerDeploymentIdentity:
         capability = _controller_providers()
         spec = specs_trainer_controller(_make_args(use_critic=True))[1]
 
-        identity = spec.ctor_kwargs(_controller_context(capability))["deployment_identity"]
+        identity = spec.ctor_kwargs(_controller_context(spec, capability))["deployment_identity"]
 
         assert identity.trainer_id == "critic"

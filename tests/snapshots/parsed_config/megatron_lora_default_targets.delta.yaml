@@ -1,0 +1,45 @@
+base: megatron
+base_sha256: ebd030be45f1499e7bc51665e4d4216277a0d2c7e3b4e114b2651c47811e1b61
+edits:
+- at: 1
+  delete: 1
+  insert: |2
+      <<: &id002 {async_save: false, ckpt_step: null, distributed_backend: nccl, distributed_timeout_minutes: 10, eval_interval: null,
+- at: 123
+  delete: 1
+  insert: |2
+      eval_function_path: &id003 {config: null, path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn}
+- at: 154
+  delete: 2
+  insert: |2
+      hf_checkpoint: $FIXTURES/hf
+      hf_lora_targets: &id001 [model.layers.*.self_attn.q_proj, model.layers.*.self_attn.k_proj, model.layers.*.self_attn.v_proj,
+        model.layers.*.self_attn.o_proj, model.layers.*.mlp.gate_proj, model.layers.*.mlp.up_proj, model.layers.*.mlp.down_proj]
+- at: 181
+  delete: 1
+  insert: |2
+      lora_adapter_targets: *id001
+- at: 185
+  delete: 1
+  insert: |2
+      lora_rank: 8
+- at: 261
+  delete: 1
+  insert: |2
+          <<: *id002
+- at: 1033
+  delete: 1
+  insert: |2
+          tokenizer_model: $FIXTURES/hf
+- at: 1141
+  delete: 1
+  insert: |2
+      rollout_function_path: *id003
+- at: 1166
+  delete: 1
+  insert: |2
+        <<: &id004 {api_key: null, enable_trace: false, log_level: info, otlp_traces_endpoint: 'localhost:4317', reasoning_parser: null,
+- at: 1283
+  delete: 1
+  insert: |2
+          <<: *id004

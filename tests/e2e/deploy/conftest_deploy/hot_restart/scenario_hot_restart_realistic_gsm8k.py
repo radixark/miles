@@ -100,6 +100,7 @@ def _build_train_args(dump_dir: str, *, wandb_run_id: str) -> str:
     return (
         build_checkpoint_args(dump_dir)
         + f"--wandb-run-id {wandb_run_id} "
+        + f"--config-snapshot-name {TEST_NAME} "
         + "--ci-disable-weight-update-checker --enable-event-analyzer --enable-witness "
     )
 

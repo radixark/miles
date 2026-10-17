@@ -7,17 +7,18 @@ from pathlib import Path
 
 import httpx
 import pytest
-from tests.fast.utils.workers.import_probe import unexpected_light_entrypoint_imports
+from tests.fast.utils.workers.serving.registered_serve import REGISTERED_SERVE_MODULE, pod_env, serve_config_argv
 from tests.fast.utils.workers.serving.serve_smoke_worker import (
-    IMPORTED_MODULES_ENV_VAR,
     POOL_ID,
-    RPC_PORT_FLAG,
     SMOKE_EXTRA_ENV_VAR,
+    SmokeServeSpec,
     SmokeWorker,
+    SmokeWorkerConfig,
 )
 
+from miles.ray.specs.entrypoint import SERVE_SPEC_CLASSES
 from miles.utils.http_utils import find_available_port
-from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
+from miles.utils.workers.env_vars import SUBPROCESS_INDEX_ENV_VAR
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.serving import serve as serve_module
@@ -25,7 +26,14 @@ from miles.utils.workers.serving.utils import split_worker_argv
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
-_SPECS_PATH = "tests.fast.utils.workers.serving.serve_smoke_worker.compute_specs"
+
+
+def _smoke_own_argv(monkeypatch: pytest.MonkeyPatch, *, worker_argv: list[str]) -> list[str]:
+    config = SmokeWorkerConfig(rpc_port=9000, worker_argv=worker_argv)
+    monkeypatch.setitem(SERVE_SPEC_CLASSES, SmokeServeSpec.worker_type, SmokeServeSpec)
+    for name, value in pod_env(SmokeServeSpec.create(config)).items():
+        monkeypatch.setenv(name, value)
+    return serve_config_argv(spec_class=SmokeServeSpec, config=config)
 
 
 class TestSplitWorkerArgv:
@@ -54,22 +62,14 @@ class TestOuterServeForwarding:
             captured.update(path=path, argv=argv, env=env)
 
         monkeypatch.setattr(serve_module.os, "execve", fake_execve)
-        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
-        own_argv = ["--specs", _SPECS_PATH, "--pool-id", POOL_ID]
-        worker_argv = [RPC_PORT_FLAG, "9000", "--flag", "value"]
-        monkeypatch.setattr(sys, "orig_argv", [sys.executable, "serve.py", *own_argv, "--", *worker_argv])
-        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv, "--", *worker_argv])
+        worker_argv = ["--flag", "value"]
+        own_argv = _smoke_own_argv(monkeypatch, worker_argv=worker_argv)
+        monkeypatch.setattr(sys, "orig_argv", [sys.executable, "serve.py", *own_argv])
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv])
 
         serve_module.main()
 
-        assert captured["argv"] == [
-            sys.executable,
-            "-m",
-            "miles.utils.workers.serving.serve_inner",
-            *own_argv,
-            "--",
-            *worker_argv,
-        ]
+        assert captured["argv"] == [sys.executable, "-m", "miles.utils.workers.serving.serve_inner", *own_argv]
         assert captured["env"]["MILES_SERVE_SMOKE_ENV"] == ",".join(worker_argv)
         assert captured["env"]["MILES_SERVE_SMOKE_POOL_ID"] == POOL_ID
 
@@ -85,12 +85,11 @@ class TestOuterServeForwarding:
         computed_name = "MILES_TEST_COMPUTED_ENV"
         inherited_name = "MILES_TEST_INHERITED_ENV"
         monkeypatch.setattr(serve_module.os, "execve", fake_execve)
-        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
         monkeypatch.setenv(SMOKE_EXTRA_ENV_VAR, computed_name)
         monkeypatch.setenv(computed_name, "from-parent")
         monkeypatch.setenv(inherited_name, "kept")
-        own_argv = ["--specs", _SPECS_PATH, "--pool-id", POOL_ID]
-        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv, "--", RPC_PORT_FLAG, "9000"])
+        own_argv = _smoke_own_argv(monkeypatch, worker_argv=[])
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv])
 
         serve_module.main()
 
@@ -104,10 +103,9 @@ class TestOuterServeForwarding:
     ) -> None:
         """--train-env-vars is unrestricted json, and one of these keys makes every rank claim worker zero."""
         monkeypatch.setattr(serve_module.os, "execve", _refuse_exec)
-        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
         monkeypatch.setenv(SMOKE_EXTRA_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR)
-        own_argv = ["--specs", _SPECS_PATH, "--pool-id", POOL_ID]
-        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv, "--", RPC_PORT_FLAG, "9000"])
+        own_argv = _smoke_own_argv(monkeypatch, worker_argv=[])
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv])
 
         with pytest.raises(AssertionError, match=SUBPROCESS_INDEX_ENV_VAR):
             serve_module.main()
@@ -129,9 +127,7 @@ class TestOuterServeInterpreterFlags:
             captured.update(path=path, argv=argv, env=env)
 
         monkeypatch.setattr(serve_module.os, "execve", fake_execve)
-        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
-        own_argv = ["--specs", _SPECS_PATH, "--pool-id", POOL_ID]
-        worker_argv = [RPC_PORT_FLAG, "9000"]
+        own_argv = _smoke_own_argv(monkeypatch, worker_argv=[])
         monkeypatch.setattr(
             sys,
             "orig_argv",
@@ -143,11 +139,9 @@ class TestOuterServeInterpreterFlags:
                 "-m",
                 "miles.utils.workers.serving.serve",
                 *own_argv,
-                "--",
-                *worker_argv,
             ],
         )
-        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv, "--", *worker_argv])
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv])
 
         serve_module.main()
 
@@ -159,32 +153,17 @@ class TestOuterServeInterpreterFlags:
             "-m",
             "miles.utils.workers.serving.serve_inner",
             *own_argv,
-            "--",
-            *worker_argv,
         ]
         assert captured["path"] == sys.executable
 
 
 def _spawn_serve(port: int) -> subprocess.Popen:
-    env = dict(os.environ)
+    config = SmokeWorkerConfig(rpc_port=port, worker_argv=["--greeting", "hello"])
+    env = dict(os.environ) | pod_env(SmokeServeSpec.create(config))
     env["PYTHONPATH"] = f"{_REPO_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
-    env[CELL_INDEX_ENV_VAR] = "0"
 
     return subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "miles.utils.workers.serving.serve",
-            "--specs",
-            _SPECS_PATH,
-            "--pool-id",
-            POOL_ID,
-            "--",
-            RPC_PORT_FLAG,
-            str(port),
-            "--greeting",
-            "hello",
-        ],
+        [sys.executable, "-m", REGISTERED_SERVE_MODULE, *serve_config_argv(spec_class=SmokeServeSpec, config=config)],
         cwd=_REPO_ROOT,
         env=env,
     )
@@ -210,8 +189,8 @@ def _stop(process: subprocess.Popen) -> None:
 
 
 class TestServeEndToEnd:
-    async def test_serve_call_argv_and_env(self):
-        """serve.py boots a worker subprocess that answers typed calls with argv and env applied."""
+    async def test_serve_call_config_and_env(self):
+        """serve.py boots a worker subprocess that answers typed calls with its config and env applied."""
         port = find_available_port(20000 + os.getpid() % 10000)
         process = _spawn_serve(port)
 
@@ -225,9 +204,8 @@ class TestServeEndToEnd:
                 await _wait_ready_or_die(handle, process)
                 assert await handle.demo_sync(a=3, b=4) == 7
                 assert (await handle.report_argv())[-2:] == ["--greeting", "hello"]
-                assert (await handle.report_env(name="MILES_SERVE_SMOKE_ENV")).endswith("--greeting,hello")
-                reported = await handle.report_env(name=IMPORTED_MODULES_ENV_VAR)
-                assert unexpected_light_entrypoint_imports(reported) == []
+                assert await handle.report_env(name="MILES_SERVE_SMOKE_ENV") == "--greeting,hello"
+                assert await handle.report_env(name="MILES_SERVE_SMOKE_POOL_ID") == POOL_ID
             finally:
                 _stop(process)
 

@@ -1,0 +1,11 @@
+base: fsdp
+base_sha256: c8002bda7c293c7105fe399d2fe5a39fd0d55652f9ab9836e28a19c39fbdb086
+edits:
+- at: 306
+  delete: 1
+  insert: |2
+      rollout_num_gpus_per_engine: 2
+- at: 915
+  delete: 1
+  insert: |2
+          tp_size: 2

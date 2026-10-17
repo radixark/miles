@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 from tests.fast.utils.env_report.conftest import make_args
 
 from miles.utils.tracking_utils import wandb_utils
@@ -63,7 +64,7 @@ def _args(**overrides):
     values = {
         "env_report": None,
         "rank": 0,
-        "sglang_enable_metrics": False,
+        "sglang": make_sglang_config(enable_metrics=False),
         "use_wandb": True,
         "wandb_dir": None,
         "wandb_group": "group",

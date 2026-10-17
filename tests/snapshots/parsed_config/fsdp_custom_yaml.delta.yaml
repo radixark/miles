@@ -1,0 +1,19 @@
+base: fsdp
+base_sha256: c8002bda7c293c7105fe399d2fe5a39fd0d55652f9ab9836e28a19c39fbdb086
+edits:
+- at: 55
+  delete: 1
+  insert: |2
+      critic_lr: 9.0e-06
+- at: 119
+  delete: 1
+  insert: |2
+      eps_clip: 0.31
+- at: 121
+  delete: 1
+  insert: |2
+      eps_clip_high: 0.31
+- at: 268
+  delete: 1
+  insert: |2
+        lr: 9.0e-06, lr_decay_iters: null, lr_decay_style: constant, lr_warmup_fraction: null, lr_warmup_init: 0.0, lr_warmup_iters: 0,

@@ -7,6 +7,8 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
+from tests.fast.fixtures.sglang_config_fixtures import with_parser_defaults_and_sglang_config
+
 _TINY_MODEL_CONFIG: dict[str, Any] = {
     "architectures": ["LlamaForCausalLM"],
     "model_type": "llama",
@@ -58,4 +60,4 @@ def make_engine_args(**overrides: Any) -> Namespace:
         colocate=False,
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return Namespace(**with_parser_defaults_and_sglang_config(defaults))

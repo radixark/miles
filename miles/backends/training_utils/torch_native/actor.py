@@ -83,6 +83,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
     def _ref_context(self) -> AbstractContextManager:
         return nullcontext()
 
+    def _before_train(self) -> None:
+        pass
+
     def _after_rollout(self, rollout_id: int, rollout_data: dict) -> None:
         pass
 
@@ -100,7 +103,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
             model,
             weights_getter=lambda: None,
             model_name=model_name,
-            quantization_config=getattr(self.hf_config, "quantization_config", None),
+            quantization_config=getattr(
+                self.hf_config, "quantization_config", None
+            ),  # config-access-exempt: unquantized HF checkpoints omit quantization_config
             iterator_factory=iterator_factory,
             parallel_state=get_parallel_state(),
             is_lora=False,
@@ -116,9 +121,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
         return lambda seq_lens: fwd_tflops_per_gpu(seq_lens, flops_args, dist.get_world_size())
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
-        if self.args.debug_rollout_only or self.args.save is None:
+        if self.args.debug_rollout_only or self.args.backend.save is None:
             return
-        assert not self.args.async_save, f"{type(self).__name__} does not support async_save yet."
+        assert not self.args.backend.async_save, f"{type(self).__name__} does not support async_save yet."
         self._save_checkpoint(rollout_id)
 
     def _save_checkpoint(self, rollout_id: int) -> None:
@@ -153,6 +158,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         assert (
             external_data is None
         ), f"the {self.backend_name} backend trains no critic, so it is never handed critic values"
+        self._before_train()
         self._heartbeat.bump()
         if self.args.offload_train:
             self.wake_up()

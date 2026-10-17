@@ -1,128 +1,90 @@
-### 0
-pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+# miles-snapshot-delta-v1
+base: ../run_qwen3_30b_a3b.py/execute.txt
+base_sha256: 935cc23db0cc766fb57d65cc8f2e01fe8d62300c90074fe27e5af68dc5872064
+edits:
+- at: 12
+  delete: 0
+  insert: |
+    for worker_ip in $(awk '{print $1}' /root/mpi_rack_hostfile); do if [ "$worker_ip" = 127.0.0.1 ]; then continue; fi; echo "Starting Ray worker on $worker_ip"; ssh root@"$worker_ip" "pkill -9 sglang ; ray stop
+      --force ; pkill -9 miles ; ray start
+      --address=127.0.0.1:6379
+      --num-gpus 8
+      --node-ip-address $worker_ip
+      --disable-usage-stats" & done; wait
 
-### 1
-export PYTHONUNBUFFERED=1 && ray start
-  --head
-  --node-ip-address 127.0.0.1
-  --num-gpus 8
-  --disable-usage-stats
-
-### 2
-for worker_ip in $(awk '{print $1}' /root/mpi_rack_hostfile); do if [ "$worker_ip" = 127.0.0.1 ]; then continue; fi; echo "Starting Ray worker on $worker_ip"; ssh root@"$worker_ip" "pkill -9 sglang ; ray stop
-  --force ; pkill -9 miles ; ray start
-  --address=127.0.0.1:6379
-  --num-gpus 8
-  --node-ip-address $worker_ip
-  --disable-usage-stats" & done; wait
-
-### 3
-nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
-
-### 4
-export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
-  --address="http://127.0.0.1:8265"
-  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
-  -- python3 <REPO_ROOT>/train.py
-  --disable-bias-linear
-  --qk-layernorm
-  --group-query-attention
-  --num-attention-heads 64
-  --num-query-groups 4
-  --kv-channels 128
-  --num-layers 94
-  --hidden-size 4096
-  --ffn-hidden-size 12288
-  --normalization RMSNorm
-  --position-embedding-type rope
-  --norm-epsilon 1e-6
-  --rotary-percent 1.0
-  --swiglu
-  --untie-embeddings-and-output-weights
-  --vocab-size 151936
-  --rotary-base 1000000
-  --moe-ffn-hidden-size 1536
-  --moe-router-score-function softmax
-  --moe-token-dispatcher-type alltoall
-  --moe-router-topk 8
-  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
-  --num-experts 128
-  --moe-grouped-gemm
-  --moe-token-drop-policy probs
-  --moe-router-dtype fp32
-  --moe-permute-fusion
-  --moe-aux-loss-coeff 0
-  --hf-checkpoint /root/models/Qwen3-235B-A22B-FP8
-  --ref-load /root/models/Qwen3-235B-A22B_torch_dist
-  --load /root/shared_data/checkpoints
-  --save /root/shared_data/checkpoints
-  --save-interval 20 
-  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
-  --input-key prompt
-  --label-key label
-  --apply-chat-template
-  --rollout-shuffle
-  --rm-type deepscaler
-  --num-rollout 3000
-  --rollout-batch-size 8
-  --n-samples-per-prompt 8
-  --rollout-max-response-len 8192
-  --rollout-temperature 1
-  --global-batch-size 64
-  --balance-data 
-  --optimizer adam
-  --lr 1e-6
-  --lr-decay-style constant
-  --weight-decay 0.1
-  --adam-beta1 0.9
-  --adam-beta2 0.98
-  --optimizer-cpu-offload
-  --overlap-cpu-optimizer-d2h-h2d
-  --use-precision-aware-optimizer 
-  --advantage-estimator gspo
-  --kl-loss-coef 0.00
-  --kl-loss-type low_var_kl
-  --entropy-coef 0.00
-  --eps-clip 4e-4 
-  --use-wandb
-  --wandb-project miles-run_qwen3_235b_a22b
-  --wandb-group 260101-000000-000
-  --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix 
-  --tensor-model-parallel-size 4
-  --sequence-parallel
-  --pipeline-model-parallel-size 4
-  --context-parallel-size 2
-  --expert-model-parallel-size 16
-  --expert-tensor-parallel-size 1
-  --decoder-last-pipeline-num-layers 22
-  --recompute-granularity full
-  --recompute-method uniform
-  --recompute-num-layers 1
-  --use-dynamic-batch-size
-  --max-tokens-per-gpu 16384 
-  --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
-  --n-samples-per-eval-prompt 16
-  --eval-max-response-len 16384
-  --eval-top-p 1 
-  --rollout-num-gpus-per-engine 32
-  --sglang-mem-fraction-static 0.7
-  --sglang-enable-dp-attention
-  --sglang-dp-size 4
-  --sglang-ep-size 32
-  --sglang-enable-dp-lm-head
-  --sglang-cuda-graph-bs-decode 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256
-  --sglang-moe-a2a-backend deepep
-  --sglang-deepep-mode auto 
-  --attention-dropout 0.0
-  --hidden-dropout 0.0
-  --accumulate-allreduce-grads-in-fp32
-  --attention-softmax-in-fp32
-  --attention-backend flash
-  --update-weight-buffer-size 4294967296
-  --actor-num-nodes 8
-  --actor-num-gpus-per-node 8
-  --rollout-num-gpus 64
-  --num-gpus-per-node 8   
-  --deploy-component all
+    ### 3
+- at: 14
+  delete: 1
+  insert: |
+    ### 4
+- at: 22
+  delete: 1
+  insert: |2
+      --num-attention-heads 64
+- at: 25
+  delete: 3
+  insert: |2
+      --num-layers 94
+      --hidden-size 4096
+      --ffn-hidden-size 12288
+- at: 36
+  delete: 1
+  insert: |2
+      --moe-ffn-hidden-size 1536
+- at: 40
+  delete: 1
+  insert: |2
+      --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+- at: 47
+  delete: 6
+  insert: "  --hf-checkpoint /root/models/Qwen3-235B-A22B-FP8\n  --ref-load /root/models/Qwen3-235B-A22B_torch_dist\n  --load\
+    \ /root/shared_data/checkpoints\n  --save /root/shared_data/checkpoints\n  --save-interval 20 \n"
+- at: 60
+  delete: 1
+  insert: |2
+      --rollout-batch-size 8
+- at: 64
+  delete: 1
+  insert: |2
+      --global-batch-size 64
+- at: 75
+  delete: 2
+  insert: |2
+      --advantage-estimator gspo
+- at: 80
+  delete: 2
+  insert: "  --eps-clip 4e-4 \n"
+- at: 83
+  delete: 1
+  insert: |2
+      --wandb-project miles-run_qwen3_235b_a22b
+- at: 87
+  delete: 0
+  insert: |2
+      --tensor-model-parallel-size 4
+      --sequence-parallel
+      --pipeline-model-parallel-size 4
+      --context-parallel-size 2
+      --expert-model-parallel-size 16
+      --expert-tensor-parallel-size 1
+      --decoder-last-pipeline-num-layers 22
+- at: 91
+  delete: 8
+  insert: "  --max-tokens-per-gpu 16384 \n"
+- at: 103
+  delete: 1
+  insert: |2
+      --rollout-num-gpus-per-engine 32
+- at: 105
+  delete: 1
+  insert: "  --sglang-enable-dp-attention\n  --sglang-dp-size 4\n  --sglang-ep-size 32\n  --sglang-enable-dp-lm-head\n  --sglang-cuda-graph-bs-decode\
+    \ 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248\
+    \ 256\n  --sglang-moe-a2a-backend deepep\n  --sglang-deepep-mode auto \n"
+- at: 111
+  delete: 3
+  insert: |2
+      --update-weight-buffer-size 4294967296
+      --actor-num-nodes 8
+- at: 115
+  delete: 1
+  insert: "  --rollout-num-gpus 64\n  --num-gpus-per-node 8   \n"

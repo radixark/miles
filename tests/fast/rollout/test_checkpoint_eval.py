@@ -11,6 +11,8 @@ import pytest
 import miles.ray.rollout.rollout_executor as rollout_executor_mod
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip, retarget_args
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
+from miles.utils.args.custom_view import ImmutableNamespace
 
 
 def make_args(**overrides) -> Namespace:
@@ -29,21 +31,29 @@ def make_args(**overrides) -> Namespace:
         ci_test=False,
         namespaced_radix_cache=False,
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
+        starts_inference_engines=True,
+        inference_runtime_mut_state=InferenceRuntimeMutState(),
     )
     defaults.update(overrides)
     return Namespace(**defaults)
 
 
+def _as_rollout_function_config(args: Namespace) -> ImmutableNamespace:
+    return ImmutableNamespace.model_validate(vars(args))
+
+
 def test_retarget_args_swaps_router_and_sizing():
-    args = make_args()
-    eval_args = retarget_args(args, "10.0.0.9", 39000, num_gpus=2, num_gpus_per_engine=2)
+    args = _as_rollout_function_config(make_args())
+    eval_args = retarget_args(args=args, router_ip="10.0.0.9", router_port=39000, engine_gpu_counts=[2])
 
     assert (eval_args.sglang_router_ip, eval_args.sglang_router_port) == ("10.0.0.9", 39000)
-    assert eval_args.rollout_num_gpus == 2
-    assert eval_args.rollout_num_gpus_per_engine == 2
+    assert (eval_args.inference_runtime_mut_state.engine_count, eval_args.inference_runtime_mut_state.gpu_count) == (
+        1,
+        2,
+    )
     # The original namespace is untouched.
     assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.1", 30000)
-    assert args.rollout_num_gpus == 4
+    assert args.inference_runtime_mut_state == InferenceRuntimeMutState()
 
 
 # ---------------- RolloutManager._eval_checkpoint (the single snapshot path) ----------------
@@ -65,6 +75,14 @@ class CheckpointFnStub(CheckpointEvalFn):
         self.disposed = True
 
 
+class _FakeInferenceControllerProvider:
+    def get_handle(self, name: str) -> "_FakeInferenceControllerProvider":
+        return self
+
+    async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+        return InferenceRuntimeImmutState(engine_count=2, gpu_count=4)
+
+
 def make_manager(args, eval_fn=None, fleet=None):
     mgr = object.__new__(
         getattr(rollout_executor_mod.RolloutExecutor, "__ray_actor_class__", rollout_executor_mod.RolloutExecutor)
@@ -77,6 +95,7 @@ def make_manager(args, eval_fn=None, fleet=None):
     mgr._metric_checker = None
     mgr.eval_generate_rollout = eval_fn
     mgr._eval_fleet = fleet
+    mgr._inference_controller_provider = _FakeInferenceControllerProvider()
     args.eval_uses_snapshots = eval_fn is not None and (fleet is not None or isinstance(eval_fn, CheckpointEvalFn))
     return mgr
 
@@ -606,7 +625,7 @@ def make_external_fn(external_fn_env, **env):
 
     for var, value in env.items():
         external_fn_env.monkeypatch.setenv(f"MILES_EXTERNAL_EVAL_{var}", value)
-    args = make_args(hf_checkpoint="/base")
+    args = _as_rollout_function_config(make_args(hf_checkpoint="/base"))
     return external_fn_env.mod.ExternalSglangEvalFn(RolloutFnConstructorInput(args=args, data_source=None))
 
 

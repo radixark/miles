@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -18,8 +19,10 @@ from miles.utils.retry_utils import retry
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import DeploymentIdentity
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_spec import MASTER_PORT_NAME, HostAndPort
 
 fake_worker_manager: FakeWorkerManager | None = None
 
@@ -156,3 +159,53 @@ def make_alive_cell(cell_index: int, *, alive_cell_indices: list[int], quorum_id
         )
     )
     return cell
+
+
+class PendingTrainerWorker(BaseWorkerHandle):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.kill_count = 0
+
+    async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None:
+        pass
+
+    async def probe_is_dead(self) -> bool:
+        return self.kill_count > 0
+
+    async def train(self) -> int:
+        self.started.set()
+        try:
+            await self.release.wait()
+            return 42
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+    async def kill_self(self) -> None:
+        self.kill_count += 1
+
+
+@pytest.fixture
+def pending_trainer_worker() -> PendingTrainerWorker:
+    return PendingTrainerWorker()
+
+
+@pytest.fixture
+def pending_trainer_cell(pending_trainer_worker: PendingTrainerWorker) -> TrainerCell:
+    worker_info = SimpleNamespace(self_addrs={MASTER_PORT_NAME: HostAndPort(host="127.0.0.1", port=1234)})
+    provider = SimpleNamespace(
+        get_worker_infos=lambda **kwargs: [[worker_info]],
+        get_handles_of_worker_infos=lambda infos: {"worker": pending_trainer_worker},
+    )
+    return TrainerCell(
+        args=SimpleNamespace(),
+        role="actor",
+        with_ref=False,
+        cell_id="trainer-engine-actor-00000",
+        cell_index=0,
+        workers_hash="old-incarnation",
+        health_checker=NoopHealthChecker(),
+        provider=provider,
+    )

@@ -1,11 +1,12 @@
 import json
 
 import pytest
-
 from tests.fast.launch_scripts.model_args_harness import expand_model_args, iter_model_types
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 
-_SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "model_args"
+from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY, assert_matches_snapshot
+
+_SNAPSHOT_DIR = REPO_ROOT / SNAPSHOT_DIRECTORY / "model_args"
 
 _MODEL_TYPES = iter_model_types()
 

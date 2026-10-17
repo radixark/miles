@@ -61,11 +61,13 @@ async def call_agent_abort_hook(args) -> None:
     sibling ``abort`` callable in the same module as the configured agent function
     and call it. Backends that don't expose one are left to drain as before.
     """
-    agent_function_path = getattr(args, "custom_agent_function_path", None)
+    from miles.utils.args.custom_view import compute_custom_function_config
+
+    agent_function_path = args.custom_agent_function_path
     if not agent_function_path:
         return
 
-    module_path, _, _ = agent_function_path.rpartition(".")
+    module_path, _, _ = agent_function_path.path.rpartition(".")
     if not module_path:
         return
     try:
@@ -74,7 +76,8 @@ async def call_agent_abort_hook(args) -> None:
         return  # plugin doesn't expose an abort hook; nothing to tear down
 
     try:
-        await abort_hook(args)
+        fn_args = compute_custom_function_config(args, agent_function_path)
+        await abort_hook(fn_args)
     except Exception as e:
         logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
 
@@ -86,10 +89,14 @@ class SingletonMeta(type):
 
     _instances = {}
 
-    def __call__(cls, *args, **kwargs):
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
         if cls not in cls._instances:
             instance = super().__call__(*args, **kwargs)
             cls._instances[cls] = instance
+        elif (
+            validate_reuse := getattr(cls, "_validate_reuse", None)
+        ) is not None:  # config-access-exempt: optional singleton reuse protocol
+            validate_reuse(cls._instances[cls], *args, **kwargs)
         return cls._instances[cls]
 
     @staticmethod

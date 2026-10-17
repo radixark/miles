@@ -1,6 +1,7 @@
 import inspect
 import logging
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -13,7 +14,9 @@ def install() -> None:
 def _shim_dist_set_timeout() -> None:
     import torch.distributed as dist
 
-    if hasattr(dist, "set_timeout"):
+    if hasattr(
+        dist, "set_timeout"
+    ):  # config-access-exempt: PyTorch versions differ in the public distributed timeout API
         return
     from torch.distributed.distributed_c10d import _set_pg_timeout
 
@@ -23,7 +26,6 @@ def _shim_dist_set_timeout() -> None:
 
 def _patch_pipeline_schedule_microbatch_api() -> None:
     import torch
-
     from torchtitan.distributed.pipeline_parallel import PipelineScheduleMulti, PipelineScheduleSingle
 
     if "arg_mbs" in inspect.signature(PipelineScheduleSingle.step).parameters:
@@ -54,14 +56,18 @@ def _patch_pipeline_schedule_microbatch_api() -> None:
                 )
             if (
                 self._has_backward
-                and getattr(self, "_backward_requires_autograd", True)
+                and getattr(
+                    self, "_backward_requires_autograd", True
+                )  # config-access-exempt: PyTorch pipeline versions may omit the backward autograd flag
                 and not torch.is_grad_enabled()
             ):
                 raise RuntimeError(
                     "step() requires gradients to be enabled for backward computation; "
                     "call eval() under torch.no_grad() instead."
                 )
-            stages = getattr(self, "_stages", None) or [self._stage]
+            stages = getattr(self, "_stages", None) or [
+                self._stage
+            ]  # config-access-exempt: PyTorch pipeline schedules expose either multiple stages or one stage
             for stage in stages:
                 stage.has_backward = self._has_backward
                 stage.clear_runtime_states()
@@ -83,7 +89,9 @@ def _patch_fsdp2_grad_accumulation_attr_error() -> None:
         return
 
     def to_accumulated_grad_if_needed(self) -> None:
-        unsharded_param = getattr(self, "_unsharded_param", None)
+        unsharded_param = getattr(
+            self, "_unsharded_param", None
+        )  # config-access-exempt: PyTorch FSDP may not materialize an unsharded parameter yet
         if (
             self.reduce_dtype is None
             or unsharded_param is None

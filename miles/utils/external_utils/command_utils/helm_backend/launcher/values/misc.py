@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from argparse import Namespace
 from pathlib import Path
@@ -10,11 +9,7 @@ import yaml
 
 from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
 from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
-from miles.utils.external_utils.command_utils.common import (
-    MOONCAKE_BACKEND_NAME,
-    MOONCAKE_INIT_KWARGS_FLAG,
-    ArgvManipulator,
-)
+from miles.utils.external_utils.command_utils.common import MOONCAKE_BACKEND_NAME, MOONCAKE_INIT_KWARGS_FLAG
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
     InfraValues,
@@ -83,14 +78,6 @@ class MooncakeInfo:
             isinstance(address, str) and ":" in address
         ), f"{MOONCAKE_MASTER_ADDRESS_KEY} is {address!r} and carries no port, so the in-cluster address cannot be built"
         return MooncakePlan(init_kwargs=init_kwargs, port=int(address.rsplit(":", 1)[1]))
-
-    @staticmethod
-    def with_cluster_master(train_argv: list[str], *, plan: MooncakePlan | None, host: str) -> list[str]:
-        if plan is None:
-            return train_argv
-
-        rendered = json.dumps(MooncakeInfo.cluster_init_kwargs(plan, host=host))
-        return ArgvManipulator.set(train_argv, MOONCAKE_INIT_KWARGS_FLAG, rendered)
 
     @staticmethod
     def cluster_init_kwargs(plan: MooncakePlan, *, host: str) -> dict[str, Any]:

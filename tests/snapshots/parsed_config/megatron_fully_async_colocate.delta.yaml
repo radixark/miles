@@ -1,0 +1,57 @@
+base: megatron
+base_sha256: ebd030be45f1499e7bc51665e4d4216277a0d2c7e3b4e114b2651c47811e1b61
+edits:
+- at: 51
+  delete: 1
+  insert: |2
+      colocate: true
+- at: 123
+  delete: 1
+  insert: |2
+      eval_function_path: &id002 {config: {custom_async_data_buffer_path_per_model: null}, path: miles.rollout.fully_async_rollout.FullyAsyncRolloutFn}
+- at: 149
+  delete: 1
+  insert: |2
+      fully_async: true
+- at: 160
+  delete: 1
+  insert: |2
+      init_expected_num_cells: {default: 1}
+- at: 230
+  delete: 1
+  insert: |2
+      offload_rollout: true
+- at: 232
+  delete: 1
+  insert: |2
+      offload_train: true
+- at: 398
+  delete: 1
+  insert: |2
+          disable_grad_buffers_cpu_backup: true
+- at: 401
+  delete: 1
+  insert: |2
+          disable_param_buffers_cpu_backup: true
+- at: 1150
+  delete: 1
+  insert: |2
+      rollout_num_gpus: 1
+- at: 1311
+  delete: 1
+  insert: |2
+          cuda_graph_backend_prefill: disabled
+- at: 1781
+  delete: 1
+  insert: |2
+        models:
+        - model_path: null
+          name: default
+          server_groups:
+          - {needs_offload: true, num_gpus_per_engine: 1, overrides: {model_path: null}, worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType,
+              name: REGULAR}}
+          update_weights: true
+- at: 1788
+  delete: 1
+  insert: |2
+      sglang_scaling: {groups: {default: [{engine_offset: 0, gpu_offset: 0, num_gpus: 1}]}}

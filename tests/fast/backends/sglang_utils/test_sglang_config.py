@@ -3,13 +3,16 @@ from __future__ import annotations
 from argparse import Namespace
 
 import pytest
+from tests.fast.fixtures.sglang_config_fixtures import resolve_sglang_config, resolve_sglang_config_and_scaling
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import (
+    ModelConfig,
     ServerGroupConfig,
+    ServerGroupScalingConfig,
+    SglangConfig,
     _compute_megatron_num_gpus,
     _compute_rollout_offset,
-    resolve_sglang_config,
 )
 from miles.utils.external_utils.command_utils.common import encode_pseudo_file
 
@@ -33,7 +36,7 @@ def _make_args(**overrides) -> Namespace:
         critic_num_nodes=0,
         critic_num_gpus_per_node=0,
         use_critic=False,
-        critic_train_only=False,
+        multi_lora=False,
     )
     defaults.update(overrides)
     defaults.setdefault("starts_inference_engines", not defaults["debug_train_only"] or defaults["eval_num_gpus"] > 0)
@@ -43,9 +46,14 @@ def _make_args(**overrides) -> Namespace:
 
 
 def _resolve_yaml(tmp_path, yaml_text: str, **args_overrides):
+    config, _ = _resolve_yaml_and_scaling(tmp_path, yaml_text, **args_overrides)
+    return config
+
+
+def _resolve_yaml_and_scaling(tmp_path, yaml_text: str, **args_overrides):
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml_text)
-    return resolve_sglang_config(_make_args(sglang_config=str(cfg_path), **args_overrides))
+    return resolve_sglang_config_and_scaling(_make_args(sglang_config=str(cfg_path), **args_overrides))
 
 
 class TestNumGpusPerEnginePrecedence:
@@ -140,32 +148,18 @@ class TestResolvedServerGroupValidation:
     def test_a_resolved_group_with_zero_gpus_is_rejected(self):
         """A group reserving no GPUs cannot host an engine and must fail construction."""
         with pytest.raises(ValueError, match="greater than 0"):
-            ServerGroupConfig(
-                worker_type="regular",
-                num_gpus=0,
-                num_gpus_per_engine=2,
-                gpu_offset=0,
-                engine_offset=0,
-                needs_offload=False,
-            )
+            ServerGroupScalingConfig(num_gpus=0, gpu_offset=0, engine_offset=0)
 
     def test_a_resolved_group_with_non_positive_gpus_per_engine_is_rejected(self):
         """A non-positive engine width would make the engine count division meaningless."""
         with pytest.raises(ValueError, match="greater than 0"):
-            ServerGroupConfig(
-                worker_type="regular",
-                num_gpus=8,
-                num_gpus_per_engine=-1,
-                gpu_offset=0,
-                engine_offset=0,
-                needs_offload=False,
-            )
+            ServerGroupConfig(worker_type="regular", num_gpus_per_engine=-1, needs_offload=False)
 
 
 class TestNumServerCells:
     def test_non_placeholder_engine_cells_are_counted(self, tmp_path):
         """The server cell count includes every engine except placeholder reservations."""
-        cfg = _resolve_yaml(
+        cfg, scaling = _resolve_yaml_and_scaling(
             tmp_path,
             "sglang:\n"
             "  - name: actor\n"
@@ -182,7 +176,7 @@ class TestNumServerCells:
             rollout_num_gpus=16,
         )
 
-        assert cfg.models[0].num_server_cells == 4
+        assert cfg.models[0].num_server_cells(scaling) == 4
 
 
 class TestOverridesResolution:
@@ -222,12 +216,12 @@ class TestOverridesResolution:
 class TestYamlShapeValidation:
     def test_engine_groups_is_accepted_as_an_alias_for_server_groups(self, tmp_path):
         """The documented engine_groups spelling keeps parsing."""
-        cfg = _resolve_yaml(
+        _, scaling = _resolve_yaml_and_scaling(
             tmp_path,
             "sglang:\n  - name: actor\n    engine_groups:\n      - worker_type: regular\n        num_gpus: 8\n",
             rollout_num_gpus=8,
         )
-        assert cfg.models[0].server_groups[0].num_gpus == 8
+        assert scaling.group(model_name="actor", group_index=0).num_gpus == 8
 
     def test_a_yaml_without_the_sglang_key_is_rejected(self, tmp_path):
         """A config missing the top-level sglang key fails loudly."""
@@ -283,13 +277,13 @@ class TestPrefillNumServersPath:
     @pytest.mark.parametrize("multi_lora", [False, True])
     def test_prefill_num_servers_counts_engines_not_gpus(self, multi_lora):
         """prefill_num_servers is a server count, so its GPU span scales with the engine width."""
-        cfg = resolve_sglang_config(
+        cfg, scaling = resolve_sglang_config_and_scaling(
             _make_args(
                 rollout_num_gpus=16, prefill_num_servers=3, rollout_num_gpus_per_engine=2, multi_lora=multi_lora
             )
         )
-        groups = cfg.models[0].server_groups
-        assert [(group.worker_type, group.num_gpus) for group in groups] == [
+        groups = zip(cfg.models[0].server_groups, scaling.groups["default"], strict=True)
+        assert [(group.worker_type, group_scaling.num_gpus) for group, group_scaling in groups] == [
             (WorkerType.PREFILL, 6),
             (WorkerType.DECODE, 10),
         ]
@@ -305,7 +299,7 @@ class TestPrefillNumServersPath:
 class TestGpuOffset:
     def test_gpu_offsets_accumulate_across_groups_and_models_including_placeholders(self, tmp_path):
         """Each group's gpu_offset equals the num_gpus sum of all preceding groups, counting placeholders."""
-        cfg = _resolve_yaml(
+        _, scaling = _resolve_yaml_and_scaling(
             tmp_path,
             "sglang:\n"
             "  - name: actor\n"
@@ -321,14 +315,14 @@ class TestGpuOffset:
             "        num_gpus: 8\n",
             rollout_num_gpus=16,
         )
-        assert [group.gpu_offset for group in cfg.models[0].server_groups] == [0, 4]
-        assert cfg.models[1].server_groups[0].gpu_offset == 8
+        assert [group.gpu_offset for group in scaling.groups["actor"]] == [0, 4]
+        assert scaling.groups["ref"][0].gpu_offset == 8
 
 
 class TestEngineOffset:
     def test_engine_offsets_count_the_workers_of_every_preceding_group(self, tmp_path):
         """Groups of different engine widths contribute different worker counts, so a gpu offset alone cannot number them."""
-        cfg = _resolve_yaml(
+        _, scaling = _resolve_yaml_and_scaling(
             tmp_path,
             "sglang:\n"
             "  - name: actor\n"
@@ -348,12 +342,12 @@ class TestEngineOffset:
             rollout_num_gpus=28,
             num_gpus_per_node=4,
         )
-        assert [group.engine_offset for group in cfg.models[0].server_groups] == [0, 4]
-        assert cfg.models[1].server_groups[0].engine_offset == 5
+        assert [group.engine_offset for group in scaling.groups["actor"]] == [0, 4]
+        assert scaling.groups["ref"][0].engine_offset == 5
 
     def test_a_group_whose_engine_spans_nodes_contributes_one_worker_per_node(self, tmp_path):
         """A cross-node engine is launched by one actor per node, so it consumes that many numbers, not one."""
-        cfg = _resolve_yaml(
+        _, scaling = _resolve_yaml_and_scaling(
             tmp_path,
             "sglang:\n"
             "  - name: actor\n"
@@ -367,19 +361,19 @@ class TestEngineOffset:
             rollout_num_gpus=20,
             num_gpus_per_node=4,
         )
-        assert [group.engine_offset for group in cfg.models[0].server_groups] == [0, 4]
+        assert [group.engine_offset for group in scaling.groups["actor"]] == [0, 4]
 
     def test_prefill_and_decode_groups_are_numbered_in_that_order(self):
         """The legacy --prefill-num-servers layout has no YAML to carry offsets, so the cursor must number it too."""
-        cfg = resolve_sglang_config(
+        _, scaling = resolve_sglang_config_and_scaling(
             _make_args(rollout_num_gpus=16, prefill_num_servers=3, rollout_num_gpus_per_engine=2)
         )
 
-        assert [group.engine_offset for group in cfg.models[0].server_groups] == [0, 3]
+        assert [group.engine_offset for group in scaling.groups["default"]] == [0, 3]
 
     def test_the_generated_eval_model_is_numbered_after_every_rollout_engine(self):
         """The eval fleet is appended without YAML, and reusing the rollout numbers would clone their RNG streams."""
-        cfg = resolve_sglang_config(
+        _, scaling = resolve_sglang_config_and_scaling(
             _make_args(
                 rollout_num_gpus=8,
                 rollout_num_gpus_per_engine=2,
@@ -388,8 +382,8 @@ class TestEngineOffset:
             )
         )
 
-        assert cfg.models[0].server_groups[0].engine_offset == 0
-        assert cfg.models[1].server_groups[0].engine_offset == 4
+        assert scaling.groups["default"][0].engine_offset == 0
+        assert scaling.groups["eval"][0].engine_offset == 4
 
 
 class TestNeedsOffload:
@@ -583,17 +577,11 @@ class TestRolloutOffset:
 
 
 class TestMegatronNumGpus:
-    def test_compute_megatron_num_gpus_for_critic_train_only(self):
-        """With only the critic training, the megatron span is the critic's own gpus, not the actor's."""
-        args = _make_args(
-            critic_train_only=True,
-            debug_rollout_only=False,
-            actor_num_nodes=1,
-            actor_num_gpus_per_node=8,
-            critic_num_nodes=1,
-            critic_num_gpus_per_node=4,
-        )
-        assert _compute_megatron_num_gpus(args) == 4
+    def test_a_namespace_carrying_the_removed_critic_train_only_field_is_rejected(self):
+        """critic_train_only no longer resizes the megatron span, so a namespace still carrying it fails loudly."""
+        args = _make_args(critic_train_only=True, critic_num_nodes=1, critic_num_gpus_per_node=4)
+        with pytest.raises(AssertionError, match="critic_train_only is not supported"):
+            _compute_megatron_num_gpus(args)
 
 
 class TestHostPortOverrideRejection:
@@ -716,3 +704,23 @@ class TestSglangConfigFileArg:
         cfg = resolve_sglang_config(_make_args(sglang_config=encode_pseudo_file(self._YAML)))
 
         assert [model.name for model in cfg.models] == ["actor"]
+
+
+class TestCommonValue:
+    def test_groups_that_agree_share_their_override(self):
+        """Every engine group overriding a field to the same value yields that value."""
+        group = ServerGroupConfig(
+            worker_type=WorkerType.REGULAR, num_gpus_per_engine=1, needs_offload=False, overrides={"x": 2}
+        )
+        model = ModelConfig(name="actor", model_path=None, server_groups=[group, group], update_weights=True)
+
+        assert SglangConfig(models=[model], base_args={"x": 1}).common_value("x") == 2
+
+    def test_a_config_without_engine_groups_reads_the_cli_value(self):
+        """External engines leave no local engine group, so the CLI value is the common value."""
+        assert SglangConfig(models=[], base_args={"x": 1}).common_value("x") == 1
+
+    def test_a_field_nobody_declares_is_rejected(self):
+        """Reading an unknown field fails instead of returning a default."""
+        with pytest.raises(AttributeError, match="No common field 'y'"):
+            SglangConfig(models=[], base_args={"x": 1}).common_value("y")

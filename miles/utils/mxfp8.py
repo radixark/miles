@@ -20,7 +20,9 @@ MXFP8_SKIP_WEIGHT_SUBSTRINGS = (
 )
 
 MXFP8_SOURCE_FP8_DTYPES = (torch.float8_e4m3fn,) + (
-    (torch.float8_e4m3fnuz,) if hasattr(torch, "float8_e4m3fnuz") else ()
+    (torch.float8_e4m3fnuz,)
+    if hasattr(torch, "float8_e4m3fnuz")
+    else ()  # config-access-exempt: PyTorch builds differ in float8_e4m3fnuz availability
 )
 
 

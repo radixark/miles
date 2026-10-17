@@ -3,11 +3,15 @@ import os
 import subprocess
 import sys
 import types
+from enum import Enum
+from pathlib import Path
 from unittest.mock import patch
 
+import torch
 
 from tests.fast.utils.env_report.conftest import SAMPLE_PIP_INSPECT, make_args
 
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.utils.audit_utils.event_logger.models import EnvReport, EnvReportEditablePackageInfo
 from miles.utils.env_report.collector import (
     _collect_key_versions,
@@ -133,12 +137,83 @@ class TestDumpArgs:
         assert dump.values["nested"] == {"x": 1}
         assert dump.values["missing"] is None
 
-    def test_skips_unserializable_values(self) -> None:
-        """A non-JSON arg is skipped by name instead of being coerced to a lossy string."""
+    def test_marks_unserializable_values_with_diagnostics(self) -> None:
+        """Unsupported values retain their location and an explicit failure diagnostic."""
         dump = _dump_args(make_args(model=object(), lr=1.0))
-        assert dump.skipped_names == ["model"]
-        assert "model" not in dump.values
+        assert dump.skipped_names == []
+        assert dump.values["model"] == {"$serialization_error": "TypeError: Cannot serialize builtins.object"}
         assert dump.values["lr"] == 1.0
+
+    def test_reports_trainer_backend_values_nested_under_backend(self) -> None:
+        """Backend arguments remain distinct from Miles arguments in the report."""
+        dump = _dump_args(make_args(lr=1.0, backend=MegatronArgsNamespace(swiglu=True, num_layers=2)))
+        assert dump.values["backend"] == {"backend_name": "megatron", "swiglu": True, "num_layers": 2}
+        assert dump.values["lr"] == 1.0
+
+    def test_backend_failures_preserve_siblings_and_nested_redaction(self) -> None:
+        """One bad backend value cannot hide other fields or expose nested secrets."""
+        dump = _dump_args(
+            make_args(
+                backend=MegatronArgsNamespace(
+                    swiglu=True,
+                    options=[{"bad/key": object(), "wandb_key": "secret"}],
+                )
+            )
+        )
+
+        assert dump.skipped_names == []
+        assert dump.values["backend"]["swiglu"] is True
+        assert "$serialization_error" in dump.values["backend"]["options"][0]["bad/key"]
+        assert dump.values["backend"]["options"][0]["wandb_key"].startswith("redacted-sha256:")
+
+    def test_backend_retains_enum_path_and_torch_dtype(self) -> None:
+        """Non-JSON configuration scalar types remain visible in nested reports."""
+        dump = _dump_args(
+            make_args(
+                backend=MegatronArgsNamespace(
+                    mode=Enum("Mode", {"TRAIN": "train"}).TRAIN,
+                    path=Path("/model"),
+                    dtype=torch.bfloat16,
+                )
+            )
+        )
+
+        assert dump.skipped_names == []
+        assert dump.values["backend"]["mode"]["name"] == "TRAIN"
+        assert dump.values["backend"]["path"] == {"$path": "/model"}
+        assert dump.values["backend"]["dtype"] == {"$torch": "torch.bfloat16"}
+
+    def test_failed_environment_secret_keeps_its_diagnostic_without_breaking_redaction(self) -> None:
+        """An unsupported environment secret preserves the report and its safe failure marker."""
+        dump = _dump_args(
+            make_args(
+                backend=MegatronArgsNamespace(
+                    train_env_vars={"WANDB_API_KEY": object(), "NCCL_DEBUG": "INFO"},
+                )
+            )
+        )
+
+        assert dump.values["backend"]["train_env_vars"] == {
+            "WANDB_API_KEY": {"$serialization_error": "TypeError: Cannot serialize builtins.object"},
+            "NCCL_DEBUG": "INFO",
+        }
+
+    def test_circular_values_keep_siblings_and_diagnostics(self) -> None:
+        """Cycles produce a local failure without discarding serializable siblings."""
+        value = {"ok": 1}
+        value["cycle"] = value
+        dump = _dump_args(make_args(nested=value))
+
+        assert dump.values["nested"]["ok"] == 1
+        assert dump.values["nested"]["cycle"] == {"$serialization_error": "ValueError: Cannot serialize builtins.dict"}
+        assert dump.skipped_names == []
+
+    def test_json_mapping_keys_and_tuples_keep_their_existing_encoding(self) -> None:
+        """JSON-compatible numeric keys and tuples retain their original JSON representation."""
+        dump = _dump_args(make_args(nested={1: ("a", True), None: 2}))
+
+        assert dump.values["nested"] == {"1": ["a", True], "null": 2}
+        assert dump.skipped_names == []
 
     def test_redacts_a_declared_secret_arg(self) -> None:
         dump = _dump_args(make_args(wandb_key="abc"))
@@ -284,4 +359,4 @@ class TestCollectEnvReport:
         report = self._with_record(tmp_path, record='{"x": 1}', model=object())
         parsed = json.loads(report.model_dump_json())
         assert parsed["editable_packages"][0]["name"] == "miles"
-        assert parsed["process"]["args"]["skipped_names"] == ["model"]
+        assert parsed["process"]["args"]["skipped_names"] == []

@@ -23,9 +23,11 @@ from miles.utils.external_utils.colocate_pairing.controller import (
 from miles.utils.external_utils.colocate_pairing.pods import PodCoordinate
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import _assert_colocate_supported
 from miles.utils.test_utils.clock import FakeClock
+from miles.utils.workers.connection_config import WORKER_METADATA_ANNOTATION, WorkerPodMetadata
 from miles.utils.workers.reconcile.loop import ReconcileLoop
 from miles.utils.workers.reconcile.source_event import DeleteEvent, UpsertEvent
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
+from miles.utils.workers.worker_spec import StaticMeta
 
 TRAINER_POOL_ID = "trainer-engine-actor"
 INFERENCE_POOL_ID = "inference-inference"
@@ -836,6 +838,17 @@ class TestCoordinateOf:
         assert pairing_pods.coordinate_of(_unlabelled_pod("r-miles-run-orchestrator-0")) is None
 
 
+_WORKER_METADATA = WorkerPodMetadata(
+    workers_per_pod=1,
+    pods_per_cell=1,
+    gpu_slots_per_worker=1,
+    dynamic_pool=True,
+    worker_class=None,
+    port_infos=[],
+    static_meta=StaticMeta(),
+)
+
+
 def _pod(
     pool_id: str,
     cell_index: int = 0,
@@ -856,7 +869,10 @@ def _pod(
         DEFAULT_LABEL_KEYS.cell_index: str(cell_index),
         DEFAULT_LABEL_KEYS.pod_in_cell_index: str(pod_index),
     }
-    pod.metadata.annotations = {f"{DEFAULT_LABEL_KEYS.meta_annotation_prefix}{DEFAULT_LABEL_KEYS.gpu_ids_meta}": "0"}
+    pod.metadata.annotations = {
+        f"{DEFAULT_LABEL_KEYS.meta_annotation_prefix}{DEFAULT_LABEL_KEYS.gpu_ids_meta}": "0",
+        WORKER_METADATA_ANNOTATION: _WORKER_METADATA.model_dump_json(),
+    }
     return pod
 
 

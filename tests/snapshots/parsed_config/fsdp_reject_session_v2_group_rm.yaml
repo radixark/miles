@@ -1,0 +1,1 @@
+{error: {message: '--use-session-server v2 does not support --group-rm; v2 returns list[Sample]', type: ValueError}}

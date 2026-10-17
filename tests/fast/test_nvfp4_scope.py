@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+from types import SimpleNamespace
+
 import pytest
 import safetensors.torch
 import torch
@@ -196,7 +198,8 @@ def test_runtime_quantizer_only_dispatches_main_language_decoder(monkeypatch, pr
     spec.loader.exec_module(quantizer)
     original, converted = [], [("quantized", torch.zeros(1))]
     monkeypatch.setattr(quantizer, "_quantize_moe_params", lambda *_: converted)
+    args = SimpleNamespace(backend=SimpleNamespace(), extra_high_precision_layers_megatron=None)
     actual = quantizer.quantize_params_nvfp4(
-        None, f"{prefix}.layers.0.mlp.experts.linear_fc2.weight0", original, {"quant_method": "nvfp4"}
+        args, f"{prefix}.layers.0.mlp.experts.linear_fc2.weight0", original, {"quant_method": "nvfp4"}
     )
     assert actual is (converted if eligible else original)

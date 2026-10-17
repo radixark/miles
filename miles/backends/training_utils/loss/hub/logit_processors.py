@@ -97,9 +97,9 @@ def _iter_response_chunks(
     if args.true_on_policy_mode:
         if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
             logits = logits.div(args.rollout_temperature)
-        if getattr(args, "bf16", False):
+        if args.backend.bf16:
             logits = logits.to(torch.bfloat16)
-        elif getattr(args, "fp16", False):
+        elif args.backend.fp16:
             logits = logits.to(torch.float16)
 
     for row_ranges, tokens_chunk, response_indices in layout:
@@ -254,14 +254,14 @@ def _torch_log_probs_and_entropy(
                 response_indices,
                 tp_rank=parallel_state.tp.rank,
             )
-        if getattr(args, "loss_type", None) == "score_centering" and sampling_mask is None:
+        if args.loss_type == "score_centering" and sampling_mask is None:
             # Reference KL compares these with the score-centering actor score, which
             # normalizes over the true vocabulary instead of Megatron's padded one.
             log_prob, entropy = selected_log_probs_and_entropy(
                 logits_chunk,
                 tokens_chunk.unsqueeze(-1),
                 group=parallel_state.tp.group if parallel_state.tp.size > 1 else None,
-                vocab_size=getattr(args, "vocab_size", None),
+                vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
                 temperature=args.rollout_temperature,
                 chunk_size=args.log_probs_chunk_size,
                 with_entropy=with_entropy,
@@ -277,7 +277,7 @@ def _torch_log_probs_and_entropy(
                 entropy_requires_grad=entropy_requires_grad,
                 chunk_size=args.log_probs_chunk_size,
                 true_on_policy=args.true_on_policy_mode,
-                vocab_size=getattr(args, "vocab_size", None),
+                vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
                 sampling_mask=sampling_mask,
                 temperature=1.0 if args.true_on_policy_mode else args.rollout_temperature,
                 debug_unified_grad_fused_logprob=args.debug_unified_grad_fused_logprob,

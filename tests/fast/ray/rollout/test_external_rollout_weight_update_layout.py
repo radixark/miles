@@ -1,5 +1,4 @@
 import asyncio
-from argparse import Namespace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -67,7 +66,7 @@ async def _discovered_server(
     )
 
 
-def _connect(*, engine_gpu_counts: list[int], rollout_num_gpus_per_engine: int) -> list[dict]:
+def _connect(*, engine_gpu_counts: list[int]) -> list[dict]:
     calls: list[dict] = []
     engines = [_RecordingEngine(calls) for _ in engine_gpu_counts]
     async_utils = SimpleNamespace(submit=lambda coro: coro, wait_futures=lambda futures: None)
@@ -78,7 +77,6 @@ def _connect(*, engine_gpu_counts: list[int], rollout_num_gpus_per_engine: int) 
         patch(f"{_BROADCAST_MODULE}.init_process_group"),
     ):
         connect_rollout_engines_from_distributed(
-            Namespace(rollout_num_gpus_per_engine=rollout_num_gpus_per_engine),
             "miles-pp_0",
             engines,
             engine_gpu_counts=engine_gpu_counts,
@@ -89,7 +87,7 @@ def _connect(*, engine_gpu_counts: list[int], rollout_num_gpus_per_engine: int) 
 class TestExternalPdFleetWeightUpdateLayout:
     @pytest.mark.asyncio
     async def test_the_discovered_gpu_counts_reach_the_update_group_unchanged(self, monkeypatch):
-        """Discovered engine sizes reach the group instead of its deliberately different fallback."""
+        """Discovered engine sizes reach the update group unchanged."""
         urls = ["prefill:8000", "decode:8000"]
         payloads = {
             "http://prefill:8000": _payload(num_gpus=2, disaggregation_mode="prefill"),
@@ -109,7 +107,7 @@ class TestExternalPdFleetWeightUpdateLayout:
             assert srv.api_clients == ["client-0", "client-2"]
             counts = srv.engine_gpu_counts
 
-        calls = _connect(engine_gpu_counts=counts, rollout_num_gpus_per_engine=1)
+        calls = _connect(engine_gpu_counts=counts)
 
         assert [call["rank"] for call in calls] == [1, 3]
         assert {call["world_size"] for call in calls} == {5}
@@ -167,7 +165,7 @@ class TestExternalRegularEngineWeightUpdateLayout:
             counts = srv.engine_gpu_counts
         assert counts == [2]
 
-        calls = _connect(engine_gpu_counts=counts, rollout_num_gpus_per_engine=1)
+        calls = _connect(engine_gpu_counts=counts)
 
         assert [call["rank"] for call in calls] == [1]
         assert {call["world_size"] for call in calls} == {3}

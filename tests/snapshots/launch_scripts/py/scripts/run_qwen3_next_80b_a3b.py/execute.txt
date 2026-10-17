@@ -1,138 +1,103 @@
-### 0
-pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+# miles-snapshot-delta-v1
+base: ../run_qwen3_30b_a3b.py/execute.txt
+base_sha256: 935cc23db0cc766fb57d65cc8f2e01fe8d62300c90074fe27e5af68dc5872064
+edits:
+- at: 12
+  delete: 0
+  insert: |
+    for worker_ip in $(awk '{print $1}' /root/mpi_rack_hostfile); do if [ "$worker_ip" = 127.0.0.1 ]; then continue; fi; echo "Starting Ray worker on $worker_ip"; ssh root@"$worker_ip" "pkill -9 sglang ; ray stop
+      --force ; pkill -9 miles ; ray start
+      --address=127.0.0.1:6379
+      --num-gpus 8
+      --node-ip-address $worker_ip
+      --disable-usage-stats" & done; wait
 
-### 1
-export PYTHONUNBUFFERED=1 && ray start
-  --head
-  --node-ip-address 127.0.0.1
-  --num-gpus 8
-  --disable-usage-stats
-
-### 2
-for worker_ip in $(awk '{print $1}' /root/mpi_rack_hostfile); do if [ "$worker_ip" = 127.0.0.1 ]; then continue; fi; echo "Starting Ray worker on $worker_ip"; ssh root@"$worker_ip" "pkill -9 sglang ; ray stop
-  --force ; pkill -9 miles ; ray start
-  --address=127.0.0.1:6379
-  --num-gpus 8
-  --node-ip-address $worker_ip
-  --disable-usage-stats" & done; wait
-
-### 3
-nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
-
-### 4
-export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
-  --address="http://127.0.0.1:8265"
-  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
-  -- python3 <REPO_ROOT>/train.py
-  --spec miles_plugins.models.qwen3_next get_qwen3_next_spec
-  --disable-bias-linear
-  --qk-layernorm
-  --group-query-attention
-  --num-attention-heads 16
-  --num-query-groups 2
-  --kv-channels 256
-  --num-layers 48
-  --hidden-size 2048
-  --ffn-hidden-size 5120
-  --normalization RMSNorm
-  --apply-layernorm-1p
-  --position-embedding-type rope
-  --norm-epsilon 1e-6
-  --rotary-percent 0.25
-  --swiglu
-  --untie-embeddings-and-output-weights
-  --vocab-size 151936
-  --rotary-base 10000000
-  --moe-ffn-hidden-size 512
-  --moe-shared-expert-intermediate-size 512
-  --moe-router-score-function softmax
-  --moe-token-dispatcher-type alltoall
-  --moe-router-topk 10
-  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
-  --num-experts 512
-  --moe-grouped-gemm
-  --moe-token-drop-policy probs
-  --moe-router-dtype fp32
-  --moe-permute-fusion
-  --moe-aux-loss-coeff 0
-  --attention-output-gate
-  --moe-shared-expert-gate
-  --mtp-num-layers 1
-  --hf-checkpoint /root/models/Qwen3-Next-80B-A3B-Thinking
-  --ref-load /root/models/Qwen3-Next-80B-A3B-Thinking_torch_dist
-  --load /root/shared_data/checkpoints
-  --save /root/shared_data/checkpoints
-  --save-interval 20 
-  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
-  --input-key prompt
-  --label-key label
-  --apply-chat-template
-  --rollout-shuffle
-  --rm-type deepscaler
-  --num-rollout 3000
-  --rollout-batch-size 32
-  --n-samples-per-prompt 8
-  --rollout-max-response-len 8192
-  --rollout-temperature 1
-  --global-batch-size 256
-  --balance-data 
-  --optimizer adam
-  --lr 1e-6
-  --lr-decay-style constant
-  --weight-decay 0.1
-  --adam-beta1 0.9
-  --adam-beta2 0.98
-  --optimizer-cpu-offload
-  --overlap-cpu-optimizer-d2h-h2d
-  --use-precision-aware-optimizer 
-  --advantage-estimator gspo
-  --kl-loss-coef 0.00
-  --kl-loss-type low_var_kl
-  --kl-coef 0.00
-  --entropy-coef 0.00
-  --eps-clip 4e-4 
-  --use-wandb
-  --wandb-project miles-run_qwen3_next_80b_a3b
-  --wandb-group 260101-000000-000
-  --wandb-key 'frozen-wandb-api-key'
-  --disable-wandb-random-suffix 
-  --tensor-model-parallel-size 2
-  --sequence-parallel
-  --pipeline-model-parallel-size 4
-  --context-parallel-size 2
-  --expert-model-parallel-size 8
-  --expert-tensor-parallel-size 1
-  --recompute-granularity full
-  --recompute-method uniform
-  --recompute-num-layers 1
-  --use-dynamic-batch-size
-  --max-tokens-per-gpu 8192 
-  --eval-interval 20
-  --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
-  --n-samples-per-eval-prompt 16
-  --eval-max-response-len 16384
-  --eval-top-p 1 
-  --rollout-num-gpus-per-engine 8
-  --sglang-mem-fraction-static 0.8
-  --sglang-ep-size 8
-  --sglang-cuda-graph-bs-decode 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128
-  --sglang-speculative-algorithm EAGLE
-  --sglang-speculative-num-steps 2
-  --sglang-speculative-eagle-topk 1
-  --sglang-speculative-num-draft-tokens 3
-  --sglang-enable-draft-weights-cpu-backup
-  --sglang-max-running-requests 512 
-  --enable-mtp-training
-  --attention-dropout 0.0
-  --hidden-dropout 0.0
-  --accumulate-allreduce-grads-in-fp32
-  --attention-softmax-in-fp32
-  --attention-backend flash
-  --moe-token-dispatcher-type flex
-  --actor-num-nodes 4
-  --actor-num-gpus-per-node 8
-  --num-gpus-per-node 8
-  --moe-enable-deepep
-  --colocate   
-  --deploy-component all
+    ### 3
+- at: 14
+  delete: 1
+  insert: |
+    ### 4
+- at: 19
+  delete: 0
+  insert: |2
+      --spec miles_plugins.models.qwen3_next get_qwen3_next_spec
+- at: 22
+  delete: 3
+  insert: |2
+      --num-attention-heads 16
+      --num-query-groups 2
+      --kv-channels 256
+- at: 27
+  delete: 1
+  insert: |2
+      --ffn-hidden-size 5120
+- at: 29
+  delete: 0
+  insert: |2
+      --apply-layernorm-1p
+- at: 31
+  delete: 1
+  insert: |2
+      --rotary-percent 0.25
+- at: 35
+  delete: 2
+  insert: |2
+      --rotary-base 10000000
+      --moe-ffn-hidden-size 512
+      --moe-shared-expert-intermediate-size 512
+- at: 39
+  delete: 1
+  insert: |2
+      --moe-router-topk 10
+- at: 41
+  delete: 1
+  insert: |2
+      --num-experts 512
+- at: 47
+  delete: 6
+  insert: "  --attention-output-gate\n  --moe-shared-expert-gate\n  --mtp-num-layers 1\n  --hf-checkpoint /root/models/Qwen3-Next-80B-A3B-Thinking\n\
+    \  --ref-load /root/models/Qwen3-Next-80B-A3B-Thinking_torch_dist\n  --load /root/shared_data/checkpoints\n  --save /root/shared_data/checkpoints\n\
+    \  --save-interval 20 \n"
+- at: 75
+  delete: 2
+  insert: |2
+      --advantage-estimator gspo
+- at: 79
+  delete: 0
+  insert: |2
+      --kl-coef 0.00
+- at: 80
+  delete: 2
+  insert: "  --eps-clip 4e-4 \n"
+- at: 83
+  delete: 1
+  insert: |2
+      --wandb-project miles-run_qwen3_next_80b_a3b
+- at: 87
+  delete: 0
+  insert: |2
+      --tensor-model-parallel-size 2
+      --sequence-parallel
+      --pipeline-model-parallel-size 4
+      --context-parallel-size 2
+      --expert-model-parallel-size 8
+      --expert-tensor-parallel-size 1
+- at: 91
+  delete: 7
+  insert: "  --max-tokens-per-gpu 8192 \n"
+- at: 104
+  delete: 2
+  insert: "  --sglang-mem-fraction-static 0.8\n  --sglang-ep-size 8\n  --sglang-cuda-graph-bs-decode 1 2 4 8 16 24 32 40 48\
+    \ 56 64 72 80 88 96 104 112 120 128\n  --sglang-speculative-algorithm EAGLE\n  --sglang-speculative-num-steps 2\n  --sglang-speculative-eagle-topk\
+    \ 1\n  --sglang-speculative-num-draft-tokens 3\n  --sglang-enable-draft-weights-cpu-backup\n  --sglang-max-running-requests\
+    \ 512 \n  --enable-mtp-training\n"
+- at: 111
+  delete: 1
+  insert: |2
+      --moe-token-dispatcher-type flex
+      --actor-num-nodes 4
+      --actor-num-gpus-per-node 8
+- at: 113
+  delete: 2
+  insert: |2
+      --moe-enable-deepep

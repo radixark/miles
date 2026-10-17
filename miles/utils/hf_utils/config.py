@@ -82,7 +82,9 @@ def register_hf_config_aliases() -> None:
                 f"set override_hf_native=True to override."
             )
         module = importlib.import_module(alias.base_module)
-        base_config = getattr(module, alias.base_class)
+        base_config = getattr(
+            module, alias.base_class
+        )  # config-access-exempt: attribute selected at runtime from alias.base_class
         attrs = {"model_type": alias.model_type, "__module__": __name__}
         if alias.normalize_kwargs is not None:
             normalize = globals()[alias.normalize_kwargs]
@@ -134,7 +136,11 @@ def load_hf_config(
 
 
 def is_dsa(hf_config) -> bool:
-    return getattr(hf_config, "model_type", None) in ("deepseek_v32", "glm_moe_dsa", "glm5_next")
+    return getattr(hf_config, "model_type", None) in (
+        "deepseek_v32",
+        "glm_moe_dsa",
+        "glm5_next",
+    )  # config-access-exempt: model-family schemas differ in optional model_type metadata
 
 
 # Written by HF exports after all ranks finish, so consumers can tell finished from partial.

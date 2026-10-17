@@ -38,7 +38,7 @@ class TestRunCellSoak:
             runner_config=runner_config,
             event_log=EventLog(tmp_path / "events.jsonl"),
             evidence_dir=tmp_path / "evidence",
-            cell_fault_forms={"actor": [actor_form], "rollout": [rollout_form]},
+            forms={"actor": [actor_form], "rollout": [rollout_form]},
         )
 
         assert recorded["forms"] == {"actor": [actor_form]}

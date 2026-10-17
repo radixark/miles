@@ -15,7 +15,7 @@ We included 3 rollout correction algorithms:
 
 
 `--use-tis`: use this flag to **turn on TIS/MIS** for rollout correction (details in **Algorithms**).
-You may specify the **IS/RS configs** with a config file using `--custom-config-path`.
+Specify the **IS/RS configs** with the `--tis-*` and `--rs-*` arguments.
 
 `--use-rollout-logprobs`: When use this flag, the logprobs will **not** be recomputed by training engine - rollout log probs will be directly used in PPO/GRPO loss.
 
@@ -92,9 +92,7 @@ Advantages:
 
 ## APIs of Algorithms
 
-You may choose from above algorithms with the two command-line flags below. They are the
-only CLI flags this feature adds; everything in **Configs and Recommended Settings** is a
-key in the YAML file you pass to `--custom-config-path`.
+Choose from the algorithms above with the command-line arguments below.
 
 `--use-rollout-logprobs`: True if only use `rollout_log_probs` to compute the loss, bypassing old_log_probs calculated by training engine;
 
@@ -113,13 +111,18 @@ When choosing to use importance sampling or rejection sampling for mismatch corr
 
 ### Config keys
 
-These are **not command-line flags**. They live in the YAML file the run points at with
-`--custom-config-path`, and `mis.py` reads them off the parsed config. The reference file
-is [`mis.yaml`](mis.yaml), wired up like this:
+The hook registers these command-line arguments from `MisConfig`:
 
 ```bash
 --use-tis
---custom-config-path examples/infra_features/train_infer_mismatch_helper/mis.yaml
+--use-rs
+--tis-level token
+--rs-level token
+--tis-mode truncate
+--tis-lower-bound 0.5
+--tis-upper-bound 2.0
+--rs-veto-threshold 1.0e-4
+--tis-batch-normalize
 --custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp
 ```
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from unittest.mock import patch
 
 
 import pytest
@@ -10,6 +12,7 @@ pytest.importorskip("sglang")
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides, validate_args
+from miles.utils.arguments import parse_args
 from miles.utils.workers.argv_utils import _record_field_names
 
 
@@ -25,7 +28,9 @@ def _parse_sglang_args(argv: list[str]) -> argparse.Namespace:
 class TestSglangModelRoutersDefault:
     def test_parsing_without_model_routers_sets_none(self):
         """Parsing without multi-policy routers exposes a safe None default."""
-        args = _parse_sglang_args([])
+        argv = ["pytest", "--train-backend", "fsdp", "--rollout-batch-size", "1", "--num-rollout", "1"]
+        with patch.object(sys, "argv", argv):
+            args = parse_args()
 
         assert args.sglang_model_routers is None
 
@@ -75,7 +80,10 @@ def test_score_centering_enables_fp32_lm_head(loss_type: str | None, explicit_fp
     args.loss_type = loss_type
     args.rollout_num_gpus_per_engine = 1
     args.true_on_policy_mode = False
+    args.recompute_logprobs_via_prefill = False
     args.use_session_server = False
+    args.sglang_router_policy = None
+    args.sglang_router_ip = None
 
     validate_args(args)
 

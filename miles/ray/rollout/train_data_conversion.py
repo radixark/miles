@@ -4,6 +4,7 @@ from typing import Any
 import torch
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 from miles.utils.lora.utils import is_multi_lora_enabled
@@ -68,7 +69,8 @@ def convert_samples_to_train_data(
     Convert inference generated samples to training data.
     """
     if (f := custom_convert_samples_to_train_data_func) is not None:
-        return f(args, samples)
+        fn_args = compute_custom_function_config(args, args.custom_convert_samples_to_train_data_path)
+        return f(fn_args, samples)
 
     raw_rewards, rewards = _post_process_rewards(
         args,
@@ -130,7 +132,9 @@ def convert_samples_to_train_data(
     if k := args.rollout_top_logprobs_num:
         for sample in samples:
             for field in ("rollout_topk_token_ids", "rollout_topk_log_probs", "rollout_log_probs"):
-                if getattr(sample, field) is None:
+                if (
+                    getattr(sample, field) is None
+                ):  # config-access-exempt: sample field name is selected from the explicit rollout probability fields
                     raise ValueError(
                         f"Rollout top-k logprobs collection requires {field}; "
                         f"sample_index={sample.index}. Custom rollout producers must record probabilities during generation."
@@ -164,7 +168,7 @@ def convert_samples_to_train_data(
 
     if samples[0].rollout_routed_experts is not None:
         train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
-    elif getattr(args, "use_rollout_routing_replay", False):
+    elif args.use_rollout_routing_replay:
         raise ValueError(
             "--use-rollout-routing-replay is set but the rollout samples carry no "
             "rollout_routed_experts: the engine response meta_info lacked 'routed_experts'."
@@ -172,7 +176,7 @@ def convert_samples_to_train_data(
 
     if samples[0].rollout_indexer_topk is not None:
         train_data["rollout_indexer_topk"] = [sample.rollout_indexer_topk for sample in samples]
-    elif getattr(args, "use_rollout_indexer_replay", False):
+    elif args.use_rollout_indexer_replay:
         raise ValueError(
             "--use-rollout-indexer-replay is set but the rollout samples carry no "
             "rollout_indexer_topk: the engine response meta_info lacked 'indexer_topk'."
@@ -347,7 +351,8 @@ def _post_process_rewards(
     prompt_group_sizes: list[int] | None = None,
 ):
     if (f := custom_reward_post_process_func) is not None:
-        return f(args, samples)
+        fn_args = compute_custom_function_config(args, args.custom_reward_post_process_path)
+        return f(fn_args, samples)
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:

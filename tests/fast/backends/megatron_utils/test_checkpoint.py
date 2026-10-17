@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import make_trainer_args
 
 from miles.backends.megatron_utils import checkpoint
 from miles.backends.training_utils.model_companion import ModelCompanion
@@ -41,8 +42,9 @@ class TestCheckpointTrainingProvenance:
             (load_path / "metadata.json").write_text("{}")
         else:
             (load_path / "latest_checkpointed_iteration.txt").write_text(source)
-        args = Namespace(load=str(load_path), finetune=finetune, ckpt_step=ckpt_step, lora_rank=0)
-        monkeypatch.setattr(checkpoint, "get_args", lambda: args)
+        args = make_trainer_args(
+            load=str(load_path), finetune=finetune, ckpt_step=ckpt_step, lora_rank=0, lora_adapter_path=None
+        )
         monkeypatch.setattr(checkpoint, "_load_checkpoint_megatron", lambda **_kwargs: (0, 123))
         checkpointing_context = (
             None
@@ -56,17 +58,20 @@ class TestCheckpointTrainingProvenance:
             opt_param_scheduler=None,
             checkpointing_context=checkpointing_context,
             skip_load_to_model_and_opt=False,
+            args=args,
         )
 
         assert result == (0, expected)
 
-    def test_loading_hf_weights_preserves_non_finetune_rollout_numbering(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("finetune", [False, True])
+    def test_loading_hf_weights_never_claims_restored_training_progress(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, finetune: bool
     ) -> None:
-        """HF loading preserves the existing non-finetune rollout numbering."""
+        """HF weights initialize a model without restoring any completed rollout."""
         (tmp_path / "config.json").write_text("{}")
-        args = Namespace(load=str(tmp_path), finetune=False, ckpt_step=None, lora_rank=0)
-        monkeypatch.setattr(checkpoint, "get_args", lambda: args)
+        args = make_trainer_args(
+            load=str(tmp_path), finetune=finetune, ckpt_step=None, lora_rank=0, lora_adapter_path=None
+        )
         monkeypatch.setattr(checkpoint, "_load_checkpoint_hf", lambda **_kwargs: (0, 0))
 
         result = checkpoint.load_checkpoint(
@@ -75,6 +80,7 @@ class TestCheckpointTrainingProvenance:
             opt_param_scheduler=None,
             checkpointing_context=None,
             skip_load_to_model_and_opt=False,
+            args=args,
         )
 
         assert result == (0, True)

@@ -14,7 +14,7 @@ async def test_recompute_rollout_logprobs_via_prefill_uses_response_tail(monkeyp
         rollout_log_probs=[-9.0, -9.0, -9.0],
         status=Sample.Status.COMPLETED,
     )
-    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False)
+    args = SimpleNamespace(recompute_logprobs_via_prefill=True, lora_rank=0, lora_adapter_path=None)
     seen = {}
 
     async def fake_post(url, payload, headers=None):
@@ -56,7 +56,7 @@ async def test_recompute_rollout_logprobs_via_prefill_uses_response_tail(monkeyp
 @pytest.mark.asyncio
 async def test_recompute_rollout_logprobs_via_prefill_checks_token_alignment(monkeypatch):
     sample = Sample(tokens=[10, 11, 20], response_length=1, status=Sample.Status.COMPLETED)
-    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False)
+    args = SimpleNamespace(recompute_logprobs_via_prefill=True, lora_rank=0, lora_adapter_path=None)
 
     async def fake_post(url, payload, headers=None):
         return {"meta_info": {"input_token_logprobs": [(None, 11), (-0.1, 999)]}}
@@ -80,7 +80,8 @@ async def test_recompute_samples_flushes_each_batch_and_batches_prefill_score(mo
     ]
     args = SimpleNamespace(
         recompute_logprobs_via_prefill=True,
-        sglang_enable_lora=False,
+        lora_rank=0,
+        lora_adapter_path=None,
         sglang_router_policy="round_robin",
     )
     calls = []
@@ -122,7 +123,8 @@ async def test_recompute_samples_batches_by_logprob_start_len(monkeypatch):
     ]
     args = SimpleNamespace(
         recompute_logprobs_via_prefill=True,
-        sglang_enable_lora=False,
+        lora_rank=0,
+        lora_adapter_path=None,
         sglang_router_policy="round_robin",
     )
     calls = []

@@ -23,12 +23,14 @@ class TestGetLogProbsAndEntropy:
         monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
         args = Namespace(
             log_probs_backend="torch",
+            loss_type="policy_loss",
             qkv_format="thd",
             rollout_temperature=1.0,
             true_on_policy_mode=False,
             log_probs_chunk_size=-1,
             allgather_cp=False,
             debug_unified_grad_fused_logprob=True,
+            train_backend="fsdp",
         )
 
         with torch.no_grad():

@@ -11,8 +11,8 @@ from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
 
 def _uses_formal_contract(args) -> bool:
     return (
-        getattr(args, "true_on_policy_mode", False)
-        and getattr(args, "sglang_true_on_policy_contract", None) == QWEN3_DENSE_TRUE_ON_POLICY_V1.name
+        args.true_on_policy_mode
+        and args.sglang.common_value("true_on_policy_contract") == QWEN3_DENSE_TRUE_ON_POLICY_V1.name
     )
 
 
@@ -29,7 +29,7 @@ class Qwen3Adapter(ArchAdapter):
     def resolve_precision(self, base, args):
         if not _uses_formal_contract(args):
             return base
-        if getattr(args, "fp16", False):
+        if args.backend.fp16:
             raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires bf16 training")
         if not base.keep_fp32_master:
             raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires fp32 master weights")
@@ -38,7 +38,7 @@ class Qwen3Adapter(ArchAdapter):
         )
 
     def patch_model(self, model, args):
-        if not _uses_formal_contract(args) or getattr(args, "fp16", False):
+        if not _uses_formal_contract(args) or args.backend.fp16:
             return
         from miles.backends.fsdp_utils.models.qwen3 import apply_qwen3_dense_true_on_policy_patch
 

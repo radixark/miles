@@ -1,34 +1,86 @@
+from typing import Any, ClassVar, Self
+
 import pytest
 from pydantic import ValidationError
-from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.utils.workers.fake_specs import FakeCommandSpec, FakeServeSpec
 
+from miles.backends.sglang_utils.sglang_config import SglangScalingConfig
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.args.runtime_base import BaseLeafConfig
+from miles.utils.args.schema import BaseConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import _assert_worker_ports_fit
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_spec import (
     DEFAULT_RPC_PORT,
     RPC_PORT_NAME,
-    BaseWorkerSpec,
-    CommandWorkerSpec,
+    BaseCommandSpec,
+    BaseServeSpec,
+    BaseSpec,
     HostAndPort,
     LaunchCommandContext,
     PortInfo,
     SchedulingSpec,
-    ServeWorkerSpec,
+    StaticMeta,
     WorkerCtorContext,
     WorkerLaunchContext,
 )
 
+_SCHEDULING = SchedulingSpec(num_cells=2, num_workers_per_cell=4, num_gpus_per_worker=0.4)
+
+
+class _DemoLeafConfig(BaseLeafConfig):
+    demo_flag: int
+
+
+class _DemoRunConfig(BaseConfig):
+    demo_flag: int
+    unrelated_flag: str
+
+
+class _PlainCommandSpec(BaseCommandSpec):
+    @classmethod
+    def create(cls, config: Any) -> Self:
+        return cls(args=config, name="demo-command", port_infos=[])
+
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return _SCHEDULING
+
+    def launch_command(self, ctx: LaunchCommandContext) -> str:
+        return "sleep 1"
+
+
+class _PlainServeSpec(BaseServeSpec):
+    worker_type: ClassVar[str] = "demo"
+    config_class: ClassVar[type[BaseLeafConfig]] = _DemoLeafConfig
+    worker_class: str = "miles.demo.Worker"
+
+    @classmethod
+    def create(cls, config: _DemoLeafConfig) -> Self:
+        return cls(args=config, name="demo-serve")
+
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return _SCHEDULING
+
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
+        return {}
+
+
+def _make_scaling() -> ScalingConfig:
+    return ScalingConfig(sglang_scaling=SglangScalingConfig(groups={}))
+
 
 def _make_launch_context(**overrides) -> WorkerLaunchContext:
-    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[])
+    kwargs = dict(args=None, cell_index=0, worker_in_cell_index=0, num_workers_per_cell=1, gpu_ids=[])
     kwargs.update(overrides)
     return WorkerLaunchContext(**kwargs)
 
 
 def _make_launch_command_context(**overrides) -> LaunchCommandContext:
     kwargs = dict(
+        args=None,
         cell_index=0,
         worker_in_cell_index=0,
+        num_workers_per_cell=1,
         gpu_ids=[],
         local_gpu_ids=[],
         self_addrs={"http": HostAndPort(host="127.0.0.1", port=8000)},
@@ -38,12 +90,6 @@ def _make_launch_command_context(**overrides) -> LaunchCommandContext:
     return LaunchCommandContext(**kwargs)
 
 
-def _make_ctor_context(**overrides) -> WorkerCtorContext:
-    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=FakeBackendCapability())
-    kwargs.update(overrides)
-    return WorkerCtorContext(**kwargs)
-
-
 def _make_port_info(**overrides) -> PortInfo:
     kwargs = dict(name="http", static_port=8080, mode="per_worker", allow_dynamic=False)
     kwargs.update(overrides)
@@ -51,12 +97,7 @@ def _make_port_info(**overrides) -> PortInfo:
 
 
 def _make_base_kwargs(**overrides) -> dict:
-    kwargs = dict(
-        name="demo-worker",
-        port_infos=[_make_port_info()],
-        env_var=lambda _ctx: {"DEMO": "1"},
-        scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=4, num_gpus_per_worker=0.4),
-    )
+    kwargs = dict(name="demo-worker", port_infos=[_make_port_info()], fixed_scheduling=_SCHEDULING)
     kwargs.update(overrides)
     return kwargs
 
@@ -116,42 +157,47 @@ class TestPortInfoCellOffset:
         assert (port_info.static_port, port_info.offset_by_cell) == (5100, True)
 
 
-class TestBaseWorkerSpec:
+class TestBaseSpec:
     def test_the_all_selector_cannot_be_stored_as_a_pool_component(self) -> None:
         """A worker pool must name one concrete deployment component rather than the all-components selector."""
-        concrete = BaseWorkerSpec(**_make_base_kwargs(deploy_component=DeployComponent.TRAINER))
+        concrete = FakeCommandSpec(**_make_base_kwargs(deploy_component=DeployComponent.TRAINER), command=str)
 
         assert concrete.deploy_component is DeployComponent.TRAINER
         with pytest.raises(ValidationError, match="must name the one component.*not the selector"):
-            BaseWorkerSpec(**_make_base_kwargs(deploy_component=DeployComponent.ALL))
+            FakeCommandSpec(**_make_base_kwargs(deploy_component=DeployComponent.ALL), command=str)
 
     def test_constructs_and_exposes_fields(self):
-        """A spec keeps its name, ports, and scheduling as provided."""
-        spec = BaseWorkerSpec(**_make_base_kwargs())
+        """A spec keeps its name and ports as provided."""
+        spec = _PlainCommandSpec(args=None, name="demo-worker", port_infos=[_make_port_info()])
         assert spec.name == "demo-worker"
         assert spec.port_infos[0].static_port == 8080
-        assert spec.scheduling.num_cells == 2
 
-    def test_env_var_is_stored_uncalled(self):
-        """The env_var callable is stored as-is and only evaluated on demand."""
-        calls = []
+    def test_a_spec_that_declares_no_env_sets_none(self):
+        """Env vars are opt-in per spec, so the base hook must add nothing to the worker's environment."""
+        spec = _PlainCommandSpec.create(None)
 
-        def env_var(_ctx) -> dict[str, str]:
-            calls.append(1)
-            return {"A": "b"}
+        assert spec.env_var(_make_launch_context()) == {}
 
-        spec = BaseWorkerSpec(**_make_base_kwargs(env_var=env_var))
-        assert calls == []
-        assert spec.env_var(_make_launch_context()) == {"A": "b"}
+    def test_a_spec_that_declares_no_meta_publishes_none_for_any_cell(self):
+        """Cell meta is opt-in, so an undeclared one must resolve to nothing rather than leak another cell's."""
+        spec = _PlainCommandSpec.create(None)
+
+        assert spec.static_meta == StaticMeta()
+        assert spec.static_meta.resolve(cell_index=3) == {}
+
+    def test_an_incomplete_spec_cannot_be_instantiated(self):
+        """A spec missing its scheduling or creation hooks would only fail once a worker is launched."""
+        with pytest.raises(TypeError, match="abstract"):
+            BaseSpec(args=None, name="demo-worker", port_infos=[])
 
     def test_rejects_extra_field(self):
         """Unknown fields are forbidden."""
         with pytest.raises(ValidationError):
-            BaseWorkerSpec(**_make_base_kwargs(unknown_field=1))
+            _PlainCommandSpec(args=None, name="demo-worker", port_infos=[], unknown_field=1)
 
     def test_is_frozen(self):
         """Field assignment after construction is rejected."""
-        spec = BaseWorkerSpec(**_make_base_kwargs())
+        spec = _PlainCommandSpec.create(None)
         with pytest.raises(ValidationError):
             spec.name = "other"
 
@@ -160,8 +206,10 @@ class TestLaunchCommandContext:
     def test_the_context_refuses_to_be_built_without_local_gpu_ids(self):
         """A default here would let a manager that never probed the worker launch it against the wrong devices."""
         kwargs = dict(
+            args=None,
             cell_index=0,
             worker_in_cell_index=0,
+            num_workers_per_cell=1,
             gpu_ids=[],
             self_addrs={"http": HostAndPort(host="127.0.0.1", port=8000)},
             pool_addrs={},
@@ -171,103 +219,91 @@ class TestLaunchCommandContext:
             LaunchCommandContext(**kwargs)
 
 
-class TestCommandWorkerSpec:
-    def test_constructs_with_launch_command(self):
-        """A command spec carries the launch command callable besides base fields."""
-        spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "python -m sglang.launch_server")
-        ctx = _make_launch_command_context()
-        assert spec.launch_command(ctx) == "python -m sglang.launch_server"
-        assert isinstance(spec, BaseWorkerSpec)
+class TestBaseCommandSpec:
+    def test_a_command_spec_is_handed_the_whole_run_config(self):
+        """A command pool renders its argv from the run's own flags, so slicing must not drop any of them."""
+        run_config = _DemoRunConfig(demo_flag=3, unrelated_flag="kept")
 
-    def test_launch_command_is_stored_uncalled(self):
-        """The launch_command callable is only evaluated once a context is available."""
-        calls: list[LaunchCommandContext] = []
+        assert _PlainCommandSpec.slice_configs(run_config) == [run_config]
 
-        def launch_command(ctx: LaunchCommandContext) -> str:
-            calls.append(ctx)
-            http = ctx.self_addrs["http"]
-            return f"serve --host {http.host} --port {http.port}"
+    def test_a_command_spec_must_say_how_to_launch_its_workers(self):
+        """Without a launch command the manager would have nothing to run in the worker's actor."""
 
-        spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=launch_command)
-        assert calls == []
+        class _NoLaunchCommand(BaseCommandSpec):
+            @classmethod
+            def create(cls, config: Any) -> Self:
+                return cls(args=config, name="demo-command", port_infos=[])
 
-        ctx = _make_launch_command_context(self_addrs={"http": HostAndPort(host="10.0.0.1", port=9001)})
-        assert spec.launch_command(ctx) == "serve --host 10.0.0.1 --port 9001"
-        assert calls == [ctx]
+            def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+                return _SCHEDULING
+
+        with pytest.raises(TypeError, match="launch_command"):
+            _NoLaunchCommand.create(None)
 
 
-class TestServeWorkerSpec:
+class TestBaseServeSpec:
     def test_constructs_with_worker_class(self):
         """A serve spec carries the worker class path besides base fields."""
-        spec = ServeWorkerSpec(
-            **_make_base_kwargs(),
-            worker_class="miles.ray.rollout.inference_controller.InferenceController",
-            ctor_kwargs=lambda _ctx: {},
-        )
-        assert spec.worker_class == "miles.ray.rollout.inference_controller.InferenceController"
-        assert isinstance(spec, BaseWorkerSpec)
+        spec = _PlainServeSpec.create(_DemoLeafConfig(demo_flag=1))
 
-    def test_ctor_kwargs_is_stored_uncalled(self):
-        """The ctor_kwargs callable is stored as-is and only evaluated on demand."""
-        calls = []
+        assert spec.worker_class == "miles.demo.Worker"
+        assert isinstance(spec, BaseSpec)
 
-        def ctor_kwargs(_ctx) -> dict:
-            calls.append(1)
-            return {"x": 1}
+    def test_a_serve_spec_is_handed_only_its_own_leaf_config(self):
+        """A served pool is rebuilt from the config it was sliced, so flags outside its leaf must not reach it."""
+        (config,) = _PlainServeSpec.slice_configs(_DemoRunConfig(demo_flag=3, unrelated_flag="dropped"))
 
-        spec = ServeWorkerSpec(
-            **_make_base_kwargs(),
-            worker_class="miles.demo.Worker",
-            ctor_kwargs=ctor_kwargs,
-        )
-        assert calls == []
-        assert spec.ctor_kwargs(_make_ctor_context()) == {"x": 1}
+        assert config == _DemoLeafConfig(demo_flag=3)
+
+    def test_a_serve_spec_must_say_how_to_build_its_worker(self):
+        """Without constructor kwargs a pod could not build the worker class it names."""
+
+        class _NoCtorKwargs(BaseServeSpec):
+            worker_type: ClassVar[str] = "demo"
+            config_class: ClassVar[type[BaseLeafConfig]] = _DemoLeafConfig
+
+            @classmethod
+            def create(cls, config: Any) -> Self:
+                return cls(args=config, name="demo-serve", worker_class="miles.demo.Worker")
+
+            def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+                return _SCHEDULING
+
+        with pytest.raises(TypeError, match="ctor_kwargs"):
+            _NoCtorKwargs.create(None)
 
 
-class TestServeWorkerSpecRpcPortInjection:
-    def _make_spec(self, **overrides) -> ServeWorkerSpec:
-        return ServeWorkerSpec(
-            **_make_base_kwargs(**overrides),
-            worker_class="miles.demo.Worker",
-            ctor_kwargs=lambda _ctx: {},
-        )
+class TestBaseServeSpecRpcPort:
+    def _make_spec(self, **overrides) -> BaseServeSpec:
+        return FakeServeSpec(**_make_base_kwargs(**overrides), worker_class="miles.demo.Worker")
 
-    def test_rpc_port_is_injected_by_default(self):
-        """Every serve worker automatically exposes an rpc port."""
-        spec = self._make_spec()
+    def test_a_serve_spec_that_declares_no_ports_exposes_the_default_rpc_port(self):
+        """Every serve worker runs the rpc server, so a spec with no port declaration must still get one."""
+        spec = _PlainServeSpec.create(_DemoLeafConfig(demo_flag=1))
+
         (rpc,) = [port_info for port_info in spec.port_infos if port_info.name == RPC_PORT_NAME]
         assert rpc.static_port == DEFAULT_RPC_PORT
         assert rpc.mode == "per_worker"
         assert rpc.allow_dynamic is True
 
-    def test_injection_keeps_declared_ports(self):
-        """The injected rpc port is appended after the declared ports."""
-        spec = self._make_spec()
-        assert [port_info.name for port_info in spec.port_infos] == ["http", RPC_PORT_NAME]
-
-    def test_explicit_rpc_port_is_not_duplicated(self):
-        """An explicitly declared rpc port wins over the injected default."""
+    def test_declared_ports_are_kept_exactly_as_declared(self):
+        """A spec that lists its ports owns the list, including where its rpc port sits in it."""
+        http = _make_port_info()
         explicit = PortInfo(name=RPC_PORT_NAME, static_port=9999, mode="per_worker", allow_dynamic=False)
-        spec = self._make_spec(port_infos=[explicit])
-        assert spec.port_infos == [explicit]
 
-    def test_an_explicit_rpc_port_given_as_a_dict_is_not_duplicated(self):
-        """Callers may declare ports as raw dicts, and such a declaration must still suppress the injected default."""
+        spec = self._make_spec(port_infos=[http, explicit])
+
+        assert spec.port_infos == [http, explicit]
+
+    def test_an_explicit_rpc_port_given_as_a_dict_is_kept(self):
+        """Callers may declare ports as raw dicts, and such a declaration must still yield the declared rpc port."""
         spec = self._make_spec(port_infos=[dict(name=RPC_PORT_NAME, static_port=9999)])
 
         assert spec.port_infos == [PortInfo(name=RPC_PORT_NAME, static_port=9999)]
 
-    def test_ports_given_as_dicts_still_receive_the_injected_rpc_port(self):
-        """Reading a dict port's name must not be confused with reading the rpc name, or the rpc port goes missing."""
-        spec = self._make_spec(port_infos=[dict(name="http", static_port=8080)])
-
-        assert [port_info.name for port_info in spec.port_infos] == ["http", RPC_PORT_NAME]
-
-    def test_base_and_command_specs_get_no_rpc_port(self):
+    def test_command_specs_get_no_rpc_port(self):
         """Only serve workers run the rpc server, so only they get the port."""
-        base = BaseWorkerSpec(**_make_base_kwargs())
-        command = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "sleep 1")
-        assert RPC_PORT_NAME not in [port_info.name for port_info in base.port_infos]
+        command = FakeCommandSpec(**_make_base_kwargs(), command=str)
         assert RPC_PORT_NAME not in [port_info.name for port_info in command.port_infos]
 
 
@@ -351,7 +387,7 @@ class TestAssertRankPortsFit:
             port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=8004)],
         )
 
-        _assert_worker_ports_fit(spec)
+        _assert_worker_ports_fit(spec, scaling=_make_scaling())
 
     def test_rejects_rank_ports_reaching_into_another_port(self):
         """Rank 2 would bind the master port and every collective would rendezvous on nothing."""
@@ -361,7 +397,7 @@ class TestAssertRankPortsFit:
         )
 
         with pytest.raises(AssertionError, match="reaches into"):
-            _assert_worker_ports_fit(spec)
+            _assert_worker_ports_fit(spec, scaling=_make_scaling())
 
     def test_rejects_rank_ports_reaching_into_a_consecutive_port_block(self):
         """A block claims num_consecutive ports, so the collision test must span all of them."""
@@ -374,7 +410,7 @@ class TestAssertRankPortsFit:
         )
 
         with pytest.raises(AssertionError, match="reaches into"):
-            _assert_worker_ports_fit(spec)
+            _assert_worker_ports_fit(spec, scaling=_make_scaling())
 
     def test_a_port_below_the_rpc_port_is_untouched(self):
         """Ranks climb upwards only, so a lower port can never be reached."""
@@ -383,7 +419,7 @@ class TestAssertRankPortsFit:
             port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=7000)],
         )
 
-        _assert_worker_ports_fit(spec)
+        _assert_worker_ports_fit(spec, scaling=_make_scaling())
 
     def test_a_pod_of_one_rank_needs_only_its_own_rpc_port(self):
         """Nodes as wide as a cell put one rank in each pod, which must not be constrained by neighbours."""
@@ -392,10 +428,10 @@ class TestAssertRankPortsFit:
             port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=8001)],
         )
 
-        _assert_worker_ports_fit(spec)
+        _assert_worker_ports_fit(spec, scaling=_make_scaling())
 
 
-def _serve_spec(*, num_gpus_per_node: int, **overrides) -> ServeWorkerSpec:
+def _serve_spec(*, num_gpus_per_node: int, **overrides) -> BaseServeSpec:
     scheduling = SchedulingSpec(
         num_cells=1,
         num_workers_per_cell=8,
@@ -403,54 +439,35 @@ def _serve_spec(*, num_gpus_per_node: int, **overrides) -> ServeWorkerSpec:
         num_gpu_slots_per_worker=1,
         num_gpus_per_node=num_gpus_per_node,
     )
-    return ServeWorkerSpec(
-        **_make_base_kwargs(scheduling=scheduling, **overrides),
-        worker_class="miles.demo.Worker",
-        ctor_kwargs=lambda _ctx: {},
+    return FakeServeSpec(
+        **_make_base_kwargs(fixed_scheduling=scheduling, **overrides), worker_class="miles.demo.Worker"
     )
 
 
-class TestServeWorkerSpecExtraScheduling:
+class TestBaseServeSpecExtraScheduling:
     def test_concurrency_groups_default_to_absent(self):
         """Most workers need no concurrency groups, so the field stays optional."""
-        spec = ServeWorkerSpec(
-            **_make_base_kwargs(),
-            worker_class="miles.demo.Worker",
-            ctor_kwargs=lambda _ctx: {},
-        )
+        spec = _PlainServeSpec.create(_DemoLeafConfig(demo_flag=1))
 
         assert spec.concurrency_groups is None
 
     def test_concurrency_groups_are_carried_on_the_spec(self):
         """The trainer needs its heartbeat rpc served outside the default group."""
-        spec = ServeWorkerSpec(
+        spec = FakeServeSpec(
             **_make_base_kwargs(),
             worker_class="miles.demo.Worker",
-            ctor_kwargs=lambda _ctx: {},
             concurrency_groups={"heartbeat_status": 1, "default": 1},
         )
 
         assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1}
 
-    def test_ctor_kwargs_receive_the_worker_position(self):
-        """Each worker needs its own rank, so the callable is per worker."""
-        spec = ServeWorkerSpec(
-            **_make_base_kwargs(),
-            worker_class="miles.demo.Worker",
-            ctor_kwargs=lambda ctx: {"rank": ctx.worker_in_cell_index, "gpu_ids": ctx.gpu_ids},
-        )
-
-        kwargs = spec.ctor_kwargs(_make_ctor_context(worker_in_cell_index=3, gpu_ids=[2]))
-
-        assert kwargs == {"rank": 3, "gpu_ids": [2]}
-
 
 class TestLaunchCommandContextPoolAddrs:
     def test_a_launch_command_reads_a_peer_address_out_of_the_pool_keyed_map(self):
         """A command renders a peer's address by looking that peer's pool id up in pool_addrs."""
-        spec = CommandWorkerSpec(
+        spec = FakeCommandSpec(
             **_make_base_kwargs(),
-            launch_command=lambda ctx: f"serve --backend {ctx.pool_addrs['inference-router-0'][0]['primary'].addr}",
+            command=lambda ctx: f"serve --backend {ctx.pool_addrs['inference-router-0'][0]['primary'].addr}",
         )
         ctx = _make_launch_command_context(
             pool_addrs={"inference-router-0": [{"primary": HostAndPort(host="10.0.0.1", port=3000)}]}
@@ -478,8 +495,10 @@ class TestLaunchCommandContextPoolAddrs:
         """Making the map optional would let a caller that forgot to wire it render commands against nothing."""
         with pytest.raises(ValidationError):
             LaunchCommandContext(
+                args=None,
                 cell_index=0,
                 worker_in_cell_index=0,
+                num_workers_per_cell=1,
                 gpu_ids=[],
                 self_addrs={"http": HostAndPort(host="127.0.0.1", port=8000)},
             )

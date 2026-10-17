@@ -110,7 +110,10 @@ def bind_nemotron_h(model, hub: HubKernels) -> int:
     mixers = [
         mod.mixer
         for mod in model.modules()
-        if getattr(mod, "block_type", None) == "attention" and hasattr(mod, "mixer")
+        if getattr(mod, "block_type", None) == "attention"
+        and hasattr(
+            mod, "mixer"
+        )  # config-access-exempt: HF model traversal includes modules without mixer; HF model traversal includes non-attention modules without block_type or mixer
     ]
     if not mixers:
         return 0

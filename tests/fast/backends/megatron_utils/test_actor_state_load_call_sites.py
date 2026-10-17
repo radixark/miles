@@ -38,7 +38,7 @@ class TestWhereTheTrainerLoadsItsState:
 
     def test_init_reaches_its_state_load_through_that_function(self):
         """The invariant is worth nothing if init stopped going through the function everything else goes through."""
-        assert "init" in _functions_calling(_CORE_METHOD, as_method=True)
+        assert _INIT_METHOD in _functions_calling(_CORE_METHOD, as_method=True)
 
 
 def _function(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:

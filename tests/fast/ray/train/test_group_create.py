@@ -8,6 +8,7 @@ from tests.fast.ray.train.conftest import make_deployment_identity
 
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.group import TrainerController
+from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.utils.workers.worker_provider.base import CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
@@ -28,7 +29,7 @@ class _RecordingWorkerProvider(RayWorkerProvider):
         self.poll_count: int = 0
 
     async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
-        self.watch_calls.append((reconcile, list(self._watched_pool_ids())))
+        self.watch_calls.append((reconcile, list(self._pool_ids)))
         return await super().watch_cells(reconcile)
 
     async def _list_alive_cells(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
@@ -56,9 +57,18 @@ def _make_args(*, num_cells: int) -> SimpleNamespace:
         context_parallel_size=1,
         actor_num_nodes=1,
         actor_num_gpus_per_node=num_cells,
+        trainer_init_expected_num_cells=num_cells,
+        ci_test=False,
+        ci_disable_config_snapshot=False,
         object_store_backend="ray",
         worker_comm_backend="ray",
         trainer_model_id=None,
+        trainer_id="actor",
+        trainer_role="actor",
+        kl_coef=0,
+        use_kl_loss=False,
+        use_opd=False,
+        opd_type="megatron",
     )
 
 
@@ -70,14 +80,12 @@ def provider() -> _RecordingWorkerProvider:
 async def _create_controller(*, num_cells: int, provider: _RecordingWorkerProvider) -> TrainerController:
     train_conftest.fake_worker_manager.num_cells = num_cells
     controller = TrainerController(
+        args=_make_args(num_cells=num_cells),
         deployment_identity=make_deployment_identity(),
-        trainer_id="actor",
-        role="actor",
-        with_ref=False,
         cell_provider=provider,
         cell_operations=MagicMock(),
     )
-    await controller.init(_make_args(num_cells=num_cells))
+    await controller.init(TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None))
     return controller
 
 

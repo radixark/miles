@@ -125,6 +125,7 @@ class TestConfigToArgv:
             apply_chat_template_kwargs={"enable_thinking": False},
             use_rollout_routing_replay=True,
             use_rollout_indexer_replay=False,
+            rollout_indexer_topk_num_streams=None,
             use_sampling_support_replay=False,
             sglang_speculative_algorithm=None,
             num_layers=None,
@@ -164,8 +165,8 @@ class TestParseConfigArgv:
             parse_config_argv(_DemoConfig, [*argv, "--unknown", "1"])
 
     def test_invalid_json_is_rejected(self):
-        """A payload that is not valid JSON fails validation loudly."""
-        with pytest.raises(ValidationError):
+        """A payload that is not valid JSON fails loudly before any field is read."""
+        with pytest.raises(json.JSONDecodeError):
             parse_config_argv(_DemoConfig, [CONFIG_JSON_FLAG, "not json"])
 
     def test_extra_json_fields_are_rejected(self):

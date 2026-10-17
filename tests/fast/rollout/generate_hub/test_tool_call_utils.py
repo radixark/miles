@@ -1,4 +1,5 @@
 import pytest
+from huggingface_hub import snapshot_download
 
 from miles.rollout.generate_utils.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
 from miles.utils.processing_utils import load_tokenizer
@@ -83,7 +84,21 @@ class TestTokenizeToolResponses:
         if num_tools > 1 and model_name in SINGLE_TOOL_CALL_ONLY_MODELS:
             pytest.skip(f"{model_name} only supports single tool call")
 
-        tokenizer = load_tokenizer(model_name, trust_remote_code=True)
+        tokenizer_path = model_name
+        if model_name == "mistralai/Mistral-7B-Instruct-v0.3":
+            tokenizer_path = snapshot_download(
+                repo_id=model_name,
+                allow_patterns=[
+                    "config.json",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "special_tokens_map.json",
+                    "added_tokens.json",
+                    "chat_template.jinja",
+                    "chat_templates/*.jinja",
+                ],
+            )
+        tokenizer = load_tokenizer(tokenizer_path, trust_remote_code=True)
 
         tool_responses = SAMPLE_TOOL_RESPONSES[:num_tools]
         assert len(tool_responses) == num_tools

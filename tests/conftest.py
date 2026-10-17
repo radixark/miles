@@ -15,6 +15,18 @@ _ = rollout_env, generation_env
 
 
 @pytest.fixture(autouse=True)
+def isolate_config_snapshot_generated_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test owns an isolated process-local provenance registry."""
+    from miles.utils.audit_utils.config_snapshot.generated_value_registry import (
+        GENERATED_VALUES_ENV_VAR,
+        generated_value_registry,
+    )
+
+    monkeypatch.setattr(generated_value_registry, "_values", [])
+    monkeypatch.delenv(GENERATED_VALUES_ENV_VAR, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def no_env_reporting(monkeypatch):
     """Constructing a worker configures its logger, which in a real process starts a thread that
     shells out to pip and git; tests exercise that reporter directly instead."""

@@ -1,0 +1,56 @@
+base: megatron
+base_sha256: ebd030be45f1499e7bc51665e4d4216277a0d2c7e3b4e114b2651c47811e1b61
+edits:
+- at: 1
+  delete: 1
+  insert: |2
+      <<:
+      - &id003 {async_save: false, ckpt_step: null, distributed_backend: nccl, distributed_timeout_minutes: 10, eval_interval: null,
+- at: 4
+  delete: 0
+  insert: |2
+      - &id001 {custom_generate_function_path: null, input_key: input, label_key: null, metadata_key: metadata, n_samples_per_eval_prompt: 1,
+        rm_type: null, tool_key: tools}
+- {at: 65, delete: 1, insert: ''}
+- at: 122
+  delete: 2
+  insert: |2
+      eval_datasets:
+      - <<:
+        - *id001
+        - &id002 {max_response_len: null, metadata_overrides: {}, min_new_tokens: null, stop: null, stop_token_ids: null, temperature: 1.0,
+          top_k: -1, top_p: 1.0}
+        name: first
+        path: $FIXTURES/data.jsonl
+      - <<:
+        - *id001
+        - *id002
+        name: second
+        path: $FIXTURES/data2.jsonl
+      eval_function_path: &id004 {config: null, path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn}
+- at: 136
+  delete: 1
+  insert: |2
+      eval_prompt_data: [first, $FIXTURES/data.jsonl, second, $FIXTURES/data2.jsonl]
+- {at: 161, delete: 1, insert: ''}
+- {at: 166, delete: 1, insert: ''}
+- {at: 198, delete: 1, insert: ''}
+- {at: 218, delete: 1, insert: ''}
+- at: 261
+  delete: 1
+  insert: |2
+          <<: *id003
+- {at: 1132, delete: 1, insert: ''}
+- at: 1141
+  delete: 1
+  insert: |2
+      rollout_function_path: *id004
+- at: 1166
+  delete: 1
+  insert: |2
+        <<: &id005 {api_key: null, enable_trace: false, log_level: info, otlp_traces_endpoint: 'localhost:4317', reasoning_parser: null,
+- at: 1283
+  delete: 1
+  insert: |2
+          <<: *id005
+- {at: 1807, delete: 1, insert: ''}

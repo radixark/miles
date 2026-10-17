@@ -1,0 +1,54 @@
+base: megatron
+base_sha256: ebd030be45f1499e7bc51665e4d4216277a0d2c7e3b4e114b2651c47811e1b61
+edits:
+- at: 2
+  delete: 2
+  insert: |2
+        global_batch_size: 1, low_memory_resume: false, micro_batch_size: 1, num_layers: 1, rollout_indexer_topk_num_streams: null,
+        save_interval: null, seed: 1234, wandb_project: null}
+- at: 6
+  delete: 1
+  insert: |2
+      advantage_estimator: ppo
+- at: 58
+  delete: 2
+  insert: |2
+      critic_num_gpus_per_node: 1
+      critic_num_nodes: 1
+- at: 169
+  delete: 0
+  insert: |2
+      load: null
+- at: 232
+  delete: 1
+  insert: |2
+      offload_train: true
+- at: 398
+  delete: 1
+  insert: |2
+          disable_grad_buffers_cpu_backup: true
+- at: 401
+  delete: 1
+  insert: |2
+          disable_param_buffers_cpu_backup: true
+- at: 644
+  delete: 0
+  insert: |2
+          load: null
+- at: 984
+  delete: 0
+  insert: |2
+          save: null
+- at: 1121
+  delete: 0
+  insert: |2
+        - {actor_index: null, model_id: null, overrides: {disable_param_buffers_cpu_backup: false, kl_coef: 0, load: null, lr: 1.0e-06,
+            lr_warmup_iters: 0, save: null, use_opd: false}, role: critic, trainer_id: critic}
+- at: 1262
+  delete: 0
+  insert: |2
+      save: null
+- at: 1829
+  delete: 1
+  insert: |2
+      use_critic: true
