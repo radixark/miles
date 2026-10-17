@@ -21,6 +21,7 @@ from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.types import ClusterBackend
+from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
 
 _BASE_URL = "http://api:18080"
 _ACTOR_0 = compute_cell_id(pool_id="actor", cell_index=0)
@@ -273,6 +274,24 @@ class TestCreateCellObserver:
         assert (observer.namespace, observer.release) == (None, None)
         assert observer.fault_target_cell_types == frozenset({"actor"})
         assert observer.process_patterns_of_type == {"actor": {}}
+
+    def test_a_kubernetes_run_reads_the_whole_release_and_trainer_hook_targets(self) -> None:
+        """Rollout faults through a trainer hook also observe trainer cells and their fault targets."""
+        observer = create_cell_observer(
+            base_url=_BASE_URL,
+            cell_types={"rollout"},
+            forms={
+                "rollout": [InjectFaultForm(base_url=_BASE_URL, action=KillProcessAction(), through_trainer_hook=True)]
+            },
+            config=ExecuteTrainConfig(
+                cluster_backend=ClusterBackend.KUBERNETES, namespace="rl", run_id="260926-120000-000"
+            ),
+        )
+
+        assert observer.namespace == "rl"
+        assert observer.release == f"{CHART_NAME}-260926-120000-000-all"
+        assert observer.cell_types == {"rollout", "actor"}
+        assert observer.fault_target_cell_types == frozenset({"rollout", "actor"})
 
 
 class TestObserverHttpBoundary:

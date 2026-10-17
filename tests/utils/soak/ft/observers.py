@@ -201,7 +201,12 @@ def create_cell_observer(
     forms: CellFaultForms,
     config: ExecuteTrainConfig,
 ) -> CellObserver:
-    fault_target_types = {kind for kind in cell_types for form in forms[kind] if form.needs_fault_target}
+    fault_target_types = {
+        fault_target_type
+        for kind in cell_types
+        for form in forms[kind]
+        for fault_target_type in form.fault_target_cell_types(kind)
+    }
     process_patterns = {
         kind: {container: pattern for form in forms[kind] for container, pattern in form.process_patterns.items()}
         for kind in cell_types
