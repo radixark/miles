@@ -282,7 +282,10 @@ class SglangConfig(FrozenStrictBaseModel):
 
     @classmethod
     def parse_args(cls, args: Namespace) -> "SglangConfig":
-        return cls.resolve(raw=_compute_raw_sglang_config(args), args=args, base_args=_extract_base_args(args))
+        base_args = _extract_base_args(args)
+        if args.fp16:
+            base_args["dtype"] = "float16"
+        return cls.resolve(raw=_compute_raw_sglang_config(args), args=args, base_args=base_args)
 
     def get_value(self, name: str, group: ServerGroupConfig) -> Any:
         return group.overrides.get(name, self.base_args[name])
