@@ -16,6 +16,7 @@ from miles.utils.workers.env_vars import (
     POD_INDEX_ENV_VAR,
     POD_UID_ENV_VAR,
     RELEASE_ENV_VAR,
+    WORKER_METADATA_ENV_VAR,
 )
 from miles.utils.workers.naming import (
     DNS_LABEL_PATTERN,
@@ -39,6 +40,7 @@ _PLATFORM_OWNED_ENV_VARS = [
     BASE_GPU_ID_ENV_VAR,
     NAMESPACE_ENV_VAR,
     RELEASE_ENV_VAR,
+    WORKER_METADATA_ENV_VAR,
 ]
 _ENV_KEYS = {
     "propertyNames": {
@@ -85,6 +87,7 @@ class PoolEntry(ValuesModel):
     ports: list[PortEntry] | None = None
     env: _EnvVars | None = None
     meta: dict[str, str] | None = None
+    annotations: dict[str, str] | None = None
     replicas: Annotated[int, Field(ge=1)] | None = None
     size: Annotated[int, Field(ge=1)] | None = None
     resources: _Resources | None = None
