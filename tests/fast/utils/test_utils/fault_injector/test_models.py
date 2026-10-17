@@ -73,6 +73,7 @@ class TestFaultHookRequestValidation:
         "change",
         [
             {"attempt": -1},
+            {"weight_version": -1},
             {"hook_name": "not_a_hook"},
         ],
     )
@@ -103,6 +104,9 @@ class TestFaultHookRequestMatches:
             ({"rollout_id": 3}, FaultHookContext(rollout_id=4), False),
             ({"rollout_id": 3}, FaultHookContext(), False),
             ({"attempt": 0}, FaultHookContext(rollout_id=3, attempt=1), False),
+            ({"weight_version": 7}, FaultHookContext(weight_version=7), True),
+            ({"weight_version": 7}, FaultHookContext(weight_version=8), False),
+            ({"weight_version": 7}, FaultHookContext(), False),
             ({"rollout_id": 0}, FaultHookContext(rollout_id=0), True),
             ({"rollout_id": 0}, FaultHookContext(), False),
         ],
@@ -110,7 +114,7 @@ class TestFaultHookRequestMatches:
     def test_each_named_filter_must_equal_the_reached_context(
         self, filters: dict[str, int], context: FaultHookContext, expected: bool
     ) -> None:
-        """Rollout and attempt filters must match exactly, including zero."""
+        """Rollout, attempt and weight version filters must match exactly, including zero."""
         request = FaultHookRequest(request_id="r", hook_name=_SEND, action=ObserveAction(), **filters)
         assert request.matches(context) is expected
 
