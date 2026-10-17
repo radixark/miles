@@ -36,6 +36,7 @@ from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef
@@ -86,8 +87,8 @@ class TorchNativeTrainRayActor(TrainRayActor):
         pass
 
     @property
-    def train_parallel_config(self) -> dict:
-        return {"dp_size": get_parallel_state().intra_dp.size}
+    def train_parallel_config(self) -> TrainParallelConfig:
+        return get_parallel_state().train_parallel_config(supports_precomputed_schedule=False)
 
     def _build_weight_updater(self, model, iterator_factory: Callable) -> WeightUpdater:
         self._published_weight_version = 0
