@@ -212,6 +212,8 @@ Phase B - target:
 Fault injection: --ci-ft-test-actions, JSON list of {at_rollout, action, cell_id, rank, attempt}
   at_rollout: rollout id; attempt: retry attempt, actor-level actions only
   stop_cell_at_end / start_cell_at_end: trainer controller, suspend/resume via cell_operations
+  restart_rollout_cell_at_end: orchestration, restart the named rollout cell before the next weight transaction;
+    wait for a fresh Running worker generation and log original/replacement identities. Requires rollout FT.
   crash_before_allreduce: inside the targeted actor
 
 Healing witness: target phase_b event dir, exactly two CellReconfigureEvents

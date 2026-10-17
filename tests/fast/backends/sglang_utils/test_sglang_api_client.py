@@ -284,6 +284,28 @@ _REMAINING_POST_CASES = [
     ),
     (lambda c: c.pause_generation(mode="abort"), "pause_generation", {"mode": "abort"}),
     (lambda c: c.continue_generation(), "continue_generation", {}),
+    (lambda c: c.resume_gpu_delta("publication-1"), "resume_gpu_delta", {"session_id": "publication-1"}),
+    (
+        lambda c: c.resume_gpu_delta("publication-1", weight_version="actor-42"),
+        "resume_gpu_delta",
+        {"session_id": "publication-1", "weight_version": "actor-42"},
+    ),
+    (
+        lambda c: c.update_weights_from_gpu_delta("/manifest"),
+        "update_weights_from_gpu_delta",
+        {"manifest_path": "/manifest", "release_state": True, "flush_cache": True, "abort_all_requests": False},
+    ),
+    (
+        lambda c: c.update_weights_from_gpu_delta("/manifest", release_state=False, weight_version="actor-42"),
+        "update_weights_from_gpu_delta",
+        {
+            "manifest_path": "/manifest",
+            "release_state": False,
+            "flush_cache": True,
+            "abort_all_requests": False,
+            "weight_version": "actor-42",
+        },
+    ),
     (
         lambda c: c.start_profile(output_dir="/out", num_steps=3),
         "start_profile",

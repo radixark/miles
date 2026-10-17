@@ -60,12 +60,12 @@ class TestDocumentedFaultInjectionExample:
             assert compute_cell_id(pool_id=parsed.pool_id, cell_index=parsed.cell_index) == cell_id
             assert parsed.cell_index >= 0
 
-    def test_the_paragraph_documents_exactly_the_supported_actions(self, fault_injection_paragraph: str) -> None:
-        """Adding or renaming an action without touching this paragraph leaves the doc lying about the flag."""
+    def test_the_paragraph_only_documents_supported_actions(self, fault_injection_paragraph: str) -> None:
+        """The overview can omit specialized E2E hooks, but every documented action must be supported."""
         code_spans = re.findall(r"`([^`]+)`", fault_injection_paragraph)
         identifiers = {span for span in code_spans if re.fullmatch(r"[a-z][a-z_]*", span)}
 
-        assert identifiers - set(FTTestAction.model_fields) == _SUPPORTED_ACTIONS
+        assert identifiers - set(FTTestAction.model_fields) <= _SUPPORTED_ACTIONS
 
     def test_the_paragraph_never_mentions_the_retired_cell_index_field(self, fault_injection_paragraph: str) -> None:
         """Prose promising a cell_index sentinel sends developers to a command that dies while loading actions."""

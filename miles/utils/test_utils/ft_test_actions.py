@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from collections.abc import Awaitable, Callable, Sequence
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 CI_FT_TEST_ACTIONS_FLAG: str = "--ci-ft-test-actions"
 SLEEP_FOREVER_AT_END_ACTION: str = "sleep_forever_at_end"
+RESTART_ROLLOUT_CELL_AT_END_ACTION: str = "restart_rollout_cell_at_end"
 SLEEP_FOREVER_INTERVAL_SECONDS: float = 60.0
 PARKABLE_TRAIN_SCRIPT: str = "train.py"
 
@@ -37,22 +39,29 @@ _CELL_RESUME_OBSERVED_TIMEOUT_SECONDS = 300.0
 
 _CONTROLLER_ACTIONS = {"stop_cell_at_end", "start_cell_at_end"}
 _ACTOR_ACTIONS = {"crash_before_allreduce"}
-_ORCHESTRATION_ACTIONS = {SLEEP_FOREVER_AT_END_ACTION}
+_ORCHESTRATION_ACTIONS = {SLEEP_FOREVER_AT_END_ACTION, RESTART_ROLLOUT_CELL_AT_END_ACTION}
 
 SleepFn = Callable[[float], Awaitable[None]]
+RestartRolloutFn = Callable[[str], Awaitable[dict]]
 
 
 class FTTestAction(FrozenStrictBaseModel):
     at_rollout: int
-    action: Literal["stop_cell_at_end", "start_cell_at_end", "crash_before_allreduce", "sleep_forever_at_end"]
+    action: Literal[
+        "stop_cell_at_end",
+        "start_cell_at_end",
+        "crash_before_allreduce",
+        "sleep_forever_at_end",
+        "restart_rollout_cell_at_end",
+    ]
     cell_id: str | None = None
     rank: int = 0  # for actor-level actions: which rank within the cell
     attempt: int = 0  # for actor-level actions: which attempt (0 = first try)
 
     @model_validator(mode="after")
     def _check_cell_name_matches_action(self) -> "FTTestAction":
-        assert (self.action in _ORCHESTRATION_ACTIONS) == (self.cell_id is None), (
-            f"an orchestration action names no cell and a cell action names one, and {self.action} names "
+        assert (self.action == SLEEP_FOREVER_AT_END_ACTION) == (self.cell_id is None), (
+            f"the sleep action names no cell and other actions name one, and {self.action} names "
             f"cell_id={self.cell_id!r}"
         )
         return self
@@ -197,11 +206,13 @@ class FTTestActionOrchestrationExecutor:
         sleep: SleepFn = asyncio.sleep,
         interval_seconds: float = SLEEP_FOREVER_INTERVAL_SECONDS,
         actions_path: Path | None = None,
+        restart_rollout_cell: RestartRolloutFn | None = None,
     ) -> None:
         self._actions = actions
         self._sleep = sleep
         self._interval_seconds = interval_seconds
         self._actions_path = actions_path
+        self._restart_rollout_cell = restart_rollout_cell
 
     @staticmethod
     def from_args(args: object, *, trainer_model_id: str | None = None) -> "FTTestActionOrchestrationExecutor":
@@ -209,10 +220,27 @@ class FTTestActionOrchestrationExecutor:
         if actions:
             _assert_loop_parkable(args, trainer_model_id=trainer_model_id)
 
+        restart_rollout_cell = None
+        if any(action.action == RESTART_ROLLOUT_CELL_AT_END_ACTION for action in actions):
+            assert "rollout" in args.ft_components, "Rollout restart testing requires rollout fault tolerance"
+            # Only this test action needs the backend and serving dependencies.
+            from miles.ray.specs.inference import compute_engine_pool_ids, create_inference_controller_handle
+            from miles.ray.wiring import get_backend_capability
+            from miles.utils.workers.types import ClusterBackend
+
+            capability = get_backend_capability(args)
+            restart_rollout_cell = partial(
+                _restart_rollout_cell,
+                operations=capability.cell_operations(),
+                controller=create_inference_controller_handle(capability=capability),
+                pool_ids=compute_engine_pool_ids(args),
+                auto_resume=ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES,
+            )
         path: str | None = args.ci_ft_test_actions_path
         return FTTestActionOrchestrationExecutor(
             actions=actions,
             actions_path=Path(path) if path is not None else None,
+            restart_rollout_cell=restart_rollout_cell,
         )
 
     async def run_after_step(self, rollout_id: int) -> None:
@@ -220,10 +248,15 @@ class FTTestActionOrchestrationExecutor:
         if not actions:
             return
         for action in actions:
-            assert action.action == SLEEP_FOREVER_AT_END_ACTION, (
-                f"the orchestration side runs {SLEEP_FOREVER_AT_END_ACTION} and nothing else, and {action.action} "
-                f"reached it (action={action})"
-            )
+            if action.action == RESTART_ROLLOUT_CELL_AT_END_ACTION:
+                assert self._restart_rollout_cell is not None
+                receipt = await self._restart_rollout_cell(action.cell_id)
+                logger.warning("[ft test rollout restart] %s", json.dumps({"at_rollout": rollout_id, **receipt}))
+                continue
+            assert action.action == SLEEP_FOREVER_AT_END_ACTION, f"unsupported orchestration action: {action}"
+
+        if not any(action.action == SLEEP_FOREVER_AT_END_ACTION for action in actions):
+            return
 
         msg = (
             f"FT test action: {SLEEP_FOREVER_AT_END_ACTION} at rollout {rollout_id} — this orchestration script "
@@ -238,6 +271,61 @@ class FTTestActionOrchestrationExecutor:
     async def _sleep_forever(self) -> None:
         while True:
             await self._sleep(self._interval_seconds)
+
+
+async def _restart_rollout_cell(cell_id: str, operations, controller, pool_ids: list[str], auto_resume: bool) -> dict:
+    """Restart before the update lock is taken, then wait for the fresh cell to be registered and ready."""
+    assert parse_cell_id(cell_id).pool_id in pool_ids, f"{cell_id} is not a rollout cell"
+    before = await operations.cell_infos(pool_ids=pool_ids)
+    original = before[cell_id]
+    assert original.alive, f"{cell_id} was not alive before the test restart"
+    await operations.suspend(cell_id=cell_id)
+    if not auto_resume:
+        await operations.resume(cell_id=cell_id)
+
+    async def _check(_remaining: float) -> dict:
+        after = await operations.cell_infos(pool_ids=pool_ids)
+        replacement = after.get(cell_id)
+        statuses = await controller.get_cell_statuses()
+        status = statuses.get(cell_id)
+        if (
+            replacement is None
+            or not replacement.alive
+            or replacement.workers_hash == original.workers_hash
+            or status is None
+            or status.workers_hash != replacement.workers_hash
+            or status.phase != "Running"
+        ):
+            raise TimeoutError(f"{cell_id} has not registered a ready replacement")
+        return after
+
+    after = await retry_until_deadline(
+        _check,
+        total_seconds=3600,
+        retry_on=TimeoutError,
+        initial_delay=1.0,
+        max_delay=5.0,
+        log_fields=dict(tag="ft", op="wait_rollout_replacement", cell=cell_id),
+    )
+
+    def identity(cell):
+        return dict(
+            workers_hash=cell.workers_hash,
+            worker_names=cell.worker_names,
+            gpu_offset=cell.meta["gpu_offset"],
+            model_id=cell.meta["model_id"],
+        )
+
+    return dict(
+        cell_id=cell_id,
+        original=identity(original),
+        replacement=identity(after[cell_id]),
+        other_cells={
+            name: dict(before=cell.workers_hash, after=after[name].workers_hash if name in after else None)
+            for name, cell in before.items()
+            if name != cell_id
+        },
+    )
 
 
 # ============ adhoc file delivery (revert after the args refactor) ============
