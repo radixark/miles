@@ -180,6 +180,7 @@ class _RawMegatronConfig(FrozenStrictBaseModel):
 
 
 class MegatronArgsNamespace(EnhancedArgparseNamespace):
+    backend_name: Literal["megatron"]
     _mutable_fields: ClassVar[frozenset[str]] = frozenset(
         {
             "ckpt_format",
@@ -202,9 +203,9 @@ class MegatronArgsNamespace(EnhancedArgparseNamespace):
         }
     )
 
-    @classmethod
-    def from_args(cls, args: Namespace, *, names: set[str]) -> "MegatronArgsNamespace":
-        return cls(**{name: value for name, value in vars(args).items() if name in names})
+    def __init__(self, *, backend_name: Literal["megatron"] = "megatron", **values: Any) -> None:
+        assert backend_name == "megatron", f"Invalid Megatron backend name: {backend_name!r}"
+        super().__init__(backend_name=backend_name, **values)
 
 
 class MegatronTrainerConfig(FrozenStrictBaseModel):
@@ -352,6 +353,7 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
     ans = copy.deepcopy(args)
     ans.trainer_id = trainer.trainer_id
     ans.trainer_model_id = trainer.model_id
+    ans.trainer_role = trainer.role
 
     for key, value in trainer.overrides.items():
         assert hasattr(ans, key), (  # config-access-exempt: attribute selected at runtime from key

@@ -23,9 +23,9 @@ _REDACTED_PREFIX = "redacted-sha256:"
 _REDACTED_HASH_CHARS = 16
 
 
-def redact_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
+def redact_env_vars(env_vars: dict[str, Any]) -> dict[str, Any]:
     return {
-        name: _redact(value) if _SECRET_ENV_VAR_PATTERN.search(name) else value
+        name: _redact_secret_value(value) if _SECRET_ENV_VAR_PATTERN.search(name) else value
         for name, value in sorted(env_vars.items())
     }
 
@@ -67,6 +67,22 @@ def redact_arg(name: str, value: Any) -> Any:
     if name not in _SECRET_ARG_NAMES:
         return value
     return _redact_secret_value(value)
+
+
+def redact_config_values(value: Any) -> Any:
+    if isinstance(value, list):
+        return [redact_config_values(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    return {
+        name: redact_config_values(
+            redact_env_vars(item)
+            if name in {"env", "env_vars", "train_env_vars"} and isinstance(item, dict)
+            else redact_arg(name, item)
+        )
+        for name, item in redact_server_info(value).items()
+    }
 
 
 def _redact(value: str) -> str:
