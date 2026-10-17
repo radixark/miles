@@ -14,7 +14,9 @@ order (agent metadata overrides the input's keys; session metadata, applied
 last, overrides the agent's).
 """
 
+import asyncio
 import json
+import threading
 import uuid
 
 import numpy as np
@@ -161,6 +163,63 @@ async def _make_session(core, records, accumulated) -> str:
 async def _collect_via_op(core, sid, *, max_seq_len=None):
     response = await core.collect_samples(sid, max_seq_len=max_seq_len)
     return response.status_code, response.body
+
+
+async def test_collect_samples_keeps_server_loop_responsive(core, monkeypatch):
+    sid = await _make_session(core, _two_turn_records(), _ACCUMULATED)
+    entered = threading.Event()
+    release = threading.Event()
+    original = core._collect_samples_sync
+
+    def blocked_collect(*args):
+        entered.set()
+        assert release.wait(timeout=10)
+        return original(*args)
+
+    monkeypatch.setattr(core, "_collect_samples_sync", blocked_collect)
+    collect = asyncio.create_task(core.collect_samples(sid, max_seq_len=None))
+    assert await asyncio.to_thread(entered.wait, 10)
+
+    health = await asyncio.wait_for(core.health(), timeout=0.5)
+    assert health.status_code == 200
+
+    release.set()
+    assert (await collect).status_code == 200
+
+
+async def test_cancelled_collect_keeps_session_locked_until_worker_finishes(core, monkeypatch):
+    sid = await _make_session(core, _two_turn_records(), _ACCUMULATED)
+    session = core.registry.sessions[sid]
+    entered = threading.Event()
+    release = threading.Event()
+    original = core._collect_samples_sync
+
+    def blocked_collect(*args):
+        entered.set()
+        assert release.wait(timeout=10)
+        return original(*args)
+
+    monkeypatch.setattr(core, "_collect_samples_sync", blocked_collect)
+    collect = asyncio.create_task(core.collect_samples(sid, max_seq_len=None))
+    assert await asyncio.to_thread(entered.wait, 10)
+    collect.cancel()
+    await asyncio.sleep(0)
+    assert not collect.done()
+
+    acquired = asyncio.Event()
+
+    async def acquire_session():
+        async with session.lock:
+            acquired.set()
+
+    waiter = asyncio.create_task(acquire_session())
+    await asyncio.sleep(0)
+    assert not acquired.is_set()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await collect
+    await asyncio.wait_for(waiter, timeout=0.5)
 
 
 def _new_pipeline(payload, input_sample):
