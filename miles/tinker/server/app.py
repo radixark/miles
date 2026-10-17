@@ -44,7 +44,7 @@ def _tenant(request: Request) -> str:
     return key
 
 
-def build_app(service: TinkerService) -> FastAPI:
+def build_app(service: TinkerService, *, processor=None) -> FastAPI:
     app = FastAPI()
 
     @app.exception_handler(UserInputError)
@@ -115,9 +115,9 @@ def build_app(service: TinkerService) -> FastAPI:
     async def forward_backward(request: Request):
         if PROTO_CONTENT_TYPE in request.headers.get("content-type", ""):
             body = maybe_decompress(await request.body(), request.headers.get("content-encoding"))
-            op, payload = decode_forward_backward_request(body)
+            op, payload = decode_forward_backward_request(body, processor)
         else:
-            op, payload = decode_command("forward_backward", await request.json())
+            op, payload = decode_command("forward_backward", await request.json(), processor)
         request_id = service.submit(_tenant(request), op, payload)
         return {"request_id": request_id, "model_id": payload["model_id"]}
 
@@ -177,7 +177,7 @@ def build_app(service: TinkerService) -> FastAPI:
 
     @app.post("/api/v1/asample")
     async def asample(request: Request):
-        payload = decode_sample_request(await request.json())
+        payload = decode_sample_request(await request.json(), processor)
         request_id, sequence_ids = service.submit_sample(_tenant(request), payload)
         return {"request_id": request_id, "sample_sequence_ids": sequence_ids}
 

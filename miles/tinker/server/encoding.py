@@ -9,6 +9,7 @@ import pydantic
 
 from miles.tinker.core.input_validation import validate_save_options
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
+from miles.tinker.server.model_input import decode_model_input
 from tinker import types as tinker_types
 from tinker.types.sample_response import MASK_LOGPROB
 
@@ -43,31 +44,31 @@ def validate_create_sampling_session(payload: dict) -> None:
     validate_against_sdk(tinker_types.CreateSamplingSessionRequest, payload)
 
 
-def decode_command(op: str, payload: dict) -> tuple[str, dict]:
+def decode_command(op: str, payload: dict, processor=None) -> tuple[str, dict]:
     """Decode content errors into ordered failures when the envelope is identifiable."""
     try:
         envelope = {"model_id": payload["model_id"], "seq_id": payload["seq_id"]}
     except KeyError as error:
         raise UserInputError(f"missing command envelope field {error.args[0]!r}") from None
     try:
-        return _decode_command(op, payload, envelope)
-    except (UserInputError, KeyError, TypeError, ValueError, IndexError) as error:
+        return _decode_command(op, payload, envelope, processor)
+    except (UserInputError, KeyError, TypeError, ValueError, IndexError, OSError) as error:
         if op == "forward_backward" and payload.get("forward_only"):
             op = "forward_only"
         return op, envelope | {"validation_error": str(error)}
 
 
-def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
+def _decode_command(op: str, payload: dict, decoded: dict, processor) -> tuple[str, dict]:
     if (request_type := REQUEST_TYPES.get(op)) is not None:
         validate_against_sdk(request_type, payload)
     if op == "forward_backward":
         fb_input = payload["forward_backward_input"]
-        datums = [
-            (model_input_tokens(datum["model_input"]), _decode_inputs(datum["loss_fn_inputs"]))
-            for datum in fb_input["data"]
-        ]
+        datums = []
+        for index, datum in enumerate(fb_input["data"]):
+            tokens, multimodal_inputs, _ = decode_model_input(datum["model_input"], processor)
+            datums.append(build_datum(tokens, _decode_inputs(datum["loss_fn_inputs"]), index, multimodal_inputs))
         decoded |= {
-            "datums": [build_datum(tokens, inputs, i) for i, (tokens, inputs) in enumerate(datums)],
+            "datums": datums,
             "loss_fn": fb_input["loss_fn"],
             "loss_fn_config": fb_input.get("loss_fn_config") or {},
         }
@@ -89,16 +90,7 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
     raise UserInputError(f"unknown command op {op!r}")
 
 
-def model_input_tokens(model_input: dict) -> list[int]:
-    tokens: list[int] = []
-    for chunk in model_input["chunks"]:
-        if chunk.get("type") != "encoded_text":
-            raise UserInputError(f"unsupported model_input chunk type: {chunk.get('type')}")
-        tokens.extend(chunk["tokens"])
-    return tokens
-
-
-def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) -> dict:
+def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int, multimodal_inputs=None) -> dict:
     """One decoded datum (token list + loss_fn_inputs lists) -> internal datum."""
     unknown = set(inputs) - set(LOSS_INPUT_KEYS) - {"target_tokens"}
     if unknown:
@@ -114,6 +106,8 @@ def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) ->
             f"datum {index}: target_tokens length {len(targets)} != model_input length {len(input_tokens)}"
         )
     datum = {"tokens": input_tokens + targets[-1:], "target_len": len(targets), "target_tokens": targets}
+    if multimodal_inputs is not None:
+        datum["multimodal_train_inputs"] = multimodal_inputs
     for wire_key, datum_key in LOSS_INPUT_KEYS.items():
         if wire_key in inputs:
             datum[datum_key] = [float(value) for value in inputs[wire_key]]
@@ -149,15 +143,17 @@ def _dense_from_csr(tensor_data: dict) -> list:
     return dense
 
 
-def decode_sample_request(payload: dict) -> dict:
+def decode_sample_request(payload: dict, processor=None) -> dict:
     validate_against_sdk(tinker_types.SampleRequest, payload)
+    tokens, _, images = decode_model_input(payload["prompt"], processor)
     return {
+        **({"image_data": images} if images else {}),
         "model_path": payload.get("model_path"),
         "base_model": payload.get("base_model"),
         "sampling_session_id": payload.get("sampling_session_id"),
         "seq_id": payload.get("seq_id"),
         "num_samples": payload.get("num_samples", 1),
-        "prompt_tokens": model_input_tokens(payload["prompt"]),
+        "prompt_tokens": tokens,
         "sampling_params": payload.get("sampling_params") or {},
         "prompt_logprobs": bool(payload.get("prompt_logprobs")),
         "topk_prompt_logprobs": payload.get("topk_prompt_logprobs", 0) or 0,
