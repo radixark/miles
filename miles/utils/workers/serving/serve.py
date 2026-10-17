@@ -25,6 +25,7 @@ def main() -> None:
             args=spec.args,
             cell_index=identity.cell_index,
             worker_in_cell_index=identity.worker_in_cell_index,
+            num_workers_per_cell=identity.num_workers_per_cell,
             gpu_ids=identity.gpu_ids,
         )
     )
