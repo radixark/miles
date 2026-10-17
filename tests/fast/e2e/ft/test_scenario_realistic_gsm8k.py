@@ -6,6 +6,7 @@ from tests.e2e.ft.conftest_ft import scenario_realistic_gsm8k
 from tests.fast.e2e.scenario_harness import SCENARIO_RUN_ID, ScenarioHarness, parse_fault_tolerance_args
 from tests.utils.soak.core.config import SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.core.events import LaunchOutcome
+from tests.utils.soak.ft import fault_triggers
 from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE, FaultTrigger
 from tests.utils.soak.recipes import gsm8k
@@ -15,6 +16,7 @@ from tests.utils.soak.recipes import gsm8k
 def harness(scenario_harness: ScenarioHarness, monkeypatch: pytest.MonkeyPatch) -> ScenarioHarness:
     monkeypatch.setattr(gsm8k, "create_backend_for_run", lambda config: config.create_backend())
     monkeypatch.setattr(gsm8k, "prepare_gsm8k", scenario_harness.record_backend_prepare)
+    monkeypatch.setattr(fault_triggers, "assert_hook_evidence", scenario_harness.recorder("assert_hook_evidence"))
     monkeypatch.setattr(scenario_realistic_gsm8k, "assert_healing", scenario_harness.recorder("assert_healing"))
     return scenario_harness
 
@@ -35,15 +37,17 @@ class TestTheSoakTheGsm8kRunSchedules:
         }
         assert runner_config.tail == SoakTailConfig.create(num_rollout=40)
 
-    def test_the_forms_are_the_timer_forms(self, harness: ScenarioHarness) -> None:
-        """Forms of another trigger would inject faults the run was never configured to survive."""
-        _run(seed=5, num_rollout=40)
+    def test_the_forms_are_those_of_the_requested_triggers(self, harness: ScenarioHarness) -> None:
+        """A timer-only run given hook forms would arm hooks the launch never gave a long enough timeout."""
+        _run(seed=5, num_rollout=40, requested_triggers=[FaultTrigger.TIMER])
 
         (soak,) = harness.soaks
+        (launch,) = harness.launches
         expected = create_cell_fault_forms(soak["config"], triggers=frozenset({FaultTrigger.TIMER}))
         assert {kind: [form.name for form in forms] for kind, forms in soak["forms"].items()} == {
             kind: [form.name for form in expected[kind]] for kind in (ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE)
         }
+        assert "--update-weights-timeout" not in launch.argv
 
 
 class TestOneGsm8kRunIdentity:
@@ -70,12 +74,25 @@ class TestOneGsm8kRunIdentity:
         (event,) = soak["event_log"].events
         assert event.outcome is LaunchOutcome.FINISHED
 
-    def test_the_fully_async_variant_writes_under_a_name_of_its_own(self, harness: ScenarioHarness) -> None:
+    @pytest.mark.parametrize(
+        ("fully_async", "requested_triggers", "name"),
+        [
+            (False, [FaultTrigger.TIMER, FaultTrigger.HOOK], "realistic_gsm8k_hook_timer"),
+            (True, None, "realistic_gsm8k_fully_async"),
+        ],
+    )
+    def test_each_variant_writes_under_a_name_of_its_own(
+        self,
+        harness: ScenarioHarness,
+        fully_async: bool,
+        requested_triggers: list[FaultTrigger] | None,
+        name: str,
+    ) -> None:
         """Variants sharing a dump directory would refuse to start after the first, or grade its evidence."""
-        _run(seed=5, num_rollout=40, fully_async=True)
+        _run(seed=5, num_rollout=40, fully_async=fully_async, requested_triggers=requested_triggers)
 
         (soak,) = harness.soaks
-        assert soak["dump_dir"] == harness.dumps_root / SCENARIO_RUN_ID / "realistic_gsm8k_fully_async"
+        assert soak["dump_dir"] == harness.dumps_root / SCENARIO_RUN_ID / name
 
     def test_the_launch_runs_without_the_proxies_of_the_launching_shell(
         self, harness: ScenarioHarness, monkeypatch: pytest.MonkeyPatch
@@ -131,7 +148,15 @@ class TestWhatTheGsm8kSoakIsJudgedBy:
 
         (soak,) = harness.soaks
         events = soak["event_log"].events
-        assert harness.checker_names == ["assert_healing"]
+        assert harness.checker_names == ["assert_hook_evidence", "assert_healing"]
+        ((hook_args, hook_kwargs),) = harness.calls_of("assert_hook_evidence")
+        assert hook_args == (frozenset({FaultTrigger.TIMER}),)
+        assert hook_kwargs == {
+            "ft_components": ("train", "rollout"),
+            "config": soak["config"],
+            "events": events,
+            "dump_dir": str(soak["dump_dir"]),
+        }
         ((healing_args, healing_kwargs),) = harness.calls_of("assert_healing")
         assert healing_args == (("train", "rollout"),)
         assert healing_kwargs["events"] == events
@@ -157,6 +182,7 @@ def _run(
     num_rollout: int,
     metric_threshold: float = gsm8k.DEFAULT_METRIC_THRESHOLD,
     fully_async: bool = False,
+    requested_triggers: list[FaultTrigger] | None = None,
 ) -> None:
     scenario_realistic_gsm8k.run_ci(
         seed=seed,
@@ -165,4 +191,5 @@ def _run(
         rollout_crash_interval_seconds=13.0,
         metric_threshold=metric_threshold,
         fully_async=fully_async,
+        requested_triggers=requested_triggers,
     )
