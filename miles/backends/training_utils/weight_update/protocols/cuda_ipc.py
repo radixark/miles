@@ -82,7 +82,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         assert engine_gpu_offsets is not None and len(engine_gpu_offsets) == len(rollout_engines)
 
         # Compute colocated engine count: engines whose GPUs fall within actor GPU range.
-        total_actor_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
+        total_actor_gpus = dist.get_world_size()
         colocate_engine_nums = 0
         for gpu_offset, gpu_count in zip(engine_gpu_offsets, engine_gpu_counts, strict=True):
             if gpu_offset + gpu_count > total_actor_gpus:
