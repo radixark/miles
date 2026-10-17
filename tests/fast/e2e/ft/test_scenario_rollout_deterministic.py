@@ -9,7 +9,7 @@ from tests.fast.e2e.scenario_harness import SCENARIO_RUN_ID, ScenarioHarness, pa
 from tests.utils.ft.launch import DETERMINISTIC_ENV_VARS
 from tests.utils.soak.core.config import QUIESCENT_POLLS_REQUIRED, SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
-from tests.utils.soak.ft.types import ROLLOUT_CELL_TYPE
+from tests.utils.soak.ft.types import ROLLOUT_CELL_TYPE, FaultTrigger
 
 from miles.utils.workers.types import ClusterBackend
 
@@ -49,7 +49,7 @@ class TestTheTwoSidesOfTheComparison:
         assert target["runner_config"].target_configs == {
             ROLLOUT_CELL_TYPE: SoakTargetConfig(expected_count=4, mean_interval_seconds=30.0)
         }
-        expected = create_cell_fault_forms(target["config"])
+        expected = create_cell_fault_forms(target["config"], triggers=frozenset({FaultTrigger.TIMER}))
         assert [form.name for form in target["forms"][ROLLOUT_CELL_TYPE]] == [
             form.name for form in expected[ROLLOUT_CELL_TYPE]
         ]

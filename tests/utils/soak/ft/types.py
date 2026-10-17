@@ -13,6 +13,11 @@ ACTOR_CELL_TYPE: str = ACTOR_ROLE
 ROLLOUT_CELL_TYPE: str = "rollout"
 
 
+class FaultTrigger(StrEnum):
+    TIMER = "timer"
+    HOOK = "hook"
+
+
 class CellTarget(FrozenStrictBaseModel):
     kind: Literal["actor", "rollout"]
     identity: str
