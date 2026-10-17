@@ -41,6 +41,9 @@ async def serve(args, *, disposer: Disposer):
         trainer_token_limit = local_token_limit * args.context_parallel_size
         max_tokens_per_datum = min(max_tokens_per_datum, trainer_token_limit)
     assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
+    max_tokens_per_sample = max_tokens_per_datum
+    if args.sglang_context_length is not None:
+        max_tokens_per_sample = min(max_tokens_per_sample, args.sglang_context_length)
     _worker_manager = init_orchestration_script(args, disposer=disposer)
     init_http_client(args)
 
@@ -62,6 +65,7 @@ async def serve(args, *, disposer: Disposer):
         checkpoint_root=checkpoint_root,
         vocab_size=hf_config.vocab_size,
         max_tokens_per_datum=max_tokens_per_datum,
+        max_tokens_per_sample=max_tokens_per_sample,
         lora_alpha=args.lora_alpha,
         max_lora_rank=args.lora_rank,
         trains_attn="attn" in args.tinker_lora_groups,

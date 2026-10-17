@@ -2,6 +2,8 @@ from miles.utils.lora.hf_lora_targets import LORA_TARGET_GROUPS, parse_lora_targ
 
 
 def add_tinker_arguments(parser):
+    # Tinker targets cover full sequences; bound the FP32 cross-entropy temporaries.
+    parser.set_defaults(log_probs_chunk_size=1024)
     group = parser.add_argument_group("Tinker")
 
     def add_argument(name, **kwargs):

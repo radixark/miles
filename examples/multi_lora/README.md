@@ -37,6 +37,9 @@ python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve     # Tinker API 
 
 Checkpoints default to `<output_dir>/checkpoints/<run_id>`; use `--save-dir` to choose another root.
 
+The gateway defaults to `--log-probs-chunk-size 1024` to bound FP32 cross-entropy
+temporaries for full-sequence targets. Override it through `--extra-args` when needed.
+
 Install `tinker` on the client, then run the marker checks:
 
 ```bash

@@ -53,6 +53,7 @@ class GatewayConfig:
     vocab_size: int
     max_datums_per_request: int = 1024
     max_tokens_per_datum: int = 32768
+    max_tokens_per_sample: int = 32768
     max_tokens_per_request: int = 4_000_000
     max_samples_per_request: int = 64
     max_lora_rank: int = 32  # the slot capacity the server was built with (--lora-rank)

@@ -1,5 +1,6 @@
 """Runtime translation preserves datum order, sampling parameters, and token logprobs."""
 
+import httpx
 import pytest
 import torch
 
@@ -15,6 +16,25 @@ from miles.tinker.runtime import (
 )
 from miles.tinker.server.proto_codec import encode_sample_response
 from tinker.proto.response_conv import deserialize_sample_response
+
+
+async def test_sampling_preserves_engine_client_error_details(monkeypatch):
+    async def rejected(*args):
+        response = httpx.Response(
+            400, text="prompt is too long", request=httpx.Request("POST", "http://router/generate")
+        )
+        response.raise_for_status()
+
+    monkeypatch.setattr("miles.tinker.runtime.post", rejected)
+    payload = {
+        "prompt_tokens": [1],
+        "sampling_params": {"max_tokens": 1},
+        "num_samples": 1,
+        "prompt_logprobs": False,
+        "topk_prompt_logprobs": 0,
+    }
+    with pytest.raises(UserInputError, match="prompt is too long"):
+        await MilesBackend(None, "http://router").sample(payload, None)
 
 
 def _datum(tokens: list[int], **extra) -> dict:

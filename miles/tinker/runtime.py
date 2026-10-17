@@ -125,6 +125,10 @@ class MilesBackend:
                     for index in range(payload["num_samples"])
                 ]
             )
+        except httpx.HTTPStatusError as error:
+            if 400 <= error.response.status_code < 500 and error.response.status_code not in (408, 429):
+                raise UserInputError(error.response.text) from error
+            return {"error": f"{error}: {error.response.text}"}
         except httpx.HTTPError as error:
             return {"error": str(error)}
         sequences = [_to_sequence(response) for response in responses]

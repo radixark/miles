@@ -55,6 +55,39 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+async def test_post_does_not_retry_permanent_client_errors(status):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(status, text="invalid request")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(httpx.HTTPStatusError, match=str(status)):
+            await http_utils._post(client, "http://engine/generate", {})
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [408, 429, 503])
+async def test_post_still_retries_transient_responses(status, monkeypatch):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(status if len(calls) == 1 else 200, json={"ok": True})
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr(http_utils.asyncio, "sleep", no_wait)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        assert await http_utils._post(client, "http://engine/generate", {}) == {"ok": True}
+    assert len(calls) == 2
+
+
 def _listen_after_delay(host: str, port: int, delay: float, stop_event: threading.Event):
     """Open a TCP listener after *delay* seconds, keep it open until *stop_event* is set."""
     time.sleep(delay)

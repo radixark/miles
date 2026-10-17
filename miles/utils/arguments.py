@@ -601,8 +601,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 help="Whether to enable recompute loss function to save memory during training.",
             )
+            log_probs_chunk_size = parser.get_default("log_probs_chunk_size")
             parser.add_argument(
-                "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
+                "--log-probs-chunk-size",
+                type=int,
+                default=-1 if log_probs_chunk_size is None else log_probs_chunk_size,
+                help="Chunk size to compute log probs to save memory",
             )
             parser.add_argument(
                 "--log-probs-backend",
