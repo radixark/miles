@@ -101,6 +101,7 @@ def test_native_model_coverage():
     # These entries use custom code, a Miles alias, or a version newer than the pinned Transformers.
     non_native = {
         "deepseek_v32",
+        "glm5_next",
         "kimi_k2",
         "kimi_k25",
         "kimi_k3",
