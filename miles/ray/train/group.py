@@ -3,6 +3,7 @@ import logging
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
@@ -423,6 +424,12 @@ class TrainerController:
             )
         if info.engine_cell_ids and set(output.failed_cell_ids) == set(info.engine_cell_ids):
             raise NonRetryableError("No inference cell received the weights")
+
+        output = replace(
+            output,
+            debug_trainer_load_state_timestamp=self._debug_trainer_load_state_timestamp,
+            debug_weight_update_id=debug_weight_update_id,
+        )
 
         updated_cell_ids = [cell_id for cell_id in info.engine_cell_ids if cell_id not in set(output.failed_cell_ids)]
         if is_event_logger_initialized():

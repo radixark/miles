@@ -330,13 +330,18 @@ class InferenceController:
         selector: str = "all",
         skip_list: list[str] | None = None,
         model_id: str | None = None,
-    ) -> list[Any]:
+        cell_ids: list[str] | None = None,
+    ) -> list[tuple[ServerCellMetadata, Any]]:
         # Only the updatable model is re-synced; a frozen model would always mismatch.
         srv = self._get_updatable_server(model_id=model_id)
         if srv is None:
             return []
         return await srv.check_weights(
-            action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+            action=action,
+            allow_quant_error=allow_quant_error,
+            selector=selector,
+            skip_list=skip_list,
+            cell_ids=cell_ids,
         )
 
     # -------------------------- tick -----------------------------
