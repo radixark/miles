@@ -44,6 +44,17 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 
 Larger directions to evaluate against the evidence below. Add yours here.
 
+## 2026-10-17: a worker replica gives up on a starved head (resume, retry 1)
+
+- **What happened:** the podman resume's retry 1 (from 02:23, steps 160–~184, head on `10.93.2.35`) failed at 08:00:
+  the worker replica on `10.93.1.243` (`holmes-cs-aus-504`) logged `Ray head 10.93.2.35:6379 unreachable 6 times in
+  a row; leaving` and exited 1. Before it, the head's own podman socket timed out (`ReadTimeout`, benched at 07:50)
+  and session requests to its session servers got `404`s: the head node was starved again. The weight syncs before
+  were 1–3.5 s, then 53 s at 07:55. A 21-minute sync (1,286 s) after step 170 at 04:03 had not killed it.
+- **Reading:** the entry script's own watchdog, not Ray, ended this attempt: about 90 s of failed `ray status` on a
+  starved head. `aeb4f9ecd3` raises it to about 20 minutes (`HEAD_MISS_LIMIT` 80), matching the Ray health-check
+  tolerance of `f5ef1f8273`; neither is in the running attempt, which the user chose to let retry on the old code.
+
 ## 2026-10-17: fleet Redis outage delays the gateway prod run
 
 - **Run:** `tmax_prod4node_gateway_qwen35_9b_20261017_035830` (Beaker `01M54060ECZQ0CN4XF1A5FZPZ6`,
