@@ -253,11 +253,12 @@ def _train(args: ScriptArgs):
     if _is_full:
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
         # fits engine=min(8, ngpu) on one node
-        _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
+        _fp8_full = args.fp8_rollout and args.model_name in ("GLM-5.2", "GLM-5.3")
         _eng = min(8, args.num_gpus_per_node) if _fp8_full else args.rollout_num_gpus_per_engine
-        _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
-        _cg = 256 if _fp8_full else 64
-        _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
+        # Keep the KV cache bf16: flashmla_sparse requires it and fp8-KV flashmla_kv decode crashes the allocator.
+        _decode = "flashmla_sparse"
+        _cg = 64
+        _kv = ""
         sglang_args = (
             f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
             f"--sglang-enable-dp-attention --sglang-ep-size {_eng} --sglang-dp-size {_eng} "
