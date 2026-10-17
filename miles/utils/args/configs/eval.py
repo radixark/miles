@@ -1,7 +1,11 @@
 from miles.utils.args.schema import A, Arg, BaseConfig
+from miles.utils.eval_config import EvalDatasetConfig
 
 
 class EvalConfig(BaseConfig):
+    eval_datasets: list[EvalDatasetConfig]
+    eval_uses_snapshots: bool
+
     eval_function_path: A[
         str | None,
         Arg(
