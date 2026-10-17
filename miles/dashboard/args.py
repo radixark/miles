@@ -37,39 +37,6 @@ _SNAPSHOT_KEYS = (
 )
 
 
-def add_dashboard_arguments(parser) -> None:
-    group = parser.add_argument_group("miles dashboard")
-    group.add_argument(
-        "--use-miles-dashboard",
-        action="store_true",
-        default=False,
-        help="Collect dashboard telemetry (phases, GPU util, engine metrics) under {dump-details}/dashboard/. "
-        "Requires --dump-details. View with `python -m miles.dashboard.serve`.",
-    )
-    group.add_argument("--dashboard-flush-interval", type=float, default=5.0, help="collector disk flush cadence (s)")
-    group.add_argument("--dashboard-gpu-sample-interval", type=float, default=1.0, help="NVML sampling cadence (s)")
-    group.add_argument("--dashboard-sglang-scrape-interval", type=float, default=2.0, help="engine scrape cadence (s)")
-    group.add_argument(
-        "--dashboard-sglang-scrape-mode",
-        type=str,
-        choices=["auto", "router", "direct"],
-        default="auto",
-        help="auto scrapes each engine's /metrics; router scrapes {router}/engine_metrics",
-    )
-    group.add_argument(
-        "--dashboard-sglang-metrics",
-        type=str,
-        default=None,
-        help="comma-separated override of the scraped sglang metric whitelist",
-    )
-    group.add_argument(
-        "--dashboard-forward-prometheus",
-        action="store_true",
-        default=False,
-        help="also push dashboard gauges to the --use-prometheus collector for external Grafana",
-    )
-
-
 def validate_dashboard_args(args) -> None:
     if not args.use_miles_dashboard:
         return
