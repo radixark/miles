@@ -1,5 +1,10 @@
+import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-from ray.util.state import list_nodes
+
+# Ray marks the head node with this resource. Reading it through ray.nodes() goes to GCS, so the
+# lookup works from any node; ray.util.state.list_nodes() asks the dashboard, which a head started
+# without --dashboard-host serves on 127.0.0.1 only.
+_HEAD_NODE_RESOURCE = "node:__internal_head__"
 
 
 class Box:
@@ -22,7 +27,7 @@ def compute_ray_pin_head_options():
 
 
 def _get_head_node_id() -> str:
-    for node in list_nodes():
-        if node.is_head_node:
-            return node.node_id
+    for node in ray.nodes():
+        if node.get("Alive") and _HEAD_NODE_RESOURCE in node.get("Resources", {}):
+            return node["NodeID"]
     raise RuntimeError("Could not find a head node in the Ray cluster")
