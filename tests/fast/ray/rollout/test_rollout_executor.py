@@ -3,8 +3,10 @@ from argparse import Namespace
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
+from tests.fast.fixtures.object_store_fixtures import InMemoryStore
 from tests.fast.ray.rollout.conftest import make_args, make_sample
 
 from miles.backends.training_utils.types import TrainStepOutcome
@@ -35,6 +37,7 @@ from miles.utils.audit_utils.event_logger.models import (
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.object_store import _MooncakeStoreObjectRef
+from miles.utils.stored_array import StoredArray
 from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -640,3 +643,59 @@ class TestRolloutCheckpointDir:
     def test_every_rollout_gets_its_own_directory(self, tmp_path: Path) -> None:
         """The rollout id names the directory, so two checkpoints never share one."""
         assert compute_rollout_checkpoint_dir(tmp_path, rollout_id=3) == tmp_path / "rollout" / "3"
+
+
+class TestStoredReplayArrays:
+    @staticmethod
+    def _stub_conversion(monkeypatch: pytest.MonkeyPatch, converted: list[list[Sample]]) -> None:
+        def convert(_args, data, **_kwargs):
+            converted.append(data)
+            return {}
+
+        monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", convert)
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: None)
+
+    async def test_get_hands_the_batch_objects_to_the_driver(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, in_memory_store: InMemoryStore
+    ) -> None:
+        """Once the batch is shipped, dropping its samples must not remove what the trainer is about to read."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        async def generate_rollout_data(*, rollout_id: int, trainer_model_id: str | None):
+            sample = Sample(index=7, rollout_routed_experts=StoredArray.put(np.zeros((2, 1, 1), dtype=np.int32)))
+            return [sample], {}
+
+        monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
+        self._stub_conversion(monkeypatch, converted=[])
+
+        pack = await executor.get(rollout_id=3)
+        executor._output_snapshotter.discard_completed(completed_rollout_ids={None: 3})
+
+        assert [ref.payload for ref in pack.stored_array_refs] == [{"key": 0}]
+        assert in_memory_store.removed == []
+
+    async def test_a_checkpointed_batch_replays_its_arrays_after_a_restart(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, in_memory_store: InMemoryStore
+    ) -> None:
+        """The store dies with the job, so the checkpoint must carry the bytes, not the reference."""
+        array = np.arange(6, dtype=np.int32).reshape(3, 1, 2)
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor._output_snapshotter.capture(
+            trainer_model_id=None,
+            rollout_id=3,
+            data=[Sample(index=7, rollout_routed_experts=StoredArray.put(array))],
+            metadata={},
+        )
+        await executor.save(2)
+        del executor
+        assert in_memory_store.objects == {}
+
+        restored = _make_executor(tmp_path, _CountingRolloutFn())
+        await restored.load(2)
+        converted: list[list[Sample]] = []
+        self._stub_conversion(monkeypatch, converted)
+        pack = await restored.get(rollout_id=3)
+
+        [[sample]] = converted
+        np.testing.assert_array_equal(sample.rollout_routed_experts.handle.read(), array)
+        assert pack.stored_array_refs == [sample.rollout_routed_experts.handle.ref]

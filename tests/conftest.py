@@ -9,9 +9,10 @@ from typing import TextIO
 import pytest
 
 from tests.fast.fixtures.generation_fixtures import generation_env
+from tests.fast.fixtures.object_store_fixtures import in_memory_store
 from tests.fast.fixtures.rollout_fixtures import rollout_env
 
-_ = rollout_env, generation_env
+_ = rollout_env, generation_env, in_memory_store
 
 
 @pytest.fixture(autouse=True)

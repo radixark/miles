@@ -320,6 +320,8 @@ def process_rollout_data(
 class RolloutDataPack(StrictBaseModel):
     sample_indices: list[int] | None = None
     data_ref: object_store.StoreObjectRef | list[object_store.StoreObjectRef] | None = None
+    # stored arrays the train data points at (--rollout-replay-via-object-store), removed with it
+    stored_array_refs: list[object_store.StoreObjectRef] = []
 
     @property
     def data_refs(self) -> list[object_store.StoreObjectRef]:
@@ -330,7 +332,7 @@ class RolloutDataPack(StrictBaseModel):
 
 def remove_rollout_data_refs(args, rollout_data_pack: RolloutDataPack) -> None:
     store = object_store.get_instance()
-    for ref in rollout_data_pack.data_refs:
+    for ref in [*rollout_data_pack.data_refs, *rollout_data_pack.stored_array_refs]:
         store.remove(ref)
 
 

@@ -26,6 +26,7 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.filter_hub.base_types import iter_samples
 from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import object_store
@@ -44,6 +45,12 @@ from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.simple_checkpointer import atomic_save_folder
+from miles.utils.stored_array import (
+    REPLAY_ARRAY_FIELDS,
+    StoredArray,
+    stored_array_checkpoint_reads,
+    stored_array_checkpoint_writes,
+)
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
@@ -60,6 +67,7 @@ _DATA_SOURCE_DIRNAME = "data_source"
 _GENERATE_ROLLOUT_DIRNAME = "generate_rollout"
 _EVAL_GENERATE_ROLLOUT_DIRNAME = "eval_generate_rollout"
 _EXECUTOR_DIRNAME = "executor"
+_STORED_ARRAYS_DIRNAME = "stored_arrays"
 
 
 class RolloutExecutor(DedicatedRpcLoopWorker):
@@ -192,7 +200,16 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 data_ref = split_train_data_by_dp(
                     self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
                 )
-            return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
+            # last, once the train data that points at them exists
+            stored_array_refs = [
+                value.hand_off()
+                for sample in iter_samples(data)
+                for field in REPLAY_ARRAY_FIELDS
+                if isinstance(value := getattr(sample, field), StoredArray)
+            ]
+            return RolloutDataPack(
+                sample_indices=sample_indices, data_ref=data_ref, stored_array_refs=stored_array_refs
+            )
 
     async def _generate_rollout_data(
         self, *, rollout_id: int, trainer_model_id: str | None
@@ -335,7 +352,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
         )
         target = compute_rollout_checkpoint_dir(self.args.save, rollout_id=rollout_id)
-        with atomic_save_folder(target) as dir_temp:
+        with atomic_save_folder(target) as dir_temp, stored_array_checkpoint_writes(dir_temp / _STORED_ARRAYS_DIRNAME):
             self.data_source.save(dir_temp / _DATA_SOURCE_DIRNAME)
             if not self.use_legacy_rollout_v1:
                 if self.generate_rollout is not None:
@@ -358,16 +375,17 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             f"rollout-side state moved into one directory per rollout cannot resume that state"
         )
 
-        self._output_snapshotter.load(directory / _EXECUTOR_DIRNAME)
-        self._output_snapshotter.discard_completed(
-            completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
-        )
-        self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
-        if not self.use_legacy_rollout_v1:
-            if self.generate_rollout is not None:
-                self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
-            if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
-                eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
+        with stored_array_checkpoint_reads(directory / _STORED_ARRAYS_DIRNAME):
+            self._output_snapshotter.load(directory / _EXECUTOR_DIRNAME)
+            self._output_snapshotter.discard_completed(
+                completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
+            )
+            self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
+            if not self.use_legacy_rollout_v1:
+                if self.generate_rollout is not None:
+                    self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
+                if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
+                    eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
 
     # -------------------------- misc APIs -----------------------------
 

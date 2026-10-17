@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import ray
 import torch
@@ -14,12 +15,14 @@ from miles.ray.rollout.train_data_conversion import (
     _post_process_rewards,
     can_schedule_on_rollout_side,
     convert_samples_to_train_data,
+    process_rollout_data_shard,
     split_train_data_by_dp,
     split_train_data_by_dp_raw,
     split_train_data_by_dp_scheduled_raw,
 )
 from miles.utils import object_store
 from miles.utils.sampling_mask import RolloutSamplingMask
+from miles.utils.stored_array import store_replay_arrays
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
@@ -1124,3 +1127,48 @@ def test_delayed_dp_split_preserves_the_tinker_loss_vectors():
     for shard in shards:
         assert shard["loss_weights"] and shard["advantages"] and shard["rollout_log_probs"]
     assert shards[0]["advantages"] == [[0.5], [0.5]]
+
+
+# ----------------------------- --rollout-replay-via-object-store -----------------------------
+
+
+class TestReplayArraysViaObjectStore:
+    @staticmethod
+    def _samples_with_routed_experts() -> list[Sample]:
+        samples = make_samples_grouped(n_groups=2, group_size=2)
+        for sample in samples:
+            sample.rollout_routed_experts = np.full((len(sample.tokens) - 1, 3, 2), sample.index, dtype=np.int32)
+        return samples
+
+    def test_the_trainer_shards_hold_the_same_arrays_as_the_inline_path(self, in_memory_store) -> None:
+        """The only difference the flag makes is where the bytes wait; the trainer sees identical arrays."""
+        inline_args = make_args(advantage_estimator="grpo", rewards_normalization=False)
+        stored_args = make_args(
+            advantage_estimator="grpo", rewards_normalization=False, rollout_replay_via_object_store=True
+        )
+        stored_samples = self._samples_with_routed_experts()
+        store_replay_arrays(stored_samples)
+
+        shards_by_path = {}
+        for name, args, samples in (
+            ("inline", inline_args, self._samples_with_routed_experts()),
+            ("stored", stored_args, stored_samples),
+        ):
+            train_data = convert_samples_to_train_data(
+                args,
+                samples,
+                metadata={},
+                custom_convert_samples_to_train_data_func=None,
+                custom_reward_post_process_func=None,
+            )
+            shards = split_train_data_by_dp_raw(args, train_data, dp_size=2)
+            shards_by_path[name] = [process_rollout_data_shard(args, shard) for shard in shards]
+
+        assert "rollout_routed_experts_stored" not in shards_by_path["stored"][0]
+        for inline, stored in zip(shards_by_path["inline"], shards_by_path["stored"], strict=True):
+            assert inline.keys() == stored.keys()
+            for inline_array, stored_array in zip(
+                inline["rollout_routed_experts"], stored["rollout_routed_experts"], strict=True
+            ):
+                assert stored_array.dtype == inline_array.dtype
+                np.testing.assert_array_equal(stored_array, inline_array)
