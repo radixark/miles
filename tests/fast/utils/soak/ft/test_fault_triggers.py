@@ -4,6 +4,8 @@ from typing import Any
 import pytest
 from tests.utils.soak.core.events import SoakEvent
 from tests.utils.soak.ft import fault_triggers
+from tests.utils.soak.ft.actions import factory as factory_module
+from tests.utils.soak.ft.actions.factory import CELL_TYPE_OF_FT_COMPONENT, create_cell_fault_forms
 from tests.utils.soak.ft.types import FaultTrigger
 
 from miles.utils.external_utils import command_utils
@@ -13,7 +15,45 @@ _TIMER = FaultTrigger.TIMER
 _HOOK = FaultTrigger.HOOK
 
 
+class TestResolve:
+    @pytest.mark.parametrize(
+        "requested,has_real_rollout,expected",
+        [
+            (None, True, {_TIMER, _HOOK}),
+            ([], True, {_TIMER, _HOOK}),
+            (None, False, {_TIMER}),
+            ([_TIMER], True, {_TIMER}),
+            ([_TIMER], False, {_TIMER}),
+            ([_HOOK], True, {_HOOK}),
+            ([_HOOK, _TIMER, _HOOK], True, {_TIMER, _HOOK}),
+        ],
+        ids=["default", "empty", "fake-default", "timer", "fake-timer", "hook", "both"],
+    )
+    def test_the_requested_or_default_triggers_are_resolved(
+        self, requested: list[FaultTrigger] | None, has_real_rollout: bool, expected: set[FaultTrigger]
+    ) -> None:
+        """A real rollout draws both by default and a fake rollout silently narrows the default to timer."""
+        assert fault_triggers.resolve(requested, has_real_rollout=has_real_rollout) == frozenset(expected)
+
+    @pytest.mark.parametrize("requested", [[_HOOK], [_TIMER, _HOOK]], ids=["hook", "both"])
+    def test_explicit_hook_faults_without_rollout_engines_are_refused(self, requested: list[FaultTrigger]) -> None:
+        """No update reaches a trainer hook without engines, so asking for hooks explicitly must fail loudly."""
+        with pytest.raises(AssertionError, match="hook-triggered faults could only expire"):
+            fault_triggers.resolve(requested, has_real_rollout=False)
+
+
 class TestTestNameSuffixAndTrainArgs:
+    @pytest.mark.parametrize(
+        "triggers,suffix",
+        [({_TIMER, _HOOK}, ""), ({_TIMER}, "_timer"), ({_HOOK}, "_hook")],
+        ids=["default", "timer", "hook"],
+    )
+    def test_only_a_non_default_trigger_set_changes_the_test_name(
+        self, triggers: set[FaultTrigger], suffix: str
+    ) -> None:
+        """The default keeps the historical dump directory while a subset gets one of its own."""
+        assert fault_triggers.compute_test_name_suffix(frozenset(triggers)) == suffix
+
     def test_hook_faults_lengthen_the_weight_update_timeout(self) -> None:
         """A hook delay plus recovery inside an update needs a timeout longer than the default."""
         assert fault_triggers.compute_hook_train_args(frozenset({_HOOK})) == "--update-weights-timeout 600 "
@@ -38,16 +78,20 @@ class TestAssertHookEvidence:
             return _check
 
         monkeypatch.setattr(fault_triggers, "read_training_events", _read)
+        monkeypatch.setattr(factory_module, "compute_base_url", lambda config: "http://api:1")
         for name in ("assert_hook_dispatches", "assert_p2p_receiver_failures", "assert_trainer_peers_progress"):
             monkeypatch.setattr(fault_triggers, name, _recorder(name))
         return calls
 
     @staticmethod
     def _check(triggers: set[FaultTrigger], *, ft_components: tuple[str, ...], backend: ClusterBackend) -> None:
+        forms = create_cell_fault_forms(
+            command_utils.ExecuteTrainConfig(cluster_backend=backend, namespace="ns", run_id="run-1"),
+            triggers=frozenset(triggers),
+        )
+        kinds = [CELL_TYPE_OF_FT_COMPONENT[component] for component in ft_components]
         fault_triggers.assert_hook_evidence(
-            frozenset(triggers),
-            ft_components=ft_components,
-            config=command_utils.ExecuteTrainConfig(cluster_backend=backend, namespace="ns"),
+            forms={kind: forms[kind] for kind in kinds},
             events=[],
             dump_dir="/dump",
         )
