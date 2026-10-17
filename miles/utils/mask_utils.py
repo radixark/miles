@@ -7,10 +7,28 @@ def get_response_lengths(loss_masks: list[list[int]]) -> list[int]:
 
 
 class MultiTurnLossMaskGenerator:
-    def __init__(self, tokenizer: AutoTokenizer, tokenizer_type: str = "qwen"):
+    def __init__(
+        self,
+        tokenizer: AutoTokenizer,
+        tokenizer_type: str = "qwen",
+        chat_template_kwargs: dict | None = None,
+    ):
         self.tokenizer = tokenizer
-        self.system_message_length, self.gen_token_length = self.get_system_message_length()
         self.tokenizer_type = tokenizer_type
+        self.chat_template_kwargs = dict(chat_template_kwargs or {})
+        if tokenizer_type == "glm5":
+            role_tokens = {
+                "<|system|>": "system",
+                "<|user|>": "user",
+                "<|assistant|>": "assistant",
+                "<|observation|>": "tool",
+            }
+            vocab = tokenizer.get_added_vocab()
+            if missing := role_tokens.keys() - vocab.keys():
+                raise ValueError(f"GLM loss masks require role tokens in the tokenizer: {sorted(missing)}")
+            self._glm_role_token_ids = {vocab[token]: role for token, role in role_tokens.items()}
+        else:
+            self.system_message_length, self.gen_token_length = self.get_system_message_length()
 
     def get_response_lengths(self, loss_masks: list[list[int]]) -> list[int]:
         return get_response_lengths(loss_masks)
@@ -130,6 +148,60 @@ class MultiTurnLossMaskGenerator:
             loss_mask = [0] * len(token_ids)
         return token_ids, loss_mask
 
+    def gen_multi_turn_loss_mask_glm5(
+        self, messages: list[dict], tools: list[dict] = None
+    ) -> tuple[list[int], list[int]]:
+        # Defer SGLang template dependencies for tokenizer-only loss mask users.
+        from miles.utils.chat_template_utils import apply_chat_template
+
+        # GLM templates render reasoning and tool turns using the full conversation.
+        token_ids = apply_chat_template(
+            messages,
+            tokenizer=self.tokenizer,
+            tools=tools,
+            tokenize=True,
+            add_generation_prompt=False,
+            **self.chat_template_kwargs,
+        )
+        boundaries = [
+            (index, self._glm_role_token_ids[token])
+            for index, token in enumerate(token_ids)
+            if token in self._glm_role_token_ids
+        ]
+        expected_roles = []
+        for message in messages:
+            role = message["role"]
+            if role not in self._glm_role_token_ids.values():
+                raise ValueError(f"Unsupported GLM SFT message role: {role}")
+            if role != "tool" or not expected_roles or expected_roles[-1] != "tool":
+                expected_roles.append(role)
+        observed_roles = [role for _, role in boundaries]
+        prefix_length = len(observed_roles) - len(expected_roles)
+        if (
+            prefix_length < 0
+            or any(role != "system" for role in observed_roles[:prefix_length])
+            or observed_roles[prefix_length:] != expected_roles
+        ):
+            raise ValueError(
+                "GLM SFT role markers do not match conversation messages; "
+                f"expected={expected_roles}, observed={observed_roles}"
+            )
+
+        assistant_messages = [message for message in messages if message["role"] == "assistant"]
+        assistant_boundaries = [index for index, role in boundaries if role == "assistant"]
+        if len(assistant_boundaries) != len(assistant_messages):
+            raise ValueError("GLM SFT assistant marker count does not match assistant messages")
+
+        loss_mask = [0] * len(token_ids)
+        assistant_index = 0
+        for boundary_index, (start, role) in enumerate(boundaries):
+            end = boundaries[boundary_index + 1][0] if boundary_index + 1 < len(boundaries) else len(token_ids)
+            if role == "assistant":
+                if assistant_messages[assistant_index].get("step_loss_mask", 1) == 1:
+                    loss_mask[start + 1 : end] = [1] * (end - start - 1)
+                assistant_index += 1
+        return token_ids, loss_mask
+
     def get_loss_mask(self, messages: list[dict], tools: list[dict] = None) -> tuple[list[int], list[int]]:
         if self.tokenizer_type == "qwen":
             if "<｜Assistant｜>" in self.tokenizer.get_added_vocab():
@@ -140,35 +212,61 @@ class MultiTurnLossMaskGenerator:
             return self.gen_multi_turn_loss_mask_qwen3(messages, tools)
         elif self.tokenizer_type == "distill_qwen":
             return self.gen_multi_turn_loss_mask_distill_qwen(messages, tools)
+        elif self.tokenizer_type == "glm5":
+            return self.gen_multi_turn_loss_mask_glm5(messages, tools)
         else:
             raise ValueError(f"Unsupported tokenizer type: {self.tokenizer_type}")
 
     def get_loss_mask_with_multimodal_alignment(
-        self, messages: list[dict], input_ids: list[int], tools: list[dict] = None
+        self,
+        messages: list[dict],
+        input_ids: list[int],
+        tools: list[dict] = None,
+        multimodal_token_ids: set[int] | None = None,
     ) -> tuple[list[int], list[int]]:
-        text = []
-        for msg in messages:
-            if isinstance(msg.get("content"), list):
-                text_parts = []
-                for item in msg["content"]:
-                    if isinstance(item, dict) and item.get("type") == "text":
-                        text_parts.append(item.get("text", ""))
-                    elif isinstance(item, str):
-                        text_parts.append(item)
-                text.append({"role": msg["role"], "content": " ".join(text_parts)})
-            else:
-                text.append(msg)
+        text_token_ids, text_loss_mask = self.get_loss_mask(messages, tools=tools)
+        multimodal_token_ids = multimodal_token_ids or set()
+        if text_token_ids == input_ids:
+            return input_ids, [
+                0 if token in multimodal_token_ids else mask
+                for token, mask in zip(input_ids, text_loss_mask, strict=True)
+            ]
 
-        _, loss_mask_text = self.get_loss_mask(text, tools=tools)
+        aligned_mask = []
+        text_idx = input_idx = 0
+        while text_idx < len(text_token_ids) and input_idx < len(input_ids):
+            text_token = text_token_ids[text_idx]
+            input_token = input_ids[input_idx]
+            if text_token != input_token:
+                raise ValueError(
+                    "Processor tokenization differs from tokenizer tokenization outside a multimodal token run: "
+                    f"text_index={text_idx}, input_index={input_idx}, "
+                    f"text_token={text_token}, input_token={input_token}"
+                )
 
-        diff = len(input_ids) - len(loss_mask_text)
-        assert diff >= 0, (
-            f"input_ids (length={len(input_ids)}) is shorter than text loss_mask (length={len(loss_mask_text)}) "
-            f"Please check if processor and tokenizer tokenization are consistent."
-        )
-        loss_mask = [0] * diff + loss_mask_text
+            if text_token not in multimodal_token_ids:
+                aligned_mask.append(text_loss_mask[text_idx])
+                text_idx += 1
+                input_idx += 1
+                continue
 
-        return input_ids, loss_mask
+            text_run_end = text_idx
+            while text_run_end < len(text_token_ids) and text_token_ids[text_run_end] == text_token:
+                text_run_end += 1
+            input_run_end = input_idx
+            while input_run_end < len(input_ids) and input_ids[input_run_end] == input_token:
+                input_run_end += 1
+            aligned_mask.extend([0] * (input_run_end - input_idx))
+            text_idx = text_run_end
+            input_idx = input_run_end
+
+        if text_idx != len(text_token_ids) or input_idx != len(input_ids):
+            raise ValueError(
+                "Processor and tokenizer produced incompatible sequence lengths after multimodal alignment: "
+                f"text={len(text_token_ids)}, processor={len(input_ids)}"
+            )
+
+        return input_ids, aligned_mask
 
     def get_text_from_loss_mask(self, token_ids: list[int], loss_masks: list[int]) -> list[str]:
         selected_texts = []

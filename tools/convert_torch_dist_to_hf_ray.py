@@ -724,6 +724,17 @@ def _mla_pair_group(key: str) -> str:
     )
 
 
+def _whole_source_dependency_group(key: str, q_lora_rank: int | None) -> str:
+    # GLM combines three mHC scalars using a worker-local buffer.
+    match = re.fullmatch(
+        r"(.+\.(?:self_attention_hyper_connection|mlp_hyper_connection))\.(alpha_pre|alpha_post|alpha_res)",
+        key,
+    )
+    if match:
+        return f"{match.group(1)}.HC_SCALE"
+    return _mla_pair_group(key) if q_lora_rank is not None else key
+
+
 def group_small_tasks(
     atomic_tasks: list[tuple[int, tuple[str, ...]]],
     task_group_bytes: int,
@@ -756,7 +767,7 @@ def plan_whole_source_tasks(
 ) -> list[TaskSpec]:
     grouped: dict[str, list[str]] = {}
     for key in tensor_metadata:
-        group = _mla_pair_group(key) if q_lora_rank is not None else key
+        group = _whole_source_dependency_group(key, q_lora_rank)
         grouped.setdefault(group, []).append(key)
 
     atomic_tasks = []
@@ -1006,6 +1017,7 @@ def write_prepared_tensor_groups(
     quantization_config: dict[str, Any] | None,
     max_file_bytes: int,
     cuda_device_id: int | None,
+    model_name: str | None = None,
 ) -> tuple[tuple[ShardManifest, ...], int]:
     current_tensors: dict[str, torch.Tensor] = {}
     current_size = 0
@@ -1016,13 +1028,12 @@ def write_prepared_tensor_groups(
     for group in groups:
         converted_named_tensors = group.tensors
         if quantization_config is not None:
-            if cuda_device_id is not None:
-                torch.cuda.set_device(cuda_device_id)
-            converted_named_tensors = tuple(
-                m2hf.quantize_params(
-                    megatron_args, group.source_name, list(converted_named_tensors), quantization_config
-                )
+            converted_named_tensors = quantize_prepared_group(
+                group, megatron_args, quantization_config, cuda_device_id
             )
+        converted_named_tensors = tuple(
+            (restore_multimodal_hf_name(name, model_name), tensor) for name, tensor in converted_named_tensors
+        )
         shard_idx, current_size, added_size = append_to_shards(
             staging_dir,
             task_id,
@@ -1038,6 +1049,34 @@ def write_prepared_tensor_groups(
     if current_tensors:
         shards.append(_flush_shard(staging_dir, task_id, shard_idx, current_tensors, current_size))
     return tuple(shards), total_size
+
+
+def quantize_prepared_group(
+    group: PreparedTensorGroup,
+    megatron_args: Any,
+    quantization_config: dict[str, Any],
+    cuda_device_id: int | None,
+) -> tuple[tuple[str, torch.Tensor], ...]:
+    if cuda_device_id is None:
+        raise ValueError("A conversion GPU is required for quantization")
+    torch.cuda.set_device(cuda_device_id)
+    device = torch.device("cuda", cuda_device_id)
+    # DCP loads on CPU; Triton quantization requires device pointers. Release the
+    # device tensors after each group instead of retaining a task's entire shard.
+    device_tensors = [(name, tensor.to(device=device)) for name, tensor in group.tensors]
+    quantized = m2hf.quantize_params(megatron_args, group.source_name, device_tensors, quantization_config)
+    return tuple((name, tensor.cpu()) for name, tensor in quantized)
+
+
+def restore_multimodal_hf_name(name: str, model_name: str | None) -> str:
+    if model_name is None or model_name.lower() not in {"glm5_next", "glm5next"}:
+        return name
+    # Restore names after quantization so the original precision exclusions still match.
+    if name.startswith("language_model.model."):
+        return "model.language_model." + name.removeprefix("language_model.model.")
+    if name.startswith("model.layers.") or name in {"model.embed_tokens.weight", "model.norm.weight"}:
+        return "model.language_model." + name.removeprefix("model.")
+    return name
 
 
 def assign_cuda_device_id(actor_id: int, device_count: int) -> int:
@@ -1067,10 +1106,13 @@ class ConversionWorker:
         quantization_config: dict[str, Any] | None,
         max_file_bytes: int,
         metadata_ref: Any,
+        cuda_device_index: int | None = None,
     ) -> None:
         self.actor_id = actor_id
         self.ray_node_id = ray.get_runtime_context().get_node_id()
-        self.cuda_device_id = initialize_worker_cuda_device(actor_id, quantization_config)
+        self.cuda_device_id = initialize_worker_cuda_device(
+            actor_id if cuda_device_index is None else cuda_device_index, quantization_config
+        )
         self.input_dir = input_dir
         self.staging_dir = staging_dir
         self.megatron_args = megatron_args
@@ -1096,6 +1138,7 @@ class ConversionWorker:
             self.quantization_config,
             self.max_file_bytes,
             self.cuda_device_id,
+            model_name=self.model_name,
         )
         return TaskResult(
             task_id=task.task_id,
@@ -1135,16 +1178,18 @@ def live_ray_node_ids() -> list[str]:
 
 
 def make_conversion_actor():
+    worker_env = {
+        "PYTHONUNBUFFERED": "1",
+        "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
+        "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
+    }
+    scale_format = os.environ.get("NVTE_FP8_BLOCK_SCALING_FP32_SCALES")
+    if scale_format is not None:
+        worker_env["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] = scale_format
     return ray.remote(
         num_cpus=0,
         num_gpus=0,
-        runtime_env={
-            "env_vars": {
-                "PYTHONUNBUFFERED": "1",
-                "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
-                "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
-            }
-        },
+        runtime_env={"env_vars": worker_env},
     )(ConversionWorker)
 
 
@@ -1181,6 +1226,7 @@ def collect_ray_results(
                 quantization_config,
                 max_file_bytes,
                 metadata_ref,
+                cuda_device_index=actor_id // len(node_ids),
             )
         )
 

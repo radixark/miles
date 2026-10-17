@@ -53,6 +53,7 @@ _HC_SITE_TO_SCALE = {
 }
 
 _LAYER_PATTERN = re.compile(r"module\.module\.decoder\.layers\.(\d+)\.(.+)")
+_VISUAL_PATTERN = re.compile(r"module\.module\.visual\.(.+)")
 _HC_ALPHA_PATTERN = re.compile(
     r"(self_attention_hyper_connection|mlp_hyper_connection)\.(alpha_pre|alpha_post|alpha_res)$"
 )
@@ -71,6 +72,12 @@ def _convert_hc_scale(layer_idx: str, site: str, alpha_name: str, param: torch.T
 
 
 def convert_glm5_next_to_hf(args, name, param):
+    # Image SFT can train the visual tower, which Megatron stores under `visual.` with the
+    # checkpoint's own HF submodule names. They need no remapping beyond the `model.` prefix.
+    visual = _VISUAL_PATTERN.match(name)
+    if visual:
+        return [(f"model.visual.{visual.group(1)}", param)]
+
     match = _LAYER_PATTERN.match(name)
     if match:
         layer_idx, rest = match.groups()

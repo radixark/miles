@@ -1,6 +1,7 @@
 import base64
 import inspect
 import io
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -144,6 +145,16 @@ def extract_multimodal_train_inputs(processor_output: Mapping[str, Any]) -> dict
     return {key: value for key, value in processor_output.items() if key not in excluded_keys} or None
 
 
+def _is_glm5_next_checkpoint(name_or_path: str) -> bool:
+    config_path = Path(name_or_path) / "config.json"
+    try:
+        with config_path.open(encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(config, dict) and config.get("model_type") == "glm5_next"
+
+
 def load_processor(name_or_path: str, **kwargs):
     from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
 
@@ -151,6 +162,12 @@ def load_processor(name_or_path: str, **kwargs):
         from miles_plugins.models.inkling.mm_processor import InklingTrainProcessor
 
         return InklingTrainProcessor(name_or_path)
+
+    if _is_glm5_next_checkpoint(name_or_path) and (Path(name_or_path) / "processor_config.json").is_file():
+        # Defer torch/torchvision imports for text-only and unrelated checkpoints.
+        from miles_plugins.models.glm5_next.processor import load_glm5_next_processor
+
+        return load_glm5_next_processor(name_or_path, **kwargs)
 
     try:
         proc = AutoProcessor.from_pretrained(name_or_path, **kwargs)
