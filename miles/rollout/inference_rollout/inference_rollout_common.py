@@ -21,7 +21,7 @@ from miles.rollout.base_types import (
 from miles.rollout.generate_hub.single_turn import generate
 from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
-from miles.rollout.rm_hub import async_rm, batched_async_rm
+from miles.rollout.rm_hub import async_rm, batched_async_rm, remote_rm_connection_pool
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample, SampleLineage
@@ -217,6 +217,7 @@ class InferenceRolloutFn(BaseRolloutFn):
         self.state = GenerateState(input.args)
         self.eval_prompt_dataset_cache = {}
 
+    @remote_rm_connection_pool()
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
             return await self._call_eval(input)

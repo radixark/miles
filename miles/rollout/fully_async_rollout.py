@@ -51,6 +51,7 @@ from miles.rollout.fully_async_data_buffer import (
 from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
+from miles.rollout.rm_hub import remote_rm_connection_pool
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
@@ -122,6 +123,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             return
         await _end_worker(worker)
 
+    @remote_rm_connection_pool()
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
         if input.generate_state is not None:
             results = await run_eval_datasets(
@@ -171,6 +173,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         )
         return DataBufferInput(prompt_group=prompt_group, group=result)
 
+    @remote_rm_connection_pool()
     async def _worker_loop(self) -> None:
         active: set[asyncio.Task] = set()
         while True:
