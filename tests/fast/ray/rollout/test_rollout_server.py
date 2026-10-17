@@ -689,15 +689,6 @@ async def _noop_async(self):
     return None
 
 
-def _server_of(cells: dict[str, SimpleNamespace]) -> RolloutServer:
-    return RolloutServer(
-        all_server_cells=cells,
-        args=SimpleNamespace(colocate=False),
-        context_lock=_make_lock(),
-        engine_provider=_StubProvider(),
-    )
-
-
 def _fake_cell(*, cell_id: str, gpu_offset: int, errored: bool = False, serving: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
         meta=SimpleNamespace(cell_id=cell_id, gpu_offset=gpu_offset, num_gpus_per_engine=gpu_offset + 1),
@@ -707,7 +698,72 @@ def _fake_cell(*, cell_id: str, gpu_offset: int, errored: bool = False, serving:
     )
 
 
+def _server_of(cells: dict[str, SimpleNamespace]) -> RolloutServer:
+    return RolloutServer(
+        all_server_cells=cells,
+        args=SimpleNamespace(colocate=False),
+        context_lock=_make_lock(),
+        engine_provider=_StubProvider(),
+    )
+
+
+class TestErroredCellsLeaveTheEngineLists:
+    def _server(self) -> RolloutServer:
+        return _server_of(
+            {
+                "engine-0": _fake_cell(cell_id="engine-0", gpu_offset=0),
+                "engine-1": _fake_cell(cell_id="engine-1", gpu_offset=1, errored=True),
+                "engine-2": _fake_cell(cell_id="engine-2", gpu_offset=2),
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_normal_view_drops_the_errored_cell_the_full_dict_still_holds(self):
+        """Reconcile still has to see the errored cell to replace it, so only the filtered view may lose it."""
+        srv = self._server()
+
+        async with srv.context_lock:
+            assert sorted(srv.normal_server_cells) == ["engine-0", "engine-2"]
+        assert sorted(srv.all_server_cells) == ["engine-0", "engine-1", "engine-2"]
+
+    @pytest.mark.asyncio
+    async def test_every_derived_engine_list_skips_the_errored_cell(self):
+        """The trainer indexes these lists in parallel, so a cell left in one of them receives weights again."""
+        srv = self._server()
+
+        async with srv.context_lock:
+            assert srv.engine_cell_ids == ["engine-0", "engine-2"]
+            assert srv.api_clients == ["client-engine-0", "client-engine-2"]
+            assert srv.engine_gpu_offsets == [0, 2]
+            assert srv.engine_gpu_counts == [1, 3]
+
+    @pytest.mark.asyncio
+    async def test_an_errored_cell_is_no_longer_addressed_by_the_fan_out_calls(self):
+        """Offload, abort and the weight checker would each dial an engine that is on its way out."""
+        srv = self._server()
+
+        async with srv.context_lock:
+            assert [cell.meta.cell_id for cell in srv._addressable_cells()] == ["engine-0", "engine-2"]
+
+    @pytest.mark.asyncio
+    async def test_a_server_whose_cells_all_errored_offers_no_engine_at_all(self):
+        """Handing back a stale list would start a weight update against engines nobody may address."""
+        srv = _server_of({"engine-0": _fake_cell(cell_id="engine-0", gpu_offset=0, errored=True)})
+
+        async with srv.context_lock:
+            assert srv.normal_server_cells == {}
+            assert srv.engine_cell_ids == []
+
+
 class TestServerCellViewLocking:
+    @pytest.mark.asyncio
+    async def test_the_filtered_view_is_refused_without_the_context_lock(self):
+        """It is read while the engine lists are built, which only makes sense inside the update window."""
+        srv = _server_of({"engine-0": _fake_cell(cell_id="engine-0", gpu_offset=0)})
+
+        with pytest.raises(AssertionError, match="context lock"):
+            _ = srv.normal_server_cells
+
     @pytest.mark.asyncio
     async def test_the_full_dict_is_readable_without_the_context_lock(self):
         """The startup barrier and the status endpoint both read it before anyone owns the lock."""

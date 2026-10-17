@@ -108,9 +108,14 @@ class RolloutServer:
     def engine_cell_ids(self) -> list[str]:
         return [cell.meta.cell_id for cell in self._cells_by_gpu_offset()]
 
+    @property
+    @requires_lock
+    def normal_server_cells(self) -> dict[str, ServerCell]:
+        return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
+
     @requires_lock
     def _cells_by_gpu_offset(self) -> list[ServerCell]:
-        return sorted(self.all_server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
+        return sorted(self.normal_server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
 
     @requires_lock
     async def add_cell(self, cell_meta: ServerCellMetadata):
@@ -216,7 +221,8 @@ class RolloutServer:
         return sum(
             1
             for cell in self.all_server_cells.values()
-            if (self.args.colocate and cell.meta.needs_offload) or cell.is_pending_weights_or_serving
+            if not cell.is_errored
+            and ((self.args.colocate and cell.meta.needs_offload) or cell.is_pending_weights_or_serving)
         )
 
     @property
