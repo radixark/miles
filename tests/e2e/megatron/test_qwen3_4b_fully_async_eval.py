@@ -20,9 +20,9 @@ Requires: 8 GPUs, Qwen3-4B, GSM8K. Triggered by label: run-ci-megatron or run-ci
 import os
 from tempfile import TemporaryDirectory
 
-from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
-
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
 from miles.utils.external_utils import command_utils
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(
     est_time=2400,
@@ -178,4 +178,5 @@ if __name__ == "__main__":
         print(f"===== fully-async eval mode: {mode} =====", flush=True)
         # CI containers share host IPC, so each case must own its snapshot directory.
         with TemporaryDirectory(prefix=f"miles_eval_{mode}_", dir="/dev/shm") as eval_hf_dir:
+            generated_value_registry.register(kind="temporary_directory", name=f"fully_async_eval_{mode}", value=eval_hf_dir)
             execute(mode, eval_hf_dir)

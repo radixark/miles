@@ -6,6 +6,10 @@ from argparse import Namespace
 from pathlib import Path
 
 import torch
+
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
+from miles.utils.test_utils.comparisons.metrics import compare_metrics
+from miles.utils.types import Sample
 from scripts.run_deepseek_v4 import (
     _DSV4_TE_PRECISION_CONFIG,
     ScriptArgs,
@@ -15,9 +19,6 @@ from scripts.run_deepseek_v4 import (
     _train,
 )
 from tests.ci.ci_register import register_cuda_ci
-
-from miles.utils.test_utils.comparisons.metrics import compare_metrics
-from miles.utils.types import Sample
 
 register_cuda_ci(
     est_time=1100, suite="stage-c-4-gpu-h200", labels=["precision", "long"], hardware=["hopper"], num_gpus=4
@@ -276,6 +277,7 @@ def main() -> None:
         os.environ.pop(env_var, None)
 
     debug_root = Path(tempfile.mkdtemp(prefix="miles-dsv4-bshd-thd-", dir="/tmp"))
+    generated_value_registry.register(kind="temporary_directory", name="dsv4_parity", value=str(debug_root))
     te_precision_config_path = debug_root / "te_precision.yaml"
     te_precision_config_path.write_text(f"{_DSV4_TE_PRECISION_CONFIG}\n", encoding="utf-8")
     _run_rollout(

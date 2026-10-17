@@ -14,6 +14,8 @@ helm upgrade --install miles-run-260101-000000-000-all <REPO_ROOT>/charts/miles-
 run:
   env:
     CUDA_DEVICE_MAX_CONNECTIONS: '1'
+    MILES_SNAPSHOT_RECORD_DIR: ''
+    MILES_UPDATE_SNAPSHOTS: ''
     PYTHONUNBUFFERED: '1'
   id: '260101-000000-000'
   inferenceEngines:
