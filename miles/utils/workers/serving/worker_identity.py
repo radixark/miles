@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
@@ -25,8 +26,9 @@ class KubernetesWorkerIdentity:
         first = self.worker_in_pod_index * self.gpu_slots_per_worker
         return list(range(first, first + self.gpu_slots_per_worker))
 
-    def ctor_context(self, *, capability: BackendCapability) -> WorkerCtorContext:
+    def ctor_context(self, *, args: Any, capability: BackendCapability) -> WorkerCtorContext:
         return WorkerCtorContext(
+            args=args,
             cell_index=self.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
             gpu_ids=self.gpu_ids,

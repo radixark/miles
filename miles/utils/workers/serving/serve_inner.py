@@ -43,7 +43,8 @@ def create_worker(spec: BaseServeSpec, *, specs_fn: str, worker_argv: list[str])
     identity = read_worker_identity(scheduling=spec.scheduling, environ=os.environ)
     _log(f"identity={identity}")
     capability = DeferredBackendCapability(create=lambda: _backend_capability(specs_fn, worker_argv))
-    return load_function(spec.worker_class)(**spec.ctor_kwargs(identity.ctor_context(capability=capability)))
+    context = identity.ctor_context(args=spec.args, capability=capability)
+    return load_function(spec.worker_class)(**spec.ctor_kwargs(context))
 
 
 def _backend_capability(specs_fn: str, worker_argv: list[str]) -> BackendCapability:
