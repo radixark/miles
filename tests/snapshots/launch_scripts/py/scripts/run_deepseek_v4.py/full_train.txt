@@ -261,6 +261,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --fp8-format e4m3
   --fp8-recipe blockwise
   --te-precision-config-file base64:<frozen-pseudo-file-1>   
+  --deploy-component all
 
 ### pseudo file 1
 configs:

@@ -74,14 +74,16 @@ def make_checksum(
     )
 
 
-def make_step_end(*, second: float, rollout_id: int = 0) -> TrainGroupStepEndEvent:
+def make_step_end(
+    *, second: float, rollout_id: int = 0, cell_outcomes: dict[int, list[TrainStepOutcome]] | None = None
+) -> TrainGroupStepEndEvent:
     return TrainGroupStepEndEvent(
         timestamp=at(second),
         source=TrainerControllerProcessIdentity(trainer_id="actor"),
         rollout_id=rollout_id,
         attempt=0,
         role="actor",
-        cell_outcomes={0: [TrainStepOutcome.NORMAL]},
+        cell_outcomes={0: [TrainStepOutcome.NORMAL]} if cell_outcomes is None else cell_outcomes,
     )
 
 

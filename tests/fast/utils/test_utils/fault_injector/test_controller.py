@@ -1,13 +1,16 @@
 import asyncio
+import sys
 from collections.abc import Callable
 
 import pytest
-from tests.fast.utils.test_utils.fault_injector.fakes import _CellOperations, _Clock, _Timer
+from tests.fast.utils.test_utils.fault_injector.fakes import _CellOperations, _Clock, _Controller, _Timer
 
 from miles.utils.test_utils.fault_injector import controller as controller_module
 from miles.utils.test_utils.fault_injector import request_executor
+from miles.utils.test_utils.fault_injector.actions import cell
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext, FaultHookResources
-from miles.utils.test_utils.fault_injector.actions.cell import StopCellAction
+from miles.utils.test_utils.fault_injector.actions.cell import StartCellAction, StopCellAction
+from miles.utils.test_utils.fault_injector.actions.process import ExitProcessAction
 from miles.utils.test_utils.fault_injector.controller import (
     FaultHookCommand,
     FaultHookConflictError,
@@ -17,15 +20,24 @@ from miles.utils.test_utils.fault_injector.controller import (
     reach_fault_hook_async,
 )
 from miles.utils.test_utils.fault_injector.models import (
+    DeclaredFaultHookTarget,
     FaultHookName,
+    FaultHookOwner,
     FaultHookRecord,
     FaultHookRequest,
     FaultHookStatus,
 )
 
 _CELL_HOOK = FaultHookName.TRAINER_CONTROLLER_STEP_END
-
-
+_ACTOR_HOOK = FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE
+_CRASH = FaultHookRequest(
+    request_id="crash",
+    hook_name=_ACTOR_HOOK,
+    action=ExitProcessAction(),
+    rollout_id=4,
+    attempt=0,
+    target=DeclaredFaultHookTarget(cell_id="trainer-engine-actor-1", rank=0),
+)
 _SEND = FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND
 
 
@@ -48,6 +60,205 @@ def _clear(hooks: _FaultHookController, request: FaultHookRequest) -> FaultHookR
 
 def _statuses(records: list[FaultHookRecord], request_id: str) -> list[FaultHookStatus]:
     return [record.status for record in records if record.request.request_id == request_id]
+
+
+class TestCellHooks:
+    @pytest.mark.parametrize("rollout_id,expected", [(2, []), (3, ["trainer-engine-actor-0"])])
+    async def test_stop_only_fires_at_the_declared_step(
+        self,
+        configure_hooks: Callable[..., _FaultHookController],
+        operations: _CellOperations,
+        rollout_id: int,
+        expected: list[str],
+    ) -> None:
+        """Stopping must happen only after the configured trainer step finishes."""
+        request = FaultHookRequest(
+            request_id="stop",
+            hook_name=_CELL_HOOK,
+            rollout_id=3,
+            action=StopCellAction(cell_id="trainer-engine-actor-0"),
+        )
+        hooks = configure_hooks([request], owner=FaultHookOwner.TRAINER_CONTROLLER, operations=operations)
+        await hooks._reach_async(_CELL_HOOK, {"rollout_id": rollout_id})
+        assert operations.stopped == expected
+        assert operations.started == []
+
+    @pytest.mark.parametrize("observed_after_reads", [0, 1, 2])
+    async def test_start_waits_until_the_resumed_cell_is_observed(
+        self,
+        configure_hooks: Callable[..., _FaultHookController],
+        operations: _CellOperations,
+        observed_after_reads: int,
+    ) -> None:
+        """Resuming a dropped cell must wait for its return to the controller membership."""
+        controller = _Controller(
+            observed_after_reads=observed_after_reads,
+            cell_ids=("trainer-engine-actor-0", "trainer-engine-actor-2"),
+            initial_cell_ids=("trainer-engine-actor-0",),
+        )
+        request = FaultHookRequest(
+            request_id="start",
+            hook_name=_CELL_HOOK,
+            rollout_id=3,
+            action=StartCellAction(cell_id="trainer-engine-actor-2"),
+        )
+        hooks = configure_hooks(
+            [request], owner=FaultHookOwner.TRAINER_CONTROLLER, operations=operations, controller=controller
+        )
+        await hooks._reach_async(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.started == ["trainer-engine-actor-2"]
+        assert operations.stopped == []
+        assert controller.reads == observed_after_reads + 1
+
+    async def test_unobserved_start_fails_at_the_bounded_deadline(
+        self,
+        configure_hooks: Callable[..., _FaultHookController],
+        operations: _CellOperations,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A resumed cell that never rejoins must fail instead of making the scenario pass."""
+        monkeypatch.setattr(cell, "CELL_RESUME_OBSERVED_TIMEOUT_SECONDS", 0.0)
+        request = FaultHookRequest(
+            request_id="start", hook_name=_CELL_HOOK, action=StartCellAction(cell_id="trainer-engine-actor-0")
+        )
+        hooks = configure_hooks(
+            [request],
+            owner=FaultHookOwner.TRAINER_CONTROLLER,
+            operations=operations,
+            controller=_Controller(observed_after_reads=sys.maxsize),
+        )
+        with pytest.raises(TimeoutError, match="was resumed but is not observed yet"):
+            await hooks._reach_async(_CELL_HOOK, {})
+        assert operations.started == ["trainer-engine-actor-0"]
+
+    @pytest.mark.parametrize("reject_stop", [False, True])
+    async def test_multiple_actions_preserve_order_and_stop_after_failure(
+        self, configure_hooks: Callable[..., _FaultHookController], reject_stop: bool
+    ) -> None:
+        """A rejected transition must propagate before later actions can alter membership."""
+        operations = _CellOperations(reject_stop=reject_stop)
+        requests = [
+            FaultHookRequest(
+                request_id="stop",
+                hook_name=_CELL_HOOK,
+                rollout_id=3,
+                action=StopCellAction(cell_id="trainer-engine-actor-0"),
+            ),
+            FaultHookRequest(
+                request_id="start",
+                hook_name=_CELL_HOOK,
+                rollout_id=3,
+                action=StartCellAction(cell_id="trainer-engine-actor-2"),
+            ),
+        ]
+        hooks = configure_hooks(
+            requests,
+            owner=FaultHookOwner.TRAINER_CONTROLLER,
+            operations=operations,
+            controller=_Controller(cell_ids=("trainer-engine-actor-0", "trainer-engine-actor-2")),
+        )
+        if reject_stop:
+            with pytest.raises(RuntimeError, match="rejected the stop"):
+                await hooks._reach_async(_CELL_HOOK, {"rollout_id": 3})
+            assert operations.stopped == operations.started == []
+        else:
+            await hooks._reach_async(_CELL_HOOK, {"rollout_id": 3})
+            assert operations.stopped == ["trainer-engine-actor-0"]
+            assert operations.started == ["trainer-engine-actor-2"]
+            await hooks._reach_async(_CELL_HOOK, {"rollout_id": 3})
+            assert operations.stopped == ["trainer-engine-actor-0"]
+            assert operations.started == ["trainer-engine-actor-2"]
+
+    async def test_no_plan_has_no_cell_side_effects(
+        self, configure_hooks: Callable[..., _FaultHookController], operations: _CellOperations
+    ) -> None:
+        """Unarmed controllers must leave cell membership alone."""
+        hooks = configure_hooks([], owner=FaultHookOwner.TRAINER_CONTROLLER, operations=operations)
+        await hooks._reach_async(_CELL_HOOK, {"rollout_id": 5})
+        assert operations.stopped == operations.started == []
+
+
+class TestActorHooks:
+    @pytest.mark.parametrize(
+        "cell_id,rank,rollout_id,attempt,expected",
+        [
+            ("trainer-engine-actor-1", 0, 4, 0, [1]),
+            ("trainer-engine-actor-0", 0, 4, 0, []),
+            ("rollout-engine-1", 0, 4, 0, []),
+            ("trainer-engine-actor-1", 1, 4, 0, []),
+            ("trainer-engine-actor-1", 0, 3, 0, []),
+            ("trainer-engine-actor-1", 0, 4, 1, []),
+        ],
+    )
+    async def test_only_the_declared_actor_and_attempt_exit(
+        self,
+        configure_hooks: Callable[..., _FaultHookController],
+        recorded_exit_codes: list[int],
+        cell_id: str,
+        rank: int,
+        rollout_id: int,
+        attempt: int,
+        expected: list[int],
+    ) -> None:
+        """An injected crash must spare other cells, ranks, rollouts and retries."""
+        hooks = configure_hooks([_CRASH], owner=FaultHookOwner.TRAINER_ACTOR, cell_id=cell_id, rank=rank)
+        await hooks._reach_async(_ACTOR_HOOK, {"rollout_id": rollout_id, "attempt": attempt})
+        assert recorded_exit_codes == expected
+
+    @pytest.mark.parametrize("owner", [FaultHookOwner.TRAINER_CONTROLLER, FaultHookOwner.ORCHESTRATOR])
+    async def test_other_owners_ignore_actor_requests(
+        self,
+        configure_hooks: Callable[..., _FaultHookController],
+        recorded_exit_codes: list[int],
+        owner: FaultHookOwner,
+    ) -> None:
+        """The same launch plan must not execute an actor fault in another owner."""
+        hooks = configure_hooks([_CRASH], owner=owner)
+        await hooks._reach_async(_ACTOR_HOOK, {"rollout_id": 4, "attempt": 0})
+        assert recorded_exit_codes == []
+
+    async def test_no_actor_plan_never_exits(
+        self, configure_hooks: Callable[..., _FaultHookController], recorded_exit_codes: list[int]
+    ) -> None:
+        """Normal actors must not exit when they reach an unarmed hook."""
+        hooks = configure_hooks([], owner=FaultHookOwner.TRAINER_ACTOR, cell_id="trainer-engine-actor-1", rank=0)
+        await hooks._reach_async(_ACTOR_HOOK, {"rollout_id": 4, "attempt": 0})
+        assert recorded_exit_codes == []
+
+    async def test_mixed_plan_routes_each_request_to_its_owner(
+        self,
+        configure_hooks: Callable[..., _FaultHookController],
+        recorded_exit_codes: list[int],
+        operations: _CellOperations,
+    ) -> None:
+        """Loading a shared plan must retain the owner-specific action and ignore the others."""
+        stop = FaultHookRequest(
+            request_id="stop", hook_name=_CELL_HOOK, action=StopCellAction(cell_id="trainer-engine-actor-0")
+        )
+        requests = [stop, _CRASH]
+        trainer = configure_hooks(
+            requests, owner=FaultHookOwner.TRAINER_ACTOR, cell_id="trainer-engine-actor-1", rank=0
+        )
+        controller = configure_hooks(requests, owner=FaultHookOwner.TRAINER_CONTROLLER, operations=operations)
+        await trainer._reach_async(_CELL_HOOK, {})
+        await controller._reach_async(_ACTOR_HOOK, {"rollout_id": 4, "attempt": 0})
+        assert operations.stopped == recorded_exit_codes == []
+        await trainer._reach_async(_ACTOR_HOOK, {"rollout_id": 4, "attempt": 0})
+        await controller._reach_async(_CELL_HOOK, {})
+        assert recorded_exit_codes == [1]
+        assert operations.stopped == ["trainer-engine-actor-0"]
+
+    async def test_other_actor_hook_does_not_consume_the_crash_request(
+        self, configure_hooks: Callable[..., _FaultHookController], recorded_exit_codes: list[int]
+    ) -> None:
+        """A different trainer hook must leave the armed crash pending for its exact hook."""
+        hooks = configure_hooks([_CRASH], owner=FaultHookOwner.TRAINER_ACTOR, cell_id="trainer-engine-actor-1", rank=0)
+        context = {"rollout_id": 4, "attempt": 0}
+        await hooks._reach_async(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND, context)
+        assert recorded_exit_codes == []
+        await hooks._reach_async(_ACTOR_HOOK, context)
+        await hooks._reach_async(_ACTOR_HOOK, context)
+        assert recorded_exit_codes == [1]
 
 
 class TestRuntimeSetAndClear:
@@ -443,7 +654,7 @@ class TestDelayedRequests:
         """A request without a hook but with a delay must wait for its timer after being set."""
         assert _set(runtime_hooks, _stop(hook_name=None, delay_ms=100)).status == FaultHookStatus.SCHEDULED
         assert operations.stopped == []
-        assert timers[0].interval == 0.1
+        assert timers[0].interval == pytest.approx(0.1)
         timers[0].fire()
         assert operations.stopped == ["cell-0"]
 

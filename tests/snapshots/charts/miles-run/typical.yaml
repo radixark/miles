@@ -672,6 +672,10 @@ spec:
               value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
             - name: "PYTHONUNBUFFERED"
               value: "1"
+            - name: MILES_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: "rpc"
               containerPort: 8000
@@ -786,6 +790,10 @@ spec:
               value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
             - name: "PYTHONUNBUFFERED"
               value: "1"
+            - name: MILES_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: "rpc"
               containerPort: 8000
@@ -903,6 +911,10 @@ spec:
               value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
             - name: "PYTHONUNBUFFERED"
               value: "1"
+            - name: MILES_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: "primary"
               containerPort: 8000
@@ -1011,6 +1023,10 @@ spec:
               value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
             - name: "PYTHONUNBUFFERED"
               value: "1"
+            - name: MILES_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: "primary"
               containerPort: 8000
@@ -1125,6 +1141,10 @@ spec:
               value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
             - name: "PYTHONUNBUFFERED"
               value: "1"
+            - name: MILES_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: "rpc"
               containerPort: 8000
@@ -1324,6 +1344,10 @@ spec:
                 value: "0"
               - name: "SGLANG_TIMEOUT_KEEP_ALIVE"
                 value: "60"
+              - name: MILES_POD_UID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.uid
             ports:
               - name: "primary"
                 containerPort: 8000
@@ -1531,6 +1555,10 @@ spec:
                 value: "0"
               - name: "SGLANG_TIMEOUT_KEEP_ALIVE"
                 value: "60"
+              - name: MILES_POD_UID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.uid
             ports:
               - name: "primary"
                 containerPort: 8000
@@ -1655,6 +1683,10 @@ spec:
                 value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
               - name: "PYTHONUNBUFFERED"
                 value: "1"
+              - name: MILES_POD_UID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.uid
             ports:
               - name: "master"
                 containerPort: 9000

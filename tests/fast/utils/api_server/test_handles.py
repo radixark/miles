@@ -6,7 +6,6 @@ import pytest
 
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
-from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 
 from .conftest import (
@@ -15,6 +14,8 @@ from .conftest import (
     MockTrainerCell,
     MockWorkerManager,
     make_cell_summaries,
+    make_fault_command,
+    make_fault_record,
     make_mock_controller,
 )
 
@@ -124,12 +125,14 @@ class TestActorCellHandler:
     async def test_injection_is_forwarded_to_the_worker_manager(self) -> None:
         """The manager owns the actors, so it is the one that can crash them."""
         handler, _group, manager = _make_actor_handler()
-        manager.injected = []
-        manager.inject_fault = MockRemoteCall(None, effect=lambda *a, **kw: manager.injected.append((a, kw)))
+        command = make_fault_command(cell_id=ACTOR_CELL_ID, rank=1)
+        record = make_fault_record(command)
+        manager.control_fault_hook = MockRemoteCall(record)
 
-        await handler.inject_fault(ACTOR_CELL_ID, mode=FailureMode.SIGKILL, sub_index=1)
+        result = await handler.control_fault_hook(command)
 
-        assert manager.injected == [((ACTOR_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 1})]
+        assert manager.control_fault_hook.calls == [((), {"command": command})]
+        assert result is record
 
 
 ENGINE_CELL_ID = "inference-engine-0-0-0"
@@ -391,12 +394,14 @@ class TestRolloutCellHandler:
         assert manager.cell_info_calls == [{"pool_ids": ["engine"]}]
 
 
-class TestRolloutCellHandlerInjectFault:
+class TestRolloutCellHandlerControlFaultHook:
     @pytest.mark.asyncio
     async def test_injection_is_forwarded_to_the_worker_manager(self) -> None:
         """The manager owns the actors, so it is the one that can crash them."""
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
-        manager.inject_fault = MockRemoteCall(None)
+        command = make_fault_command(cell_id=ENGINE_CELL_ID, rank=1)
+        record = make_fault_record(command)
+        manager.control_fault_hook = MockRemoteCall(record)
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(
@@ -406,11 +411,10 @@ class TestRolloutCellHandlerInjectFault:
             pool_ids=_pool_ids_of(manager),
         )
 
-        await handler.inject_fault(ENGINE_CELL_ID, mode=FailureMode.SIGKILL, sub_index=1)
+        result = await handler.control_fault_hook(command)
 
-        assert manager.inject_fault.calls == [
-            ((ENGINE_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 1}),
-        ]
+        assert manager.control_fault_hook.calls == [((), {"command": command})]
+        assert result is record
 
 
 class TestCellStatusGeneration:

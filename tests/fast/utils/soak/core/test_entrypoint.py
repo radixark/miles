@@ -12,7 +12,7 @@ from tests.fast.utils.soak.soak_fakes import (
     _wait_until,
     _write_sut_lines,
 )
-from tests.utils.soak.core import teardown as teardown_module
+from tests.utils.soak.core import teardown as soak_teardown
 from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.core.entrypoint import run_soak
 from tests.utils.soak.core.event_log import EventLog
@@ -72,7 +72,7 @@ class _SoakWorld:
 @pytest.fixture
 def processes(monkeypatch: pytest.MonkeyPatch) -> _RecordingProcesses:
     fake = _RecordingProcesses()
-    monkeypatch.setattr(teardown_module, "run_process", fake)
+    monkeypatch.setattr(soak_teardown, "run_process", fake)
     monkeypatch.delenv("RAY_ADDRESS", raising=False)
     return fake
 
