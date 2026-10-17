@@ -182,7 +182,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
-    parser.add_argument("--custom-agent-function-path", type=str)
     parser.add_argument(
         "--custom-agent-function-mode",
         choices=AGENT_FUNCTION_MODES,
