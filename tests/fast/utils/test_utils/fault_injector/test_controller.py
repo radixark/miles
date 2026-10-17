@@ -460,3 +460,84 @@ class TestDelayedRequests:
             _set(runtime_hooks, _stop("b", rollout_id=3, delay_ms=250))
         timers[0].fire()
         assert _set(runtime_hooks, _stop("b", rollout_id=3, delay_ms=250)).status == FaultHookStatus.PENDING
+
+
+class TestLifetime:
+    def test_a_request_fires_just_before_its_deadline(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations, clock: _Clock
+    ) -> None:
+        """A request reached before set time plus lifetime must still fire."""
+        _set(runtime_hooks, _stop(rollout_id=3, lifetime_seconds=5))
+        clock.advance(4.999)
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-0"]
+
+    def test_a_request_reached_at_its_exact_deadline_expires(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        clock: _Clock,
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """Reaching the hook exactly at the deadline must expire the request instead of firing it."""
+        request = _stop(rollout_id=3, lifetime_seconds=5)
+        _set(runtime_hooks, request)
+        clock.advance(5.0)
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == []
+        with pytest.raises(FaultHookConflictError, match="never set"):
+            _clear(runtime_hooks, request)
+        [_, expired] = hook_records()
+        assert expired.status == FaultHookStatus.EXPIRED
+        assert expired.changed_at == 105.0
+
+    def test_an_expired_id_and_trigger_can_be_set_again(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        clock: _Clock,
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """Expiry must be noticed by the next SET so the same ID and trigger are free again."""
+        _set(runtime_hooks, _stop(rollout_id=3, lifetime_seconds=5))
+        clock.advance(5.0)
+        _set(runtime_hooks, _stop(rollout_id=3))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-0"]
+        assert _statuses(hook_records(), "stop") == [
+            FaultHookStatus.PENDING,
+            FaultHookStatus.EXPIRED,
+            FaultHookStatus.PENDING,
+            FaultHookStatus.FIRED,
+        ]
+
+    def test_a_scheduled_request_that_outlives_its_lifetime_never_fires(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        clock: _Clock,
+        timers: list[_Timer],
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """Lifetime must count from SET, so a timer due after the deadline must expire instead."""
+        _set(runtime_hooks, _stop(rollout_id=3, lifetime_seconds=5, delay_ms=1000))
+        clock.advance(4.5)
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        clock.advance(1.0)
+        timers[0].fire()
+        assert operations.stopped == []
+        assert timers[0].cancelled
+        assert _statuses(hook_records(), "stop") == [
+            FaultHookStatus.PENDING,
+            FaultHookStatus.SCHEDULED,
+            FaultHookStatus.EXPIRED,
+        ]
+
+    def test_a_request_without_lifetime_never_expires(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations, clock: _Clock
+    ) -> None:
+        """Omitting the lifetime must keep the request armed indefinitely."""
+        _set(runtime_hooks, _stop(rollout_id=3))
+        clock.advance(10_000.0)
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-0"]
