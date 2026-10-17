@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from argparse import Namespace
-from typing import Any
 
+from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.utils.init_once import InitState
 from miles.utils.misc import call_agent_abort_hook
 from miles.utils.retry_utils import retry_until_deadline
@@ -70,10 +70,10 @@ async def wait_trainers_idle(handles: dict[str, BaseWorkerHandle]) -> bool:
 
 
 async def trainer_init_or_load_state(
-    trainer: BaseWorkerHandle, model_args: Namespace, *, trainer_id: str, resumed: bool
-) -> list[Any]:
+    trainer: BaseWorkerHandle, request: TrainerControllerInitRequest, *, trainer_id: str, resumed: bool
+) -> list[int]:
     if not resumed:
-        return await trainer.init(model_args)
+        return await trainer.init(request)
 
     start_rollout_ids = await asyncio.wait_for(trainer.load_state(), timeout=_TRAINER_RELOAD_TIMEOUT_SECONDS)
     logger.info(f"Resumed the already-initialized trainer {trainer_id!r} at rollout ids {start_rollout_ids}")

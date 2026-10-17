@@ -40,7 +40,7 @@ from tests.utils.soak.ft.actions.base import CellFaultForms
 from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_healing
 from tests.utils.soak.ft.entrypoint import run_cell_soak
-from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE, FaultTrigger
+from tests.utils.soak.ft.types import FaultTrigger
 
 from miles.utils.external_utils import command_utils
 
@@ -166,10 +166,6 @@ def _run_soak(
     fully_async: bool,
     cell_fault_forms: CellFaultForms,
 ) -> SoakRunner:
-    expected_counts: dict[str, int] = {
-        ACTOR_CELL_TYPE: ft_mode.num_cells,
-        ROLLOUT_CELL_TYPE: ft_mode.rollout_num_engines,
-    }
     evidence_dir = evidence_directory(Path(dump_dir))
     event_log = EventLog(evidence_dir / "events.jsonl")
     return asyncio.run(
@@ -191,14 +187,16 @@ def _run_soak(
             runner_config=SoakRunnerConfig(
                 seed=seed,
                 target_configs={
-                    kind: SoakTargetConfig(expected_count=expected_counts[kind], mean_interval_seconds=interval)
+                    kind: SoakTargetConfig(
+                        expected_count=ft_mode.cell_counts_of_type[kind], mean_interval_seconds=interval
+                    )
                     for kind, interval in mean_interval_seconds_of_cell_type.items()
                 },
                 tail=SoakTailConfig.create(num_rollout=num_steps),
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
-            cell_fault_forms=cell_fault_forms,
+            forms=cell_fault_forms,
         )
     )
 

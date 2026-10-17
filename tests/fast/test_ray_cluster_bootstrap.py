@@ -5,10 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY
-
 _TESTS_ROOT = Path(__file__).resolve().parents[1]
-_SNAPSHOTS_ROOTS = (_TESTS_ROOT / "snapshots", _TESTS_ROOT.parent / SNAPSHOT_DIRECTORY)
+_SNAPSHOTS_ROOTS = (_TESTS_ROOT / "snapshots", _TESTS_ROOT / "snapshots_before")
 
 
 def test_only_the_session_fixture_starts_the_ray_cluster():

@@ -201,9 +201,7 @@ class RouterSpec(BaseCommandSpec):
 
         if args.use_miles_router:
             assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
-            router_config = compute_miles_router_config(
-                args, host=primary.host, port=primary.port, num_engines=args.sglang_scaling.num_server_cells(model_cfg)
-            )
+            router_config = compute_miles_router_config(args, host=primary.host, port=primary.port)
             launch_argv = [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
         else:
             router_args = compute_sglang_router_args(

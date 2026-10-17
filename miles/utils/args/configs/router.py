@@ -34,7 +34,10 @@ class RouterConfig(BaseConfig):
         Arg(help="Whether to use MilesRouter for text-based routing instead of SGLang token-based routing"),
     ] = False
     miles_router_timeout: A[float | None, Arg(help="Timeout for MilesRouter HTTP requests in seconds.")] = None
-    miles_router_max_connections: A[int | None, Arg(help="Max connections for MilesRouter HTTP client.")] = None
+    miles_router_max_connections: A[
+        int | None,
+        Arg(help="Max connections for MilesRouter HTTP client. When unset, the HTTP client has no connection cap."),
+    ] = None
     miles_router_health_check_failure_threshold: A[
         int,
         Arg(help="Number of consecutive failures before marking a worker as unhealthy."),

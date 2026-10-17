@@ -89,6 +89,7 @@ class HotRestartEvidence(FrozenStrictBaseModel):
     release: str
     observation_attempts: int = 0
     observation_failures: int = 0
+    commands_of_pod_uid: dict[str, tuple[str, ...]] = {}
 
     def write(self, *, dump_dir: str) -> None:
         path = evidence_path(dump_dir=dump_dir)

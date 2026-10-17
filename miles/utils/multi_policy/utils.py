@@ -6,11 +6,12 @@ from miles.backends.megatron_utils.megatron_config import MegatronConfig
 from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.ray.specs.train import compute_trainer_configs
-from miles.utils.args.runtime import AllConfig
-from miles.utils.args.trainer_utils import compute_trainer_config
+from miles.ray.train.init_request import TrainerControllerInitRequest
+from miles.utils.args.runtime import OrchestratorConfig
 from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
 from miles.utils.tracking_utils.tracking import define_step_key_metric_group
+from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -23,19 +24,23 @@ class TrainerInfo:
     handle: BaseWorkerHandle
 
 
-async def create_trainers(args: AllConfig, *, rollout_executor: BaseWorkerHandle) -> dict[str, TrainerInfo]:
+async def create_trainers(
+    args: OrchestratorConfig, *, rollout_executor: BaseWorkerHandle, capability: BackendCapability
+) -> dict[str, TrainerInfo]:
     trainer_configs = compute_trainer_configs(args)
-    handles = create_trainer_handles(args, trainer_configs=trainer_configs)
+    handles = create_trainer_handles(args, trainer_configs=trainer_configs, capability=capability)
     resumed = await take_over_trainers(args, handles=handles)
+    request = TrainerControllerInitRequest.from_args(args)
 
     trainers: dict[str, TrainerInfo] = {}
     for trainer_config in trainer_configs:
         model_id = trainer_config.model_id
         assert model_id is not None, f"{trainer_config} carries no policy model id"
         created = await create_training_model(
-            compute_trainer_config(args, trainer_config),
             handle=handles[trainer_config.trainer_id],
             trainer_id=trainer_config.trainer_id,
+            request=request,
+            requested_start_rollout_id=args.start_rollout_id,
             resumed=resumed,
         )
         assert model_id not in trainers, f"{trainer_config} shares its model id with an already created trainer"

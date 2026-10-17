@@ -4,7 +4,7 @@ import logging
 # TODO: this entrypoint reaches into miles.ray; fix the layering later
 from miles.ray.specs.entrypoint import compute_specs
 from miles.ray.specs.train import compute_trainer_ids, create_trainer_controller_handle
-from miles.ray.wiring import get_backend_capability, launch_worker_manager
+from miles.ray.wiring import compute_backend_capability, launch_worker_manager
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.ft_utils.api_server.server import start_api_server
@@ -42,7 +42,7 @@ def _maybe_serve_fault_tolerance(args, *, component: DeployComponent) -> None:
     if not args.api_server_port or not component.selects(DeployComponent.TRAINER):
         return
 
-    capability = get_backend_capability(args)
+    capability = compute_backend_capability(args)
     start_api_server(
         args=args,
         trainer_models={

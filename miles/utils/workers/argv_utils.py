@@ -11,6 +11,7 @@ from miles.utils.args.schema import validate_complete_config
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 CONFIG_JSON_FLAG = "--config-json"
+ORCHESTRATOR_CONFIG_FLAG = "--orchestrator-config"
 
 _INTERPRETER_SHORT_FLAGS_TAKING_A_VALUE = frozenset({"X", "W", "Q"})
 
@@ -47,6 +48,17 @@ def python_argv_prefix() -> list[str]:
 
 
 # ==================== config argv ====================
+
+
+def orchestrator_config_values(argv: list[str]) -> list[str]:
+    values: list[str] = []
+    for index, token in enumerate(argv):
+        if token == ORCHESTRATOR_CONFIG_FLAG:
+            assert index + 1 < len(argv), f"{ORCHESTRATOR_CONFIG_FLAG} is the last argument, so it names no value"
+            values.append(argv[index + 1])
+        elif token.startswith(f"{ORCHESTRATOR_CONFIG_FLAG}="):
+            values.append(token.split("=", maxsplit=1)[1])
+    return values
 
 
 def config_to_argv(config: FrozenStrictBaseModel) -> list[str]:
