@@ -76,6 +76,8 @@ def _add_argument(
 
 
 def _argument_kwargs(*, name: str, annotation: Any, field: FieldInfo, argument: Arg) -> dict[str, Any]:
+    from miles.utils.args.custom_function import CustomFunctionConfig
+
     kwargs = {
         key: value
         for key, value in vars(argument).items()
@@ -88,10 +90,14 @@ def _argument_kwargs(*, name: str, annotation: Any, field: FieldInfo, argument: 
 
     if not field.is_required():
         kwargs["default"] = deepcopy(field.get_default(call_default_factory=True))
+        if isinstance(kwargs["default"], CustomFunctionConfig):
+            kwargs["default"] = kwargs["default"].path
 
     annotation = _unwrap_optional(annotation)
     if argument.type_parser is not _UNSET:
         kwargs["type"] = argument.type_parser
+    elif annotation is CustomFunctionConfig:
+        kwargs["type"] = str
     elif argument.action is None and annotation is bool:
         kwargs["action"] = "store_true"
     elif argument.action in {None, "store", "append", "extend"}:

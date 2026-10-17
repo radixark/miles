@@ -209,7 +209,11 @@ def setup_model_and_optimizer(
             from miles_plugins.optimizers.nvme_stream import setup_muon_state_on_disk
 
             setup_muon_state_on_disk(args)
-        if config.muon_split_qkv and "inkling" in (args.custom_model_provider_path or ""):
+        if (
+            config.muon_split_qkv
+            and (provider := args.custom_model_provider_path) is not None
+            and "inkling" in provider.path
+        ):
             if is_first_replica_megatron_main_rank():
                 logger.info(
                     "Inkling fused qkvr detected: forcing muon_split_qkv=False " "(whole-matrix orthogonalization)."
