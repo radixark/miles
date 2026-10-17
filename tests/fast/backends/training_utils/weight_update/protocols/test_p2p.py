@@ -96,11 +96,10 @@ class TestWriteThreads:
 
 
 class TestWriteCompletion:
-    def test_every_failed_write_is_named_and_fails_the_update(
+    def test_the_first_failed_rank_marks_its_cell_and_skips_later_ranks(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
-        """A failed write leaves its rollout engine rank on the old weights, so the update must not succeed; the error
-        names each failed rank, the last one included (`main` only logged those), and no other."""
+        """A failed rank excludes its whole cell and prevents queued later ranks from writing."""
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=3)
         p2p_sender.connect(protocol, [api])
@@ -109,12 +108,11 @@ class TestWriteCompletion:
 
         protocol.send_bucket(make_bucket("hf.w"))
 
-        with pytest.raises(RuntimeError, match="2 of 2 p2p writes failed") as failure:
-            protocol.after_base_weights()
-        assert api.session_id(1) in str(failure.value) and api.session_id(2) in str(failure.value)
-        assert api.session_id(0) not in str(failure.value)
+        protocol.after_base_weights()
+        assert protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert p2p_sender.transfer_engine.written_sessions() == [api.session_id(0), api.session_id(1)]
 
-    def test_a_failed_write_fails_the_update_before_its_transfer_buffer_is_loaded_again(
+    def test_a_failed_write_marks_the_cell_before_its_transfer_buffer_is_loaded_again(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
         """Waiting for the end of the base weights would queue every later write behind the broken rank first."""
@@ -124,14 +122,15 @@ class TestWriteCompletion:
         p2p_sender.begin_sync(protocol, weight_version=1)
         p2p_sender.transfer_engine.failing_sessions = {api.session_id(0)}
 
-        with pytest.raises(RuntimeError, match=api.session_id(0)):
-            protocol.send_bucket(make_bucket("hf.w"))
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+        assert protocol.cell_updaters_of_cell_id["cell-a"].is_errored
         assert api.session_id(2) not in p2p_sender.transfer_engine.written_sessions()
 
-    def test_a_write_still_running_at_the_timeout_fails_the_update(
+    def test_a_write_still_running_at_the_timeout_marks_its_cell(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
-        """A write that has not finished within --p2p-transfer-timeout fails the update instead of being forgotten."""
+        """A timed-out write removes its cell from the update while retaining its registered buffer."""
         protocol = p2p_sender.make_protocol(p2p_transfer_timeout=0.1)
         api = make_rollout_api("cell-a", gpu_count=1)
         p2p_sender.connect(protocol, [api])
@@ -140,8 +139,9 @@ class TestWriteCompletion:
 
         protocol.send_bucket(make_bucket("hf.w"))
 
-        with pytest.raises(RuntimeError, match="still running after 0.1s"):
-            protocol.after_base_weights()
+        protocol.after_base_weights()
+        assert protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert len(p2p_sender.transfer_engine.registered) == 2
 
 
 class TestConnect:

@@ -159,7 +159,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 pending_writes = [
                     PendingWrite(
                         future=write,
-                        remote_shard=shard,
+                        cell_updater=self.cell_updaters_of_cell_id[self._engine_cell_ids[shard.rollout_engine_ind]],
                     )
                     for shard, write in zip(remote_shards, writes, strict=True)
                 ]

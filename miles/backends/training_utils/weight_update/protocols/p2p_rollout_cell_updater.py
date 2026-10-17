@@ -12,4 +12,8 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
         if self.is_errored:
             logger.warning(f"[P2P-Shared] skipping a queued write to rollout cell {self.cell_id}")
             return
-        write()
+        try:
+            write()
+        except Exception as error:
+            self.mark_errored(error)
+            raise

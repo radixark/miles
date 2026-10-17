@@ -1,4 +1,4 @@
-"""A transfer buffer must never be loaded again while a write still reads it."""
+"""A transfer buffer stays unchanged for healthy cells and registered for every unfinished write."""
 
 import threading
 from concurrent.futures import Future
@@ -7,8 +7,8 @@ import pytest
 import torch
 
 import miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers as transfer_buffers_module
-from miles.backends.training_utils.weight_update.protocols.transports.mooncake import RemoteShard
 from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import PendingWrite, TransferBuffers
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 
 _RETURN_TIMEOUT_SECONDS = 10.0
 _STILL_BLOCKED_SECONDS = 0.2
@@ -40,18 +40,11 @@ def make_transfer_buffers(monkeypatch: pytest.MonkeyPatch):
     return make
 
 
-def _remote_shard(session_id: str) -> RemoteShard:
-    return RemoteShard(
-        rollout_engine_ind=0,
-        rollout_engine_rank=0,
-        runner_role="target",
-        session_id=session_id,
-        weight_locations_by_name={},
-    )
-
-
 def _pending_write(session_id: str, future: Future[None]) -> PendingWrite:
-    return PendingWrite(remote_shard=_remote_shard(session_id), future=future)
+    return PendingWrite(
+        future=future,
+        cell_updater=_RolloutCellUpdater(cell_id=session_id, api_client=None),
+    )
 
 
 def _start_in_thread(target) -> threading.Event:
@@ -82,32 +75,39 @@ def test_a_buffer_is_not_handed_out_while_a_write_still_reads_it(make_transfer_b
     assert acquired == [first_buffer]
 
 
-def test_a_failed_write_fails_the_next_acquire_of_its_buffer_and_frees_it(make_transfer_buffers) -> None:
+def test_a_failed_write_marks_its_cell_and_allows_reuse(make_transfer_buffers) -> None:
     """Loading on after a failed write would only queue more writes behind a broken rollout engine."""
     transfer_buffers, _ = make_transfer_buffers(num_buffers=1)
     buffer = transfer_buffers.acquire()
     failed_write = Future()
     failed_write.set_exception(RuntimeError("write failed"))
-    transfer_buffers.release_after(buffer, [_pending_write("session-a", failed_write)])
+    pending = _pending_write("session-a", failed_write)
+    transfer_buffers.release_after(buffer, [pending])
 
-    with pytest.raises(RuntimeError, match="session session-a.*write failed"):
-        transfer_buffers.acquire()
+    assert transfer_buffers.acquire() is buffer
+    assert pending.cell_updater.is_errored
+    assert str(pending.cell_updater._error) == "write failed"
     assert transfer_buffers.acquire() is buffer
 
 
-def test_a_write_still_running_after_the_timeout_fails_acquire_and_keeps_its_buffer(make_transfer_buffers) -> None:
-    """A hung write must fail the update within the write timeout, and its buffer stays reserved while it reads."""
-    transfer_buffers, _ = make_transfer_buffers(num_buffers=1, write_timeout=_STILL_BLOCKED_SECONDS)
+def test_a_timed_out_write_allows_reuse_but_prevents_unregister_until_it_returns(make_transfer_buffers) -> None:
+    """A timed-out cell can absorb late reads, but the native writer must never read unregistered memory."""
+    transfer_buffers, registered = make_transfer_buffers(num_buffers=1, write_timeout=_STILL_BLOCKED_SECONDS)
     buffer = transfer_buffers.acquire()
     running_write = Future()
-    transfer_buffers.release_after(buffer, [_pending_write("session-a", running_write)])
+    running_write.set_running_or_notify_cancel()
+    pending = _pending_write("session-a", running_write)
+    transfer_buffers.release_after(buffer, [pending])
 
-    with pytest.raises(RuntimeError, match=f"session session-a.*still running after {_STILL_BLOCKED_SECONDS}s"):
-        transfer_buffers.acquire()
-    with pytest.raises(RuntimeError, match="still running"):
-        transfer_buffers.acquire()
-    running_write.set_result(None)
     assert transfer_buffers.acquire() is buffer
+    assert pending.cell_updater.is_errored
+    assert transfer_buffers.acquire() is buffer
+    with pytest.raises(RuntimeError, match="still running"):
+        transfer_buffers.release()
+    assert registered == [(buffer.data_ptr(), buffer.numel())]
+    running_write.set_result(None)
+    transfer_buffers.release()
+    assert registered == []
 
 
 def test_each_buffer_is_registered_once_over_its_whole_allocation(make_transfer_buffers) -> None:
