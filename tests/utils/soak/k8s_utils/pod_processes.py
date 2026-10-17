@@ -75,16 +75,25 @@ def observe_processes(*, pod_uid: str, pattern: str) -> ProcessTarget:
 
 def signal_observed_processes(*, target: ProcessTarget, operation: ProcessSignal) -> list[int]:
     _assert_container_unchanged(target)
-    with ExitStack() as resources:
+    with ExitStack() as resources, ExitStack() as rollback:
         handles = _open_observed_handles(target=target, operation=operation, resources=resources)
         for fd in handles:
             if select.select([fd], [], [], 0)[0]:
                 raise ProcessLookupError("An observed process exited before injection")
+        signum = signal.SIGKILL if operation == ProcessSignal.KILL else signal.SIGSTOP
         for process, fd in zip(target.processes, handles, strict=True):
-            signal.pidfd_send_signal(fd, signal.SIGKILL)
-            _log(f"Sent SIGKILL to pid {process.pid}")
+            signal.pidfd_send_signal(fd, signum)
+            _log(f"Sent {signum.name} to pid {process.pid}")
+            if operation == ProcessSignal.STOP:
+                rollback.callback(_idempotent_resume, fd=fd, pid=process.pid)
 
         pids = [process.pid for process in target.processes]
+        if operation == ProcessSignal.STOP:
+            _log(f"Confirming pids {pids} stopped")
+            _confirm_processes_stopped(target=target, handles=handles)
+            rollback.pop_all()
+            _log(f"Confirmed pids {pids} stopped")
+            return [process.pid for process in target.processes]
         _log(f"Confirming pids {pids} exited")
         _confirm_processes_exited(handles)
         _log(f"Confirmed pids {pids} exited")
@@ -108,9 +117,21 @@ def _open_observed_handles(*, target: ProcessTarget, operation: ProcessSignal, r
         assert _start_ticks(process.pid) == process.start_ticks, "Process identity changed"
         command = (Path("/proc") / str(process.pid) / "cmdline").read_bytes().replace(b"\0", b" ")
         assert matcher.search(command.decode(errors="replace")), "Process command changed"
+        if operation == ProcessSignal.STOP and (
+            (Path("/proc") / str(process.pid) / "stat").read_text().rsplit(")", 1)[1].split()[0] == "T"
+        ):
+            raise ProcessLookupError("An observed process was already stopped")
         handles.append(fd)
         _log(f"Opened pidfd for pid {process.pid}")
     return handles
+
+
+def _confirm_processes_stopped(*, target: ProcessTarget, handles: list[int]) -> None:
+    deadline = time.monotonic() + 5.0
+    for process, fd in zip(target.processes, handles, strict=True):
+        _wait_process_stopped(pid=process.pid, pidfd=fd, timeout_seconds=deadline - time.monotonic())
+    if any(select.select([fd], [], [], 0)[0] for fd in handles):
+        raise ProcessLookupError("An observed process exited during stop confirmation")
 
 
 def _confirm_processes_exited(handles: list[int]) -> None:
@@ -122,6 +143,30 @@ def _confirm_processes_exited(handles: list[int]) -> None:
             _log(f"Timed out waiting for {len(pending)} signalled processes to exit")
             raise TimeoutError("Signalled processes did not exit within five seconds")
         pending.difference_update(readable)
+
+
+def _idempotent_resume(*, fd: int, pid: int) -> None:
+    try:
+        signal.pidfd_send_signal(fd, signal.SIGCONT)
+        _log(f"Rollback sent SIGCONT to pid {pid}")
+    except ProcessLookupError:
+        pass
+
+
+def _wait_process_stopped(*, pid: int, pidfd: int, timeout_seconds: float) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if select.select([pidfd], [], [], 0)[0]:
+            raise ProcessLookupError("Fault target exited before stop was witnessed")
+        tasks = list((Path("/proc") / str(pid) / "task").glob("*/stat"))
+        states = [path.read_text().rsplit(")", 1)[1].split()[0] for path in tasks]
+        if states and all(state == "T" for state in states):
+            if select.select([pidfd], [], [], 0)[0]:
+                raise ProcessLookupError("Fault target exited during stop observation")
+            return
+        time.sleep(0.01)
+    _log(f"Timed out waiting for pid {pid} to stop")
+    raise TimeoutError("Fault target did not stop after witness initialization")
 
 
 def _start_ticks(pid: int) -> int:

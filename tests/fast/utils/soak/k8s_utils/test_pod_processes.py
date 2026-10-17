@@ -1,3 +1,4 @@
+import signal
 from collections.abc import Callable
 from pathlib import Path
 
@@ -231,7 +232,86 @@ class TestSignalObservedProcessesKill:
         assert kernel.open_fds == set()
 
 
+class TestSignalObservedProcessesStop:
+    def test_every_thread_stopped_confirms_the_stop_without_resuming(self, kernel: _FakeProcKernel) -> None:
+        """A successful freeze leaves every thread in T and never sends SIGCONT."""
+        target = _observe_engines(kernel, 40, 41)
+
+        assert signal_observed_processes(target=target, operation=ProcessSignal.STOP) == [40, 41]
+
+        assert kernel.signals() == [(40, "SIGSTOP"), (41, "SIGSTOP")]
+        assert all(state == "T" for pid in (40, 41) for state in kernel.processes[pid].thread_states.values())
+        assert kernel.open_fds == set()
+
+    def test_an_already_stopped_process_is_refused_before_any_signal(self, kernel: _FakeProcKernel) -> None:
+        """A process that was already frozen would make the stop look caused by this request."""
+        target = _observe_engines(kernel, 40, 41)
+        kernel.processes[41].thread_states[41] = "T"
+        kernel.write(kernel.processes[41])
+
+        with pytest.raises(ProcessLookupError, match="already stopped"):
+            signal_observed_processes(target=target, operation=ProcessSignal.STOP)
+
+        assert kernel.signals() == []
+
+    def test_one_thread_that_never_stops_times_out_and_resumes_every_process(self, kernel: _FakeProcKernel) -> None:
+        """A partially frozen process is not a witnessed stop; everything signalled is resumed."""
+        target = _observe_engines(kernel, 40, 41)
+        kernel.processes[41].unstoppable_tids = frozenset({42})
+
+        with pytest.raises(TimeoutError):
+            signal_observed_processes(target=target, operation=ProcessSignal.STOP)
+
+        assert sorted(kernel.signals()) == [(40, "SIGCONT"), (40, "SIGSTOP"), (41, "SIGCONT"), (41, "SIGSTOP")]
+        assert all(state == "S" for pid in (40, 41) for state in kernel.processes[pid].thread_states.values())
+        assert kernel.clock == pytest.approx(5.0, abs=0.05)
+        assert kernel.open_fds == set()
+
+    def test_a_failed_send_resumes_only_the_processes_already_stopped(self, kernel: _FakeProcKernel) -> None:
+        """A partial failure rolls back the earlier SIGSTOPs and never signals later processes."""
+        target = _observe_engines(kernel, 40, 41, 43)
+        kernel.processes[41].send_errors[signal.SIGSTOP] = PermissionError("denied")
+
+        with pytest.raises(PermissionError):
+            signal_observed_processes(target=target, operation=ProcessSignal.STOP)
+
+        assert kernel.signals() == [(40, "SIGSTOP"), (40, "SIGCONT")]
+        assert kernel.open_fds == set()
+
+    def test_a_process_exiting_on_stop_is_refused_and_the_rest_resumed(self, kernel: _FakeProcKernel) -> None:
+        """An exit during stop confirmation is a crash, not a freeze, and survivors are resumed."""
+        target = _observe_engines(kernel, 40, 41)
+        kernel.processes[41].exits_on_stop = True
+
+        with pytest.raises(ProcessLookupError):
+            signal_observed_processes(target=target, operation=ProcessSignal.STOP)
+
+        assert (40, "SIGCONT") in kernel.signals()
+        assert kernel.processes[40].thread_states == {40: "S", 41: "S"}
+
+    def test_rollback_tolerates_a_process_that_already_exited(self, kernel: _FakeProcKernel) -> None:
+        """Resuming an exited process is idempotent so the original failure still surfaces."""
+        target = _observe_engines(kernel, 40, 41)
+        kernel.processes[40].exits_on_stop = True
+
+        with pytest.raises(ProcessLookupError, match="exited before stop was witnessed"):
+            signal_observed_processes(target=target, operation=ProcessSignal.STOP)
+
+        assert (41, "SIGCONT") in kernel.signals()
+
+
 class TestPodProcessesCli:
+    def test_stop_prints_a_receipt_that_validates_for_the_request(self, kernel: _FakeProcKernel) -> None:
+        """The CLI reads the target from stdin and prints an exact receipt for this request and operation."""
+        target = _observe_engines(kernel, 40, 41)
+
+        result = CliRunner().invoke(app, ["stop", "req-9"], input=target.model_dump_json())
+
+        assert result.exit_code == 0, result.output
+        receipt = ProcessSignalReceipt.model_validate_json(_last_line(result.stdout))
+        receipt.validate_for(request_id="req-9", target=target, operation=ProcessSignal.STOP)
+        assert kernel.signals() == [(40, "SIGSTOP"), (41, "SIGSTOP")]
+
     def test_kill_prints_a_kill_receipt(self, kernel: _FakeProcKernel) -> None:
         """The kill command signals SIGKILL and describes the operation as KILL."""
         target = _observe_engines(kernel, 40)

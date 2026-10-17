@@ -18,6 +18,7 @@ from miles.utils.workers.types import DeployComponent
 
 DELETE_POD_FORM_NAME: str = "delete_pod"
 EXEC_SIGKILL_FORM_NAME: str = "exec_sigkill"
+EXEC_SIGSTOP_FORM_NAME: str = "exec_sigstop"
 
 ENGINE_CONTAINER_NAME: str = "engine"
 SGLANG_PROCESS_PATTERN: str = "sglang::"
@@ -135,3 +136,13 @@ class ExecSigkillFaultForm(BaseExecSignalFaultForm):
     @property
     def operation(self) -> ProcessSignal:
         return ProcessSignal.KILL
+
+
+class ExecSigstopFaultForm(BaseExecSignalFaultForm):
+    @property
+    def name(self) -> str:
+        return EXEC_SIGSTOP_FORM_NAME
+
+    @property
+    def operation(self) -> ProcessSignal:
+        return ProcessSignal.STOP
