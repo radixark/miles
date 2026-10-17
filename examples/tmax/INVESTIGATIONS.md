@@ -15,6 +15,9 @@ Runs referred to:
   - **Retry 3:** 15:24 to 15:26; died with `ENOSPC` at startup.
   - **Retry 4:** 15:30 to 22:40, steps 95–149; rollout node declared dead.
   - **Retry 5** (the last of `retries: 5`): 22:45 to 23:46; failed in its first step. Retries exhausted.
+- **Resume 1:** Beaker experiment `01M53JRRQ310SG0GDCF249TW1A` (`tmax_prod4node_qwen35_9b_20261016_001037_resume1`),
+  submitted 23:58 on the podman backend with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037`, continuing from
+  `iter_0000149`, off `holmes-cs-aus-556` and `holmes-cs-aus-500` (`--exclude-host`), commit `6648a1cb54`.
 
 ## Open decisions
 
