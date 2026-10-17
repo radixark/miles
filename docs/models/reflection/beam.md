@@ -3,9 +3,10 @@ title: Beam 1.0
 sidebarTitle: Beam 1.0
 description: Launch recipes for Reflection's Beam 1.0 (501B MoE, 23B active) — full-parameter BF16 GRPO on 96 or 64 H200 GPUs, and LoRA on 32.
 ---
-The complete Beam RL implementation is open on the Miles
-[`beam-image`](https://github.com/radixark/miles/tree/beam-image) branch. The scripts and image
-below come from that branch.
+The complete Beam RL implementation is open at the Miles pull request:
+[`radixark/miles#4137`](https://github.com/radixark/miles/pull/4137), branch
+[`zhihengy/beam-support`](https://github.com/radixark/miles/tree/zhihengy/beam-support). The
+scripts and image below come from that branch.
 
 ## 1. Model Introduction
 
@@ -75,11 +76,11 @@ MASTER_ADDR=<head ip> python scripts/run_beam.py execute --num-rollout 100 \
     --output-dir /root/shared_data/beam-run
 ```
 
-The run evaluates on AIME25 every five rollouts and saves a checkpoint every twenty.
+Training is asynchronous (`train_async.py`): the next rollout generates while the current one trains, so its responses are one update stale; `--no-async-training` switches to synchronous `train.py`. The run evaluates on AIME25 every five rollouts and saves a checkpoint every twenty.
 
 ### 4.3 Full parameter, colocated, 8 nodes
 
-`execute-colocate` takes the same arguments on eight 8×H200 nodes. Every GPU trains and also hosts one of four rollout engines, which receive the new weights over CUDA IPC. Each node's NVMe holds both the optimizer state and the paused trainer:
+`execute-colocate` takes the same arguments on eight 8×H200 nodes. Every GPU trains and also hosts one of four rollout engines, which receive the new weights over CUDA IPC, and training is synchronous. Each node's NVMe holds both the optimizer state and the paused trainer:
 
 ```bash
 MASTER_ADDR=<head ip> python scripts/run_beam.py execute-colocate --num-rollout 100 \
@@ -89,7 +90,7 @@ MASTER_ADDR=<head ip> python scripts/run_beam.py execute-colocate --num-rollout 
 
 ### 4.4 LoRA, 4 nodes
 
-`run_beam_lora.py` runs on four 8×H200 nodes: two train and two host one rollout engine. It needs no NVMe, since the adapter's optimizer state stays on the GPUs:
+`run_beam_lora.py` runs on four 8×H200 nodes: two train and two host one rollout engine, asynchronously like `execute`. It needs no NVMe, since the adapter's optimizer state stays on the GPUs:
 
 ```bash
 MASTER_ADDR=<head ip> python scripts/run_beam_lora.py execute --num-rollout 100 \
@@ -135,7 +136,6 @@ The engines serve BF16 with Triton attention and MoE. Each engine takes its shar
 --sglang-dtype bfloat16
 --sglang-attention-backend triton
 --sglang-moe-runner-backend triton
---sglang-context-length 5120
 --sglang-chunked-prefill-size 8192
 --sglang-max-running-requests 128      # 256 / engines: 128, colocated 64, LoRA 256
 --sglang-cuda-graph-max-bs-decode 128  # same as max-running-requests
