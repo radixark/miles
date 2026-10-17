@@ -1,3 +1,4 @@
+from tests.utils.soak.core.utils import compute_base_url
 from tests.utils.soak.ft.actions.base import BaseCellFaultForm, CellFaultForms
 from tests.utils.soak.ft.actions.inject_fault import InjectFaultForm
 from tests.utils.soak.ft.actions.pod import DeletePodFaultForm, ExecSigkillFaultForm, ExecSigstopFaultForm
@@ -18,7 +19,8 @@ ROLLOUT_FAULT_ACTIONS: list[FaultAction] = [KillProcessAction()]
 CELL_TYPE_OF_FT_COMPONENT: dict[str, str] = {"train": ACTOR_CELL_TYPE, "rollout": ROLLOUT_CELL_TYPE}
 
 
-def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrainConfig) -> CellFaultForms:
+def create_cell_fault_forms(config: command_utils.ExecuteTrainConfig) -> CellFaultForms:
+    base_url = compute_base_url(config)
     actor_inject_fault_forms = _inject_fault_forms(base_url=base_url, actions=ACTOR_FAULT_ACTIONS)
 
     match config.cluster_backend:

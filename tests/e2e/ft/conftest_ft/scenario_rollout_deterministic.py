@@ -16,6 +16,7 @@ from tests.utils.soak.core.utils import (
     evidence_directory,
     note_launch_outcome,
 )
+from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_injections_recovered, assert_min_injections
 from tests.utils.soak.ft.checkers.progress_windows import assert_faults_span_progress_windows
 from tests.utils.soak.ft.entrypoint import run_cell_soak
@@ -86,6 +87,7 @@ def _run_side(request: RunSideRequest) -> None:
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
+            cell_fault_forms=create_cell_fault_forms(config),
         )
     )
     if target:
