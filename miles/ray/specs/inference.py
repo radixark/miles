@@ -87,6 +87,12 @@ class InferenceRegistrationReporterSpec(BaseServeSpec):
     worker_class: str = INFERENCE_REGISTRATION_REPORTER_WORKER_CLASS
 
     @classmethod
+    def slice_configs(cls, args: Any) -> list[InferenceControllerConfig]:
+        if DeployComponent(args.deploy_component) is not DeployComponent.INFERENCE:
+            return []
+        return [InferenceControllerConfig.slice_from(args)]
+
+    @classmethod
     def create(cls, config: InferenceControllerConfig) -> Self:
         return cls(
             args=config,
