@@ -31,17 +31,13 @@ The Beam bridge loads only this BF16 checkpoint; the FP8 and NVFP4 releases are 
 
 ## 3. Environment Setup
 
-### 3.1 Download
+### 3.1 Checkpoint and data
 
-The `full-train` commands in section 4 download everything they need, so this step is optional: run it when you want the download to finish before you claim the cluster, or when several recipes share one copy.
+There is no separate download step: the `full-train` commands in section 4 fetch the checkpoint into `--model-dir` and DAPO-Math-17K and AIME25 into `--data-dir`, then train. Every node must see both at the same path, and the checkpoint needs no Megatron conversion — the trainer reads it through the Beam bridge at startup.
 
-`prepare` downloads the checkpoint into `--model-dir` and DAPO-Math-17K and AIME25 into `--data-dir`; every node must see both at the same path. `run_beam_lora.py prepare` is identical, so one run serves both recipes:
+The fetch also writes `aime-2025/aime-2025-answer-format.jsonl`, the AIME25 problems wrapped in the training prompts' answer-format instruction, which the evals read.
 
-```bash
-python scripts/run_beam.py prepare --model-dir /root/models/Beam --data-dir /root/datasets
-```
-
-The checkpoint needs no Megatron conversion: the trainer reads it through the Beam bridge at startup. `prepare` also writes `aime-2025/aime-2025-answer-format.jsonl`, the AIME25 problems wrapped in the training prompts' answer-format instruction, which the evals read.
+To stage the download on its own — to finish it before claiming the cluster, or to share one copy between the recipes — `prepare` does that part alone, and `run_beam_lora.py prepare` is identical.
 
 ### 3.2 SGLang
 
@@ -72,7 +68,7 @@ ray start --address=${MASTER_ADDR}:6379 --node-ip-address ${WORKER_IP} --num-gpu
 
 ### 4.2 Full parameter, 12 nodes
 
-`full-train` downloads anything 3.1 did not and then runs on twelve 8×H200 nodes: eight train and four host two rollout engines. Each trainer node needs at least 2 TB free on node-local NVMe for the optimizer state, at `/scratch/beam-optimizer` by default (`--optimizer-disk-dir`):
+`full-train` downloads the checkpoint and datasets if they are not already in place, then runs on twelve 8×H200 nodes: eight train and four host two rollout engines. Each trainer node needs at least 2 TB free on node-local NVMe for the optimizer state, at `/scratch/beam-optimizer` by default (`--optimizer-disk-dir`):
 
 ```bash
 MASTER_ADDR=<head ip> python scripts/run_beam.py full-train --num-rollout 100 \
