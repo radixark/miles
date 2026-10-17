@@ -15,7 +15,9 @@ from megatron.core.utils import unwrap_model
 from megatron.training.checkpointing import get_checkpoint_name
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
+from torch.serialization import safe_globals
 
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionSampleConsumptionUtils,
@@ -148,7 +150,7 @@ def load_checkpoint(
             assert_checkpoint_is_current(load_path)
         if not has_local_checkpoint_manager and _has_linear_attention(ddp_model):
             assert_linear_attn_checkpoint_is_current(load_path)
-        with args.backend.mutable():
+        with safe_globals([MegatronArgsNamespace]), args.backend.mutable():
             result_iteration, _ = _load_checkpoint_megatron(
                 ddp_model=ddp_model,
                 optimizer=optimizer,
