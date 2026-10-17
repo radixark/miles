@@ -78,8 +78,12 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
             )
             return watching.pop_all().aclose
 
-    def cell_ids(self) -> list[str]:
-        return sorted(self._loop_or_fail().parent_keys())
+    def cell_ids(self, *, pool_ids: list[str] | None = None, category: str | None = None) -> list[str]:
+        return sorted(
+            cell_id
+            for cell_id in self._loop_or_fail().parent_keys()
+            if (pods := self._pods_of_cell(cell_id)) and _pod_matches(pods[0], pool_ids=pool_ids, category=category)
+        )
 
     def cell_info(self, cell_id: str) -> CellInfo | None:
         return cell_view.compute_cell_info(cell_id, pods=self._pods_of_cell(cell_id), run=self._run)
@@ -92,11 +96,9 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
 
     def _cell_id_of_pod(self, pod: Pod) -> str | None:
         parsed = pod_view.parse_pod(pod, self._run.label_keys)
-        if parsed is None or (self._pool_ids is not None and parsed.pool_id not in self._pool_ids):
+        if parsed is None or not parsed.worker_metadata.dynamic_pool:
             return None
-        if not parsed.worker_metadata.dynamic_pool:
-            return None
-        if self._category is not None and parsed.worker_metadata.category != self._category:
+        if not _pod_matches(parsed, pool_ids=self._pool_ids, category=self._category):
             return None
         return parsed.cell_id
 
@@ -127,3 +129,11 @@ def _watched_pods_selector(*, base_selector: str, pool_label_key: str, pool_ids:
 
 
 _NO_POD_CARRIES_THIS_LABEL = "never-matches.invalid/watches-nothing"
+
+
+def _pod_matches(parsed: pod_view.ParsedPod, *, pool_ids: list[str] | None, category: str | None) -> bool:
+    if pool_ids is not None and parsed.pool_id not in pool_ids:
+        return False
+    if category is not None and parsed.worker_metadata.category != category:
+        return False
+    return True
