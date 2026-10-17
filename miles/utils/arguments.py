@@ -912,6 +912,7 @@ def miles_validate_args(args):
     from miles.backends.training_utils.weight_update.session import weight_update_selector
 
     if args.custom_config_path:
+        logger.warning("--custom-config-path is deprecated; use the custom function's declared CLI arguments instead.")
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
         for k, v in data.items():
             if hasattr(args, k):  # config-access-exempt: attribute selected at runtime from k
