@@ -7,6 +7,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.ray.rollout.serving_registry import ServingRegistry
 from miles.utils import async_utils
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
@@ -85,6 +86,7 @@ class RolloutServer:
         default_factory=lambda: ActivenessTracker(active=True)
     )
     init_expected_num_cells: int = 0
+    serving_registry: ServingRegistry | None = None
 
     @property
     @requires_lock
@@ -117,6 +119,7 @@ class RolloutServer:
             meta=cell_meta,
             provider=self.engine_provider,
             health_checker_activeness=self.health_checker_activeness.get,
+            serving_registry=self.serving_registry,
         )
         self.server_cells[cell_id] = cell
         if not (self.args.colocate and cell_meta.needs_offload):
