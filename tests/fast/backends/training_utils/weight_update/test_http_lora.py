@@ -84,7 +84,10 @@ def _make_args(tmp_path, **overrides) -> Namespace:
         custom_update_weight_post_write_path=None,
         http_lora_ship="path",
         fully_async=False,
+        colocate=False,
         pause_generation_mode="retract",
+        ft_components=[],
+        update_weight_engine_request_timeout=10.0,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -98,6 +101,7 @@ def _connect(args: Namespace, engines: list[_FakeEngine], gpu_counts: list[int] 
             engines,
             gpu_counts or [1] * len(engines),
             None,
+            engine_cell_ids=[f"cell-{index}" for index in range(len(engines))],
             parallel_state=None,
             placement=WeightUpdatePlacement(gather_pp=True),
             selector="all",
