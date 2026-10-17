@@ -1,15 +1,16 @@
 import argparse
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from types import UnionType
-from typing import Annotated, Any, Union, get_args, get_origin
+from typing import Annotated, Any, TypeVar, Union, get_args, get_origin
 
-from pydantic import ConfigDict
+from pydantic import BaseModel, ConfigDict
 from pydantic.fields import FieldInfo
 
 from miles.utils.pydantic_utils import StrictBaseModel
 
+_ConfigT = TypeVar("_ConfigT", bound=BaseModel)
 A = Annotated
 
 
@@ -46,6 +47,12 @@ class BaseConfig(StrictBaseModel):
                     field=field,
                     argument=argument,
                 )
+
+
+def validate_complete_config(config_class: type[_ConfigT], payload: Mapping[str, Any]) -> _ConfigT:
+    config = config_class.model_validate(payload)
+    _validate_complete_value(value=config, path=config_class.__name__)
+    return config
 
 
 def _argument_metadata(field: FieldInfo) -> Arg | None:
@@ -119,3 +126,20 @@ def _infer_type_parser(annotation: Any) -> Callable[[str], Any]:
     if annotation not in {str, int, float, bool}:
         raise TypeError(f"Explicit type_parser is required for {annotation!r}")
     return annotation
+
+
+def _validate_complete_value(*, value: Any, path: str) -> None:
+    if isinstance(value, BaseModel):
+        fields = type(value).model_fields
+        missing = {name for name, field in fields.items() if field.exclude is not True} - value.model_fields_set
+        if missing:
+            raise ValueError(f"Incomplete configuration {path}: missing fields {sorted(missing)}")
+        for name, field in fields.items():
+            if field.exclude is not True:
+                _validate_complete_value(value=value.__getattribute__(name), path=f"{path}.{name}")
+    elif isinstance(value, Mapping):
+        for name, item in value.items():
+            _validate_complete_value(value=item, path=f"{path}[{name!r}]")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_complete_value(value=item, path=f"{path}[{index}]")
