@@ -1,0 +1,256 @@
+---
+title: "TMax Terminal-RL"
+description: "Terminal-RL on the TMax tasks with per-task Podman sandboxes: sync and fully-async GRPO, plus on-policy distillation."
+# Generated from examples/tmax/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
+---
+GRPO and on-policy distillation on the 14.6k TMax terminal tasks
+([`allenai/tmax-15k-open-instruct`](https://huggingface.co/datasets/allenai/tmax-15k-open-instruct)),
+the Miles port of open-instruct's Terminal-RL recipe with the `swerl_vanillux_sandbox` environment.
+Every episode runs in a fresh container from the task's prebuilt image, the only tool is `bash`, and the
+reward is the task's `tests/test.sh` verdict, uploaded only at submit time so the policy cannot read it.
+
+Validated end to end on B300s (Beaker `ai2/holmes`):
+
+| Mode | Launcher flags | Validated with |
+|---|---|---|
+| Synchronous GRPO, colocated, 4 GPUs | (default) | Qwen3.5-9B, 3 steps |
+| Fully-async GRPO, 4 GPUs | `--async-rollout-gpus 2` | Qwen3.5-9B, 4 steps |
+| On-policy distillation (sync and async), 4 GPUs | `--opd-teacher tmax-4b` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 + 4 steps |
+| open-instruct's production recipe, fully async on 4 nodes (32x B300), 64k context | `configs/prod_4node.yaml` | Qwen3.5-9B, training on Beaker since 2026-10-16 |
+
+| Read | For |
+|---|---|
+| This page | What the example does, how an episode runs, how to run it, results, findings |
+| [beaker/README.md](/examples/tmax/beaker) | Running on Beaker: submissions, run names and resume, images, mirrors, watching a run, failure triage |
+| [DEVELOPING.md](https://github.com/radixark/miles/blob/main/examples/tmax/DEVELOPING.md) | How the port plugs into Miles, local development and tests, the validation ladder, conventions, history |
+| [ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md) | Open work by priority, decisions taken |
+| [INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md) | Investigations from the production runs: evidence, options, open decisions |
+| [Miles vs open-instruct](/deep-dive/open-instruct-comparison) | Every framework, harness and infrastructure difference, and the flag-by-flag mapping of the production recipe |
+
+## Files
+
+| File | Role |
+|---|---|
+| `run_tmax_qwen3_5.py` | Launcher: `prepare` (download, extract tasks, prompt JSONL, torch_dist conversion) and `execute` |
+| `tmax_agent_function.py` | Agent loop for `agentic_tool_call.generate`, plus the over-sampling `abort` hook |
+| `tmax_sandbox.py` | Per-episode container on a Docker-API socket (Podman), ported from open-instruct |
+| `generate.py` | Reward function (`None` drops the group) and `agent/*` metrics |
+| `tmax_prompts.py` | open-instruct's system prompt |
+| `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes) |
+| `beaker/` | `submit.py` (config -> Beaker job, pinned to a commit), the job's entrypoint, open-instruct's vendored podman bring-up, and the registry mirror tooling |
+| `tools/` | `watch_run.py` (one line per step, slow sync or failure of a running Beaker experiment) and `check_samples.py` (trained samples vs episode traces) |
+
+## How an episode runs
+
+The loop follows open-instruct's `vllm_utils.process_request` with the `swerl_vanillux_sandbox` env as run in its
+production script (`--tool_call_format_error_feedback` off, `SWERL_RESET_FAILURE_ZERO_REWARD=1`):
+
+1. `agentic_tool_call.generate` opens a TITO session and calls `tmax_agent_function.run` in a process of its own.
+2. `run` starts a container from `metadata.image` (`sleep infinity`, a 4 GB memory limit requested) on one of the podman
+   daemons, uploads the task's `environment/seeds`, and installs a wrapper that keeps `cwd` and exported variables
+   across commands. A failed start is retried 5 times (1-16 s backoff); a daemon that fails to connect is benched
+   for 300-330 s. If it never starts, the episode scores 0 and stays in its group, through a one-token turn
+   (`start_failure: drop` drops the group instead).
+3. Up to `max_steps` (64) bash calls: a chat completion with the single `bash` tool through the session server,
+   each command run with a 120 s timeout, output truncated head/tail at 10k characters and followed by
+   `(exit_code=N)`. Calls to other tools are ignored; a turn without a bash call ends the episode. A command that
+   fails for infra reasons is reported as `Step 'bash' failed: ...` and the episode goes on; a vanished container
+   is recreated once. Each step, a submit's test run included, is capped by `tool_call_timeout_s` (120 s, open-instruct's
+   `tool_call_timeout`): an overrun is reported as `Step 'bash' timed out ...` and the episode goes on, which also
+   bounds a hung podman call. As in open-instruct's production runs, a test run longer than 120 s therefore cannot
+   earn the reward; raise `tool_call_timeout_s` to stop reproducing that.
+4. The episode ends on the submit marker (`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`), which uploads `tests/`,
+   runs `test.sh` (600 s) and reads `/logs/verifier/reward.txt`; or with reward 0 on no tool call, a
+   length-truncated turn, a full context, the step limit, an OOM-killed sandbox, or `episode_timeout_s` (off).
+
+Each finished episode logs `episode done: reward=... end=... turns=...`, and with `trace_dir` set appends a JSONL
+record (messages, reward, metrics) to `<trace_dir>/<exp_name>/` (open-instruct's `--save_traces`).
+
+## Run
+
+Experiments are YAML configs of the launcher's fields, as open-instruct's `configs/train_configs/`: pass one to
+`prepare` / `execute`, and command-line flags override it.
+
+```bash
+python examples/tmax/run_tmax_qwen3_5.py prepare examples/tmax/configs/smoke_sync.yaml   # download, convert
+python examples/tmax/run_tmax_qwen3_5.py execute examples/tmax/configs/smoke_sync.yaml --num-rollout 1
+```
+
+The sandboxes need a Docker-compatible API socket (podman), whose containers can pull
+`docker.io/hamishi740/swerl-tmax-v3:*`, and `pip install docker`. The launcher hands the sockets in
+`TMAX_DOCKER_HOST` (comma-separated) to the rollout; `docker_host` overrides them.
+
+### Beaker
+
+```bash
+python examples/tmax/beaker/submit.py examples/tmax/configs/prod_4node.yaml [--dry-run] [-- --num-rollout 10]
+```
+
+`submit.py` turns a config's `beaker:` section into a Beaker job pinned to the current commit; its entrypoint brings
+up open-instruct's podman setup on every node and runs `prepare` + `execute`. Each submission is its own run
+(`<exp_name>_YYYYMMDD_HHMMSS`), and its Beaker retries resume from that run's checkpoints. Everything else (the
+`beaker:` keys, multi-node layout, images, pull credentials and mirrors, checkpoints, watching a run, failures) is in
+[beaker/README.md](/examples/tmax/beaker).
+
+## Mapping from open-instruct
+
+Every flag of open-instruct's production script and its counterpart here is in the
+[comparison's flag-by-flag table](/deep-dive/open-instruct-comparison#flag-by-flag-the-production-recipe).
+The deliberate algorithmic difference is the loss: open-instruct trains with DPPO, which Miles does not have, so
+the port uses PPO clip (0.2 / 0.28) around the rollout log-probs.
+
+## Results
+
+### Production recipe, 4 nodes
+
+`configs/prod_4node.yaml` on 4x 8 B300 (`ai2/holmes`), run `tmax_prod4node_qwen35_9b_20261016_001037` (commit
+`edf2c7ae3e`, session server v2): 8 prompts x 32 samples per step, 64k tokens per episode, fully async with 16
+SGLang engines and 512 episodes in flight.
+
+| Step | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loss | 0.022 | 0.025 | 0.012 | 0.032 | 0.008 | 0.042 | 0.027 | 0.057 | 0.025 | 0.044 | 0.030 |
+| grad_norm | 0.084 | 0.082 | 0.051 | 0.076 | 0.101 | 0.066 | 0.079 | 0.086 | 0.076 | 0.066 | 0.056 |
+| `rollout/raw_reward_unfiltered` | 0.41 | 0.40 | 0.65 | 0.43 | 0.29 | 0.40 | 0.27 | 0.50 | 0.38 | 0.34 | |
+| `rollout/fully_async/avg_staleness` | 0 | 1 | 2 | 3 | 4 | 3 | 1.6 | 1.9 | 2.1 | 2.1 | |
+
+- **Speed.** Step 0 trained 41 minutes after the replicas started, then a step about every 5 minutes.
+- **Weight syncs** took 1.5-8 s, with an occasional 30-50 s one.
+- **Train/rollout agreement.** `train/train_rollout_logprob_abs_diff` stayed at 0.0066-0.0068.
+- **Session-collect failures:** none.
+- **Episodes.** Over the first 5,705:
+  - mean reward 0.38, mean 38 turns;
+  - ended by submitting 62%, at the 64-step limit 30%, with no tool call 7%, with a full context 1.3%, on a
+    length-truncated turn 0.1%;
+  - 0.19 failed or timed-out tool steps per episode;
+  - median episode 4 minutes (p90 10), 48% of it in model calls and 19% in sandbox commands.
+
+### Smoke tests (4x B300, 64-prompt subset, 4 prompts x 4 samples per step, 16k tokens per episode)
+
+Synchronous GRPO, Qwen3.5-9B:
+
+| Step | Episodes submitted | Mean episode time | pg_loss | grad_norm | train/rollout KL |
+|---|---|---|---|---|---|
+| 0 | 62% | 373 s | 0.014 | 0.36 | 3e-4 |
+| 1 | 56% | 250 s | 0.0068 | 0.21 | 3e-4 |
+| 2 | 25% | 109 s | -0.0038 | 0.21 | 3e-4 |
+
+Fully-async GRPO, Qwen3.5-9B, 2 training + 2 rollout GPUs: 4 steps, grad_norm 0.40 / 0.28 / 0.23 / 0.22,
+train/rollout KL 3e-4 to 4e-4, at most 1 weight version stale, no stale or aborted groups.
+
+On-policy distillation, `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B` (`--opd-kl-coef 1.0`; these runs rendered
+with `enable_thinking=false`, off the models' training distribution, so they validate the pipeline, not the numbers):
+
+| | Step 0 | Step 1 | Step 2 | Step 3 |
+|---|---|---|---|---|
+| Sync: teacher reverse KL per token | 0.178 | 0.168 | 0.150 | |
+| Sync: grad_norm | 6.0 | 5.2 | 4.4 | |
+| Async: teacher reverse KL per token | 0.150 | 0.187 | 0.202 | 0.104 |
+| Async: grad_norm | 5.3 | 5.5 | 4.4 | 2.8 |
+| Async: max staleness (versions) | 0 | 1 | 2 | 3 |
+
+The step-0 reverse KL agrees with an independent measurement: scoring the student's own trajectories with
+both models through vLLM `prompt_logprobs` gave 0.175 nats per assistant token (p90 0.61, 6.6% of tokens
+above 1 nat).
+
+## Findings
+
+### Required settings
+
+- **`--tito-model qwen35` does not set SGLang's parsers.** `resolve_reasoning_and_tool_call_parser` is only
+  called from test utilities, so without `--sglang-reasoning-parser qwen3 --sglang-tool-call-parser
+  qwen3_coder` the engines return the model's `<tool_call>` XML as plain content, `tool_calls` is empty, and
+  every episode ends after one turn with reward 0. The launcher passes both.
+- **Zero-variance filter.** Qwen3.5-9B is very consistent per task: in a local check, four tasks were solved
+  4/4, 4/4, 0/4 and 0/4. With 4 samples per prompt almost every group is all-pass or all-fail, the filter
+  drops it, and a synchronous step never fills (the progress bar sits at 0/16 while the loop cycles through
+  the prompt pool without any error). Use 8 samples per prompt and a large prompt pool for real runs,
+  `--no-filter-zero-std` for smoke tests, and always with OPD, where uniform groups still carry signal.
+- **Thinking.** `allenai/tmax-4b`, `allenai/tmax-9b`, `hamishivi/Qwen3.5-4B`/`-9B` and stock Qwen3.5 all
+  open `<think>` by default, as does Miles' `qwen35` template, and open-instruct trained with that default;
+  only `allenai/tmax-2b` defaults to thinking off. The `_RECIPES` table keeps thinking on. (The OPD runs in
+  the results below predate this and rendered with `enable_thinking=false`.) SGLang's Qwen3.5 reasoning
+  detector treats `<tool_call>` as an implicit end of reasoning, so turns parse either way. vLLM's `qwen3`
+  reasoning parser does not: for a model that emits no `</think>` it files the whole turn as reasoning and
+  drops every tool call. Serve these checkpoints in vLLM with `--language-model-only` (they ship no
+  image-processor config).
+
+### Throughput
+
+- A synchronous step waits for its slowest episode. Most episodes take 1-6 minutes; 40-turn long-thinking
+  ones took about 20. Cap episodes with `episode_timeout_s` (default 0, off; the smoke configs use 3600) or use
+  `--async-rollout-gpus`.
+- Where the time goes depends on load. In 4-GPU smoke tests about 80% of episode wall time was sandbox
+  execution; in the 4-node production run, with 512 episodes sharing 16 engines, model calls take 48% and sandbox
+  commands 19%.
+- The first training step JIT-compiles the TileLang and Triton kernels for the linear-attention layers
+  (a few minutes); SGLang engines also compile at start-up and log health-check failures meanwhile.
+
+### Session server
+
+- `session_server: v2` (the default) is required by upstream's `--namespaced-radix-cache`, which fully async turns
+  on with in-place weight updates so prefix KV computed under old weights never serves a later call. v2 also needs
+  an image whose SGLang has prefill weight versions ([Images](/examples/tmax/beaker#images)). `v1` still works; pair it
+  with `--no-namespaced-radix-cache` in that mode.
+- v2 builds the same training samples as v1: one sample per episode, tool tokens loss-masked, the same observation
+  framing. Episodes that end with a full context lose their last, overflowing turn, or keep it cut at
+  `max_seq_len`; both versions do both.
+
+### Fully async
+
+- `--fully-async` rejects `--colocate` and `--rollout-function-path`, so `agent/*` metrics are only logged
+  in synchronous mode; the per-episode log lines are written in both.
+- The abort hook matters only in synchronous mode: after over-sampling finishes a step, Miles waits for all
+  pending episodes. Each episode runs in its own process (`--custom-agent-function-mode subproc`, the
+  default), so `abort`, which runs in the rollout process, bumps a generation counter in a file scoped to
+  that process and removes its containers; every in-flight model call and bash command races against the
+  counter, and aborted episodes return within seconds. The episodes are not cancelled, because
+  `as_completed_async` would re-raise the cancellation. Limits shared across episodes (start and exec
+  concurrency, one pull per image) are `rollout_limits` file locks for the same reason.
+- With OPD the trainer is the bottleneck on a 2 + 2 split (a 455 s step, 241 s of it the teacher forward),
+  so staleness climbs one version per step and would reach `--max-weight-staleness` on the next. Give the
+  trainer more GPUs than the generator for async OPD.
+
+### On-policy distillation
+
+- Megatron mode (`--opd-type megatron`) keeps the teacher as a CPU weight backup of the student's model and
+  swaps it in for one forward pass per step, so teacher and student must share an architecture; the launcher
+  asserts this. It leaves the task reward and the sandbox loop untouched, while SGLang mode replaces the
+  reward function with OPD's own. With `--use-rollout-logprobs` the student term of the reverse-KL estimate
+  is the rollout log-prob, the behavior policy's.
+- `allenai/tmax-4b` and `hamishivi/Qwen3.5-4B` have identical architecture, vocabulary and merges;
+  `tmax-4b` only adds seven unused audio/TTS special tokens (ids 248070-248076).
+- The OPD term is dense: at `--opd-kl-coef 1.0` grad_norm is about 20x a GRPO-only step (4-6 vs 0.2-0.4)
+  and is clipped to 1.0, so the update is mostly distillation. Use 0.1-0.3 to keep the task reward in play.
+
+### Sandboxes and environment
+
+- Podman inside a Beaker task: `apt install podman` (4.9) works with open-instruct's `containers.conf`; a
+  `storage.conf` must set `runroot` and `graphroot`. docker-py consults the client's
+  `~/.docker/config.json` credential helper on pull and fails if it is broken; `tmax_sandbox` always sends
+  explicit (possibly empty) credentials so Podman uses its own login.
+- GPU containers cannot be nested inside a Beaker task: Podman there can neither mount a fresh procfs nor
+  create cgroups, and the `/proc` bind it falls back to belongs to another PID namespace, which makes
+  `cuInit` fail with CUDA error 304. Run the Miles image as the Beaker task itself and nest only the CPU
+  sandboxes. Current Miles images are CUDA 13 only (upstream retired the CUDA 12 images), so 570-series drivers
+  cannot run them.
+- `openai_session_url` already appends `/v1`; agent functions pass its result to the OpenAI client as is.
+- Qwen3.5 `torch_dist` checkpoints converted before the head-sharded linear-attention layout (upstream #3610)
+  are rejected at load; re-convert them from HF into a new `--model-dir`.
+- On B300 with TP=1 and no optimizer offload, Qwen3.5-9B training uses ~58 GB allocated per GPU, and a
+  weight sync to the engines takes ~2.6 s.
+
+### Known gaps
+
+Open differences from open-instruct and the work on them are tracked in [ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md); the
+[comparison](/deep-dive/open-instruct-comparison) describes each. The largest:
+
+- No DPPO in Miles: the port trains with PPO clip.
+- The first-turn prompt is not token-identical: SGLang's tool schema adds `"strict": false` and reorders the tool
+  definition's keys, about 17 tokens. Tool observations are framed differently too (two newlines, trimmed output,
+  several calls in one turn share one user block).
+- `agent/*` episode metrics are not logged in fully-async runs.
+- Podman comes from Ubuntu's apt (4.9) at job start; open-instruct's image builds 5.6.2 and crun 1.14.3.
+- Every agent process runs on the head node (`--pin-rollout-manager-to-head`); open-instruct's environment actors
+  run on every node. The sandboxes still spread: the head drives the other nodes' podman over TCP.
+- Group-granular dropping: one infra failure discards its whole group.
