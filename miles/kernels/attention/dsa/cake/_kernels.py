@@ -41,6 +41,14 @@ ATTENTION_TC_ARCHES = ("sm_100a", "sm_103a")
 # everywhere.  Numerics: FP32 accumulation in the tensor-core order (deterministic run to run, within the register-MMA
 # stages' tolerances).
 ATTENTION_TC_BWD_HEADS = (8, 16, 32, 64)
+# The tcgen05 lightning-indexer logits stages ``dsa_indexer_logits_tc_h{H}`` (keys on M = 128 via TMA key tiles,
+# ``INDEXER_TC_QUERY_COLUMNS // H`` queries x H heads packed on N = 256, FP32 accumulation in tensor memory, the weighted-ReLU
+# head sum in the register-MMA stage's order) exist for these indexer head counts on ``ATTENTION_TC_ARCHES``; every other
+# case runs the register-MMA logits stage ``dsa_indexer_logits_h{H}``.  Both are followed by the same ``dsa_indexer_clean``
+# launch.  ``MILES_DSA_INDEXER_TC=0`` forces the register-MMA stage everywhere.  Numerics: FP32 dot products in the
+# tensor-core order (deterministic run to run, within the register-MMA stage's tolerances).
+INDEXER_TC_HEADS = (8, 16, 32, 64)
+INDEXER_TC_QUERY_COLUMNS = 256  # (query, head) columns per CTA of the tcgen05 stage: queries per CTA = 256 // heads
 
 _PREBUILT: set[str] = set()
 
@@ -145,6 +153,15 @@ def attention_tc_bwd_stage(heads: int, d_tail: int, arch: str) -> str | None:
     if os.environ.get("MILES_DSA_ATTENTION_BWD_TC", "1") == "0":
         return None
     return f"dsa_attention_bwd_tc_h{heads}_d512t{d_tail}"
+
+
+def indexer_tc_stage(heads: int, arch: str) -> str | None:
+    """The tcgen05 indexer logits stage for ``heads`` on ``arch``, or ``None`` when the register-MMA logits stage applies."""
+    if heads not in INDEXER_TC_HEADS or arch not in ATTENTION_TC_ARCHES:
+        return None
+    if os.environ.get("MILES_DSA_INDEXER_TC", "1") == "0":
+        return None
+    return f"dsa_indexer_logits_tc_h{heads}"
 
 
 def _storage_alias(tensor):
@@ -431,6 +448,10 @@ def dsa_indexer_logits(index_q, index_k, weights, cu_ks, cu_ke, *, batch: int, s
     ``index_q`` is ``[batch * seq_len, heads, 128]`` BF16, ``index_k`` ``[batch * seq_len_kv, 128]``
     BF16, ``weights`` ``[batch * seq_len, heads]`` FP32, ``cu_ks``/``cu_ke`` int32 ``[seq_len]`` key
     bounds shared by the batch.
+
+    Head counts in ``INDEXER_TC_HEADS`` run the tcgen05 logits stage on ``ATTENTION_TC_ARCHES`` (FP32 in the tensor-core
+    order, bit-deterministic run to run, within the register-MMA stage's tolerances but not bit-identical to it); every
+    other case runs the register-MMA stage.  ``dsa_indexer_clean`` follows either.
     """
     heads, dim = int(index_q.shape[1]), int(index_q.shape[2])
     if dim != INDEXER_HEAD_DIM:
@@ -442,17 +463,33 @@ def dsa_indexer_logits(index_q, index_k, weights, cu_ks, cu_ke, *, batch: int, s
         return logits
     bq = 64 // heads
     if seq_len_kv > 0:
-        _kernel(f"dsa_indexer_logits_h{heads}", index_q.device).launch(
-            grid=((seq_len + bq - 1) // bq, batch, 1),
-            index_q=index_q,
-            index_k=index_k,
-            weights=weights,
-            cu_ks=cu_ks,
-            cu_ke=cu_ke,
-            logits=logits,
-            seq_len=seq_len,
-            seq_len_kv=seq_len_kv,
-        )
+        tc_stage = indexer_tc_stage(heads, device_arch(index_q.device))
+        if tc_stage is not None:
+            # the tcgen05 stage: ``index_q`` / ``index_k`` are TMA tensor maps the launcher encodes from the bound 2-D views
+            pq = INDEXER_TC_QUERY_COLUMNS // heads
+            _kernel(tc_stage, index_q.device).launch(
+                grid=((seq_len + pq - 1) // pq, batch, 1),
+                index_q=index_q.reshape(batch * seq_len * heads, dim),
+                index_k=index_k,
+                weights=weights,
+                cu_ks=cu_ks,
+                cu_ke=cu_ke,
+                logits=logits,
+                seq_len=seq_len,
+                seq_len_kv=seq_len_kv,
+            )
+        else:
+            _kernel(f"dsa_indexer_logits_h{heads}", index_q.device).launch(
+                grid=((seq_len + bq - 1) // bq, batch, 1),
+                index_q=index_q,
+                index_k=index_k,
+                weights=weights,
+                cu_ks=cu_ks,
+                cu_ke=cu_ke,
+                logits=logits,
+                seq_len=seq_len,
+                seq_len_kv=seq_len_kv,
+            )
         _kernel("dsa_indexer_clean", index_q.device).launch(
             grid=(seq_len, batch, 1),
             logits=logits,
@@ -505,6 +542,8 @@ __all__ = [
     "ATTENTION_TC_HEADS",
     "INDEXER_HEADS",
     "INDEXER_HEAD_DIM",
+    "INDEXER_TC_HEADS",
+    "INDEXER_TC_QUERY_COLUMNS",
     "REDUCE_SPLIT_MAX_DIM",
     "MODULES",
     "AttentionGeometry",
@@ -520,5 +559,6 @@ __all__ = [
     "dsa_indexer_logits",
     "dsa_segmented_reduce_launch",
     "indexer_key_block",
+    "indexer_tc_stage",
     "indexer_padded_heads",
 ]
