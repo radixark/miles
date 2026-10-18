@@ -345,6 +345,13 @@ class InferenceController:
         ), "this run deploys no eval fleet, so nothing asked this controller to pin one"
         return await self._eval_fleet.pin(checkpoint_dir=checkpoint_dir, weight_version=weight_version)
 
+    @lock_exempt
+    async def check_eval_fleet_version(self, weight_version: str) -> EvalFleetPin:
+        """Check the already-synchronized eval pool without loading a checkpoint."""
+        if self._eval_fleet is None:
+            raise ValueError("This run has no dedicated eval fleet")
+        return await self._eval_fleet.check_version(weight_version)
+
     # -------------------------- misc APIs -----------------------------
 
     @lock_exempt

@@ -288,9 +288,14 @@ class _RecordingInferenceControllerEvalFleet:
     def __init__(self, info: EvalFleetInfo):
         self.info = info
         self.pins: list[dict] = []
+        self.checked_versions: list[str] = []
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
         self.pins.append(dict(checkpoint_dir=checkpoint_dir, weight_version=weight_version))
+        return EvalFleetPin(skip_reason=None)
+
+    async def check_version(self, weight_version: str) -> EvalFleetPin:
+        self.checked_versions.append(weight_version)
         return EvalFleetPin(skip_reason=None)
 
 
@@ -1443,6 +1448,7 @@ class TestEvalFleetSurface:
 
         assert callable(handle.get_eval_fleet_info)
         assert callable(handle.pin_eval_fleet)
+        assert callable(handle.check_eval_fleet_version)
         with pytest.raises(AttributeError, match="no rpc method 'eval_fleet'"):
             handle.eval_fleet()
 
@@ -1454,10 +1460,16 @@ class TestEvalFleetSurface:
         assert serializer.decode_result(serializer.encode_result(info)) == info
         assert serializer.decode_result(serializer.encode_result(None)) is None
 
-    def test_a_pin_and_its_skip_reason_survive_the_wire(self):
+    @pytest.mark.parametrize(
+        "method,query",
+        [
+            ("pin_eval_fleet", dict(checkpoint_dir="/snap/step_5", weight_version="5")),
+            ("check_eval_fleet_version", dict(weight_version="5")),
+        ],
+    )
+    def test_a_pin_and_its_skip_reason_survive_the_wire(self, method, query):
         """A skipped point must arrive as a skip with its reason, not as a remote crash."""
-        spec = collect_rpc_method_specs(InferenceController)["pin_eval_fleet"]
-        query = dict(checkpoint_dir="/snap/step_5", weight_version="5")
+        spec = collect_rpc_method_specs(InferenceController)[method]
 
         assert spec.serializer.decode_query(spec.serializer.encode_query(query)) == query
         for pin in (EvalFleetPin(skip_reason=None), EvalFleetPin(skip_reason="unhealthy")):
@@ -1479,6 +1491,8 @@ class TestEvalFleetSurface:
 
         with pytest.raises(AssertionError, match="no eval fleet"):
             await controller.pin_eval_fleet(checkpoint_dir="/snap/step_5", weight_version="5")
+        with pytest.raises(ValueError, match="no dedicated eval fleet"):
+            await controller.check_eval_fleet_version(weight_version="5")
 
     @pytest.mark.asyncio
     async def test_the_fleet_answers_and_pins_through_the_controller(self):
@@ -1492,6 +1506,8 @@ class TestEvalFleetSurface:
             skip_reason=None
         )
         assert controller._eval_fleet.pins == [dict(checkpoint_dir="/snap/step_5", weight_version="5")]
+        assert await controller.check_eval_fleet_version(weight_version="5") == EvalFleetPin(skip_reason=None)
+        assert controller._eval_fleet.checked_versions == ["5"]
 
 
 class TestCellsReadyIsScopedToTheTargetedModel:

@@ -133,6 +133,36 @@ class TestTheFleetIsBuiltOnTheRealServer:
 
 
 class TestEvalFleetPinning:
+    @pytest.mark.parametrize(
+        "versions,reason", [(["5", "5"], None), (["5", "4"], "pin_violation"), ([], "pin_violation")]
+    )
+    async def test_current_version_checks_every_engine_without_loading_weights(self, router_probes, versions, reason):
+        log = []
+        engines = [FakeEngine(log) for _ in versions]
+        for engine, version in zip(engines, versions, strict=True):
+            engine.weight_version = version
+        fleet = make_fleet(make_args(), engines)
+
+        assert await fleet.check_version("5") == EvalFleetPin(skip_reason=reason)
+
+        assert log == [("get_weight_version", (), {})] * len(engines)
+        assert len(router_probes) == (1 if reason is None else 0)
+
+    async def test_current_version_read_is_deadlined(self, monkeypatch, router_probes):
+        monkeypatch.setattr(eval_fleet_mod, "EVAL_WEIGHT_LOAD_TIMEOUT_SECS", 0.01)
+
+        async def never_answers():
+            await asyncio.Event().wait()
+
+        log = []
+        engine = FakeEngine(log)
+        engine.get_weight_version = never_answers
+        fleet = make_fleet(make_args(), [engine])
+
+        assert await fleet.check_version("5") == EvalFleetPin(skip_reason="unhealthy")
+        assert log == []
+        assert router_probes == []
+
     async def test_pins_every_engine_before_reporting_success(self, router_ready):
         """Every engine is reloaded from the snapshot before the pin reports no skip."""
         log = []
@@ -159,16 +189,19 @@ class TestEvalFleetPinning:
         assert pin.skip_reason == "pin_violation"
         assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 4  # 2 engines x 2 attempts
 
-    async def test_a_router_that_never_becomes_ready_skips_the_eval(self, monkeypatch):
+    @pytest.mark.parametrize("already_synced", [False, True])
+    async def test_a_router_that_never_becomes_ready_skips_the_eval(self, monkeypatch, already_synced):
         """Every other case here neutralises the router wait, so this branch is the only thing that reads it."""
 
         async def never_ready(self, timeout=180.0):
             raise TimeoutError("router never came up")
 
         monkeypatch.setattr(eval_fleet_mod.InferenceControllerEvalFleet, "_wait_router_ready", never_ready)
-        fleet = make_fleet(make_args(), [FakeEngine([])])
+        engine = FakeEngine([])
+        engine.weight_version = "5"
+        fleet = make_fleet(make_args(), [engine])
 
-        pin = await fleet.pin("/snap/step_5", "5")
+        pin = await fleet.check_version("5") if already_synced else await fleet.pin("/snap/step_5", "5")
 
         assert pin.skip_reason == "unhealthy"
 
@@ -295,6 +328,13 @@ class FakeInferenceController:
             raise pin
         return pin
 
+    async def check_eval_fleet_version(self, weight_version: str) -> EvalFleetPin:
+        self.calls.append(dict(weight_version=weight_version))
+        pin = self._pins[len(self.calls) - 1]
+        if isinstance(pin, Exception):
+            raise pin
+        return pin
+
 
 class FakeControllerProvider:
     def __init__(self, controllers):
@@ -328,6 +368,28 @@ def make_session_over(provider, *, info=None):
 
 
 class TestRolloutExecutorEvalFleet:
+    @pytest.mark.parametrize(
+        "reply,reason",
+        [
+            (EvalFleetPin(None), None),
+            (EvalFleetPin("pin_violation"), "pin_violation"),
+            (TimeoutError(), "controller_unreachable"),
+        ],
+    )
+    async def test_current_version_uses_controller_without_a_checkpoint(self, fleet_states, reply, reason):
+        controller = FakeInferenceController([reply])
+        session = make_session(controller)
+
+        if reason is None:
+            assert await session.current("5") == "fake-state-1"
+        else:
+            with pytest.raises(EvalSkip) as exc:
+                await session.current("5")
+            assert exc.value.reason == reason
+
+        assert controller.calls == [dict(weight_version="5")]
+        assert len(fleet_states) == 1
+
     def test_builds_its_state_against_the_fleet_router(self, fleet_states):
         """The executor generates against the eval router and the fleet's gpu sizing, not the rollout ones."""
         make_session(FakeInferenceController([]))
