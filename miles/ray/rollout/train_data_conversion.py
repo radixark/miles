@@ -10,6 +10,7 @@ from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.stored_array import REPLAY_ARRAY_FIELDS, StoredArrayHandle, stored_field_name
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
 
@@ -46,6 +47,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
+    **{stored_field_name(field): ValueSpec(codec="msgpack_ragged") for field in REPLAY_ARRAY_FIELDS},
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
     "weight_versions": ValueSpec(codec="msgpack_ragged"),
@@ -164,7 +166,7 @@ def convert_samples_to_train_data(
             _compact_candidate_ids(train_data)
 
     if samples[0].rollout_routed_experts is not None:
-        train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
+        train_data.update(_replay_array_column(args, "rollout_routed_experts", samples))
     elif getattr(args, "use_rollout_routing_replay", False):
         raise ValueError(
             "--use-rollout-routing-replay is set but the rollout samples carry no "
@@ -172,7 +174,7 @@ def convert_samples_to_train_data(
         )
 
     if samples[0].rollout_indexer_topk is not None:
-        train_data["rollout_indexer_topk"] = [sample.rollout_indexer_topk for sample in samples]
+        train_data.update(_replay_array_column(args, "rollout_indexer_topk", samples))
     elif getattr(args, "use_rollout_indexer_replay", False):
         raise ValueError(
             "--use-rollout-indexer-replay is set but the rollout samples carry no "
@@ -358,6 +360,13 @@ def _post_process_rewards(
     return raw_rewards, raw_rewards
 
 
+def _replay_array_column(args, field: str, samples: list[Sample]) -> dict[str, list]:
+    values = [getattr(sample, field) for sample in samples]
+    if args.rollout_replay_via_object_store:
+        return {stored_field_name(field): [value.handle.model_dump_json() for value in values]}
+    return {field: values}
+
+
 def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: dict | None):
     """Split the train data across DP ranks and put the shards into the object store.
 
@@ -482,6 +491,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "rollout_sampling_mask_offsets",
             "rollout_routed_experts",
             "rollout_indexer_topk",
+            *(stored_field_name(field) for field in REPLAY_ARRAY_FIELDS),
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
@@ -523,5 +533,9 @@ def process_rollout_data_shard(args, rollout_data):
     # save the seqlen of the whole rollout batch
     Timer().seq_lens = total_lengths
     rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
+
+    for field in REPLAY_ARRAY_FIELDS:
+        if (handles := rollout_data.pop(stored_field_name(field), None)) is not None:
+            rollout_data[field] = [StoredArrayHandle.model_validate_json(handle).read() for handle in handles]
 
     return rollout_data

@@ -119,6 +119,7 @@ def make_args(**overrides) -> Namespace:
         sglang_router_request_timeout_secs=14400,
         eval_num_gpus=0,
         namespaced_radix_cache=True,
+        rollout_replay_via_object_store=False,
     )
     defaults.update(overrides)
     return Namespace(**defaults)

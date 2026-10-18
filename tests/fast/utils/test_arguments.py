@@ -3171,6 +3171,35 @@ class TestValidateSkipActorForwardOnly:
         )
 
 
+class TestRolloutReplayViaObjectStore:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--rollout-replay-via-object-store", "--num-rollout", "1", *extra] + REQUIRED_ARGS)
+
+    _SUPPORTED = ["--object-store-backend", "mooncake", "--use-rollout-routing-replay"]
+
+    def test_a_mooncake_run_with_routing_replay_is_accepted(self):
+        miles_validate_args(self._parse(self._SUPPORTED))
+
+    @pytest.mark.parametrize(
+        "extra, match",
+        [
+            (
+                ["--object-store-backend", "ray", "--use-rollout-routing-replay"],
+                "needs --object-store-backend mooncake",
+            ),
+            (["--object-store-backend", "mooncake"], "enable a rollout replay"),
+            ([*_SUPPORTED, "--partial-rollout"], "does not support --partial-rollout"),
+            ([*_SUPPORTED, "--dump-details", "/tmp/details"], "does not support --save-debug-rollout-data"),
+        ],
+        ids=["ray-store", "no-replay", "partial-rollout", "dump-details"],
+    )
+    def test_an_unsupported_combination_is_rejected(self, extra, match):
+        with pytest.raises(AssertionError, match=match):
+            miles_validate_args(self._parse(extra))
+
+
 class TestRunUuidResolution:
     def _parse(self, extra: list[str]):
         parser = argparse.ArgumentParser()

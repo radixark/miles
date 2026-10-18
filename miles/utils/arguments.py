@@ -854,6 +854,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=1,
                 help="Number of Mooncake memory replicas for each stored object.",
             )
+            parser.add_argument(
+                "--rollout-replay-via-object-store",
+                action="store_true",
+                default=False,
+                help=(
+                    "Put each finished training sample's routed experts and indexer top-k into the Mooncake "
+                    "object store as soon as the sample finishes, so the rollout executor holds only references "
+                    "while samples wait for their group, in the data buffer and in prefetched batches; the "
+                    "trainer reads them back unchanged."
+                ),
+            )
 
             # sampling
             parser.add_argument(
@@ -3255,6 +3266,25 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
     return list(args.ft_components)
 
 
+def _validate_rollout_replay_via_object_store(args: argparse.Namespace) -> None:
+    assert ObjectStoreBackend(args.object_store_backend) == ObjectStoreBackend.MOONCAKE, (
+        "--rollout-replay-via-object-store needs --object-store-backend mooncake: the ray store keeps "
+        "objects on the rollout executor's node"
+    )
+    assert (
+        args.use_rollout_routing_replay or args.use_rollout_indexer_replay
+    ), "--rollout-replay-via-object-store stores routed experts / indexer top-k; enable a rollout replay"
+    assert not use_legacy_rollout_v1(), "--rollout-replay-via-object-store needs the class-based rollout API"
+    assert not args.partial_rollout, (
+        "--rollout-replay-via-object-store does not support --partial-rollout: a resumed sample would extend "
+        "routed experts that are already in the store"
+    )
+    assert args.save_debug_rollout_data is None and args.load_debug_rollout_data is None, (
+        "--rollout-replay-via-object-store does not support --save-debug-rollout-data / "
+        "--load-debug-rollout-data (also set by --dump-details): debug rollout data carries the arrays inline"
+    )
+
+
 def _validate_rematerialize_param_from_master_weight(args):
     if not args.rematerialize_param_from_master_weight:
         return
@@ -4115,6 +4145,9 @@ def miles_validate_args(args):
             args.mooncake_store_init_kwargs = (
                 compute_mooncake_init_kwargs_vanilla() | compute_mooncake_init_kwargs_from_env()
             )
+
+    if args.rollout_replay_via_object_store:
+        _validate_rollout_replay_via_object_store(args)
 
     args.run_uuid = _resolve_run_uuid(args)
 

@@ -134,6 +134,19 @@ class TestRemoveRolloutDataRefs:
 
         assert store.removed == refs
 
+    def test_the_stored_arrays_the_train_data_points_at_are_released_with_it(self, store: _RecordingStore):
+        """The executor handed these objects off with the batch; the driver is their last owner."""
+        data_ref, stored_array_refs = _ref("rollout"), [_ref("r3-0"), _ref("r3-1")]
+
+        remove_rollout_data_refs(
+            None,
+            rollout_data_pack=RolloutDataPack(
+                sample_indices=[0, 1], data_ref=data_ref, stored_array_refs=stored_array_refs
+            ),
+        )
+
+        assert store.removed == [data_ref, *stored_array_refs]
+
     def test_a_pack_that_carries_no_data_never_reaches_the_store(self, store: _RecordingStore):
         """A pack without a data ref ships no object, and asking the store to free None would raise."""
         remove_rollout_data_refs(None, rollout_data_pack=RolloutDataPack())
