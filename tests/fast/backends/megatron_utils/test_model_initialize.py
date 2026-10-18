@@ -47,6 +47,10 @@ class _DummyScheduler:
     pass
 
 
+class _DummyPackedSeqParams:
+    pass
+
+
 class _DummyOptimizerConfig:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
@@ -106,7 +110,7 @@ def _mock_megatron_environment():
             },
         )
         _stub_module("megatron.core.optimizer_param_scheduler", {"OptimizerParamScheduler": _DummyScheduler})
-        _stub_module("megatron.core.packed_seq_params", {"PackedSeqParams": MagicMock()})
+        _stub_module("megatron.core.packed_seq_params", {"PackedSeqParams": _DummyPackedSeqParams})
         _stub_module("megatron.core.pipeline_parallel", {"get_forward_backward_func": MagicMock()})
         _stub_module("megatron.core.transformer", is_package=True)
         _stub_module("megatron.core.transformer.utils", {"sharded_state_dict_default": MagicMock()})
@@ -126,6 +130,7 @@ def _mock_megatron_environment():
         _stub_module(
             "megatron.training.checkpointing",
             {
+                "get_checkpoint_name": MagicMock(),
                 "load_checkpoint": MagicMock(),
                 "save_checkpoint": MagicMock(),
             },
@@ -170,7 +175,7 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
 
     args = Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8, finetune=False)
     model = [_FakeModelChunk()]
-    optimizer = object()
+    optimizer = MagicMock()
     opt_param_scheduler = MagicMock()
 
     with ExitStack() as stack:
@@ -198,7 +203,7 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
 
     args = Namespace(use_checkpoint_opt_param_scheduler=False, global_batch_size=8, finetune=False)
     model = [_FakeModelChunk()]
-    optimizer = object()
+    optimizer = MagicMock()
     opt_param_scheduler = MagicMock()
 
     with ExitStack() as stack:
@@ -313,3 +318,56 @@ class TestALoraAdapterThatCarriesItsOwnIteration:
     def test_adapter_weights_without_training_state_start_at_rollout_zero(self, tmp_path: Path) -> None:
         """An HF adapter or shards saved without training state carry no iteration to continue from."""
         assert self._start(tmp_path, adapter_iteration=None).start_rollout_id == 0
+
+
+class _MastersUnderChunkedOffload:
+    """Where a --chunked-optimizer-state-offload optimizer keeps its fp32 masters: built on GPU, refreshed there by
+    reload_model_params, and moved to host by offload_optimizer_state_for_forward."""
+
+    def __init__(self):
+        self.masters_on_gpu = True
+
+    def reload_model_params(self):
+        self.masters_on_gpu = True
+
+    def offload_optimizer_state_for_forward(self):
+        self.masters_on_gpu = False
+
+
+class TestTheFirstForwardAfterALoad:
+    def test_finds_the_masters_the_load_refreshed_already_on_host(self, tmp_path: Path):
+        """Offloaded only after a step, they would share the first fwd/bwd with the weights and gradients;
+        Megatron's loop moves them before its first forward too."""
+        from miles.backends.megatron_utils.model import load_model_state
+
+        load_dir = tmp_path / "hf"
+        load_dir.mkdir()
+        (load_dir / "config.json").write_text("{}")
+        optimizer = _MastersUnderChunkedOffload()
+
+        def load_hf_checkpoint(model, optimizer, *args, **kwargs):
+            # as _load_checkpoint_hf does after writing the weights
+            optimizer.reload_model_params()
+            return 0, 0
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("miles.backends.megatron_utils.model.load_checkpoint", side_effect=load_hf_checkpoint)
+            )
+            _patch_initialize_side_effects(stack)
+            load_model_state(
+                Namespace(
+                    use_checkpoint_opt_param_scheduler=True,
+                    global_batch_size=8,
+                    finetune=True,
+                    lora_rank=0,
+                    load=str(load_dir),
+                ),
+                model=[_FakeModelChunk()],
+                optimizer=optimizer,
+                opt_param_scheduler=None,
+                role="actor",
+                checkpointing_context=None,
+            )
+
+        assert not optimizer.masters_on_gpu

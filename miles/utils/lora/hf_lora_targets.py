@@ -185,6 +185,18 @@ def _inkling_targets(config):
     return attention, tuple(mlp)
 
 
+def _step5_targets(config):
+    # The converter names routed expert E moe.experts.E.*; the shared expert is share_expert.
+    num_moe_layers = len(config["moe_layer_list"])
+    mlp = []
+    if num_moe_layers < config["num_hidden_layers"]:
+        mlp.extend(_DENSE_MLP)
+    if num_moe_layers:
+        mlp.extend(_prefix_paths("moe.experts.*", "gate_proj", "up_proj", "down_proj"))
+        mlp.extend(_prefix_paths("share_expert", "gate_proj", "up_proj", "down_proj"))
+    return _QKVO_ATTENTION, tuple(mlp)
+
+
 _HF_LORA_MODELS = {
     "llama": _HfLoraModelSpec(_dense_targets),
     "qwen2": _HfLoraModelSpec(_dense_targets),
@@ -218,6 +230,8 @@ _HF_LORA_MODELS = {
     ),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
+    "step5": _HfLoraModelSpec(_step5_targets),
+    "step5_vl": _HfLoraModelSpec(_step5_targets, unwrap_text_config=True),
     "inkling_text": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_model": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_mm_model": _HfLoraModelSpec(

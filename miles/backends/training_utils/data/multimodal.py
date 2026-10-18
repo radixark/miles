@@ -2,10 +2,11 @@
 
 The rollout side emits one media placeholder/sentinel per media item; training
 expands it to the per-item token count so the LM sees a position per vision
-patch / audio frame. Two families live here: Kimi-VL / Kimi-K2.5 (grid-derived
-expansion of an in-vocab placeholder) and Inkling (out-of-vocab sentinels expanded
-to in-vocab placeholder runs with explicit positions). Kept separate from
-data.py (generic batching / CP slicing).
+patch / audio frame. Three families live here: Kimi-VL / Kimi-K2.5 (grid-derived
+expansion of an in-vocab placeholder), Inkling (out-of-vocab sentinels expanded
+to in-vocab placeholder runs with explicit positions) and Step5 (the prompt the
+engine expanded, swapped in whole). Kept separate from data.py (generic batching /
+CP slicing).
 """
 
 import logging
@@ -15,7 +16,7 @@ import torch
 
 from miles.backends.training_utils.data.context_parallel import all_gather_with_cp, slice_log_prob_with_cp
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.types import RolloutBatch
+from miles.utils.types import STEP5_EXPANDED_PROMPT_KEY, RolloutBatch
 
 logger = logging.getLogger(__name__)
 
@@ -200,12 +201,43 @@ def _expand_inkling_rollout_data_in_place(rollout_data: RolloutBatch) -> None:
         )
 
 
+def _is_step5_batch(multimodal_train_inputs: Sequence[dict[str, torch.Tensor] | None]) -> bool:
+    return any(mm is not None and "step5_num_patches" in mm for mm in multimodal_train_inputs)
+
+
+def _expand_step5_rollout_data_in_place(rollout_data: RolloutBatch, qkv_format: str) -> None:
+    """Swap each image sample's prompt for the one SGLang expanded; idempotent."""
+    assert get_parallel_state().cp.size == 1, "Step5 multimodal training does not support CP>1 yet"
+    # image positions are offset by packed-sequence starts, which only thd lays out back to back
+    assert qkv_format == "thd", f"Step5 multimodal training needs --qkv-format thd, got {qkv_format}"
+    tokens = []
+    for token_tensor, response_length, mm in zip(
+        rollout_data["tokens"], rollout_data["response_lengths"], rollout_data["multimodal_train_inputs"], strict=True
+    ):
+        # popping the expanded prompt is what marks a sample as done
+        if mm is not None and STEP5_EXPANDED_PROMPT_KEY in mm:
+            token_tensor = _swap_in_expanded_prompt(token_tensor, response_length, mm.pop(STEP5_EXPANDED_PROMPT_KEY))
+        tokens.append(token_tensor)
+    rollout_data["tokens"] = tokens
+    rollout_data["total_lengths"] = [token_tensor.size(0) for token_tensor in tokens]
+
+
+def _swap_in_expanded_prompt(
+    token_tensor: torch.Tensor, response_length: int, expanded_prompt: torch.Tensor
+) -> torch.Tensor:
+    response = token_tensor[token_tensor.size(0) - response_length :]
+    return torch.cat([expanded_prompt.to(device=token_tensor.device, dtype=token_tensor.dtype), response])
+
+
 def expand_multimodal_rollout_data_in_place(
     rollout_data: RolloutBatch,
     media_token_id: int = KIMI_VL_MEDIA_TOKEN_ID,
     qkv_format: str = "thd",
 ) -> None:
     multimodal_train_inputs = rollout_data.get("multimodal_train_inputs", None)
+    if multimodal_train_inputs is not None and _is_step5_batch(multimodal_train_inputs):
+        _expand_step5_rollout_data_in_place(rollout_data, qkv_format=qkv_format)
+        return
     if multimodal_train_inputs is not None and any(
         mm is not None and ("mm_vision_num_patches" in mm or "mm_audio_num_tokens" in mm)
         for mm in multimodal_train_inputs

@@ -104,13 +104,15 @@ class FusedAttach:
     ``build`` constructs the family's split adapter (``LoRASplitQKV`` /
     ``LoRASplitFC1``) from the active subset; the fused host's geometry differs
     per family, so construction stays a callable while everything around it is
-    shared.
+    shared. ``unadapted_leaves`` names HF projections the host also carries that
+    get no adapter (Step5's head-wise gate ``g_proj``).
     """
 
     module_attr: str
     projections: tuple[ProjectionSpec, ...]
     adapter_attr: str
     build: FusedBuildFn
+    unadapted_leaves: tuple[str, ...] = ()
 
     @property
     def targets(self) -> frozenset[str]:
@@ -162,7 +164,9 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
     for group in layout.fused:
         host = getattr(block, group.module_attr)
         hf_prefix = context.naming.block_prefix(
-            layer, host.weight, [projection.hf_leaf for projection in group.projections]
+            layer,
+            host.weight,
+            [*(projection.hf_leaf for projection in group.projections), *group.unadapted_leaves],
         )
         active = tuple(
             projection for projection in group.projections if context.lora.selects(f"{hf_prefix}{projection.hf_leaf}")

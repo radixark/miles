@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -16,13 +17,23 @@ from miles.backends.megatron_utils.lora.native.modules.moe import (
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
+@dataclass(frozen=True)
 class GroupedExpertsSpec:
     """Shared-outer routed experts (shared A / per-expert B for gate/up, the reverse for down).
 
     The adapter widths come from the grouped host weights, so latent MoEs need no extra
     table entry. Shared experts stored as a list of sub-experts get one adapter over all of
     them here; a plain shared-expert MLP is adapted by the architecture's MLP spec instead.
+    ``fc1_leaves`` / ``fc2_leaf`` are the experts' HF projection names (Kimi's ``w1``/``w3``/``w2``,
+    Step5's ``gate_proj``/``up_proj``/``down_proj``).
     """
+
+    fc1_leaves: tuple[str, str] = ("w1", "w3")
+    fc2_leaf: str = "w2"
+
+    @property
+    def supported_targets(self) -> frozenset[str]:
+        return frozenset((*self.fc1_leaves, self.fc2_leaf))
 
     def attach(self, mlp: nn.Module, layer: nn.Module, context: AttachContext) -> int:
         from megatron.core import parallel_state
@@ -39,18 +50,26 @@ class GroupedExpertsSpec:
             is_ep=parallel_state.get_expert_model_parallel_world_size() > 1,
         )
         count = 0
-        fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, ["w1", "w3"])
+        fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, list(self.fc1_leaves))
         # selectors address one expert ("experts.*.w1"); shared-outer adapters cover them all
-        if context.lora.selects(f"{fc1_prefix}0.w1") or context.lora.selects(f"{fc1_prefix}0.w3"):
+        if any(context.lora.selects(f"{fc1_prefix}0.{leaf}") for leaf in self.fc1_leaves):
             experts.lora_fc1_adapter = LoRAGroupedFC1(
-                hf_prefix=fc1_prefix, reference=fc1.weight0, width=fc1.weight0.shape[1], **common
+                hf_prefix=fc1_prefix,
+                leaves=self.fc1_leaves,
+                reference=fc1.weight0,
+                width=fc1.weight0.shape[1],
+                **common,
             )
             attach_adapter_forward(fc1, experts.lora_fc1_adapter, context.lora.scale)
             count += 1
-        fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, ["w2"])
-        if context.lora.selects(f"{fc2_prefix}0.w2"):
+        fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, [self.fc2_leaf])
+        if context.lora.selects(f"{fc2_prefix}0.{self.fc2_leaf}"):
             experts.lora_fc2_adapter = LoRAGroupedFC2(
-                hf_prefix=fc2_prefix, reference=fc2.weight0, width=fc2.weight0.shape[0], **common
+                hf_prefix=fc2_prefix,
+                leaf=self.fc2_leaf,
+                reference=fc2.weight0,
+                width=fc2.weight0.shape[0],
+                **common,
             )
             attach_adapter_forward(fc2, experts.lora_fc2_adapter, context.lora.scale)
             count += 1

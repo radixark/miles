@@ -194,3 +194,21 @@ def test_model_companion_info_records_only_normal_actor_representatives(
         assert calls[0]["cell_index"] == 2
         assert calls[0]["rollout_id"] == 7
         assert calls[0]["attempt"] == 3
+
+
+def test_lora_publication_reads_frozen_backups_but_keeps_live_adapters(actor_module, monkeypatch):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda _: True))
+    base = torch.nn.Parameter(torch.ones(2), requires_grad=False)
+    adapter = torch.nn.Parameter(torch.full((2,), 7.0))
+    host_base = torch.full((2,), 3.0)
+    worker._named_actor_weights = Mock(return_value=[("base", base), ("adapter", adapter)])
+
+    def translate(tensor):
+        assert tensor is base, "live adapter buffers must never query the native backup lookup"
+        return host_base
+
+    monkeypatch.setattr(actor_module, "_maybe_get_cpu_backup", translate)
+    result = worker._get_actor_weights()
+    assert result["base"] is host_base
+    assert result["adapter"] is adapter

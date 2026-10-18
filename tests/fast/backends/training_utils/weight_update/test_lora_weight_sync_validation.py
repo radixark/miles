@@ -11,7 +11,7 @@ Verifies that silent failures are caught:
 
 from argparse import Namespace
 from dataclasses import dataclass
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 import torch
@@ -101,14 +101,24 @@ class TestCheckWeightSyncResults:
 
 
 class TestUpdateWeightsEmptyBaseIteration:
-    def test_no_raise_for_base_model_zero_buckets(self):
-        """Base model weight sync with zero buckets is valid (e.g. empty model state)."""
+    @pytest.mark.parametrize(
+        "is_lora,resync_base",
+        [(False, False), (True, False), (True, True)],
+        ids=["base", "adapter-only", "adapter-base-resync"],
+    )
+    def test_weight_source_is_read_only_when_base_is_sent(self, is_lora, resync_base):
+        """Adapter-only sync must not query offloaded base weights; base resync still must."""
+        sync_base = not is_lora or resync_base
+        weights = {"base": torch.tensor([3.0])}
+        weights_getter = (
+            Mock(return_value=weights) if sync_base else Mock(side_effect=AssertionError("unused base read"))
+        )
         empty_iterator = MagicMock()
         empty_iterator.iter_hf_weights.return_value = iter([])
 
         protocol = MagicMock()
         protocol.use_weight_update_session = True
-        protocol.needs_base_resync_for_lora = False
+        protocol.needs_base_resync_for_lora = resync_base
         protocol.is_sender = True
         protocol.group_name = "test"
         protocol.begin_sync.return_value = True
@@ -121,6 +131,7 @@ class TestUpdateWeightsEmptyBaseIteration:
             patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
             patch(f"{_UPDATER_MODULE}.maybe_pause_engines"),
             patch(f"{_UPDATER_MODULE}.begin_weight_update"),
+            patch(f"{_UPDATER_MODULE}.register_lora_adapter"),
             patch(f"{_UPDATER_MODULE}.set_weight_version"),
             patch(f"{_UPDATER_MODULE}.end_weight_update"),
             patch(f"{_UPDATER_MODULE}.maybe_resume_engines"),
@@ -129,15 +140,24 @@ class TestUpdateWeightsEmptyBaseIteration:
             updater = WeightUpdater(
                 args,
                 [MagicMock()],
-                weights_getter=lambda: {},
+                weights_getter=weights_getter,
                 model_name="qwen",
                 quantization_config=None,
                 iterator_factory=lambda *a, **k: empty_iterator,
                 parallel_state=MagicMock(),
-                is_lora=False,
+                is_lora=is_lora,
+                lora_sync_config={} if is_lora else None,
             )
             updater.update_weights(weight_version=1)
 
+        if sync_base:
+            weights_getter.assert_called_once_with()
+        else:
+            weights_getter.assert_not_called()
+        iteration = empty_iterator.iter_hf_weights.call_args
+        assert iteration.args[0] is (weights if sync_base else None)
+        assert iteration.kwargs["include_base"] is sync_base
+        assert bool(iteration.kwargs["adapters"]) is is_lora
         protocol.send_bucket.assert_not_called()
         protocol.after_base_weights.assert_called_once()
         protocol.finalize.assert_called_once_with(1)

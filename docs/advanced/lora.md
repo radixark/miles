@@ -43,7 +43,7 @@ separate from SGLang's serving-side `--sglang-lora-backend` choice.
 | Implementation | How the adapter is built | Model coverage on current `main` | Status |
 |---|---|---|---|
 | **Megatron-Bridge PEFT** | `AutoBridge` builds the provider, applies Bridge LoRA before DDP, and exports HF-named adapter tensors. Select it with `--megatron-to-hf-mode bridge`. | Qwen2.5, Qwen3, GPT-OSS, Kimi K2.5, GLM-5/5.1/5.2/5.3, and Qwen3.5/3.6, subject to the evidence and module caveats below. | General production path. Current multi-LoRA also requires this path. |
-| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles.backends.megatron_utils.lora.native` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles/backends/megatron_utils/lora/native/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6/Next hybrids (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), Inkling, and Kimi K3. | Single-LoRA, colocated. Unregistered models fail at startup. |
+| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles.backends.megatron_utils.lora.native` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles/backends/megatron_utils/lora/native/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6/Next hybrids (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), Step5, Inkling, and Kimi K3. | Single-LoRA, colocated. Unregistered models fail at startup. |
 
 <Note>
 The planned maintenance direction is native-first: after the generalized native plugin
@@ -61,13 +61,15 @@ same declaration drives attachment, HF export/import, and SGLang serving targets
 The spec is selected from the checkpoint's `model_type`.
 
 Adapters cover attention projections (GQA Q/K/V/O, MLA Q-A/Q-B/KV-A/KV-B/O), dense
-MLPs, and shared experts. Routed experts carry shared-outer adapters only for Inkling
-and Kimi K3 (which require `--experts-shared-outer-loras`); Inkling's spec also covers
+MLPs, and shared experts. Routed experts carry shared-outer adapters only for Inkling,
+Kimi K3 and Step5 (which require `--experts-shared-outer-loras`); Inkling's spec also covers
 its output head. Inkling and Kimi K3 accept only their verified adapter layout (Kimi
 K3 may omit the routed-expert down projection), so omit `--target-modules` for them.
 Selecting a projection the spec does not implement
 (for example routed experts or GDN input projections) fails at startup; use
-`--megatron-to-hf-mode bridge` for those. A partial fused selection (for example
+`--megatron-to-hf-mode bridge` for those. Step5 adapts Q/K/V/O, its dense MLPs, the
+shared expert and the routed experts; its head-wise attention gate (`g_proj`) stays frozen
+(see [Step-5-Preview](/models/stepfun/step5#55-lora)). A partial fused selection (for example
 only `q_proj`) trains only the selected projection; SGLang serves its fused-buffer
 siblings as zero adapters. A shared expert's `up_proj` needs `gate_proj` selected too.
 
@@ -87,6 +89,7 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Bridge | Qwen3.5 / Qwen3.6 35B-A3B | Hybrid GDN + MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_qwen3_5_35b_a3b_lora.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/test_qwen3_5_35b_a3b_lora_ci.py) | Uses explicit wildcard targets to exclude MTP and vision modules. |
 | Native / raw | Inkling / Inkling-Small | Native multimodal MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_inkling.py), [Inkling-Small 6-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_inkling_small_6layer_lora_ci.py) | Larger profiles are launcher/experiment evidence rather than LoRA CI. |
 | Native / raw | Qwen3 0.6B, Qwen3.5-35B-A3B | Dense GQA; gated-GQA + GDN hybrid MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_qwen3_lora_native.py), [Qwen3 0.6B E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_0_6b_lora_native_ci.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_5_35b_a3b_lora_native_ci.py) | Attention (+ dense/shared MLP) adapters; GDN layers carry none. |
+| Native / raw | Step-5-Preview (5-layer slice) | Gated GQA + DSA MoE | [Recipe](/models/stepfun/step5#55-lora), 8×H200 rollout/train parity | Attention, dense, shared-expert and shared-outer routed-expert adapters; the head-wise gate stays frozen. |
 | Native / raw | GLM-4.7-Flash, GLM-5.2, Kimi K2.5 | MLA MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_lora_native.py), [GLM-5.2 5-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_glm5_2_5layer_lora_native_ci.py), [Kimi K2.5 2-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_kimi_k25_2layer_lora_native_ci.py) | MLA attention adapters; routed experts require Bridge. |
 
 ## Quick start
@@ -155,6 +158,7 @@ hybrid attention. Vision towers, routers, norms, and GDN convolutions are exclud
 | DeepSeek V3.2, GLM-5/5.1/5.2 | MLA + DSA indexer | Dense + routed + shared experts as configured | Attention + MLP, excluding indexer |
 | GLM-4 MoE | Q/K/V/O | Dense + routed + shared experts as configured | Attention + MLP |
 | Inkling | Q/K/V/R/O | Dense + packed routed + shared expert projections | Attention + MLP + output head |
+| Step5, text and multimodal | Q/K/V/O (head-wise gate excluded) | Dense + routed experts (`moe.experts.*`) + shared expert (`share_expert`) | Attention + MLP |
 
 `--target-modules` accepts comma-separated `attn`, `mlp`, and `unembed` groups,
 explicit HF targets, or a mix of both. Group names expand through the model's HF

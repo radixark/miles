@@ -240,6 +240,7 @@ def _native_run_args(tmp_path, model_type, **overrides):
         moe_shared_expert_overlap=False,
         overlap_grad_reduce=False,
         expert_tensor_parallel_size=1,
+        hf_lora_targets=[],
     )
     return SimpleNamespace(**(defaults | overrides))
 
@@ -264,6 +265,19 @@ def test_native_run_contract_accepts_its_validated_configs(tmp_path):
     validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False, lora_train_only=True))
     # expert TP only matters for specs whose routed experts carry adapters
     validate_native_lora_args(_native_run_args(tmp_path, "qwen3_moe", expert_tensor_parallel_size=2))
+
+
+def test_expert_tp_matters_only_when_the_routed_experts_are_targets(tmp_path):
+    """Step5 selects its targets: frozen routed experts may shard by expert TP, adapted ones may not."""
+    frozen = ["model.layers.*.share_expert.gate_proj", "model.layers.*.share_expert.up_proj"]
+    validate_native_lora_args(
+        _native_run_args(tmp_path, "step5", expert_tensor_parallel_size=2, hf_lora_targets=frozen)
+    )
+    routed = [*frozen, "model.layers.*.moe.experts.*.down_proj"]
+    with pytest.raises(AssertionError, match="expert-tensor-parallel-size"):
+        validate_native_lora_args(
+            _native_run_args(tmp_path, "step5", expert_tensor_parallel_size=2, hf_lora_targets=routed)
+        )
 
 
 def test_inkling_head_export_rows_follow_sglangs_served_vocab(tmp_path):

@@ -5,8 +5,15 @@ from unittest.mock import MagicMock
 
 import numpy
 import pytest
+import torch
 
-from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.types import (
+    LEGACY_WEIGHT_VERSIONS_KEY,
+    STEP5_EXPANDED_PROMPT_KEY,
+    Sample,
+    WeightVersionSpan,
+    WeightVersionsPerCall,
+)
 
 
 def _make_sample(
@@ -994,3 +1001,28 @@ class TestTrainingIdentity:
 
         assert restored.index == 101
         assert restored.lineage == identity
+
+
+class TestValidateMediaExpandedRoutedExperts:
+    """The engine routes the prompt it expanded, so routing replay covers media-expanded lengths."""
+
+    @staticmethod
+    def _step5_sample(num_routed_rows: int) -> Sample:
+        s = _make_sample([5, 128001, 8], [3, 4])
+        expanded_prompt = [0, 5, 128000] + [128001] * 169 + [128002, 8]
+        s.multimodal_train_inputs = {STEP5_EXPANDED_PROMPT_KEY: torch.tensor(expanded_prompt)}
+        s.rollout_routed_experts = numpy.zeros((num_routed_rows, 2, 2), dtype=numpy.int32)
+        return s
+
+    def test_accepts_the_step5_expanded_length(self):
+        self._step5_sample(num_routed_rows=174 + 2 - 1).validate()
+
+    def test_rejects_any_other_length(self):
+        with pytest.raises(AssertionError, match=r"media-expanded \(175\)"):
+            self._step5_sample(num_routed_rows=174 + 2).validate()
+
+    def test_accepts_the_inkling_expanded_length(self):
+        s = _make_sample([5, -101, 8], [3, 4])
+        s.multimodal_train_inputs = {"mm_vision_num_patches": torch.tensor([6])}
+        s.rollout_routed_experts = numpy.zeros((len(s.tokens) + 5 - 1, 2, 2), dtype=numpy.int32)
+        s.validate()

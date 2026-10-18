@@ -1,0 +1,53 @@
+### 0
+mkdir -p /root/datasets
+
+### 1
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 2
+PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 4 <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --spec miles_plugins.models.step5 get_step5_spec
+  --num-layers 5
+  --hidden-size 4096
+  --ffn-hidden-size 13824
+  --num-attention-heads 64
+  --group-query-attention
+  --num-query-groups 4
+  --kv-channels 192
+  --head-wise-attn-gate
+  --qk-layernorm
+  --normalization RMSNorm
+  --norm-epsilon 1e-5
+  --fp32-residual-connection
+  --swiglu
+  --disable-bias-linear
+  --hidden-dropout 0
+  --attention-dropout 0
+  --untie-embeddings-and-output-weights
+  --vocab-size 128896
+  --make-vocab-size-divisible-by 32
+  --position-embedding-type rope
+  --rotary-base 10000
+  --window-size 511,0
+  --window-attn-skip-freq '[1,0,1,1,0]'
+  --num-experts 352
+  --moe-layer-freq '[0,1,1,1,0]'
+  --moe-ffn-hidden-size 1536
+  --moe-shared-expert-intermediate-size 1536
+  --moe-router-topk 8
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type none
+  --moe-aux-loss-coeff 0
+  --moe-router-topk-scaling-factor 3.0
+  --moe-router-dtype fp32
+  --moe-token-dispatcher-type alltoall
+  --moe-grouped-gemm
+  --moe-combine-in-fp32
+  --hf-checkpoint /root/models/Step5-5layer
+  --save /root/models/Step5-5layer_torch_dist
+  --expert-model-parallel-size 4 

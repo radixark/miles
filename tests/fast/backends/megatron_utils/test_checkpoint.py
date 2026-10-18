@@ -1,6 +1,7 @@
+import sys
 from argparse import Namespace
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -105,3 +106,60 @@ class TestRawMbridgeCompanionIsolation:
             assert companion.weight_version.item() == 7
             assert companion.sample_consumptions.tolist() == [[1, 2, 3, 4, 0]]
             torch.testing.assert_close(model.weight, torch.full_like(model.weight, 5))
+
+
+class TestRawMbridgeNativeLoRAIsolation:
+    @pytest.mark.parametrize("fail", [False, True])
+    def test_base_load_preserves_nested_adapter_state(self, raw_mbridge_loader, fail):
+        from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
+        from miles.backends.megatron_utils.lora.native.spec.base import ProjectionSpec, ShardLayout
+
+        observed = raw_mbridge_loader(fail)
+        model = torch.nn.Linear(2, 2)
+        model.self_attention = torch.nn.Module()
+        adapter = NativeLoRAAdapter(
+            "model.layers.0.self_attn", (ProjectionSpec("q_proj", "q", ShardLayout.COLUMN),), tp_rank=0
+        )
+        adapter.register_parameter("q_A", torch.nn.Parameter(torch.full((2, 2), 7.0)))
+        adapter.register_parameter("q_B", torch.nn.Parameter(torch.zeros(2, 2)))
+        adapter.register_buffer("persistent", torch.tensor(3.0))
+        adapter.register_buffer("scratch", torch.tensor(4.0), persistent=False)
+        model.self_attention.lora_qkv_adapter = adapter
+        before = {name: value.clone() for name, value in adapter.state_dict().items()}
+
+        with pytest.raises(RuntimeError, match="HF loading failed") if fail else nullcontext():
+            checkpoint._load_hf_weights_with_mbridge([model], Namespace(offload_train=False), "/unused/hf")
+
+        assert observed == [{"weight", "bias"}]
+        assert model.self_attention.lora_qkv_adapter is adapter
+        torch.testing.assert_close(model.weight, torch.full_like(model.weight, 5))
+        for name, value in before.items():
+            torch.testing.assert_close(adapter.state_dict()[name], value)
+            torch.testing.assert_close(model.state_dict()[f"self_attention.lora_qkv_adapter.{name}"], value)
+
+
+def test_raw_hf_load_normalizes_state_before_disabling_memory_saver(raw_mbridge_loader, monkeypatch):
+    """State hooks can replace persistent storage; staging-copy bypass must start afterward."""
+    from megatron.core.transformer.moe.router import TopKRouter
+
+    raw_mbridge_loader(False)
+    router = TopKRouter.__new__(TopKRouter)
+    torch.nn.Module.__init__(router)
+    router.register_buffer("expert_bias", torch.zeros(4, dtype=torch.bfloat16))
+    model = torch.nn.Linear(2, 2)
+    model.add_module("router", router)
+
+    @contextmanager
+    def disable():
+        assert router.expert_bias.dtype == torch.float32
+        storage = router.expert_bias.data_ptr()
+        yield
+        assert router.expert_bias.data_ptr() == storage
+
+    # the CPU runner has no torch_memory_saver; the loader imports it at call time
+    monkeypatch.setitem(
+        sys.modules, "torch_memory_saver", SimpleNamespace(torch_memory_saver=SimpleNamespace(disable=disable))
+    )
+    checkpoint._load_hf_weights_with_mbridge([model], Namespace(offload_train=True), "/unused/hf")
+    torch.testing.assert_close(router.expert_bias, torch.zeros(4))
+    torch.testing.assert_close(model.weight, torch.full_like(model.weight, 5))

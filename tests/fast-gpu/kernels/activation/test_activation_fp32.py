@@ -54,6 +54,57 @@ def test_swiglu_matches_float64_reference(with_scale):
         assert _rel_err(scale_kernel.grad, scale_ref.grad) < 5e-3
 
 
+_SWIGLU_LIMIT = 7.0
+
+
+def _clamped_swiglu_reference(fc1_out: torch.Tensor) -> torch.Tensor:
+    gate, up = fc1_out.chunk(2, dim=-1)
+    return F.silu(gate).clamp(max=_SWIGLU_LIMIT) * up.clamp(-_SWIGLU_LIMIT, _SWIGLU_LIMIT)
+
+
+def test_clamped_swiglu_bounds_both_halves():
+    gate = torch.tensor([[-3.0, 0.5, 20.0]], device="cuda")
+    up = torch.tensor([[9.0, -0.25, -12.0]], device="cuda")
+    fc1_out = torch.cat([gate, up], dim=-1).bfloat16()
+
+    out = swiglu_fp32(fc1_out, limit=_SWIGLU_LIMIT)
+
+    assert out.dtype == torch.bfloat16
+    torch.testing.assert_close(out, _clamped_swiglu_reference(fc1_out.float()).bfloat16(), rtol=0, atol=0)
+
+
+def test_clamped_swiglu_matches_float64_reference():
+    torch.manual_seed(0)
+    tokens, width = 257, 384
+    # wide enough that both clamps engage on a good share of the elements
+    fc1_out = (torch.randn(tokens, 2 * width, device="cuda") * 6).bfloat16()
+    grad = torch.randn(tokens, width, device="cuda", dtype=torch.bfloat16)
+
+    fc1_kernel = fc1_out.clone().requires_grad_()
+    out = swiglu_fp32(fc1_kernel, limit=_SWIGLU_LIMIT)
+    out.backward(grad)
+
+    fc1_ref = fc1_out.double().requires_grad_()
+    out_ref = _clamped_swiglu_reference(fc1_ref)
+    out_ref.backward(grad.double())
+
+    gate, up = fc1_out.float().chunk(2, dim=-1)
+    assert (F.silu(gate) > _SWIGLU_LIMIT).any() and (up.abs() > _SWIGLU_LIMIT).any()
+    assert _rel_err(out, out_ref) < 5e-3
+    assert _rel_err(fc1_kernel.grad, fc1_ref.grad) < 5e-3
+
+
+def test_clamped_swiglu_is_bit_identical_to_sglang():
+    """The rollout's dense MLPs and shared experts run sglang's SiluClampAndMul; training must round alike."""
+    sglang_op = pytest.importorskip("sglang.kernels.ops.activation.silu_clamp_and_mul_triton")
+    torch.manual_seed(0)
+    fc1_out = (torch.randn(513, 2 * 1536, device="cuda") * 6).bfloat16()
+    expected = torch.empty(513, 1536, device="cuda", dtype=torch.bfloat16)
+    sglang_op._silu_clamp_and_mul(fc1_out, expected, limit=_SWIGLU_LIMIT)
+
+    assert torch.equal(swiglu_fp32(fc1_out, limit=_SWIGLU_LIMIT), expected)
+
+
 def _sconv_reference(x: torch.Tensor, weight: torch.Tensor, seqlens: list[int]) -> torch.Tensor:
     kernel_size = weight.shape[-1]
     segments = [
@@ -61,6 +112,27 @@ def _sconv_reference(x: torch.Tensor, weight: torch.Tensor, seqlens: list[int]) 
         for segment in x.split(seqlens)
     ]
     return torch.cat(segments)
+
+
+def test_swiglu_addresses_rows_past_int32_offsets():
+    """Rows whose element offset ``row * 2N`` passes 2**31 are read and written where they belong, not wrapped."""
+    width = 8192
+    tokens = 2**31 // (2 * width) + 2
+    fc1_out = torch.zeros(tokens, 2 * width, device="cuda", dtype=torch.bfloat16)
+    rows = torch.tensor([0, tokens - 2, tokens - 1], device="cuda")
+    fc1_out[rows] = torch.randn(3, 2 * width, device="cuda", dtype=torch.bfloat16)
+    fc1_out.requires_grad_()
+
+    out = swiglu_fp32(fc1_out)
+    grad = torch.zeros_like(out)
+    grad[rows] = torch.randn(3, width, device="cuda", dtype=torch.bfloat16)
+    out.backward(grad)
+
+    tail = fc1_out.detach()[rows].double().requires_grad_()
+    expected = _swiglu_reference(tail, None)
+    expected.backward(grad[rows].double())
+    assert _rel_err(out[rows], expected.detach()) < 1e-2
+    assert _rel_err(fc1_out.grad[rows], tail.grad) < 1e-2
 
 
 @pytest.mark.parametrize("seqlens", [[300], [70, 1, 129, 100]], ids=["single", "packed"])

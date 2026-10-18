@@ -4326,6 +4326,9 @@ def hf_validate_args(args, hf_config):
     model_name = (args.model_name or "").lower().replace("-", "").replace("_", "")
     if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:
         assert args.allgather_cp, "zigzag CP is not supported for DeepSeek V4."
+    # Step5 rollouts serve FP8 experts to a BF16 trainer, whose own routing diverges from the rollout's.
+    if hf_config.model_type == "step5":
+        assert args.use_rollout_routing_replay, "Step5 trains only with --use-rollout-routing-replay."
 
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
@@ -4350,6 +4353,9 @@ def hf_validate_args(args, hf_config):
         ):
             continue
         if hasattr(hf_config, hf_config_name):
+            # A per-layer rope_theta (Step5's) has no single megatron flag; the model spec checks it.
+            if hf_config_name == "rope_theta" and isinstance(hf_config.rope_theta, list):
+                continue
             if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
                 errors.append(
                     f"{hf_config_name} in hf config {getattr(hf_config, hf_config_name)} is not equal to "

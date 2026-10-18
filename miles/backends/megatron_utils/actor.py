@@ -82,7 +82,7 @@ from .model import (
     save,
     train,
 )
-from .named_weights import named_params_and_buffers
+from .named_weights import _maybe_get_cpu_backup, named_params_and_buffers
 from .optimizer_utils import reset_optimizer_state
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
@@ -897,9 +897,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def _get_actor_weights(self, *, include_model_companion: bool = False) -> dict[str, torch.Tensor]:
         if self._weight_sync_reads_tms_backup:
-            return dict(
-                self._named_actor_weights(translate_gpu_to_cpu=True, include_model_companion=include_model_companion)
-            )
+            # LoRA's trainable DDP buffers remain on GPU and have no TMS host backup.
+            return {
+                name: tensor if tensor.requires_grad else _maybe_get_cpu_backup(tensor)
+                for name, tensor in self._named_actor_weights(include_model_companion=include_model_companion)
+            }
         # use cpu backup only when weight is not live on gpu
         if self.args.colocate or self._asleep or self._active_model_tag != "actor":
             return {
@@ -910,6 +912,8 @@ class MegatronTrainRayActor(TrainRayActor):
         return dict(self._named_actor_weights(include_model_companion=include_model_companion))
 
     def _get_actor_weight_version(self) -> int:
+        if self._weight_sync_reads_tms_backup:
+            return ModelCompanionWeightVersionUtils.weight_version(self.model)
         return ModelCompanionWeightVersionUtils.from_params(
             self._get_actor_weights(include_model_companion=True).items()
         )

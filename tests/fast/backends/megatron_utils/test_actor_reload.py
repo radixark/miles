@@ -329,8 +329,8 @@ class TestAReloadThatFindsNothingItSaved:
         args = _cold_started_args(tmp_path)
         _watch_load(actor_module, monkeypatch, args=args, iteration=0)
         actor = _actor(actor_module, role="actor", args=args)
-        actor.optimizer = "the live optimizer"
-        reset: list[str] = []
+        actor.optimizer = Mock(name="the live optimizer")
+        reset: list[Mock] = []
         monkeypatch.setattr(
             actor_module,
             "reset_optimizer_state",
@@ -341,7 +341,7 @@ class TestAReloadThatFindsNothingItSaved:
 
         actor.load_state()
 
-        assert actor._post_init_random_state.restores == 1 and reset == ["the live optimizer"]
+        assert actor._post_init_random_state.restores == 1 and reset == [actor.optimizer]
 
     @pytest.mark.parametrize(
         "overrides",

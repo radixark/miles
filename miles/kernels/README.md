@@ -1,14 +1,16 @@
 # miles.kernels
 
 ```
-activation/        swiglu_fp32 · short_conv_fp32
+activation/        swiglu_fp32 (optional per-token scale and SiLU-output clamp) · short_conv_fp32
 attention/
   dense/           dense_attention_backward
   dsa/             sparse_attention · lightning_indexer · indexer_logits[_sbhd] · indexer_topk_scores · kpool · topk
     tilelang/      one indexer + sparse attention pair; RoPE tail and attention sink are compile-time parameters
   qsa/             qsa_sparse_attention · qsa_block_sparse_attention
+  region_sparse/   sparse_region_attention (per-KV-group 8-token regions, head dim 192) · layout: query_blocks · token_region_bitmap · region_unions
 embedding/         gather_ple_rows · ple_gate_conv
 hyper_connection/  hc: hc_mix_inject · hc_combine    mhc: mhc_mix · mhc_aggregate
+linear/            batch_invariant_linear (BF16 x @ w.T, FP64-GEMM rounding, independent of batch)
 moe/               fused_experts
 norm/              grouped_rmsnorm (device helpers shared by hc and ple)
 position/          rope: apply_rotary_emb

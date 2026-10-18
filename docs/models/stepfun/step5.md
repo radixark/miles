@@ -1,7 +1,7 @@
 ---
 title: Step-5-Preview
 sidebarTitle: Step-5-Preview
-description: Launch recipe for StepFun's Step-5-Preview (600B MoE, sliding-window + DSA sparse attention) — FP8 rollout, BF16 training, on two 8-GPU B300 nodes.
+description: Launch recipe for StepFun's Step-5-Preview (600B MoE, sliding-window + DSA sparse attention) — FP8 rollout, BF16 training, on two 8-GPU B300 nodes or with LoRA on four 8-GPU H200 nodes.
 ---
 ## 1. Model Introduction
 
@@ -39,9 +39,9 @@ The AIME 2026 evals read `<data-dir>/aime-2026/aime-2026.jsonl` (`prompt` and `l
 
 ### 3.2 SGLang
 
-The engine needs the Step-5-Preview support in [sgl-project/sglang#44356](https://github.com/sgl-project/sglang/pull/44356).
+The engine needs the Step-5-Preview support for sglang-miles in [sgl-project/sglang#44917](https://github.com/sgl-project/sglang/pull/44917), a port of [sgl-project/sglang#44356](https://github.com/sgl-project/sglang/pull/44356) that adds the Hopper kernels and the RL weight-sync and LoRA fixes.
 
-The `radixark/miles:step5` image (multi-arch, built on `lmsysorg/sglang:v0.5.20`) carries it and the recipe code:
+The `radixark/miles:step5` image (amd64 and arm64, built on `lmsysorg/sglang:v0.5.22` with torch 2.14) carries it and the recipe code:
 
 ```bash
 docker pull radixark/miles:step5
@@ -59,6 +59,21 @@ MASTER_ADDR=<head ip> python scripts/run_step5.py train --model-name Step5 \
 ```
 
 On two 8×B300 nodes, with 32 prompts × 8 samples per step, responses capped at 2048 tokens (the recipe default is 32768), DAPO dynamic sampling on and evals off, a step took a median 274 s over 80 steps: 81 s of training and 95 s of weight update, the rest mostly rollout.
+
+### 4.2 Four H200 nodes with LoRA
+
+Start a Ray cluster on exactly four 8-GPU H200 nodes and submit from the head:
+
+```bash
+MILES_SCRIPT_EXTERNAL_RAY=1 MASTER_ADDR=<head ip> python scripts/run_step5.py train \
+    --model-name Step5 --num-nodes 4 --num-gpus-per-node 8 --num-rollout 3 \
+    --rollout-max-response-len 512 --no-eval-aime
+```
+
+This layout selects rank-16 LoRA (alpha 32), TP4/EP32 training and one FA3 TP8/EP8 rollout engine per node.
+It adapts Q/K/V/O, dense MLPs and shared experts while freezing routed experts, the attention gate and the base model.
+The adapter optimizer stays on the GPU; each rollout engine keeps a CPU copy of the base weights for subsequent adapter-only updates.
+The response default is 8192 tokens; shorter smoke responses do not establish that longer contexts fit.
 
 ## 5. Recipe Configuration
 
@@ -93,9 +108,22 @@ Adam at `--lr 1e-6`. With EP 16 on 16 GPUs, expert data parallelism is 1, so the
 ### 5.4 Notable quirks
 
 - **`--window-attn-skip-freq` reads backwards**: Megatron treats a 1 as window attention, not a skip. Step5 passes 1 for `layer % 4 != 3`, the 69 sliding-window layers, with `--window-size 511,0`: the query plus 511 previous keys, 512 in total.
-- **Frozen DSA indexer**: every parameter but the indexer trains, and the full-attention layers recompute the rollout's region selection with it. The weight sync never sends it; the engine keeps its own copy.
+- **Frozen DSA indexer**: in the full-parameter recipe every parameter but the indexer trains, and the full-attention layers recompute the rollout's region selection with it. The weight sync never sends it; the engine keeps its own copy.
 - **`--sglang-max-total-tokens 2097152`** is a correctness bound: an unbounded KV pool overflows the DSA kernels' int32 strides.
 - **`--sglang-moe-runner-backend triton`**: routing replay needs the engine's materialized top-k ids.
+
+### 5.5 LoRA
+
+Native LoRA (`--megatron-to-hf-mode raw`, the recipe's mode) adapts the text decoder's Q/K/V/O projections, dense MLPs and shared expert. The head-wise attention gate (`g_proj`, which shares `linear_qkv` with Q/K/V) stays frozen. Routed-expert adapters require `--experts-shared-outer-loras` and all-expert selectors (`moe.experts.*`); selecting individual experts is rejected. Gate and up projections must be selected together in each layer. The four-node H200 recipe excludes routed-expert adapters. To use the same frozen-expert adapter scope on a slice, pass the exclusion explicitly:
+
+```bash
+python scripts/run_step5.py train --model-name Step5-5layer --num-gpus-per-node 8 \
+    --extra-args "--lora-rank 16 --lora-alpha 32 --target-modules all-linear --exclude-modules 'model.layers.*.moe.experts.*' --lora-base-cpu-backup --lr 1e-5"
+```
+
+The engine needs SGLang's Step5 LoRA support: per-layer adapter widths (the shared expert is 1536 wide, a dense MLP 13824), the routed experts left out of LoRA, and the MoE layers completing their own all-reduce when LoRA disables the deferred one.
+
+On the 5-layer slice on 8 × H200 (TP1, EP8, routing replay), a zero-initialized adapter reproduces the full-parameter recipe's train-rollout gap (`train_rollout_logprob_abs_diff` 0.033, KL 0.0010); a random rank-16 adapter that moves the rollout's mean log-prob by 0.4 nats gives 0.043–0.050 (0.035–0.039 at a quarter of that scale). The 11 MiB adapter syncs in under 0.12 s per step instead of 1.5–2.5 s for the full weights, and the trainer holds 8.7 GB per GPU instead of 57.5 GB.
 
 ## 6. Pairs Well With
 

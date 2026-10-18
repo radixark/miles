@@ -15,6 +15,7 @@ from miles.backends.megatron_utils.lora.native.spec.attention import (
     InklingAttentionSpec,
     KimiK3AttentionSpec,
     MLAAttentionSpec,
+    Step5AttentionSpec,
 )
 from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, LoRAArchSpec
 from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
@@ -75,6 +76,20 @@ def _kimi_k3_arch_spec() -> LoRAArchSpec:
     )
 
 
+def _step5_arch_spec() -> LoRAArchSpec:
+    attention = Step5AttentionSpec()
+    # The shared expert is HF ``share_expert``, an MLP like the dense layers'; the converter names
+    # routed expert E ``moe.experts.E.{gate,up,down}_proj``.
+    return LoRAArchSpec(
+        name=attention.name,
+        attention=attention,
+        mlp=SplitGateUpMLPSpec(),
+        experts=GroupedExpertsSpec(fc1_leaves=("gate_proj", "up_proj"), fc2_leaf="down_proj"),
+        mlp_hf_blocks="mlp|share_expert",
+        experts_hf_block=r"moe\.experts\.(?:\d+|\*)",
+    )
+
+
 def _shared_outer_serving_targets(targets: list[str]) -> list[str]:
     """Shared-outer export stores the expert dimension in each tensor, not in its name."""
     return [target.replace(".experts.*.", ".experts.") for target in targets]
@@ -108,6 +123,8 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "kimi_k25": mla,
         "joyai_llm_flash": mla,
         "kimi_k3": _kimi_k3_arch_spec(),
+        # also step5_vl, whose text config is step5
+        "step5": _step5_arch_spec(),
         "inkling_text": inkling,
         "inkling_model": inkling,
         "inkling_mm_model": inkling,
@@ -153,7 +170,7 @@ def resolve_adapter_targets(
     assert lora_type == "lora", "native LoRA does not implement --lora-type canonical_lora; use bridge mode"
     _model_type, spec = resolve_config_spec(hf_config)
     assert (
-        spec.experts is None or experts_shared_outer_loras
+        not selects_routed_experts(spec, hf_targets) or experts_shared_outer_loras
     ), f"native {spec.name} LoRA trains shared-outer expert adapters; pass --experts-shared-outer-loras"
     if spec.fixed_targets is not None:
         _assert_fixed_target_layout(spec, hf_config, hf_targets)
@@ -167,7 +184,8 @@ def resolve_adapter_targets(
         f"--target-modules {attention_target_modules_csv(hf_config)}) or use --megatron-to-hf-mode bridge."
     )
     _assert_shared_expert_up_proj_has_gate_proj(selected or hf_targets)
-    return hf_targets
+    _assert_routed_expert_selection(spec, hf_targets)
+    return _shared_outer_serving_targets(hf_targets)
 
 
 def validate_native_lora_args(args) -> None:
@@ -190,8 +208,15 @@ def validate_native_lora_args(args) -> None:
     )
     _model_type, spec = resolve_checkpoint_spec(args.hf_checkpoint)
     assert (
-        spec.experts is None or args.expert_tensor_parallel_size == 1
+        not selects_routed_experts(spec, args.hf_lora_targets) or args.expert_tensor_parallel_size == 1
     ), f"native {spec.name} expert LoRA assumes --expert-tensor-parallel-size 1"
+
+
+def selects_routed_experts(spec: LoRAArchSpec, hf_targets: list[str]) -> bool:
+    """Whether the run trains routed-expert adapters; a verified fixed layout always includes them."""
+    if spec.experts is None:
+        return False
+    return spec.fixed_targets is not None or any(spec.adapts_routed_expert(target) for target in hf_targets)
 
 
 def _assert_fixed_target_layout(spec: LoRAArchSpec, hf_config: dict, hf_targets: list[str]) -> None:
@@ -221,6 +246,28 @@ def _assert_shared_expert_up_proj_has_gate_proj(hf_targets: list[str]) -> None:
     assert (
         not lone_up_projs
     ), f"native LoRA needs gate_proj selected with {lone_up_projs}: SGLang drops a shared expert's lone up_proj"
+
+
+def _assert_routed_expert_selection(spec: LoRAArchSpec, hf_targets: list[str]) -> None:
+    """Shared-outer adapters cover every expert and both halves of each selected fused gate/up host."""
+    if spec.experts is None:
+        return
+    selected_by_block: dict[str, set[str]] = {}
+    for target in hf_targets:
+        if not spec.adapts_routed_expert(target):
+            continue
+        block, _, leaf = target.rpartition(".")
+        assert block.rpartition(".")[2] == "*", (
+            f"native {spec.name} shared-outer LoRA covers all routed experts; "
+            f"replace the expert index in {target!r} with '*' or exclude routed experts"
+        )
+        selected_by_block.setdefault(block, set()).add(leaf)
+    fc1_leaves = set(spec.experts.fc1_leaves)
+    for block, selected in selected_by_block.items():
+        assert not (selected & fc1_leaves) or fc1_leaves <= selected, (
+            f"native {spec.name} LoRA adapts {block}'s {sorted(fc1_leaves)} as one fused host; "
+            f"select both or neither (selected {sorted(selected)})"
+        )
 
 
 def attention_target_modules_csv(hf_config: dict) -> str:

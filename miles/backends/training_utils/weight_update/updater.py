@@ -145,7 +145,7 @@ class WeightUpdater:
         with timer("update_weights_implementation"):
             pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
             for bucket in self._hf_weight_iterator.iter_hf_weights(
-                self.weights_getter(),
+                self.weights_getter() if sync_base else None,
                 include_base=sync_base,
                 adapters=adapters,
                 materialize=protocol.is_sender,

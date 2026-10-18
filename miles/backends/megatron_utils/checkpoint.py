@@ -4,6 +4,7 @@ import re
 import shutil
 from collections.abc import Sequence
 from contextlib import contextmanager
+from itertools import chain
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -251,6 +252,30 @@ def _hide_critic_value_head_from_hf_load(ddp_model):
             setattr(chunk, name, head)
 
 
+@contextmanager
+def _exclude_native_lora_from_hf_load(ddp_model):
+    """Expose only base tensors to mbridge without changing the model's module tree."""
+    from .lora.native.modules.linear import NativeLoRAAdapter
+
+    def exclude_adapter_state(module, state_dict, prefix, local_metadata):
+        for name, _ in chain(
+            module.named_parameters(remove_duplicate=False), module.named_buffers(remove_duplicate=False)
+        ):
+            state_dict.pop(prefix + name, None)
+
+    handles = [
+        module.register_state_dict_post_hook(exclude_adapter_state)
+        for chunk in unwrap_model(ddp_model)
+        for module in chunk.modules()
+        if isinstance(module, NativeLoRAAdapter)
+    ]
+    try:
+        yield
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
 def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
     """Raw-mode HF load through mbridge for models Megatron-Bridge lacks; staging copies bypass the memory saver."""
     from contextlib import nullcontext
@@ -270,10 +295,15 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
     with (
         ModelCompanionInstallationUtils.hide(ddp_model),
         _hide_critic_value_head_from_hf_load(ddp_model),
-        bypass,
+        _exclude_native_lora_from_hf_load(ddp_model),
     ):
-        bridge = AutoBridge.from_pretrained(load_path, trust_remote_code=True)
-        bridge.load_weights(ddp_model, load_path, memory_efficient=True)
+        if args.offload_train:
+            # MCore's state hooks replace router bias storage; keep those allocations tracked.
+            for model in ddp_model:
+                model.state_dict()
+        with bypass:
+            bridge = AutoBridge.from_pretrained(load_path, trust_remote_code=True)
+            bridge.load_weights(ddp_model, load_path, memory_efficient=True)
     torch.cuda.synchronize()
 
 

@@ -1,4 +1,4 @@
-"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, and Inkling."""
+"""Native-LoRA attention specs for fused GQA, gated GQA, Step5, MLA, and Inkling."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import torch.nn as nn
 from miles.backends.megatron_utils.lora.native.modules.linear import (
     LoRASplitAdapter,
     LoRASplitQKV,
+    LoRASplitQKVHeadGate,
     LoRAUnreducedRowLinear,
 )
 from miles.backends.megatron_utils.lora.native.spec import layout as L
@@ -89,6 +90,51 @@ class GQAAttentionSpec(AttentionSpecBase):
             "single query group across ranks and the local qkv rows are not a per-group slice. "
             "Use --megatron-to-hf-mode bridge."
         )
+
+
+def _build_split_qkv_head_gate(
+    attention: nn.Module,
+    hf_prefix: str,
+    context: AttachContext,
+    active: tuple[ProjectionSpec, ...],
+) -> LoRASplitQKVHeadGate:
+    return LoRASplitQKVHeadGate(
+        hf_prefix=hf_prefix,
+        reference=attention.linear_qkv.weight,
+        context=context,
+        projections=active,
+        num_q=attention.num_attention_heads_per_partition,
+        num_kv=attention.num_query_groups_per_partition,
+        head_dim=attention.hidden_size_per_attention_head,
+    )
+
+
+class Step5AttentionSpec(GQAAttentionSpec):
+    """Step5's GQA with Megatron's ``head_wise_attn_gate``: the frozen per-head gate rows (HF ``g_proj``)
+    follow each rank's Q/K/V rows in ``linear_qkv``. Sliding-window and sparse full-attention layers
+    share this layout; the sparse layers' indexer stays frozen."""
+
+    name = "step5"
+    layout = ModuleLayout(
+        name="step5_attention",
+        present_when_attr="linear_qkv",
+        fused=(
+            FusedAttach(
+                module_attr="linear_qkv",
+                projections=GQAAttentionSpec.layout.fused[0].projections,
+                unadapted_leaves=("g_proj",),
+                adapter_attr="lora_qkv_adapter",
+                build=_build_split_qkv_head_gate,
+            ),
+        ),
+        singles=GQAAttentionSpec.layout.singles,
+    )
+
+    def validate(self, config, *, tp_size: int) -> None:
+        super().validate(config, tp_size=tp_size)
+        assert (
+            config.head_wise_attn_gate and not config.attention_output_gate
+        ), "native Step5 LoRA expects the head-wise attention gate (--head-wise-attn-gate) and no output gate"
 
 
 class MLAAttentionSpec(AttentionSpecBase):

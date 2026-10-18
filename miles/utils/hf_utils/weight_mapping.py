@@ -1,5 +1,6 @@
 import functools
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
@@ -11,6 +12,8 @@ from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 from transformers.conversion_mapping import get_model_conversion_mapping
 from transformers.core_model_loading import WeightConverter, WeightRenaming
 from transformers.models.auto.auto_factory import _get_model_class
+
+_EXPERT_INDEX = re.compile(r"\.experts\.\d+\.")
 
 
 @dataclass(frozen=True)
@@ -67,7 +70,13 @@ def build_hf_namespace_predicate(hf_checkpoint: str) -> Callable[[str], bool]:
     if mapping.parameter_names:
         return lambda name: mapping.model_parameter(name) in mapping.parameter_names
     modules = frozenset(name.rpartition(".")[0] for name in get_checkpoint_weight_map(hf_checkpoint))
-    return lambda name: name.rpartition(".")[0] in modules
+
+    def in_checkpoint(name: str) -> bool:
+        module = name.rpartition(".")[0]
+        # a checkpoint packing its experts in one tensor (Step5 ``moe.gate_proj``) holds ``moe.experts.<E>.gate_proj``
+        return module in modules or _EXPERT_INDEX.sub(".", module) in modules
+
+    return in_checkpoint
 
 
 def get_checkpoint_weight_map(checkpoint_dir: str | Path) -> dict[str, str]:

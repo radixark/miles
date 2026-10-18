@@ -1037,14 +1037,16 @@ class TestActorPublicationSource:
         assert worker._get_actor_weights() == {"weight": actor_weight}
         assert worker.model[0].model_companion.weight_version.item() == 3
 
-    def test_reading_host_backups_still_finds_the_companion_version(
+    def test_host_backup_version_lookup_does_not_read_model_weights(
         self, actor_module: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Colocated LoRA translates live weights to host backups and must tolerate the host-resident companion."""
+        """Reading a CPU version must not query offloaded CUDA allocations."""
         worker = _weight_update_worker(actor_module, monkeypatch)
         monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda _self: True))
+        worker._get_actor_weights = Mock(side_effect=AssertionError("version lookup must not enumerate base weights"))
 
         assert worker._get_actor_weight_version() == 3
+        worker._get_actor_weights.assert_not_called()
 
 
 @pytest.mark.parametrize("use_tms_backup", [False, True])
@@ -1064,6 +1066,4 @@ def test_actor_weight_getter_forwards_companion_selection_to_live_source(
     assert worker._get_actor_weights(include_model_companion=include_model_companion) == {"weight": tensor}
 
     expected = {"include_model_companion": include_model_companion}
-    if use_tms_backup:
-        expected["translate_gpu_to_cpu"] = True
     worker._named_actor_weights.assert_called_once_with(**expected)

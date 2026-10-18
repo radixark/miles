@@ -28,24 +28,50 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
 
 
 def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> torch.Tensor:
+    """Dequantize block-scaled FP8 weights (``real = fp8 * scale_inv[block]``).
+
+    Leading dimensions are batch dimensions, so packed expert tensors ``[E, N, K]``
+    with scales ``[E, ceil(N/B), ceil(K/B)]`` take the same path as 2-D weights.
+    """
     assert x.is_contiguous() and s.is_contiguous()
-    assert x.dim() == 2 and s.dim() == 2
-    M, N = x.size()
+    assert x.dim() >= 2 and s.dim() == x.dim() and x.shape[:-2] == s.shape[:-2]
+    M, N = x.shape[-2:]
     y = torch.empty_like(x, dtype=torch.get_default_dtype())
 
     def grid(meta):
         return (triton.cdiv(M, meta["BLOCK_SIZE"]), triton.cdiv(N, meta["BLOCK_SIZE"]))
 
-    weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
+    for xi, si, yi in zip(x.view(-1, M, N), s.view(-1, *s.shape[-2:]), y.view(-1, M, N), strict=True):
+        weight_dequant_kernel[grid](xi, si, yi, M, N, BLOCK_SIZE=block_size)
     return y
+
+
+def bf16_config(config: dict) -> dict:
+    """The source config without ``quantization_config``, which no longer describes BF16 weights.
+
+    Loaders that honor it (SGLang, StepFun's reference) otherwise expect scale tensors that the cast removed.
+    VLM configs repeat it under ``text_config``.
+    """
+    config = {key: value for key, value in config.items() if key != "quantization_config"}
+    if isinstance(config.get("text_config"), dict):
+        config["text_config"] = bf16_config(config["text_config"])
+    return config
+
+
+def write_bf16_config(src: str, dst: str) -> None:
+    with open(src) as f:
+        config = json.load(f)
+    with open(dst, "w") as f:
+        json.dump(bf16_config(config), f, indent=2)
 
 
 def main(fp8_path, bf16_path):
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(bf16_path, exist_ok=True)
-    os.system("cp -rf " + fp8_path + "/config.json " + bf16_path)
+    write_bf16_config(os.path.join(fp8_path, "config.json"), os.path.join(bf16_path, "config.json"))
     os.system("cp -rf " + fp8_path + "/*.py " + bf16_path)
     os.system("cp -rf " + fp8_path + "/tokenizer* " + bf16_path)
+    os.system("cp -rf " + fp8_path + "/special_tokens_map* " + bf16_path)
     os.system("cp -rf " + fp8_path + "/chat_template* " + bf16_path)
     model_index_file = os.path.join(fp8_path, "model.safetensors.index.json")
     with open(model_index_file) as f:

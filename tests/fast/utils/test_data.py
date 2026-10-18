@@ -68,6 +68,43 @@ def test_mixed_dataset_uses_processor_only_for_structured_prompts(tmp_path) -> N
     assert processor.prompts == [multimodal_prompt]
 
 
+class _TemplatingTokenizer:
+    name_or_path = ""
+
+    def apply_chat_template(self, messages, *, tokenize, tools, return_dict, add_generation_prompt):
+        return "".join(part.get("text", "<image>") for message in messages for part in message["content"])
+
+
+class _PlaceholderProcessor:
+    """One token per character, like a processor that leaves each image a single placeholder."""
+
+    def extract_media(self, prompt):
+        return {"images": [part["image"] for message in prompt for part in message["content"] if "image" in part]}
+
+    def __call__(self, text, images):
+        assert isinstance(text, str) and images
+        return {"input_ids": [list(range(len(text)))]}
+
+
+def test_prompt_length_filter_reuses_the_media_of_templated_multimodal_prompts(tmp_path) -> None:
+    prompt_path = tmp_path / "prompts.jsonl"
+    rows = [{"problem": "<image>Find x.", "images": ["a.png"]}, {"problem": "<image>" + "x" * 64, "images": ["b.png"]}]
+    prompt_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    dataset = Dataset(
+        str(prompt_path),
+        tokenizer=_TemplatingTokenizer(),
+        processor=_PlaceholderProcessor(),
+        max_length=32,
+        prompt_key="problem",
+        multimodal_keys={"image": "images"},
+        apply_chat_template=True,
+    )
+
+    assert [sample.prompt for sample in dataset.samples] == ["<image>Find x."]
+    assert dataset.samples[0].multimodal_inputs == {"images": ["a.png"]}
+
+
 def _ref(payload: Any) -> StoreObjectRef:
     return _MooncakeStoreObjectRef(payload=payload)
 

@@ -94,6 +94,9 @@ class MLPLoRASpec(Protocol):
 class ExpertsLoRASpec(Protocol):
     """Routed-expert attachment for architectures whose experts carry adapters."""
 
+    supported_targets: frozenset[str]
+    fc1_leaves: tuple[str, str]
+
     def attach(self, mlp: nn.Module, layer: nn.Module, context: AttachContext) -> int: ...
 
 
@@ -129,15 +132,29 @@ class LoRAArchSpec:
     fixed_targets: FixedTargets | None = None
     # None names adapters after the raw-mode converter's HF weight names
     declared_naming: Any = None
+    # HF blocks (regex alternatives) the MLP spec adapts: dense MLPs and MLP-shaped shared experts
+    mlp_hf_blocks: str = r"mlp(?:\.shared_experts?)?"
+    # HF block (regex) of one routed expert, for specs that accept any selection of attachable projections
+    experts_hf_block: str | None = None
 
     def attaches(self, hf_module: str) -> bool:
         """Whether this spec implements an adapter for the HF module (``*`` stands for any layer)."""
         block, _, leaf = hf_module.rpartition(".")
         if leaf in self.attention.supported_targets:
             return re.search(f"{_HF_LAYER}{re.escape(self.attention.hf_block)}$", block) is not None
-        if leaf in self.mlp.supported_targets:
-            return re.search(rf"{_HF_LAYER}mlp(?:\.shared_experts?)?$", block) is not None
-        return False
+        if leaf in self.mlp.supported_targets and re.search(rf"{_HF_LAYER}(?:{self.mlp_hf_blocks})$", block):
+            return True
+        return self.adapts_routed_expert(hf_module)
+
+    def adapts_routed_expert(self, hf_module: str) -> bool:
+        """Whether the HF module is a routed-expert projection this spec adapts."""
+        if self.experts_hf_block is None:
+            return False
+        block, _, leaf = hf_module.rpartition(".")
+        return (
+            leaf in self.experts.supported_targets
+            and re.search(rf"{_HF_LAYER}{self.experts_hf_block}$", block) is not None
+        )
 
     def validate(self, context: AttachContext) -> None:
         assert context.transformer_config.gated_linear_unit, "native LoRA's MLP specs assume a gated (SwiGLU) MLP"

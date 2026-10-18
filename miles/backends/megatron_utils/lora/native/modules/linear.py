@@ -369,6 +369,42 @@ class LoRASplitQKV(LoRASplitAdapter):
         return delta.index_select(-1, self.out_perm)
 
 
+class LoRASplitQKVHeadGate(LoRASplitAdapter):
+    """Q/K/V adapters over a ``head_wise_attn_gate`` QKV: each rank's grouped ``[q; k; v]`` rows, then
+    one gate row per local query head. The gate rows (HF ``g_proj``) carry no adapter."""
+
+    def __init__(
+        self,
+        *,
+        hf_prefix: str,
+        reference: torch.Tensor,
+        context: AttachContext,
+        projections: Sequence[ProjectionSpec],
+        num_q: int,
+        num_kv: int,
+        head_dim: int,
+    ):
+        rows_by_param_prefix = {"q": num_q * head_dim, "k": num_kv * head_dim, "v": num_kv * head_dim, "g": num_q}
+        assert sum(rows_by_param_prefix.values()) == reference.shape[0], (
+            f"{type(self).__name__} expects {rows_by_param_prefix} local rows, "
+            f"but the host linear has {reference.shape[0]}"
+        )
+        assert "g" not in {projection.param_prefix for projection in projections}, "the head-wise gate stays frozen"
+        super().__init__(
+            hf_prefix=hf_prefix,
+            reference=reference,
+            context=context,
+            projections=projections,
+            rows_by_param_prefix=rows_by_param_prefix,
+        )
+        qkv_perm = build_qkv_permutation(num_q, num_kv, head_dim, reference.device)
+        gate_rows = torch.arange(len(qkv_perm), len(qkv_perm) + num_q, device=reference.device)
+        self.register_buffer("out_perm", torch.cat([qkv_perm, gate_rows]), persistent=False)
+
+    def _pack(self, delta: torch.Tensor) -> torch.Tensor:
+        return delta.index_select(-1, self.out_perm)
+
+
 class LoRASplitFC1(LoRASplitAdapter):
     """Independent gate/up adapters whose delta is packed into one fused FC1 output."""
 
