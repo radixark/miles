@@ -49,6 +49,17 @@ ATTENTION_TC_BWD_HEADS = (8, 16, 32, 64)
 # tensor-core order (deterministic run to run, within the register-MMA stage's tolerances).
 INDEXER_TC_HEADS = (8, 16, 32, 64)
 INDEXER_TC_QUERY_COLUMNS = 256  # (query, head) columns per CTA of the tcgen05 stage: queries per CTA = 256 // heads
+# The tcgen05 Lightning-indexer backward rows stages ``dsa_indexer_bwd_tc_h{H}`` (one CTA per query row; logits, dQ^T
+# and dK^T on tcgen05, FP32 accumulation, one FP32 ``[128]`` partial per (row, slot) for the split-4 reducer -- the same
+# contract and numerics class as ``dsa_indexer_bwd_h{H}``) exist for rows with exactly 32 or 64 indexer heads on
+# ``ATTENTION_TC_ARCHES``; every other head count runs the register-MMA stages.  ``MILES_DSA_INDEXER_BWD_TC=0`` forces the
+# register-MMA indexer backward everywhere.
+INDEXER_TC_BWD_HEADS = (32, 64)
+# The tcgen05 rows kernel (one CTA per query row, one CTA per SM) amortises a per-row prologue / epilogue over the row's
+# 128-key tiles: measured on GB300 it is 1.15-1.25x faster than the register-MMA kernel at 32 heads x topk 2048 and at
+# 64 heads x topk 512, but 4-7 % slower at 32 heads x topk 512 (4 tiles), so 32-head rows below this (padded) topk keep the
+# register-MMA stage.
+INDEXER_TC_BWD_MIN_TOPK = {32: 1024, 64: 0}
 
 _PREBUILT: set[str] = set()
 
@@ -162,6 +173,19 @@ def indexer_tc_stage(heads: int, arch: str) -> str | None:
     if os.environ.get("MILES_DSA_INDEXER_TC", "1") == "0":
         return None
     return f"dsa_indexer_logits_tc_h{heads}"
+
+
+def indexer_tc_bwd_stage(heads: int, topk: int, arch: str) -> str | None:
+    """The tcgen05 indexer backward rows stage for ``heads`` rows of (padded) ``topk`` slots on ``arch``, or ``None`` when
+    the register-MMA stage applies (other head counts / architectures, the kill switch, or ``topk`` below
+    ``INDEXER_TC_BWD_MIN_TOPK[heads]``)."""
+    if heads not in INDEXER_TC_BWD_HEADS or arch not in ATTENTION_TC_ARCHES:
+        return None
+    if os.environ.get("MILES_DSA_INDEXER_BWD_TC", "1") == "0":
+        return None
+    if int(topk) < INDEXER_TC_BWD_MIN_TOPK[heads]:
+        return None
+    return f"dsa_indexer_bwd_tc_h{heads}"
 
 
 def _storage_alias(tensor):
@@ -518,7 +542,8 @@ def dsa_indexer_backward_rows(index_q, index_k, weights, topk_indices, grad_scor
         raise ValueError(
             f"indexer topk must be a multiple of {indexer_key_block(int(heads))} for {heads} heads, got {topk}"
         )
-    _kernel(f"dsa_indexer_bwd_h{hp}", index_q.device).launch(
+    stage = indexer_tc_bwd_stage(int(heads), topk, device_arch(index_q.device)) or f"dsa_indexer_bwd_h{hp}"
+    _kernel(stage, index_q.device).launch(
         grid=(num_rows, 1, 1),
         index_q=index_q,
         index_k=index_k,
@@ -544,6 +569,8 @@ __all__ = [
     "INDEXER_HEAD_DIM",
     "INDEXER_TC_HEADS",
     "INDEXER_TC_QUERY_COLUMNS",
+    "INDEXER_TC_BWD_HEADS",
+    "INDEXER_TC_BWD_MIN_TOPK",
     "REDUCE_SPLIT_MAX_DIM",
     "MODULES",
     "AttentionGeometry",
@@ -561,4 +588,5 @@ __all__ = [
     "indexer_key_block",
     "indexer_tc_stage",
     "indexer_padded_heads",
+    "indexer_tc_bwd_stage",
 ]
