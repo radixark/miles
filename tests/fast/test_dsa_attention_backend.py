@@ -25,6 +25,7 @@ FUSED_STAGES = {"dsa_indexer_topk_scan_h32_d128", "dsa_indexer_topk_finalize_k51
 TC_STAGES = {f"dsa_attention_fwd_tc_h{h}_d512t{t}" for h in (8, 16, 32, 64) for t in (64, 0)}
 TC_BWD_STAGES = {f"dsa_attention_bwd_tc_h{h}_d512t{t}" for h in (8, 16, 32, 64) for t in (64, 0)}
 INDEXER_TC_STAGES = {f"dsa_indexer_logits_tc_h{h}" for h in (8, 16, 32, 64)}
+INDEXER_TC_BWD_STAGES = {f"dsa_indexer_bwd_tc_h{h}" for h in (32, 64)}
 
 
 def _load(name: str, relative: str):
@@ -90,6 +91,7 @@ def test_generated_package_registry_covers_both_architectures():
         *TC_STAGES,
         *TC_BWD_STAGES,
         *INDEXER_TC_STAGES,
+        *INDEXER_TC_BWD_STAGES,
     }
     assert set(jit.MODULES) == expected
     for stage, record in jit.MODULES.items():
@@ -164,6 +166,47 @@ def test_generated_package_registry_covers_both_architectures():
     # the register-MMA logits stages stay in the package as the fallback of every other head count / architecture
     for heads in (8, 16, 32, 64):
         assert jit.MODULES[f"dsa_indexer_logits_h{heads}"]["block"] == [256, 1, 1]
+    # the tcgen05 indexer backward rows stages: the register-MMA ``dsa_indexer_bwd_h{H}`` ABI with ``index_k`` as a by-value
+    # tensor map (no workspace), 256 threads, built plain
+    indexer_tc_bwd_args = "index_q index_k weights topk_indices grad_scores d_index_q d_weights partial heads topk".split()
+    for stage in sorted(INDEXER_TC_BWD_STAGES):
+        record = jit.MODULES[stage]
+        assert [name for kind, name in record["arg_plan"] if kind != "grid"] == indexer_tc_bwd_args, stage
+        assert [name for kind, name in jit.MODULES["dsa_indexer_bwd_h32"]["arg_plan"] if kind != "grid"] == indexer_tc_bwd_args
+        assert "workspace" not in {kind for kind, _ in record["arg_plan"]}, stage
+        assert record["block"] == [256, 1, 1] and record["tma_workspace_bytes"] == 0, stage
+        assert record["compile_flags"] == [], stage
+    assert len({jit.MODULES[stage]["name"] for stage in INDEXER_TC_BWD_STAGES}) == len(INDEXER_TC_BWD_STAGES)
+
+
+def test_indexer_backward_dispatch_selects_the_tcgen05_stage_for_32_and_64_heads(monkeypatch):
+    """Rows with exactly 32 or 64 indexer heads run the tcgen05 indexer backward rows kernel on both exported
+    architectures (same partial contract as the register-MMA stage); other head counts, other architectures and the kill
+    switch keep the register-MMA stages.
+    """
+    from miles.kernels.attention.dsa.cake import _kernels
+
+    monkeypatch.delenv("MILES_DSA_INDEXER_BWD_TC", raising=False)
+    assert _kernels.INDEXER_TC_BWD_HEADS == (32, 64)
+    assert _kernels.INDEXER_TC_BWD_MIN_TOPK == {32: 1024, 64: 0}
+    for arch in ("sm_100a", "sm_103a"):
+        # GLM-5.2 (32 heads, topk 2048) and DeepSeek-V4 (64 heads, topk 512) rows run the tcgen05 stage
+        assert _kernels.indexer_tc_bwd_stage(32, 2048, arch) == "dsa_indexer_bwd_tc_h32"
+        assert _kernels.indexer_tc_bwd_stage(32, 1024, arch) == "dsa_indexer_bwd_tc_h32"
+        assert _kernels.indexer_tc_bwd_stage(64, 512, arch) == "dsa_indexer_bwd_tc_h64"
+        assert _kernels.indexer_tc_bwd_stage(64, 128, arch) == "dsa_indexer_bwd_tc_h64"
+        for heads in (32, 64):
+            assert _kernels.indexer_tc_bwd_stage(heads, 2048, arch) in INDEXER_TC_BWD_STAGES
+        # 32-head rows below topk 1024 (the V4.1 indexer forms, topk 512) keep the register-MMA stage
+        assert _kernels.indexer_tc_bwd_stage(32, 512, arch) is None
+        assert _kernels.indexer_tc_bwd_stage(32, 992, arch) is None
+        for heads in (1, 8, 16, 17, 33, 48, 65, 128):
+            assert _kernels.indexer_tc_bwd_stage(heads, 2048, arch) is None
+    assert _kernels.indexer_tc_bwd_stage(32, 2048, "sm_90a") is None
+    assert _kernels.indexer_tc_bwd_stage(64, 512, "sm_120a") is None
+    monkeypatch.setenv("MILES_DSA_INDEXER_BWD_TC", "0")
+    assert _kernels.indexer_tc_bwd_stage(32, 2048, "sm_100a") is None
+    assert _kernels.indexer_tc_bwd_stage(64, 512, "sm_103a") is None
 
 
 def test_attention_backward_dispatch_selects_the_tcgen05_stages_for_8_16_32_and_64_heads(monkeypatch):
