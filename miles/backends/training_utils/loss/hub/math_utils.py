@@ -633,6 +633,7 @@ def get_advantages_and_returns_batch(
     gamma,
     lambd,
     chunked: bool = True,
+    bootstrap_values: list[torch.Tensor] | None = None,
 ):
     """
     Batched GAE with CP support, computed over trainable tokens only.
@@ -647,9 +648,8 @@ def get_advantages_and_returns_batch(
         response token.
       - Fully masked samples get zero advantages and returns; their terminal
         reward is dropped.
-      - Truncated sequences use the same zero bootstrap as terminated ones:
-        the value after the last trainable token is taken as 0 and the
-        observed terminal reward is still applied.
+      - An optional final-state value is added after the last trainable token.
+        Terminated sequences use zero bootstrap.
       - This function outputs zero advantages and returns at masked positions.
         Downstream transforms may still shift these entries to nonzero values
         (advantage whitening applies its affine transform to every position,
@@ -670,6 +670,7 @@ def get_advantages_and_returns_batch(
         qkv_format:        str, sequence layout used to split tensors across CP ranks
         max_seq_lens:      list[int] of BSHD padded lengths, or None for THD
         loss_masks:        list[Tensor], full-response masks, each has shape [R_i]
+        bootstrap_values:  optional list of final-state value tensors, one per sample
     Output:
         advantages_list:   list[Tensor], each current-CP-rank tensor has shape [C_i]
         returns_list:      list[Tensor], same shape
@@ -681,6 +682,7 @@ def get_advantages_and_returns_batch(
         assert B == len(rewards_list)
         assert B == len(terminal_rewards)
         assert B == len(loss_masks)
+        assert bootstrap_values is None or B == len(bootstrap_values)
 
         cp_size = get_parallel_state().cp.size
         if cp_size > 1 and qkv_format == "bshd":
@@ -735,6 +737,8 @@ def get_advantages_and_returns_batch(
                 packed_values[i, :K] = full_values_list[i][idx]
                 packed_rewards[i, :K] = full_rewards_list[i][idx]
                 packed_rewards[i, K - 1] += terminal_rewards[i]
+                if bootstrap_values is not None:
+                    packed_rewards[i, K - 1] += gamma * bootstrap_values[i].reshape(())
 
         if max_len == 0:
             packed_advantages = torch.zeros(B, 0, device=device, dtype=dtype)
