@@ -30,7 +30,7 @@ ATTENTION_D_ROPE = 64  # the MLA rope tail width (d_tail 64)
 # token, the generator's ``dsa_h64_fwd`` schedule on the flat contract) exist for these head counts on these
 # architectures; every other head count runs the register-MMA forward stages.  ``MILES_DSA_ATTENTION_TC=0`` forces the
 # register-MMA forward everywhere.
-ATTENTION_TC_HEADS = (16, 32, 64)
+ATTENTION_TC_HEADS = (8, 16, 32, 64)
 ATTENTION_TC_ARCHES = ("sm_100a", "sm_103a")
 # The tcgen05 backward rows stages ``dsa_attention_bwd_tc_h64_d512t{d_tail}`` (one CTA per query row holding all 64
 # heads, the generator's ``dsa_h64_bwd`` schedule on the flat contract; the key-side dKV is accumulated over the heads
