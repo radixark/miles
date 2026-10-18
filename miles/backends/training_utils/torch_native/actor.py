@@ -1,6 +1,6 @@
 import functools
 import logging
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
 from typing import ClassVar
@@ -75,6 +75,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
     tokenizer: PreTrainedTokenizerBase
     ref_runner: StepRunner | None = None
     align_token_side_channel: Callable[[torch.Tensor, int], torch.Tensor] | None = None
+    position_ids_builder: Callable[[torch.Tensor, Mapping | None], torch.Tensor] | None = None
 
     def _step_runner(self) -> StepRunner:
         raise NotImplementedError
@@ -284,6 +285,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 self.args.data_pad_size_multiplier,
                 self.args.qkv_format,
                 get_position_ids=True,
+                position_ids_builder=self.position_ids_builder,
             )
 
     @timer

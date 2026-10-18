@@ -1,6 +1,6 @@
 import logging
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import torch
 import torch.distributed as dist
@@ -172,6 +172,7 @@ def get_batch(
     qkv_format: str = "thd",
     get_position_ids: bool = False,
     allgather_cp: bool = False,
+    position_ids_builder: Callable[[torch.Tensor, Mapping | None], torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor | list[torch.Tensor] | None]:
     """
     Generate a CP-ready micro-batch with packed sequence parameters.
@@ -322,21 +323,24 @@ def get_batch(
             ids = torch.stack(ids)
         elif qkv_format == "thd":
             ids = [slice_with_cp(p, 0, qkv_format) for p in ids_list]
-            ids = torch.cat(ids)
+            ids = torch.cat(ids, dim=-1)
             if pad != 0:
                 ids = F.pad(ids, (0, pad), value=0)
-            ids = ids.unsqueeze(0)
+            ids = ids.unsqueeze(-2)
         else:
             raise NotImplementedError
         return ids
 
     if get_position_ids:
-        position_ids_list = []
-        for t in batch["unconcat_tokens"]:
-            seq_len = t.size(0)
-            pos_ids = torch.arange(seq_len, device=t.device, dtype=torch.long)
-            position_ids_list.append(pos_ids)
-
+        unconcat_tokens = batch["unconcat_tokens"]
+        if position_ids_builder is None:
+            position_ids_list = [torch.arange(t.size(0), device=t.device, dtype=torch.long) for t in unconcat_tokens]
+        else:
+            assert (
+                qkv_format == "thd" and cp_size == 1
+            ), f"architecture-specific position ids need thd packing without CP, got {qkv_format} with CP {cp_size}"
+            mm_inputs = batch.get("multimodal_train_inputs") or [None] * len(unconcat_tokens)
+            position_ids_list = [position_ids_builder(t, mm) for t, mm in zip(unconcat_tokens, mm_inputs, strict=True)]
         batch["position_ids"] = _compute_transform_like_token_ids(position_ids_list)
 
     if (witness_ids := batch.get("witness_ids")) is not None:
