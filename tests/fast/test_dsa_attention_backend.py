@@ -22,7 +22,7 @@ REPO = Path(__file__).resolve().parents[2]
 TOPK_STAGES = {f"dsa_topk_fp32_c{capacity}_k512" for capacity in (4096, 8192, 16384, 32768)}
 TOPK_THREADS = {4096: 256, 8192: 256, 16384: 512, 32768: 512}
 FUSED_STAGES = {"dsa_indexer_topk_scan_h32_d128", "dsa_indexer_topk_finalize_k512"}
-TC_STAGES = {f"dsa_attention_fwd_tc_h{h}_d512t{t}" for h in (16, 32, 64) for t in (64, 0)}
+TC_STAGES = {f"dsa_attention_fwd_tc_h{h}_d512t{t}" for h in (8, 16, 32, 64) for t in (64, 0)}
 TC_BWD_STAGES = {f"dsa_attention_bwd_tc_h64_d512t{t}" for t in (64, 0)}
 
 
@@ -174,17 +174,17 @@ def test_attention_backward_dispatch_selects_the_tcgen05_stage_for_64_heads(monk
 
 
 def test_attention_forward_dispatch_selects_the_tcgen05_stage_for_production_head_counts(monkeypatch):
-    """16 / 32 / 64 heads run the tcgen05 forward on both exported architectures; other head counts and the kill switch
+    """8 / 16 / 32 / 64 heads run the tcgen05 forward on both exported architectures; other head counts and the kill switch
     keep the register-MMA stage chosen by ``attention_block_h``."""
     from miles.kernels.attention.dsa.cake import _kernels
 
     monkeypatch.delenv("MILES_DSA_ATTENTION_TC", raising=False)
     for arch in ("sm_100a", "sm_103a"):
-        for heads in (16, 32, 64):
+        for heads in (8, 16, 32, 64):
             for tail in (64, 0):
                 assert _kernels.attention_tc_stage(heads, tail, arch) == f"dsa_attention_fwd_tc_h{heads}_d512t{tail}"
                 assert _kernels.attention_tc_stage(heads, tail, arch) in TC_STAGES
-        for heads in (1, 8, 17, 48, 65, 128):
+        for heads in (1, 4, 17, 48, 65, 128):
             assert _kernels.attention_tc_stage(heads, 0, arch) is None
     assert _kernels.attention_tc_stage(64, 0, "sm_90a") is None
     monkeypatch.setenv("MILES_DSA_ATTENTION_TC", "0")
