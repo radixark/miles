@@ -17,7 +17,8 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 
 from miles.kernels.attention.region_sparse import sparse_region_attention
 from miles_plugins.models.step5.indexer import Step5Indexer
-from miles_plugins.models.step5.layers import FULL_ATTENTION_ROPE, Step5Attention
+from miles_plugins.models.step5.layer_math import FULL_ATTENTION_ROPE
+from miles_plugins.models.step5.layers import Step5Attention
 from miles_plugins.models.step5.region_selection import RegionSelection
 
 # The kernel's tiles are 8 query tokens times one KV group's heads, tuned for Step5's 16.

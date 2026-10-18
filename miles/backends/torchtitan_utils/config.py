@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import logging
 import os
 import tempfile
@@ -8,7 +9,7 @@ from torchtitan.components.optimizer import ParamGroupConfig
 from torchtitan.distributed.activation_checkpoint import FullAC
 from torchtitan.trainer import Trainer
 
-from miles.backends.torchtitan_utils.components import EmptyDataLoader, TiedCheckpointManager
+from miles.backends.torchtitan_utils.components import EmptyDataLoader, NoTokenizer, TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.parallel import parallel_dims_from_config
 from miles.utils.hf_utils.config import load_hf_config
@@ -38,6 +39,8 @@ def resolve_model_spec(args: Namespace):
     registry = getattr(module, "model_registry", None)
     if registry is None:
         raise ValueError(f"{module.__name__} exposes no model_registry(); cannot build a ModelSpec")
+    if "hf_config" in inspect.signature(registry).parameters:
+        return registry(args.titan_model_flavor, attn_backend="flex", hf_config=load_hf_config(args.hf_checkpoint))
     return registry(args.titan_model_flavor, attn_backend="flex")
 
 
@@ -53,7 +56,9 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     if args.optimizer != "adam":
         raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.optimizer!r}")
 
-    ties_embeddings = load_hf_config(hf_assets_path).tie_word_embeddings
+    hf_config = load_hf_config(hf_assets_path)
+    # a VL checkpoint keeps the decoder's settings in its text_config
+    ties_embeddings = (getattr(hf_config, "text_config", None) or hf_config).tie_word_embeddings
     if ties_embeddings and args.pipeline_model_parallel_size > 1:
         raise ValueError(
             "the checkpoint ties lm_head to the embedding, which torchtitan cannot do across pipeline "
@@ -116,6 +121,7 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
 
     config.loss = RLLossAdapter.Config()
     config.dataloader = EmptyDataLoader.Config()
+    config.tokenizer = NoTokenizer.Config()
     config.checkpoint = TiedCheckpointManager.Config()
     config.activation_checkpoint = FullAC.Config() if args.gradient_checkpointing else None
     config.debug.seed = args.seed

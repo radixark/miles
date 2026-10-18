@@ -15,6 +15,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_group
 from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import (
     iter_checkpoint_tower_units,
 )
+from miles.kernels.quant.fp8_blockwise import fp8_blockwise_cast
 from miles.utils.hf_utils.config import load_hf_config
 
 
@@ -24,13 +25,24 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._engine_dtypes = _checkpoint_dtypes(self.args.hf_checkpoint)
+        self._fp8_block_size = (self.quantization_config or {}).get("weight_block_size")
         self._q_lora_rank = getattr(load_hf_config(self.args.hf_checkpoint), "q_lora_rank", None) or None
 
     def _iter_hf_param_units(self, weights, *, materialize):
         for name, tensor in hf_weights(self.model, complete_across_pp=self.placement.gather_pp):
             if materialize:
-                yield [(name, self._to_engine_dtype(name, tensor))]
+                yield self._to_engine_tensors(name, tensor)
         yield from iter_checkpoint_tower_units(self.args.hf_checkpoint, materialize=materialize)
+
+    def _to_engine_tensors(self, name: str, tensor: torch.Tensor) -> list[tuple[str, torch.Tensor]]:
+        """``name`` as the engine loaded it: block-scaled FP8 with its ``_scale_inv`` where the checkpoint
+        stores it so, else in the checkpoint's dtype."""
+        if self._engine_dtypes.get(name) != torch.float8_e4m3fn:
+            return [(name, self._to_engine_dtype(name, tensor))]
+        if self._fp8_block_size is None or f"{name}_scale_inv" not in self._engine_dtypes:
+            raise ValueError(f"{name} is FP8 in the checkpoint without the block scales this export writes")
+        weight, scale_inv = _block_fp8(tensor, self._fp8_block_size)
+        return [(name, weight), (f"{name}_scale_inv", scale_inv)]
 
     def _to_engine_dtype(self, name: str, tensor: torch.Tensor) -> torch.Tensor:
         target = self._engine_dtypes.get(name)
@@ -148,8 +160,19 @@ class _StageLayout:
             del tensor
 
 
+def _block_fp8(tensor: torch.Tensor, block_size: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
+    """E4M3 ``tensor`` with FP32 ``scale_inv`` per block of its last two dims; leading dims (packed experts) loop."""
+    rows = tensor.reshape(-1, *tensor.shape[-2:])
+    weights, scales = zip(*(fp8_blockwise_cast(matrix, block_size) for matrix in rows), strict=True)
+    return (
+        torch.stack(weights).view(*tensor.shape),
+        torch.stack(scales).view(*tensor.shape[:-2], *scales[0].shape),
+    )
+
+
 _SAFETENSORS_DTYPES = {
     "BF16": torch.bfloat16,
+    "F8_E4M3": torch.float8_e4m3fn,
     "F16": torch.float16,
     "F32": torch.float32,
     "F64": torch.float64,

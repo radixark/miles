@@ -664,6 +664,30 @@ the new block (subclassing torchtitan's `TransformerBlock` / `BaseAttention`), t
 `state_dict_adapter.py` if the HF names differ, and only then a `parallelize.py` if the
 existing sharding plans do not apply. Two checks belong with every package: a fast test that pins the flavor's dimensions to the values recorded from the model's `config.json` and checks the adapter's map covers every key pattern recorded from `model.safetensors.index.json`, and an e2e case under `tests/e2e/torchtitan/` — SGLang has to implement the architecture too, since it is what consumes the streamed weights.
 
+`models/step5/` (StepFun Step-5-Preview) shows a package whose blocks are new and whose
+numerics follow the Megatron model in `miles_plugins/models/step5/`: zero-centred FP32 norms
+over an FP32 residual stream, gated GQA whose RoPE depends on the layer's attention type, a
+512-token sliding window on three layers in four, and on the rest sparse attention over the
+regions a frozen indexer selects. It supports **FSDP, EP, PP and CP, but not TP yet**. Under
+CP the sliding-window layers attend each rank's queries over the gathered keys of their
+window, while the full-attention layers gather the whole sequence, attend it and keep the
+rank's rows, so their attention compute does not split across the CP group. The released
+checkpoint stores most routed experts in block-scaled FP8: the adapter dequantizes them on
+load, and the weight sync quantizes every tensor the checkpoint stores in FP8 back to FP8
+with its block scales. The package sizes the model from the `--hf-checkpoint`'s
+`config.json`, so `--titan-model-flavor` only names the run:
+
+```bash
+--train-backend torchtitan \
+--titan-model-name step5 \
+--titan-model-flavor 5layer \
+--expert-model-parallel-size 4 \
+--hf-checkpoint /root/models/Step-5-Preview-5layer \
+--model-name step5
+```
+
+The rollout needs an SGLang with Step5 support, with the flags in `scripts/run_step5.py`.
+
 ### Try it
 
 ```bash

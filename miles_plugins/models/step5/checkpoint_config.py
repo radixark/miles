@@ -4,15 +4,11 @@ from typing import Any
 
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles_plugins.models.step5.indexer import INDEXER_NUM_HEADS, INDEXER_ROPE
 from miles_plugins.models.step5.indexer_ops import INDEXER_HEAD_DIM, INDEXER_ROPE_DIM
-from miles_plugins.models.step5.layers import (
-    FULL_ATTENTION_ROPE,
-    SLIDING_WINDOW_ROPE,
-    SWIGLU_LIMIT,
-    is_full_attention_layer,
-)
+from miles_plugins.models.step5.layer_math import FULL_ATTENTION_ROPE, SLIDING_WINDOW_ROPE, SWIGLU_LIMIT
+from miles_plugins.models.step5.layers import is_full_attention_layer
 from miles_plugins.models.step5.region_selection import REGION_SIZE, TOP_REGIONS
+from miles_plugins.models.step5.region_selector import INDEXER_NUM_HEADS, INDEXER_ROPE
 
 
 def check_matches_checkpoint(config: TransformerConfig, text_config: Any) -> None:

@@ -12,7 +12,8 @@ from tests.fast.launch_scripts.model_args_harness import expand_model_args  # no
 
 from miles.utils.arguments import hf_validate_args  # noqa: E402
 from miles_plugins.models.step5.checkpoint_config import check_matches_checkpoint  # noqa: E402
-from miles_plugins.models.step5.layers import is_full_attention_layer, zero_centered_rms_norm  # noqa: E402
+from miles_plugins.models.step5.layer_math import zero_centered_rms_norm  # noqa: E402
+from miles_plugins.models.step5.layers import is_full_attention_layer  # noqa: E402
 from miles_plugins.models.step5.qkv_layout import fuse_qkv_and_gate, split_qkv_and_gate  # noqa: E402
 
 _SLICE = (0, 3, 4, 88, 91)
