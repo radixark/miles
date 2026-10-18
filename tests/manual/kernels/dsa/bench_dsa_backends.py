@@ -12,7 +12,8 @@ before every timed call and is excluded from the sum.  Reported as the median ov
 
 Shapes (see ``--list``): the GLM-5.2 5-layer e2e (TP4: 16 local heads, index heads from the checkpoint,
 topk 2048, d_qk 576) and the DeepSeek-V4-Flash 4-layer e2e (TP1: 64 heads, d 512, window 128 + 512
-compressed keys, indexer 64 heads over S/4 compressed keys), at 2048 and 4096 query rows per rank.
+compressed keys, indexer 64 heads over S/4 compressed keys), at 2048 and 4096 query rows per rank; plus the
+DeepSeek-V4.1-Flash TP8 production form (8 local heads) and the GLM-5.2 TP8 form (8 local heads, d_qk 576).
 """
 
 from __future__ import annotations
@@ -62,10 +63,20 @@ def production_shapes(rows: int, glm_index_heads: int):
         # DeepSeek-V4-Flash e2e (4 GPUs, TP4, 64 heads -> 16 local heads, window 128 + index_topk 512).
         AttentionShape(f"dsv4_tp4_attention_r{rows}", "bshd", 1, rows, 16, 0, 128 + 512, True),
         AttentionShape(f"dsv4_tp2_attention_r{rows}", "bshd", 1, rows, 32, 0, 128 + 512, True),
+        # DeepSeek-V4.1-Flash production (TP8: 64 heads -> 8 local heads; q is [.., 512] with the rope tail inside the
+        # 512, so d_tail 0; window 128 + index_topk 512; FP32 attention sink).
+        AttentionShape(f"dsv4_tp8_attention_r{rows}", "bshd", 1, rows, 8, 0, 128 + 512, True),
+        # GLM-5.2 GB300 recipe (TP8 x PP4 x DP2: 64 heads -> 8 local heads, d_qk 576, topk 2048).
+        AttentionShape(f"glm52_tp8_attention_r{rows}", "thd", 1, rows, 8, 64, 2048, False),
     ]
     indexer = [
         IndexerShape(f"glm52_indexer_r{rows}", "thd", 1, rows, glm_index_heads, rows, 2048),
         IndexerShape(f"dsv4_indexer_r{rows}", "sbhd", 1, rows, 64, rows // 4, 512),
+        # DeepSeek-V4.1-Flash indexer form (32 index heads, not TP-sharded; compressed keys at ratio 2 for the index
+        # source layers 2/8/14 and ratio 1 for 20/24/28/32/36; index_topk 512).  Informational: the V4.1 plugin scores
+        # with the TileLang indexer today, the cake indexer is wired for DeepSeek-V4 and GLM-5.
+        IndexerShape(f"dsv41_indexer_c2_r{rows}", "sbhd", 1, rows, 32, rows // 2, 512),
+        IndexerShape(f"dsv41_indexer_c1_r{rows}", "sbhd", 1, rows, 32, rows, 512),
     ]
     return attention, indexer
 
