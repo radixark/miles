@@ -140,16 +140,18 @@ The launcher exposes these as flags:
 - `--use-deepep` (default `True`) — enables Megatron-side DeepEP (`--moe-enable-deepep --moe-token-dispatcher-type flex`); falls back to `alltoall`. On GB300 you must pass `--no-megatron-use-deepep` (known Megatron DeepEP failure; the launcher asserts).
 - On B200/GB300 (without `balanced` or FP8 + DeepEP) the launcher pins `--sglang-moe-runner-backend`: `flashinfer_trtllm_routed` for FP8 rollout, `triton` for BF16.
 
-**Measured kernel speed of `--dsa-attention-backend cake`** at the GLM-5.2 training shapes (64 attention heads, `index_topk` 2048, `thd`; 32 indexer heads; `r` = query rows per rank). CUPTI device time of the kernel launches, cold L2, median; ratio = TileLang time / cake time, > 1 = cake faster. The forward runs the tcgen05 stages on 16 / 32 / 64 local heads; the backward runs a tcgen05 rows kernel on 64 local heads (one CTA per query row, the key-side gradient accumulated over the heads in tensor memory) and the register-MMA rows kernels otherwise, and reduces its key-side partials with a fixed 4-way FP32 tree (no floating-point atomics), so both stay bit-deterministic run to run.
+**Measured kernel speed of `--dsa-attention-backend cake`** at the GLM-5.2 training shapes (64 attention heads, `index_topk` 2048, `thd`; 32 indexer heads; `r` = query rows per rank). CUPTI device time of the kernel launches, cold L2, median; ratio = TileLang time / cake time, > 1 = cake faster. The forward runs tcgen05 stages on 8 / 16 / 32 / 64 local heads (the 8-head stage is the swap-AB form: keys on the MMA's M axis, the heads on N); the backward runs tcgen05 rows kernels on 8 / 16 / 32 local heads (swap-AB, one CTA per query row) and on 64 local heads (the key-side gradient accumulated over the heads in tensor memory), and reduces its key-side partials with a fixed 4-way FP32 tree (no floating-point atomics), so both stay bit-deterministic run to run. The lightning-indexer logits run a tcgen05 stage for every indexer head count; the indexer backward runs a tcgen05 rows kernel for 32 index heads at a padded `index_topk` of 1024 or more (the GLM-5.2 shape; below that the register-MMA stage stays selected, measured 3-7 % faster at topk 512) and for 64 index heads. The register-MMA stages stay in the package as the fallback (`MILES_DSA_ATTENTION_TC=0`, `MILES_DSA_ATTENTION_BWD_TC=0`, `MILES_DSA_INDEXER_TC=0`, `MILES_DSA_INDEXER_BWD_TC=0`; non-Blackwell architectures).
 
 | kernel | local heads | B200 r2048 / r4096 | GB300 r2048 / r4096 | numerics vs the register-MMA stages |
 |---|---|---|---|---|
-| attention fwd | 16 (TP 4) | 1.70x / 1.62x | 1.70x / 1.72x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
-| attention fwd | 64 (TP 1) | 4.29x / 3.97x | 4.15x / 4.14x | fixed-order FP32 |
-| attention bwd | 16 (TP 4) | 4.31x / 2.08x | 4.61x / 2.43x | fixed-order FP32 (delta kernel; dq / dkv rows kernels bit-identical) |
-| attention bwd | 64 (TP 1) | 5.05x / 2.82x | 5.46x / 3.24x | fixed-order FP32 (tcgen05 rows kernel: dKV over the 64 heads in tensor memory; delta kernel) |
-| indexer logits (`thd`) | 32 index heads | 1.49x / 1.39x | 1.55x / 1.41x | bit-identical (sources unchanged) |
-| indexer bwd | 32 index heads | 1.48x / 1.28x | 1.52x / 1.28x | fixed-order FP32 (d_index_k via the split4 reducer; dq / dw bit-identical) |
+| attention fwd | 8 (TP 8) | 2.05x / 2.13x | 1.97x / 2.09x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 8 heads on N) |
+| attention fwd | 16 (TP 4) | 1.72x / 1.61x | 1.70x / 1.72x | fixed-order FP32 |
+| attention fwd | 64 (TP 1) | 4.28x / 3.90x | 4.12x / 4.14x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
+| attention bwd | 8 (TP 8) | 5.48x / 2.74x | 5.45x / 2.99x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
+| attention bwd | 16 (TP 4) | 5.46x / 2.72x | 5.48x / 2.97x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
+| attention bwd | 64 (TP 1) | 5.09x / 2.84x | 5.46x / 3.25x | fixed-order FP32 (tcgen05 rows kernel: dKV over the 64 heads in tensor memory; delta kernel) |
+| indexer logits (`thd`) | 32 index heads | 5.00x / 5.80x | 4.96x / 5.90x | bit-identical to the register-MMA stage (FP32 dot products on tcgen05; the head sum in the register-MMA stage's chain order) |
+| indexer bwd | 32 index heads | 1.73x / 1.47x | 1.76x / 1.43x | fixed-order FP32 (tcgen05 rows kernel + the same split-4 reducer; max dq error vs the FP64 reference identical to three digits to the register-MMA stage) |
 
 `tests/manual/kernels/dsa/bench_dsa_backends.py` reproduces the comparison with its own timer.
 
