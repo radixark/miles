@@ -1,8 +1,11 @@
-# A maintainer-applied `run-ci*` label doubles as the "Approve and run"
-# decision for fork PRs from first-time contributors, on this and every later
-# push. Kept apart from pr-test.yml: tests run PR-world merge-ref code, while
-# approval must come from main's workflow definition and base-repo token
-# (`pull_request_target`). This job checks out nothing from the fork.
+# A maintainer-applied `run-ci*` label is the "Approve and run" decision for a
+# fork PR from a first-time contributor -- for the code that was present when
+# the label was applied, NOT for later, unreviewed pushes. `synchronize` is
+# deliberately excluded: a new push must be re-reviewed (re-apply a label, or
+# approve in the UI), because the execution job runs PR-world merge-ref code in
+# a --privileged self-hosted container that shares persistent host state with
+# secret-bearing trusted jobs. Kept apart from pr-test.yml; checks out nothing
+# from the fork (base-repo token, `pull_request_target`).
 
 name: Approve Trusted CI
 
