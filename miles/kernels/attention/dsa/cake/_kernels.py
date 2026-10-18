@@ -59,7 +59,7 @@ INDEXER_TC_QUERY_COLUMNS = 256  # (query, head) columns per CTA of the tcgen05 s
 INDEXER_TC_BWD_HEADS = (32, 64)
 # The tcgen05 rows kernel (one CTA per query row, one CTA per SM) amortises a per-row prologue / epilogue over the row's
 # 128-key tiles: measured on GB300 it is 1.15-1.25x faster than the register-MMA kernel at 32 heads x topk 2048 and at
-# 64 heads x topk 512, but 4-7 % slower at 32 heads x topk 512 (4 tiles), so 32-head rows below this (padded) topk keep the
+# 64 heads x topk 512, but 3-7 % slower at 32 heads x topk 512 (4 tiles), so 32-head rows below this (padded) topk keep the
 # register-MMA stage.
 INDEXER_TC_BWD_MIN_TOPK = {32: 1024, 64: 0}
 
