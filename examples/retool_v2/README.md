@@ -19,7 +19,12 @@ Users only need to focus on business logic (tool definitions, tool execution, re
 
 ## Files
 
-- `tool_sandbox.py`: Tool definitions (`tool_specs`), tool execution (`execute_tool`), reward function (`reward_func`), and sandboxed safe execution environment
+- `tool_sandbox.py`: Tool definitions (`tool_specs`), tool execution (`execute_tool`), reward function (`reward_func`), and the Python code-execution backend.
+
+> **Warning:** `code_interpreter` runs model-generated Python on the rollout
+> host. The in-process `_check_code_safety` regex check is NOT a security
+> boundary and is trivially bypassable. By default execution now requires an
+> OS-level sandbox (`bwrap`/`nsjail`/`firejail`); see `tool_sandbox.py`.
 - `run_retool_multi_turn.py`: Training launch script
 
 ## Quick Start

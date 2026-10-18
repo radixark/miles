@@ -2,6 +2,7 @@ import asyncio
 import gc
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -29,6 +30,40 @@ TOOL_CONFIGS = {
 
 # Global semaphore for controlling concurrent tool executions
 SEMAPHORE = asyncio.Semaphore(TOOL_CONFIGS["tool_concurrency"])
+
+
+def _build_sandboxed_cmd(script_path: str, temp_dir: str) -> list[str] | None:
+    """Wrap `python3 script_path` in an OS-level isolation boundary.
+
+    The in-process regex check is NOT a security boundary: model code can reach
+    the host (e.g. `sys.modules["os"].system(...)`) without writing any import.
+    We therefore run the snippet under bwrap/nsjail/firejail with no network,
+    a read-only root and an isolated, writable cwd. Returns None if no isolation
+    tool is available (the caller then refuses unless explicitly opted out).
+    """
+    inner = ["python3", script_path]
+    if shutil.which("bwrap"):
+        return [
+            "bwrap", "--unshare-all", "--die-with-parent",
+            "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
+            "--ro-bind", "/lib", "/lib", "--symlink", "usr/lib", "/lib64",
+            "--proc", "/proc", "--dev", "/dev",
+            "--bind", temp_dir, temp_dir, "--chdir", temp_dir,
+            *inner,
+        ]
+    if shutil.which("nsjail"):
+        return [
+            "nsjail", "--quiet", "--mode", "o", "--disable_clone_newnet",
+            "--cwd", temp_dir, "--bindmount", f"{temp_dir}:{temp_dir}",
+            "--bindmount_ro", "/usr:/usr", "--bindmount_ro", "/bin:/bin",
+            "--bindmount_ro", "/lib:/lib", "--", *inner,
+        ]
+    if shutil.which("firejail"):
+        return [
+            "firejail", "--quiet", "--net=none", "--private-tmp",
+            f"--private={temp_dir}", "--read-only=/", *inner,
+        ]
+    return None
 
 
 def get_memory_usage() -> float:
@@ -167,10 +202,14 @@ class PythonSandbox:
             # Create safe Python script
             script_path = os.path.join(temp_dir, "code.py")
 
-            # Set environment variables
-            env = os.environ.copy()
-            env["PYTHONPATH"] = temp_dir
-            env["PYTHONUNBUFFERED"] = "1"
+            # Pass only a minimal environment. Never inherit the trainer's env
+            # (os.environ holds API keys, HF/W&B tokens and cloud creds), which
+            # model-written code could otherwise read and exfiltrate.
+            env = {
+                "PATH": "/usr/bin:/bin",
+                "PYTHONPATH": temp_dir,
+                "PYTHONUNBUFFERED": "1",
+            }
 
             yield script_path, env, temp_dir
 
@@ -255,10 +294,21 @@ except Exception as e:
             with open(script_path, "w") as f:
                 f.write(wrapped_code)
 
+            cmd = _build_sandboxed_cmd(script_path, temp_dir)
+            if cmd is None:
+                if os.environ.get("MILES_RETOOL_ALLOW_UNSANDBOXED") != "1":
+                    return (
+                        "Error: no OS-level sandbox (bwrap/nsjail/firejail) found; "
+                        "refusing to run model-generated code on the host. Install "
+                        "one, or set MILES_RETOOL_ALLOW_UNSANDBOXED=1 to accept "
+                        "arbitrary RCE as the training user."
+                    )
+                cmd = ["python3", script_path]
+
             try:
                 # Use subprocess to run code
                 process = subprocess.Popen(
-                    ["python3", script_path],
+                    cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     env=env,
@@ -309,7 +359,7 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "code_interpreter",
-                    "description": "A tool for executing Python code in a safe sandbox environment.",
+                    "description": "A tool for executing Python code. Runs on the rollout host; not a security boundary.",
                     "parameters": {
                         "type": "object",
                         "properties": {"code": {"type": "string", "description": "The Python code to execute"}},
