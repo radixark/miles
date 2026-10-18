@@ -9,6 +9,7 @@ from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
+from miles.utils.compile_cache_utils import node_local_compile_cache_env
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import resolve_ip
 from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
@@ -415,6 +416,8 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_EXPOSE_OWN_ENV_VARS": "1",
         }.items()
     }
+    # Node-local JIT caches (#3158); the process env wins.
+    env_vars.update(node_local_compile_cache_env())
     if args.dumper_enable or args.dumper_inference:
         from miles.utils import dumper_utils
 

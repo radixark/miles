@@ -1304,6 +1304,8 @@ spec:
                 value: "1"
               - name: "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT"
                 value: "true"
+              - name: "SGLANG_CACHE_DIR"
+                value: "/tmp/miles-compile-cache-snapshot/sglang"
               - name: "SGLANG_DG_CACHE_DIR_PER_PROCESS"
                 value: "1"
               - name: "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION"
@@ -1324,6 +1326,12 @@ spec:
                 value: "0"
               - name: "SGLANG_TIMEOUT_KEEP_ALIVE"
                 value: "60"
+              - name: "TORCHINDUCTOR_CACHE_DIR"
+                value: "/tmp/miles-compile-cache-snapshot/torchinductor"
+              - name: "TRITON_CACHE_DIR"
+                value: "/tmp/miles-compile-cache-snapshot/triton"
+              - name: "TVM_FFI_CACHE_DIR"
+                value: "/tmp/miles-compile-cache-snapshot/tvm-ffi"
             ports:
               - name: "primary"
                 containerPort: 8000
@@ -1511,6 +1519,8 @@ spec:
                 value: "1"
               - name: "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT"
                 value: "true"
+              - name: "SGLANG_CACHE_DIR"
+                value: "/tmp/miles-compile-cache-snapshot/sglang"
               - name: "SGLANG_DG_CACHE_DIR_PER_PROCESS"
                 value: "1"
               - name: "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION"
@@ -1531,6 +1541,12 @@ spec:
                 value: "0"
               - name: "SGLANG_TIMEOUT_KEEP_ALIVE"
                 value: "60"
+              - name: "TORCHINDUCTOR_CACHE_DIR"
+                value: "/tmp/miles-compile-cache-snapshot/torchinductor"
+              - name: "TRITON_CACHE_DIR"
+                value: "/tmp/miles-compile-cache-snapshot/triton"
+              - name: "TVM_FFI_CACHE_DIR"
+                value: "/tmp/miles-compile-cache-snapshot/tvm-ffi"
             ports:
               - name: "primary"
                 containerPort: 8000

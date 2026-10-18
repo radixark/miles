@@ -9,6 +9,7 @@ from miles.backends.megatron_utils.megatron_config import (
     resolve_megatron_config,
 )
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+from miles.utils.compile_cache_utils import node_local_compile_cache_env
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
@@ -202,6 +203,7 @@ def _compute_spec_trainer(
     assert total_gpus % num_cells == 0, f"{total_gpus=} must be divisible by {num_cells=}"
     gpus_per_cell = total_gpus // num_cells
 
+    compile_cache_env = node_local_compile_cache_env()
     fp8_scales = (
         x
         if (x := os.environ.get("NVTE_FP8_BLOCK_SCALING_FP32_SCALES")) is not None
@@ -213,7 +215,9 @@ def _compute_spec_trainer(
         category=POOL_CATEGORY_TRAINER_ENGINE,
         deploy_component=DeployComponent.TRAINER,
         port_infos=[PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True)],
-        env_var=lambda ctx: compute_trainer_env_vars(args, ctx, fp8_scales=fp8_scales),
+        env_var=lambda ctx: compute_trainer_env_vars(
+            args, ctx, fp8_scales=fp8_scales, compile_cache_env=compile_cache_env
+        ),
         scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=gpus_per_cell,
@@ -241,7 +245,11 @@ def _compute_spec_trainer(
     )
 
 
-def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str) -> dict[str, str]:
+def compute_trainer_env_vars(
+    args, ctx: WorkerLaunchContext, *, fp8_scales: str, compile_cache_env: dict[str, str] | None = None
+) -> dict[str, str]:
+    if compile_cache_env is None:
+        compile_cache_env = node_local_compile_cache_env()
     env_vars = {
         # because sglang will always set NCCL_CUMEM_ENABLE to 0
         # we need also set it to 0 to prevent nccl error.
@@ -250,6 +258,10 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
         "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
         "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": fp8_scales,
         **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
+        # Node-local JIT caches (#3158), resolved on the driver like fp8_scales so the
+        # user in the path is the job's user, not whoever runs the worker manager.
+        # A --train-env-vars value wins over both the default and the process env.
+        **compile_cache_env,
         **args.train_env_vars,
     }
 
