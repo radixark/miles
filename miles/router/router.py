@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import os
 import sys
+from urllib.parse import urlsplit
 
 import httpx
 import setproctitle
@@ -38,6 +40,11 @@ class MilesRouter:
         """Initialize the miles-router with SGLang router address"""
         self.config = config
         self.verbose = verbose
+        # Shared secret required to mutate the routing pool. Set the same value
+        # on the router process and on the Ray-launched engines that
+        # self-register. When unset, worker registration is disabled entirely so
+        # a network peer can never inject a worker URL (SSRF / poisoning / DoS).
+        self.auth_token = os.environ.get("MILES_ROUTER_AUTH_TOKEN")
 
         self.app = FastAPI()
         self.app.router.on_startup.append(self._start_background_health_check)
@@ -175,6 +182,33 @@ class MilesRouter:
         except Exception:
             return Response(content=content, status_code=status_code, headers=headers, media_type=content_type)
 
+    def _check_auth(self, request: Request) -> JSONResponse | None:
+        """Authorize a routing-pool mutation. Returns an error response if denied."""
+        if not self.auth_token:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "worker registration is disabled (MILES_ROUTER_AUTH_TOKEN unset)"},
+            )
+        presented = request.headers.get("x-miles-router-token")
+        if presented != self.auth_token:
+            return JSONResponse(status_code=403, content={"error": "invalid or missing router token"})
+        return None
+
+    @staticmethod
+    def _validate_worker_url(url: str) -> bool:
+        """Reject anything that is not a plain http(s) origin.
+
+        Blocks SSRF primitives: non-http schemes, a missing host, and embedded
+        '?'/'#' that would smuggle a query/fragment into the proxied path.
+        """
+        if any(c in url for c in "?#"):
+            return False
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return False
+        # A worker URL is a bare origin: no path/params/query/fragment.
+        return parts.path in ("", "/") and not parts.params and not parts.query and not parts.fragment
+
     async def add_worker(self, request: Request):
         """Add a new worker to the router.
         Supports providing the URL via query string or JSON body.
@@ -182,11 +216,15 @@ class MilesRouter:
         - POST /add_worker?url=http://127.0.0.1:10090
         - POST /add_worker  with body {"url": "http://127.0.0.1:10090"}
         """
+        if (denied := self._check_auth(request)) is not None:
+            return denied
         worker_url = await self._parse_worker_url(request)
         if not worker_url:
             return JSONResponse(
                 status_code=400, content={"error": "worker_url is required (use query ?url=... or JSON body)"}
             )
+        if not self._validate_worker_url(worker_url):
+            return JSONResponse(status_code=400, content={"error": "worker_url must be a bare http(s) origin"})
 
         # Add if new, keep a simple request count per worker
         if worker_url not in self.worker_request_counts:
@@ -200,6 +238,8 @@ class MilesRouter:
 
     async def remove_worker(self, request: Request):
         """Remove a worker from the router, using the same URL conventions as add_worker."""
+        if (denied := self._check_auth(request)) is not None:
+            return denied
         worker_url = await self._parse_worker_url(request)
         if worker_url is None:
             return JSONResponse(
