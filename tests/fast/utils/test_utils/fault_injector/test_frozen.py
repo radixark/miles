@@ -8,9 +8,13 @@ import pytest
 from pydantic import ValidationError
 from tests.utils.ft.launch import DEFAULT_TRAIN_SCRIPT
 
-from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext, FaultHookResources
-from miles.utils.test_utils.fault_injector.actions.frozen import (
+from miles.utils.test_utils.fault_injector.actions.base import (
     PARKABLE_TRAIN_SCRIPT,
+    FaultHookContext,
+    FaultHookResources,
+)
+from miles.utils.test_utils.fault_injector.actions.cell import RestartRolloutCellAction
+from miles.utils.test_utils.fault_injector.actions.frozen import (
     SLEEP_FOREVER_INTERVAL_SECONDS,
     SleepAction,
     SleepForeverAction,
@@ -127,6 +131,9 @@ class TestSleepForeverHook:
 
 class TestParkableLoops:
     @pytest.mark.parametrize(
+        "action", [SleepForeverAction(), RestartRolloutCellAction(cell_id="inference-engine-all-0-0-00001")]
+    )
+    @pytest.mark.parametrize(
         "script,interval,model_id,message",
         [
             ("train_async.py", 1, None, "train_async.py has already started"),
@@ -138,17 +145,18 @@ class TestParkableLoops:
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
+        action,
         script: str,
         interval: int,
         model_id: str | None,
         message: str,
     ) -> None:
-        """Freezing an incompatible loop must fail before claiming that the run has parked."""
+        """A step-boundary action must reject an incompatible loop before any side effect."""
         monkeypatch.setattr(sys, "argv", [f"/miles/{script}"])
         path = tmp_path / "plan.json"
         args = SimpleNamespace(ci_fault_hooks_path=str(path), update_weights_interval=interval, fully_async=False)
         with pytest.raises(AssertionError, match=message):
-            await SleepForeverAction()(
+            await action(
                 context=FaultHookContext(rollout_id=2, trainer_model_id=model_id),
                 resources=FaultHookResources(args=args),
             )

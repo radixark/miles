@@ -187,6 +187,20 @@ class TestFaultHookRequestValidation:
         assert FaultHookRequest.model_validate_json(request.model_dump_json()) == request
         assert request.action.kind == action["kind"]
 
+    @pytest.mark.parametrize(
+        "change",
+        [{"hook_name": None}, {"hook_name": _SEND}, {"delay_ms": 1}, {"rollout_id": None}],
+    )
+    def test_rollout_restart_cannot_escape_its_awaited_step_boundary(self, change: dict[str, object]) -> None:
+        """A detached restart could race the weight transaction instead of preceding it."""
+        request = _request(
+            hook_name=FaultHookName.ORCHESTRATOR_STEP_END,
+            action={"kind": "restart_rollout_cell", "cell_id": "inference-engine-all-0-0-00001"},
+        )
+        assert FaultHookRequest.model_validate_json(request.model_dump_json()) == request
+        with pytest.raises(ValidationError, match="requires an immediate orchestrator_step_end"):
+            FaultHookRequest.model_validate(request.model_dump(mode="json") | change)
+
     def test_a_remote_action_cannot_nest_a_cell_action(self) -> None:
         """The inner action of a remote fault must be a process fault only."""
         with pytest.raises(ValidationError):

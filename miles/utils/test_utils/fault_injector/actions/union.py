@@ -2,7 +2,11 @@ from typing import Annotated
 
 from pydantic import Discriminator
 
-from miles.utils.test_utils.fault_injector.actions.cell import StartCellAction, StopCellAction
+from miles.utils.test_utils.fault_injector.actions.cell import (
+    RestartRolloutCellAction,
+    StartCellAction,
+    StopCellAction,
+)
 from miles.utils.test_utils.fault_injector.actions.frozen import SleepAction, SleepForeverAction
 from miles.utils.test_utils.fault_injector.actions.process import (
     DeadlockThreadAction,
@@ -25,6 +29,7 @@ FaultAction = Annotated[
     | DeadlockThreadAction
     | StopCellAction
     | StartCellAction
+    | RestartRolloutCellAction
     | SleepAction
     | SleepForeverAction
     | ApiServerFaultAction,

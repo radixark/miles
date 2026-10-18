@@ -106,7 +106,10 @@ is deliberate: a mismatch names the layer instead of just saying the model diffe
 `[{"request_id": "stop", "hook_name": "trainer_controller_step_end", "action": {"kind": "stop_cell", "cell_id": "trainer-engine-actor-00000"}, "rollout_id": 3}]`. A request waits at a named hook
 (`trainer_step_before_allreduce`, `trainer_controller_step_start`, `trainer_controller_step_end`, `orchestrator_step_end`, the weight-update
 hooks) and runs its action there (`kill_process`, `exit_process`, `segfault_process`, `freeze_process`, `stop_process`, `deadlock_thread`, `stop_cell`, `start_cell`,
-`sleep`, `sleep_forever`, `observe`, `api_server_fault`). It is how the fault-tolerance suite kills things on purpose. See
+`sleep`, `sleep_forever`, `observe`, `api_server_fault`, `restart_rollout_cell`). The rollout
+restart runs immediately at `orchestrator_step_end` for its declared rollout, requires rollout fault tolerance
+and synchronous single-policy training, and waits for a fresh Running replacement before the
+next weight transaction. It is how the fault-tolerance suite kills things on purpose. See
 [Fault Tolerance](/advanced/fault-tolerance).
 
 ## Aligning precision

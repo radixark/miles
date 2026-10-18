@@ -9,6 +9,7 @@ from pydantic import Discriminator, Field, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
+from miles.utils.test_utils.fault_injector.actions.cell import RestartRolloutCellAction
 from miles.utils.test_utils.fault_injector.actions.frozen import SleepForeverAction
 from miles.utils.test_utils.fault_injector.actions.process import DeadlockThreadAction
 from miles.utils.test_utils.fault_injector.actions.union import FaultAction
@@ -95,6 +96,10 @@ class FaultHookRequest(FrozenStrictBaseModel):
 
     @model_validator(mode="after")
     def _validate_target(self) -> "FaultHookRequest":
+        if isinstance(self.action, RestartRolloutCellAction) and (
+            self.hook_name is not FaultHookName.ORCHESTRATOR_STEP_END or self.delay_ms != 0 or self.rollout_id is None
+        ):
+            raise ValueError("Rollout restart requires an immediate orchestrator_step_end hook with rollout_id")
         if (
             self.hook_name is not None
             and self.hook_name.owner is not FaultHookOwner.TRAINER_ACTOR
