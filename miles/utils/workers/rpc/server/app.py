@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -17,12 +18,15 @@ from miles.utils.workers.rpc.common.protocol import (
     EXPECTED_BOOT_UUID_HEADER,
     HEALTH_PATH,
     IN_FLIGHT_PATH,
+    RPC_SHARED_SECRET_HEADER,
     SUBMIT_PATH,
+    UNAUTHORIZED_STATUS,
     CallStatusResponse,
     HealthResponse,
     InFlightResponse,
     SubmitRequest,
     SubmitResponse,
+    read_rpc_shared_secret,
 )
 from miles.utils.workers.rpc.server.core import RpcServer
 
@@ -40,6 +44,25 @@ def create_rpc_app(worker: object) -> FastAPI:
             await server.close()
 
     app = FastAPI(lifespan=lifespan)
+
+    expected_secret = read_rpc_shared_secret()
+
+    @app.middleware("http")
+    async def shared_secret_guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        # Authenticate before routing, so the body is never parsed (and no `Pickled` field is
+        # ever unpickled) for an unauthenticated caller. The health endpoint stays open so
+        # container/liveness probes keep working; it exposes no caller-controlled deserialization.
+        if request.url.path != HEALTH_PATH:
+            if expected_secret is None:
+                log_structured(logger.error, tag="rpc", op="server", phase="reject", reason="shared_secret_unset")
+                return JSONResponse(
+                    status_code=UNAUTHORIZED_STATUS, content={"detail": "rpc shared secret not configured"}
+                )
+            provided = request.headers.get(RPC_SHARED_SECRET_HEADER)
+            if provided is None or not hmac.compare_digest(provided, expected_secret):
+                log_structured(logger.warning, tag="rpc", op="server", phase="reject", reason="shared_secret_mismatch")
+                return JSONResponse(status_code=UNAUTHORIZED_STATUS, content={"detail": "unauthorized"})
+        return await call_next(request)
 
     @app.middleware("http")
     async def boot_uuid_guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:

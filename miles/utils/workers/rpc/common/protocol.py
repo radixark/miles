@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Literal
 
 from miles.utils.pydantic_utils import StrictBaseModel
 
 EXPECTED_BOOT_UUID_HEADER = "x-miles-expected-boot-uuid"
 BOOT_UUID_HEADER = "x-miles-boot-uuid"
+
+# Per-run shared secret that authenticates every rpc caller. The driver generates it once and
+# delivers it to the worker process out of band (K8s Secret / Ray runtime env). It is NOT
+# echoed in responses, unlike the boot uuid, so a network peer cannot learn it by probing.
+RPC_SHARED_SECRET_HEADER = "x-miles-rpc-secret"
+RPC_SHARED_SECRET_ENV = "MILES_RPC_SHARED_SECRET"
+
+UNAUTHORIZED_STATUS = 401
+
+
+def read_rpc_shared_secret() -> str | None:
+    """The per-run rpc shared secret, or None when unset. The server fails closed when None."""
+    secret = os.environ.get(RPC_SHARED_SECRET_ENV)
+    return secret or None
+
 
 BOOT_UUID_MISMATCH_STATUS = 412
 
