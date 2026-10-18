@@ -32,13 +32,15 @@ ATTENTION_D_ROPE = 64  # the MLA rope tail width (d_tail 64)
 # register-MMA forward everywhere.
 ATTENTION_TC_HEADS = (8, 16, 32, 64)
 ATTENTION_TC_ARCHES = ("sm_100a", "sm_103a")
-# The tcgen05 backward rows stages ``dsa_attention_bwd_tc_h64_d512t{d_tail}`` (one CTA per query row holding all 64
-# heads, the generator's ``dsa_h64_bwd`` schedule on the flat contract; the key-side dKV is accumulated over the heads
-# in tensor memory and written as ONE FP32 partial per (row, slot) for the sorted segmented reducer) exist for rows with
-# exactly 64 heads on ``ATTENTION_TC_ARCHES``; every other head count runs the register-MMA rows kernels (h16 / h32 /
-# the h32x2 cluster pair).  ``MILES_DSA_ATTENTION_BWD_TC=0`` forces the register-MMA backward everywhere.  Numerics:
-# FP32 accumulation in the tensor-core order (deterministic run to run, within the register-MMA stages' tolerances).
-ATTENTION_TC_BWD_HEADS = (64,)
+# The tcgen05 backward rows stages ``dsa_attention_bwd_tc_h{H}_d512t{d_tail}`` (one CTA per query row holding all of the
+# row's heads; the key-side dKV is accumulated over the heads in tensor memory and written as ONE FP32 partial per
+# (row, slot) for the sorted segmented reducer) exist for rows with exactly 64 heads (the generator's ``dsa_h64_bwd``
+# schedule, heads on the MMA M axis) and exactly 8 heads (the generator's swap-AB ``dsa_swapab_bwd`` schedule, keys on the
+# M axis) on ``ATTENTION_TC_ARCHES``; every other head count runs the register-MMA rows kernels (h16 / h32 / the h32x2
+# cluster pair).  Both stages share one launch ABI.  ``MILES_DSA_ATTENTION_BWD_TC=0`` forces the register-MMA backward
+# everywhere.  Numerics: FP32 accumulation in the tensor-core order (deterministic run to run, within the register-MMA
+# stages' tolerances).
+ATTENTION_TC_BWD_HEADS = (8, 64)
 TOPK_STAGE_PREFIX = "dsa_topk_fp32_"
 INDEXER_TOPK_STAGE_PREFIX = "dsa_indexer_topk_"
 

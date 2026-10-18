@@ -23,7 +23,7 @@ TOPK_STAGES = {f"dsa_topk_fp32_c{capacity}_k512" for capacity in (4096, 8192, 16
 TOPK_THREADS = {4096: 256, 8192: 256, 16384: 512, 32768: 512}
 FUSED_STAGES = {"dsa_indexer_topk_scan_h32_d128", "dsa_indexer_topk_finalize_k512"}
 TC_STAGES = {f"dsa_attention_fwd_tc_h{h}_d512t{t}" for h in (8, 16, 32, 64) for t in (64, 0)}
-TC_BWD_STAGES = {f"dsa_attention_bwd_tc_h64_d512t{t}" for t in (64, 0)}
+TC_BWD_STAGES = {f"dsa_attention_bwd_tc_h{h}_d512t{t}" for h in (8, 64) for t in (64, 0)}
 
 
 def _load(name: str, relative: str):
@@ -150,24 +150,30 @@ def test_generated_package_registry_covers_both_architectures():
     assert len({jit.MODULES[stage]["name"] for stage in TC_BWD_STAGES}) == len(TC_BWD_STAGES)
 
 
-def test_attention_backward_dispatch_selects_the_tcgen05_stage_for_64_heads(monkeypatch):
-    """Rows with exactly 64 heads run the tcgen05 backward rows kernel on both exported architectures (one partial per
-    slot); other head counts, other architectures and the kill switch keep the register-MMA / cluster-pair rows kernels.
+def test_attention_backward_dispatch_selects_the_tcgen05_stages_for_8_and_64_heads(monkeypatch):
+    """Rows with exactly 64 heads (``dsa_h64_bwd``) or exactly 8 heads (the swap-AB schedule) run the tcgen05 backward rows
+    kernel on both exported architectures (one partial per slot); other head counts, other architectures and the kill
+    switch keep the register-MMA / cluster-pair rows kernels.
     """
     from miles.kernels.attention.dsa.cake import _kernels
 
     monkeypatch.delenv("MILES_DSA_ATTENTION_BWD_TC", raising=False)
     for arch in ("sm_100a", "sm_103a"):
-        for tail in (64, 0):
-            assert _kernels.attention_tc_bwd_stage(64, tail, arch) == f"dsa_attention_bwd_tc_h64_d512t{tail}"
-            assert _kernels.attention_tc_bwd_stage(64, tail, arch) in TC_BWD_STAGES
-        for heads in (1, 16, 32, 40, 48, 65, 128):
+        for heads in (8, 64):
+            for tail in (64, 0):
+                assert _kernels.attention_tc_bwd_stage(heads, tail, arch) == f"dsa_attention_bwd_tc_h{heads}_d512t{tail}"
+                assert _kernels.attention_tc_bwd_stage(heads, tail, arch) in TC_BWD_STAGES
+        for heads in (1, 4, 16, 32, 40, 48, 65, 128):
             assert _kernels.attention_tc_bwd_stage(heads, 0, arch) is None
     assert _kernels.attention_tc_bwd_stage(64, 0, "sm_90a") is None
+    assert _kernels.attention_tc_bwd_stage(8, 0, "sm_90a") is None
     monkeypatch.setenv("MILES_DSA_ATTENTION_BWD_TC", "0")
     assert _kernels.attention_tc_bwd_stage(64, 0, "sm_100a") is None
+    assert _kernels.attention_tc_bwd_stage(8, 0, "sm_100a") is None
     geo = _kernels.AttentionGeometry(64, 512, 0, 32, 2, 640, False, True)
     assert geo.kv_partials == 1 and geo.d_qk == 512
+    geo8 = _kernels.AttentionGeometry(8, 512, 0, 16, 1, 640, False, True)
+    assert geo8.kv_partials == 1 and geo8.block_h == 16
     assert _kernels.AttentionGeometry(64, 512, 0, 32, 2, 640, True).kv_partials == 1
     assert _kernels.AttentionGeometry(64, 512, 0, 32, 2, 640, False).kv_partials == 2
     assert {_kernels._stage_family(stage) for stage in TC_BWD_STAGES} == {"attention"}
