@@ -11,6 +11,8 @@ from miles.utils.workers.rpc.common.protocol import (
     BOOT_UUID_HEADER,
     BOOT_UUID_MISMATCH_STATUS,
     EXPECTED_BOOT_UUID_HEADER,
+    RPC_SHARED_SECRET_HEADER,
+    read_rpc_shared_secret,
 )
 
 _ResponseT = TypeVar("_ResponseT", bound=BaseModel)
@@ -56,6 +58,9 @@ class RpcTransport:
         self, method: str, path: str, *, seconds: float, response_model: type[_ResponseT], **kwargs: Any
     ) -> _ResponseT:
         headers = dict(kwargs.pop("headers", {}))
+        secret = read_rpc_shared_secret()
+        if secret is not None:
+            headers[RPC_SHARED_SECRET_HEADER] = secret
         if self._boot_uuid_pin.expected is not None:
             headers[EXPECTED_BOOT_UUID_HEADER] = self._boot_uuid_pin.expected
         response = await asyncio.wait_for(
