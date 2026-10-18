@@ -24,6 +24,7 @@ TOPK_THREADS = {4096: 256, 8192: 256, 16384: 512, 32768: 512}
 FUSED_STAGES = {"dsa_indexer_topk_scan_h32_d128", "dsa_indexer_topk_finalize_k512"}
 TC_STAGES = {f"dsa_attention_fwd_tc_h{h}_d512t{t}" for h in (8, 16, 32, 64) for t in (64, 0)}
 TC_BWD_STAGES = {f"dsa_attention_bwd_tc_h{h}_d512t{t}" for h in (8, 16, 32, 64) for t in (64, 0)}
+INDEXER_TC_STAGES = {f"dsa_indexer_logits_tc_h{h}" for h in (8, 16, 32, 64)}
 
 
 def _load(name: str, relative: str):
@@ -88,6 +89,7 @@ def test_generated_package_registry_covers_both_architectures():
         *FUSED_STAGES,
         *TC_STAGES,
         *TC_BWD_STAGES,
+        *INDEXER_TC_STAGES,
     }
     assert set(jit.MODULES) == expected
     for stage, record in jit.MODULES.items():
@@ -148,6 +150,20 @@ def test_generated_package_registry_covers_both_architectures():
         assert record["block"] == [640, 1, 1] and record["tma_workspace_bytes"] == 0, stage
         assert record["compile_flags"] == [], stage
     assert len({jit.MODULES[stage]["name"] for stage in TC_BWD_STAGES}) == len(TC_BWD_STAGES)
+    # the tcgen05 indexer logits stages: the register-MMA logits ABI with ``index_q`` / ``index_k`` as by-value tensor maps
+    # (no workspace), 320 threads, built plain
+    indexer_tc_args = "index_q index_k weights cu_ks cu_ke logits seq_len seq_len_kv".split()
+    for stage in sorted(INDEXER_TC_STAGES):
+        record = jit.MODULES[stage]
+        assert [name for kind, name in record["arg_plan"] if kind != "grid"] == indexer_tc_args, stage
+        assert [kind for kind, _ in record["arg_plan"]][:2] == ["tma_buffer", "tma_buffer"], stage
+        assert "workspace" not in {kind for kind, _ in record["arg_plan"]}, stage
+        assert record["block"] == [320, 1, 1] and record["tma_workspace_bytes"] == 0, stage
+        assert record["compile_flags"] == [], stage
+    assert len({jit.MODULES[stage]["name"] for stage in INDEXER_TC_STAGES}) == len(INDEXER_TC_STAGES)
+    # the register-MMA logits stages stay in the package as the fallback of every other head count / architecture
+    for heads in (8, 16, 32, 64):
+        assert jit.MODULES[f"dsa_indexer_logits_h{heads}"]["block"] == [256, 1, 1]
 
 
 def test_attention_backward_dispatch_selects_the_tcgen05_stages_for_8_16_32_and_64_heads(monkeypatch):
@@ -652,3 +668,22 @@ def test_lightning_indexer_fused_switch_routes_and_globalizes(monkeypatch):
         with pytest.raises(Launched, match="dsa_indexer_logits_h32"):
             ops.lightning_indexer(q, k, w, ks, ke, topk, layout="thd", **kwargs)
     assert not seen, "the fused launcher must not run under topk_indices= or a logits backend"
+
+
+def test_indexer_logits_dispatch_selects_the_tcgen05_stage_for_exported_head_counts(monkeypatch):
+    """8 / 16 / 32 / 64 indexer heads run the tcgen05 logits stage on both exported architectures; other head counts, other
+    architectures and the kill switch keep the register-MMA logits stage."""
+    from miles.kernels.attention.dsa.cake import _kernels
+
+    monkeypatch.delenv("MILES_DSA_INDEXER_TC", raising=False)
+    for arch in ("sm_100a", "sm_103a"):
+        for heads in (8, 16, 32, 64):
+            assert _kernels.indexer_tc_stage(heads, arch) == f"dsa_indexer_logits_tc_h{heads}"
+            assert _kernels.indexer_tc_stage(heads, arch) in INDEXER_TC_STAGES
+            assert _kernels.INDEXER_TC_QUERY_COLUMNS % heads == 0
+        for heads in (1, 4, 24, 48, 128):
+            assert _kernels.indexer_tc_stage(heads, arch) is None
+    assert _kernels.indexer_tc_stage(32, "sm_90a") is None
+    monkeypatch.setenv("MILES_DSA_INDEXER_TC", "0")
+    assert _kernels.indexer_tc_stage(32, "sm_100a") is None
+    assert _kernels.INDEXER_TC_HEADS == (8, 16, 32, 64) and _kernels.INDEXER_HEADS == (8, 16, 32, 64)
