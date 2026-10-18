@@ -168,11 +168,15 @@ def test_generated_package_registry_covers_both_architectures():
         assert jit.MODULES[f"dsa_indexer_logits_h{heads}"]["block"] == [256, 1, 1]
     # the tcgen05 indexer backward rows stages: the register-MMA ``dsa_indexer_bwd_h{H}`` ABI with ``index_k`` as a by-value
     # tensor map (no workspace), 256 threads, built plain
-    indexer_tc_bwd_args = "index_q index_k weights topk_indices grad_scores d_index_q d_weights partial heads topk".split()
+    indexer_tc_bwd_args = (
+        "index_q index_k weights topk_indices grad_scores d_index_q d_weights partial heads topk".split()
+    )
     for stage in sorted(INDEXER_TC_BWD_STAGES):
         record = jit.MODULES[stage]
         assert [name for kind, name in record["arg_plan"] if kind != "grid"] == indexer_tc_bwd_args, stage
-        assert [name for kind, name in jit.MODULES["dsa_indexer_bwd_h32"]["arg_plan"] if kind != "grid"] == indexer_tc_bwd_args
+        assert [
+            name for kind, name in jit.MODULES["dsa_indexer_bwd_h32"]["arg_plan"] if kind != "grid"
+        ] == indexer_tc_bwd_args
         assert "workspace" not in {kind for kind, _ in record["arg_plan"]}, stage
         assert record["block"] == [256, 1, 1] and record["tma_workspace_bytes"] == 0, stage
         assert record["compile_flags"] == [], stage
@@ -220,7 +224,9 @@ def test_attention_backward_dispatch_selects_the_tcgen05_stages_for_8_16_32_and_
     for arch in ("sm_100a", "sm_103a"):
         for heads in (8, 16, 32, 64):
             for tail in (64, 0):
-                assert _kernels.attention_tc_bwd_stage(heads, tail, arch) == f"dsa_attention_bwd_tc_h{heads}_d512t{tail}"
+                assert (
+                    _kernels.attention_tc_bwd_stage(heads, tail, arch) == f"dsa_attention_bwd_tc_h{heads}_d512t{tail}"
+                )
                 assert _kernels.attention_tc_bwd_stage(heads, tail, arch) in TC_BWD_STAGES
         for heads in (1, 4, 12, 24, 40, 48, 65, 128):
             assert _kernels.attention_tc_bwd_stage(heads, 0, arch) is None
@@ -507,10 +513,10 @@ def test_prebuild_is_scoped_to_the_stage_family(monkeypatch):
     assert len(calls) == 1, "a family is prebuilt once per architecture"
     _kernels._kernel("dsa_indexer_clean", "cuda")
     assert len(calls) == 2 and set(calls[1][1]) == set(_jit.MODULES) - TOPK_STAGES - FUSED_STAGES
-    # 17 pre-existing + delta + split reducer + the six tcgen05 forward stages + the two cluster-pair backward stages
-    # + the two tcgen05 backward stages
-    assert len(calls[1][1]) == 21 + len(TC_STAGES) + len(
-        TC_BWD_STAGES
+    # 17 pre-existing + delta + split reducer + the eight tcgen05 forward stages + the two cluster-pair backward stages
+    # + the four tcgen05 backward stages + the four tcgen05 indexer logits stages + the two tcgen05 indexer backward stages
+    assert len(calls[1][1]) == 21 + len(TC_STAGES) + len(TC_BWD_STAGES) + len(INDEXER_TC_STAGES) + len(
+        INDEXER_TC_BWD_STAGES
     ), "the attention / indexer family builds neither top-k family"
     _kernels._kernel("dsa_indexer_topk_scan_h32_d128", "cuda")
     assert len(calls) == 3 and set(calls[2][1]) == FUSED_STAGES, "the fused family builds exactly its two stages"
@@ -700,8 +706,11 @@ def test_lightning_indexer_fused_switch_routes_and_globalizes(monkeypatch):
         ops.lightning_indexer(q, k, w, ks, ke, topk, layout="bshd", topk_backend="cake_fused")
     with pytest.raises(ValueError, match="ratio applies to topk_backend='cake_fused' only"):
         ops.lightning_indexer(q, k, w, ks, ke, topk, layout="thd", topk_backend="torch", ratio=2)
-    # replay pass-through and the logits backends: the dense indexer logits kernel is the first launch
+    # replay pass-through and the logits backends: the dense indexer logits kernel is the first launch (a non-Blackwell
+    # arch keeps the register-MMA logits stage here; the tcgen05 routing is covered by
+    # test_indexer_logits_dispatch_selects_the_tcgen05_stage_for_exported_head_counts)
     seen.clear()
+    monkeypatch.setattr(_kernels, "device_arch", lambda device: "sm_90a")
     for kwargs in (
         dict(topk_backend="cake_fused", topk_indices=idx),
         dict(topk_backend="cake"),
