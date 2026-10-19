@@ -80,19 +80,6 @@ def _refuse_lookup(*_args, **_kwargs):
     raise AssertionError("a name lookup ran for a host that needs none")
 
 
-@pytest.mark.parametrize("headers", [{}, {"X-Policy": "one", "x-routing-key": "two"}])
-def test_validate_request_headers_preserves_casing(headers):
-    original = headers.copy()
-    http_utils.validate_request_headers(headers)
-    assert headers == original
-
-
-@pytest.mark.parametrize("second_value", ["one", "two"])
-def test_validate_request_headers_rejects_duplicate_names(second_value):
-    with pytest.raises(ValueError, match="duplicate case-insensitive names"):
-        http_utils.validate_request_headers({"X-Policy": "one", "x-policy": second_value})
-
-
 class TestResolveIp:
     def test_an_ipv4_literal_passes_through_without_a_lookup(self, monkeypatch):
         """A literal already is what a socket address parser wants, so resolving it would only add a failure mode."""

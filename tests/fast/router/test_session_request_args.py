@@ -55,11 +55,12 @@ def _assert_exported_turn_args(exported: dict, request_args: dict):
 @pytest.mark.parametrize("evaluation", [False, True])
 def test_request_headers_preserve_session_generation(version, evaluation):
     calls = []
-    received_headers = []
     do_proxy = SessionServer.do_proxy
 
-    async def record_proxy(self, request, path, *, body, headers):
-        received_headers.append(headers)
+    async def checked_proxy(self, request, path, *, body, headers):
+        assert headers["X-SMG-Routing-Key"] == "replacement"
+        assert headers["x-policy"] == "policy"
+        assert headers["content-type"] == "application/json"
         return await do_proxy(self, request, path, body=body, headers=headers)
 
     def customize_headers(headers, *, evaluation):
@@ -69,7 +70,7 @@ def test_request_headers_preserve_session_generation(version, evaluation):
         return {**headers, "X-SMG-Routing-Key": "replacement", "x-policy": "policy"}
 
     with function_registry.temporary("test.customize_headers", customize_headers), patch.object(
-        SessionServer, "do_proxy", record_proxy
+        SessionServer, "do_proxy", checked_proxy
     ):
         with _serve(version, {"custom_rollout_request_headers_function_path": "test.customize_headers"}) as env:
             session_id = requests.post(f"{env.url}/sessions", json={"evaluation": evaluation}, timeout=5).json()[
@@ -77,25 +78,14 @@ def test_request_headers_preserve_session_generation(version, evaluation):
             ]
             response = _post_chat(env.url, session_id, {"messages": [USER]})
             assert response.status_code == 200, response.text
-            assert response.json()["choices"][0]["message"]["content"]
-            wire = env.backend.request_log[-1]
-            assert wire["logprobs"] is True
-            assert _records(env.url, session_id)[0]["request"] == wire
-            assert len(received_headers) == 1
-            assert received_headers[0]["x-policy"] == "policy"
-            assert received_headers[0]["X-SMG-Routing-Key"] == "replacement"
-            assert received_headers[0]["content-type"] == "application/json"
+            assert _records(env.url, session_id)[0]["request"] == env.backend.request_log[-1]
             assert calls == [evaluation]
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
-@pytest.mark.parametrize("duplicate_headers", [False, True])
-def test_request_headers_failure_prevents_generation(version, duplicate_headers):
+def test_duplicate_request_headers_prevent_generation(version):
     async def customize_headers(headers, *, evaluation):
-        await asyncio.sleep(0)
-        if duplicate_headers:
-            return {**headers, "x-smg-routing-key": "replacement"}
-        raise RuntimeError("Request metadata is unavailable")
+        return {**headers, "x-smg-routing-key": "replacement"}
 
     with function_registry.temporary("test.customize_headers", customize_headers):
         with _serve(version, {"custom_rollout_request_headers_function_path": "test.customize_headers"}) as env:

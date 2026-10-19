@@ -78,7 +78,8 @@ signatures load through the same adapter. See
 ### `--custom-rollout-request-headers-function-path`
 
 Customize headers for an inference endpoint's routing, authentication, or admission
-requirements without replacing generation:
+requirements on built-in single-turn/multi-turn generation and session-server v1/v2
+chat requests, for training and evaluation:
 
 ```python
 def customize_headers(headers: dict[str, str], *, evaluation: bool) -> dict[str, str]:
@@ -86,33 +87,19 @@ def customize_headers(headers: dict[str, str], *, evaluation: bool) -> dict[str,
 ```
 
 Set `--custom-rollout-request-headers-function-path my_module.customize_headers`. Both sync
-and async functions are supported. Use an async function to fetch external metadata
-without blocking other requests. Failures propagate through existing error handling;
-miles does not send the inference request if obtaining its headers fails.
+and async functions are supported; use async for external lookups without blocking.
 
-The function receives the request's own default headers without changing their casing,
-plus the training/evaluation flag. Native generation includes `X-SMG-Routing-Key`
-when the sample has a routing key; session forwarding derives it from the session ID.
-The function may preserve, replace, remove, or add headers. Its returned dictionary
-replaces the defaults; omitted headers are not restored.
-For example, assigning `headers["X-SMG-Routing-Key"]` overrides the routing default
-without changing the sample or session identity inside miles.
+The function receives the default headers with their original casing, including
+`X-SMG-Routing-Key` when set. Its returned dictionary replaces the defaults, so it can
+add, change, or remove headers without changing the internal sample/session identity.
+Names must be unique ignoring case: returning both `X-Policy` and `x-policy` fails
+before dispatch, as does an exception from the function.
 
-Returned header names must be unique ignoring case. Returning both `X-Policy` and
-`x-policy` raises an error before dispatch, rather than sending ambiguous values.
-
-The endpoint must accept the existing generation protocol. The payload is not exposed:
-sampling, tokenization, required training outputs, and response processing remain
-owned by miles. HTTP serialization and proxy header handling remain unchanged.
-
-The function runs once per inference call in built-in single-turn/multi-turn generation
-and session-server v1/v2 chat forwarding, for training and evaluation. Native generation's
-transport retries reuse the prepared headers; session forwarding keeps its existing
-error propagation to the agent. Custom generators that send requests directly own their
-headers; agents using the session server receive its configured headers. Health checks,
-session management, raw proxy routes, and post-rollout prefill scoring do not invoke
-it; this is not a global HTTP authentication setting. With the function unset,
-requests keep their existing behavior.
+Only headers change: the endpoint must accept the existing generation protocol.
+The function runs once per inference call; native transport retries reuse its result.
+With no function configured, behavior is unchanged. Direct custom generators own
+their headers; health/management calls, raw proxy routes, and prefill scoring are
+outside this hook's scope.
 
 ### `--custom-agent-function-path`
 

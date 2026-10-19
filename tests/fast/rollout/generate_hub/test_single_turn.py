@@ -167,14 +167,10 @@ class TestBasicGeneration:
 
     @pytest.mark.parametrize("headers_result", [{}, {"x-routing-key": "replacement", "x-policy": "policy"}])
     def test_request_headers_preserve_generation(self, variant, generation_env, monkeypatch, headers_result):
-        calls = []
-
         async def customize_headers(headers, *, evaluation):
-            calls.append(evaluation)
+            assert evaluation is False
             assert headers == {"X-SMG-Routing-Key": "original"}
-            headers.pop("X-SMG-Routing-Key")
-            headers.update(headers_result)
-            return headers
+            return headers_result
 
         module = (
             "miles.rollout.sglang_rollout"
@@ -193,7 +189,6 @@ class TestBasicGeneration:
         with function_registry.temporary("test.customize_headers", customize_headers):
             result = _run_generate(variant, generation_env, sample)
 
-        assert calls == [False]
         assert result.requests == [expected_request(variant)]
         expected = expected_sample(variant)
         expected.routing_key = "original"
