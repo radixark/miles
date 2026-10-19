@@ -142,3 +142,13 @@ export MILES_SCRIPT_EXTERNAL_RAY=1   # after `ray start` on every node
 python scripts/run_glm5_3_flash_lora.py train --model-name GLM-5.3-Flash \
   --num-nodes 3 --num-gpus-per-node 8
 ```
+
+## 7. Primus trainer
+
+On ROCm, Primus builds this model and loads the HuggingFace checkpoint in
+process. The reasoning recipe is
+[`examples/primus/run-glm5.3-flash-reasoning-rl.sh`](https://github.com/radixark/miles/blob/main/examples/primus/run-glm5.3-flash-reasoning-rl.sh):
+the same DAPO-Math task, SGLang serving the released FP8 checkpoint, and a
+BF16 trainer with context parallelism and dynamic batching. The logprob gap
+and the reward curve in the table above are the numbers that run should land
+near.
