@@ -2,9 +2,9 @@
 python tools/convert_hf_to_fp8.py [-h] [--model-dir MODEL_DIR] [--save-dir SAVE_DIR] [--strategy {block,channel,tensor}] [--block-size [BLOCK_SIZE ...]]
                            [--max-workers MAX_WORKERS] [--extra-high-precision-layers-hf ...]
 
-Convert linear weight matrices to FP8, preserving vision components and
-non-matrix parameters. Use --extra-high-precision-layers-hf to keep additional
-HF weight-name substrings unquantized.
+Convert HF weights to FP8. Use --extra-high-precision-layers-hf to keep
+additional HF weight-name substrings unquantized, for example visual. when
+the serving model keeps its vision encoder in high precision.
 
 options:
   -h, --help            show this help message and exit
@@ -43,6 +43,8 @@ def ceildiv(a, b):
 
 
 def block_fp8(weight, block_size):
+    if weight.ndim != 2:
+        raise ValueError(f"Block FP8 conversion requires a 2-D weight, got shape {tuple(weight.shape)}.")
 
     # per block quant
     block_n, block_k = block_size[0], block_size[1]
@@ -137,7 +139,6 @@ def process_file(
     for key in weights.keys():
         if (
             key.endswith(".weight")
-            and weights[key].ndim == 2
             and "layernorm" not in key
             and "embed" not in key
             and "router" not in key
@@ -150,7 +151,6 @@ def process_file(
             and "wo_a" not in key
             and "ffn.gate." not in key
             and "compressor." not in key
-            and ".visual." not in f".{key}"
             and "vision_tower" not in key
             and "mm_projector" not in key
             and not any(substr in key for substr in extra_high_precision_layers_hf)
