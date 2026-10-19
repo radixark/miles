@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 from scripts.run_deepseek_v4_1 import ScriptArgs, _prepare_download, _train
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(
@@ -12,6 +12,12 @@ register_cuda_ci(
     labels=["megatron", "model-scripts"],
     hardware=["hopper", "blackwell"],
     num_gpus=8,
+)
+
+register_rocm_ci(
+    est_time=2000,
+    suite="nightly-stage-c-8-gpu-mi350",
+    labels=["megatron", "model-scripts"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")
