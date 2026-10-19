@@ -117,7 +117,7 @@ adapter.
 
 | Layer type | Adapted HF projections |
 |---|---|
-| KDA (34 layers) | `q/k/v/o_proj`, `b_proj`, `f_a/f_b_proj`, `g_a/g_b_proj` |
+| KDA (34 layers) | `q/k/v/o_proj`, `b_proj`, `forget_gate.f_a/f_b_proj`, `g_a/g_b_proj` |
 | DSA (11 layers) | `q_a/q_b_proj`, `kv_a_proj_with_mqa`, `o_proj` |
 | MLP | dense and shared-expert `gate/up/down_proj` |
 
@@ -130,7 +130,7 @@ exactly the table, and selecting a frozen projection fails at argument validatio
 targets.
 
 Serving the adapter needs SGLang LoRA on the KDA projections, which `sglang-miles` does not have
-yet; it is in [sgl-project/sglang#37753](https://github.com/sgl-project/sglang/pull/37753).
+yet; it is in [sgl-project/sglang#44862](https://github.com/sgl-project/sglang/pull/44862).
 
 ```bash
 python scripts/run_glm5_3_flash_lora.py prepare --model-name GLM-5.3-Flash-4layer
