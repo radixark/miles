@@ -90,7 +90,7 @@ def _parse_generalized_path(s: str):
 
 
 def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_length: int | None) -> list[Sample]:
-    if max_length is None:
+    if max_length is None or not origin_samples:
         return origin_samples
 
     if not isinstance(origin_samples[0].prompt, str):
@@ -266,9 +266,8 @@ class Dataset:
         if self.epoch_id == new_epoch_id:
             return
 
-        random.seed(self.seed + new_epoch_id)
         permutation = list(range(len(self.samples)))
-        random.shuffle(permutation)
+        random.Random(self.seed + new_epoch_id).shuffle(permutation)
         self.samples = [self.origin_samples[i] for i in permutation]
         self.epoch_id = new_epoch_id
 

@@ -170,6 +170,7 @@ Sections mirror the launch-script argument groups.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--prompt-data` | str | – | Path to a single JSONL file. |
+| `--rollout-data-config` | str | – | YAML file or inline `base64:` payload for [training dataset mixing](/user-guide/customization#training-dataset-mixing). Replaces `--prompt-data`; requires explicit `--num-rollout`. |
 | `--input-key` | str | `input` | JSONL key to `Sample.prompt`. |
 | `--label-key` | str | `None` | JSONL key to `Sample.label`. |
 | `--metadata-key` | str | `metadata` | JSONL key to `Sample.metadata`. |
