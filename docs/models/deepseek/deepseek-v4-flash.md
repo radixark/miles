@@ -191,16 +191,16 @@ On the Megatron side, V4 needs `--qkv-format bshd` with CP-aware data slicing. W
 
 | kernel | local heads | B200 r2048 / r4096 | GB300 r2048 / r4096 | numerics vs the register-MMA stages |
 |---|---|---|---|---|
-| attention fwd | 64 (TP 1) | 3.88x / 3.88x | 4.26x / 4.14x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
-| attention fwd | 32 (TP 2) | 2.08x / 2.08x | 2.36x / 2.27x | fixed-order FP32 |
-| attention fwd | 16 (TP 4) | 1.53x / 1.52x | 1.79x / 1.70x | fixed-order FP32 |
-| attention fwd | 8 (TP 8) | 2.00x / 1.97x | 2.24x / 2.14x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 8 heads on N) |
-| attention bwd | 64 (TP 1) | 1.97x / 1.77x | 1.80x / 1.74x | fixed-order FP32 (tcgen05 rows kernel: dKV over the 64 heads in tensor memory; delta kernel) |
-| attention bwd | 32 (TP 2) | 1.90x / 1.64x | 1.59x / 1.48x | fixed-order FP32 (swap-AB rows kernel: keys on the MMA M axis, dKV over the heads in tensor memory; delta kernel) |
-| attention bwd | 16 (TP 4) | 1.74x / 1.33x | 1.43x / 1.24x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
-| attention bwd | 8 (TP 8) | 1.69x / 1.33x | 1.42x / 1.27x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
-| indexer logits (`sbhd`) | 64 index heads | 2.83x / 3.94x | 2.81x / 3.92x | bit-identical to the register-MMA stage (FP32 dot products on tcgen05; the head sum in the register-MMA stage's chain order) |
-| indexer bwd | 64 index heads | 1.37x / 1.50x | 1.39x / 1.50x | fixed-order FP32 (tcgen05 rows kernel + the same split-4 reducer; max dq error vs the FP64 reference identical to three digits to the register-MMA stage) |
+| attention fwd | 64 (TP 1) | 3.90x / 3.93x | 4.27x / 4.17x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
+| attention fwd | 32 (TP 2) | 2.09x / 2.08x | 2.35x / 2.31x | fixed-order FP32 |
+| attention fwd | 16 (TP 4) | 1.89x / 1.89x | 2.13x / 2.09x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 16 heads on N) |
+| attention fwd | 8 (TP 8) | 2.03x / 2.00x | 2.28x / 2.21x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 8 heads on N) |
+| attention bwd | 64 (TP 1) | 1.98x / 1.79x | 1.80x / 1.68x | fixed-order FP32 (tcgen05 rows kernel: dKV over the 64 heads in tensor memory; delta kernel) |
+| attention bwd | 32 (TP 2) | 1.91x / 1.65x | 1.60x / 1.44x | fixed-order FP32 (swap-AB rows kernel: keys on the MMA M axis, dKV over the heads in tensor memory; delta kernel) |
+| attention bwd | 16 (TP 4) | 1.72x / 1.33x | 1.43x / 1.23x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
+| attention bwd | 8 (TP 8) | 1.68x / 1.33x | 1.43x / 1.22x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
+| indexer logits (`sbhd`) | 64 index heads | 2.82x / 3.90x | 2.75x / 3.91x | bit-identical to the register-MMA stage (FP32 dot products on tcgen05; the head sum in the register-MMA stage's chain order) |
+| indexer bwd | 64 index heads | 1.36x / 1.50x | 1.39x / 1.51x | fixed-order FP32 (tcgen05 rows kernel + the same split-4 reducer; max dq error vs the FP64 reference identical to three digits to the register-MMA stage) |
 
 Every shape is faster than TileLang on both architectures. `tests/manual/kernels/dsa/bench_dsa_backends.py` reproduces the comparison with its own timer.
 
