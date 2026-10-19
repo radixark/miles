@@ -111,10 +111,9 @@ class GenerateState(metaclass=SingletonMeta):
         self.dp_counts = [0] * (args.sglang_dp_size or 1)
         self.dp_rank = 0
 
-        request_headers_path = getattr(args, "custom_rollout_request_headers_function_path", None)
-        self.rollout_request_headers_function = load_function(request_headers_path)
-        if request_headers_path and not callable(self.rollout_request_headers_function):
-            raise ValueError(f"{request_headers_path!r} must resolve to a callable")
+        self.rollout_request_headers_function = load_function(
+            getattr(args, "custom_rollout_request_headers_function_path", None)
+        )
         self.reset()
 
     @contextmanager

@@ -106,16 +106,8 @@ def test_duplicate_request_headers_leave_session_unchanged(version):
 @pytest.mark.parametrize(
     ("version", "path"), [("v1", "v1/chat/completions"), ("v2", "v1/chat/completions"), ("v1", "abort_request")]
 )
-def test_session_routing_replaces_incoming_key_without_a_hook(version, path):
-    do_proxy = SessionServer.do_proxy
-
-    async def checked_proxy(self, request, path, *, body, headers):
-        assert [(name, value) for name, value in headers.items() if name.lower() == "x-smg-routing-key"] == [
-            ("X-SMG-Routing-Key", session_id)
-        ]
-        return await do_proxy(self, request, path, body=body, headers=headers)
-
-    with patch.object(SessionServer, "do_proxy", checked_proxy), _serve(version) as env:
+def test_duplicate_session_headers_fail_without_a_hook(version, path):
+    with _serve(version) as env:
         session_id = _create_session(env.url)
         response = requests.post(
             f"{env.url}/sessions/{session_id}/{path}",
@@ -123,7 +115,9 @@ def test_session_routing_replaces_incoming_key_without_a_hook(version, path):
             headers={"x-smg-routing-key": "client-key"},
             timeout=10.0,
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 500
+        assert env.backend.request_log == []
+        assert _records(env.url, session_id) == []
 
 
 class TestForbiddenClientFields:

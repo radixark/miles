@@ -214,8 +214,6 @@ class SessionCore:
         self.config = config
         self.instance_id = session_server_instance_id
         self.rollout_request_headers_function = load_function(config.custom_rollout_request_headers_function_path)
-        if config.custom_rollout_request_headers_function_path and not callable(self.rollout_request_headers_function):
-            raise ValueError(f"{config.custom_rollout_request_headers_function_path!r} must resolve to a callable")
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
@@ -344,9 +342,7 @@ class SessionCore:
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-        # Session routing uses the session identity, not a client-provided key.
-        headers = {name: value for name, value in headers.items() if name.lower() != "x-smg-routing-key"}
-        headers["X-SMG-Routing-Key"] = session_id
+        headers = {**headers, "X-SMG-Routing-Key": session_id}
         if self.rollout_request_headers_function is not None:
             headers = await maybe_await(self.rollout_request_headers_function(headers, evaluation=session.evaluation))
         validate_request_headers(headers)
@@ -439,9 +435,7 @@ class SessionCore:
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes
     ) -> Response:
-        # Session routing uses the session identity, not a client-provided key.
-        headers = {name: value for name, value in headers.items() if name.lower() != "x-smg-routing-key"}
-        headers["X-SMG-Routing-Key"] = session_id
+        headers = {**headers, "X-SMG-Routing-Key": session_id}
         validate_request_headers(headers)
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), path, body=body, headers=headers

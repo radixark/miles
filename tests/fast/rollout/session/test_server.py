@@ -12,22 +12,14 @@ from tests.fast.fixtures.session_fixtures import make_session_server_config
 from yarl import URL
 
 from miles.rollout.session import server as session_server_module
-from miles.rollout.session.core import ProxyRequest, SessionCore
+from miles.rollout.session.core import ProxyRequest
 from miles.rollout.session.server import SessionServer, main
-from miles.rollout.session.v2.core import SessionCoreV2
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.workers.argv_utils import config_to_argv
 
 
 class TestSessionServer:
-    @pytest.mark.parametrize("core_class", [SessionCore, SessionCoreV2])
-    @pytest.mark.parametrize("path", ["os.name", "builtins.None"])
-    def test_request_headers_function_must_be_callable(self, core_class, path):
-        config = make_session_server_config(custom_rollout_request_headers_function_path=path)
-        with pytest.raises(ValueError, match="must resolve to a callable"):
-            core_class(backend=None, registry=None, config=config)
-
     def test_proxy_client_lifecycle_without_requests(self):
         """Uvicorn creates the configured client at startup and closes it without needing a request."""
         server = SessionServer(make_session_server_config(timeout=7.5))

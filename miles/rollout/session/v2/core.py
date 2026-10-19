@@ -154,9 +154,7 @@ class SessionCoreV2(SessionCore):
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-        # Session routing uses the session identity, not a client-provided key.
-        headers = {name: value for name, value in headers.items() if name.lower() != "x-smg-routing-key"}
-        headers["X-SMG-Routing-Key"] = session_id
+        headers = {**headers, "X-SMG-Routing-Key": session_id}
         if self.rollout_request_headers_function is not None:
             headers = await maybe_await(self.rollout_request_headers_function(headers, evaluation=session.evaluation))
         validate_request_headers(headers)

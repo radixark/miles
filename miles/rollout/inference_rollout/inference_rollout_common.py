@@ -51,10 +51,9 @@ class GenerateState:
         )
 
         self.generate_function = load_generate_function(args.custom_generate_function_path) or generate
-        request_headers_path = getattr(args, "custom_rollout_request_headers_function_path", None)
-        self.rollout_request_headers_function = load_function(request_headers_path)
-        if request_headers_path and not callable(self.rollout_request_headers_function):
-            raise ValueError(f"{request_headers_path!r} must resolve to a callable")
+        self.rollout_request_headers_function = load_function(
+            getattr(args, "custom_rollout_request_headers_function_path", None)
+        )
 
         self.reset()
 
