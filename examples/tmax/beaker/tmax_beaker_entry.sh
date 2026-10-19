@@ -7,7 +7,7 @@
 #
 # On NUM_NODES > 1 replicas, as open-instruct's multi-node jobs: every replica brings podman up; replica 0 runs
 # the rest and the Ray head; the others join its Ray cluster as GPU workers (configs/beaker_configs/
-# ray_node_setup.sh) and exit when it is gone. The agent processes run on the head, which reaches each worker's
+# ray_node_setup.sh) and leave once the head marks the run done. The agent processes run on the head, which reaches each worker's
 # podman shards through TCP forwards that accept the head's address only; tmax_sandbox caps the live sandboxes
 # per node (sandboxes_per_node), as open-instruct's --pool_size actors spread over its nodes.
 #
@@ -19,8 +19,6 @@
 #   KEEP_LAST_N_CHECKPOINTS   keep only the newest N training checkpoints, 0 keeps all     (default: 0)
 #   EXTRA_ARGS                launcher flags that override the config
 #   DOCKER_PAT, DOCKERHUB_USERNAME   Docker Hub login for the sandbox image pulls
-#   RAY_HEAD_MONITOR_INTERVAL_S, RAY_HEAD_MONITOR_MAX_MISSES   a worker's check of the Ray head, as open-instruct's
-#                             ray_node_setup.sh                                            (default: 5, 6)
 #   SANDBOX_NICE              niceness of the podman services, inherited by every sandbox   (default: 19)
 #   RAY_health_check_timeout_ms, RAY_health_check_failure_threshold   Ray's node health check (default: 20000, 60)
 #   RAY_gcs_rpc_server_reconnect_timeout_s   how long a node's Ray processes wait for an unresponsive head (default: 1200)
@@ -109,7 +107,7 @@ export TMAX_DOCKER_HOST="$SWERL_PODMAN_DOCKER_HOSTS"
 ps -o ni=,args= -p "$(pgrep -d, -f 'podman.* system service')" | cut -c1-120 || true  # the services' niceness
 podman --url "${TMAX_DOCKER_HOST%%,*}" run --rm docker.io/library/alpine:latest echo podman-sandbox-ok
 
-# ---- 2. Ray worker replicas: serve podman to the head, join its Ray cluster and stay until it goes away ----
+# ---- 2. Ray worker replicas: serve podman to the head, join its Ray cluster and stay until the run is done ----
 if [ "$NUM_NODES" -gt 1 ] && [ "$RANK" != 0 ]; then
     # The Docker API is root on this node, so only the head's address may connect (socat 1.8 takes range=a/n
     # only on an IPv4 listener). A forward that does not stay up fails the job rather than leaving its node idle.
@@ -131,35 +129,18 @@ if [ "$NUM_NODES" -gt 1 ] && [ "$RANK" != 0 ]; then
         sleep 15
     done
     ray start --address="$HEAD_IP:$RAY_PORT" --num-gpus "$(nvidia-smi -L | wc -l)" --disable-usage-stats
-    # open-instruct's ray_node_setup.sh, as written: a worker leaves with 1 after RAY_HEAD_MONITOR_MAX_MISSES failed
-    # `ray status` checks of the head in a row, RAY_HEAD_MONITOR_INTERVAL_S apart, with no timeout on a check (a slow
-    # head delays the check rather than failing it), so propagateFailure stops a run whose head is gone. Unlike it, a
-    # worker leaves with 0 once the head marked the run done, so a finished experiment is not failed and retried.
-    # INVESTIGATIONS.md option M: an earlier port added a 10 s timeout per check, which failed starved-but-alive heads;
-    # removing the check altogether is still to explore.
+    # A worker stays until the head marks every node done (HEAD_DONE, once training succeeded) and then leaves with
+    # 0, so a finished experiment is not failed and retried. It does not watch the head: when the head's job fails or
+    # is preempted, Beaker's propagateFailure / propagatePreemption stops this one. open-instruct's ray_node_setup.sh
+    # also leaves after 6 failed `ray status` checks of the head in a row; on 2026-10-19 that check ended resume 6 while
+    # its starved head was slow to answer, minutes after it had recovered from 5 misses (INVESTIGATIONS.md, option M).
     trap 'ray stop --force >/dev/null 2>&1 || true; exit 1' TERM INT HUP EXIT
     set +x
-    misses=0
-    while true; do
-        if ray status --address="$HEAD_IP:$RAY_PORT" >/dev/null 2>&1; then
-            [ "$misses" -gt 0 ] && echo "Ray head status recovered after $misses failed checks"
-            misses=0
-        else
-            misses=$((misses + 1))
-            echo "Ray head status check failed ($misses/${RAY_HEAD_MONITOR_MAX_MISSES:-6})"
-            if [ "$misses" -ge "${RAY_HEAD_MONITOR_MAX_MISSES:-6}" ]; then
-                if [ -f "$HEAD_DONE" ]; then
-                    echo "Ray head $HEAD_IP:$RAY_PORT finished training; leaving"
-                    trap - TERM INT HUP EXIT
-                    ray stop --force >/dev/null 2>&1 || true
-                    exit 0
-                fi
-                echo "Ray head $HEAD_IP:$RAY_PORT unreachable $misses times in a row; leaving"
-                exit 1
-            fi
-        fi
-        sleep "${RAY_HEAD_MONITOR_INTERVAL_S:-5}"
-    done
+    until [ -f "$HEAD_DONE" ]; do sleep 5; done
+    echo "Ray head $HEAD_IP:$RAY_PORT finished training; leaving"
+    trap - TERM INT HUP EXIT
+    ray stop --force >/dev/null 2>&1 || true
+    exit 0
 fi
 
 # ---- 3. Keep the newest KEEP_LAST_N_CHECKPOINTS training checkpoints (open-instruct --keep_last_n_checkpoints) ----

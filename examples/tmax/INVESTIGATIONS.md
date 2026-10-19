@@ -42,7 +42,7 @@ The options below are the ones presented during the investigations; none is impl
 | H | `PYTHONFAULTHANDLER=1` in the Beaker env | Captures a Python stack if the rollout executor segfaults again | One env var | Bundle with the next restart |
 | I | More episodes in flight (1024, 256 sandboxes per node) | Uses idle engine capacity during long-tail phases | Doubles sandbox load per node, which is the suspected cause of the stalls | Not before A–C |
 | J | Episode wall-clock cap (`episode_timeout_s`) | Bounds long-tail episodes | open-instruct has no cap | Not now |
-| M | Worker replicas' watch on the Ray head. (1) None: workers leave when the head marks the run done, or through Beaker's `propagateFailure` when the head's job fails. (2) open-instruct's: 6 failed `ray status` checks 5 s apart, with no timeout on a check. (3) A ~20-minute tolerance (`HEAD_MISS_LIMIT` 80, `aeb4f9ecd3`) | The ported check (6 misses with a 10 s timeout each, about 90 s) failed three podman attempts on 2026-10-17 while a starved head was slow to answer | (1) relies on Beaker noticing a failed head; a head that hangs without exiting would leave the workers waiting | **(2), taken 2026-10-17 by the user (`ray_node_setup.sh` as written); (1) to explore later** |
+| M | Worker replicas' watch on the Ray head. (1) None: workers leave when the head marks the run done, or through Beaker's `propagateFailure` when the head's job fails. (2) open-instruct's: 6 failed `ray status` checks 5 s apart, with no timeout on a check. (3) A ~20-minute tolerance (`HEAD_MISS_LIMIT` 80, `aeb4f9ecd3`) | The ported check (6 misses with a 10 s timeout each, about 90 s) failed three podman attempts on 2026-10-17 while a starved head was slow to answer | (1) relies on Beaker noticing a failed head; a head that hangs without exiting would leave the workers waiting | **(1), taken 2026-10-19 by the user, after (2) ended resume 6 on a starved head that had recovered from 5 misses minutes before; (2) was used 2026-10-17 to 19** |
 | K | Make a dropped weight-sync reply non-fatal: treat it as "outcome unknown" after a completed broadcast and verify the engines' weight version | Survives the `ReadError` seen once in the old run | Miles core change; check upstream first | Only if it recurs |
 
 Suggested next restart: A + B + F + H (and G once the trainer side exists), validated on a 4-GPU smoke, then
@@ -66,6 +66,11 @@ Larger directions to evaluate against the evidence below. Add yours here.
   end in a SIGKILL, exit 137).
 - **Change:** `RAY_gcs_rpc_server_reconnect_timeout_s` 1200 (Ray's default is 60) in the entry script, so the nodes
   wait about 20 minutes for an unresponsive head, as the node health check already does the other way.
+- **Resume 6** (`01M5B3TNZA8KSK1W74EJ22Y06Y`, `0f9404b0d4`, the 1200 s setting): no raylet gave up and
+  `follow_ray_job.py` kept following the job, but step 225 (from 22:57) did not finish in 40 minutes on a head
+  starved from about 22:56 (its dashboard answered `500` by 23:23). At 23:37:40 a worker's head check (6 failed
+  `ray status` checks of about 47 s each) ended the run, after recovering from 5 misses at 23:31:53. Stopped; the
+  workers' head check is removed (option M (1)).
 - **Open:** why the head starves at this step every time. The data order is fixed, so each resume runs the same
   tasks; one may load the head node, whose sandboxes have no memory or process limits. Resume 5 stopped on 2026-10-19
   during attempt 4.

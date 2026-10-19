@@ -50,8 +50,8 @@ Before submitting:
    `sandbox_shards` daemons with their own storage, the mirror config, the image janitor, and the Docker Hub login.
    An `alpine` container proves the first daemon works.
 4. **Worker replicas** (rank > 0) forward each podman shard socket on TCP port `23750 + shard`, accepting only the
-   head's address. They wait up to 2 h for the Ray head (the head runs `prepare` first), join it, and stay until it
-   goes away: exit 0 if the head marked the run done, 1 otherwise.
+   head's address. They wait up to 2 h for the Ray head (the head runs `prepare` first), join it, and stay until the
+   head marks the run done (exit 0); a failed or preempted head stops them through Beaker.
 5. **The head** (rank 0):
    - starts a checkpoint pruner (every 10 min it keeps the newest `keep_last_n_checkpoints`, never the one
      `latest_checkpointed_iteration.txt` names);
@@ -161,10 +161,10 @@ python examples/tmax/beaker/registry_mirror/registry_mirror.py warm     # open-i
   the podman services, and so every sandbox, under `nice -n 19` (`SANDBOX_NICE`, 0 turns it off), and gives Ray's
   node health check about 20 minutes (`RAY_health_check_timeout_ms` 20000, `RAY_health_check_failure_threshold`
   60) before it declares a node dead, and the nodes' Ray processes the same before they give up on an unresponsive head (`RAY_gcs_rpc_server_reconnect_timeout_s` 1200, Ray's default 60); the log shows both (`19 /usr/bin/podman system service`, `ray pid …:
-  RAY_health_check_…`). Worker replicas check the head as open-instruct's `ray_node_setup.sh` does: they leave
-  after 6 failed `ray status` checks in a row, 5 s apart, with no timeout on a check (`RAY_HEAD_MONITOR_*`), and
-  each failed check is logged. See [INVESTIGATIONS.md](../INVESTIGATIONS.md) for the node deaths behind these, and
-  option M.
+  RAY_health_check_…`). Worker replicas do not watch the head (open-instruct's `ray_node_setup.sh` leaves after 6
+  failed `ray status` checks, which ended a run whose starved head was only slow): they leave once the head marks
+  the run done, and Beaker's failure and preemption propagation stops them otherwise. See
+  [INVESTIGATIONS.md](../INVESTIGATIONS.md) for the node deaths behind these, and option M.
 - **Layout.** With `nodes: N`, replica 0 is the Ray head and runs the launcher; training takes the first nodes and
   SGLang the rest (`async_rollout_gpus` must be whole nodes). The rollout executor, and with it every agent process,
   is pinned to the head (`--pin-rollout-manager-to-head`). The sandboxes still spread: the head drives the other
