@@ -5,8 +5,8 @@ Simple single-turn generation.
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
-    compute_request_payload,
     compute_routing_headers,
+    prepare_generate_request,
     update_sample_from_response,
 )
 from miles.utils.http_utils import post
@@ -34,19 +34,22 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
     else:
         input_ids = prompt_ids
 
-    payload, halt_status = compute_request_payload(
+    headers = compute_routing_headers(args, sample) or {}
+    payload, halt_status = await prepare_generate_request(
         args,
         input_ids=input_ids,
         sampling_params=sampling_params,
         multimodal_inputs=sample.multimodal_inputs,
         evaluation=input.evaluation,
         kv_cache_namespace=sample.kv_cache_namespace,
+        request_hook=input.state.request_hook,
+        headers=headers,
     )
     if payload is None:
         sample.status = halt_status
         return GenerateFnOutput(samples=sample)
 
-    output = await post(url, payload, headers=compute_routing_headers(args, sample))
+    output = await post(url, payload, headers=headers)
     await update_sample_from_response(args, sample, payload=payload, output=output)
 
     return GenerateFnOutput(samples=sample)

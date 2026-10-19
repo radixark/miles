@@ -992,6 +992,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--custom-rollout-request-hook-path",
+                type=str,
+                default=None,
+                help=(
+                    "Sync or async function hook(payload, headers, *, evaluation) that customizes "
+                    "inference requests before miles applies its request constraints. "
+                    "Used by built-in generation and session-server chat forwarding; "
+                    "custom generators sending requests directly own their request customization."
+                ),
+            )
+            parser.add_argument(
                 "--custom-rollout-log-function-path",
                 type=str,
                 default=None,

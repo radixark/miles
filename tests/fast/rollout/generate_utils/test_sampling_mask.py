@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload
+from miles.rollout.generate_utils.generate_endpoint_utils import prepare_generate_request
 from miles.rollout.generate_utils.sampling_mask import (
     append_forced_sampling_tokens,
     append_sampling_metadata,
@@ -21,7 +21,7 @@ from miles.utils.types import Sample
         (1.0, -1, 1.0, -1, False),
     ],
 )
-def test_generate_payload_automatically_requests_sampling_mask(
+async def test_generate_payload_automatically_requests_sampling_mask(
     rollout_top_p,
     rollout_top_k,
     request_top_p,
@@ -41,7 +41,7 @@ def test_generate_payload_automatically_requests_sampling_mask(
         rollout_sampling_logprobs_mode="selected",
     )
 
-    payload, halt_status = compute_request_payload(
+    payload, halt_status = await prepare_generate_request(
         args,
         input_ids=[1, 2],
         sampling_params={
@@ -75,7 +75,7 @@ def test_unbounded_run_treats_an_unset_request_top_k_as_unbounded():
     assert should_return_sampling_mask(args, {"top_p": 1.0, "top_k": None}) is False
 
 
-def test_evaluation_does_not_request_or_validate_training_sampling_support():
+async def test_evaluation_does_not_request_or_validate_training_sampling_support():
     args = SimpleNamespace(
         use_sampling_support_replay=True,
         rollout_top_p=0.95,
@@ -89,7 +89,7 @@ def test_evaluation_does_not_request_or_validate_training_sampling_support():
         rollout_sampling_logprobs_mode="selected",
     )
 
-    payload, halt_status = compute_request_payload(
+    payload, halt_status = await prepare_generate_request(
         args,
         input_ids=[1, 2],
         sampling_params={"max_new_tokens": 4, "top_p": 1.0, "top_k": -1, "temperature": 0.5},

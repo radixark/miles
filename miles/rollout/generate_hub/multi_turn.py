@@ -9,8 +9,8 @@ from copy import deepcopy
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
-    compute_request_payload,
     compute_routing_headers,
+    prepare_generate_request,
     update_sample_from_response,
 )
 from miles.rollout.generate_utils.tool_call_utils import (
@@ -51,19 +51,22 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     for _turn in range(args.generate_max_turns):
         # ----------------------- Call inference endpoint -------------------------
 
-        payload, halt_status = compute_request_payload(
+        headers = compute_routing_headers(args, sample) or {}
+        payload, halt_status = await prepare_generate_request(
             args,
             sample.tokens,
             input.sampling_params,
             evaluation=input.evaluation,
             kv_cache_namespace=sample.kv_cache_namespace,
+            request_hook=input.state.request_hook,
+            headers=headers,
         )
         if payload is None:
             sample.status = halt_status
             break
 
         gen_t0 = time.time()
-        output = await post(url, payload, headers=compute_routing_headers(args, sample))
+        output = await post(url, payload, headers=headers)
         sink = None if input.evaluation else TrajectoryLifecycle().sink
         if sink is not None:
             tokens = output.get("meta_info", {}).get("completion_tokens", "")

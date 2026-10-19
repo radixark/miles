@@ -31,6 +31,7 @@ _ARGS_TO_CONFIG_FIELD = {
     "rollout_top_logprobs_num": "rollout_top_logprobs_num",
     "rollout_sampling_logprobs_mode": "rollout_sampling_logprobs_mode",
     "rollout_temperature": "rollout_temperature",
+    "custom_rollout_request_hook_path": "custom_rollout_request_hook_path",
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
@@ -41,6 +42,7 @@ _OPTIONAL_ARGS_ATTRS = (
     "use_session_server",
     "session_sample_picker_path",
     "session_sample_postprocessor_path",
+    "custom_rollout_request_hook_path",
 )
 
 _DISTINCT_ARGS_VALUES = dict(
@@ -67,6 +69,7 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    custom_rollout_request_hook_path="fake.request_hook",
 )
 
 
@@ -158,6 +161,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_top_logprobs_num=0,
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
+    custom_rollout_request_hook_path=None,
 )
 
 

@@ -13,6 +13,8 @@ from transformers import AutoProcessor
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import single_turn
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.function_registry import function_registry
+from miles.utils.http_utils import post
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -161,6 +163,34 @@ class TestBasicGeneration:
     def test_basic_generation(self, variant, generation_env):
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
+        assert listify(result.sample) == [expected_sample(variant)]
+
+    def test_request_hook_preserves_generation(self, variant, generation_env, monkeypatch):
+        calls = []
+
+        async def hook(payload, headers, *, evaluation):
+            calls.append(evaluation)
+            payload["routing_hint"] = "policy"
+            payload["return_logprob"] = False
+            headers["X-Policy"] = "policy"
+
+        module = (
+            "miles.rollout.sglang_rollout"
+            if variant == "old_sglang_rollout"
+            else f"miles.rollout.generate_hub.{variant}"
+        )
+
+        async def checked_post(url, payload, headers):
+            assert headers["X-Policy"] == "policy"
+            return await post(url, payload, headers=headers)
+
+        monkeypatch.setattr(f"{module}.post", checked_post)
+        generation_env.args.custom_rollout_request_hook_path = "test.request_hook"
+        with function_registry.temporary("test.request_hook", hook):
+            result = _run_generate(variant, generation_env)
+
+        assert calls == [False]
+        assert result.requests == [{**expected_request(variant), "routing_hint": "policy"}]
         assert listify(result.sample) == [expected_sample(variant)]
 
 

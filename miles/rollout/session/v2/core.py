@@ -16,7 +16,7 @@ from miles.rollout.session.core import (
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
-from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
+from miles.rollout.session.request_args import filter_turn_args
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
@@ -152,12 +152,14 @@ class SessionCoreV2(SessionCore):
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
+        headers = {**headers, "X-SMG-Routing-Key": session_id}
+        client_args = await self._customize_chat_request(body, headers, evaluation=session.evaluation)
+
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            client_args = parse_chat_request(body)
             prepared, attach_parent = prepare_token_ids_and_request_args(
                 session,
                 client_args,
@@ -180,7 +182,6 @@ class SessionCoreV2(SessionCore):
         # --- lock released ---
 
         # --- Phase 2: proxy to backend (NO lock held) ---
-        headers = {**headers, "X-SMG-Routing-Key": session_id}
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
         )
