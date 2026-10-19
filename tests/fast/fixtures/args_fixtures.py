@@ -17,6 +17,8 @@ _TRAIN_BACKEND_DEFAULTS: dict[str, Any] = dict(
     disable_param_buffers_cpu_backup=False,
     lr_warmup_iters=None,
     load=None,
+    ckpt_step=None,
+    exit_on_missing_checkpoint=False,
 )
 
 # declared with no default and resolved after parsing, so the raw parser value is one no production

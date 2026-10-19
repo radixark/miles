@@ -564,6 +564,17 @@ class TestComputeTrainerArgs:
 
 
 class TestTrainerCheckpointDirs:
+    @pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
+    def test_other_backends_keep_their_scoped_load_path(self, backend):
+        args = _make_args(encode_megatron_config("a"), train_backend=backend, load="/checkpoints")
+        del args.ckpt_step, args.exit_on_missing_checkpoint
+
+        model = _model_args(args, model_id="a")
+
+        assert model.load == "/checkpoints/trainers/a-actor"
+        assert model.start_rollout_id is None
+        assert not model.no_load_optim and not model.no_load_rng
+
     def test_a_multi_policy_run_gives_every_trainer_its_own_checkpoint_dir(self, tmp_path):
         """A shared --save makes two policies write the same iter_* directory and overwrite each other."""
         old = tmp_path / "old"
