@@ -133,11 +133,23 @@ if [ "$SANDBOX_BACKEND" = gateway ] && [ "$RANK" = 0 ]; then
             python3 -m venv "$LR_VENV" && "$LR_VENV/bin/pip" install -q "literegistry==${LITEREGISTRY_VERSION:-1.0.57}"
         fi
         GATEWAY_PORT=${GATEWAY_PORT:-24750}
+        # On weka next to the run's checkpoints, one file per attempt, so it outlives the job (2026-10-17's stayed in
+        # the job's /tmp).
+        GATEWAY_LOG=$(python - "$CONFIG" <<'PY'
+import os, sys, time, yaml
+c = yaml.safe_load(open(sys.argv[1]))
+exp = os.environ.get("MILES_SCRIPT_EXP_NAME") or c.get("exp_name")
+base = f"{c['output_dir']}/{exp}" if exp and c.get("output_dir") else "/tmp"
+print(f"{base}/literegistry-gateway-{time.strftime('%Y%m%d_%H%M%S', time.gmtime())}.log")
+PY
+)
+        mkdir -p "$(dirname "$GATEWAY_LOG")"
+        echo "literegistry gateway log: $GATEWAY_LOG"
         (
             while true; do
                 "$LR_VENV/bin/python" -m literegistry.gateway --registry="$GATEWAY_REGISTRY" --host=127.0.0.1 \
-                    --port="$GATEWAY_PORT" --workers="${GATEWAY_WORKERS:-8}" --register=False >> /tmp/literegistry-gateway.log 2>&1
-                echo "literegistry gateway exited; restarting in 5 s (log: /tmp/literegistry-gateway.log)"
+                    --port="$GATEWAY_PORT" --workers="${GATEWAY_WORKERS:-8}" --register=False >> "$GATEWAY_LOG" 2>&1
+                echo "literegistry gateway exited; restarting in 5 s (log: $GATEWAY_LOG)"
                 sleep 5
             done
         ) &
@@ -147,7 +159,7 @@ if [ "$SANDBOX_BACKEND" = gateway ] && [ "$RANK" = 0 ]; then
     else
         echo "sandbox_backend: gateway needs beaker.gateway_registry or beaker.gateway_url"; exit 1
     fi
-    python - "$TMAX_GATEWAY_URL" "${GATEWAY_MIN_REPLICAS:-1}" "${GATEWAY_WAIT_S:-1800}" <<'PY' || { tail -50 /tmp/literegistry-gateway.log 2>/dev/null; exit 1; }
+    python - "$TMAX_GATEWAY_URL" "${GATEWAY_MIN_REPLICAS:-1}" "${GATEWAY_WAIT_S:-1800}" <<'PY' || { tail -50 "$GATEWAY_LOG" 2>/dev/null; exit 1; }
 import json, sys, time, urllib.request
 url, want, deadline = sys.argv[1], int(sys.argv[2]), time.time() + float(sys.argv[3])
 have = -1

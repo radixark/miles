@@ -232,16 +232,17 @@ def test_timeout_reports_like_podman(gateway, task_dir, monkeypatch):
 
 
 @pytest.mark.parametrize("status, body", [(410, SANDBOX_LOST_PIDS), (410, OWNER_LOST)])
-def test_lost_container_ends_the_episode(gateway, task_dir, monkeypatch, status, body):
+def test_lost_container_ends_the_episode(gateway, task_dir, monkeypatch, caplog, status, body):
     async def episode():
         async with tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir) as box:
             gateway.fail_next = [(status, body)]
             await box.bash(":(){ :|:& };:")
 
-    with pytest.raises(tmax_sandbox.SandboxLostError) as lost:
+    with pytest.raises(tmax_sandbox.SandboxLostError) as lost, caplog.at_level("WARNING", tmax_gateway.logger.name):
         run(gateway, episode, monkeypatch)
     assert lost.value.reason == body.get("detail", body).get("reason", body.get("code"))
     assert gateway.handshakes == 1  # never continued in a replacement container
+    assert any(f"gateway container lost ({status})" in r.getMessage() for r in caplog.records)  # with its full detail
 
 
 def test_expired_binding_ends_the_episode(gateway, task_dir, monkeypatch):
@@ -270,7 +271,7 @@ def test_markerless_waits_probe_the_container(gateway, task_dir, monkeypatch, st
     assert type(error.value) is (tmax_sandbox.SandboxLostError if stopped else tmax_sandbox.SandboxInfraError)
 
 
-def test_transient_errors_are_retried(gateway, task_dir, monkeypatch):
+def test_transient_errors_are_retried(gateway, task_dir, monkeypatch, caplog):
     unavailable = {"error": "strict affinity owner is temporarily unavailable", "code": "affinity_owner_unavailable"}
 
     async def episode():
@@ -278,8 +279,14 @@ def test_transient_errors_are_retried(gateway, task_dir, monkeypatch):
             gateway.fail_next = [(503, unavailable), (502, {"code": "affinity_upstream_disconnected"})]
             return await box.bash("echo hi")
 
-    observation, _ = run(gateway, episode, monkeypatch)
+    with caplog.at_level("WARNING", logger=tmax_gateway.logger.name):
+        observation, _ = run(gateway, episode, monkeypatch)
     assert observation.endswith("(exit_code=0)")
+    # Each retry logs the gateway's own code and how long the request took, not only the status.
+    retries = [r.getMessage() for r in caplog.records if "gateway request failed" in r.getMessage()]
+    assert len(retries) == 2
+    assert "(503) after" in retries[0] and '"code":"affinity_owner_unavailable"' in retries[0]
+    assert "(502) after" in retries[1] and "affinity_upstream_disconnected" in retries[1]
 
 
 def test_start_retries_then_gives_up(gateway, task_dir, monkeypatch):

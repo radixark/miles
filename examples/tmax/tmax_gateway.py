@@ -31,6 +31,7 @@ the episode does not continue in a replacement container.
 
 import asyncio
 import base64
+import json
 import logging
 import random
 import shlex
@@ -181,6 +182,7 @@ class TmaxGatewaySandbox(SandboxBase):
         try:
             return await self._run_command(command, timeout_s or _settings().command_timeout_s)
         except PodmanContainerLostError as e:
+            logger.warning(f"gateway container lost ({e.status_code}): {_response_summary(e.response)}")
             raise SandboxLostError(f"sandbox {self._image} lost: {_describe_loss(e)}", reason=e.reason) from e
         except PodmanGatewayError as e:
             if e.status_code == 404:  # the binding is gone, so is any way back to the container
@@ -327,17 +329,37 @@ def _describe_loss(error: PodmanContainerLostError) -> str:
 async def _retry(call: Callable[[], Awaitable], attempts: int):
     """Run ``call``, retrying transient gateway failures; every request this backend sends is safe to repeat."""
     for attempt in range(1, attempts + 1):
+        started = time.monotonic()
         try:
             return await call()
         except PodmanContainerLostError:
             raise
         except PodmanGatewayError as e:
             permanent = e.status_code is not None and e.status_code not in _TRANSIENT_STATUSES
-            if permanent or attempt == attempts:
-                raise
+            last = permanent or attempt == attempts
             delay = min(_RETRY_BASE_S * 2 ** (attempt - 1), _RETRY_MAX_S) + random.uniform(0.0, 0.5)
-            logger.warning(f"gateway request failed ({e.status_code}); retry {attempt}/{attempts - 1} in {delay:.1f}s")
+            # The gateway's own answer (its code and execution_outcome) and how long the request took, which tell
+            # a replica that is unreachable from one that is slow (2026-10-17: only the status was logged).
+            logger.warning(
+                f"gateway request failed ({e.status_code}) after {time.monotonic() - started:.1f}s: "
+                f"{_response_summary(e.response) or e}; "
+                + ("giving up" if last else f"retry {attempt}/{attempts - 1} in {delay:.1f}s")
+            )
+            if last:
+                raise
             await asyncio.sleep(delay)
+
+
+def _response_summary(response: object, limit: int = 400) -> str:
+    """The gateway's error body, compact and bounded, for the log."""
+    if response is None:
+        return ""
+    text = (
+        json.dumps(response, separators=(",", ":"), default=str)
+        if isinstance(response, (dict, list))
+        else str(response)
+    )
+    return text[:limit]
 
 
 async def close_live_sandboxes() -> int:

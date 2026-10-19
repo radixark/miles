@@ -187,7 +187,7 @@ beaker:
   environment, and literegistry into a venv of its own, since literegistry pins starlette and pulls streamlit, which
   the training environment cannot take. It then starts `python -m literegistry.gateway
   --registry=<gateway_registry> --register=False` on `127.0.0.1:24750`, restarting it if it exits; the gateway's log
-  goes to `/tmp/literegistry-gateway.log`. Before training starts, the head waits up to 30 min for the gateway to
+  goes to `<output_dir>/<run>/literegistry-gateway-<UTC time>.log` on weka, one file per attempt. Before training starts, the head waits up to 30 min for the gateway to
   list `gateway_min_replicas` podman replicas. The gateway finds the fleet's Redis through the head registry, so it
   follows a Redis move, and prints the first replica's `session_limits` once enough are listed. `gateway_url` skips
   all this and uses a running gateway.
