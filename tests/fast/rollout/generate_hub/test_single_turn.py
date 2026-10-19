@@ -168,9 +168,10 @@ class TestBasicGeneration:
     def test_request_headers_preserve_generation(self, variant, generation_env, monkeypatch):
         calls = []
 
-        async def get_headers(*, evaluation):
+        async def customize_headers(headers, *, evaluation):
             calls.append(evaluation)
-            return {"X-Policy": "policy"}
+            assert headers == {"x-smg-routing-key": "original"}
+            return {**headers, "x-smg-routing-key": "replacement", "x-policy": "policy"}
 
         module = (
             "miles.rollout.sglang_rollout"
@@ -179,17 +180,21 @@ class TestBasicGeneration:
         )
 
         async def checked_post(url, payload, headers):
-            assert headers["X-Policy"] == "policy"
+            assert headers == {"x-smg-routing-key": "replacement", "x-policy": "policy"}
             return await post(url, payload, headers=headers)
 
         monkeypatch.setattr(f"{module}.post", checked_post)
-        generation_env.args.custom_rollout_request_headers_function_path = "test.get_headers"
-        with function_registry.temporary("test.get_headers", get_headers):
-            result = _run_generate(variant, generation_env)
+        generation_env.args.custom_rollout_request_headers_function_path = "test.customize_headers"
+        sample = _make_sample()
+        sample.routing_key = "original"
+        with function_registry.temporary("test.customize_headers", customize_headers):
+            result = _run_generate(variant, generation_env, sample)
 
         assert calls == [False]
         assert result.requests == [expected_request(variant)]
-        assert listify(result.sample) == [expected_sample(variant)]
+        expected = expected_sample(variant)
+        expected.routing_key = "original"
+        assert listify(result.sample) == [expected]
 
 
 class TestRadixCacheExtraKey:

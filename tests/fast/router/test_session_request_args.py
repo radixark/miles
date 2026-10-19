@@ -62,14 +62,16 @@ def test_request_headers_preserve_session_generation(version, evaluation):
         received_headers.append(headers)
         return await do_proxy(self, request, path, body=body, headers=headers)
 
-    def get_headers(*, evaluation):
+    def customize_headers(headers, *, evaluation):
         calls.append(evaluation)
-        return {"X-Policy": "policy"}
+        assert headers["x-smg-routing-key"] == session_id
+        assert "content-type" not in headers
+        return {**headers, "x-smg-routing-key": "replacement", "x-policy": "policy"}
 
-    with function_registry.temporary("test.get_headers", get_headers), patch.object(
+    with function_registry.temporary("test.customize_headers", customize_headers), patch.object(
         SessionServer, "do_proxy", record_proxy
     ):
-        with _serve(version, {"custom_rollout_request_headers_function_path": "test.get_headers"}) as env:
+        with _serve(version, {"custom_rollout_request_headers_function_path": "test.customize_headers"}) as env:
             session_id = requests.post(f"{env.url}/sessions", json={"evaluation": evaluation}, timeout=5).json()[
                 "session_id"
             ]
@@ -80,19 +82,20 @@ def test_request_headers_preserve_session_generation(version, evaluation):
             assert wire["logprobs"] is True
             assert _records(env.url, session_id)[0]["request"] == wire
             assert len(received_headers) == 1
-            assert received_headers[0]["X-Policy"] == "policy"
-            assert received_headers[0]["X-SMG-Routing-Key"] == session_id
+            assert received_headers[0]["x-policy"] == "policy"
+            assert received_headers[0]["x-smg-routing-key"] == "replacement"
+            assert received_headers[0]["content-type"] == "application/json"
             assert calls == [evaluation]
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
 def test_request_headers_failure_prevents_generation(version):
-    async def get_headers(*, evaluation):
+    async def customize_headers(headers, *, evaluation):
         await asyncio.sleep(0)
         raise RuntimeError("Request metadata is unavailable")
 
-    with function_registry.temporary("test.get_headers", get_headers):
-        with _serve(version, {"custom_rollout_request_headers_function_path": "test.get_headers"}) as env:
+    with function_registry.temporary("test.customize_headers", customize_headers):
+        with _serve(version, {"custom_rollout_request_headers_function_path": "test.customize_headers"}) as env:
             session_id = _create_session(env.url)
             response = _post_chat(env.url, session_id, {"messages": [USER]})
             assert response.status_code == 500

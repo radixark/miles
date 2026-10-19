@@ -13,7 +13,7 @@ and the default it replaces.
 | **Rollout** | `--rollout-function-path` | The whole rollout loop |
 | | `--custom-agent-function-path` | The agent-environment loop inside a TITO session |
 | | `--custom-generate-function-path` | A single sample's generation |
-| | `--custom-rollout-request-headers-function-path` | Additional inference request headers |
+| | `--custom-rollout-request-headers-function-path` | Default application headers on generation requests |
 | | `--data-source-path` | How prompts are loaded |
 | | `--eval-function-path` | The eval rollout |
 | **Session** | `--session-message-matcher` | Prefix-replay equivalence |
@@ -77,28 +77,37 @@ signatures load through the same adapter. See
 
 ### `--custom-rollout-request-headers-function-path`
 
-Add external-service metadata, such as workload tags or routing hints, without
-changing the generation request:
+Customize application headers, such as affinity or workload metadata, without
+changing the generation payload:
 
 ```python
-def get_headers(*, evaluation: bool) -> dict[str, str]:
-    return {"X-Workload": "evaluation" if evaluation else "training"}
+def customize_headers(headers: dict[str, str], *, evaluation: bool) -> dict[str, str]:
+    return {**headers, "x-workload": "evaluation" if evaluation else "training"}
 ```
 
-Set `--custom-rollout-request-headers-function-path my_module.get_headers`. Both sync
+Set `--custom-rollout-request-headers-function-path my_module.customize_headers`. Both sync
 and async functions are supported. Use an async function to fetch external metadata
 without blocking other requests. Failures propagate through existing error handling;
 miles does not send the inference request if obtaining its headers fails.
 
-The function receives only the training/evaluation flag, not the payload or existing
-headers. It may add headers but cannot replace existing ones, including routing/session
-identity, or set transport-controlled fields such as `Host`, `Content-Type`, and
-`Content-Length`. Header names are compared case-insensitively. Sampling, tokenization,
-required training outputs, and the response protocol remain owned by miles.
+The function receives an owned copy of the default application headers with lowercase
+names, plus the training/evaluation flag. Native generation derives its default
+`x-smg-routing-key` from the sample; session forwarding derives it from the session ID.
+The function may preserve, replace, remove, or add application headers. Its returned
+dictionary replaces the application defaults; omitted headers are not restored.
+For example, assigning `headers["x-smg-routing-key"]` overrides the routing default
+without changing the sample or session identity inside miles.
+
+HTTP transport fields, such as `Host`, `Content-Type`, and `Content-Length`, are not
+passed to the function and cannot be returned by it. They retain their existing
+handling. Returned header names are case-insensitive; duplicate spellings of one name
+are rejected. The payload is not exposed: sampling, tokenization, required training
+outputs, and the response protocol remain owned by miles.
 
 The function runs once per inference call in built-in single-turn/multi-turn generation
-and session-server v1/v2 chat forwarding, for training and evaluation. Transport retries
-reuse the prepared headers. Custom generators that send requests directly own their
+and session-server v1/v2 chat forwarding, for training and evaluation. Native generation's
+transport retries reuse the prepared headers; session forwarding keeps its existing
+error propagation to the agent. Custom generators that send requests directly own their
 headers; agents using the session server receive its configured headers. Health checks,
 session management, raw proxy routes, and post-rollout prefill scoring do not invoke
 it; this is not a global HTTP authentication setting. With the function unset,
