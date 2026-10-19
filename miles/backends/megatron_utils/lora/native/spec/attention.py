@@ -202,7 +202,9 @@ class Glm5NextAttentionSpec(MLAAttentionSpec):
     @property
     def canonical_targets_csv(self) -> str:
         # a dotted selector must match the whole module name, so pass leaves
-        names = [binding.projection.hf_leaf.rpartition(".")[2] for binding in self.kda_layout.singles + self.layout.singles]
+        names = [
+            binding.projection.hf_leaf.rpartition(".")[2] for binding in self.kda_layout.singles + self.layout.singles
+        ]
         return ",".join(dict.fromkeys(names))
 
     def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
