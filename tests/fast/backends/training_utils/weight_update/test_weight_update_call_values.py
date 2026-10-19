@@ -60,7 +60,7 @@ def test_colocated_base_update_does_not_flush():
         dist_mock.get_rank.return_value = 0
         dist_mock.get_world_size.return_value = 1
         dist_mock.gather_object.side_effect = fake_gather_object
-        futures, _long_live_tensors = _send_to_colocated_engine(
+        futures, _long_live_tensors, _serialized = _send_to_colocated_engine(
             _NAMED_TENSORS,
             ipc_engine=client,
             ipc_gather_src=0,
