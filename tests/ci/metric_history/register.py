@@ -7,7 +7,7 @@
 * A gate composes `steps` (which value(s) to pull from a metric's series:
   `"last"` | `"all"` | a non-empty list of step indices) and a `constraint`
   (the pass/fail rule).
-* `constraint` is a literal dict of the two-sided band params (`rel_up` /
+* `constraint` is a literal dict of the band params (`rel_up` /
   `abs_floor_up` / `rel_down` / `abs_floor_down`), validated against the
   schema in :mod:`constraints`.
 * For the captured standard metrics, :data:`GATE_DEFAULTS` supplies `steps`
@@ -55,9 +55,10 @@ def register_ci_gate(
     metric. `steps` picks the
     comparison value(s): `"last"` (the series' last point), `"all"` (every
     step present, fanned out), or a non-empty list of step indices.
-    `constraint` is a literal dict of the two-sided band params -- see
-    :data:`constraints.CONSTRAINT_SCHEMA`; each side needs at least one of its
-    `rel` / `abs_floor` written. An omitted `steps` / `constraint` is filled from
+    `constraint` is a literal dict of the band params -- see
+    :data:`constraints.CONSTRAINT_SCHEMA`. The lower side requires a `rel` or
+    `abs_floor` param; omitting both upper params disables the upper bound.
+    An omitted `steps` / `constraint` is filled from
     :data:`GATE_DEFAULTS` when `metric_key` has an entry there; the Python
     defaults of None exist only so a one-liner call runs as a no-op -- the
     parser, not this signature, decides validity. `enforce` defaults to True:
@@ -112,7 +113,7 @@ GATE_DEFAULTS: dict[str, dict] = {
     },
     "rollout/raw_reward": {
         "steps": "all",
-        "constraint": {"rel_up": 0.5, "abs_floor_up": 0.05, "rel_down": 0.2, "abs_floor_down": 0.05},
+        "constraint": {"rel_down": 0.2, "abs_floor_down": 0.05},
     },
     "rollout/tito_session_mismatch_rate/v1/assistant_text": {
         "steps": "last",
@@ -214,20 +215,20 @@ def _validate_param(validator: str, value: object) -> object:
 
 def _normalize_constraint(raw: object) -> dict:
     """Validate the constraint literal against `CONSTRAINT_SCHEMA` and return
-    a normalized dict (validated params + filled defaults). Each side needs at
-    least one written band param -- an all-default side has band 0 and would
-    fail on any deviation."""
+    a normalized dict (validated params + defaults for declared sides).
+    The lower side is required; omitting both upper params disables the upper bound."""
     if not isinstance(raw, dict):
         raise _ParseError("constraint must be a dict")
     for key in raw:
         if key not in CONSTRAINT_SCHEMA:
             raise _ParseError(f"unknown key {key!r} for constraint; valid: {sorted(CONSTRAINT_SCHEMA)}")
-    if "rel_up" not in raw and "abs_floor_up" not in raw:
-        raise _ParseError("constraint requires at least one upper band param ('rel_up' or 'abs_floor_up')")
     if "rel_down" not in raw and "abs_floor_down" not in raw:
         raise _ParseError("constraint requires at least one lower band param ('rel_down' or 'abs_floor_down')")
+    has_upper = "rel_up" in raw or "abs_floor_up" in raw
     normalized: dict = {}
     for param, (validator, required, default) in CONSTRAINT_SCHEMA.items():
+        if param in ("rel_up", "abs_floor_up") and not has_upper:
+            continue
         if param in raw:
             try:
                 normalized[param] = _validate_param(validator, raw[param])

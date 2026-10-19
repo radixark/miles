@@ -568,9 +568,8 @@ def test_asymmetric_corridor_tight_up_loose_down(tmp_path, store):
     )
 
 
-def test_reward_corridor_flags_drop_and_suspicious_jump(tmp_path, store):
-    # raw_reward regressing means DROPPING (tight lower band); a jump far
-    # above baseline smells of a broken env / reward hack (loose upper band).
+def test_explicit_reward_corridor_flags_both_sides(tmp_path, store):
+    # Tests can still opt into an upper bound with an explicit constraint.
     test_file = _write_test_file(
         tmp_path,
         """
@@ -606,6 +605,41 @@ def test_reward_corridor_flags_drop_and_suspicious_jump(tmp_path, store):
         evaluate_gate(test_file, jump, store, executing_suite="stage-c-8-gpu-h100").metrics[0].historical_status
         == GateStatus.FAIL
     )
+
+
+@pytest.mark.parametrize(
+    "baseline,current,status",
+    [
+        (0.040625, 0.09375, GateStatus.PASS),  # Run 39043818318, attempt 1.
+        (0.6, 1.0, GateStatus.PASS),
+        (0.6, 0.48, GateStatus.PASS),
+        (0.6, 0.47, GateStatus.FAIL),
+        (0.1, 0.04, GateStatus.FAIL),
+        (0.6, "NaN", GateStatus.ERROR),
+        (0.6, "Infinity", GateStatus.ERROR),
+        (0.6, "-Infinity", GateStatus.ERROR),
+    ],
+)
+def test_reward_default_only_gates_drops(tmp_path, store, baseline, current, status):
+    test_file = _write_test_file(tmp_path, 'register_ci_gate(metric_key="rollout/raw_reward")')
+    # History collected under the previous two-sided default remains usable.
+    _seed_baseline(
+        store,
+        test_file,
+        metric_key="rollout/raw_reward",
+        steps_key=_key("all"),
+        constraint_key=_key({"rel_up": 0.5, "abs_floor_up": 0.05, "rel_down": 0.2, "abs_floor_down": 0.05}),
+        step=0,
+        values=[baseline] * 2,
+    )
+    record = _write_record(tmp_path, {"rollout/raw_reward": [[0, current]]})
+    result = evaluate_gate(test_file, record, store, executing_suite="stage-c-8-gpu-h100")
+    metric = result.metrics[0]
+    assert metric.historical_status == status
+    assert result.trusted is (status == GateStatus.PASS)
+    if status != GateStatus.ERROR:
+        assert metric.baseline_n == 2
+        assert metric.baseline_mean == pytest.approx(baseline)
 
 
 def test_grad_norm_default_is_a_sanity_band(tmp_path, store):

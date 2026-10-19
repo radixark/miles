@@ -47,12 +47,27 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "speculative_boundary_reduction": (
         "Derived from boundary_reduction and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
+    "enable_cp_tp_group_sharing": (
+        "Resolved from the model architecture and declared Arg(no_cli=True); sglang registers no CLI option for it."
+    ),
     "grpc_worker_threads": (
         "Env-only (SGLANG_GRPC_WORKER_THREADS) and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
     "cuda_graph_config": (
         "The CLI parses a validated per-phase JSON object while ServerArgs holds a CudaGraphConfig "
         "instance, so no generically rendered token parses back to the same value."
+    ),
+    **dict.fromkeys(
+        (
+            "watermark_key",
+            "watermark_key_b",
+            "watermark_context_window",
+            "watermark_mixing_probability",
+            "watermark_max_probability",
+            "watermark_default_enabled",
+            "watermark_enforce_all",
+        ),
+        "Resolved from --watermark-config and declared Arg(no_cli=True); sglang registers no CLI option for it.",
     ),
 }
 

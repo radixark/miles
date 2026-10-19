@@ -148,7 +148,8 @@ def _query_server_args(rollout_engine: SGLangApiClient) -> ServerArgs:
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
     valid_fields = set(_record_field_names(ServerArgs))
-    filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
+    # /server_info reports watermark secrets as "<redacted>", even unset ones, and a replica never samples.
+    filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields and not k.startswith("watermark_")}
     return ServerArgs(**filtered_data)
 
 

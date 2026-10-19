@@ -28,8 +28,8 @@ The store's baseline query keys on exactly these (plus a `limit` for how many re
 A gate declaration composes a step selection and a constraint, both validated at parse time:
 
 - `steps` — which value(s) of the metric's series to compare: `"last"` (the series' last point, a whole-series reduction), `"all"` (every step present), or a list of step indices. `"all"` and a step list fan out to one comparison per step, judged against that step's own history.
-- **Constraint** — whether one value passes against a reference: every constraint is two-sided — the value must land in the corridor `[ref − band_down, ref + band_up]`, each side's band written independently as `band = max(rel·|ref|, abs_floor)`; a literal dict of those params (`rel_up` / `abs_floor_up` / `rel_down` / `abs_floor_down`), at least one param per side written. Bands scale from the reference only, so a deviating value cannot widen its own tolerance. There is no unbounded side — a value far from baseline in the "improving" direction is usually a broken metric, and a trusted run's values become future baselines, so admitting it would drag the mean; a side meant to be lenient gets a wide band, not no band.
-- **Defaults for standard metrics** — a per-`metric_key` table beside the parser (`GATE_DEFAULTS` in `register.py`) supplies `steps` and `constraint`, so `register_ci_gate(metric_key="train/ppo_kl")` alone is complete. The standard RL metrics use `steps="all"`, so every captured step is judged and persisted under its own coordinate. Omitted fields pass through the same parser validation; an explicit literal wins, and a metric absent from the table must provide both fields. Table keys stay within the capture whitelist (test-enforced).
+- **Constraint** — whether one value passes against a reference: the lower bound is `ref − band_down`; an optional upper bound is `ref + band_up`. Each band is `max(rel·|ref|, abs_floor)`, declared as a literal dict of params (`rel_up` / `abs_floor_up` / `rel_down` / `abs_floor_down`). At least one lower param is required. Omitting both upper params disables the upper bound; explicitly writing zero still enforces it. Bands scale from the reference only, so a deviating value cannot widen its own tolerance.
+- **Defaults for standard metrics** — a per-`metric_key` table beside the parser (`GATE_DEFAULTS` in `register.py`) supplies `steps` and `constraint`, so `register_ci_gate(metric_key="train/ppo_kl")` alone is complete. The standard RL metrics use `steps="all"`, so every captured step is judged and persisted under its own coordinate. Omitted fields pass through the same parser validation; an explicit literal wins, and a metric absent from the table must provide both fields. Table keys stay within the capture whitelist (test-enforced). `rollout/raw_reward` defaults to a lower bound only: improved reward does not fail the gate. A test can explicitly supply upper params to opt into a two-sided check.
 - **Default calibration** — band values are shadow-calibration starting points. Changing a table literal changes the band every relying declaration applies and keeps their history (see Identity).
 
 The authoritative constraint params are the schema table beside the function; the doc does not duplicate them. A missing/empty series, a missing required step, or a non-finite value (`NaN` / `±Inf`) at a selected coordinate is an ERROR verdict, never a skip — non-finite is judged here, not silently dropped (capture records it faithfully as a strict-JSON string marker the gate-side reader decodes; `write_run` refuses it at the DB boundary).
@@ -53,7 +53,7 @@ register_ci_gate(
     constraint={"abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02},
 )
 
-register_ci_gate(metric_key="rollout/raw_reward")  # automatically fails CI after 10 trusted baselines
+register_ci_gate(metric_key="rollout/raw_reward")  # rejects reward drops after 10 trusted baselines
 ```
 
 

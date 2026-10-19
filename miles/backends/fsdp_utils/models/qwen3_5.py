@@ -2,8 +2,9 @@
 
 The FSDP actor passes HF's padding-free boundary kwargs (``cu_seq_lens_*``, ``max_length_*``,
 ``seq_idx``) so GatedDeltaNet resets its recurrence and conv state per packed document. HF's
-multimodal forward also hands its ``**kwargs`` to the vision tower, whose flash-attention blocks set
-``cu_seq_lens_q`` themselves, so any batch with images would fail with a duplicate keyword argument.
+multimodal forward also hands its ``**kwargs`` to the vision tower. Its flash-attention blocks
+override the boundary kwargs with the image's own, but the rest (``seq_idx``, the text rows'
+document ids) would still reach them.
 """
 
 import functools
