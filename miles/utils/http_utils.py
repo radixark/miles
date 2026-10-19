@@ -216,9 +216,9 @@ def _next_actor():
     return actor
 
 
-def validate_request_headers(headers: dict[str, str]) -> None:
+def validate_request_headers(headers: dict[str, str] | None) -> None:
     """Reject case-insensitive duplicate names in a single-valued header mapping."""
-    if len(headers) != len({name.lower() for name in headers}):
+    if headers and len(headers) != len({name.lower() for name in headers}):
         raise ValueError("Request headers contain duplicate case-insensitive names")
 
 
@@ -421,6 +421,7 @@ def _rollout_client() -> httpx.AsyncClient:
 
 # TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)
 async def post(url, payload, max_retries=60, action="post", headers=None):
+    validate_request_headers(headers)
     # If distributed mode is enabled and actors exist, dispatch via Ray.
     if _distributed_post_enabled and _post_actors:
         try:

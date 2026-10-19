@@ -16,6 +16,7 @@ from tqdm import tqdm
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
+from miles.rollout.generate_utils.request_headers import customize_request_headers
 from miles.rollout.generate_utils.rollout_topk_logprobs import (
     append_rollout_topk_logprobs,
     configure_rollout_topk_logprobs_request,
@@ -23,12 +24,12 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
 from miles.utils import dumper_utils
-from miles.utils.async_utils import maybe_await, run
+from miles.utils.async_utils import run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import get, post, router_worker_base_urls, validate_request_headers
+from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook
@@ -234,9 +235,7 @@ async def generate(
             sample.tokens = prompt_ids
 
     headers = compute_routing_headers(args, sample)
-    if state.rollout_request_headers_function is not None:
-        headers = await maybe_await(state.rollout_request_headers_function(headers or {}, evaluation=evaluation))
-        validate_request_headers(headers)
+    headers = await customize_request_headers(headers, state.rollout_request_headers_function, evaluation=evaluation)
 
     output = await post(url, payload, headers=headers)
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":

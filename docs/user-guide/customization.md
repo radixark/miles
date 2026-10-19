@@ -90,14 +90,15 @@ Set `--custom-rollout-request-headers-function-path my_module.customize_headers`
 and async functions are supported; use async for external lookups without blocking.
 
 The function receives the default headers with their original casing, including
-`X-SMG-Routing-Key` when set. Its returned dictionary replaces the defaults, so it can
-add, change, or remove headers without changing the internal sample/session identity.
+`X-SMG-Routing-Key` when set (session forwarding replaces the client's key with the
+session ID). Its returned dictionary replaces the defaults, so it can add, change, or
+remove headers without changing the internal sample/session identity.
 Names must be unique ignoring case: returning both `X-Policy` and `x-policy` fails
 before dispatch, as does an exception from the function.
 
 Only headers change: the endpoint must accept the existing generation protocol.
 The function runs once per inference call; native transport retries reuse its result.
-With no function configured, behavior is unchanged. Direct custom generators own
+With no function configured, default headers are used. Direct custom generators own
 their headers; health/management calls, raw proxy routes, and prefill scoring are
 outside this hook's scope.
 

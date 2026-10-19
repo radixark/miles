@@ -83,17 +83,47 @@ def test_request_headers_preserve_session_generation(version, evaluation):
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
-def test_duplicate_request_headers_prevent_generation(version):
+def test_duplicate_request_headers_leave_session_unchanged(version):
+    reject = False
+
     async def customize_headers(headers, *, evaluation):
-        return {**headers, "x-smg-routing-key": "replacement"}
+        return {**headers, "x-smg-routing-key": "replacement"} if reject else headers
 
     with function_registry.temporary("test.customize_headers", customize_headers):
         with _serve(version, {"custom_rollout_request_headers_function_path": "test.customize_headers"}) as env:
             session_id = _create_session(env.url)
+            assert _post_chat(env.url, session_id, {"messages": [USER]}).status_code == 200
+            records = _records(env.url, session_id)
+            metadata = _metadata(env.url, session_id)
+            reject = True
             response = _post_chat(env.url, session_id, {"messages": [USER]})
             assert response.status_code == 500
-            assert env.backend.request_log == []
-            assert _records(env.url, session_id) == []
+            assert len(env.backend.request_log) == 1
+            assert _records(env.url, session_id) == records
+            assert _metadata(env.url, session_id) == metadata
+
+
+@pytest.mark.parametrize(
+    ("version", "path"), [("v1", "v1/chat/completions"), ("v2", "v1/chat/completions"), ("v1", "abort_request")]
+)
+def test_session_routing_replaces_incoming_key_without_a_hook(version, path):
+    do_proxy = SessionServer.do_proxy
+
+    async def checked_proxy(self, request, path, *, body, headers):
+        assert [(name, value) for name, value in headers.items() if name.lower() == "x-smg-routing-key"] == [
+            ("X-SMG-Routing-Key", session_id)
+        ]
+        return await do_proxy(self, request, path, body=body, headers=headers)
+
+    with patch.object(SessionServer, "do_proxy", checked_proxy), _serve(version) as env:
+        session_id = _create_session(env.url)
+        response = requests.post(
+            f"{env.url}/sessions/{session_id}/{path}",
+            json={"messages": [USER]},
+            headers={"x-smg-routing-key": "client-key"},
+            timeout=10.0,
+        )
+        assert response.status_code == 200, response.text
 
 
 class TestForbiddenClientFields:

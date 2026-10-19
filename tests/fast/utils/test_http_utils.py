@@ -80,6 +80,18 @@ def _refuse_lookup(*_args, **_kwargs):
     raise AssertionError("a name lookup ran for a host that needs none")
 
 
+@pytest.mark.parametrize("distributed", [False, True])
+async def test_post_rejects_duplicate_headers_before_dispatch(monkeypatch, distributed):
+    monkeypatch.setattr(http_utils, "_distributed_post_enabled", distributed)
+    monkeypatch.setattr(http_utils, "_post_actors", [object()])
+    with (
+        patch.object(http_utils, "_next_actor", side_effect=AssertionError("must not dispatch to Ray")),
+        patch.object(http_utils, "_rollout_client", side_effect=AssertionError("must not create an HTTP client")),
+        pytest.raises(ValueError, match="duplicate case-insensitive names"),
+    ):
+        await http_utils.post("http://unused.invalid/generate", {}, headers={"X-Policy": "one", "x-policy": "two"})
+
+
 class TestResolveIp:
     def test_an_ipv4_literal_passes_through_without_a_lookup(self, monkeypatch):
         """A literal already is what a socket address parser wants, so resolving it would only add a failure mode."""

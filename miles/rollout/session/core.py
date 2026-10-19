@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import orjson
 from starlette.responses import Response
 
+from miles.rollout.generate_utils.request_headers import customize_request_headers
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
@@ -33,7 +34,6 @@ from miles.rollout.session.samples.merge import (
     truncate_samples_by_total_tokens,
 )
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
-from miles.utils.async_utils import maybe_await
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import validate_request_headers
 
@@ -55,6 +55,13 @@ class ProxyRequest:
 
     method: str
     query: str = ""
+
+
+def _with_session_routing_key(headers: dict[str, str], session_id: str) -> dict[str, str]:
+    # Session routing uses the session identity, not a client-provided key.
+    headers = {name: value for name, value in headers.items() if name.lower() != "x-smg-routing-key"}
+    headers["X-SMG-Routing-Key"] = session_id
+    return headers
 
 
 def _render_json(payload) -> bytes:
@@ -342,10 +349,11 @@ class SessionCore:
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-        headers = {**headers, "X-SMG-Routing-Key": session_id}
-        if self.rollout_request_headers_function is not None:
-            headers = await maybe_await(self.rollout_request_headers_function(headers, evaluation=session.evaluation))
-            validate_request_headers(headers)
+        headers = _with_session_routing_key(headers, session_id)
+        headers = await customize_request_headers(
+            headers, self.rollout_request_headers_function, evaluation=session.evaluation
+        )
+        validate_request_headers(headers)
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
@@ -435,7 +443,8 @@ class SessionCore:
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes
     ) -> Response:
-        headers = {**headers, "X-SMG-Routing-Key": session_id}
+        headers = _with_session_routing_key(headers, session_id)
+        validate_request_headers(headers)
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), path, body=body, headers=headers
         )
