@@ -55,7 +55,7 @@ def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
     return None
 
 
-async def prepare_generate_request(
+async def compute_request_payload(
     args,
     input_ids: list[int],
     sampling_params: dict,
@@ -63,12 +63,12 @@ async def prepare_generate_request(
     *,
     evaluation: bool = False,
     kv_cache_namespace: str | None = None,
-    request_hook=None,
+    rollout_request_hook=None,
     headers: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     payload = {"input_ids": input_ids, "sampling_params": deepcopy(sampling_params)}
-    if request_hook is not None:
-        await maybe_await(request_hook(payload, headers, evaluation=evaluation))
+    if rollout_request_hook is not None:
+        await maybe_await(rollout_request_hook(payload, headers, evaluation=evaluation))
         for field, expected in (
             ("stream", False),
             ("logprob_start_len", 0),

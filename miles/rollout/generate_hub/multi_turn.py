@@ -9,8 +9,8 @@ from copy import deepcopy
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
+    compute_request_payload,
     compute_routing_headers,
-    prepare_generate_request,
     update_sample_from_response,
 )
 from miles.rollout.generate_utils.tool_call_utils import (
@@ -52,13 +52,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         # ----------------------- Call inference endpoint -------------------------
 
         headers = compute_routing_headers(args, sample) or {}
-        payload, halt_status = await prepare_generate_request(
+        payload, halt_status = await compute_request_payload(
             args,
             sample.tokens,
             input.sampling_params,
             evaluation=input.evaluation,
             kv_cache_namespace=sample.kv_cache_namespace,
-            request_hook=input.state.request_hook,
+            rollout_request_hook=input.state.rollout_request_hook,
             headers=headers,
         )
         if payload is None:

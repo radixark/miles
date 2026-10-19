@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.rollout.generate_utils.generate_endpoint_utils import prepare_generate_request
+from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload
 from miles.rollout.generate_utils.sampling_mask import (
     append_forced_sampling_tokens,
     append_sampling_metadata,
@@ -41,7 +41,7 @@ async def test_generate_payload_automatically_requests_sampling_mask(
         rollout_sampling_logprobs_mode="selected",
     )
 
-    payload, halt_status = await prepare_generate_request(
+    payload, halt_status = await compute_request_payload(
         args,
         input_ids=[1, 2],
         sampling_params={
@@ -89,7 +89,7 @@ async def test_evaluation_does_not_request_or_validate_training_sampling_support
         rollout_sampling_logprobs_mode="selected",
     )
 
-    payload, halt_status = await prepare_generate_request(
+    payload, halt_status = await compute_request_payload(
         args,
         input_ids=[1, 2],
         sampling_params={"max_new_tokens": 4, "top_p": 1.0, "top_k": -1, "temperature": 0.5},

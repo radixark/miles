@@ -111,7 +111,7 @@ class GenerateState(metaclass=SingletonMeta):
         self.dp_counts = [0] * (args.sglang_dp_size or 1)
         self.dp_rank = 0
 
-        self.request_hook = load_function(getattr(args, "custom_rollout_request_hook_path", None))
+        self.rollout_request_hook = load_function(getattr(args, "custom_rollout_request_hook_path", None))
         self.reset()
 
     @contextmanager
@@ -192,8 +192,8 @@ async def generate(
         "return_logprob": True,
     }
     headers = compute_routing_headers(args, sample) or {}
-    if state.request_hook is not None:
-        await maybe_await(state.request_hook(payload, headers, evaluation=evaluation))
+    if state.rollout_request_hook is not None:
+        await maybe_await(state.rollout_request_hook(payload, headers, evaluation=evaluation))
         sampling_params = payload["sampling_params"]
         payload["return_logprob"] = True
         payload.pop("return_sampling_mask", None)

@@ -212,17 +212,17 @@ class SessionCore:
         self.registry = registry
         self.config = config
         self.instance_id = session_server_instance_id
-        self.request_hook = load_function(config.custom_rollout_request_hook_path)
+        self.rollout_request_hook = load_function(config.custom_rollout_request_hook_path)
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
 
     async def _customize_chat_request(self, body: bytes, headers: dict, *, evaluation: bool) -> dict:
         client_args = parse_chat_request(body)
-        if self.request_hook is not None:
+        if self.rollout_request_hook is not None:
             client_stream = client_args.get("stream", False)
             client_logprobs = client_args.get("logprobs", False)
-            await maybe_await(self.request_hook(client_args, headers, evaluation=evaluation))
+            await maybe_await(self.rollout_request_hook(client_args, headers, evaluation=evaluation))
             # Backend customization must not change the response the agent asked to receive.
             client_args.update(stream=client_stream, logprobs=client_logprobs)
         return client_args
