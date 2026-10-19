@@ -13,12 +13,12 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
     update_sample_from_response,
 )
-from miles.rollout.generate_utils.request_headers import customize_request_headers
 from miles.rollout.generate_utils.tool_call_utils import (
     create_tool_call_parser,
     execute_tool_calls,
     update_sample_with_tool_responses,
 )
+from miles.utils.async_utils import maybe_await
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import post
 from miles.utils.lifecycle import TrajectoryLifecycle
@@ -64,9 +64,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             break
 
         headers = compute_routing_headers(args, sample)
-        headers = await customize_request_headers(
-            headers, input.state.rollout_request_headers_function, evaluation=input.evaluation
-        )
+        if input.state.rollout_request_headers_function is not None:
+            headers = await maybe_await(
+                input.state.rollout_request_headers_function(headers or {}, evaluation=input.evaluation)
+            )
         gen_t0 = time.time()
         output = await post(url, payload, headers=headers)
         sink = None if input.evaluation else TrajectoryLifecycle().sink

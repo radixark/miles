@@ -10,6 +10,7 @@ from PIL import Image
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 from transformers import AutoProcessor
 
+from miles.rollout import sglang_rollout
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import single_turn
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
@@ -164,6 +165,16 @@ class TestBasicGeneration:
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
         assert listify(result.sample) == [expected_sample(variant)]
+
+    @pytest.mark.parametrize(
+        ("variant", "state_class"),
+        [("single_turn", GenerateState), ("old_sglang_rollout", sglang_rollout.GenerateState)],
+    )
+    @pytest.mark.parametrize("path", ["os.name", "builtins.None"])
+    def test_request_headers_function_must_be_callable(self, variant, state_class, path, generation_env):
+        generation_env.args.custom_rollout_request_headers_function_path = path
+        with pytest.raises(ValueError, match="must resolve to a callable"):
+            state_class(generation_env.args)
 
     @pytest.mark.parametrize("headers_result", [{}, {"x-routing-key": "replacement", "x-policy": "policy"}])
     def test_request_headers_preserve_generation(self, variant, generation_env, monkeypatch, headers_result):

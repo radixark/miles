@@ -16,7 +16,6 @@ from tqdm import tqdm
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
-from miles.rollout.generate_utils.request_headers import customize_request_headers
 from miles.rollout.generate_utils.rollout_topk_logprobs import (
     append_rollout_topk_logprobs,
     configure_rollout_topk_logprobs_request,
@@ -24,7 +23,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
 from miles.utils import dumper_utils
-from miles.utils.async_utils import run
+from miles.utils.async_utils import maybe_await, run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
@@ -112,9 +111,10 @@ class GenerateState(metaclass=SingletonMeta):
         self.dp_counts = [0] * (args.sglang_dp_size or 1)
         self.dp_rank = 0
 
-        self.rollout_request_headers_function = load_function(
-            getattr(args, "custom_rollout_request_headers_function_path", None)
-        )
+        request_headers_path = getattr(args, "custom_rollout_request_headers_function_path", None)
+        self.rollout_request_headers_function = load_function(request_headers_path)
+        if request_headers_path and not callable(self.rollout_request_headers_function):
+            raise ValueError(f"{request_headers_path!r} must resolve to a callable")
         self.reset()
 
     @contextmanager
@@ -235,7 +235,8 @@ async def generate(
             sample.tokens = prompt_ids
 
     headers = compute_routing_headers(args, sample)
-    headers = await customize_request_headers(headers, state.rollout_request_headers_function, evaluation=evaluation)
+    if state.rollout_request_headers_function is not None:
+        headers = await maybe_await(state.rollout_request_headers_function(headers or {}, evaluation=evaluation))
 
     output = await post(url, payload, headers=headers)
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":

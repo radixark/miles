@@ -5,7 +5,6 @@ from copy import deepcopy
 import orjson
 from starlette.responses import Response
 
-from miles.rollout.generate_utils.request_headers import customize_request_headers
 from miles.rollout.session.core import (
     JSON_MEDIA_TYPE,
     ProxyRequest,
@@ -13,7 +12,6 @@ from miles.rollout.session.core import (
     _chat_client_response,
     _render_json,
     _samples_response,
-    _with_session_routing_key,
     extract_completion,
     proxy_result_to_response,
 )
@@ -29,6 +27,7 @@ from miles.rollout.session.v2.session_state import (
     prepare_token_ids_and_request_args,
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
+from miles.utils.async_utils import maybe_await
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import validate_request_headers
 
@@ -155,10 +154,11 @@ class SessionCoreV2(SessionCore):
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-        headers = _with_session_routing_key(headers, session_id)
-        headers = await customize_request_headers(
-            headers, self.rollout_request_headers_function, evaluation=session.evaluation
-        )
+        # Session routing uses the session identity, not a client-provided key.
+        headers = {name: value for name, value in headers.items() if name.lower() != "x-smg-routing-key"}
+        headers["X-SMG-Routing-Key"] = session_id
+        if self.rollout_request_headers_function is not None:
+            headers = await maybe_await(self.rollout_request_headers_function(headers, evaluation=session.evaluation))
         validate_request_headers(headers)
 
         # --- Phase 1: prepare request (lock held briefly) ---
