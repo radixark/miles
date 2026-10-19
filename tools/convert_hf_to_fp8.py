@@ -1,6 +1,10 @@
 """
 python tools/convert_hf_to_fp8.py [-h] [--model-dir MODEL_DIR] [--save-dir SAVE_DIR] [--strategy {block,channel,tensor}] [--block-size [BLOCK_SIZE ...]]
-                           [--max-workers MAX_WORKERS]
+                           [--max-workers MAX_WORKERS] [--extra-high-precision-layers-hf ...]
+
+Convert linear weight matrices to FP8, preserving vision components and
+non-matrix parameters. Use --extra-high-precision-layers-hf to keep additional
+HF weight-name substrings unquantized.
 
 options:
   -h, --help            show this help message and exit
@@ -12,6 +16,8 @@ options:
                         eg. --block-size 32 32
   --max-workers MAX_WORKERS
                         Number of worker threads for parallel processing
+  --extra-high-precision-layers-hf ...
+                        Additional HF weight-name substrings to keep unquantized
 """
 
 import argparse
@@ -113,7 +119,9 @@ class ConversionResult:
             self.modules_to_not_convert.extend(module_names)
 
 
-def process_file(input_path, output_path, filename, strategy, block_size, result_collector):
+def process_file(
+    input_path, output_path, filename, strategy, block_size, result_collector, extra_high_precision_layers_hf=()
+):
     if not filename.endswith(".safetensors"):
         return
 
@@ -128,7 +136,8 @@ def process_file(input_path, output_path, filename, strategy, block_size, result
     modules_to_not_convert = []
     for key in weights.keys():
         if (
-            "weight" in key
+            key.endswith(".weight")
+            and weights[key].ndim == 2
             and "layernorm" not in key
             and "embed" not in key
             and "router" not in key
@@ -141,8 +150,10 @@ def process_file(input_path, output_path, filename, strategy, block_size, result
             and "wo_a" not in key
             and "ffn.gate." not in key
             and "compressor." not in key
+            and ".visual." not in f".{key}"
             and "vision_tower" not in key
             and "mm_projector" not in key
+            and not any(substr in key for substr in extra_high_precision_layers_hf)
         ):
             qw, s = quant_fp8(weights[key], strategy, block_size)
             q_weights[key] = qw
@@ -152,7 +163,8 @@ def process_file(input_path, output_path, filename, strategy, block_size, result
                 scale_name = key.replace(".weight", ".weight_scale")
             q_weights[scale_name] = s
         else:
-            modules_to_not_convert.append(key.replace(".weight", ""))
+            if key.endswith(".weight"):
+                modules_to_not_convert.append(key.removesuffix(".weight"))
             q_weights[key] = weights[key]
 
     safetensors.torch.save_file(q_weights, os.path.join(output_path, filename), metadata={"format": "pt"})
@@ -160,7 +172,7 @@ def process_file(input_path, output_path, filename, strategy, block_size, result
     result_collector.add_result(filename, q_weights, modules_to_not_convert)
 
 
-def convert_fp8(input_path, output_path, strategy, block_size=None, max_workers=4):
+def convert_fp8(input_path, output_path, strategy, block_size=None, max_workers=4, extra_high_precision_layers_hf=()):
     input_path = os.path.abspath(input_path)
     os.makedirs(output_path, exist_ok=True)
 
@@ -176,7 +188,14 @@ def convert_fp8(input_path, output_path, strategy, block_size=None, max_workers=
         futures = []
         for filename in safetensors_files:
             future = executor.submit(
-                process_file, input_path, output_path, filename, strategy, block_size, result_collector
+                process_file,
+                input_path,
+                output_path,
+                filename,
+                strategy,
+                block_size,
+                result_collector,
+                extra_high_precision_layers_hf,
             )
             futures.append(future)
 
@@ -254,6 +273,13 @@ if __name__ == "__main__":
     parser.add_argument("--strategy", type=str, default="block", choices=["block", "channel", "tensor"])
     parser.add_argument("--block-size", type=int, nargs="*", default=None, help="eg. --block-size 32 32")
     parser.add_argument("--max-workers", type=int, default=1, help="Number of worker threads for parallel processing")
+    parser.add_argument(
+        "--extra-high-precision-layers-hf",
+        type=str,
+        nargs="*",
+        default=[],
+        help="Additional HF weight-name substrings to keep unquantized.",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.save_dir):
@@ -262,4 +288,11 @@ if __name__ == "__main__":
     elif not os.path.isdir(args.save_dir):
         raise ValueError("The save_dir should be a directory.")
 
-    convert_fp8(args.model_dir, args.save_dir, args.strategy, args.block_size, args.max_workers)
+    convert_fp8(
+        args.model_dir,
+        args.save_dir,
+        args.strategy,
+        args.block_size,
+        args.max_workers,
+        extra_high_precision_layers_hf=tuple(s.strip() for s in args.extra_high_precision_layers_hf if s.strip()),
+    )
