@@ -14,6 +14,7 @@ Each topic has one owner; the others link to it.
 | [`beaker/README.md`](beaker/README.md) | Running on Beaker: what a submission does, the `beaker:` config, run names and resume, images, sandbox pulls and mirrors, watching a run, failure triage |
 | [`ROADMAP.md`](ROADMAP.md) | Open work by priority, decisions already taken, things not yet verified |
 | [`INVESTIGATIONS.md`](INVESTIGATIONS.md) | Investigations from running the port: evidence, the options considered, open decisions |
+| [`FAILURE_MODES.md`](FAILURE_MODES.md) | Index of every way a prod run has hung or failed, with its status (open, mitigated, fixed) and a link to its investigation |
 | [`docs/deep-dive/open-instruct-comparison.md`](../../docs/deep-dive/open-instruct-comparison.md) | Every difference from open-instruct (framework, harness, sandboxes, Beaker, checkpoints, metrics), and the flag-by-flag mapping of the production recipe |
 | [`docs/deep-dive/`](../../docs/deep-dive/index.md) | Miles internals: one RL step, every metric's formula, async and off-policy mechanics, agentic rollouts and the session server |
 | This file | How the port is put together, how to develop and test it, conventions, history |

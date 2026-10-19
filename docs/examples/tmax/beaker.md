@@ -234,6 +234,9 @@ reasons, turns, tool errors) are not logged in fully-async mode, so read them fr
 
 ## Failures and what they mean
 
+What to do when a symptom shows up. Every failure mode seen so far, with its status, is indexed in
+[FAILURE_MODES.md](https://github.com/radixark/miles/blob/main/examples/tmax/FAILURE_MODES.md).
+
 | Symptom | Cause | Action |
 |---|---|---|
 | `timed out after waiting 10m0s for synchronized replica start`; retries then fail with `only 16/32 GPUs joined the Ray cluster in 30 min` | Beaker cancelled replicas that started late and never retried them | Fixed by `synchronized_start_timeout: 1h`. If it recurs, stop the experiment and resubmit with `--exp-name` |

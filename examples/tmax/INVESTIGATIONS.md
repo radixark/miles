@@ -2,7 +2,8 @@
 
 Investigations from running the port, newest first. Each records what was observed, the evidence, the options
 considered and whether one was chosen. Open work lives in [ROADMAP.md](ROADMAP.md), which links back here; failure
-signatures and what to do about them are in the [Beaker runbook](beaker/README.md#failures-and-what-they-mean).
+signatures and what to do about them are in the [Beaker runbook](beaker/README.md#failures-and-what-they-mean), and
+every failure mode with its current status is indexed in [FAILURE_MODES.md](FAILURE_MODES.md).
 
 Runs referred to:
 
