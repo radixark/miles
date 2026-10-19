@@ -1,4 +1,4 @@
-"""GLM-5.3-Flash through native LoRA: the launcher's targets, checkpoint-named adapters, KDA's plain linears — no GPU."""
+"""GLM-5.3-Flash through native LoRA: the launcher's targets, HF-named adapters, KDA's plain linears — no GPU."""
 
 import argparse
 import shlex
@@ -15,14 +15,24 @@ from miles.backends.megatron_utils.lora.native.lora import _attach_layer
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
-from miles.utils.hf_utils.config import register_hf_config_aliases
 from miles.utils.lora.arguments import _resolve_lora_targets
-from miles.utils.lora.utils import get_adapter_target_modules, matches_lora_target
+from miles.utils.lora.utils import get_adapter_target_modules
 
 HIDDEN, RANK = 8, 2
 PREFIX = "model.language_model.layers."
 GLM5_NEXT = MODEL_SPECS["glm5_next"]
-_KDA_LEAVES = ("q_proj", "k_proj", "v_proj", "b_proj", "f_a_proj", "f_b_proj", "g_a_proj", "g_b_proj", "o_proj")
+_KDA_HOSTS = ("q_proj", "k_proj", "v_proj", "b_proj", "f_a_proj", "f_b_proj", "g_a_proj", "g_b_proj", "o_proj")
+_KDA_LEAVES = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "b_proj",
+    "forget_gate.f_a_proj",
+    "forget_gate.f_b_proj",
+    "g_a_proj",
+    "g_b_proj",
+    "o_proj",
+)
 _DSA_LEAVES = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "o_proj")
 _MLP_LEAVES = ("gate_proj", "up_proj", "down_proj")
 
@@ -91,10 +101,15 @@ def _moe():
 
 
 def _hf_config():
-    register_hf_config_aliases()
     return AutoConfig.for_model(
         "glm5_next",
-        text_config=dict(num_hidden_layers=2, first_k_dense_replace=1, n_shared_experts=1, q_lora_rank=4),
+        text_config=dict(
+            num_hidden_layers=2,
+            layer_types=["linear_attention", "indexed_attention"],
+            mlp_layer_types=["dense", "sparse"],
+            n_shared_experts=1,
+            q_lora_rank=4,
+        ),
     )
 
 
@@ -153,24 +168,20 @@ def launcher_targets(monkeypatch):
 
 def test_the_launcher_trains_every_projection_native_lora_runs(launcher_targets):
     """Routed experts and the absorbed kv_b_proj have no native adapter; everything else is trained."""
-    expected = {f"{PREFIX}*.self_attn.{leaf}" for leaf in _KDA_LEAVES + _DSA_LEAVES}
-    expected |= {f"{PREFIX}*.{block}.{leaf}" for block in ("mlp", "mlp.shared_experts") for leaf in _MLP_LEAVES}
-    assert set(launcher_targets) == expected
+    assert set(launcher_targets) == (
+        {f"{PREFIX}0.self_attn.{leaf}" for leaf in _KDA_LEAVES}
+        | {f"{PREFIX}0.mlp.{leaf}" for leaf in _MLP_LEAVES}
+        | {f"{PREFIX}1.self_attn.{leaf}" for leaf in _DSA_LEAVES}
+        | {f"{PREFIX}1.mlp.shared_experts.{leaf}" for leaf in _MLP_LEAVES}
+    )
 
 
-def test_adapters_carry_the_checkpoint_names_the_targets_select(launcher_targets):
+def test_adapters_carry_the_hf_names_the_targets_select(launcher_targets):
     """An adapter named outside the selected namespace is never attached, so the run trains nothing there."""
     exported = dict(export_lora_hf_named([_model(launcher_targets)]))
 
-    modules = get_adapter_target_modules(exported)
-    assert set(modules) == {f"{PREFIX}0.self_attn.{leaf}" for leaf in _KDA_LEAVES} | {
-        f"{PREFIX}0.mlp.{leaf}" for leaf in _MLP_LEAVES
-    } | {f"{PREFIX}1.self_attn.{leaf}" for leaf in _DSA_LEAVES} | {
-        f"{PREFIX}1.mlp.shared_experts.{leaf}" for leaf in _MLP_LEAVES
-    }
-    for module in modules:
-        assert any(matches_lora_target(module, target) for target in launcher_targets), module
-    assert exported[f"{PREFIX}0.self_attn.f_b_proj.lora_A.weight"].shape == (RANK, 4)
+    assert set(get_adapter_target_modules(exported)) == set(launcher_targets)
+    assert exported[f"{PREFIX}0.self_attn.forget_gate.f_b_proj.lora_A.weight"].shape == (RANK, 4)
     assert exported[f"{PREFIX}0.self_attn.b_proj.lora_B.weight"].shape == (3, RANK)
 
 
@@ -178,10 +189,10 @@ def test_kda_adapters_add_their_delta_to_the_plain_linear_output(launcher_target
     model = _model(launcher_targets)
     weights = {name: parameter for name, parameter in model.named_parameters() if "lora" not in name}
     merged = merge_lora_into_weights([model], weights)
-    for leaf in _KDA_LEAVES:
-        host = getattr(model.layers[0].self_attention.kda, leaf)
+    for name in _KDA_HOSTS:
+        host = getattr(model.layers[0].self_attention.kda, name)
         inputs = torch.randn(4, host.weight.shape[1])
-        torch.testing.assert_close(host(inputs), inputs @ merged[f"layers.0.self_attention.kda.{leaf}.weight"].t())
+        torch.testing.assert_close(host(inputs), inputs @ merged[f"layers.0.self_attention.kda.{name}.weight"].t())
 
 
 def test_kv_b_proj_is_rejected_since_the_absorbed_dsa_never_calls_it():

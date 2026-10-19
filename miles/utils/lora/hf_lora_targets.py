@@ -41,7 +41,16 @@ _PACKED_EXPERTS = _prefix_paths("mlp.experts", "gate_up_proj", "down_proj")
 _GDN_NEXT = _prefix_paths("linear_attn", "in_proj_qkvz", "in_proj_ba", "out_proj")
 _GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
 _KDA = _prefix_paths(
-    "self_attn", "q_proj", "k_proj", "v_proj", "b_proj", "f_a_proj", "f_b_proj", "g_a_proj", "g_b_proj", "o_proj"
+    "self_attn",
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "b_proj",
+    "forget_gate.f_a_proj",
+    "forget_gate.f_b_proj",
+    "g_a_proj",
+    "g_b_proj",
+    "o_proj",
 )
 
 
@@ -53,12 +62,12 @@ def _gpt_oss_targets(config):
     return _QKVO_ATTENTION, _PACKED_EXPERTS
 
 
-def _deepseek_mlp_targets(config, routed_experts=_PACKED_EXPERTS):
+def _deepseek_mlp_targets(config):
     mlp = []
     if config["first_k_dense_replace"] > 0:
         mlp.extend(_DENSE_MLP)
     if config["first_k_dense_replace"] < config["num_hidden_layers"]:
-        mlp.extend(routed_experts)
+        mlp.extend(_PACKED_EXPERTS)
         if config["n_shared_experts"]:
             mlp.extend(_SHARED_EXPERTS)
     return tuple(mlp)
@@ -123,10 +132,14 @@ def _glm_dsa_targets(config):
 
 
 def _glm5_next_targets(config):
-    # Every GLM-5.3-Flash stack interleaves KDA and DSA layers; without an HF model class the
-    # checkpoint keeps one module per routed expert.
-    attention = tuple(dict.fromkeys(_KDA + _mla_attention_targets(config)))
-    return attention, _deepseek_mlp_targets(config, routed_experts=_ROUTED_EXPERTS)
+    # GLM-5.3-Flash interleaves KDA layers into the GLM-5 DSA stack
+    dsa_attention, mlp = _glm_dsa_targets(config)
+    attention = []
+    if "linear_attention" in config["layer_types"]:
+        attention.extend(_KDA)
+    if "indexed_attention" in config["layer_types"]:
+        attention.extend(dsa_attention)
+    return tuple(dict.fromkeys(attention)), mlp
 
 
 def _qwen_moe_mlp_targets(config, *, shared_expert=False):

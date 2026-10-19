@@ -174,14 +174,24 @@ class Glm5NextAttentionSpec(MLAAttentionSpec):
         full_sequence=True,
         singles=tuple(
             ProjectionBinding(
-                projection=ProjectionSpec(f"{param_prefix}_proj", param_prefix, ShardLayout.REPLICATED),
+                projection=ProjectionSpec(hf_leaf, param_prefix, ShardLayout.REPLICATED),
                 module_attr=f"{param_prefix}_proj",
                 in_dim=L.host_in_local(f"{param_prefix}_proj"),
                 out_dim=L.host_out_local(f"{param_prefix}_proj"),
                 adapter_attr=f"lora_{param_prefix}_adapter",
                 adapter_class=LoRAReplicatedPlainLinear,
             )
-            for param_prefix in ("q", "k", "v", "b", "f_a", "f_b", "g_a", "g_b", "o")
+            for param_prefix, hf_leaf in (
+                ("q", "q_proj"),
+                ("k", "k_proj"),
+                ("v", "v_proj"),
+                ("b", "b_proj"),
+                ("f_a", "forget_gate.f_a_proj"),
+                ("f_b", "forget_gate.f_b_proj"),
+                ("g_a", "g_a_proj"),
+                ("g_b", "g_b_proj"),
+                ("o", "o_proj"),
+            )
         ),
     )
 
@@ -191,7 +201,8 @@ class Glm5NextAttentionSpec(MLAAttentionSpec):
 
     @property
     def canonical_targets_csv(self) -> str:
-        names = [binding.projection.hf_leaf for binding in self.kda_layout.singles + self.layout.singles]
+        # a dotted selector must match the whole module name, so pass leaves
+        names = [binding.projection.hf_leaf.rpartition(".")[2] for binding in self.kda_layout.singles + self.layout.singles]
         return ",".join(dict.fromkeys(names))
 
     def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
