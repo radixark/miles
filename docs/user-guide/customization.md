@@ -13,7 +13,7 @@ and the default it replaces.
 | **Rollout** | `--rollout-function-path` | The whole rollout loop |
 | | `--custom-agent-function-path` | The agent-environment loop inside a TITO session |
 | | `--custom-generate-function-path` | A single sample's generation |
-| | `--custom-rollout-request-headers-function-path` | Default application headers on generation requests |
+| | `--custom-rollout-request-headers-function-path` | Headers on generation requests |
 | | `--data-source-path` | How prompts are loaded |
 | | `--eval-function-path` | The eval rollout |
 | **Session** | `--session-message-matcher` | Prefix-replay equivalence |
@@ -77,8 +77,8 @@ signatures load through the same adapter. See
 
 ### `--custom-rollout-request-headers-function-path`
 
-Customize application headers, such as affinity or workload metadata, without
-changing the generation payload:
+Customize headers for an inference endpoint's routing, authentication, or admission
+requirements without replacing generation:
 
 ```python
 def customize_headers(headers: dict[str, str], *, evaluation: bool) -> dict[str, str]:
@@ -90,19 +90,17 @@ and async functions are supported. Use an async function to fetch external metad
 without blocking other requests. Failures propagate through existing error handling;
 miles does not send the inference request if obtaining its headers fails.
 
-The function receives an owned copy of the default application headers with lowercase
-names, plus the training/evaluation flag. Native generation derives its default
-`x-smg-routing-key` from the sample; session forwarding derives it from the session ID.
-The function may preserve, replace, remove, or add application headers. Its returned
-dictionary replaces the application defaults; omitted headers are not restored.
+The function receives an owned copy of the default request headers with lowercase
+names, plus the training/evaluation flag. Native generation includes `x-smg-routing-key`
+when the sample has a routing key; session forwarding derives it from the session ID.
+The function may preserve, replace, remove, or add headers. Its returned dictionary
+replaces the defaults; omitted headers are not restored.
 For example, assigning `headers["x-smg-routing-key"]` overrides the routing default
 without changing the sample or session identity inside miles.
 
-HTTP transport fields, such as `Host`, `Content-Type`, and `Content-Length`, are not
-passed to the function and cannot be returned by it. They retain their existing
-handling. Returned header names are case-insensitive; duplicate spellings of one name
-are rejected. The payload is not exposed: sampling, tokenization, required training
-outputs, and the response protocol remain owned by miles.
+The endpoint must accept the existing generation protocol. The payload is not exposed:
+sampling, tokenization, required training outputs, and response processing remain
+owned by miles. HTTP serialization and proxy header handling remain unchanged.
 
 The function runs once per inference call in built-in single-turn/multi-turn generation
 and session-server v1/v2 chat forwarding, for training and evaluation. Native generation's

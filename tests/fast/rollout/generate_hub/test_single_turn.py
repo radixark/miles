@@ -165,13 +165,16 @@ class TestBasicGeneration:
         assert result.requests == [expected_request(variant)]
         assert listify(result.sample) == [expected_sample(variant)]
 
-    def test_request_headers_preserve_generation(self, variant, generation_env, monkeypatch):
+    @pytest.mark.parametrize("headers_result", [{}, {"x-routing-key": "replacement", "x-policy": "policy"}])
+    def test_request_headers_preserve_generation(self, variant, generation_env, monkeypatch, headers_result):
         calls = []
 
         async def customize_headers(headers, *, evaluation):
             calls.append(evaluation)
             assert headers == {"x-smg-routing-key": "original"}
-            return {**headers, "x-smg-routing-key": "replacement", "x-policy": "policy"}
+            headers.pop("x-smg-routing-key")
+            headers.update(headers_result)
+            return headers
 
         module = (
             "miles.rollout.sglang_rollout"
@@ -180,7 +183,7 @@ class TestBasicGeneration:
         )
 
         async def checked_post(url, payload, headers):
-            assert headers == {"x-smg-routing-key": "replacement", "x-policy": "policy"}
+            assert headers == headers_result
             return await post(url, payload, headers=headers)
 
         monkeypatch.setattr(f"{module}.post", checked_post)

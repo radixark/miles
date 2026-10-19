@@ -65,7 +65,7 @@ def test_request_headers_preserve_session_generation(version, evaluation):
     def customize_headers(headers, *, evaluation):
         calls.append(evaluation)
         assert headers["x-smg-routing-key"] == session_id
-        assert "content-type" not in headers
+        assert headers["content-type"] == "application/json"
         return {**headers, "x-smg-routing-key": "replacement", "x-policy": "policy"}
 
     with function_registry.temporary("test.customize_headers", customize_headers), patch.object(

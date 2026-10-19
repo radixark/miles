@@ -16,7 +16,6 @@ from dataclasses import dataclass
 import orjson
 from starlette.responses import Response
 
-from miles.rollout.generate_utils.request_headers import compute_request_headers
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
@@ -34,6 +33,7 @@ from miles.rollout.session.samples.merge import (
     truncate_samples_by_total_tokens,
 )
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.utils.async_utils import maybe_await
 from miles.utils.function_registry import load_function
 
 logger = logging.getLogger(__name__)
@@ -343,9 +343,8 @@ class SessionCore:
 
         headers = {**headers, "X-SMG-Routing-Key": session_id}
         if self.rollout_request_headers_function is not None:
-            headers = await compute_request_headers(
-                headers, self.rollout_request_headers_function, evaluation=session.evaluation
-            )
+            headers = {name.lower(): value for name, value in headers.items()}
+            headers = await maybe_await(self.rollout_request_headers_function(headers, evaluation=session.evaluation))
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:

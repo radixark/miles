@@ -5,7 +5,6 @@ from copy import deepcopy
 import orjson
 from starlette.responses import Response
 
-from miles.rollout.generate_utils.request_headers import compute_request_headers
 from miles.rollout.session.core import (
     JSON_MEDIA_TYPE,
     ProxyRequest,
@@ -28,6 +27,7 @@ from miles.rollout.session.v2.session_state import (
     prepare_token_ids_and_request_args,
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
+from miles.utils.async_utils import maybe_await
 from miles.utils.function_registry import load_function
 
 logger = logging.getLogger(__name__)
@@ -155,9 +155,8 @@ class SessionCoreV2(SessionCore):
 
         headers = {**headers, "X-SMG-Routing-Key": session_id}
         if self.rollout_request_headers_function is not None:
-            headers = await compute_request_headers(
-                headers, self.rollout_request_headers_function, evaluation=session.evaluation
-            )
+            headers = {name.lower(): value for name, value in headers.items()}
+            headers = await maybe_await(self.rollout_request_headers_function(headers, evaluation=session.evaluation))
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
