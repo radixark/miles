@@ -63,6 +63,11 @@ def _prepare(args: ScriptArgs):
     backend = args.create_backend()
     backend.exec_command_cpu(f"mkdir -p {args.model_dir} {args.ckpt_dir} {args.data_dir}")
     backend.exec_command_cpu(f"hf download {_HF_REPO[args.model_name]} --local-dir {args.hf_checkpoint}")
+    if args.model_name == "GLM-5.3-Flash-4layer":
+        # the slice omits the processor config SGLang loads for this multimodal model
+        backend.exec_command_cpu(
+            f"hf download {_HF_REPO['GLM-5.3-Flash']} processor_config.json --local-dir {args.hf_checkpoint}"
+        )
     backend.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     os.environ["CONVERT_KEEP_PP1"] = "1"
     os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
