@@ -284,6 +284,7 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
         custom_megatron_post_save_hook_path=None,
         debug_rollout_only=False,
         save_hf=None,
+        rollout_save_retain_interval=None,
     )
     worker.role = "actor"
     worker._heartbeat = Mock()
@@ -326,6 +327,7 @@ def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, 
         custom_megatron_post_save_hook_path=None,
         debug_rollout_only=False,
         save_hf="/checkpoints/hf/{rollout_id}",
+        rollout_save_retain_interval=None,
     )
     worker.role = "actor"
     worker._heartbeat = Mock()

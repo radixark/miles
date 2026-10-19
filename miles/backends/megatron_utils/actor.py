@@ -78,7 +78,7 @@ from miles.utils.workers.rpc.common.wire_types import Pickled
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
 from ..training_utils.parallel import get_parallel_state
-from .checkpoint import load_checkpoint
+from .checkpoint import load_checkpoint, prune_unretained_checkpoints
 from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
@@ -497,6 +497,14 @@ class MegatronTrainRayActor(TrainRayActor):
             return
 
         maybe_finalize_async_save(blocking=True)
+
+    def _prune_unretained_checkpoints(self) -> None:
+        # Runs once a save has completed, so the tracker already names the checkpoint that must survive.
+        if self.args.backend.rollout_save_retain_interval is None or dist.get_rank() != 0:
+            return
+        prune_unretained_checkpoints(
+            self.args.backend.save, retain_interval=self.args.backend.rollout_save_retain_interval
+        )
 
     @with_logs
     @timer
@@ -941,6 +949,7 @@ class MegatronTrainRayActor(TrainRayActor):
             return
 
         self._finalize_pending_async_save()
+        self._prune_unretained_checkpoints()
 
         save(
             self.args,
@@ -964,6 +973,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if force_sync:
             self._finalize_pending_async_save()
+        if force_sync or not self.args.backend.async_save:
+            self._prune_unretained_checkpoints()
 
         if (x := self.args.custom_megatron_post_save_hook_path) is not None and dist.get_rank() == 0:
             self._finalize_pending_async_save()

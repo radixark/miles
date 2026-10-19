@@ -347,6 +347,7 @@ def parse_args_and_get_parser(
         previous_arg_names = set(vars(args))
         megatron_validate_args(args)
         validate_lora_args_after_megatron(args)
+        _retain_checkpoints_by_rollout(args)
 
         # always use varlen
         args.variable_seq_lengths = True
@@ -1042,6 +1043,17 @@ def _apply_custom_config(args, data: dict) -> None:
                 f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}."
             )  # config-access-exempt: attribute selected at runtime from k
         setattr(args, k, v)
+
+
+def _retain_checkpoints_by_rollout(args) -> None:
+    """Take --save-retain-interval away from Megatron and apply it to rollouts.
+
+    Megatron keeps an old checkpoint only when its iteration is a multiple of the interval, but rollout r
+    is saved as iteration r, so the periodic saves (19, 39, ...) never qualify and only the latest would
+    survive. The Megatron actor prunes by rollout count instead (prune_unretained_checkpoints).
+    """
+    args.rollout_save_retain_interval = args.save_retain_interval
+    args.save_retain_interval = None
 
 
 def miles_validate_args(args):

@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from tests.fast.fixtures.args_fixtures import make_trainer_config
+from tests.fast.fixtures.args_fixtures import make_trainer_args, make_trainer_config
 from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
 
 from miles.backends.training_utils.model_companion import ModelCompanion
@@ -393,3 +393,66 @@ class TestUpdateWeightsFaultHookContext:
         reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER)
 
         assert log == []
+
+
+class TestSaveModelRetention:
+    @staticmethod
+    def _actor(actor_module: ModuleType, *, async_save: bool, retain_interval: int | None):
+        actor = object.__new__(actor_module.MegatronTrainRayActor)
+        actor.args = make_trainer_args(
+            debug_rollout_only=False,
+            async_save=async_save,
+            save="/checkpoints",
+            save_hf=None,
+            custom_megatron_post_save_hook_path=None,
+            rollout_save_retain_interval=retain_interval,
+        )
+        actor._heartbeat = Mock()
+        actor.model = actor.optimizer = actor.opt_param_scheduler = actor.snapshot_publisher = None
+        actor.adapter_slots = actor._schedule_first_rollout = None
+        return actor
+
+    @pytest.fixture
+    def pruned(self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
+        calls: list[tuple[str, int]] = []
+        monkeypatch.setattr(actor_module, "save", lambda *args, **kwargs: None)
+        monkeypatch.setattr(actor_module, "maybe_finalize_async_save", lambda blocking: None)
+        monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 0)
+        monkeypatch.setattr(
+            actor_module,
+            "prune_unretained_checkpoints",
+            lambda save_dir, *, retain_interval: calls.append((save_dir, retain_interval)),
+        )
+        return calls
+
+    def test_a_synchronous_save_prunes_once_it_is_written(self, actor_module: ModuleType, pruned) -> None:
+        """The tracker names the new checkpoint as soon as a synchronous save returns."""
+        self._actor(actor_module, async_save=False, retain_interval=60).save_model(rollout_id=59)
+
+        assert pruned[-1] == ("/checkpoints", 60)
+
+    def test_an_asynchronous_save_prunes_only_after_it_is_finalized(self, actor_module: ModuleType, pruned) -> None:
+        """Until the save is finalized the tracker still names the previous checkpoint, which must survive."""
+        actor = self._actor(actor_module, async_save=True, retain_interval=60)
+
+        actor.save_model(rollout_id=59)
+        prunes_before_finalize = len(pruned)
+        actor.save_model(rollout_id=79, force_sync=True)
+
+        assert prunes_before_finalize == 1
+        assert len(pruned) == 3
+
+    def test_nothing_is_pruned_without_a_retain_interval(self, actor_module: ModuleType, pruned) -> None:
+        """Without --save-retain-interval every checkpoint is kept, as before."""
+        self._actor(actor_module, async_save=False, retain_interval=None).save_model(rollout_id=59)
+
+        assert pruned == []
+
+    def test_only_global_rank_0_prunes(
+        self, actor_module: ModuleType, pruned, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 3)
+
+        self._actor(actor_module, async_save=False, retain_interval=60).save_model(rollout_id=59)
+
+        assert pruned == []

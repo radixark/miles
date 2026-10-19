@@ -198,3 +198,51 @@ class TestDeepSeekCheckpointCompatibility:
                 skip_load_to_model_and_opt=False,
                 args=args,
             )
+
+
+class TestPruneUnretainedCheckpoints:
+    @staticmethod
+    def _make_checkpoints(save_dir: Path, iterations: list[int], *, latest: int | None) -> None:
+        for iteration in iterations:
+            (save_dir / f"iter_{iteration:07d}").mkdir(parents=True)
+        if latest is not None:
+            (save_dir / "latest_checkpointed_iteration.txt").write_text(str(latest))
+
+    @staticmethod
+    def _remaining(save_dir: Path) -> list[str]:
+        return sorted(path.name for path in save_dir.iterdir() if path.is_dir())
+
+    def test_keeps_every_retained_rollout_step_and_the_latest(self, tmp_path: Path) -> None:
+        """Rollout r is saved as iteration r, so a 60-rollout interval keeps 59 and 119, not 60 and 120."""
+        self._make_checkpoints(tmp_path, [19, 39, 59, 79, 99, 119, 139], latest=139)
+
+        checkpoint.prune_unretained_checkpoints(str(tmp_path), retain_interval=60)
+
+        assert self._remaining(tmp_path) == ["iter_0000059", "iter_0000119", "iter_0000139"]
+
+    def test_a_directory_newer_than_the_tracker_is_left_alone(self, tmp_path: Path) -> None:
+        """An asynchronous save writes its directory before the tracker names it."""
+        self._make_checkpoints(tmp_path, [19, 39, 59], latest=39)
+
+        checkpoint.prune_unretained_checkpoints(str(tmp_path), retain_interval=60)
+
+        assert self._remaining(tmp_path) == ["iter_0000039", "iter_0000059"]
+
+    def test_nothing_is_deleted_without_a_tracker(self, tmp_path: Path) -> None:
+        """Without a tracker no checkpoint is known to be complete, so none may go."""
+        self._make_checkpoints(tmp_path, [19, 39], latest=None)
+
+        checkpoint.prune_unretained_checkpoints(str(tmp_path), retain_interval=60)
+
+        assert self._remaining(tmp_path) == ["iter_0000019", "iter_0000039"]
+
+    def test_other_entries_in_the_save_directory_are_untouched(self, tmp_path: Path) -> None:
+        """Rollout state and a released conversion live next to the iteration directories."""
+        self._make_checkpoints(tmp_path, [19, 39], latest=39)
+        (tmp_path / "rollout" / "19").mkdir(parents=True)
+        (tmp_path / "release").mkdir()
+        (tmp_path / "iter_notanumber").mkdir()
+
+        checkpoint.prune_unretained_checkpoints(str(tmp_path), retain_interval=60)
+
+        assert self._remaining(tmp_path) == ["iter_0000039", "iter_notanumber", "release", "rollout"]

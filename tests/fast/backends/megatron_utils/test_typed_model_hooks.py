@@ -158,6 +158,7 @@ class TestTypedModelHooks:
             save_hf=None,
             ci_test=False,
             use_distributed_optimizer=False,
+            rollout_save_retain_interval=None,
         )
         worker.role = "actor"
         worker._heartbeat = SimpleNamespace(bump=lambda: None)
