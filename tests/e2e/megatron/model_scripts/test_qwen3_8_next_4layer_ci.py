@@ -11,6 +11,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
     hardware=["hopper", "blackwell"],
+    num_gpus=8,
 )
 register_rocm_ci(
     est_time=600,
@@ -30,6 +31,7 @@ _MODEL_ORG = "CharyZeng"
 def _args() -> ScriptArgs:
     return ScriptArgs.from_env(
         model_name="Qwen3.8-Flash-Next-4layer",
+        ckpt_dir="/root/models",
         num_nodes=1,
         num_gpus_per_node=8,
         num_rollout=5,

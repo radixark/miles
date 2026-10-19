@@ -12,6 +12,7 @@ register_cuda_ci(
     labels=["ft-long"],
     hardware=["hopper", "blackwell"],
     disabled="FT soak tests pending CI infra support",
+    num_gpus=8,
 )
 
 _MODE: str = "kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer"

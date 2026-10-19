@@ -303,7 +303,6 @@ def _execute_train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
         # TODO if good, also configure to other scripts
         "--router-health-success-threshold 1 "

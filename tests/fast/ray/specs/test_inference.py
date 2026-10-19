@@ -12,6 +12,7 @@ from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
 from miles.ray.rollout import external_engine_provider as external_engine_provider_module
 from miles.ray.rollout.inference_controller import InferenceController
@@ -39,6 +40,7 @@ from miles.router.config import MilesRouterConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
 from miles.utils.function_registry import load_function
+from miles.utils.http_utils import GeneralHttpClientProvider
 from miles.utils.workers.argv_utils import parse_config_argv
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.types import PlatformAccess
@@ -50,6 +52,11 @@ from miles.utils.workers.worker_spec import (
     WorkerCtorContext,
     WorkerMetaContext,
 )
+
+
+@pytest.fixture(autouse=True)
+def _interpreter_without_runner_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-m", "pytest"])
 
 
 def _controller_layout() -> LaunchPlan:
@@ -512,11 +519,13 @@ class TestInferenceEngineEnvVars:
         """Without an override the engine must still get miles' own safety values rather than sglang's."""
         monkeypatch.delenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", raising=False)
         monkeypatch.delenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", raising=False)
+        monkeypatch.delenv("SGLANG_TIMEOUT_KEEP_ALIVE", raising=False)
 
         envs = compute_inference_engine_env_vars(make_args())
 
         assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "false"
         assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "true"
+        assert int(envs["SGLANG_TIMEOUT_KEEP_ALIVE"]) > GeneralHttpClientProvider._LIMITS.keepalive_expiry
 
     def test_custom_all_reduce_v2_is_disabled_only_for_colocated_multi_gpu_engines(self, monkeypatch):
         """Only a colocated engine spanning several gpus hits the v2 all-reduce conflict; disabling it elsewhere
@@ -898,7 +907,7 @@ class TestInferenceEngineRandomSeed:
         for model_idx, model_cfg in enumerate(resolve_sglang_config(args).models):
             for group_index, group_cfg in enumerate(model_cfg.server_groups):
                 num_actors = group_cfg.num_gpus // min(group_cfg.num_gpus_per_engine, args.num_gpus_per_node)
-                if group_cfg.worker_type != "placeholder":
+                if group_cfg.worker_type != WorkerType.PLACEHOLDER:
                     pool_id = compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index)
                     seeds[pool_id] = [args.seed + global_rank + i for i in range(num_actors)]
                 global_rank += num_actors

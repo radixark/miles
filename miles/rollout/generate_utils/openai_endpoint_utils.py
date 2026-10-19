@@ -16,7 +16,7 @@ from miles.rollout.session.samples.codec import (
     decode_samples_and_merge_input_sample,
 )
 from miles.rollout.session.types import CreateSessionRequest
-from miles.utils.http_utils import post, post_bytes_no_retry
+from miles.utils.http_utils import post, post_buffer_no_retry
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,13 @@ class OpenAIEndpointTracer:
         return self.router_url.removeprefix("http://")
 
     @staticmethod
-    async def create(args: Namespace, *, evaluation: bool = False, sampling_params: dict | None = None):
+    async def create(
+        args: Namespace,
+        *,
+        evaluation: bool = False,
+        sampling_params: dict | None = None,
+        extra_key: str | None = None,
+    ):
         instances = getattr(args, "session_server_instances", None)
         if not instances:
             raise RuntimeError(
@@ -64,7 +70,9 @@ class OpenAIEndpointTracer:
         session_params = {
             key: value for key, value in (sampling_params or {}).items() if key in CreateSessionRequest.model_fields
         }
-        body = CreateSessionRequest.model_validate({**session_params, "evaluation": evaluation})
+        body = CreateSessionRequest.model_validate(
+            {**session_params, "evaluation": evaluation, "extra_key": extra_key}
+        )
         use_v2 = getattr(args, "use_session_server", None) == "v2"
         samples_wire_fields = COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS
         if should_return_sampling_mask(args, sampling_params, evaluation=evaluation):
@@ -88,7 +96,7 @@ class OpenAIEndpointTracer:
             body["metadata"] = agent_metadata
         try:
             # Timeouts and transport errors propagate after cleanup, for `generate` to handle.
-            payload = await post_bytes_no_retry(
+            payload = await post_buffer_no_retry(
                 f"{self.base_url}/samples",
                 body,
                 timeout=_SESSION_REQUEST_TIMEOUT,

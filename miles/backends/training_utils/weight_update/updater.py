@@ -20,13 +20,15 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
-    pause_engines,
+    maybe_pause_engines,
+    maybe_resume_engines,
     register_lora_adapter,
-    resume_engines,
     set_weight_version,
+    weight_update_selector,
 )
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.utils import async_utils
@@ -69,7 +71,6 @@ class WeightUpdater:
             quantization_config=quantization_config,
         )
         self.weights_getter = weights_getter
-        self.weight_version = 0
         self.is_lora = is_lora
         if is_lora:
             assert lora_sync_config is not None
@@ -79,16 +80,18 @@ class WeightUpdater:
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
     ) -> None:
         self.protocol.connect(
-            rollout_engines,
-            engine_gpu_counts,
-            engine_gpu_offsets,
-            self.parallel_state,
-            self._hf_weight_iterator.placement,
-            self._hf_weight_iterator.weight_update_selector,
+            rollout_engines=rollout_engines,
+            engine_gpu_counts=engine_gpu_counts,
+            engine_gpu_offsets=engine_gpu_offsets,
+            engine_cell_ids=engine_cell_ids,
+            parallel_state=self.parallel_state,
+            placement=self._hf_weight_iterator.placement,
+            selector=weight_update_selector(self.args),
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
@@ -104,40 +107,40 @@ class WeightUpdater:
             info.rollout_engines,
             engine_gpu_counts=info.engine_gpu_counts,
             engine_gpu_offsets=info.engine_gpu_offsets,
+            engine_cell_ids=info.engine_cell_ids,
         )
         self.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
         dist.barrier(group=get_gloo_group())
 
-    def verify_engine_version(self, rollout_engines: Sequence[SGLangApiClient]) -> None:
-        if not rollout_engines or self.weight_version == 0:
+    def verify_engine_version(self, rollout_engines: Sequence[SGLangApiClient], *, weight_version: int) -> None:
+        if not rollout_engines:
             return
         engine = random.choice(list(rollout_engines))
         engine_version = async_utils.run(engine.get_weight_version())
-        if str(engine_version) != str(self.weight_version):
-            raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_version}")
+        if str(engine_version) != str(weight_version):
+            raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {weight_version}")
 
     def pop_metrics(self) -> dict[str, float]:
         """Return and clear the protocol's metrics; the actor drains them onto the step log."""
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self) -> None:
+    def update_weights(self, weight_version: int) -> bool:
         """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
-        if not protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets):
-            return
-        self.weight_version += 1
+        if not protocol.begin_sync(weight_version, self._iter_base_buckets):
+            return False
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
         adapters = self._get_updated_adapters()
 
         driver = dist.get_rank() == 0
+        cell_updaters = list(protocol.cell_updaters_of_cell_id.values())
         if protocol.use_weight_update_session and driver:
-            pause_engines(self.args, protocol.rollout_engines)
+            maybe_pause_engines(self.args, cell_updaters)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
-            begin_weight_update(
-                protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
-            )
+            begin_weight_update(cell_updaters, weight_update_selector(self.args), sync_base=sync_base)
+        _mark_cells_errored_on_any_rank(cell_updaters)
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
@@ -162,13 +165,16 @@ class WeightUpdater:
             dist.barrier(group=get_gloo_group())
 
         with timer("finalize_and_resume_engines"):
-            protocol.finalize(self.weight_version)
+            protocol.finalize(weight_version)
+            _mark_cells_errored_on_any_rank(cell_updaters)
             if protocol.use_weight_update_session and driver:
-                end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                set_weight_version(protocol.rollout_engines, self.weight_version)
-                resume_engines(protocol.rollout_engines)
+                end_weight_update(cell_updaters, expected_lora_checksums=checksums)
+                set_weight_version(cell_updaters, weight_version)
+                maybe_resume_engines(self.args, cell_updaters)
+            _mark_cells_errored_on_any_rank(cell_updaters)
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
+        return True
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
@@ -191,3 +197,17 @@ class WeightUpdater:
                 config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
             register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
             self._registered_adapters.add(lora_name)
+
+
+def _mark_cells_errored_on_any_rank(cell_updaters: Sequence[_RolloutCellUpdater]) -> set[str]:
+    group = get_gloo_group()
+    errored_cell_ids_per_rank: list[list[str] | None] = [None] * dist.get_world_size(group=group)
+    dist.all_gather_object(errored_cell_ids_per_rank, [u.cell_id for u in cell_updaters if u.is_errored], group=group)
+
+    errored_cell_ids = {cell_id for cell_ids in errored_cell_ids_per_rank for cell_id in cell_ids}
+    for cell_updater in cell_updaters:
+        if cell_updater.cell_id in errored_cell_ids and not cell_updater.is_errored:
+            cell_updater.mark_errored(
+                RuntimeError(f"another trainer rank failed to update cell {cell_updater.cell_id}")
+            )
+    return errored_cell_ids

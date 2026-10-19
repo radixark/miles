@@ -4,12 +4,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils.legacy as U
 
-register_cuda_ci(
-    est_time=900,
-    suite="stage-c-4-gpu-h200",
-    labels=["weight-update"],
-    hardware=["hopper"],
-)
+register_cuda_ci(est_time=900, suite="stage-c-4-gpu-h200", labels=["weight-update"], hardware=["hopper"], num_gpus=4)
 register_rocm_ci(est_time=500, suite="nightly-stage-c-4-gpu-mi350", labels=["weight-update"])
 
 # The FSDP backend streams through the shared WeightUpdater, so every transfer
@@ -78,7 +73,7 @@ def execute():
         "--update-weight-local-checkpoint-dir /root/fsdp_delta/local "
     )
 
-    ci_args = "--ci-test --ci-disable-kl-checker "
+    ci_args = "--ci-test --ci-disable-kl-checker --no-enable-sample-ownership-checker "
 
     train_args = (
         f"{ckpt_args} "

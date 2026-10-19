@@ -1,0 +1,35 @@
+#!/bin/bash
+# `docker` for runners tagged `aliyun`: `manage-runners.sh --tags aliyun` mounts
+# this directory first in the runner's PATH (see SKILL.md, "Host tags").
+# Every command passes through unchanged except `docker start`: once a job
+# container on its `github_network_*` is running, it joins every `rdma-railN`
+# network and gets the host's per-rail routes before `start` returns, so its
+# first step already has the host's RDMA view. Any failure fails the start.
+set -euo pipefail
+real=/usr/bin/docker
+
+[ "${1:-}" = start ] || exec "$real" "$@"
+"$real" "$@"
+shift
+
+self_image=$("$real" inspect -f '{{.Image}}' "$(hostname)")
+rails=$("$real" network ls --filter label=rdma.routes --format '{{.Name}}' | sort)
+for c in "$@"; do
+    [[ $c == -* ]] && continue
+    nets=$("$real" inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$c")
+    [[ " $nets" == *" github_network_"* ]] || continue
+    [ -n "$rails" ] || { echo "aliyun hook: no rdma-rail networks on this host" >&2; exit 1; }
+    script=""
+    for net in $rails; do
+        "$real" network connect "$net" "$c"
+        addr=$("$real" inspect -f "{{(index .NetworkSettings.Networks \"$net\").GlobalIPv6Address}}" "$c")
+        routes=$("$real" network inspect -f '{{index .Labels "rdma.routes"}}' "$net")
+        script+="dev=\$(ip -6 -o addr show to $addr | awk '{print \$2}'); [ -n \"\$dev\" ]; "
+        IFS=, read -ra rs <<<"$routes"
+        for r in "${rs[@]}"; do script+="ip -6 route replace $r dev \$dev; "; done
+    done
+    # the host's iproute2 inside the job's network namespace
+    pid=$("$real" inspect -f '{{.State.Pid}}' "$c")
+    "$real" run --rm --pid host --privileged --network none --entrypoint nsenter "$self_image" \
+        --mount=/proc/1/ns/mnt --net="/proc/$pid/ns/net" -- sh -c "set -e; $script"
+done

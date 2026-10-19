@@ -4,8 +4,8 @@ from typing import Any
 import torch
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
-from miles.utils import object_store
-from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
@@ -39,6 +39,9 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "truncated": ValueSpec(codec="ndarray", dtype="int64"),
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
     "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "lineage_source_sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "lineage_output_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "lineage_output_counts": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
@@ -77,6 +80,10 @@ def convert_samples_to_train_data(
     assert len(raw_rewards) == len(samples)
     assert len(rewards) == len(samples)
 
+    sample_identity_columns = (
+        _get_training_sample_identity_columns(samples) if args.enable_sample_ownership_checker else {}
+    )
+
     train_data = {
         "tokens": [sample.tokens for sample in samples],
         "response_lengths": [sample.response_length for sample in samples],
@@ -86,6 +93,7 @@ def convert_samples_to_train_data(
         "raw_reward": raw_rewards,
         "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
         "sample_indices": [sample.index for sample in samples],
+        **sample_identity_columns,
         "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
 
@@ -177,7 +185,7 @@ def convert_samples_to_train_data(
         train_data["multimodal_train_inputs"] = [sample.multimodal_train_inputs for sample in samples]
 
     if any(sample.weight_versions for sample in samples):
-        train_data["weight_versions"] = [[call.to_dicts() for call in sample.weight_versions] for sample in samples]
+        train_data["weight_versions"] = [[call.to_dict() for call in sample.weight_versions] for sample in samples]
 
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
@@ -225,6 +233,16 @@ def _compact_candidate_ids(data: dict) -> None:
         lengths.append(count)
     data["rollout_topk_lengths"] = lengths
     del data["rollout_topk_token_ids"]
+
+
+def _get_training_sample_identity_columns(samples: list[Sample]) -> dict[str, list[int]]:
+    return {
+        "lineage_source_sample_indices": [
+            x.source_sample_index if (x := sample.lineage) is not None else sample.index for sample in samples
+        ],
+        "lineage_output_indices": [x.output_index if (x := sample.lineage) is not None else 0 for sample in samples],
+        "lineage_output_counts": [x.output_count if (x := sample.lineage) is not None else 1 for sample in samples],
+    }
 
 
 def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int]]) -> list[int]:
@@ -339,23 +357,26 @@ def _post_process_rewards(
     return raw_rewards, raw_rewards
 
 
-def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: dict | None):
-    """Split the train data across DP ranks and put the shards into the object store.
+def split_train_data_by_dp(
+    args: Any, data: dict[str, Any], train_parallel_config: TrainParallelConfig | None
+) -> list[dict[str, Any]]:
+    """Split the train data across DP ranks.
 
     When the training backend can consume a rollout-side schedule, the shards
     also carry the precomputed micro-batch layout; otherwise this falls back to
     the legacy split (the training side schedules locally)."""
-    if can_schedule_on_rollout_side(args, data, train_parallel_config):
+    if can_precompute_dp_schedule(args, data, train_parallel_config):
         shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     else:
-        shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
-    store = object_store.get_instance()
-    return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+        shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config.dp_size)
+    return shards
 
 
-def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_config: dict | None) -> bool:
+def can_precompute_dp_schedule(
+    args: Any, data: dict[str, Any], train_parallel_config: TrainParallelConfig | None
+) -> bool:
     """Whether the rollout side can precompute the full DP/mbs schedule."""
-    if not has_full_schedule_config(train_parallel_config):
+    if train_parallel_config is None or not train_parallel_config.supports_precomputed_schedule:
         return False
     if is_multi_lora_enabled(args):
         return False
@@ -368,7 +389,7 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
 
 
 def split_train_data_by_dp_scheduled_raw(
-    args, data: dict[str, Any], *, train_parallel_config: dict
+    args: Any, data: dict[str, Any], *, train_parallel_config: TrainParallelConfig
 ) -> list[dict[str, Any]]:
     """DP split with the micro-batch schedule precomputed on the rollout side."""
     total_lengths = [len(t) for t in data["tokens"]]
@@ -382,6 +403,9 @@ def split_train_data_by_dp_scheduled_raw(
         global_batch_size=global_batch_size,
         rollout_indices=data["rollout_ids"],
     )
+
+    _log_dp_schedule_trim(args=args, data=data, partitions=partitions)
+
     logger.info(
         f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
         f"num_rollouts={num_rollouts}, num_microbatches={num_microbatches}"
@@ -393,6 +417,22 @@ def split_train_data_by_dp_scheduled_raw(
         shard["micro_batch_indices"] = micro_batch_indices[rank]
         shard["num_rollouts"] = num_rollouts
     return shards
+
+
+def _log_dp_schedule_trim(*, args, data: dict[str, Any], partitions: list[list[int]]) -> None:
+    if not args.enable_sample_ownership_checker:
+        return
+
+    retained_rows = {index for partition in partitions for index in partition}
+    retained_sources = {data["lineage_source_sample_indices"][index] for index in retained_rows}
+    dropped_sources = [
+        source_index
+        for index, source_index in enumerate(data["lineage_source_sample_indices"])
+        if index not in retained_rows and source_index not in retained_sources
+    ]
+    SampleOwnershipRecorder.log_dropped_source_sample_indices(
+        args=args, source_sample_indices=dropped_sources, reason="dp_schedule_trim"
+    )
 
 
 def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> list[dict[str, Any]]:
@@ -431,6 +471,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "loss_masks",
             "round_number",
             "sample_indices",
+            "lineage_source_sample_indices",
+            "lineage_output_indices",
+            "lineage_output_counts",
             "rollout_ids",
             "rollout_mask_sums",
             "rollout_log_probs",

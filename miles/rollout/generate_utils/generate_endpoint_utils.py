@@ -61,6 +61,7 @@ def compute_request_payload(
     multimodal_inputs: dict | None = None,
     *,
     evaluation: bool = False,
+    kv_cache_namespace: str | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
@@ -84,6 +85,8 @@ def compute_request_payload(
         payload["lora_path"] = LORA_ADAPTER_NAME
     if image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+    if kv_cache_namespace is not None:
+        payload["extra_key"] = kv_cache_namespace
 
     if not evaluation:
         configure_rollout_topk_logprobs_request(args, payload)
@@ -141,7 +144,8 @@ async def update_sample_from_response(
 
 
 def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) -> np.ndarray:
-    x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
+    # validate=True: SGLang sends plain base64; pybase64 skips its slow non-alphabet filtering pass.
+    x = np.frombuffer(pybase64.b64decode(info, validate=True), dtype=np.int32)
     if num_tokens <= 0:
         return np.empty((0, num_layers, max(0, topk)), dtype=np.int32)
     if topk == -1:  # indexer: topk dim recovered from buffer length

@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-register_cuda_ci(est_time=180, suite="stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"])
+register_cuda_ci(est_time=180, suite="stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"], num_gpus=2)
 register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["megatron"])
 
 import gc
@@ -248,6 +248,7 @@ def _low_precision_worker(rank: int, world_size: int, port: int) -> None:
 def _memory_args(chunk_size: int, vocab_size: int) -> Namespace:
     return Namespace(
         qkv_format="thd",
+        log_probs_backend="torch",
         rollout_temperature=1.0,
         true_on_policy_mode=True,
         bf16=True,

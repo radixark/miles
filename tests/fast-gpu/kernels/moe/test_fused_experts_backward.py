@@ -16,6 +16,7 @@ register_cuda_ci(
     labels=["precision"],
     hardware=["hopper", "blackwell"],
     disabled="the fused MoE backward needs sglang.srt.layers.moe.fused_moe_triton.fused_moe, removed by the sglang 0.5.20 bump (#3321)",
+    num_gpus=2,
 )
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

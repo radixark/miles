@@ -1,15 +1,12 @@
 import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
-from tests.e2e.common_dirs import get_test_data_dir, get_test_model_dir
+from tests.utils.dirs import get_test_data_dir, get_test_model_dir
 
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=3000,
-    suite="stage-c-2-gpu-h200",
-    labels=["long"],
-    hardware=["hopper", "blackwell"],
+    est_time=3000, suite="stage-c-2-gpu-h200", labels=["long"], hardware=["hopper", "blackwell"], num_gpus=2
 )
 register_rocm_ci(
     est_time=3900,
@@ -91,7 +88,7 @@ def execute():
     perf_args = "--use-dynamic-batch-size --max-tokens-per-gpu 32768 "
 
     ci_args = (
-        "--ci-test "
+        "--ci-test --no-enable-sample-ownership-checker "
         "--ci-disable-kl-checker "
         "--ci-metric-checker-key eval/gsm8k "
         "--ci-metric-checker-threshold 0.71 "  # loose threshold at 60 step

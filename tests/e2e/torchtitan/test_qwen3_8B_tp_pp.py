@@ -1,7 +1,7 @@
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.torchtitan._common import CaseConfig, execute, prepare
 
-register_cuda_ci(est_time=900, suite="stage-c-4-gpu-h200", labels=["torchtitan"], hardware=["hopper"])
+register_cuda_ci(est_time=900, suite="stage-c-4-gpu-h200", labels=["torchtitan"], hardware=["hopper"], num_gpus=4)
 
 # Tensor and pipeline parallelism together, which is where the two dialects the
 # backend has to speak both bite. Tensor parallelism shards the vocabulary, and

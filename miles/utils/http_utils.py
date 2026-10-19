@@ -2,14 +2,18 @@ import asyncio
 import ipaddress
 import json
 import logging
+import mmap
 import multiprocessing
 import os
 import random
 import socket
 import subprocess
 import time
+import urllib.parse
 
+import aiohttp
 import httpx
+import numpy as np
 
 from miles.utils.logging_utils import configure_logger_raw
 
@@ -194,7 +198,7 @@ class GeneralHttpClientProvider:
 # TODO: the client below is not general — it carries a rollout-specific connection limit and an
 # optional ray-distributed POST path. Rename it (or fold it into GeneralHttpClientProvider with the
 # limit as an argument) once the rollout request path is reworked.
-_http_client: httpx.AsyncClient | None = None
+_http_clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
 _client_concurrency: int = 0
 
 # Optional Ray-based distributed POST dispatch
@@ -269,22 +273,63 @@ async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, r
             await asyncio.sleep(5)
 
 
-async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> bytes:
-    """Perform one raw-bytes POST with a total timeout."""
-    assert _http_client is not None, "init_http_client() must run before post_bytes_no_retry()"
+async def post_buffer_no_retry(url: str, payload: dict, *, timeout: float) -> np.ndarray:
+    """POST once and return a writable buffer; bound the whole operation by timeout.
 
-    async def _do() -> bytes:
-        response = await _http_client.post(url, json=payload)
-        if not (200 <= response.status_code < 300):
-            raise RuntimeError(f"POST {url} failed with {response.status_code}: {response.text}")
-        return response.content
+    Plain HTTP only. Transport failures remain httpx.TransportError for the rollout
+    abort handler; non-2xx responses raise RuntimeError carrying the response body.
+    """
+    return await asyncio.wait_for(_post_buffer(url, payload), timeout=timeout)
 
-    return await asyncio.wait_for(_do(), timeout=timeout)
+
+async def _post_buffer(url: str, payload: dict) -> np.ndarray:
+    if urllib.parse.urlsplit(url).scheme != "http":
+        raise ValueError(f"post_buffer_no_retry supports http:// only, got {url}")
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=None),
+            auto_decompress=False,
+            skip_auto_headers={"Accept-Encoding"},
+            cookie_jar=aiohttp.DummyCookieJar(),
+        ) as client:
+            async with client.post(
+                url, json=payload, headers={"Connection": "close"}, allow_redirects=False
+            ) as response:
+                if not (200 <= response.status < 300):
+                    body = (await response.read()).decode(errors="replace")
+                    raise RuntimeError(f"POST {url} failed with {response.status}: {body}")
+                length = response.content_length
+                if length is None:
+                    raise httpx.RemoteProtocolError("reply without Content-Length")
+                # Private mmap avoids numpy huge-page compaction; prefault on a worker keeps page
+                # faults out of the event-loop copy into the reply buffer. mmap rejects length 0.
+                try:
+                    mapping = await asyncio.to_thread(
+                        mmap.mmap,
+                        -1,
+                        max(length, 1),
+                        flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | getattr(mmap, "MAP_POPULATE", 0),
+                    )
+                except (OSError, OverflowError) as exc:
+                    raise httpx.ReadError(f"cannot allocate reply buffer for Content-Length {length}") from exc
+                reply = np.frombuffer(mapping, dtype=np.uint8)[:length]
+                view = memoryview(reply)
+                filled = 0
+                async for chunk in response.content.iter_any():
+                    view[filled : filled + len(chunk)] = chunk
+                    filled += len(chunk)
+                if filled != length:
+                    raise httpx.ReadError(f"connection closed after {filled} of {length} body bytes")
+                return reply
+    except aiohttp.ClientConnectorError as exc:
+        raise httpx.ConnectError(str(exc)) from exc
+    except aiohttp.ClientError as exc:
+        raise httpx.ReadError(str(exc)) from exc
 
 
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
-    global _http_client, _client_concurrency, _distributed_post_enabled
+    global _client_concurrency, _distributed_post_enabled
     rollout_num_gpus = args.rollout_num_gpus or 0
     if rollout_num_gpus == 0 and not args.eval_uses_snapshots:
         return
@@ -293,11 +338,6 @@ def init_http_client(args):
     if args.eval_num_gpus > 0:
         _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
     _client_concurrency = max(_client_concurrency, args.sglang_server_concurrency)
-    if _http_client is None:
-        _http_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=_client_concurrency),
-            timeout=httpx.Timeout(None),
-        )
 
     # Optionally initialize distributed POST via Ray without changing interfaces
     if args.use_distributed_post:
@@ -360,7 +400,17 @@ def _init_ray_distributed_post(args):
 
 def _rollout_client() -> httpx.AsyncClient:
     # a process where init_http_client never ran, such as a subproc agent call, gets a default client
-    return _http_client if _http_client is not None else GeneralHttpClientProvider.client()
+    if _client_concurrency == 0:
+        return GeneralHttpClientProvider.client()
+
+    loop = asyncio.get_running_loop()
+    if (client := _http_clients.get(loop)) is None:
+        client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=_client_concurrency),
+            timeout=httpx.Timeout(None),
+        )
+        _http_clients[loop] = client
+    return client
 
 
 # TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)

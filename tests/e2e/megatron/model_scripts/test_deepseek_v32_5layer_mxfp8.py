@@ -10,6 +10,7 @@ register_cuda_ci(
     labels=["megatron", "model-scripts"],
     hardware=["blackwell"],
     disabled="Temporarily disabled; superseded by test_deepseek_v32_5layer_ci on H100.",
+    num_gpus=8,
 )
 
 MODEL_ORG = "Pinaster"
@@ -233,7 +234,6 @@ def execute():
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "
         f"--rollout-num-gpus {ROLLOUT_NUM_GPUS} "
-        "--use-fault-tolerance "
     )
 
     train_args = (

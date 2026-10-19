@@ -30,7 +30,7 @@ class TestInitOrchestrationScript:
 
     def test_initializes_the_shared_driver_machinery_in_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every driver restores the event history first, then initializes the shared machinery in order."""
-        args = Namespace(run="test")
+        args = Namespace(run="test", ci_fault_hooks=None, ci_fault_hooks_path=None)
         worker_manager = object()
         calls: list[str] = []
         captured: dict[str, object] = {}
@@ -113,7 +113,9 @@ class TestInitOrchestrationScript:
         monkeypatch.setattr(orchestration_utils, "shutdown_worker_manager", fake_shutdown_worker_manager)
 
         async with Disposer() as disposer:
-            orchestration_utils.init_orchestration_script(Namespace(run="test"), disposer=disposer)
+            orchestration_utils.init_orchestration_script(
+                Namespace(run="test", ci_fault_hooks=None, ci_fault_hooks_path=None), disposer=disposer
+            )
 
             assert released == []
 

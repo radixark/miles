@@ -41,6 +41,7 @@ class FakeWorkerManager:
 class FakeRolloutExecutor:
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self._disposed = False
         self.generation_gates: dict[int, asyncio.Event] = {}
         self.generation_errors: list[BaseException | None] = []
         self.generation_packs: list[RolloutDataPack] = []
@@ -67,6 +68,12 @@ class FakeRolloutExecutor:
         self.events.append(f"executor_save:{rollout_id}")
 
     async def dispose(self) -> None:
+        if self._disposed:
+            return
+        self._disposed = True
+        await self._dispose()
+
+    async def _dispose(self) -> None:
         self.events.append("executor_dispose")
 
     async def _report_eval_skip(self, rollout_id: int, reason: str) -> None:

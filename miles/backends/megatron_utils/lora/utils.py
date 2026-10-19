@@ -10,6 +10,8 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from miles.backends.megatron_utils.lora.native import load_lora_adapter_hf
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
@@ -70,19 +72,47 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
 
 
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
-    """Check if model has LoRA layers applied."""
+    """Whether the model was built with LoRA; set at build so every rank agrees, including a pipeline
+    stage the target selection left without adapters."""
+    return model[0].lora_attached
+
+
+def adapter_named_parameters(model: Sequence[torch.nn.Module]) -> list[dict[str, torch.nn.Parameter]]:
+    """Every adapter parameter of each model chunk, found by the module that owns it: a native adapter,
+    or what a Bridge ``AdapterWrapper`` holds besides the base module it wraps.
+
+    Virtual pipeline chunks reuse local parameter names, so the parameters stay keyed per chunk.
+    """
+    try:
+        from megatron.bridge.peft.adapter_wrapper import AdapterWrapper
+    except ImportError:
+        AdapterWrapper = None
+
+    adapter_param_ids: set[int] = set()
     for model_chunk in model:
-        if hasattr(model_chunk.module, "peft_config"):
-            return True
-        for name, _ in model_chunk.named_parameters():
-            if "lora_" in name or "adapter" in name:
-                return True
-    return False
+        for module in model_chunk.modules():
+            if isinstance(module, NativeLoRAAdapter):
+                adapter_param_ids.update(id(param) for param in module.parameters())
+            elif AdapterWrapper is not None and isinstance(module, AdapterWrapper):
+                base_param_ids = {id(param) for param in module.to_wrap.parameters()}
+                adapter_param_ids.update(id(param) for param in module.parameters() if id(param) not in base_param_ids)
+    return [
+        {name: param for name, param in model_chunk.named_parameters() if id(param) in adapter_param_ids}
+        for model_chunk in model
+    ]
 
 
-def _is_adapter_param_name(name: str) -> bool:
-    """Check if a parameter name belongs to a LoRA adapter (Megatron internal naming)."""
-    return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))
+def _adapter_shard_params(model: Sequence[torch.nn.Module]) -> dict[str, torch.nn.Parameter]:
+    """A rank's adapter parameters under their native-shard names."""
+    params_by_chunk = adapter_named_parameters(model)
+    if len(params_by_chunk) == 1:
+        return params_by_chunk[0]
+    # virtual pipeline chunks are prefixed model{i}, as Megatron's own checkpoints key them
+    return {
+        f"model{chunk_index}.{name}": param
+        for chunk_index, params in enumerate(params_by_chunk)
+        for name, param in params.items()
+    }
 
 
 _param_grad_buffer_patched = False
@@ -143,7 +173,7 @@ def create_lora_instance(args: Namespace, *, target_modules):
         dim=args.lora_rank,
         alpha=args.lora_alpha,
         dropout=args.lora_dropout,
-        lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
+        lora_A_init_method=args.lora_A_init_method,
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
     if "share_expert_adapters" in getattr(lora_cls, "__dataclass_fields__", {}):
@@ -181,18 +211,18 @@ def save_lora_checkpoint(
     global_rank = dist.get_rank() if dist.is_initialized() else 0
 
     def write_shards(checkpoint_dir: Path):
-        adapter_state = {
-            name: param.detach().cpu()
-            for model_chunk in model
-            for name, param in model_chunk.named_parameters()
-            if _is_adapter_param_name(name)
-        }
+        adapter_state = {name: param.detach().cpu() for name, param in _adapter_shard_params(model).items()}
         training_state = None
         if optimizer is not None:
             save_optimizer = not getattr(args, "no_save_optim", False)
             training_state = {
                 "iteration": iteration,
                 "optimizer": optimizer.state_dict() if save_optimizer else None,
+                "parameter_state": (
+                    [sub.get_parameter_state_dp_reshardable() for sub in _distributed_optimizers(optimizer)]
+                    if save_optimizer
+                    else None
+                ),
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
             }
 
@@ -217,107 +247,103 @@ def save_lora_checkpoint(
     return str(save_dir)
 
 
-def load_lora_adapter(
+def restore_lora_adapter(
     model: Sequence[torch.nn.Module],
-    adapter_path: str,
+    args: Namespace,
     *,
-    optimizer: Any | None = None,
-    opt_param_scheduler: Any | None = None,
-    load_optimizer: bool = True,
-) -> tuple[bool, int | None, bool]:
-    """Restore native adapter shards and optional optimizer/scheduler state.
-
-    HF adapters cannot be loaded into Bridge models through this path.
-    """
-    adapter_dir = Path(adapter_path).resolve()
-    if not adapter_dir.exists():
-        logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
-        return False, None, False
-
-    tp_rank = get_parallel_state().tp.rank
-    pp_rank = get_parallel_state().pp.rank
-
-    # ---- Try Megatron-native format first (fast, no conversion needed) ----
-    global_rank = dist.get_rank() if dist.is_initialized() else 0
-    native_path = adapter_dir / f"adapter_megatron_rank{global_rank}.pt"
-    if not native_path.exists():
-        if any(adapter_dir.glob("adapter_megatron_rank*.pt")):
-            raise FileNotFoundError(
-                f"{adapter_dir} holds per-rank adapter shards but none for global rank {global_rank}; "
-                "it was saved under a different parallel layout."
-            )
-        legacy = adapter_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
-        if legacy.exists():
-            logger.warning(f"Using legacy tp/pp-named adapter shard {legacy}; only valid when EP<=TP")
-            native_path = legacy
-    if native_path.exists():
-        state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
-        adapter_params = {
-            name: param
-            for model_chunk in model
-            for name, param in model_chunk.named_parameters()
-            if _is_adapter_param_name(name)
-        }
-        missing = adapter_params.keys() - state_dict.keys()
-        unexpected = state_dict.keys() - adapter_params.keys()
-        if missing or unexpected:
-            raise RuntimeError(
-                f"Adapter checkpoint {native_path} does not match the model's adapter parameters: "
-                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
-            )
-        for name, param in adapter_params.items():
-            param.data.copy_(state_dict[name].to(device=param.device))
-        logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
-
-        iteration, optimizer_restored = _load_training_state(
-            adapter_dir, optimizer, opt_param_scheduler, load_optimizer
-        )
-        return True, iteration, optimizer_restored
-
-    if any((adapter_dir / name).exists() for name in ("adapter_model.safetensors", "adapter_model.bin")):
-        logger.warning(
-            f"Found HF PEFT adapter at {adapter_dir} but direct HF PEFT loading into "
-            f"Megatron is not yet supported. Please save using Megatron-native format "
-            f"(adapter_megatron_rank*.pt files) for checkpoint resume."
-        )
-        return False, None, False
-
-    logger.warning(f"No adapter checkpoint found at {adapter_dir}")
-    return False, None, False
-
-
-def _load_training_state(
-    adapter_dir: Path,
     optimizer: Any | None,
     opt_param_scheduler: Any | None,
-    load_optimizer: bool = True,
-) -> tuple[int | None, bool]:
-    """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint."""
-    if optimizer is None:
-        return None, False
+) -> int | None:
+    """Restore ``--lora-adapter-path`` into the attached adapters; return the saved iteration, if any.
 
+    The directory's format decides what can be restored: per-rank native shards carry the
+    optimizer and scheduler state, an HF/PEFT adapter carries weights only. Restoring the
+    optimizer is required unless ``--no-load-optim``; a checkpoint that cannot provide it fails.
+    """
+    adapter_dir = Path(args.lora_adapter_path).resolve()
+    shard = _native_adapter_shard(adapter_dir)
+    if shard is not None:
+        _load_native_adapter_shard(model, shard)
+        training_state = _load_training_state(adapter_dir)
+    else:
+        assert (adapter_dir / "adapter_model.safetensors").exists(), (
+            f"--lora-adapter-path {adapter_dir} holds neither per-rank native shards "
+            "(adapter_megatron_rank*.pt) nor an HF adapter (adapter_model.safetensors)"
+        )
+        assert args.megatron_to_hf_mode == "raw", "loading an HF/PEFT adapter requires --megatron-to-hf-mode raw"
+        load_lora_adapter_hf(model, str(adapter_dir))
+        training_state = None
+
+    if optimizer is None:
+        return None
+    if args.no_load_optim:
+        # the fp32 masters were built before the adapter load; without this the first step() reverts it
+        optimizer.reload_model_params()
+    else:
+        assert (
+            training_state is not None and training_state["optimizer"] is not None
+        ), f"{adapter_dir} has no optimizer state to resume; pass --no-load-optim to start a fresh optimizer"
+        assert "parameter_state" in training_state, (
+            f"{adapter_dir} predates saving DistributedOptimizer parameter state (fp32 masters, moments); "
+            "pass --no-load-optim to resume its adapter with a fresh optimizer"
+        )
+        optimizer.load_state_dict(training_state["optimizer"])
+        for sub, parameter_state in zip(
+            _distributed_optimizers(optimizer), training_state["parameter_state"], strict=True
+        ):
+            sub.load_parameter_state_from_dp_reshardable(parameter_state)
+        logger.info("Restored optimizer state from LoRA checkpoint")
+    if training_state is None:
+        return None
+    if opt_param_scheduler is not None and training_state["opt_param_scheduler"] is not None:
+        opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
+    return training_state["iteration"]
+
+
+def _native_adapter_shard(adapter_dir: Path) -> Path | None:
+    """This rank's native adapter shard, or None when the directory holds none at all."""
+    global_rank = dist.get_rank() if dist.is_initialized() else 0
+    shard = adapter_dir / f"adapter_megatron_rank{global_rank}.pt"
+    if shard.exists():
+        return shard
+    assert not any(adapter_dir.glob("adapter_megatron_rank*.pt")), (
+        f"{adapter_dir} holds per-rank adapter shards but none for global rank {global_rank}; "
+        "it was saved under a different parallel layout."
+    )
+    legacy = adapter_dir / f"adapter_megatron_tp{get_parallel_state().tp.rank}_pp{get_parallel_state().pp.rank}.pt"
+    if legacy.exists():
+        logger.warning(f"Using legacy tp/pp-named adapter shard {legacy}; only valid when EP<=TP")
+        return legacy
+    return None
+
+
+def _load_native_adapter_shard(model: Sequence[torch.nn.Module], shard: Path) -> None:
+    state_dict = torch.load(shard, map_location="cpu", weights_only=True)
+    adapter_params = _adapter_shard_params(model)
+    missing = adapter_params.keys() - state_dict.keys()
+    unexpected = state_dict.keys() - adapter_params.keys()
+    if missing or unexpected:
+        raise RuntimeError(
+            f"Adapter checkpoint {shard} does not match the model's adapter parameters: "
+            f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+        )
+    for name, param in adapter_params.items():
+        param.data.copy_(state_dict[name].to(device=param.device))
+    logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {shard}")
+
+
+def _load_training_state(adapter_dir: Path) -> dict | None:
     rank = dist.get_rank() if dist.is_initialized() else 0
     state_path = adapter_dir / f"training_state_rank{rank}.pt"
     if not state_path.exists():
-        return None, False
+        return None
+    # Optimizer state dicts hold non-tensor objects (step counts, param group metadata).
+    return torch.load(state_path, map_location="cpu", weights_only=False)
 
-    # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
-    # param group metadata), so full unpickling is required here.
-    training_state = torch.load(state_path, map_location="cpu", weights_only=False)
 
-    optimizer_restored = False
-    if not load_optimizer:
-        logger.info("--no-load-optim: keeping the freshly initialized optimizer")
-    elif training_state.get("optimizer") is not None:
-        optimizer.load_state_dict(training_state["optimizer"])
-        optimizer_restored = True
-        logger.info("Restored optimizer state from LoRA checkpoint")
+def _distributed_optimizers(optimizer: Any) -> list:
+    """The DistributedOptimizers under ``optimizer``, whose ``state_dict()`` leaves out the per-parameter state."""
+    from megatron.core.optimizer import ChainedOptimizer, DistributedOptimizer
 
-    if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
-        opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
-        logger.info("Restored LR scheduler state from LoRA checkpoint")
-
-    iteration = training_state.get("iteration")
-    if iteration is not None:
-        logger.info(f"Resuming LoRA training from iteration {iteration}")
-    return iteration, optimizer_restored
+    subs = optimizer.chained_optimizers if isinstance(optimizer, ChainedOptimizer) else [optimizer]
+    return [sub for sub in subs if isinstance(sub, DistributedOptimizer)]

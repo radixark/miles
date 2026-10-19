@@ -207,7 +207,10 @@
         "expanded": false
        },
        "models/gpt-oss/gpt-oss",
-       "models/mimo/mimo-v2-6-flash"
+       "models/mimo/mimo-v2-6-flash",
+       "models/stepfun/step5",
+       "models/muse-spark/muse-spark-open",
+       "models/reflection/beam"
       ]
      }
     ]

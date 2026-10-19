@@ -203,3 +203,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rematerialize-param-from-master-weight
   --moe-enable-deepep
   --moe-token-dispatcher-type flex   
+  --deploy-component all

@@ -155,13 +155,14 @@ def test_broad_scope_adds_every_runnable_stage():
 def test_blackwell_only_scope_keeps_b200_for_non_blackwell_changes(changed_path):
     registrations = [
         _registration("tests/e2e/test_hopper.py", "stage-c-8-gpu-h200", hardware=["hopper"]),
-        _registration("tests/e2e/test_blackwell.py", "stage-c-8-gpu-b200", hardware=["blackwell"]),
+        _registration("tests/e2e/test_blackwell_8.py", "stage-c-8-gpu-b200", hardware=["blackwell"]),
+        _registration("tests/e2e/test_blackwell_4.py", "stage-c-4-gpu-b200", hardware=["blackwell"]),
     ]
     changed_files = (ChangedFile("M", (changed_path,)),)
 
     skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-blackwell-only",)))
 
-    assert skipped == PR_GPU_STAGES - {"stage-c-8-gpu-b200"}
+    assert skipped == PR_GPU_STAGES - {"stage-c-8-gpu-b200", "stage-c-4-gpu-b200"}
 
 
 def test_bypass_fastfail_does_not_make_a_docs_change_affect_gpu_stages():
@@ -179,6 +180,17 @@ def test_unknown_source_path_affects_every_runnable_gpu_stage():
         )
         == ()
     )
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "skips_every_stage"),
+    [(".claude/skills/pr-ci-targeted/affected_tests.py", True), ("miles/trainer.py", False)],
+)
+def test_agent_tooling_under_dot_claude_affects_no_gpu_stage(changed_path, skips_every_stage):
+    registrations = [_registration(f"tests/e2e/{stage}.py", stage, labels=[]) for stage in PR_GPU_STAGES]
+    skipped = _select((ChangedFile("M", (changed_path,)),), registrations, raw_labels=())
+
+    assert (set(skipped) == PR_GPU_STAGES) is skips_every_stage
 
 
 def test_rename_from_unknown_source_path_affects_every_runnable_stage():

@@ -12,12 +12,22 @@ https://github.com/radixark/miles/settings/secrets/actions
 
 The miles CI workflow bind-mounts `/data/miles_ci` (and its `models`,
 `datasets`, `hf_cache` subdirectories) from the host into every job container.
+`models` also holds the `<model>_torch_dist` checkpoints that
+`convert_checkpoint` writes by default, so a host converts each model once and
+every later job on it reuses the result.
+`jit` holds the Triton, Inductor, FlashInfer, CuTe and CUDA cache
+roots configured by `_run-ci.yml`. Reuse and invalidation follow each library's
+cache keys. DeepGEMM stays under `/tmp/deep_gemm` so its PID-based directories
+cannot collide across job containers. TileLang stays
+under `/tmp/tilelang_cache` in each job: its 0.1.14 cache key omits the headers
+patched by our image. Remove unused host caches only while the host has no
+running jobs; later jobs rebuild missing entries.
 Every CI host must provide `/data/miles_ci` either as a real directory on its
 biggest disk or as a symlink to wherever the big disk is.
-[`tests/ci/skills/setup-ci-host`](skills/setup-ci-host/) automates this:
+[`setup-ci-host`](../../.claude/skills/setup-ci-host/) automates this:
 
 ```shell
-cd /root/miles/tests/ci/skills/setup-ci-host
+cd /root/miles/.claude/skills/setup-ci-host
 ./setup-host.sh
 ```
 
@@ -33,7 +43,7 @@ The token can be found at https://github.com/radixark/miles/settings/actions/run
 WARN: The `GITHUB_RUNNER_TOKEN` changes after a while.
 
 > Steps 1-3 cover the `docker-compose` flow. For hosts that use the
-> `gh-runner` image flow instead, see [`manage-gh-runners`](skills/manage-gh-runners/).
+> `gh-runner` image flow instead, see [`manage-gh-runners`](../../.claude/skills/manage-gh-runners/).
 
 ### Step 2: Prepare `/home/runner/externals`
 
@@ -53,7 +63,7 @@ docker compose up -d
 ```
 
 The base `docker-compose.yml` defines a template `runner` service; the per-host
-concrete runner services (e.g. `scitix-72-0`, `scitix-72-1`) live in
+concrete runner services (e.g. `<host>-0`, `<host>-1`) live in
 `docker-compose.override.yml`. The base service is set to `replicas: 1` so a
 stray `docker compose up` without the override never silently spins up many
 runners.
@@ -77,24 +87,75 @@ GPU exposure to inner CI job containers happens in two layers:
 
 Host conventions:
 
-* **scitix-72** (H200, 2 runners): `scitix-72-0` pins `CUDA_VISIBLE_DEVICES=0,1,2,3`;
-  `scitix-72-1` pins `4,5,6,7`. Per-runner CVD is defined in
-  `docker-compose.override.yml`.
-* **scitix-73** (H200, 3 runners, externally managed via `gh-runner` image):
-  `scitix-73-4gpu-0` pins `0,1,2,3` (label `4gpu`); `scitix-73-2gpu-0` pins
-  `4,5` and `scitix-73-2gpu-1` pins `6,7` (label `2gpu`). CVD is injected
-  via the container's `RUNNER_LABELS` + `CUDA_VISIBLE_DEVICES` env at
-  `docker run` time — see [`manage-gh-runners`](skills/manage-gh-runners/).
-* **novita-host2 / novita-host4** (H100, 1 runner each, externally managed):
-  CVD intentionally left unset so jobs see all 8 GPUs. The bare
+* **Fixed partitions**: each runner on a shared host pins a contiguous slice
+  that no other runner on the host uses, and the slices cover the host, e.g.
+  `0,1,2,3` + `4,5,6,7`, or `0,1,2,3` + `4,5` + `6,7` on an 8-GPU host. The
+  runner's `<N>gpu` label equals its slice size. Compose hosts set CVD in
+  `docker-compose.override.yml`; `gh-runner` hosts set it with
+  [`manage-gh-runners`](../../.claude/skills/manage-gh-runners/).
+* **Whole-host runners** leave CVD unset so jobs see every GPU. The bare
   `--env CUDA_VISIBLE_DEVICES` forwards the "unset" state, and CUDA defaults
   to seeing every visible device.
-* **b200-oma-8gpu-0** (B200, 1 runner, `docker-compose` flow):
-  whole node, CVD unset like the novita hosts. Deliberately not partitioned —
-  the 8-GPU runner would otherwise share physical GPUs with any 2/4-GPU runner
-  on the same host, and GitHub has no cross-runner resource lock. Tests needing
-  fewer than 8 GPUs still run here correctly, because a test declares its own
-  budget via `ray start --num-gpus` / `torchrun --nproc-per-node`.
+* **b200-oma** (20 logical runners on one 8-GPU host): for each count `n` from 1 to 8,
+  `floor(8/n)` runners carry the corresponding `<n>gpu` label. These are admission slots, not fixed
+  device partitions. Every CUDA registration declares `num_gpus`; the B200 plan
+  creates one job per selected file with that budget. The job-start hook assigns
+  any available GPU set and writes `CUDA_VISIBLE_DEVICES` through `GITHUB_ENV`
+  before test steps run. Driver-level visibility remains host-wide.
+  The repository-wide `b200-oma` workflow queue keeps one PR's finite job set
+  ahead of the next PR; B200 file reruns use the same queue. Within a run, mixes
+  such as `4+2+1+1` and noncontiguous free sets can execute concurrently.
+
+This README does not track which runners live on which host. Query the live
+registrations and labels with
+`gh api --paginate repos/radixark/miles/actions/runners --jq '.runners[] | {name,status,labels:[.labels[].name]}'`,
+and a host's partition with `docker exec <runner> printenv CUDA_VISIBLE_DEVICES`
+(or `manage-runners.sh list` on a `gh-runner` host).
+
+### Rolling out the B200 allocator
+
+`github_runner/docker-compose.b200.yml` supplies enough slots for every supported
+count so waiting large jobs cannot consume the smaller jobs' runner slots. Large plans run in sequential batches with at most 23 hours of summed
+file-timeout and setup/cleanup budgets. Each job receives that batch budget so
+GPU admission waiting cannot consume its own execution allowance. This stays
+below the 24-hour GitHub token lifetime and 5-day self-hosted job limit. Within
+a batch, the matrix has no `max-parallel` cap; device locks govern admission.
+Each job keeps its GPU locks through `Runner.Worker` exit and container cleanup.
+A shared host lock for smaller jobs and an exclusive one for whole-node jobs also
+exclude old whole-node workflow revisions during rollout.
+
+Allocation metadata in `/data/miles_ci/b200-gpu-leases` records each runner's
+assigned devices. The hook checks daemon-owned job containers before reusing
+cards: a surviving container after worker death retains its devices, even when
+its file locks disappear. A container without a lease fails admission; a runner
+with its own previous job container also fails. Inspect and clean up abandoned
+containers before retrying; do not delete lease records to free GPUs.
+
+Drain running jobs before replacing an existing hook or recreating runners.
+Back up the host-local Compose override, hooks, and `.env`. From
+`tests/ci/github_runner`, install the hooks and use a fresh repository runner
+registration token in `.env`:
+
+```shell
+sudo install -d /data/miles_ci/runner-hooks
+sudo install -m 755 b200-job-start.sh /data/miles_ci/runner-hooks/
+sudo install -m 644 b200_job_lock.py /data/miles_ci/runner-hooks/
+docker compose --env-file .env -f docker-compose.b200.yml config --quiet
+docker compose --env-file .env -f docker-compose.b200.yml up -d
+```
+
+Use the same explicit `-f` configuration for later runner operations. Every
+runner needs its own work directory and the hook. Job containers must retain
+private PID and network namespaces: cleanup kills Ray processes and tests reuse
+service ports. `_run-ci.yml` checks the exact CUDA-visible GPU count; `nvidia-smi`
+alone cannot verify a CUDA allocation. The hook's `GITHUB_ENV` value overrides
+the runner's default CVD for job steps and their child processes.
+
+Validate mixed `4+2+1+1` execution, reuse of noncontiguous free cards, whole-node
+exclusion, normal cancellation, and forced worker exit with a surviving CUDA
+container. GitHub executes job-start hooks with `always()`, so cancelling a
+waiting job can take the runner's five-minute cancellation grace period. A
+waiting job creates no test container; its holder exits with the worker.
 
 ## /data/miles_ci path identity rule
 
@@ -143,24 +204,23 @@ Logs
 docker compose logs -f
 
 # One container
-docker logs -f scitix-72-0
+docker logs -f <runner>
 ```
 
 Exec
 
 ```shell
-docker exec -it scitix-72-0 /bin/bash
+docker exec -it <runner> /bin/bash
 ```
 
 Verify a runner's CUDA partition
 
 ```shell
-docker exec scitix-72-0 printenv CUDA_VISIBLE_DEVICES   # -> 0,1,2,3
-docker exec scitix-72-1 printenv CUDA_VISIBLE_DEVICES   # -> 4,5,6,7
+docker exec <runner> printenv CUDA_VISIBLE_DEVICES   # e.g. 0,1,2,3
 ```
 
 Quickly iterate
 
 ```shell
-docker compose down -v && docker compose up -d && docker logs -f scitix-72-0
+docker compose down -v && docker compose up -d && docker logs -f <runner>
 ```

@@ -1,6 +1,4 @@
-import dataclasses
 import logging
-import signal
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -8,23 +6,23 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
+from tests.e2e.ft.conftest_ft.execution import run_training
+from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.deploy.hot_restart.cluster_observer import ClusterObserver
+from tests.utils.deploy.hot_restart.evidence import (
     HotRestartEvidence,
     HotRestartRecord,
     RunProgress,
     read_run_progress,
 )
-from tests.e2e.ft.conftest_ft.execution import run_training
-from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.soak.core.utils import REPLACED_LAUNCH_EXIT_CODE
+from tests.utils.soak.deploy.utils import compute_hot_restart_config
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
-from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
-from miles.utils.test_utils.ft_test_actions import SLEEP_FOREVER_AT_END_ACTION, read_frozen_rollout_id
+from miles.utils.test_utils.fault_injector.actions.frozen import SleepForeverAction, read_frozen_rollout_id
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
 from miles.utils.test_utils.polling_worker import PollingWorker
-from miles.utils.workers.types import HOT_RESTART_SEPARATOR, HotRestartComponent
-
 
 # ================================= constants ==================================
 
@@ -37,18 +35,6 @@ RELAUNCH_JOIN_TIMEOUT_SECONDS: float = 1800.0
 CONSECUTIVE_READ_FAILURE_LIMIT: int = 20
 TRACKER_SETTLE_ATTEMPTS: int = 3
 TRACKER_SETTLE_INTERVAL_SECONDS: float = 2.0
-HOT_RESTART_ARG: str = HOT_RESTART_SEPARATOR.join(one.value for one in HotRestartComponent)
-REPLACED_LAUNCH_EXIT_CODE: int = 128 + signal.SIGTERM
-
-
-# ============================== run directories ===============================
-
-
-CHECKPOINT_DIRNAME: str = "checkpoints"
-
-
-def compute_checkpoint_dir(dump_dir: str) -> Path:
-    return Path(dump_dir) / CHECKPOINT_DIRNAME
 
 
 # ============================== the freeze plan ===============================
@@ -67,21 +53,20 @@ class ScheduledFreeze:
         )
 
 
-def compute_freeze_plan(frozen_rollout_id: int | None) -> list[dict]:
+def compute_freeze_plan(frozen_rollout_id: int | None) -> list[FaultHookRequest]:
     if frozen_rollout_id is None:
         return []
-    return [{"at_rollout": frozen_rollout_id, "action": SLEEP_FOREVER_AT_END_ACTION}]
+    return [
+        FaultHookRequest(
+            request_id=f"sleep_forever_at_{frozen_rollout_id}",
+            hook_name=FaultHookName.ORCHESTRATOR_STEP_END,
+            action=SleepForeverAction(),
+            rollout_id=frozen_rollout_id,
+        )
+    ]
 
 
 # ============================ relaunching a release ===========================
-
-
-def compute_release_of_config(config: ExecuteTrainConfig) -> str:
-    return ReleaseName(
-        run_id=config.run_id,
-        deploy_component=config.deploy_component,
-        deploy_instance_id=config.deploy_instance_id,
-    ).serialize()
 
 
 def relaunch_with_hot_restart(
@@ -92,14 +77,6 @@ def relaunch_with_hot_restart(
         mode=mode,
         config=compute_hot_restart_config(config, installed_release=installed_release),
     )
-
-
-def compute_hot_restart_config(config: ExecuteTrainConfig, *, installed_release: str) -> ExecuteTrainConfig:
-    assert (relaunched := compute_release_of_config(config)) == installed_release, (
-        f"a hot restart upgrades the release that is already up: this relaunch would install {relaunched}, not the "
-        f"watched {installed_release}, so it built a config with a run id of its own and would leave the trainers behind"
-    )
-    return dataclasses.replace(config, hot_restart=HOT_RESTART_ARG)
 
 
 # ============================== the take-over loop =============================

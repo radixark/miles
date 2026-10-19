@@ -15,7 +15,9 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=400, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=400, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=4
+)
 register_rocm_ci(est_time=600, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron"])
 
 MODEL_NAME = "MiMo-7B-RL"

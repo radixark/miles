@@ -16,10 +16,7 @@ from tests.ci.ci_register import register_cuda_ci
 from miles_plugins.optimizers.nvme_stream import NVMeOptimizerStateStore, _Bucket, _Entry, _resize, _Stager
 
 register_cuda_ci(
-    est_time=30,
-    suite="stage-b-2-gpu-h200",
-    labels=["miles-plugin"],
-    hardware=["hopper", "blackwell"],
+    est_time=30, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"], num_gpus=1
 )
 
 SIZES = (1000, 3000, 500)
@@ -167,3 +164,9 @@ def test_megatron_norm_and_clip_leave_streamed_mains_to_the_store(tmp_path):
     finally:
         for bucket in store.buckets:
             os.close(bucket.fd)
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(pytest.main([__file__, "-v"]))

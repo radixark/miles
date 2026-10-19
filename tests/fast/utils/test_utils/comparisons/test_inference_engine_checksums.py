@@ -51,7 +51,17 @@ def _source_of(model_id: str | None) -> SimpleProcessIdentity | TrainerControlle
 def _partial(
     *, rollout_id: int, engine_checksums: list[dict[str, str]], trainer_model_id: str | None = None
 ) -> dict[str, Any]:
-    return dict(rollout_id=rollout_id, trainer_model_id=trainer_model_id, engine_checksums=engine_checksums)
+    return dict(
+        rollout_id=rollout_id,
+        trainer_model_id=trainer_model_id,
+        weight_version=rollout_id + 1,
+        debug_trainer_load_state_timestamp=0.0,
+        debug_weight_update_id=f"update-{rollout_id + 1}",
+        engine_snapshots=[
+            dict(cell_id=f"cell-{index}", workers_hash=f"incarnation-{index}", tensor_checksums=checksums)
+            for index, checksums in enumerate(engine_checksums)
+        ],
+    )
 
 
 class TestCompareInferenceEngineChecksums:
@@ -144,7 +154,7 @@ class TestCompareInferenceEngineChecksums:
             tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])]
         )
 
-        with pytest.raises(AssertionError, match=r"\(model_id, rollout_id\) sets differ"):
+        with pytest.raises(AssertionError, match=r"\(model_id, weight_version\) sets differ"):
             compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_empty_baseline_fails(self, tmp_path: Path) -> None:
@@ -198,7 +208,7 @@ class TestSeveralPolicies:
             model_id="b",
         )
 
-        with pytest.raises(AssertionError, match=r"baseline/b/rollout_1 vs target/b/rollout_1"):
+        with pytest.raises(AssertionError, match=r"baseline/b/version_2 vs target/b/version_2"):
             compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_the_writers_identity_no_longer_decides_which_policy_an_event_belongs_to(self, tmp_path: Path) -> None:
@@ -213,6 +223,55 @@ class TestSeveralPolicies:
             )
 
         compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+
+class TestPublishedVersionKeys:
+    @staticmethod
+    def _at(*, rollout_id: int, weight_version: int, checksum: str) -> dict[str, Any]:
+        return {
+            **_partial(rollout_id=rollout_id, engine_checksums=[{"rank0/w": checksum}]),
+            "weight_version": weight_version,
+        }
+
+    def test_sides_whose_rollout_ids_differ_align_on_the_published_version(self, tmp_path: Path) -> None:
+        """A retried rollout publishes one version under another rollout id, which must still compare."""
+        _write_inference_engine_events(tmp_path / "baseline", [self._at(rollout_id=1, weight_version=2, checksum="a")])
+        _write_inference_engine_events(tmp_path / "target", [self._at(rollout_id=4, weight_version=2, checksum="a")])
+
+        compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+    def test_one_rollout_id_with_different_versions_is_not_merged(self, tmp_path: Path) -> None:
+        """Keying by rollout id would pair version 2 against version 3 and hide the missing publication."""
+        _write_inference_engine_events(tmp_path / "baseline", [self._at(rollout_id=1, weight_version=2, checksum="a")])
+        _write_inference_engine_events(tmp_path / "target", [self._at(rollout_id=1, weight_version=3, checksum="a")])
+
+        with pytest.raises(AssertionError, match=r"sets differ"):
+            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+    def test_a_repeated_version_with_the_same_weights_is_accepted(self, tmp_path: Path) -> None:
+        """Re-sampling one publication twice records the same weights and is not a conflict."""
+        repeated = [
+            self._at(rollout_id=1, weight_version=2, checksum="a"),
+            self._at(rollout_id=2, weight_version=2, checksum="a"),
+        ]
+        _write_inference_engine_events(tmp_path / "baseline", repeated)
+        _write_inference_engine_events(tmp_path / "target", repeated[:1])
+
+        compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+    def test_a_repeated_version_with_different_weights_is_rejected(self, tmp_path: Path) -> None:
+        """Two different weight sets under one published version cannot both be the version the trainer made."""
+        _write_inference_engine_events(
+            tmp_path / "baseline",
+            [
+                self._at(rollout_id=1, weight_version=2, checksum="a"),
+                self._at(rollout_id=2, weight_version=2, checksum="b"),
+            ],
+        )
+        _write_inference_engine_events(tmp_path / "target", [self._at(rollout_id=1, weight_version=2, checksum="a")])
+
+        with pytest.raises(AssertionError, match=r"Conflicting checksums for \(None, 2\)"):
+            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
 
 class TestLogsPredatingTheTrainerModelIdField:

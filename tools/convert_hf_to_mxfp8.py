@@ -15,36 +15,20 @@ import os
 import re
 import shutil
 
-
 import safetensors
 import safetensors.torch
 import torch
 from sglang.srt.layers.quantization.fp8_utils import block_quant_dequant
 from tqdm import tqdm
 
-from miles.utils.mxfp8 import MXFP8_GROUP_SIZE
+from miles.utils.hf_rollout_schema import create_mxfp8_rollout_schema
+from miles.utils.mxfp8 import MXFP8_GROUP_SIZE, MXFP8_SKIP_WEIGHT_SUBSTRINGS, MXFP8_SOURCE_FP8_DTYPES
 from miles.utils.mxfp8 import mxfp8_quantize as quantize_mxfp8
-
-
-SKIP_WEIGHT_SUBSTRINGS = (
-    "layernorm",
-    "embed",
-    "router",
-    "mlp.gate.",
-    "norm",
-    "lm_head",
-    "eh_proj",
-    "weights_proj",
-    "head.",
-    "wo_a",
-    "ffn.gate.",
-    "compressor.",
-)
+from miles.utils.mxfp8 import should_use_mxfp8
 
 SOURCE_FP8_BLOCK_SIZE = [128, 128]
 TARGET_MXFP8_BLOCK_SIZE = [1, MXFP8_GROUP_SIZE]
 SOURCE_FP8_SCALE_KEY_SUFFIX = ".weight_scale_inv"
-SOURCE_FP8_DTYPES = (torch.float8_e4m3fn,) + ((torch.float8_e4m3fnuz,) if hasattr(torch, "float8_e4m3fnuz") else ())
 
 
 def _strip_weight_suffix(weight_key: str) -> str:
@@ -118,28 +102,6 @@ def _source_fp8_to_mxfp8_scale_u8(weight: torch.Tensor, source_scale_u8: torch.T
     return mxfp8_scale_u8[..., :n, : (k // TARGET_MXFP8_BLOCK_SIZE[1])].contiguous()
 
 
-def should_quantize(
-    name: str,
-    weight: torch.Tensor,
-    skip_weight_substrings=SKIP_WEIGHT_SUBSTRINGS,
-    allow_source_fp8: bool = False,
-) -> bool:
-    allowed_dtypes = (torch.float16, torch.bfloat16, torch.float32)
-    if allow_source_fp8:
-        allowed_dtypes += SOURCE_FP8_DTYPES
-    if not name.endswith(".weight"):
-        return False
-    if any(substr in name for substr in skip_weight_substrings):
-        return False
-    if weight.dtype not in allowed_dtypes:
-        return False
-    if weight.dim() < 2:
-        return False
-    if weight.shape[-1] % 32 != 0:
-        return False
-    return True
-
-
 class ConversionResult:
     def __init__(self) -> None:
         self.weight_map: dict[str, str] = {}
@@ -189,7 +151,7 @@ def process_file(
         modules_to_not_convert.extend(sorted(dynamic_skip_layer_prefixes))
 
     dynamic_skip_substrings = (
-        *SKIP_WEIGHT_SUBSTRINGS,
+        *MXFP8_SKIP_WEIGHT_SUBSTRINGS,
         *extra_high_precision_layers_hf,
         *sorted(dynamic_skip_layer_prefixes),
     )
@@ -198,15 +160,16 @@ def process_file(
         if not key.endswith(".weight"):
             continue
 
-        should_quant = should_quantize(
+        should_quant = should_use_mxfp8(
             key,
-            tensor,
-            skip_weight_substrings=dynamic_skip_substrings,
+            tuple(tensor.shape),
+            tensor.dtype,
+            skip_substrings=dynamic_skip_substrings,
             allow_source_fp8=source_is_block_fp8_ue8m0,
         )
 
         if should_quant:
-            if source_is_block_fp8_ue8m0 and tensor.dtype in SOURCE_FP8_DTYPES:
+            if source_is_block_fp8_ue8m0 and tensor.dtype in MXFP8_SOURCE_FP8_DTYPES:
                 source_scale_fp32, source_scale_u8, scale_key = _load_source_scale_u8(
                     weights,
                     key,
@@ -234,7 +197,7 @@ def process_file(
         else:
             if ".experts." not in key:
                 modules_to_not_convert.append(_strip_weight_suffix(key))
-            if source_is_block_fp8_ue8m0 and tensor.dtype in SOURCE_FP8_DTYPES:
+            if source_is_block_fp8_ue8m0 and tensor.dtype in MXFP8_SOURCE_FP8_DTYPES:
                 source_scale_fp32, _, _ = _load_source_scale_u8(
                     weights,
                     key,
@@ -386,7 +349,17 @@ def main() -> None:
         default=(),
         help="Extra substrings for weight names to skip quantization (e.g. .shared_experts.).",
     )
+    parser.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="Write a weightless MXFP8 rollout schema (config + tokenizer) instead of converting weights.",
+    )
     args, _ = parser.parse_known_args()
+
+    if args.metadata_only:
+        schema = create_mxfp8_rollout_schema(args.model_dir, args.save_dir)
+        print(f"Created metadata-only MXFP8 rollout schema at {schema}")
+        return
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available, cannot run MXFP8 quantization.")

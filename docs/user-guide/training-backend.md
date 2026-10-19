@@ -430,7 +430,8 @@ trusted Hub kernel publishers. Local kernel overrides are unsupported because th
 provenance cannot be verified across ranks.
 
 These are **module-level** kernels: `kernels.get_kernel()` returns a module and miles rebinds the
-free functions HF modeling code already looks up per forward. Nothing rebinds an `nn.Module.forward`,
+free functions HF modeling code already looks up per forward (for GatedDeltaNet, the kernel names in
+the model's `transformers` modeling module, process-wide). Nothing rebinds an `nn.Module.forward`,
 so `state_dict`, `_no_split_modules` and the DTensor gather are untouched — which is why the binding
 runs before `apply_fsdp2` and the ref model takes the same call.
 
@@ -442,8 +443,7 @@ packed document, and each one fails differently when its wheel is missing:
 
 - no `flash-linear-attention` — `transformers` binds `torch_chunk_gated_delta_rule`, whose signature
   ends in `**kwargs`, so the injected `cu_seqlens` is *accepted and ignored*;
-- no `causal_conv1d` — the handle is `None` and the forward drops to `F.silu(self.conv1d(...))`,
-  which takes no `seq_idx`;
+- no `causal_conv1d` — `transformers` binds its torch `causal_conv1d_fn`, which takes no `seq_idx`;
 - no `flash_attn` — the NemotronH attention patch returns the unpatched dense forward.
 
 In all three the per-document reset stops happening, nothing raises, and the only symptom is a wider
@@ -493,21 +493,22 @@ expert parallelism, use [Megatron-LM](#megatron-lm).
 
 Any HuggingFace causal LM loads. Some need small corrections around the edges: a weight
 layout SGLang does not expect, a stateful layer that must be reset per document, a class
-that needs patching before construction. Those live in
-`miles/backends/fsdp_utils/adaptations/specs/`, one file per architecture, and an
-architecture that needs none of them registers nothing.
+that needs patching before construction. Each such architecture has one `ArchAdapter` in
+`miles/backends/fsdp_utils/adaptations/specs/<arch>.py` that overrides only the hooks it
+needs; an architecture without one runs on the stock HF path.
 
 | Hook | What it fixes |
 |---|---|
-| `register_param_transform` | Train to rollout parameter rename / reshape at weight sync, for example unfusing batched experts into the per-expert names SGLang expects |
-| `register_model_patch` | Config-time patch of a `transformers` class |
-| `register_model_instance_patch` | Post-construction patch of one model instance |
-| `register_packing_patch` | Per-document state reset under THD sequence packing, for stateful layers such as Gated-Delta-Net and Mamba2 hybrids |
-| `register_post_load_fixup` | Repair weights `from_pretrained()` clobbered |
-| `register_precision_policy` | Model-specific FSDP compute / autocast policy |
+| `resolve_precision` | Model-specific FSDP compute / autocast policy |
+| `patch_classes` | Patch a `transformers` class before construction |
+| `patch_model` | Patch the constructed model; runs for both the actor and the ref model |
+| `packing_kwargs` | Per-document boundaries under sequence packing, taken from the micro-batch's `cu_seqlens` and passed as HF's own padding-free kwargs (`cu_seq_lens_*`, `seq_idx`) for stateful layers such as Gated-Delta-Net |
+| `param_transform` | Train to rollout parameter rename / reshape at weight sync, for example unfusing batched experts into the per-expert names SGLang expects |
+| `routing_replay` | Where the MoE router selects experts, for `--use-rollout-routing-replay` (R3) |
 
-Specs ship today for `qwen3`, `qwen3_moe`, `qwen3_5`, `glm4_moe_lite` (GLM-4.7-Flash) and
-`nemotron_h`; `adaptations/specs/__init__.py` is the source of truth for that list.
+Adapters ship today for `qwen3`, `qwen3_moe`, `qwen3_vl`, `qwen3_5` (plus Qwen3.5-MoE and
+Qwen3-Next), `glm4_moe_lite` (GLM-4.7-Flash) and `nemotron_h`; `_ADAPTERS` in
+`adaptations/specs/__init__.py` is the source of truth for that list.
 
 MoE is part of this backend rather than an exception to it: expert layers use the fused
 Triton kernels in `miles/kernels/moe/`, the weight bridge unfuses batched experts at sync

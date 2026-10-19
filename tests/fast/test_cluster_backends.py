@@ -1,7 +1,7 @@
 import subprocess
 
 import pytest
-from tests.fast import cluster_backends
+from tests.utils import cluster_backends
 
 from miles.utils.external_utils import command_utils
 from miles.utils.workers.types import ClusterBackend

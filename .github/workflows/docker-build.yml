@@ -113,8 +113,8 @@ jobs:
               | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')") \
               && [[ "$fp" =~ ^[0-9a-f]{64}$ ]] && echo "$fp"
           }
-          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch213-x86_64) || fail_poll "wheels cu130-torch213-x86_64 lookup failed"
-          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch213-aarch64) || fail_poll "wheels cu130-torch213-aarch64 lookup failed"
+          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch214-x86_64) || fail_poll "wheels cu130-torch214-x86_64 lookup failed"
+          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch214-aarch64) || fail_poll "wheels cu130-torch214-aarch64 lookup failed"
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"

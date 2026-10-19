@@ -18,6 +18,10 @@ _RAY_TRACE_CONTEXT_PARAMETER = "_ray_trace_ctx"
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
+class DedicatedRpcLoopWorker:
+    pass
+
+
 def rpc(*, concurrency_group: str = DEFAULT_CONCURRENCY_GROUP) -> Callable[[_F], _F]:
     config = _RpcConfig(concurrency_group=concurrency_group)
 

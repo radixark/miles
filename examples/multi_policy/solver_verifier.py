@@ -132,6 +132,7 @@ def _build_verifier_sample(solver_sample: Sample) -> Sample:
         label=solver_sample.label,
         metadata=dict(solver_sample.metadata or {}),
         routing_key=solver_sample.routing_key,
+        kv_cache_namespace=solver_sample.kv_cache_namespace,
     )
 
 

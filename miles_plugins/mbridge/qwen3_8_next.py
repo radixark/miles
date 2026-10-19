@@ -149,9 +149,8 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         raise NotImplementedError(f"Unsupported vision parameter name: {mcore_weights_name}")
 
     def _ple_layer_ids(self) -> list[int]:
-        """0-based decoder layer indices carrying PLE; ``ple_layer_ids`` in the HF config is 1-based."""
-        text_config = self._get_text_config()
-        return sorted({int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []})
+        """0-based decoder layer indices carrying PLE; the native config keeps ``ple_layer_ids`` sorted and 1-based."""
+        return [i - 1 for i in self._get_text_config().ple_layer_ids]
 
     def _ngram_rows_per_shard(self) -> int | None:
         """Height of one n-gram shard, read from the checkpoint; None when the index is unavailable."""
@@ -248,26 +247,26 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         config = super()._build_config()
 
         config.enable_hyper_connections = True
-        config.num_residual_streams = getattr(text_config, "hc_count", 4)
-        config.qwen3_8_next_hc_lowrank = getattr(text_config, "hc_lowrank", 320)
+        config.num_residual_streams = text_config.hc_count
+        config.qwen3_8_next_hc_lowrank = text_config.hc_lowrank
 
         config.qwen3_8_next_ple_layer_ids = self._ple_layer_ids()
-        config.qwen3_8_next_ple_embed_dim = getattr(text_config, "ple_embed_dim", 2560)
-        config.qwen3_8_next_ngram_size = getattr(text_config, "ngram_size", 3)
-        config.qwen3_8_next_heads_per_ngram = getattr(text_config, "heads_per_ngram", 8)
-        config.qwen3_8_next_ngram_vocab_size_base = getattr(text_config, "ngram_vocab_size_base", 20000000)
-        config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
-        config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
+        config.qwen3_8_next_ple_embed_dim = text_config.ple_embed_dim
+        config.qwen3_8_next_ngram_size = text_config.ngram_size
+        config.qwen3_8_next_heads_per_ngram = text_config.heads_per_ngram
+        config.qwen3_8_next_ngram_vocab_size_base = text_config.ngram_vocab_size_base
+        config.qwen3_8_next_split_ngram_parts = text_config.split_ngram_parts
+        config.qwen3_8_next_ple_conv_kernel_size = text_config.ple_conv_kernel_size
         # the n-gram hash resets at EOS so n-grams never straddle a document
-        config.qwen3_8_next_eos_token_id = getattr(text_config, "eos_token_id", 0)
+        config.qwen3_8_next_eos_token_id = text_config.eos_token_id
         # the checkpoint pads the last shard, so the height is not a ceil over the config
         config.qwen3_8_next_ngram_rows_per_shard = self._ngram_rows_per_shard()
 
-        config.qwen3_8_next_indexer_budget = getattr(text_config, "indexer_budget", 2048)
-        config.qwen3_8_next_indexer_compress_ratio = getattr(text_config, "indexer_compress_ratio", 4)
-        config.qwen3_8_next_indexer_n_heads = getattr(text_config, "indexer_n_heads", 4)
-        config.qwen3_8_next_indexer_head_dim = getattr(text_config, "indexer_head_dim", 128)
-        config.qwen3_8_next_indexer_kv_heads = getattr(text_config, "indexer_kv_heads", 1)
+        config.qwen3_8_next_indexer_budget = text_config.indexer_budget
+        config.qwen3_8_next_indexer_compress_ratio = text_config.indexer_compress_ratio
+        config.qwen3_8_next_indexer_n_heads = text_config.indexer_n_heads
+        config.qwen3_8_next_indexer_head_dim = text_config.indexer_head_dim
+        config.qwen3_8_next_indexer_kv_heads = text_config.indexer_kv_heads
 
         config.qwen3_8_next_no_block_layernorms = True
 

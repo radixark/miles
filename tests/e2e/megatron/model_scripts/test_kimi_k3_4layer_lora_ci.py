@@ -9,6 +9,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
+    num_gpus=8,
 )
 register_rocm_ci(
     est_time=400,
@@ -46,7 +47,7 @@ def _args() -> ScriptArgs:
         check_lora_weight_equal=True,
         skip_saving=True,
         rollout_bf16=os.getenv("MILES_HARDWARE_PLATFORM") == "rocm",
-        extra_args="--ci-test --ci-disable-logprobs-checker ",
+        extra_args="--ci-test --ci-disable-logprobs-checker --no-enable-sample-ownership-checker ",
     )
 
 

@@ -368,7 +368,7 @@ def _alive_engine_cells(servers) -> list:
     until recovery completes."""
     cells = []
     for server in servers.values():
-        for cell in server.server_cells.values():
+        for cell in server.all_server_cells.values():
             if cell.is_pending_weights_or_serving:
                 cells.append(cell)
     return cells
@@ -404,7 +404,7 @@ async def _compute_engine_infos(cells, worker_infos_per_cell, *, provider: BaseW
         engines.append(
             EngineInfo(
                 addr=cell.server_url,
-                worker_type=cell.meta.worker_type,
+                worker_type=cell.meta.worker_type.value,
                 engine_rank=engine_rank,
                 gpus=[
                     [info.self_addrs["primary"].host.strip("[]"), gpu_id]

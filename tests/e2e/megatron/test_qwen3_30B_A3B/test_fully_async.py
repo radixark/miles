@@ -10,6 +10,7 @@ register_cuda_ci(
     labels=["megatron", "weight-update", "fully-async"],
     hardware=["hopper", "blackwell"],
     disabled="Outdated and simple.",
+    num_gpus=4,
 )
 register_rocm_ci(
     est_time=800,
@@ -47,7 +48,10 @@ CASE = CaseConfig(
     update_weight_transfer_mode="broadcast",
     num_rollout=3,
     fully_async=True,
-    extra_args="--decoder-first-pipeline-num-layers 17 --decoder-last-pipeline-num-layers 14 ",
+    extra_args=(
+        "--decoder-first-pipeline-num-layers 17 --decoder-last-pipeline-num-layers 14 "
+        "--sample-ownership-grace-steps 4"
+    ),
 )
 
 

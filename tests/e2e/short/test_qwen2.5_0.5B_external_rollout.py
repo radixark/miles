@@ -18,7 +18,9 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import InfraInfo
 from miles.utils.workers.types import ClusterBackend
 
-register_cuda_ci(est_time=300, suite="stage-c-4-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=300, suite="stage-c-4-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"], num_gpus=4
+)
 register_rocm_ci(est_time=700, suite="nightly-stage-c-4-gpu-mi350", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
@@ -98,7 +100,7 @@ def _object_store_args(config: command_utils.ExecuteTrainConfig) -> str:
 
 
 def _train_args(engine_addrs: list[str], *, object_store_args: str) -> str:
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist/ "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist/ "
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "

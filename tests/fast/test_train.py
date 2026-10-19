@@ -50,7 +50,11 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
 
 
 def _install_driver_fakes(
-    monkeypatch: pytest.MonkeyPatch, args: SimpleNamespace, events: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    args: SimpleNamespace,
+    events: list[str],
+    *,
+    num_rollout_per_epoch: int = 4,
 ) -> SimpleNamespace:
     components = SimpleNamespace(
         inference_controller=FakeInferenceController(events),
@@ -60,7 +64,7 @@ def _install_driver_fakes(
     )
 
     async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
-        return components.inference_controller, components.rollout_executor, 4
+        return components.inference_controller, components.rollout_executor, num_rollout_per_epoch
 
     async def create_training_models(_args: SimpleNamespace, _executor: Any) -> tuple[Any, Any]:
         return components.actor_model, components.critic_model
@@ -242,7 +246,89 @@ class TestApiServerWiring:
         assert started_with[0]["inference_controller"] is components.inference_controller
 
 
+class TestCheckpointPublication:
+    async def test_checkpoint_and_eval_share_the_completed_rollout_cadence(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[str] = []
+        args = _make_args(num_rollout=40, save_interval=20, eval_interval=20, skip_eval_before_train=True)
+        components = _install_driver_fakes(monkeypatch, args, events, num_rollout_per_epoch=100)
+
+        await with_disposer(train_driver.train, args)
+
+        assert components.actor_model.saved == [19, 39]
+        assert [event for event in events if event.startswith("eval:")] == ["eval:19", "eval:39"]
+        for rollout_id in components.actor_model.saved:
+            assert (
+                events.index(f"executor_save:{rollout_id}")
+                < events.index(f"actor_save:{rollout_id}")
+                < events.index(f"eval:{rollout_id}")
+            )
+
+    async def test_rollout_save_failure_does_not_publish_a_model_checkpoint(self, monkeypatch: pytest.MonkeyPatch):
+        """A resumable model checkpoint must not precede its matching data progress."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, save_interval=20)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        async def fail_rollout_save(rollout_id):
+            raise OSError("rollout state write failed")
+
+        components.rollout_executor.save = fail_rollout_save
+
+        with pytest.raises(OSError, match="rollout state write failed"):
+            await with_disposer(train_driver.train, args)
+
+        assert components.actor_model.saved == []
+
+
 class TestTerminalLifecycle:
+    @pytest.mark.parametrize("audit_fails", [False, True])
+    async def test_final_audit_runs_with_live_api_and_cells(
+        self, monkeypatch: pytest.MonkeyPatch, audit_fails: bool
+    ) -> None:
+        """Final audits retain a working observation endpoint even when the audit raises."""
+        events: list[str] = []
+        args = _make_args()
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        def close_api() -> None:
+            events.append("api_closed")
+
+        async def final_audit() -> None:
+            assert "api_closed" not in events
+            assert "actor_dispose" not in events
+            assert "inference_dispose" not in events
+            events.append("audit")
+            if audit_fails:
+                raise RuntimeError("audit failed")
+
+        monkeypatch.setattr(train_driver, "maybe_start_api_server", lambda *args, **kwargs: close_api)
+        monkeypatch.setattr(components.rollout_executor, "_dispose", final_audit)
+
+        if audit_fails:
+            with pytest.raises(RuntimeError, match="audit failed"):
+                await with_disposer(train_driver.train, args)
+        else:
+            await with_disposer(train_driver.train, args)
+
+        assert events.count("audit") == 1
+        assert events.index("audit") < events.index("api_closed") < events.index("actor_dispose")
+        assert "inference_dispose" in events
+
+    async def test_model_creation_failure_still_disposes_rollout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Startup failure before the API exists still releases the rollout components."""
+        events: list[str] = []
+        args = _make_args()
+        _install_driver_fakes(monkeypatch, args, events)
+
+        async def fail_creation(*args: Any) -> None:
+            raise RuntimeError("model creation failed")
+
+        monkeypatch.setattr(train_driver, "create_training_models", fail_creation)
+        with pytest.raises(RuntimeError, match="model creation failed"):
+            await with_disposer(train_driver.train, args)
+
+        assert events == ["executor_dispose", "inference_dispose"]
+
     async def test_train_disposes_all_created_component_controllers(self, monkeypatch: pytest.MonkeyPatch):
         """Every component the driver created must be disposed, or its watchers outlive the run."""
         events: list[str] = []

@@ -1,12 +1,14 @@
-"""Bind resolved hub kernels onto constructed model instances.
+"""Bind resolved hub kernels onto constructed models.
 
-Rebinding happens on module instances, not on classes: it only replaces callables the HF modeling
-code already looks up per forward, so parameters, `state_dict` keys, `_no_split_modules` and the
-DTensor gather in `update_weight_utils.py` are untouched -- which is why running before
-`apply_fsdp2` is safe, for the policy and the ref model alike.
+Binding only replaces callables the HF modeling code already looks up per forward, so parameters,
+`state_dict` keys, `_no_split_modules` and the DTensor gather in `update_weight_utils.py` are
+untouched -- which is why running before `apply_fsdp2` is safe, for the policy and the ref model alike.
 """
 
+import functools
+import inspect
 import logging
+import sys
 
 from miles.backends.fsdp_utils.plugins.hf_kernels.loader import HubKernels
 from miles.backends.fsdp_utils.plugins.hf_kernels.presets import (
@@ -17,14 +19,15 @@ from miles.backends.fsdp_utils.plugins.hf_kernels.presets import (
 
 logger = logging.getLogger(__name__)
 
-# Per slot: the GatedDeltaNet instance attribute -> the function name in that Hub build. The names
-# differ on the recurrent kernel, which transformers stores without the `fused_` prefix.
+# Per slot: the module-level name a GatedDeltaNet forward calls in its transformers modeling module
+# -> the function name in that Hub build. The delta-rule names keep their `torch_` prefix whichever
+# implementation transformers resolved at import.
 _GDN_KERNEL_SLOTS = (
     (
         SLOT_GATED_DELTA_RULE,
         {
-            "chunk_gated_delta_rule": "chunk_gated_delta_rule",
-            "recurrent_gated_delta_rule": "fused_recurrent_gated_delta_rule",
+            "torch_chunk_gated_delta_rule": "chunk_gated_delta_rule",
+            "torch_recurrent_gated_delta_rule": "fused_recurrent_gated_delta_rule",
         },
     ),
     (
@@ -38,30 +41,62 @@ _GDN_KERNEL_SLOTS = (
 
 
 def bind_gated_deltanet(model, hub: HubKernels) -> int:
-    """Point each GatedDeltaNet's kernel handles at the Hub builds; returns modules patched.
+    """Point the kernels each GatedDeltaNet calls at the Hub builds; returns modules served.
 
-    `_patch_gdn_forward` in `models/qwen3_5.py` injects the packed-document boundaries into
-    whatever callables the instance carries, so this only has to replace them. Slots resolve
-    independently: one missing Hub build leaves the other bound.
+    transformers' GatedDeltaNet forward calls module-level kernels of its modeling module (resolved
+    at import to fla / causal_conv1d or a torch fallback) and hands them the packed-document
+    boundaries it receives as kwargs (`seq_idx`, `cu_seq_lens_q`), so this rebinds those names.
+    That is process-wide, which the policy and the ref model share. Slots resolve independently:
+    one missing Hub build leaves the other bound.
     """
     modules = [m for m in model.modules() if type(m).__name__.endswith("GatedDeltaNet")]
     if not modules:
         return 0
+    modeling_modules = list(dict.fromkeys(sys.modules[type(m).__module__] for m in modules))
 
     bound = []
-    for slot, attr_to_function in _GDN_KERNEL_SLOTS:
+    for slot, name_to_function in _GDN_KERNEL_SLOTS:
         functions = hub.resolve_slot(slot)
         if not functions:
             continue
-        for module in modules:
-            for attr, function_name in attr_to_function.items():
-                setattr(module, attr, functions[function_name])
+        missing = [
+            f"{mod.__name__}.{name}" for mod in modeling_modules for name in name_to_function if not hasattr(mod, name)
+        ]
+        if missing:
+            message = f"slot {slot!r}: no module-level GatedDeltaNet kernel {missing} to rebind"
+            if hub.strict:
+                raise RuntimeError(f"--kernel-strict: {message}")
+            logger.warning("[hf kernels] %s; keeping the native kernel", message)
+            continue
+        for mod in modeling_modules:
+            for name, function_name in name_to_function.items():
+                setattr(mod, name, _with_declared_kwargs(functions[function_name]))
         bound.append(slot)
 
     if not bound:
         return 0
-    logger.info("[hf kernels] GatedDeltaNet %s served from the Hub on %d module(s)", " + ".join(bound), len(modules))
+    logger.info(
+        "[hf kernels] GatedDeltaNet %s served from the Hub in %s (%d module(s))",
+        " + ".join(bound),
+        ", ".join(mod.__name__ for mod in modeling_modules),
+        len(modules),
+    )
     return len(modules)
+
+
+def _with_declared_kwargs(function):
+    """Call `function` with only the kwargs it declares, as transformers' own kernel wrappers do.
+
+    The GatedDeltaNet forward hands every padding-free kwarg (`cu_seq_lens_k`, `max_length_q`, ...)
+    to each kernel, while a Hub build such as `causal_conv1d_fn` declares no `**kwargs`.
+    """
+    declared = frozenset(inspect.signature(function).parameters)
+
+    @functools.wraps(function)
+    def call(*args, **kwargs):
+        return function(*args, **{key: value for key, value in kwargs.items() if key in declared})
+
+    return call
 
 
 def bind_nemotron_h(model, hub: HubKernels) -> int:

@@ -12,6 +12,7 @@ register_cuda_ci(
     labels=["ft-short"],
     hardware=["hopper", "blackwell"],
     disabled="will enable in future FT delivery",
+    num_gpus=8,
 )
 
 _MODE: str = "kill_train__dp2_cp2"

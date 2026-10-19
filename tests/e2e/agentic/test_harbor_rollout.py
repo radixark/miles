@@ -59,6 +59,7 @@ register_cuda_ci(
     hardware=["hopper"],
     labels=["agentic"],
     disabled="CI runners hold no sandbox credential; run it manually on a GPU devbox that has one",
+    num_gpus=2,
 )
 
 REPO = Path(__file__).resolve().parents[3]
@@ -168,7 +169,7 @@ def execute(worker_env: dict[str, str]):
     # accepts for skipping megatron init
     misc_args = (
         f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate "
-        "--train-backend fsdp --debug-rollout-only --ci-test "
+        "--train-backend fsdp --debug-rollout-only --ci-test --no-enable-sample-ownership-checker "
     )
     train_args = f"{ckpt_args} {rollout_args} {agent_args} {sglang_args} {command_utils.get_default_wandb_args(__file__)} {misc_args}"
 

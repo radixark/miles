@@ -20,6 +20,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
+    num_gpus=8,
 )
 register_rocm_ci(est_time=900, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
@@ -31,7 +32,7 @@ _CONFIGS = [
 
 
 def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
-    extra_args = "--ci-test --ci-disable-logprobs-checker "
+    extra_args = "--ci-test --no-enable-sample-ownership-checker --ci-disable-logprobs-checker "
     if not virtual_experts:
         extra_args += "--no-sglang-lora-use-virtual-experts "
     # ROCm shared-expert fusion requires per-expert LoRA factors.

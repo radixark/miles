@@ -1,6 +1,8 @@
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-register_cuda_ci(est_time=240, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=240, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=4
+)
 register_rocm_ci(est_time=40, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
 
 import os
@@ -554,6 +556,25 @@ def _check_batch_isend_irecv_ring(rank: int, det1: dist.ProcessGroup) -> None:
     for req in reqs:
         req.wait()
     _assert_bitwise("batch_isend_irecv ring", recv_tensor, torch.full((16,), float(prev_rank), device=device))
+
+    recv_tensor.fill_(-1)
+    snapshots = [torch.empty_like(recv_tensor), torch.empty_like(recv_tensor)]
+    torch.cuda.synchronize()
+    submit_stream = torch.cuda.Stream()
+    consumers = [torch.cuda.Stream(), torch.cuda.Stream()]
+    submit_stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(submit_stream):
+        torch.cuda._sleep(100_000_000)
+        delayed_requests = dist.batch_isend_irecv(ops)
+
+    for consumer, snapshot in zip(consumers, snapshots, strict=True):
+        with torch.cuda.stream(consumer):
+            for request in delayed_requests:
+                request.wait()
+            snapshot.copy_(recv_tensor)
+    for consumer, snapshot in zip(consumers, snapshots, strict=True):
+        consumer.synchronize()
+        _assert_bitwise("batch P2P cross-stream wait", snapshot, torch.full((16,), float(prev_rank), device=device))
 
 
 def _check_dtype_allreduce(rank: int, det1: dist.ProcessGroup) -> None:

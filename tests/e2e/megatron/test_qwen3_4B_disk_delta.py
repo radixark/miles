@@ -12,6 +12,7 @@ register_cuda_ci(
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "weight-update"],
     hardware=["hopper", "blackwell"],
+    num_gpus=4,
 )
 register_rocm_ci(
     est_time=500,
@@ -36,7 +37,7 @@ def prepare():
 
 def execute():
     U = command_utils.default_config().create_backend()
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "

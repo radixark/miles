@@ -10,7 +10,11 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_5_35B_A3B._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
-    est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper", "blackwell"]
+    est_time=1500,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron", "qwen35"],
+    hardware=["hopper", "blackwell"],
+    num_gpus=4,
 )
 register_rocm_ci(est_time=1300, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "qwen35"])
 
@@ -37,7 +41,6 @@ CASE = CaseConfig(
     use_spec=False,
     enable_mtp_training=False,
     use_r3=False,
-    check_weight_update_selector="target",
     # miles has no VLM/vision implementation on the training side, so vision weights are
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),

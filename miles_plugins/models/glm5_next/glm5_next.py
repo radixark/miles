@@ -21,34 +21,30 @@ _MHC_EPS = 1e-6
 
 
 def full_attn_layers(text_config) -> list[int]:
-    linear_attn_config = getattr(text_config, "linear_attn_config", None)
-    if isinstance(linear_attn_config, dict) and linear_attn_config.get("full_attn_layers") is not None:
-        return sorted(int(i) for i in linear_attn_config["full_attn_layers"])
-    layer_types = getattr(text_config, "layer_types", None)
-    if layer_types:
-        return [i for i, layer_type in enumerate(layer_types) if layer_type != "linear_attention"]
-    return [i for i in range(text_config.num_hidden_layers) if i % 4 == 3]
+    """DSA layers; the native config labels the KDA layers ``linear_attention``."""
+    return [i for i, layer_type in enumerate(text_config.layer_types) if layer_type != "linear_attention"]
 
 
 def _apply_glm5_next_config(config, text_config) -> None:
-    hc_eps = getattr(text_config, "hc_eps", _MHC_EPS)
+    hc_eps = text_config.hc_eps
     assert hc_eps == _MHC_EPS, (
         f"GLM-5.3 hc_eps={hc_eps} but Megatron's mHC sinkhorn/compute-h eps are the "
         f"constants _MHC_SINKHORN_EPS=_MHC_COMPUTE_H_EPS={_MHC_EPS}"
     )
     config.enable_hyper_connections = True
-    config.num_residual_streams = getattr(text_config, "hc_mult", 4)
-    config.mhc_sinkhorn_iterations = getattr(text_config, "hc_sinkhorn_iters", 20)
+    config.num_residual_streams = text_config.hc_mult
+    config.mhc_sinkhorn_iterations = text_config.hc_sinkhorn_iters
     config.use_fused_mhc = False
 
     config.index_num_attention_heads = text_config.index_n_heads
     config.index_head_dim = text_config.index_head_dim
     config.index_topk = text_config.index_topk
     config.index_kpool = text_config.index_kpool
+    # index_kpool_compress is a checkpoint field the native config does not declare
     assert (
         text_config.index_kpool > 1
         and getattr(text_config, "index_kpool_compress", False)
-        and getattr(text_config, "index_kpool_always_select_tail", False)
+        and text_config.index_kpool_always_select_tail
     ), "GLM-5.3 kpool indexer expects index_kpool>1 with compress and always_select_tail"
 
     config.glm5_next_full_attn_layers = full_attn_layers(text_config)

@@ -35,9 +35,9 @@ have `/data/miles_ci` correctly set up.
 1. Probes mounted filesystems with `df` and picks the mount point with the
    most total bytes, excluding `tmpfs`/`devtmpfs`/`overlay`/`squashfs` and
    system mounts (`/`, `/boot`, `/dev`, `/proc`, `/run`, `/sys`).
-2. **If the biggest mount is `/data`** (the canonical case, e.g. scitix-72):
+2. **If the biggest mount is `/data`** (the canonical case):
    ensures `/data/miles_ci` exists as a real directory. Done.
-3. **If the biggest mount is something else** (e.g. `/mnt/nvme0n1` on novita):
+3. **If the biggest mount is something else** (e.g. `/mnt/nvme0n1`):
    ensures `<big_disk>/miles_ci` exists as a real directory, then atomically
    replaces `/data/miles_ci` with a symlink pointing to `<big_disk>/miles_ci`
    (creates `/data` first if missing).

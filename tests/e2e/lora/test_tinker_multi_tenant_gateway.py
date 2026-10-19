@@ -5,12 +5,7 @@ from tests.e2e.lora.tinker_gateway import BASE_MODEL, prepare_gateway, running_g
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(
-    est_time=400,
-    suite="stage-c-8-gpu-h100",
-    labels=["multi-lora"],
-    hardware=["hopper"],
-)
+register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["multi-lora"], hardware=["hopper"], num_gpus=8)
 
 
 def execute():

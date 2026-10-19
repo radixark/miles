@@ -23,7 +23,7 @@ flowchart TB
             R1 -. health, route .- MR
             R2 -. health, route .- MR
         end
-        D[Data Source<br/>RolloutDataSourceWithBuffer]
+        D[Data Source<br/>RolloutDataSource]
         T1 <-- weight sync --> R1
         T1 <-- weight sync --> R2
         D --> MR

@@ -154,7 +154,7 @@ class TestUninstallIfPresent:
         """A comparison handoff must tear down the release that still owns the previous side's GPUs."""
         calls: list[tuple[str, ...]] = []
 
-        def run_raw(*arguments: str) -> subprocess.CompletedProcess[str]:
+        def run_raw(*arguments: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
             calls.append(arguments)
             return subprocess.CompletedProcess(arguments, returncode=0, stdout="", stderr="")
 
@@ -169,7 +169,7 @@ class TestUninstallIfPresent:
         monkeypatch.setattr(
             Helm,
             "run_raw",
-            lambda *_arguments: subprocess.CompletedProcess(
+            lambda *_arguments, timeout=None: subprocess.CompletedProcess(
                 [],
                 returncode=1,
                 stdout="",
@@ -184,7 +184,9 @@ class TestUninstallIfPresent:
         monkeypatch.setattr(
             Helm,
             "run_raw",
-            lambda *_arguments: subprocess.CompletedProcess([], returncode=1, stdout="", stderr="forbidden"),
+            lambda *_arguments, timeout=None: subprocess.CompletedProcess(
+                [], returncode=1, stdout="", stderr="forbidden"
+            ),
         )
 
         with pytest.raises(RuntimeError, match="forbidden"):
@@ -513,3 +515,29 @@ class TestStaticWorkerHost:
         assert naming.static_worker_host("myrun", "session-server", 1) == (
             "myrun-miles-run-session-server-1.myrun-miles-run-session-server"
         )
+
+
+class TestUpgradeTimeout:
+    @pytest.mark.parametrize("timeout", [None, 300.0])
+    def test_the_upgrade_process_is_bounded_by_exactly_the_timeout_it_was_given(
+        self, monkeypatch: pytest.MonkeyPatch, timeout: float | None
+    ) -> None:
+        """A dropped timeout lets an install that is expected to hang block its caller forever."""
+        calls: list[tuple[list[str], dict[str, object]]] = []
+
+        def fake_run_process(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(command_wrapper, "run_process", fake_run_process)
+
+        Helm.upgrade(
+            release="r", namespace="rl", chart="/chart", values_files=["/v.yaml"], ci_run=False, timeout=timeout
+        )
+
+        assert calls == [
+            (
+                Helm.upgrade_command("r", "rl", "/chart", ["/v.yaml"], ci_run=False),
+                {"capture_output": False, "check": True, "timeout": timeout},
+            )
+        ]

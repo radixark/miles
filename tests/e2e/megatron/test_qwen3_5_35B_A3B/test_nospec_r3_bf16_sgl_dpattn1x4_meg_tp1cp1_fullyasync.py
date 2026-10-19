@@ -19,6 +19,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "qwen35", "weight-update", "fully-async", "replay"],
     hardware=["hopper", "blackwell"],
+    num_gpus=8,
 )
 register_rocm_ci(
     est_time=1400,
@@ -49,7 +50,6 @@ CASE = CaseConfig(
     use_spec=False,
     enable_mtp_training=False,
     use_r3=True,
-    check_weight_update_selector="target",
     # miles has no VLM/vision implementation on the training side, so vision weights are
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),

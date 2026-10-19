@@ -49,26 +49,8 @@ def _sample(metric_key, value, *, steps_key=LAST_STEPS_KEY, constraint_key=REL_C
     return MetricSample(metric_key, steps_key, constraint_key, step, value)
 
 
-def _recent(
-    store,
-    metric_key,
-    *,
-    steps_key=LAST_STEPS_KEY,
-    constraint_key=REL_CONSTRAINT_KEY,
-    step=-1,
-    identity=IDENTITY,
-    limit=10,
-):
-    return store.recent_trusted_values(
-        identity.test_path,
-        identity.backend,
-        identity.suite,
-        metric_key,
-        steps_key,
-        constraint_key,
-        step,
-        limit,
-    )
+def _recent(store, metric_key, *, step=-1, identity=IDENTITY, limit=10):
+    return store.recent_trusted_values(identity.test_path, identity.backend, identity.suite, metric_key, step, limit)
 
 
 @pytest.fixture
@@ -149,26 +131,24 @@ def test_identity_isolation(store):
     assert _recent(store, "reward_mean") == [0.5]
 
 
-def test_coordinate_isolation(store):
-    # Four values under one metric_key; each non-base row differs from the
-    # base coordinate in exactly one coordinate column.
+def test_coordinate_is_metric_and_step(store):
+    # Rows written under different declaration literals share their (metric, step) history.
     _write(
         store,
         created_at="2026-06-01T00:00:00+00:00",
+        values=[_sample("pass_rate", 0.70), _sample("pass_rate", 0.90, step=0)],
+    )
+    _write(
+        store,
+        created_at="2026-06-02T00:00:00+00:00",
         values=[
-            _sample("pass_rate", 0.70),
-            _sample("pass_rate", 0.60, steps_key=STEP_LIST_KEY, step=0),
             _sample("pass_rate", 0.80, constraint_key=ABS_CONSTRAINT_KEY),
-            _sample("pass_rate", 0.90, step=0),
+            _sample("pass_rate", 0.60, steps_key=STEP_LIST_KEY, step=0),
         ],
     )
 
-    # Each exact coordinate matches only its own row: plain equality on every
-    # column, no cross-matching.
-    assert _recent(store, "pass_rate") == [0.70]
-    assert _recent(store, "pass_rate", steps_key=STEP_LIST_KEY, step=0) == [0.60]
-    assert _recent(store, "pass_rate", constraint_key=ABS_CONSTRAINT_KEY) == [0.80]
-    assert _recent(store, "pass_rate", step=0) == [0.90]
+    assert _recent(store, "pass_rate") == [0.80, 0.70]
+    assert _recent(store, "pass_rate", step=0) == [0.60, 0.90]
 
 
 def test_mark_untrusted_by_run_id_excludes_immediately(store):
@@ -234,14 +214,13 @@ def test_baseline_sql_matches_authoritative_shape():
         "r.backend = ?",
         "r.suite = ?",
         "mv.metric_key = ?",
-        "mv.steps_key = ?",
-        "mv.constraint_key = ?",
         "mv.step = ?",
         "r.trusted = 1",
         "order by r.created_at desc",
         "limit ?",
     ):
         assert fragment in sql, f"baseline query missing: {fragment!r}"
+    assert "steps_key" not in sql and "constraint_key" not in sql
 
 
 def test_neon_store_requires_dsn(monkeypatch):

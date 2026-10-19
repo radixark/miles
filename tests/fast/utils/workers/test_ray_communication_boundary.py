@@ -39,7 +39,7 @@ RAY_USING_MODULES = {
     "miles/utils/tracking_utils/prometheus_utils.py": "known debt: the prometheus collector is a ray actor, skipped under kubernetes",
     "miles/ray/train_actor.py": "launcher closure: a launched actor reads the gpu ids ray gave it",
     "miles/backends/training_utils/weight_update/protocols/broadcast.py": "node ip lookup for a collective, not a call to another worker",
-    "miles/backends/training_utils/weight_update/protocols/p2p_transfer_utils.py": "node ip lookup for a collective, not a call to another worker",
+    "miles/backends/training_utils/weight_update/protocols/transports/mooncake.py": "node ip lookup for a collective, not a call to another worker",
     "miles/utils/debug_utils/replay_reward_fn.py": "tooling: a standalone debugging script",
     "miles/utils/test_utils/mock_sglang_engine.py": "tooling: a test double that stands in for a ray-launched engine",
     "tools/convert_torch_dist_to_hf_ray.py": "tooling: a standalone conversion script that fans out over a ray cluster",

@@ -36,15 +36,12 @@ class CaseConfig:
     ep_size: int
     rollout_num_gpus_per_engine: int
     # Whether MTP training is enabled. On -> --enable-mtp-training --mtp-num-layers 1
-    # (+ loss factor); off -> --mtp-num-layers 0, so the trainer builds no MTP layer (note
-    # `--enable-mtp-training --mtp-num-layers 0` would fail the arguments.py assert).
+    # (+ loss factor); off -> no flag, so validation drops the model script's MTP layer and
+    # the trainer builds none.
     enable_mtp_training: bool
     # Whether to enable R3 routing replay (--use-rollout-routing-replay).
     use_r3: bool
     max_tokens_per_gpu: int = 8192
-    # Weight-check selector: "all" (target + draft) or "target" (target model only; use
-    # when MTP training is off so the un-synced draft is not checked).
-    check_weight_update_selector: str = "all"
     # Rollout weight-name substrings to exclude from the equality check (substring match;
     # mismatches become non-fatal). Cases pass ("visual",): miles has no VLM/vision
     # implementation on the training side, so those weights are never synced.
@@ -66,6 +63,7 @@ class CaseConfig:
     rollout_max_response_len: int = 8192
     colocate: bool = True
     rollout_num_gpus: int = None
+    update_weight_transfer_mode: str = None
     fully_async: bool = False
     optimizer: Literal["adam", "dist_muon"] = "adam"
     extra_args: str = ""
@@ -77,8 +75,12 @@ class CaseConfig:
             raise ValueError("fully_async requires colocate=False: train_async.py rejects colocation")
         if not self.colocate and self.rollout_num_gpus is None:
             raise ValueError("rollout_num_gpus must be set when colocate is False")
-        if not self.use_spec and (self.enable_mtp_training or self.check_weight_update_selector != "target"):
-            raise ValueError("without spec there is no draft: set enable_mtp_training=False and selector 'target'")
+        if self.update_weight_transfer_mode is not None:
+            assert self.update_weight_transfer_mode in ("broadcast", "p2p")
+        if self.update_weight_transfer_mode == "p2p" and self.colocate:
+            raise ValueError("p2p weight updates require colocate=False: the engines are written from other GPUs")
+        if not self.use_spec and self.enable_mtp_training:
+            raise ValueError("without spec there is no draft to train: set enable_mtp_training=False")
         if self.sglang_deepep_dispatcher_output_dtype is not None and not self.use_deepep:
             raise ValueError("sglang_deepep_dispatcher_output_dtype requires use_deepep=True")
 
@@ -102,7 +104,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     enable_eval = os.environ.get("MILES_TEST_ENABLE_EVAL", "0").lower() in ("1", "true", "yes")
 
     hf_checkpoint = f"/root/models/{MODEL_NAME}-FP8" if case.use_fp8_rollout else f"/root/models/{MODEL_NAME}"
-    ckpt_args = f"--hf-checkpoint {hf_checkpoint} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint {hf_checkpoint} " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -207,6 +209,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         sglang_args += "--sglang-enable-dp-attention "
     if case.use_r3:
         sglang_args += "--use-rollout-routing-replay "
+    if case.update_weight_transfer_mode == "p2p":
+        # publish destination addresses for P2P writes
+        sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
         # The decode CUDA-graph batch is per DP rank: capture at most one DP rank's requests.
@@ -218,17 +223,12 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
             sglang_args += f"--sglang-deepep-dispatcher-output-dtype {case.sglang_deepep_dispatcher_output_dtype} "
 
     # When MTP training is off the rollout still runs EAGLE spec from the checkpoint
-    # draft; those draft weights just never get synced (the spec_nor3 case checks only the
-    # target through its selector).
+    # draft; the weight sync and the weight check both leave that draft out.
+    mtp_args = ""
     if case.enable_mtp_training:
         mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
-    else:
-        # The model script always passes --mtp-num-layers 1, and Megatron adds an MTP loss whenever the
-        # layer exists, even without --enable-mtp-training; this later flag overrides it.
-        mtp_args = "--mtp-num-layers 0 "
 
     ci_args = "--ci-test "
-    ci_args += f"--check-weight-update-selector {case.check_weight_update_selector} "
     if case.check_weight_update_skip_list:
         ci_args += "--check-weight-update-skip-list " + " ".join(case.check_weight_update_skip_list) + " "
     if case.use_fp8_rollout:
@@ -249,6 +249,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
     if case.fully_async:
         misc_args += "--fully-async "
+    if case.update_weight_transfer_mode is not None:
+        misc_args += f"--update-weight-transfer-mode {case.update_weight_transfer_mode} "
     misc_args += f"--moe-token-dispatcher-type {case.megatron_dispatcher} "
     if case.colocate and case.optimizer == "adam":
         misc_args += "--rematerialize-param-from-master-weight "
@@ -273,10 +275,14 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 def execute(case: CaseConfig, *, wandb_file: str) -> None:
     U = command_utils.default_config().create_backend()
     train_args = build_train_args(case, wandb_file=wandb_file)
+    extra_env_vars = {"SGLANG_ENABLE_SPEC_V2": "1"} if case.use_spec else {}
+    if case.update_weight_transfer_mode == "p2p":
+        # CI hosts lack nvidia_peermem; use dmabuf
+        extra_env_vars["WITH_NVIDIA_PEERMEM"] = "0"
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=case.num_gpus_per_node + (0 if case.colocate else case.rollout_num_gpus),
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py" if case.fully_async else "train.py",
-        extra_env_vars={"SGLANG_ENABLE_SPEC_V2": "1"} if case.use_spec else {},
+        extra_env_vars=extra_env_vars,
     )

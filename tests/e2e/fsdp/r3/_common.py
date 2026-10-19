@@ -93,7 +93,7 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
         f"--attn-implementation {case.attn_implementation} "
     )
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --no-enable-sample-ownership-checker "
 
     misc_args = "--actor-num-nodes 1 " f"--actor-num-gpus-per-node {case.num_gpus} " "--colocate "
 

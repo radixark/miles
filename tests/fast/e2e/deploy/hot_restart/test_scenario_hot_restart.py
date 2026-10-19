@@ -8,7 +8,6 @@ import pytest
 import tests.e2e.deploy
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_deterministic as scenario
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import compute_freeze_plan_path
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import (
     HotRestartMode,
@@ -16,12 +15,15 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_determini
     read_installed_args,
 )
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
+from tests.utils.deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
 from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH
 from miles.utils.misc import should_run_periodic_action
-from miles.utils.test_utils.ft_test_actions import CI_FT_TEST_ACTIONS_PATH_FLAG
+from miles.utils.test_utils.fault_injector.actions.frozen import SleepForeverAction
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import CI_FAULT_HOOKS_PATH_FLAG
 
 ENTRY_DIR: Path = Path(tests.e2e.deploy.__file__).parent
 
@@ -163,6 +165,7 @@ class TestWeightVersionExclusion:
                 target_dir=f"{dump_dir}/{TARGET_SIDE}",
                 expected_engine_count=scenario._MODE.rollout_num_engines,
                 min_trained_rollouts=scenario.MIN_TRAINED_ROLLOUTS,
+                expected_target_reconfigures=[],
                 exclude_keys=[
                     "rollout/weight_version/mean",
                     "rollout/weight_version/median",
@@ -249,17 +252,20 @@ class TestTheFreezeTheRunIsInstalledWith:
         args = scenario._build_frozen_args(scenario.CHECKPOINTED, scenario._MODE, dump_dir, False)
 
         plan_path = compute_freeze_plan_path(dump_dir)
-        assert ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(plan_path)]
-        assert json.loads(plan_path.read_text()) == [
-            {"at_rollout": scenario.CHECKPOINTED.frozen_rollout_ids[0], "action": "sleep_forever_at_end"}
-        ]
+        assert ArgvManipulator.get(shlex.split(args), CI_FAULT_HOOKS_PATH_FLAG) == [str(plan_path)]
+        [request] = [FaultHookRequest.model_validate(one) for one in json.loads(plan_path.read_text())]
+        assert request.hook_name == FaultHookName.ORCHESTRATOR_STEP_END
+        assert request.action == SleepForeverAction()
+        assert request.rollout_id == scenario.CHECKPOINTED.frozen_rollout_ids[0]
+        assert request.target.cell_id is None
+        assert request.target.rank is None
 
     # TODO ad hoc hack: revert after the args refactor
     def test_the_baseline_side_is_never_frozen(self):
         """The baseline is the run nobody touched, and one asleep at step 2 would never finish."""
         args = scenario._build_args(scenario.CHECKPOINTED, scenario._MODE, "/dumps/baseline/plain", False)
 
-        assert not ArgvManipulator.is_defined(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG)
+        assert not ArgvManipulator.is_defined(shlex.split(args), CI_FAULT_HOOKS_PATH_FLAG)
 
     def test_the_relaunch_repeats_the_frozen_arguments_the_run_is_up_with(self, tmp_path):
         """A relaunch whose argv differs from the installed one is refused as more than a hot restart."""
@@ -279,17 +285,6 @@ class TestTheModesThisScenarioRefuses:
 
         with pytest.raises(AssertionError, match="leaving no step past the last take-over"):
             scenario.assert_freeze_schedule_leaves_redo_window(too_late)
-
-    def test_a_colocated_mode_is_refused(self):
-        """A take-over keeps the trainers and the engines up, and a colocated mode shares their gpus."""
-        colocated = dataclasses.replace(
-            scenario._MODE, colocate=True, rollout_num_engines=2, rollout_gpus_per_engine=1
-        )
-
-        with pytest.raises(AssertionError, match="colocates them"):
-            scenario._build_script_args(
-                scenario.CHECKPOINTED, mode=colocated, dump_dir="/dumps/target", enable_dumper=False
-            )
 
     def test_a_mode_with_no_engines_is_refused(self):
         """The take-over replaces the rollout executor, which needs engines to drive when it returns."""

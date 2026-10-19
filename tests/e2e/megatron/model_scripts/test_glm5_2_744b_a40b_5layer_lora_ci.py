@@ -23,12 +23,15 @@ register_cuda_ci(
     disabled="Megatron's dsa variant now builds AbsorbedMLASelfAttention, which reads "
     "linear_kv_up_proj.weight directly; the pinned Megatron-Bridge's LoRALinear has no such "
     "property. Upstream Bridge added an effective-weight property — re-enable after bumping it.",
+    num_gpus=4,
 )
 
 # skip the engine-side stacked params a frozen-base LoRA run cannot re-ship
 # (they keep their correct checkpoint values; everything else is verified)
 _BASE_EXTRA = (
-    "--ci-test " "--ci-disable-logprobs-checker " "--check-weight-update-skip-list fused_qkv_a_proj_with_mqa indexer. "
+    "--ci-test --no-enable-sample-ownership-checker "
+    "--ci-disable-logprobs-checker "
+    "--check-weight-update-skip-list fused_qkv_a_proj_with_mqa indexer. "
 )
 
 # (name, dsa_attention_backend, experts_shared_outer_loras, virtual_experts_serving)

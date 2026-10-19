@@ -28,11 +28,23 @@ def convert_kimi_k25_to_hf(args, name, param):
 
 
 def convert_language_model_to_hf(args, name, param):
-    if name == "module.module.language_model.embedding.word_embeddings.weight":
+    # The VL trainer prefixes the text stack with language_model.; the raw
+    # text-only provider (native-LoRA K2.5 runs) does not. HF names always
+    # carry the multimodal shell's language_model. prefix.
+    if name in (
+        "module.module.language_model.embedding.word_embeddings.weight",
+        "module.module.embedding.word_embeddings.weight",
+    ):
         return [("language_model.model.embed_tokens.weight", param)]
-    if name == "module.module.language_model.output_layer.weight":
+    if name in (
+        "module.module.language_model.output_layer.weight",
+        "module.module.output_layer.weight",
+    ):
         return [("language_model.lm_head.weight", param)]
-    if name == "module.module.language_model.decoder.final_layernorm.weight":
+    if name in (
+        "module.module.language_model.decoder.final_layernorm.weight",
+        "module.module.decoder.final_layernorm.weight",
+    ):
         return [("language_model.model.norm.weight", param)]
 
     try:

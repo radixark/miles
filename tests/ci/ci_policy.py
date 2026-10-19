@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from tests.ci.hardware import CUDA_STAGES, KNOWN_ARCHES
-from tests.ci.labels import KNOWN_LABELS
+from tests.ci.labels import KNOWN_LABELS, PERF_LABEL
 
 _RUN_CI_PREFIX = "run-ci-"
 # `run-on-<arch>` lacks the `run-ci-` prefix, so membership here is what
@@ -164,7 +164,7 @@ def registration_matches_selection(
     """Return whether one registration is selected by cadence and labels."""
     if nightly and not admit_nightly_tests:
         return False
-    labels = set(labels)
+    labels = set(labels) - {PERF_LABEL}
     return not labels or bool(labels & set(include_labels))
 
 

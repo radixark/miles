@@ -40,7 +40,7 @@ on:
         default: 'miles-main'
         type: string
       keep_superseded:
-        description: 'Keep other-version wheels; TE always keeps them while TE_ON_SCHEDULE is false'
+        description: 'Keep other-version wheels'
         required: false
         default: false
         type: boolean
@@ -59,10 +59,6 @@ env:
   ROUTER_REF: main
   INT4_QAT_PATH: miles/kernels/quant/int4_fake
   TE_REPO: radixark/TransformerEngine
-  # Scheduled te runs stay off while docker/Dockerfile installs NVIDIA's 2.17.0:
-  # a te upload without keep_superseded deletes those wheels. Turn this on with
-  # the change that makes the Dockerfile install the +miles wheels.
-  TE_ON_SCHEDULE: 'false'
 
 jobs:
   check:
@@ -88,7 +84,6 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT: ${{ github.event_name }}
           WHEELS_INPUT: ${{ inputs.wheels || 'all' }}
           FORCE: ${{ inputs.force || false }}
           TE_REF: ${{ inputs.te_ref || 'miles-main' }}
@@ -145,7 +140,7 @@ jobs:
             is_sha "$INT4_SHA" || fail "cannot resolve ${INT4_QAT_PATH} on main"
             if stale "$INT4_SHA" "$TAG_X86" fake_int4_quant_cuda-source.json; then INT4_X86=true; fi
           fi
-          if wanted te && { [ "$EVENT" = workflow_dispatch ] || [ "$TE_ON_SCHEDULE" = true ]; }; then
+          if wanted te; then
             TE_SHA=$(gh api "repos/${TE_REPO}/commits/${TE_REF}" --jq .sha)
             is_sha "$TE_SHA" || fail "cannot resolve ${TE_REPO}@${TE_REF}"
             if stale "$TE_SHA" "$TAG_X86" transformer_engine-source.json; then TE_X86=true; fi
@@ -372,13 +367,8 @@ jobs:
         run: |
           pip install packaging
           for wheel_dir in "${RUNNER_TEMP}/wheels/wheels-${ARCH}-"*; do
-            keep_superseded=()
-            if [ "$KEEP_SUPERSEDED" = --keep-superseded ] \
-              || { [ "$TE_ON_SCHEDULE" = false ] && [ "${wheel_dir##*/}" = "wheels-${ARCH}-te" ]; }; then
-              keep_superseded=(--keep-superseded)
-            fi
             WHEEL_DIR="$wheel_dir" python miles-wheels/build_wheels.py upload \
-              --cuda "$CUDA" --arch "$BUILD_ARCH" --torch "$TORCH" "${keep_superseded[@]}"
+              --cuda "$CUDA" --arch "$BUILD_ARCH" --torch "$TORCH" $KEEP_SUPERSEDED
           done
 
   notify-build-failure:

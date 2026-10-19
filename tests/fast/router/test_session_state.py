@@ -982,43 +982,36 @@ class TestComputeSessionMismatch:
         assert mock_tokenize.call_args.kwargs["template_args"] == {"reasoning_effort": "low"}
 
 
-def test_committed_full_turn_args_are_isolated_between_siblings(registry):
+def test_committed_full_turn_args_are_each_siblings_own_request(registry):
+    """One copy: each node keeps the request it committed itself, read-only from then on."""
     session = registry.get_session(registry.create_session())
-    request_args = {"temperature": 0.7, "chat_template_kwargs": {"nested": [1]}, "input_ids": [1, 2]}
-    record = SessionRecord(
-        timestamp=1.0, method="POST", path="/v1/chat/completions", status_code=200, request=request_args, response={}
-    )
-    first = commit_generation(
-        session,
-        parent=None,
-        request_messages=[SYS_MSG, USER_MSG],
-        assistant_message=ASSISTANT_MSG_1,
-        prompt_token_ids=[1, 2],
-        completion_token_ids=[3],
-        max_trim_tokens=0,
-        record=record,
-        response_id="first",
-        finish_reason="stop",
-        turn_args=request_args,
-    )
-    request_args["temperature"] = 0.1
-    request_args["chat_template_kwargs"]["nested"].append(2)
-    second = commit_generation(
-        session,
-        parent=None,
-        request_messages=[SYS_MSG, USER_MSG],
-        assistant_message=ASSISTANT_MSG_1,
-        prompt_token_ids=[1, 2],
-        completion_token_ids=[4],
-        max_trim_tokens=0,
-        record=record,
-        response_id="second",
-        finish_reason="stop",
-        turn_args=request_args,
-    )
-    request_args["input_ids"].append(9)
-    assert first.turn_args == {"temperature": 0.7, "chat_template_kwargs": {"nested": [1]}, "input_ids": [1, 2]}
-    assert second.turn_args == {"temperature": 0.1, "chat_template_kwargs": {"nested": [1, 2]}, "input_ids": [1, 2]}
+    nodes = []
+    for response_id, temperature, completion in (("first", 0.7, 3), ("second", 0.1, 4)):
+        request_args = {"temperature": temperature, "chat_template_kwargs": {"nested": [1]}, "input_ids": [1, 2]}
+        record = SessionRecord(
+            timestamp=1.0,
+            method="POST",
+            path="/v1/chat/completions",
+            status_code=200,
+            request=request_args,
+            response={},
+        )
+        node = commit_generation(
+            session,
+            parent=None,
+            request_messages=[SYS_MSG, USER_MSG],
+            assistant_message=ASSISTANT_MSG_1,
+            prompt_token_ids=[1, 2],
+            completion_token_ids=[completion],
+            max_trim_tokens=0,
+            record=record,
+            response_id=response_id,
+            finish_reason="stop",
+            turn_args=request_args,
+        )
+        assert node.turn_args is request_args
+        nodes.append(node)
+    assert [node.turn_args["temperature"] for node in nodes] == [0.7, 0.1]
 
 
 def test_mismatch_does_not_resolve_defaults_for_an_empty_committed_record(registry):

@@ -268,7 +268,7 @@ def _execute_train(args: ScriptArgs):
 
     if args.num_nodes == 1:  # minimal test for the 5-layer model
         perf_args = (
-            "--tensor-model-parallel-size 4 "
+            f"--tensor-model-parallel-size {min(4, args.num_gpus_per_node)} "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
             "--context-parallel-size 1 "
