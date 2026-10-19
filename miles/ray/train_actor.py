@@ -226,7 +226,7 @@ class TrainRayActor(NodeProbeMixin):
                 timeout=timedelta(minutes=args.backend.distributed_timeout_minutes),
             )
         current_platform.bind_device_after_process_group()
-        init_gloo_group()
+        init_gloo_group(timeout=timedelta(minutes=args.backend.distributed_timeout_minutes))
 
         with args.backend.mutable():
             args.backend.rank = dist.get_rank()

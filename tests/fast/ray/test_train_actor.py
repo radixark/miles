@@ -180,7 +180,7 @@ class TestInitRunsExactlyOnce:
         monkeypatch.setattr(train_actor.dist, "init_process_group", lambda **_kwargs: None)
         monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 3)
         monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 8)
-        monkeypatch.setattr(train_actor, "init_gloo_group", lambda: None)
+        monkeypatch.setattr(train_actor, "init_gloo_group", lambda timeout=None: None)
         monkeypatch.setattr(train_actor, "rebind_env_reporting", rebound.append)
         monkeypatch.setattr(train_actor.torch.version, "hip", "test")
 
@@ -356,7 +356,7 @@ class TestNumaAffinity:
         monkeypatch.setattr(train_actor.dist, "init_process_group", lambda **_kwargs: None)
         monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 0)
         monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 4)
-        monkeypatch.setattr(train_actor, "init_gloo_group", lambda: None)
+        monkeypatch.setattr(train_actor, "init_gloo_group", lambda timeout=None: None)
         monkeypatch.setattr(train_actor, "rebind_env_reporting", lambda _args: None)
 
         actor._init_common(args=args, role="actor")

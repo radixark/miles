@@ -20,11 +20,18 @@ from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 GLOO_GROUP = None
 
 
-def init_gloo_group():
-    """Initialize Gloo group for distributed communication."""
+def init_gloo_group(timeout: timedelta | None = None):
+    """Initialize Gloo group for distributed communication.
+
+    The NCCL group already uses ``--distributed-timeout-minutes``. The Gloo
+    group has to share that timeout: a context-parallel step can sit in a
+    Gloo collective longer than PyTorch's 10-minute default.
+    """
     global GLOO_GROUP
     if GLOO_GROUP is None:
-        GLOO_GROUP = dist.new_group(backend="gloo")
+        # None keeps PyTorch's default. Callers that omit the timeout stay on that path.
+        group_timeout = default_pg_timeout if timeout is None else timeout
+        GLOO_GROUP = dist.new_group(backend="gloo", timeout=group_timeout)
     return GLOO_GROUP
 
 
