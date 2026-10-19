@@ -144,14 +144,14 @@ The launcher exposes these as flags:
 
 | kernel | local heads | B200 r2048 / r4096 | GB300 r2048 / r4096 | numerics vs the register-MMA stages |
 |---|---|---|---|---|
-| attention fwd | 8 (TP 8) | 2.05x / 2.13x | 1.97x / 2.09x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 8 heads on N) |
-| attention fwd | 16 (TP 4) | 1.72x / 1.61x | 1.70x / 1.72x | fixed-order FP32 |
-| attention fwd | 64 (TP 1) | 4.28x / 3.90x | 4.12x / 4.14x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
-| attention bwd | 8 (TP 8) | 5.48x / 2.74x | 5.45x / 2.99x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
-| attention bwd | 16 (TP 4) | 5.46x / 2.72x | 5.48x / 2.97x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
-| attention bwd | 64 (TP 1) | 5.09x / 2.84x | 5.46x / 3.25x | fixed-order FP32 (tcgen05 rows kernel: dKV over the 64 heads in tensor memory; delta kernel) |
-| indexer logits (`thd`) | 32 index heads | 5.00x / 5.80x | 4.96x / 5.90x | bit-identical to the register-MMA stage (FP32 dot products on tcgen05; the head sum in the register-MMA stage's chain order) |
-| indexer bwd | 32 index heads | 1.73x / 1.47x | 1.76x / 1.43x | fixed-order FP32 (tcgen05 rows kernel + the same split-4 reducer; max dq error vs the FP64 reference identical to three digits to the register-MMA stage) |
+| attention fwd | 8 (TP 8) | 2.06x / 2.14x | 2.00x / 2.13x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 8 heads on N) |
+| attention fwd | 16 (TP 4) | 1.80x / 1.86x | 1.76x / 1.81x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 16 heads on N) |
+| attention fwd | 64 (TP 1) | 4.31x / 3.94x | 4.16x / 4.16x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
+| attention bwd | 8 (TP 8) | 5.51x / 2.74x | 5.44x / 2.96x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
+| attention bwd | 16 (TP 4) | 5.47x / 2.72x | 5.42x / 2.97x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
+| attention bwd | 64 (TP 1) | 5.07x / 2.83x | 5.47x / 3.20x | fixed-order FP32 (tcgen05 rows kernel: dKV over the 64 heads in tensor memory; delta kernel) |
+| indexer logits (`thd`) | 32 index heads | 5.02x / 5.75x | 4.89x / 5.96x | bit-identical to the register-MMA stage (FP32 dot products on tcgen05; the head sum in the register-MMA stage's chain order) |
+| indexer bwd | 32 index heads | 1.73x / 1.48x | 1.76x / 1.44x | fixed-order FP32 (tcgen05 rows kernel + the same split-4 reducer; max dq error vs the FP64 reference identical to three digits to the register-MMA stage) |
 
 `tests/manual/kernels/dsa/bench_dsa_backends.py` reproduces the comparison with its own timer.
 
