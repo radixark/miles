@@ -23,6 +23,7 @@
 #                             ray_node_setup.sh                                            (default: 5, 6)
 #   SANDBOX_NICE              niceness of the podman services, inherited by every sandbox   (default: 19)
 #   RAY_health_check_timeout_ms, RAY_health_check_failure_threshold   Ray's node health check (default: 20000, 60)
+#   RAY_gcs_rpc_server_reconnect_timeout_s   how long a node's Ray processes wait for an unresponsive head (default: 1200)
 set -euxo pipefail
 
 REPO=$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)
@@ -42,11 +43,15 @@ pip install docker  # the sandbox client; the Miles image does not ship it
 # allow about 20 minutes instead, so a stall the node recovers from does not kill the run. ray start reads these.
 export RAY_health_check_timeout_ms=${RAY_health_check_timeout_ms:-20000}
 export RAY_health_check_failure_threshold=${RAY_health_check_failure_threshold:-60}
+# The other direction: a node's raylet (and every Ray process) exits once the head's GCS has not answered for 60 s
+# (Ray's default). On 2026-10-19 a starved but alive head stopped answering for just over that, the raylets exited and
+# the job failed; the head answered again 25 s later. Give the head the same ~20 minutes.
+export RAY_gcs_rpc_server_reconnect_timeout_s=${RAY_gcs_rpc_server_reconnect_timeout_s:-1200}
 export PYTHONFAULTHANDLER=${PYTHONFAULTHANDLER:-1}  # a crash of any Python process leaves its stack in the log
 # Once Ray is up (started later, by the launcher or below), report what its own processes actually got.
 (for _ in $(seq 720); do pgrep -f 'gcs_server|raylet' >/dev/null && break; sleep 15; done; sleep 30
  for pid in $(pgrep -f 'gcs_server|raylet' || true); do
-    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -E '^RAY_health_check' | sed "s/^/ray pid $pid: /"
+    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -E '^RAY_(health_check|gcs_rpc_server_reconnect)' | sed "s/^/ray pid $pid: /"
  done) &
 if [ "$NUM_NODES" -gt 1 ]; then
     HEAD_IP=$(getent hosts "$BEAKER_LEADER_REPLICA_HOSTNAME" | awk '{print $1; exit}')

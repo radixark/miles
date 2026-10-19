@@ -52,6 +52,24 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 
 Larger directions to evaluate against the evidence below. Add yours here.
 
+## 2026-10-19: resume 5 dies at the first step after `iter_0000224`, three times
+
+- **Run:** resume 5 (`01M5AM2F0G62GACSWDT9H1J4W0`, commit `2316f39868`), from `iter_0000224`, off seven bad nodes.
+- **What happened:** attempts 1 and 2 each died about 3 minutes into training rollout 225, as resume 4 had.
+  - Attempt 1: the head's GCS stopped answering for over 60 s from about 18:31. The raylets logged `Failed to connect
+    to GCS within 60 seconds` and exited, and the job failed. A worker's `ray status` reached the head again at
+    18:32:55, 25 s after the first raylet gave up, so the head was starved, not dead.
+  - Attempt 2: the router's health checks of the engines on two nodes failed from 19:24, and the job failed.
+  - `follow_ray_job.py` recorded both as failures (no mid-run "success").
+- **Stuck starts:** attempt 3's replica on `holmes-cs-aus-508` stayed `scheduled` for an hour, as on `-510` on
+  2026-10-17. Both nodes had just torn down one of our replicas, which can take up to 8 minutes after a cancel (some
+  end in a SIGKILL, exit 137).
+- **Change:** `RAY_gcs_rpc_server_reconnect_timeout_s` 1200 (Ray's default is 60) in the entry script, so the nodes
+  wait about 20 minutes for an unresponsive head, as the node health check already does the other way.
+- **Open:** why the head starves at this step every time. The data order is fixed, so each resume runs the same
+  tasks; one may load the head node, whose sandboxes have no memory or process limits. Resume 5 stopped on 2026-10-19
+  during attempt 4.
+
 ## 2026-10-17: `ray job submit` returns 0 mid-run (resume 4)
 
 - **What happened:** resume 4 trained from 21:04 (first weight sync, 43.8 s, as after every resume) and began

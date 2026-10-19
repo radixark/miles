@@ -163,7 +163,7 @@ python examples/tmax/beaker/registry_mirror/registry_mirror.py warm     # open-i
 - **Starved nodes.** Sandboxes run without CPU limits next to Ray, SGLang and the trainers. The entry script runs
   the podman services, and so every sandbox, under `nice -n 19` (`SANDBOX_NICE`, 0 turns it off), and gives Ray's
   node health check about 20 minutes (`RAY_health_check_timeout_ms` 20000, `RAY_health_check_failure_threshold`
-  60) before it declares a node dead; the log shows both (`19 /usr/bin/podman system service`, `ray pid …:
+  60) before it declares a node dead, and the nodes' Ray processes the same before they give up on an unresponsive head (`RAY_gcs_rpc_server_reconnect_timeout_s` 1200, Ray's default 60); the log shows both (`19 /usr/bin/podman system service`, `ray pid …:
   RAY_health_check_…`). Worker replicas check the head as open-instruct's `ray_node_setup.sh` does: they leave
   after 6 failed `ray status` checks in a row, 5 s apart, with no timeout on a check (`RAY_HEAD_MONITOR_*`), and
   each failed check is logged. See [INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md) for the node deaths behind these, and
