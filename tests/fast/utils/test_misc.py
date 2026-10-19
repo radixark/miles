@@ -144,7 +144,8 @@ class TestNodeProbeMixin:
 
     def test_get_free_port_block_returns_bindable_consecutive_ports(self) -> None:
         """A block request returns five ports that can be bound simultaneously."""
-        candidate_start: int = get_free_port(start_port=15000, consecutive=10)
+        low, high = misc.service_port_range()
+        candidate_start: int = get_free_port(start_port=low, consecutive=10, port_range=(low, high))
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied_socket:
             occupied_socket.bind(("", candidate_start + 4))
@@ -178,6 +179,34 @@ class TestNodeProbeMixin:
 
         with pytest.raises(AssertionError):
             get_free_port(start_port=65535, consecutive=2)
+
+    def test_the_scan_stays_inside_the_given_range(self, monkeypatch):
+        """A port past the range end is never returned, even when it is the only free one."""
+        monkeypatch.setattr(misc, "is_port_available", lambda port: port == 9000)
+
+        with pytest.raises(RuntimeError, match=r"consecutive free ports in \[2000, 8999\]"):
+            get_free_port(start_port=8990, consecutive=1, port_range=(2000, 8999))
+
+    def test_a_ranged_scan_wraps_to_the_start_of_its_range(self, monkeypatch):
+        """With a range, running off its end continues from its start, not from 20000."""
+        monkeypatch.setattr(misc, "is_port_available", lambda port: port == 2005)
+
+        assert get_free_port(start_port=8990, consecutive=1, port_range=(2000, 8999)) == 2005
+
+    @pytest.mark.parametrize("cursor", [None, 1500, 20000, 8998])
+    def test_a_block_probe_without_a_usable_cursor_starts_at_the_range_start(self, monkeypatch, cursor):
+        """A new node, a cursor outside the node's range, or one with no room left for the block starts over."""
+        monkeypatch.setattr(misc, "service_port_range", lambda: (2000, 8999))
+        monkeypatch.setattr(misc, "is_port_available", lambda port: True)
+
+        assert NodeProbeMixin._get_free_port_block(start_port=cursor, count=4) == 2000
+
+    def test_a_block_probe_continues_from_a_cursor_inside_the_range(self, monkeypatch):
+        """Resetting early would hand out ports that are still in use by live cells."""
+        monkeypatch.setattr(misc, "service_port_range", lambda: (2000, 8999))
+        monkeypatch.setattr(misc, "is_port_available", lambda port: True)
+
+        assert NodeProbeMixin._get_free_port_block(start_port=8996, count=4) == 8996
 
     def test_is_port_available_separates_a_bound_port_from_a_free_one(self) -> None:
         """The probe answers False exactly for a port another process is already listening on."""

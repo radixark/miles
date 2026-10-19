@@ -9,6 +9,7 @@ import ray
 
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import MILES_HOST_IP_ENV, is_port_available
+from miles.utils.port_range import service_port_range
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +127,15 @@ def get_node_external_ip() -> str | None:
     return os.environ.get(MILES_NODE_EXTERNAL_IP_ENV) or None
 
 
-def get_free_port(start_port=10000, consecutive=1):
+def get_free_port(start_port=10000, consecutive=1, *, port_range: tuple[int, int] | None = None):
     # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available,
-    # scanning upwards from start_port and wrapping around once the ports run out
-    highest_start = _MAX_PORT - consecutive + 1
-    assert start_port <= highest_start, f"{start_port=} leaves no room for {consecutive=} ports below {_MAX_PORT}"
-    lowest_start = min(start_port, _MIN_DYNAMIC_PORT)
+    # scanning upwards from start_port and wrapping around once the ports run out;
+    # port_range bounds the scan to an inclusive range that contains start_port
+    lowest_start, highest_port = port_range or (min(start_port, _MIN_DYNAMIC_PORT), _MAX_PORT)
+    highest_start = highest_port - consecutive + 1
+    assert (
+        lowest_start <= start_port <= highest_start
+    ), f"{start_port=} leaves no room for {consecutive=} ports in [{lowest_start}, {highest_port}]"
 
     port = start_port
     for _ in range(highest_start - lowest_start + 1):
@@ -139,7 +143,7 @@ def get_free_port(start_port=10000, consecutive=1):
             return port
         port = port + 1 if port < highest_start else lowest_start
 
-    raise RuntimeError(f"No {consecutive} consecutive free ports in [{lowest_start}, {_MAX_PORT}]")
+    raise RuntimeError(f"No {consecutive} consecutive free ports in [{lowest_start}, {highest_port}]")
 
 
 def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
@@ -182,8 +186,13 @@ class NodeProbeMixin:
         return get_node_external_ip()
 
     @staticmethod
-    def _get_free_port_block(*, start_port: int, count: int) -> int:
-        return get_free_port(start_port=start_port, consecutive=count)
+    def _get_free_port_block(*, start_port: int | None, count: int) -> int:
+        # A cursor that is missing, lies outside this node's service port range, or leaves
+        # no room for the block before the range ends starts over at the range's start.
+        low, high = service_port_range()
+        if start_port is None or not low <= start_port <= high - count + 1:
+            start_port = low
+        return get_free_port(start_port=start_port, consecutive=count, port_range=(low, high))
 
     @staticmethod
     def _to_local_gpu_ids(*, gpu_ids: list[int]) -> list[int]:

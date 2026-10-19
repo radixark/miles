@@ -34,6 +34,7 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.output_store.config import output_store_reader
+from miles.utils.port_range import service_port_range
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
@@ -169,7 +170,9 @@ class TrainRayActor(NodeProbeMixin):
                 self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
 
     def propose_master_addr_and_port(self) -> tuple[str, int]:
-        return get_current_node_ip(), get_free_port(start_port=random.randint(20000, 21000))
+        low, high = service_port_range()
+        start_port = random.randint(low, min(low + 1000, high))
+        return get_current_node_ip(), get_free_port(start_port=start_port, port_range=(low, high))
 
     def configure_master_addr_and_port(self, *, master_addr: str, master_port: int) -> None:
         os.environ["MASTER_ADDR"] = master_addr
