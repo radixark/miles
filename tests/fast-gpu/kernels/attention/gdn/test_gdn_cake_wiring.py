@@ -736,14 +736,14 @@ def test_segment_len_override_is_validated_at_plan_time(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# per-architecture stage selection (round R6: dqkwg, wy_bwd, wy_bwd_bf16; round R7: the WY pullback also on SM100a)
+# per-architecture stage selection (dqkwg, wy_bwd, wy_bwd_bf16; the WY pullback is the tcgen05 kernel on both Blackwell parts)
 
 PER_ARCH_STAGES = {
     # stage: {arch: (schedule the registry names, block)}; the eight-warp dqkwg is selected on SM103a only, the
-    # eight-warp WY pullback on SM100a and SM103a
+    # tcgen05 + swapAB WY pullback on SM100a and SM103a
     "dqkwg": {"sm_100a": ("gdn_chunk_bwd_dqkwg", 128), "sm_103a": ("gdn_chunk_bwd_dqkwg_w8", 256)},
-    "wy_bwd": {"sm_100a": ("gdn_chunk_bwd_wy_w8", 256), "sm_103a": ("gdn_chunk_bwd_wy_w8", 256)},
-    "wy_bwd_bf16": {"sm_100a": ("gdn_chunk_bwd_wy_bf16_w8", 256), "sm_103a": ("gdn_chunk_bwd_wy_bf16_w8", 256)},
+    "wy_bwd": {"sm_100a": ("gdn_chunk_bwd_wy_tc", 256), "sm_103a": ("gdn_chunk_bwd_wy_tc", 256)},
+    "wy_bwd_bf16": {"sm_100a": ("gdn_chunk_bwd_wy_bf16_tc", 256), "sm_103a": ("gdn_chunk_bwd_wy_bf16_tc", 256)},
 }
 
 
@@ -751,7 +751,7 @@ def test_per_arch_stages_launch_the_kernel_selected_for_this_architecture():
     """``dqkwg`` / ``wy_bwd`` / ``wy_bwd_bf16`` are the stages whose kernel is selected per architecture: the registry
     the host loads names the schedule it was rendered from and carries that kernel's block / dynamic shared
     memory, and ``kernel()`` launches exactly that record on the current device (eight-warp dqkwg on SM103a only,
-    eight-warp WY pullback on both Blackwell parts)."""
+    tcgen05 WY pullback on both Blackwell parts)."""
     _require_blackwell()
     arch = ops.device_arch(DEVICE)
     for stage, per_arch in PER_ARCH_STAGES.items():
