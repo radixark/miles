@@ -1,0 +1,50 @@
+# open-instruct's production TMax recipe on one 8-GPU node:
+#   scripts/general_agent/terminal/rl/qwen35_9b_dppo_repro_4node_64k.sh (allenai/open-instruct, branch opd)
+# Same model, batch, lengths, staleness and filter; 1 node (4 train + 4 rollout GPUs) instead of 4 (16 + 16),
+# PPO clip instead of DPPO. Submit with: python examples/tmax/beaker/submit.py examples/tmax/configs/prod_1node.yaml
+exp_name: tmax_prod1node_qwen35_9b
+model_name: Qwen3.5-9B-tmax-template          # hamishivi/Qwen3.5-9B, thinking on
+num_gpus_per_node: 8
+rollout_batch_size: 8                         # --num_unique_prompts_rollout 8
+n_samples_per_prompt: 32                      # --num_samples_per_prompt_rollout 32
+num_rollout: 500                              # --total_episodes 128000 / 256
+max_seq_len: 67584                            # --response_length 65536 + --max_prompt_token_length 2048
+rollout_max_response_len: 16384               # --per_turn_max_tokens 16384
+max_steps: 64                                 # --max_steps 64
+filter_zero_std: true                         # --active_sampling
+async_rollout_gpus: 4                         # --async_steps 4 on disjoint GPUs, 1:1 like 16 learners : 16 engines
+max_weight_staleness: 4                       # groups older than --async_steps 4 are dropped
+async_max_concurrent_samples: 256             # --pool_size 512 is 2 batches in flight over 4 nodes (128 sandboxes per
+                                              # node); one node holds 256 sandboxes reliably, so 1 batch here
+async_data_buffer_capacity_factor: 4          # --async_steps 4: generation runs at most 4 steps ahead
+tensor_model_parallel_size: 2                 # 64k trajectories: TP 2 x CP 2 on the 4 training GPUs
+context_parallel_size: 2
+max_tokens_per_gpu: 34816                     # >= max_seq_len / CP, so the longest trajectory fits one micro-batch
+optimizer_cpu_offload: false
+sglang_mem_fraction_static: 0.8
+sandbox_start_concurrency: 64                 # SWERL_DOCKER_START_CONCURRENCY, per node
+sandbox_exec_concurrency: 256                 # SWERL_DOCKER_EXEC_CONCURRENCY, per node
+start_failure: zero                           # SWERL_RESET_FAILURE_ZERO_REWARD=1
+save_interval: 5                              # --checkpoint_state_freq 5 (holmes resume config)
+extra_args: "--log-probs-backend fused"
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+wandb_project: oe-general-agents
+
+beaker:
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  preemptible: true                           # only used without min_runtime (Beaker allows one)
+  min_runtime: 8h
+  retries: 5                                  # mason --max_retries 5; a retry resumes from exp_name's checkpoint
+  gpus: 8
+  shared_memory: 512GiB
+  image: docker.io/radixark/miles:dev-202610151741
+  sandbox_shards: 4                           # SWERL_PODMAN_SERVICE_COUNT=4
+  dockerhub_username: shashankg209
+  mirror_url: auto                            # the registry_mirror.py mirrors running at submit time
+  keep_last_n_checkpoints: 3                  # --keep_last_n_checkpoints 3

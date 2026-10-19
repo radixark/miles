@@ -270,7 +270,9 @@
        "examples/on-policy-distillation/qwen3-5-35b-selfdistill",
        "examples/ppo",
        "examples/retool-v2",
-       "examples/swe-agent-harbor-docker"
+       "examples/swe-agent-harbor-docker",
+       "examples/tmax",
+       "examples/tmax/beaker"
       ]
      },
      {
@@ -300,6 +302,17 @@
      "developer/reconcile-loop",
      "developer/versions",
      "developer/debug",
+     {
+      "group": "Deep Dive",
+      "pages": [
+       "deep-dive/index",
+       "deep-dive/rl-step-walkthrough",
+       "deep-dive/metrics-and-debugging",
+       "deep-dive/async-and-off-policy",
+       "deep-dive/agentic-rollout-internals",
+       "deep-dive/open-instruct-comparison"
+      ]
+     },
      {
       "group": "CI",
       "pages": [

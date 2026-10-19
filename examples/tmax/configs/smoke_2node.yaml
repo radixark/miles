@@ -1,0 +1,37 @@
+# Multi-node smoke test on 2 replicas x 2 GPUs: smoke_async.yaml with training on one replica and SGLang on the
+# other, and the 16 sandboxes split 8 per replica, so the Beaker replicas, the Ray join, the weight broadcast and
+# the forwarded podman shards are all exercised for 4 GPUs. Beaker may pack both replicas onto one machine, which
+# leaves cross-machine NCCL to the first real multi-node run.
+num_nodes: 2
+async_rollout_gpus: 2
+num_gpus_per_node: 2
+num_prompts: 64
+rollout_batch_size: 4
+n_samples_per_prompt: 4
+num_rollout: 3
+max_seq_len: 16384
+tensor_model_parallel_size: 1
+optimizer_cpu_offload: false
+sglang_mem_fraction_static: 0.6
+filter_zero_std: false
+sandboxes_per_node: 8
+save_interval: 1000
+episode_timeout_s: 3600
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/nora-default/shashankg/miles_tmax_v2/output
+
+beaker:
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  preemptible: false
+  min_runtime: 8h
+  retries: 0
+  nodes: 2
+  gpus: 2
+  shared_memory: 256GiB
+  image: docker.io/radixark/miles:dev-202610151741
+  sandbox_shards: 1
+  dockerhub_username: shashankg209
