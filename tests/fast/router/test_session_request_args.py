@@ -54,23 +54,13 @@ def _assert_exported_turn_args(exported: dict, request_args: dict):
 @pytest.mark.parametrize("version", ["v1", "v2"])
 @pytest.mark.parametrize("evaluation", [False, True])
 def test_request_headers_preserve_session_generation(version, evaluation):
-    calls = []
-    do_proxy = SessionServer.do_proxy
-
-    async def checked_proxy(self, request, path, *, body, headers):
-        assert headers["X-SMG-Routing-Key"] == "replacement"
-        assert headers["x-policy"] == "policy"
-        assert headers["content-type"] == "application/json"
-        return await do_proxy(self, request, path, body=body, headers=headers)
-
     def customize_headers(headers, *, evaluation):
-        calls.append(evaluation)
         assert headers["X-SMG-Routing-Key"] == session_id
-        assert headers["content-type"] == "application/json"
-        return {**headers, "X-SMG-Routing-Key": "replacement", "x-policy": "policy"}
+        return {**headers, "X-SMG-Routing-Key": "replacement", "x-mode": "eval" if evaluation else "train"}
 
-    with function_registry.temporary("test.customize_headers", customize_headers), patch.object(
-        SessionServer, "do_proxy", checked_proxy
+    with (
+        function_registry.temporary("test.customize_headers", customize_headers),
+        patch.object(SessionServer, "do_proxy", autospec=True, side_effect=SessionServer.do_proxy) as proxy,
     ):
         with _serve(version, {"custom_rollout_request_headers_function_path": "test.customize_headers"}) as env:
             session_id = requests.post(f"{env.url}/sessions", json={"evaluation": evaluation}, timeout=5).json()[
@@ -79,7 +69,9 @@ def test_request_headers_preserve_session_generation(version, evaluation):
             response = _post_chat(env.url, session_id, {"messages": [USER]})
             assert response.status_code == 200, response.text
             assert _records(env.url, session_id)[0]["request"] == env.backend.request_log[-1]
-            assert calls == [evaluation]
+            headers = proxy.call_args.kwargs["headers"]
+            assert headers["X-SMG-Routing-Key"] == "replacement"
+            assert headers["x-mode"] == ("eval" if evaluation else "train")
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])

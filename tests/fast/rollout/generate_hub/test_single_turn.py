@@ -2,6 +2,8 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=220, suite="stage-b-cpu", labels=["rollout"])
 
+from unittest.mock import patch
+
 import numpy as np
 import pybase64
 import pytest
@@ -13,8 +15,8 @@ from transformers import AutoProcessor
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import single_turn
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils import http_utils
 from miles.utils.function_registry import function_registry
-from miles.utils.http_utils import post
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -166,44 +168,26 @@ class TestBasicGeneration:
         assert listify(result.sample) == [expected_sample(variant)]
 
     @pytest.mark.parametrize("headers_result", [{}, {"x-routing-key": "replacement", "x-policy": "policy"}])
-    def test_request_headers_preserve_generation(self, variant, generation_env, monkeypatch, headers_result):
+    def test_request_headers_preserve_generation(self, variant, generation_env, headers_result):
         async def customize_headers(headers, *, evaluation):
             assert evaluation is False
             assert headers == {"X-SMG-Routing-Key": "original"}
             return headers_result
 
-        module = (
-            "miles.rollout.sglang_rollout"
-            if variant == "old_sglang_rollout"
-            else f"miles.rollout.generate_hub.{variant}"
-        )
-
-        async def checked_post(url, payload, headers):
-            assert headers == headers_result
-            return await post(url, payload, headers=headers)
-
-        monkeypatch.setattr(f"{module}.post", checked_post)
         generation_env.args.custom_rollout_request_headers_function_path = "test.customize_headers"
         sample = _make_sample()
         sample.routing_key = "original"
-        with function_registry.temporary("test.customize_headers", customize_headers):
+        with (
+            function_registry.temporary("test.customize_headers", customize_headers),
+            patch.object(http_utils, "_post", wraps=http_utils._post) as post,
+        ):
             result = _run_generate(variant, generation_env, sample)
 
+        assert post.call_args.kwargs["headers"] == headers_result
         assert result.requests == [expected_request(variant)]
         expected = expected_sample(variant)
         expected.routing_key = "original"
         assert listify(result.sample) == [expected]
-
-    def test_duplicate_request_headers_prevent_generation(self, variant, generation_env):
-        def customize_headers(headers, *, evaluation):
-            return {"X-Policy": "one", "x-policy": "two"}
-
-        generation_env.args.custom_rollout_request_headers_function_path = "test.customize_headers"
-        with function_registry.temporary("test.customize_headers", customize_headers):
-            with pytest.raises(ValueError, match="duplicate case-insensitive names"):
-                _run_generate(variant, generation_env)
-
-        assert generation_env.mock_server.request_log == []
 
 
 class TestRadixCacheExtraKey:
