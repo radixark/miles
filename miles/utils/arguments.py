@@ -997,8 +997,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Sync or async function customize_headers(headers, *, evaluation) -> dict[str, str]. "
-                    "Receives an owned copy of the default request headers with lowercase names; "
+                    "Receives the default request headers; "
                     "the returned headers replace those defaults without modifying the inference payload. "
+                    "Header names must be unique ignoring case. "
                     "Used by built-in generation and session-server chat forwarding; "
                     "custom generators sending requests directly own their headers."
                 ),

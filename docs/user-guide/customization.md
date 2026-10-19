@@ -90,13 +90,16 @@ and async functions are supported. Use an async function to fetch external metad
 without blocking other requests. Failures propagate through existing error handling;
 miles does not send the inference request if obtaining its headers fails.
 
-The function receives an owned copy of the default request headers with lowercase
-names, plus the training/evaluation flag. Native generation includes `x-smg-routing-key`
+The function receives the request's own default headers without changing their casing,
+plus the training/evaluation flag. Native generation includes `X-SMG-Routing-Key`
 when the sample has a routing key; session forwarding derives it from the session ID.
 The function may preserve, replace, remove, or add headers. Its returned dictionary
 replaces the defaults; omitted headers are not restored.
-For example, assigning `headers["x-smg-routing-key"]` overrides the routing default
+For example, assigning `headers["X-SMG-Routing-Key"]` overrides the routing default
 without changing the sample or session identity inside miles.
+
+Returned header names must be unique ignoring case. Returning both `X-Policy` and
+`x-policy` raises an error before dispatch, rather than sending ambiguous values.
 
 The endpoint must accept the existing generation protocol. The payload is not exposed:
 sampling, tokenization, required training outputs, and response processing remain

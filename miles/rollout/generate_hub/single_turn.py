@@ -10,7 +10,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     update_sample_from_response,
 )
 from miles.utils.async_utils import maybe_await
-from miles.utils.http_utils import post
+from miles.utils.http_utils import post, validate_request_headers
 from miles.utils.types import Sample
 
 
@@ -49,8 +49,10 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
 
     headers = compute_routing_headers(args, sample)
     if input.state.rollout_request_headers_function is not None:
-        headers = {name.lower(): value for name, value in (headers or {}).items()}
-        headers = await maybe_await(input.state.rollout_request_headers_function(headers, evaluation=input.evaluation))
+        headers = await maybe_await(
+            input.state.rollout_request_headers_function(headers or {}, evaluation=input.evaluation)
+        )
+        validate_request_headers(headers)
     output = await post(url, payload, headers=headers)
     await update_sample_from_response(args, sample, payload=payload, output=output)
 

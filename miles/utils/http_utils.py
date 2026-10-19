@@ -216,6 +216,12 @@ def _next_actor():
     return actor
 
 
+def validate_request_headers(headers: dict[str, str]) -> None:
+    """Reject case-insensitive duplicate names in a single-valued header mapping."""
+    if len(headers) != len({name.lower() for name in headers}):
+        raise ValueError("Request headers contain duplicate case-insensitive names")
+
+
 async def _post(client, url, payload, max_retries=60, action="post", headers=None):
     retry_count = 0
     while retry_count < max_retries:

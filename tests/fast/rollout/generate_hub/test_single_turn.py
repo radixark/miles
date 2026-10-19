@@ -171,8 +171,8 @@ class TestBasicGeneration:
 
         async def customize_headers(headers, *, evaluation):
             calls.append(evaluation)
-            assert headers == {"x-smg-routing-key": "original"}
-            headers.pop("x-smg-routing-key")
+            assert headers == {"X-SMG-Routing-Key": "original"}
+            headers.pop("X-SMG-Routing-Key")
             headers.update(headers_result)
             return headers
 
@@ -198,6 +198,17 @@ class TestBasicGeneration:
         expected = expected_sample(variant)
         expected.routing_key = "original"
         assert listify(result.sample) == [expected]
+
+    def test_duplicate_request_headers_prevent_generation(self, variant, generation_env):
+        def customize_headers(headers, *, evaluation):
+            return {"X-Policy": "one", "x-policy": "two"}
+
+        generation_env.args.custom_rollout_request_headers_function_path = "test.customize_headers"
+        with function_registry.temporary("test.customize_headers", customize_headers):
+            with pytest.raises(ValueError, match="duplicate case-insensitive names"):
+                _run_generate(variant, generation_env)
+
+        assert generation_env.mock_server.request_log == []
 
 
 class TestRadixCacheExtraKey:

@@ -29,6 +29,7 @@ from miles.rollout.session.v2.session_state import (
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
 from miles.utils.async_utils import maybe_await
 from miles.utils.function_registry import load_function
+from miles.utils.http_utils import validate_request_headers
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +156,8 @@ class SessionCoreV2(SessionCore):
 
         headers = {**headers, "X-SMG-Routing-Key": session_id}
         if self.rollout_request_headers_function is not None:
-            headers = {name.lower(): value for name, value in headers.items()}
             headers = await maybe_await(self.rollout_request_headers_function(headers, evaluation=session.evaluation))
+            validate_request_headers(headers)
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:

@@ -64,9 +64,9 @@ def test_request_headers_preserve_session_generation(version, evaluation):
 
     def customize_headers(headers, *, evaluation):
         calls.append(evaluation)
-        assert headers["x-smg-routing-key"] == session_id
+        assert headers["X-SMG-Routing-Key"] == session_id
         assert headers["content-type"] == "application/json"
-        return {**headers, "x-smg-routing-key": "replacement", "x-policy": "policy"}
+        return {**headers, "X-SMG-Routing-Key": "replacement", "x-policy": "policy"}
 
     with function_registry.temporary("test.customize_headers", customize_headers), patch.object(
         SessionServer, "do_proxy", record_proxy
@@ -83,15 +83,18 @@ def test_request_headers_preserve_session_generation(version, evaluation):
             assert _records(env.url, session_id)[0]["request"] == wire
             assert len(received_headers) == 1
             assert received_headers[0]["x-policy"] == "policy"
-            assert received_headers[0]["x-smg-routing-key"] == "replacement"
+            assert received_headers[0]["X-SMG-Routing-Key"] == "replacement"
             assert received_headers[0]["content-type"] == "application/json"
             assert calls == [evaluation]
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
-def test_request_headers_failure_prevents_generation(version):
+@pytest.mark.parametrize("duplicate_headers", [False, True])
+def test_request_headers_failure_prevents_generation(version, duplicate_headers):
     async def customize_headers(headers, *, evaluation):
         await asyncio.sleep(0)
+        if duplicate_headers:
+            return {**headers, "x-smg-routing-key": "replacement"}
         raise RuntimeError("Request metadata is unavailable")
 
     with function_registry.temporary("test.customize_headers", customize_headers):

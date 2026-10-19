@@ -20,7 +20,7 @@ from miles.rollout.generate_utils.tool_call_utils import (
 )
 from miles.utils.async_utils import maybe_await
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import post
+from miles.utils.http_utils import post, validate_request_headers
 from miles.utils.lifecycle import TrajectoryLifecycle
 
 
@@ -65,10 +65,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
         headers = compute_routing_headers(args, sample)
         if input.state.rollout_request_headers_function is not None:
-            headers = {name.lower(): value for name, value in (headers or {}).items()}
             headers = await maybe_await(
-                input.state.rollout_request_headers_function(headers, evaluation=input.evaluation)
+                input.state.rollout_request_headers_function(headers or {}, evaluation=input.evaluation)
             )
+            validate_request_headers(headers)
         gen_t0 = time.time()
         output = await post(url, payload, headers=headers)
         sink = None if input.evaluation else TrajectoryLifecycle().sink
