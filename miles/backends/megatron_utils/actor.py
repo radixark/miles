@@ -206,7 +206,17 @@ class MegatronTrainRayActor(TrainRayActor):
             checkpointing_context = {"local_checkpoint_manager": InMemoryCheckpointManager()}
 
         heal_load_overrides: dict[str, object] = (
-            dict(no_load_optim=False, no_load_rng=False, finetune=False) if recv_ckpt_src_rank is not None else {}
+            # Peer recovery loads the received state, not a startup checkpoint or disk fallback.
+            dict(
+                load=None,
+                ckpt_step=None,
+                pretrained_checkpoint=None,
+                no_load_optim=False,
+                no_load_rng=False,
+                finetune=False,
+            )
+            if recv_ckpt_src_rank is not None
+            else {}
         )
         self.model, self.optimizer, self.opt_param_scheduler = build_model_and_optimizer(args, role=role)
         self._post_init_random_state = RandomState.capture()

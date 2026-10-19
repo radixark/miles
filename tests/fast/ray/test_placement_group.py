@@ -674,7 +674,7 @@ class TestCreateTrainingModels:
         """Every existing single policy deployment names its two pools 'actor' and 'critic'."""
         requested: list[str] = []
         self._patched(monkeypatch, requested)
-        args = Namespace(
+        values = dict(
             megatron_config=None,
             use_critic=True,
             start_rollout_id=None,
@@ -692,6 +692,7 @@ class TestCreateTrainingModels:
             critic_lr_warmup_iters=None,
             trainer_controller_addrs=None,
         )
+        args = Namespace(**{**parser_defaults(), **values})
 
         await create_training_models(args, self._rollout_executor())
 

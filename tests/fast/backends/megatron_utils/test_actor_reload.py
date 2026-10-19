@@ -3,7 +3,7 @@ import logging
 import sys
 from argparse import Namespace
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -135,6 +135,7 @@ def _watch_load(actor_module, monkeypatch, *, args: Namespace, iteration: int) -
 
     def fake_load_checkpoint(*_args: Any, **_kwargs: Any) -> _CheckpointLoadResult:
         seen["args_during_load"] = vars(args).copy()
+        seen["checkpointing_context"] = _kwargs["checkpointing_context"]
         return _CheckpointLoadResult(
             iteration=iteration,
             restored_trained_iteration=not args.finetune or iteration > 0,
@@ -195,6 +196,67 @@ def test_auxiliary_load_restores_arguments_after_failure(actor_module, monkeypat
 
     assert vars(args) == original_args
     worker.weights_backuper.backup.assert_not_called()
+
+
+@pytest.mark.parametrize("recovering", [False, True])
+def test_peer_recovery_does_not_inherit_startup_checkpoint_selection(actor_module, monkeypatch, tmp_path, recovering):
+    args = _args(
+        tmp_path,
+        ckpt_step=7,
+        pretrained_checkpoint="/pretrained",
+        trainer_id="actor",
+        dumper_enable=False,
+        profile_target=[],
+        indep_dp=True,
+        vocab_size=32,
+        rollout_data_postprocess_path=None,
+    )
+    actor = _actor(actor_module, role="actor", args=args)
+    actor._rank = 0
+    original_args = vars(args).copy()
+    manager = Mock()
+    parallel_state = SimpleNamespace(indep_dp=object(), cp=SimpleNamespace(size=1))
+    for name in (
+        "monkey_patch_torch_dist",
+        "init",
+        "verify_megatron_parallel_state",
+        "get_gloo_group",
+        "Timer",
+        "TrainProfiler",
+    ):
+        monkeypatch.setattr(actor_module, name, Mock())
+    monkeypatch.setattr(actor_module.TrainRayActor, "_init_common", Mock())
+    monkeypatch.setattr(actor_module, "all_replay_managers", [])
+    monkeypatch.setattr(actor_module, "routing_replay_manager", Mock())
+    monkeypatch.setattr(actor_module.dist, "barrier", Mock())
+    monkeypatch.setattr(actor_module.fault_hook_controller, "configure", Mock())
+    monkeypatch.setattr(actor_module.dashboard_hooks, "register_train_actor", Mock())
+    monkeypatch.setattr(actor_module, "is_first_replica_megatron_main_rank", lambda: False)
+    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(actor_module, "recv_ckpt", Mock(return_value=manager))
+    monkeypatch.setattr(actor_module, "build_model_and_optimizer", Mock(return_value=([], None, None)))
+    monkeypatch.setattr(actor_module.RandomState, "capture", Mock())
+    monkeypatch.setattr(actor, "load_hf_assets", Mock())
+    monkeypatch.setattr(actor, "_init_training_state", Mock())
+    seen = _watch_load(actor_module, monkeypatch, args=args, iteration=11 if recovering else 7)
+    _write_checkpoint(tmp_path / "pretrain", iteration=20)
+
+    next_rollout = actor.init(
+        args,
+        "actor",
+        recv_ckpt_src_rank=0 if recovering else None,
+        indep_dp_info=SimpleNamespace(cell_index=1),
+        indep_dp_store_addr=None,
+    )
+
+    during = seen["args_during_load"]
+    assert next_rollout == (12 if recovering else 8)
+    assert seen["checkpointing_context"] == ({"local_checkpoint_manager": manager} if recovering else None)
+    assert during["load"] == (None if recovering else original_args["load"])
+    assert during["ckpt_step"] == (None if recovering else 7)
+    assert during["pretrained_checkpoint"] == (None if recovering else "/pretrained")
+    assert (during["finetune"], during["no_load_optim"], during["no_load_rng"]) == (False, False, False)
+    assert vars(args) == original_args
 
 
 class _Scheduler:

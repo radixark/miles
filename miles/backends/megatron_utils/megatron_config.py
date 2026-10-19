@@ -331,8 +331,7 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
         ans.load = compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
         ans.save_hf = compute_trainer_checkpoint_dir(base_dir=ans.save_hf, trainer_id=trainer.trainer_id)
 
-    # TODO: a --use-critic critic keeps the actor's requested_load, so a hot restart reads the actor's checkpoint.
-    if args.train_backend == "megatron" and args.megatron_config is not None:
+    if (args.megatron_config is not None or args.use_critic) and args.train_backend == "megatron":
         resolve_args_checkpoint_load(ans)
 
     return ans

@@ -3674,8 +3674,9 @@ def miles_validate_args(args):
             raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
 
     # TODO: refactor
+    args.use_critic = args.advantage_estimator == "ppo"
     args.requested_load = args.load
-    if args.train_backend == "megatron" and args.megatron_config is None:
+    if args.train_backend == "megatron" and args.megatron_config is None and not args.use_critic:
         resolve_args_checkpoint_load(args)
 
     if args.eval_interval is not None:
@@ -3777,7 +3778,6 @@ def miles_validate_args(args):
             "stay alive; it cannot be combined with --load-debug-rollout-data (debug_train_only)."
         )
 
-    args.use_critic = args.advantage_estimator == "ppo"
     if args.use_critic:
         assert not args.indep_dp, (
             "Shared Actor/Critic PPO hands the critic outputs to a single trainer cell as external data; "
