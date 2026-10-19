@@ -68,7 +68,7 @@ class SessionServer:
         # `retract` may recompute earlier rows and must return full R3; all other
         # pause modes preserve prior rows and can request only the appended R3.
         self.use_addition_r3 = config.pause_generation_mode != "retract"
-        setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
+        self._core = setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
@@ -78,7 +78,11 @@ class SessionServer:
             timeout=self.timeout,
         ) as client:
             self.client = client
-            yield
+            try:
+                yield
+            finally:
+                if self._core is not None:
+                    await self._core.close()
 
     async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
         url = f"{self.backend_url}/{path}"

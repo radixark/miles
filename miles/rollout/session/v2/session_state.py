@@ -22,7 +22,7 @@ derived, never stored.
 import asyncio
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
@@ -53,6 +53,10 @@ class SessionStateV2:
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
     extra_key: str | None = None
+
+    def snapshot(self) -> "SessionStateV2":
+        """Capture the committed tree for collection. Caller holds the lock."""
+        return replace(self, tree=self.tree.snapshot())
 
     def latest(self) -> TrajectoryNode | None:
         """The most recently committed generation (always a leaf), or ``None``

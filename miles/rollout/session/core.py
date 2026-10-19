@@ -5,13 +5,16 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 - `chat_completions` omits choice `meta_info` from client replies, and choice `logprobs` unless the client's request asked for them, without modifying the stored response; `SessionRecord` retains both for sample collection and `GET /sessions/{id}`.
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
-- ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
+- ``collect_samples`` captures committed session state, then assembles and encodes it off the event loop; deterministic assembly failures return 422 with the assertion text.
 """
 
+import asyncio
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 
 import orjson
 from starlette.responses import Response
@@ -24,7 +27,7 @@ from miles.rollout.session.errors import (
     UpstreamGenerationAbortedError,
     UpstreamResponseError,
 )
-from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionRegistry
 from miles.rollout.session.request_args import ClientResponseIntent, filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.samples.merge import (
@@ -210,9 +213,14 @@ class SessionCore:
         self.registry = registry
         self.config = config
         self.instance_id = session_server_instance_id
+        # Keep materialization serial per server, without blocking its HTTP event loop.
+        self._sample_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-samples")
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
+
+    async def close(self) -> None:
+        await asyncio.to_thread(self._sample_executor.shutdown, wait=True, cancel_futures=True)
 
     def _maybe_request_addition_r3(
         self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
@@ -281,6 +289,15 @@ class SessionCore:
         Validation failures return 422; unexpected errors propagate.
         """
         session = self.registry.get_session(session_id)
+        async with session.lock:
+            if session.closing:
+                raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            snapshot = session.snapshot()
+        return await asyncio.get_running_loop().run_in_executor(
+            self._sample_executor, partial(self._collect_samples, session_id, snapshot, max_seq_len=max_seq_len)
+        )
+
+    def _collect_samples(self, session_id: str, session: LinearTrajectory, *, max_seq_len: int | None) -> Response:
         metadata = self._session_metadata(session_id, session)
         tokenizer = self.registry.tokenizer
         fields = COMPUTED_FIELDS

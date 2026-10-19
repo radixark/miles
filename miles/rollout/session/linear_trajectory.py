@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
@@ -92,6 +92,17 @@ class LinearTrajectory:
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
+
+    def snapshot(self) -> "LinearTrajectory":
+        """Copy the mutable containers, sharing committed payloads read-only. Caller holds the lock."""
+        return replace(
+            self,
+            messages=list(self.messages),
+            records=list(self.records),
+            trajectory_token_ids=list(self.trajectory_token_ids),
+            generated_checkpoint_message_ends=list(self.generated_checkpoint_message_ends),
+            turn_args_history=list(self.turn_args_history),
+        )
 
     @property
     def turn_args(self) -> dict[str, Any]:
