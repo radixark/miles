@@ -34,6 +34,7 @@ from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutpu
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
+from miles.utils import accelerator
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.dp_schedule import TrainParallelConfig
@@ -132,7 +133,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
     @timer
     def wake_up(self) -> None:
         if self.args.offload_train:
-            self._move_to("cuda")
+            self._move_to(accelerator.DEVICE_TYPE)
 
     def _move_to(self, device: str) -> None:
         print_memory(f"before moving the model to {device}")

@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils import accelerator
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
 from miles.utils.dp_schedule import TrainParallelConfig
@@ -49,19 +50,19 @@ def get_rollout_data(
     )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
-        torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
+        torch.tensor(t, dtype=torch.long, device=accelerator.current_device()) for t in rollout_data["tokens"]
     ]
     rollout_data["loss_masks"] = [
-        torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
+        torch.tensor(t, dtype=torch.int, device=accelerator.current_device()) for t in rollout_data["loss_masks"]
     ]
     if "rollout_mask_sums" in rollout_data:
         rollout_data["rollout_mask_sums"] = torch.tensor(
-            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=torch.cuda.current_device()
+            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=accelerator.current_device()
         )
     if args.enable_witness:
         seq_witness_ids = rollout_data.pop("seq_witness_ids")
         rollout_data["witness_ids"] = [
-            torch.full((len(t),), fill_value=sid, dtype=torch.long, device=torch.cuda.current_device())
+            torch.full((len(t),), fill_value=sid, dtype=torch.long, device=accelerator.current_device())
             for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
         ]
 
@@ -69,7 +70,7 @@ def get_rollout_data(
         # Move multimodal training tensors to GPU in advance
         rollout_data["multimodal_train_inputs"] = [
             (
-                {key: tensor.to(device=torch.cuda.current_device()) for key, tensor in mm_dict.items()}
+                {key: tensor.to(device=accelerator.current_device()) for key, tensor in mm_dict.items()}
                 if mm_dict is not None
                 else None
             )
@@ -103,7 +104,7 @@ def get_rollout_data(
                         args.qkv_format,
                         rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
                     ),
-                    device=torch.cuda.current_device(),
+                    device=accelerator.current_device(),
                     dtype=dtype,
                 )
                 for i, (value, total_length, response_length) in enumerate(
@@ -268,7 +269,7 @@ def get_batch(
                 cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
 
             cu_seqlens_host = tuple(cu_seqlens_list)
-            cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=torch.cuda.current_device())
+            cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=accelerator.current_device())
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
@@ -288,7 +289,7 @@ def get_batch(
 
             # thd requires the cu_seqlens to be of the origin length
             cu_seqlens_host = tuple(boundary * cp_size for boundary in cu_seqlens)
-            cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
+            cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int, device=accelerator.current_device()) * cp_size
 
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
 
@@ -310,7 +311,7 @@ def get_batch(
         ), f"adapter_slots not sorted in micro-batch: {adapter_slots}"
         n_adapters = data_iterator.rollout_data["n_adapters"]
         total_tokens = tokens.numel()
-        counts = torch.zeros(n_adapters, dtype=torch.int32, device=torch.cuda.current_device())
+        counts = torch.zeros(n_adapters, dtype=torch.int32, device=accelerator.current_device())
         for slot, length in zip(adapter_slots, sample_token_lengths, strict=True):
             counts[slot] += length
         counts[adapter_slots[-1]] += total_tokens - counts.sum().item()
@@ -535,7 +536,7 @@ def get_data_iterator(
                 get_minimum_num_micro_batch_size(samples[start:end], args.max_tokens_per_gpu * cp_size)
             )
 
-        num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=torch.cuda.current_device())
+        num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=accelerator.current_device())
         GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
 
         if vpp_size > 1:

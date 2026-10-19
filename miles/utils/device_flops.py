@@ -34,7 +34,9 @@ def peak_bf16_tflops(device_name: str) -> float | None:
 def _current_device_name() -> str | None:
     import torch
 
-    if not torch.cuda.is_available():
+    from miles.utils import accelerator
+
+    if accelerator.IS_TPU or not torch.cuda.is_available():
         return None
     return torch.cuda.get_device_name()
 

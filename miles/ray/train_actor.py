@@ -14,7 +14,7 @@ import torch.distributed as dist
 import miles.utils.eval_config
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.utils import object_store
+from miles.utils import accelerator, object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import init_gloo_group, one_rank_at_a_time
@@ -154,7 +154,7 @@ class TrainRayActor(NodeProbeMixin):
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
 
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        torch.cuda.set_device(f"cuda:{local_rank}")
+        accelerator.set_local_device(local_rank)
 
         if args.debug_deterministic_collective:
             register_det_nccl_backend()
@@ -179,7 +179,9 @@ class TrainRayActor(NodeProbeMixin):
         rebind_env_reporting(args)
 
         try:
-            if torch.version.hip is not None:
+            if accelerator.IS_TPU:
+                logger.info("TPU trainer: no NVML device to bind NUMA affinity to")
+            elif torch.version.hip is not None:
                 logger.info("Detected ROCm/HIP environment, skipping NUMA affinity setup")
                 # will find the coresponding API to implement ROCm version as below
             else:

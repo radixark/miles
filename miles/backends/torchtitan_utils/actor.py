@@ -14,6 +14,7 @@ from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.replay.routing_replay import enable as enable_routing_replay
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
+from miles.utils import accelerator
 from miles.utils.context_utils import with_defer
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory
@@ -111,7 +112,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             part.eval()
             part.requires_grad_(False)
             part.cpu()
-        torch.cuda.empty_cache()
+        torch.accelerator.empty_cache()
         self._ref_parts = ref_trainer.model_parts
         logger.info(f"Built a torchtitan reference trainer from {args.ref_load}; it lives on the host between passes")
         return ref_trainer.step_runner()
@@ -119,13 +120,13 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
     @contextmanager
     def _ref_context(self):
         for part in self._ref_parts:
-            part.cuda()
+            part.to(accelerator.current_device())
         try:
             yield
         finally:
             for part in self._ref_parts:
                 part.cpu()
-            torch.cuda.empty_cache()
+            torch.accelerator.empty_cache()
 
     def _save_checkpoint(self, rollout_id: int) -> None:
         self.trainer.checkpointer.save(self.trainer.step, last_step=True)
