@@ -14,11 +14,7 @@ import pytest
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 
 from miles.backends.fsdp_utils.arguments import build_fsdp_parser
-from miles.backends.megatron_utils.megatron_config import (
-    compute_trainer_args,
-    get_megatron_arg_parser,
-    resolve_megatron_config,
-)
+from miles.backends.megatron_utils.megatron_config import get_megatron_arg_parser
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
@@ -2074,7 +2070,7 @@ class TestCheckpointLoadFallbackWiring:
         return args
 
     def test_a_fresh_ppo_run_starts_the_actor_and_its_critic_from_the_reference_weights(self, tmp_path):
-        """Each trainer falls back independently while retaining its requested resume directory."""
+        """The fallback has to run before critic_load is derived, or the critic resumes from a dir nobody wrote."""
         ref_load = tmp_path / "ref"
         ref_load.mkdir()
 
@@ -2082,11 +2078,8 @@ class TestCheckpointLoadFallbackWiring:
             ["--advantage-estimator", "ppo", "--load", str(tmp_path / "absent"), "--ref-load", str(ref_load)]
         )
 
-        for trainer in resolve_megatron_config(args).trainers:
-            resolved = compute_trainer_args(args, trainer)
-            assert resolved.load == str(ref_load)
-            assert resolved.requested_load == str(tmp_path / "absent")
-            assert resolved.finetune
+        assert args.load == str(ref_load)
+        assert args.critic_load == str(ref_load)
 
     def test_an_existing_checkpoint_is_left_alone(self, tmp_path):
         """A real resume must keep --load, which is also what the critic inherits."""
@@ -3428,14 +3421,6 @@ class TestMilesValidateArgsCheckpointResolution:
 
         miles_validate_args(args)
 
-        assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
-
-    def test_a_critic_run_resolves_each_checkpoint_after_role_overrides(self, tmp_path):
-        args = self._parse(["--advantage-estimator", "ppo"], tmp_path)
-
-        miles_validate_args(args)
-
-        assert args.use_critic
         assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
 
     @pytest.mark.parametrize(

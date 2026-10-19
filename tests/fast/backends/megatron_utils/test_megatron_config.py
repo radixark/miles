@@ -824,7 +824,6 @@ class TestSynthesizedCriticTrainer:
         """The worker no longer remaps critic_* onto the standard fields, so the overlay must do it."""
         args = _make_args(
             use_critic=True,
-            ckpt_step=7,
             save="/ckpt/run",
             load="/ckpt/run",
             critic_load="/ckpt/critic",
@@ -849,7 +848,7 @@ class TestSynthesizedCriticTrainer:
 
     def test_the_actor_of_a_critic_run_keeps_its_own_checkpoint_and_schedule(self):
         """The two trainers share one command line, so a leaked critic override would retrain the actor."""
-        args = _make_args(use_critic=True, save="/ckpt/run", load="/ckpt/run", critic_load="/ckpt/critic", ckpt_step=7)
+        args = _make_args(use_critic=True, save="/ckpt/run", load="/ckpt/run", critic_load="/ckpt/critic")
 
         actor_args = compute_trainer_args(args, resolve_megatron_config(args).trainers[0])
 
@@ -868,24 +867,6 @@ class TestSynthesizedCriticTrainer:
 
         assert {"kl_coef", "load"} <= overrides
         assert not {"kl_coef", "load"} & set(PER_POLICY_ARGS)
-
-    @pytest.mark.parametrize("resumed_role", ["actor", "critic"])
-    def test_actor_and_critic_resolve_their_own_checkpoint_state(self, tmp_path, resumed_role):
-        actor_load, critic_load = (str(tmp_path / role) for role in ("actor", "critic"))
-        checkpoint = tmp_path / resumed_role
-        checkpoint.mkdir()
-        (checkpoint / "latest_checkpointed_iteration.txt").write_text("7")
-        args = _make_args(use_critic=True, load=actor_load, critic_load=critic_load, ref_load="/reference")
-
-        for trainer in resolve_megatron_config(args).trainers:
-            resolved = compute_trainer_args(args, trainer)
-            resumed = trainer.role == resumed_role
-            assert resolved.requested_load == str(tmp_path / trainer.role)
-            assert resolved.load == (resolved.requested_load if resumed else "/reference")
-            assert (resolved.finetune, resolved.no_load_optim, resolved.no_load_rng) == (not resumed,) * 3
-            assert resolved.start_rollout_id == (None if resumed else 0)
-
-        assert (args.load, args.finetune, args.no_load_optim, args.no_load_rng) == (actor_load, False, False, False)
 
     def test_a_critic_without_its_own_schedule_inherits_the_unset_values(self, tmp_path):
         """--critic-lr is unset by default, and the critic takes it as it is: the policy's own lr does not apply."""
