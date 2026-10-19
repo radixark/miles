@@ -31,7 +31,7 @@ class SessionServerConfig(FrozenStrictBaseModel):
     rollout_top_logprobs_num: int
     rollout_sampling_logprobs_mode: str
     rollout_temperature: float
-    custom_rollout_request_hook_path: str | None
+    custom_rollout_request_headers_function_path: str | None
 
 
 def compute_session_server_config(
@@ -65,5 +65,7 @@ def compute_session_server_config(
         rollout_top_logprobs_num=args.rollout_top_logprobs_num,
         rollout_sampling_logprobs_mode=args.rollout_sampling_logprobs_mode,
         rollout_temperature=getattr(args, "rollout_temperature", 1.0),
-        custom_rollout_request_hook_path=getattr(args, "custom_rollout_request_hook_path", None),
+        custom_rollout_request_headers_function_path=getattr(
+            args, "custom_rollout_request_headers_function_path", None
+        ),
     )

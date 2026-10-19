@@ -992,14 +992,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--custom-rollout-request-hook-path",
+                "--custom-rollout-request-headers-function-path",
                 type=str,
                 default=None,
                 help=(
-                    "Sync or async function hook(payload, headers, *, evaluation) that customizes "
-                    "inference requests before miles applies its request constraints. "
+                    "Sync or async function get_headers(*, evaluation) -> dict[str, str] that adds "
+                    "external-service metadata headers without modifying the inference payload. "
+                    "Existing headers and transport-controlled fields cannot be overridden. "
                     "Used by built-in generation and session-server chat forwarding; "
-                    "custom generators sending requests directly own their request customization."
+                    "custom generators sending requests directly own their headers."
                 ),
             )
             parser.add_argument(

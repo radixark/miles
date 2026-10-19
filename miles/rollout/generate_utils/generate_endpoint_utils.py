@@ -13,7 +13,6 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
     configure_rollout_topk_logprobs_request,
 )
 from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata, should_return_sampling_mask
-from miles.utils.async_utils import maybe_await
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
@@ -55,7 +54,7 @@ def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
     return None
 
 
-async def compute_request_payload(
+def compute_request_payload(
     args,
     input_ids: list[int],
     sampling_params: dict,
@@ -63,22 +62,8 @@ async def compute_request_payload(
     *,
     evaluation: bool = False,
     kv_cache_namespace: str | None = None,
-    rollout_request_hook=None,
-    headers: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
-    payload = {"input_ids": input_ids, "sampling_params": deepcopy(sampling_params)}
-    if rollout_request_hook is not None:
-        await maybe_await(rollout_request_hook(payload, headers, evaluation=evaluation))
-        for field, expected in (
-            ("stream", False),
-            ("logprob_start_len", 0),
-            ("routed_experts_start_len", 0),
-            ("lora_path", LORA_ADAPTER_NAME if lora_rollout_enabled(args) else None),
-        ):
-            if payload.get(field) not in (None, expected):
-                raise ValueError(f"Built-in generation requires {field}={expected!r}")
-
-    sampling_params = payload["sampling_params"]
+    sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
     if x := args.rollout_max_context_len:
         max_new_tokens = min(max_new_tokens, x - len(input_ids))
@@ -87,19 +72,15 @@ async def compute_request_payload(
 
     return_sampling_mask = should_return_sampling_mask(args, sampling_params, evaluation=evaluation)
 
-    # Prompt tokens and training side channels remain owned by miles after customization.
-    payload.update(
-        input_ids=input_ids,
-        sampling_params={**sampling_params, "max_new_tokens": max_new_tokens},
-        return_logprob=True,
-        return_routed_experts=args.use_rollout_routing_replay,
-        return_indexer_topk=args.use_rollout_indexer_replay,
-    )
-    payload.pop("sampling_logprobs_mode", None)
+    payload = {
+        "input_ids": input_ids,
+        "sampling_params": {**sampling_params, "max_new_tokens": max_new_tokens},
+        "return_logprob": True,
+        "return_routed_experts": args.use_rollout_routing_replay,
+        "return_indexer_topk": args.use_rollout_indexer_replay,
+    }
     if return_sampling_mask:
         payload["return_sampling_mask"] = True
-    else:
-        payload.pop("return_sampling_mask", None)
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
     if image_data := (multimodal_inputs or {}).get("images"):

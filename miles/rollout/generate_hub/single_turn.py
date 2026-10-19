@@ -9,6 +9,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
     update_sample_from_response,
 )
+from miles.rollout.generate_utils.request_headers import compute_request_headers
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
@@ -34,21 +35,23 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
     else:
         input_ids = prompt_ids
 
-    headers = compute_routing_headers(args, sample) or {}
-    payload, halt_status = await compute_request_payload(
+    payload, halt_status = compute_request_payload(
         args,
         input_ids=input_ids,
         sampling_params=sampling_params,
         multimodal_inputs=sample.multimodal_inputs,
         evaluation=input.evaluation,
         kv_cache_namespace=sample.kv_cache_namespace,
-        rollout_request_hook=input.state.rollout_request_hook,
-        headers=headers,
     )
     if payload is None:
         sample.status = halt_status
         return GenerateFnOutput(samples=sample)
 
+    headers = compute_routing_headers(args, sample)
+    if input.state.rollout_request_headers_function is not None:
+        headers = await compute_request_headers(
+            headers, input.state.rollout_request_headers_function, evaluation=input.evaluation
+        )
     output = await post(url, payload, headers=headers)
     await update_sample_from_response(args, sample, payload=payload, output=output)
 

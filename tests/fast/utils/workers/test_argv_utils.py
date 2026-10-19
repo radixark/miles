@@ -141,7 +141,7 @@ class TestConfigToArgv:
             rollout_top_logprobs_num=128,
             rollout_sampling_logprobs_mode="selected",
             rollout_temperature=0.7,
-            custom_rollout_request_hook_path="example.customize_request",
+            custom_rollout_request_headers_function_path="example.get_request_headers",
         )
         assert parse_config_argv(SessionServerConfig, config_to_argv(session_config)) == session_config
 

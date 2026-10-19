@@ -5,6 +5,7 @@ from copy import deepcopy
 import orjson
 from starlette.responses import Response
 
+from miles.rollout.generate_utils.request_headers import compute_request_headers
 from miles.rollout.session.core import (
     JSON_MEDIA_TYPE,
     ProxyRequest,
@@ -16,7 +17,7 @@ from miles.rollout.session.core import (
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
-from miles.rollout.session.request_args import filter_turn_args
+from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
@@ -153,13 +154,17 @@ class SessionCoreV2(SessionCore):
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
         headers = {**headers, "X-SMG-Routing-Key": session_id}
-        client_args = await self._customize_chat_request(body, headers, evaluation=session.evaluation)
+        if self.rollout_request_headers_function is not None:
+            headers = await compute_request_headers(
+                headers, self.rollout_request_headers_function, evaluation=session.evaluation
+            )
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
+            client_args = parse_chat_request(body)
             prepared, attach_parent = prepare_token_ids_and_request_args(
                 session,
                 client_args,

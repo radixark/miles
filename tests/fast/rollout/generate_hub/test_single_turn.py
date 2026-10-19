@@ -165,14 +165,12 @@ class TestBasicGeneration:
         assert result.requests == [expected_request(variant)]
         assert listify(result.sample) == [expected_sample(variant)]
 
-    def test_request_hook_preserves_generation(self, variant, generation_env, monkeypatch):
+    def test_request_headers_preserve_generation(self, variant, generation_env, monkeypatch):
         calls = []
 
-        async def hook(payload, headers, *, evaluation):
+        async def get_headers(*, evaluation):
             calls.append(evaluation)
-            payload["routing_hint"] = "policy"
-            payload["return_logprob"] = False
-            headers["X-Policy"] = "policy"
+            return {"X-Policy": "policy"}
 
         module = (
             "miles.rollout.sglang_rollout"
@@ -185,12 +183,12 @@ class TestBasicGeneration:
             return await post(url, payload, headers=headers)
 
         monkeypatch.setattr(f"{module}.post", checked_post)
-        generation_env.args.custom_rollout_request_hook_path = "test.request_hook"
-        with function_registry.temporary("test.request_hook", hook):
+        generation_env.args.custom_rollout_request_headers_function_path = "test.get_headers"
+        with function_registry.temporary("test.get_headers", get_headers):
             result = _run_generate(variant, generation_env)
 
         assert calls == [False]
-        assert result.requests == [{**expected_request(variant), "routing_hint": "policy"}]
+        assert result.requests == [expected_request(variant)]
         assert listify(result.sample) == [expected_sample(variant)]
 
 

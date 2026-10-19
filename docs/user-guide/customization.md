@@ -13,7 +13,7 @@ and the default it replaces.
 | **Rollout** | `--rollout-function-path` | The whole rollout loop |
 | | `--custom-agent-function-path` | The agent-environment loop inside a TITO session |
 | | `--custom-generate-function-path` | A single sample's generation |
-| | `--custom-rollout-request-hook-path` | Inference request customization |
+| | `--custom-rollout-request-headers-function-path` | Additional inference request headers |
 | | `--data-source-path` | How prompts are loaded |
 | | `--eval-function-path` | The eval rollout |
 | **Session** | `--session-message-matcher` | Prefix-replay equivalence |
@@ -75,35 +75,34 @@ signatures load through the same adapter. See
 **Reference:** [`examples/experimental/search-r1/generate_with_search.py`](https://github.com/radixark/miles/blob/main/examples/experimental/search-r1/generate_with_search.py).
 
 
-### `--custom-rollout-request-hook-path`
+### `--custom-rollout-request-headers-function-path`
 
-Customize a request's payload or headers without replacing generation. For example,
-an external inference service can accept routing metadata while returning the same
-inference response as a directly addressed engine:
+Add external-service metadata, such as workload tags or routing hints, without
+changing the generation request:
 
 ```python
-def customize_request(payload: dict, headers: dict, *, evaluation: bool) -> None:
-    payload["routing_hint"] = "evaluation" if evaluation else "training"
-    headers["X-Workload"] = "rollout"
+def get_headers(*, evaluation: bool) -> dict[str, str]:
+    return {"X-Workload": "evaluation" if evaluation else "training"}
 ```
 
-Set `--custom-rollout-request-hook-path my_module.customize_request`. Both sync and
-async functions are supported. The hook mutates the request in place and returns
-`None`; exceptions propagate through the existing generation-error handling.
-Use an async hook for external I/O so other requests can continue to progress.
+Set `--custom-rollout-request-headers-function-path my_module.get_headers`. Both sync
+and async functions are supported. Use an async function to fetch external metadata
+without blocking other requests. Failures propagate through existing error handling;
+miles does not send the inference request if obtaining its headers fails.
 
-The hook runs once per inference call, before request constraints and serialization,
-in built-in single-turn/multi-turn generation and session-server v1/v2 chat forwarding,
-for both training and evaluation. Native requests use `sampling_params`; session chat
-requests use OpenAI fields. The existing `X-SMG-Routing-Key` header is available when
-set. Do not mutate prompt tokens or change the inference response protocol: miles
-still owns token tracking, required logprobs/replay fields, and response processing.
-Session records contain the resolved request that was sent to the backend.
+The function receives only the training/evaluation flag, not the payload or existing
+headers. It may add headers but cannot replace existing ones, including routing/session
+identity, or set transport-controlled fields such as `Host`, `Content-Type`, and
+`Content-Length`. Header names are compared case-insensitively. Sampling, tokenization,
+required training outputs, and the response protocol remain owned by miles.
 
-This hook does not change transport retries or response handling. Custom generators
-that send requests directly own their customization; custom agents using the session
-server receive its request hook. Health checks, session management, and raw proxy
-routes do not invoke it. With the hook unset, requests keep their existing behavior.
+The function runs once per inference call in built-in single-turn/multi-turn generation
+and session-server v1/v2 chat forwarding, for training and evaluation. Transport retries
+reuse the prepared headers. Custom generators that send requests directly own their
+headers; agents using the session server receive its configured headers. Health checks,
+session management, raw proxy routes, and post-rollout prefill scoring do not invoke
+it; this is not a global HTTP authentication setting. With the function unset,
+requests keep their existing behavior.
 
 ### `--custom-agent-function-path`
 

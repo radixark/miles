@@ -13,6 +13,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
     update_sample_from_response,
 )
+from miles.rollout.generate_utils.request_headers import compute_request_headers
 from miles.rollout.generate_utils.tool_call_utils import (
     create_tool_call_parser,
     execute_tool_calls,
@@ -51,20 +52,22 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     for _turn in range(args.generate_max_turns):
         # ----------------------- Call inference endpoint -------------------------
 
-        headers = compute_routing_headers(args, sample) or {}
-        payload, halt_status = await compute_request_payload(
+        payload, halt_status = compute_request_payload(
             args,
             sample.tokens,
             input.sampling_params,
             evaluation=input.evaluation,
             kv_cache_namespace=sample.kv_cache_namespace,
-            rollout_request_hook=input.state.rollout_request_hook,
-            headers=headers,
         )
         if payload is None:
             sample.status = halt_status
             break
 
+        headers = compute_routing_headers(args, sample)
+        if input.state.rollout_request_headers_function is not None:
+            headers = await compute_request_headers(
+                headers, input.state.rollout_request_headers_function, evaluation=input.evaluation
+            )
         gen_t0 = time.time()
         output = await post(url, payload, headers=headers)
         sink = None if input.evaluation else TrajectoryLifecycle().sink

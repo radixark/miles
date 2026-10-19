@@ -34,7 +34,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
         rollout_temperature=1.0,
-        custom_rollout_request_hook_path=None,
+        custom_rollout_request_headers_function_path=None,
     )
     defaults.update(overrides)
     return SessionServerConfig(**defaults)

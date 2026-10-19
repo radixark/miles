@@ -16,6 +16,7 @@ from tqdm import tqdm
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
+from miles.rollout.generate_utils.request_headers import compute_request_headers
 from miles.rollout.generate_utils.rollout_topk_logprobs import (
     append_rollout_topk_logprobs,
     configure_rollout_topk_logprobs_request,
@@ -23,7 +24,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
 from miles.utils import dumper_utils
-from miles.utils.async_utils import maybe_await, run
+from miles.utils.async_utils import run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
@@ -111,7 +112,9 @@ class GenerateState(metaclass=SingletonMeta):
         self.dp_counts = [0] * (args.sglang_dp_size or 1)
         self.dp_rank = 0
 
-        self.rollout_request_hook = load_function(getattr(args, "custom_rollout_request_hook_path", None))
+        self.rollout_request_headers_function = load_function(
+            getattr(args, "custom_rollout_request_headers_function_path", None)
+        )
         self.reset()
 
     @contextmanager
@@ -186,29 +189,13 @@ async def generate(
         sample.status = Sample.Status.TRUNCATED
         return sample
 
+    return_sampling_mask = should_return_sampling_mask(args, sampling_params, evaluation=evaluation)
+
     # Prepare payload for sglang server
     payload = {
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
-    headers = compute_routing_headers(args, sample) or {}
-    if state.rollout_request_hook is not None:
-        await maybe_await(state.rollout_request_hook(payload, headers, evaluation=evaluation))
-        sampling_params = payload["sampling_params"]
-        payload["return_logprob"] = True
-        payload.pop("return_sampling_mask", None)
-        payload.pop("sampling_logprobs_mode", None)
-        payload.pop("return_routed_experts", None)
-        payload.pop("return_indexer_topk", None)
-        for field, expected in (
-            ("stream", False),
-            ("logprob_start_len", 0),
-            ("routed_experts_start_len", 0),
-            ("lora_path", LORA_ADAPTER_NAME if lora_rollout_enabled(args) else None),
-        ):
-            if payload.get(field) not in (None, expected):
-                raise ValueError(f"Built-in generation requires {field}={expected!r}")
-    return_sampling_mask = should_return_sampling_mask(args, sampling_params, evaluation=evaluation)
     if return_sampling_mask:
         payload["return_sampling_mask"] = True
     opd_top_k = getattr(args, "opd_log_prob_top_k", 0) or 0
@@ -246,6 +233,10 @@ async def generate(
         payload["input_ids"] = prompt_ids
         if not sample.tokens:  # Initialize sample.tokens for the first turn
             sample.tokens = prompt_ids
+
+    headers = compute_routing_headers(args, sample)
+    if state.rollout_request_headers_function is not None:
+        headers = await compute_request_headers(headers, state.rollout_request_headers_function, evaluation=evaluation)
 
     output = await post(url, payload, headers=headers)
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":

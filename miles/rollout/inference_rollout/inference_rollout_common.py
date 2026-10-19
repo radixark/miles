@@ -51,7 +51,9 @@ class GenerateState:
         )
 
         self.generate_function = load_generate_function(args.custom_generate_function_path) or generate
-        self.rollout_request_hook = load_function(getattr(args, "custom_rollout_request_hook_path", None))
+        self.rollout_request_headers_function = load_function(
+            getattr(args, "custom_rollout_request_headers_function_path", None)
+        )
 
         self.reset()
 

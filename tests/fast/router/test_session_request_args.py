@@ -53,24 +53,23 @@ def _assert_exported_turn_args(exported: dict, request_args: dict):
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
 @pytest.mark.parametrize("evaluation", [False, True])
-def test_request_hook_is_validated_sent_and_recorded(version, evaluation):
+def test_request_headers_preserve_session_generation(version, evaluation):
     calls = []
     received_headers = []
     do_proxy = SessionServer.do_proxy
 
     async def record_proxy(self, request, path, *, body, headers):
-        received_headers.append(headers["X-Policy"])
+        received_headers.append(headers)
         return await do_proxy(self, request, path, body=body, headers=headers)
 
-    def hook(payload, headers, *, evaluation):
+    def get_headers(*, evaluation):
         calls.append(evaluation)
-        payload["routing_hint"] = headers["X-SMG-Routing-Key"]
-        payload["logprobs"] = False
-        payload["stream"] = True
-        headers["X-Policy"] = "policy"
+        return {"X-Policy": "policy"}
 
-    with function_registry.temporary("test.request_hook", hook), patch.object(SessionServer, "do_proxy", record_proxy):
-        with _serve(version, {"custom_rollout_request_hook_path": "test.request_hook"}) as env:
+    with function_registry.temporary("test.get_headers", get_headers), patch.object(
+        SessionServer, "do_proxy", record_proxy
+    ):
+        with _serve(version, {"custom_rollout_request_headers_function_path": "test.get_headers"}) as env:
             session_id = requests.post(f"{env.url}/sessions", json={"evaluation": evaluation}, timeout=5).json()[
                 "session_id"
             ]
@@ -78,27 +77,25 @@ def test_request_hook_is_validated_sent_and_recorded(version, evaluation):
             assert response.status_code == 200, response.text
             assert response.json()["choices"][0]["message"]["content"]
             wire = env.backend.request_log[-1]
-            assert wire["routing_hint"] == session_id
             assert wire["logprobs"] is True
             assert _records(env.url, session_id)[0]["request"] == wire
-            assert received_headers == ["policy"]
+            assert len(received_headers) == 1
+            assert received_headers[0]["X-Policy"] == "policy"
+            assert received_headers[0]["X-SMG-Routing-Key"] == session_id
             assert calls == [evaluation]
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
-@pytest.mark.parametrize("failure", ["hook_error", "invalid_request"])
-def test_request_hook_cannot_bypass_validation_or_silently_fail(version, failure):
-    async def hook(payload, headers, *, evaluation):
+def test_request_headers_failure_prevents_generation(version):
+    async def get_headers(*, evaluation):
         await asyncio.sleep(0)
-        if failure == "hook_error":
-            raise RuntimeError("Request metadata is unavailable")
-        payload["input_ids"] = [1, 2]
+        raise RuntimeError("Request metadata is unavailable")
 
-    with function_registry.temporary("test.request_hook", hook):
-        with _serve(version, {"custom_rollout_request_hook_path": "test.request_hook"}) as env:
+    with function_registry.temporary("test.get_headers", get_headers):
+        with _serve(version, {"custom_rollout_request_headers_function_path": "test.get_headers"}) as env:
             session_id = _create_session(env.url)
             response = _post_chat(env.url, session_id, {"messages": [USER]})
-            assert response.status_code == (500 if failure == "hook_error" else 400)
+            assert response.status_code == 500
             assert env.backend.request_log == []
             assert _records(env.url, session_id) == []
 

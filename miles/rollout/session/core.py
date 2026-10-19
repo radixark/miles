@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import orjson
 from starlette.responses import Response
 
+from miles.rollout.generate_utils.request_headers import compute_request_headers
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
@@ -33,7 +34,6 @@ from miles.rollout.session.samples.merge import (
     truncate_samples_by_total_tokens,
 )
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
-from miles.utils.async_utils import maybe_await
 from miles.utils.function_registry import load_function
 
 logger = logging.getLogger(__name__)
@@ -212,20 +212,10 @@ class SessionCore:
         self.registry = registry
         self.config = config
         self.instance_id = session_server_instance_id
-        self.rollout_request_hook = load_function(config.custom_rollout_request_hook_path)
+        self.rollout_request_headers_function = load_function(config.custom_rollout_request_headers_function_path)
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
-
-    async def _customize_chat_request(self, body: bytes, headers: dict, *, evaluation: bool) -> dict:
-        client_args = parse_chat_request(body)
-        if self.rollout_request_hook is not None:
-            client_stream = client_args.get("stream", False)
-            client_logprobs = client_args.get("logprobs", False)
-            await maybe_await(self.rollout_request_hook(client_args, headers, evaluation=evaluation))
-            # Backend customization must not change the response the agent asked to receive.
-            client_args.update(stream=client_stream, logprobs=client_logprobs)
-        return client_args
 
     def _maybe_request_addition_r3(
         self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
@@ -352,13 +342,17 @@ class SessionCore:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
         headers = {**headers, "X-SMG-Routing-Key": session_id}
-        client_args = await self._customize_chat_request(body, headers, evaluation=session.evaluation)
+        if self.rollout_request_headers_function is not None:
+            headers = await compute_request_headers(
+                headers, self.rollout_request_headers_function, evaluation=session.evaluation
+            )
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
+            client_args = parse_chat_request(body)
             prepared = session.prepare_token_ids_and_request_args(
                 client_args,
                 config=self.config,
