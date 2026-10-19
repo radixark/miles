@@ -48,7 +48,7 @@ beaker:
   budget: ai2/oe-omai
   priority: urgent
   preemptible: true                           # only used without min_runtime (Beaker allows one)
-  min_runtime: 0                              # preemptible, to run on unallocated capacity (prod_4node: 8h)
+  min_runtime: 8h                             # 0 (preemptible) lost steps 5-8 to two preemptions on 2026-10-19
   retries: 10                                 # mason --max_retries 5, raised after the 2026-10-16 run used all 5;
                                               # a retry resumes from exp_name's checkpoint
   nodes: 4                                    # mason --num_nodes 4
