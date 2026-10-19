@@ -59,6 +59,8 @@ Before submitting:
    - starts the Ray head and waits up to 30 min for every GPU to join;
    - adds the workers' forwarded shards to `TMAX_DOCKER_HOST`;
    - runs `execute` against the running cluster (`MILES_SCRIPT_EXTERNAL_RAY=1`);
+   - waits for the Ray job itself (`follow_ray_job.py`). `ray job submit` also returns 0 when its log stream drops
+     mid-run, so the job's own status decides, and anything but `SUCCEEDED` fails the replica;
    - marks every node done.
 
 ## The config's `beaker:` section
@@ -247,6 +249,8 @@ reasons, turns, tool errors) are not logged in fully-async mode, so read them fr
 | `runroot must be set` from podman | `storage.conf` without `runroot` / `graphroot` | The entry script writes one; keep it if you change the bring-up |
 | CUDA error 304 in a nested container | GPU containers cannot be nested in a Beaker task | Run the Miles image as the task; nest only CPU sandboxes |
 | Ray `file_system_monitor … over 95% full` | Holmes nodes start with 10-25 GB free of 878 GB; sandbox images share the disk | The image janitor usually holds it; watch for `ENOSPC` |
+| `follow_ray_job: Ray job … is still RUNNING although its submit returned; following it` | The job's log stream dropped mid-run, usually on a starved head, and `ray job submit` returned 0 | Nothing: the head keeps following the job and printing its log |
+| One replica `scheduled` for hours and never ready; the others cancelled with `timed out after waiting 1h0m0s for synchronized replica start`; no further retry | A node that never starts the job (`holmes-cs-aus-510`, 2026-10-17) | Stop the experiment; resubmit with `--exp-name` and `--exclude-host` for that node |
 | `No completed rollout groups for 30s`, repeated | Rollout stalled; fully async only warns | Nothing exits on its own yet; stop the job and resume it |
 | Synchronous step stuck at 0/N with no errors | Zero-std filter with small groups drops every group | `filter_zero_std: false` for smoke tests |
 | Every episode `end=no_tool_call turns=1` | SGLang's reasoning and tool-call parsers not set | The launcher passes them; keep them when editing the command |

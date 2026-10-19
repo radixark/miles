@@ -22,7 +22,9 @@ Runs referred to:
 - **Resume 3/4 (hardened, commit `6fb5cb00d8`):** resume 3 (`01M55HZB5SVPMEV5W9C0RBRX2S`) crash-looped from 20:25 on
   2026-10-17: `apt-get update` failed with `At least one invalid signature was encountered` for every repository on
   `holmes-cs-aus-498` and `holmes-cs-aus-527` (exit 100 within 6 s, three retries in 12 minutes), stopped. Resume 4
-  (`01M55SE04SXJGSEM0WQEQA79GD`) excludes those two as well as `-556` and `-500`.
+  (`01M55SE04SXJGSEM0WQEQA79GD`) excludes those two as well as `-556` and `-500`. It trained rollout 225 from
+  `iter_0000224`, failed at 21:33, and its retry never started; stopped on 2026-10-19
+  ([below](#2026-10-17-ray-job-submit-returns-0-mid-run-resume-4)).
 
 ## Open decisions
 
@@ -49,6 +51,37 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 ## Ideas to explore
 
 Larger directions to evaluate against the evidence below. Add yours here.
+
+## 2026-10-17: `ray job submit` returns 0 mid-run (resume 4)
+
+- **What happened:** resume 4 trained from 21:04 (first weight sync, 43.8 s, as after every resume) and began
+  rollout 225 at 21:20. From about 21:23 the head was starved again:
+  - its router's health checks of the engines on `10.93.1.249` failed;
+  - the inference controller got `ActorUnavailableError ... Connection reset by peer`;
+  - log forwarding to the head stopped at about 21:26.
+- **The failure chain:**
+  - At 21:27:20 the dashboard closed the job's log stream (`WebSocket closed ... close code 1000`).
+  - `ray job submit` printed `Status for job ...: RUNNING` and exited 0, because it exits non-zero only for `FAILED`.
+  - The entry script took training as finished and went on to mark every node done.
+  - That step's `ray.init` gave up at 21:33:25 with `No node info found matching attributes`, and the head exited 1.
+  - Meanwhile the workers' `ray status` checks of the head failed 2–4 times in a row between 21:29 and 21:31 and then
+    recovered, so the head check did not end anything.
+- **Reading:** the head starving was the trigger; Ray recovered from it on its own within about 9 minutes. The retry
+  happened only because the marking step failed. Had it succeeded, every replica would have exited 0 and Beaker
+  would have recorded the run as succeeded in the middle of training, with no retry. Upstream Miles's `run_ray_job`
+  has the same behavior.
+- **Fix (on our side, not in Miles):** after the execute step returns 0, the entry script runs
+  `beaker/follow_ray_job.py`. It asks Ray for the job's own status. While the job is pending or running, it prints
+  the job's driver log from about where the stream stopped and waits for the end. It exits 0 only for `SUCCEEDED`,
+  and only then are nodes marked done. It adds no time limit while the dashboard is unreachable.
+- **The retry never started:** retry attempt 2 scheduled all four replicas at 21:42. Replica 2, on
+  `holmes-cs-aus-510`, stayed `scheduled` without ever becoming ready or writing a log. Beaker cancelled the other
+  three at 22:45 (`timed out after waiting 1h0m0s for synchronized replica start`) and never started attempt 3,
+  although retries were left. The experiment sat idle until it was stopped on 2026-10-19 at 17:19. The checkpoint is
+  still `iter_0000224`.
+- **More unhealthy nodes:** `holmes-cs-aus-490`'s `/tmp` was over 95% full when the job started (10.2 GB free of
+  878 GB, from Ray's own disk monitor). `holmes-cs-aus-550` failed Beaker's own healthcheck before start and is
+  cordoned.
 
 ## 2026-10-17: the gateway backend at prod scale (two 4-node runs)
 

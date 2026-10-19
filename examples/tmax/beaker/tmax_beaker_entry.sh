@@ -2,7 +2,8 @@
 # Beaker entrypoint for a TMax experiment config (submitted by beaker/submit.py, which pins the commit):
 #   bash examples/tmax/beaker/tmax_beaker_entry.sh examples/tmax/configs/<experiment>.yaml
 # Runs in docker.io/radixark/miles with BEAKER_ALLOW_SUBCONTAINERS=1: brings podman up the way open-instruct's
-# Terminal-RL jobs do, prunes old training checkpoints, then runs the launcher's prepare + execute on the config.
+# Terminal-RL jobs do, prunes old training checkpoints, then runs the launcher's prepare + execute on the config and
+# waits for the Ray job itself (follow_ray_job.py).
 #
 # On NUM_NODES > 1 replicas, as open-instruct's multi-node jobs: every replica brings podman up; replica 0 runs
 # the rest and the Ray head; the others join its Ray cluster as GPU workers (configs/beaker_configs/
@@ -219,6 +220,9 @@ PY
     export MILES_SCRIPT_EXTERNAL_RAY=1 MILES_SCRIPT_NUM_NODES=$NUM_NODES
 fi
 eval python examples/tmax/run_tmax_qwen3_5.py execute "$CONFIG" "${EXTRA_ARGS:-}"
+# `ray job submit` also returns 0 when its log stream drops while the job still runs (2026-10-17): wait for the job
+# itself, and fail the replica unless it SUCCEEDED, before marking anything done.
+python examples/tmax/beaker/follow_ray_job.py
 if [ "$NUM_NODES" -gt 1 ]; then
     python - "$HEAD_DONE" <<'PY'
 import sys, ray
