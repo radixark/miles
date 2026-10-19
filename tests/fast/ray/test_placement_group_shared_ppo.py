@@ -247,6 +247,7 @@ def _patch_train_controller_handles(monkeypatch, *, restored: dict[str, list[int
 
 def _training_models_args(**overrides):
     values = {
+        "train_backend": "megatron",
         "actor_num_nodes": 1,
         "actor_num_gpus_per_node": 2,
         "critic_num_nodes": 1,

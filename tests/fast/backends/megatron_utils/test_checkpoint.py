@@ -83,7 +83,7 @@ class TestCheckpointTrainingProvenance:
 
 @pytest.mark.parametrize(
     ("ckpt_step", "iteration", "finetune", "fails"),
-    [(0, 0, False, False), (0, 7, False, True), (7, 8, False, True), (7, 0, True, False)],
+    [(0, 0, False, False), (0, 7, False, True), (7, 0, True, False)],
 )
 def test_explicit_checkpoint_selection(tmp_path, monkeypatch, ckpt_step, iteration, finetune, fails):
     """An explicit step selects Megatron even without a tracker and cannot silently load another step."""

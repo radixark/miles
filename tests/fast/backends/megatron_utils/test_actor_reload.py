@@ -157,9 +157,8 @@ def test_auxiliary_load_uses_its_own_checkpoint_step(
     actor_module, monkeypatch, tmp_path, model_tag, path, expected_step
 ):
     args = _args(tmp_path, ckpt_step=39, opd_teacher_ckpt_step=7)
-    worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = args
-    worker.model = object()
+    original_args = vars(args).copy()
+    worker = _actor(actor_module, role="actor", args=args)
     worker.weights_backuper = Mock()
     observed_args = {}
 
@@ -176,8 +175,7 @@ def test_auxiliary_load_uses_its_own_checkpoint_step(
     assert observed_args["no_load_rng"] is True
     assert observed_args["finetune"] is True
     assert observed_args["ckpt_step"] == expected_step
-    assert args.ckpt_step == 39
-    assert args.load == str(tmp_path / "pretrain")
+    assert vars(args) == original_args
     worker.weights_backuper.backup.assert_called_once_with(model_tag)
     assert worker._active_model_tag == model_tag
 
@@ -185,9 +183,7 @@ def test_auxiliary_load_uses_its_own_checkpoint_step(
 def test_auxiliary_load_restores_arguments_after_failure(actor_module, monkeypatch, tmp_path):
     args = _args(tmp_path, ckpt_step=39)
     original_args = vars(args).copy()
-    worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = args
-    worker.model = object()
+    worker = _actor(actor_module, role="actor", args=args)
     worker.weights_backuper = Mock()
     monkeypatch.setattr(actor_module, "load_checkpoint", Mock(side_effect=RuntimeError("load failed")))
 
@@ -239,7 +235,6 @@ def test_peer_recovery_does_not_inherit_startup_checkpoint_selection(actor_modul
     monkeypatch.setattr(actor, "load_hf_assets", Mock())
     monkeypatch.setattr(actor, "_init_training_state", Mock())
     seen = _watch_load(actor_module, monkeypatch, args=args, iteration=11 if recovering else 7)
-    _write_checkpoint(tmp_path / "pretrain", iteration=20)
 
     next_rollout = actor.init(
         args,

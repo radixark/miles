@@ -675,6 +675,7 @@ class TestCreateTrainingModels:
         requested: list[str] = []
         self._patched(monkeypatch, requested)
         args = Namespace(
+            train_backend="megatron",
             megatron_config=None,
             use_critic=True,
             start_rollout_id=None,

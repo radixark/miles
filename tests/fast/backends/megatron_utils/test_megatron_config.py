@@ -59,7 +59,6 @@ def _make_args(megatron_config: str | None = None, **overrides) -> Namespace:
         finetune=False,
         ref_ckpt_step=None,
         ckpt_step=None,
-        exit_on_missing_checkpoint=False,
         start_rollout_id=None,
         optimizer="adam",
         use_distributed_optimizer=True,
@@ -381,7 +380,6 @@ def _make_checkpoint_args(tmp_path, **overrides) -> Namespace:
         no_load_rng=False,
         finetune=False,
         start_rollout_id=None,
-        exit_on_missing_checkpoint=False,
     )
     defaults.update(overrides)
     return Namespace(**{**parser_defaults(), **defaults})
@@ -467,6 +465,7 @@ class TestResolveArgsCheckpointLoad:
         assert args.load == load
         assert args.requested_load == load
         assert args.start_rollout_id is None
+        assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
 
     @pytest.mark.parametrize(
         "selector",
