@@ -90,20 +90,21 @@ def iter_local_response_rows(
     slot_start = 0  # first local row of the sample's slot, without CP or under zigzag CP
     seq_start = 0  # first global token of the sample, under all-gather CP
     for i, (tokens, total_length, response_length) in enumerate(
-        zip(unconcat_tokens, total_lengths, response_lengths, strict=False)
+        zip(unconcat_tokens, total_lengths, response_lengths, strict=True)
     ):
         max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
         if cp.size == 1:
-            if qkv_format == "bshd":
-                slot_start = max_seq_len * i
+            # bshd gives each sample its own padded slot; thd packs the samples back to back
+            sample_start = max_seq_len * i if qkv_format == "bshd" else slot_start
             sample_rows = _response_rows_without_cp(
                 tokens,
-                slot_start=slot_start,
+                slot_start=sample_start,
                 total_length=total_length,
                 response_length=response_length,
                 include_response_indices=include_response_indices,
             )
-            slot_start += total_length
+            if qkv_format == "thd":
+                slot_start += total_length
         elif allgather_cp:
             # thd splits the concatenated samples into one contiguous piece per rank; bshd splits
             # each padded sample on its own, so every sample has a piece of max_seq_len // cp rows
