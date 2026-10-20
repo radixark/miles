@@ -42,6 +42,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         save_trigger_sentinel=None,
         skip_eval_before_train=False,
         start_rollout_id=0,
+        update_weight_transfer_mode="broadcast",
         use_critic=False,
     )
     for key, value in overrides.items():

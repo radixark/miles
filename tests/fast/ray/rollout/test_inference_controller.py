@@ -877,6 +877,8 @@ class TestUpdatableModelSelection:
         eval_server = _RecordingServer({"eval-cell": eval_cell}, model_name="eval", update_weights=False)
         controller = self._controller(rollout, eval_server)
         controller._eval_fleet = object()
+        controller.args.update_weight_transfer_mode = "gpu-delta"
+        controller.args.eval_num_gpus = 2
 
         info = await controller.start_update_weights(receiver_pool="eval")
 
