@@ -3547,7 +3547,7 @@ class TestCheckWeightUpdateSelectorDefault:
 
 class TestMilesValidateArgsDiskDeltaResume:
     @staticmethod
-    def _parse(load_dir, tmp_path, initial_sync=False):
+    def _parse(load_dir, tmp_path):
         parser = argparse.ArgumentParser()
         get_miles_extra_args_provider()(parser)
         parser.set_defaults(finetune=False)
@@ -3569,18 +3569,16 @@ class TestMilesValidateArgsDiskDeltaResume:
                 "1",
             ]
             + REQUIRED_ARGS
-            + (["--update-weight-delta-initial-sync"] if initial_sync else [])
         )
 
-    @pytest.mark.parametrize("initial_sync", [False, True])
-    def test_resuming_from_a_training_checkpoint_is_rejected(self, tmp_path, initial_sync):
-        """The startup-transfer option does not enable checkpoint recovery."""
+    def test_resuming_from_a_training_checkpoint_is_rejected(self, tmp_path):
+        """Initial synchronization does not enable checkpoint recovery."""
         load_dir = tmp_path / "ckpt"
         load_dir.mkdir()
         (load_dir / "latest_checkpointed_iteration.txt").write_text("10")
 
         with pytest.raises(ValueError, match="cannot resume from a training checkpoint"):
-            miles_validate_args(self._parse(load_dir, tmp_path, initial_sync))
+            miles_validate_args(self._parse(load_dir, tmp_path))
 
     def test_a_load_directory_without_a_checkpoint_still_starts(self, tmp_path):
         """A fresh run points --load at a directory megatron has not written yet, and that is the supported shape."""

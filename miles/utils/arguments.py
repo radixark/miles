@@ -675,9 +675,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "The huggingface checkpoint of the trained model. "
                     "This is used to initialize sglang and also provide the tokenizer. "
-                    "Full-weight transfer replaces startup weights with the loaded trainer weights before the first rollout. "
-                    "For disk-delta, enable --update-weight-delta-initial-sync when the trainer starts from different weights; "
-                    "otherwise the initial sync only captures the baseline."
+                    "Weight synchronization replaces startup weights with the loaded trainer weights before the first rollout. "
+                    "Disk-delta uses this checkpoint as the common baseline for the initial delta."
                 ),
             )
             parser.add_argument(
@@ -1126,16 +1125,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                     "them into a host-local checkpoint that the engine reloads from."
-                ),
-            )
-            parser.add_argument(
-                "--update-weight-delta-initial-sync",
-                action="store_true",
-                default=False,
-                help=(
-                    "For disk-delta, publish and apply an initial delta from --hf-checkpoint "
-                    "to the loaded trainer weights before the first rollout. Without this flag, only capture "
-                    "the HF baseline. This requires the common HF base and does not support dummy-weight initialization."
                 ),
             )
             parser.add_argument(
@@ -3889,7 +3878,6 @@ def miles_validate_args(args):
         if has_megatron_checkpoint(args.requested_load):
             raise ValueError(
                 "--update-weight-transfer-mode=disk-delta cannot resume from a training checkpoint: "
-                "--update-weight-delta-initial-sync controls startup transfer but does not enable checkpoint recovery. "
                 f"Requested --load={args.requested_load}."
             )
 
