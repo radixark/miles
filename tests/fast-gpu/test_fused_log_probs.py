@@ -239,6 +239,28 @@ def test_support_mode_matches_masked_log_softmax(entropy_over_support, inplace_b
     torch.testing.assert_close(leaf.grad.float(), ref_leaf.grad.float(), rtol=1e-2, atol=1e-3)
 
 
+@pytest.mark.parametrize("entropy_over_support", [False, True], ids=["vocab_entropy", "support_entropy"])
+def test_support_mode_never_syncs_with_the_host(entropy_over_support):
+    """Forward and backward stay queued behind the model; a host sync would stall the stream."""
+    logits, rows, targets, support = _support_inputs(64, 50_001, 16, seed=40)
+    leaf = logits.clone().requires_grad_(True)
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        target_log_probs, support_log_probs, entropy = fused_support_log_probs(
+            leaf * 1,
+            rows,
+            targets,
+            support,
+            tp_group=None,
+            with_entropy=True,
+            entropy_over_support=entropy_over_support,
+        )
+        (target_log_probs.sum() + support_log_probs.sum() + entropy.sum()).backward()
+    finally:
+        torch.cuda.set_sync_debug_mode(0)
+
+
 @pytest.fixture
 def deterministic_algorithms():
     """What --deterministic-mode turns on (miles/backends/megatron_utils/initialize.py)."""

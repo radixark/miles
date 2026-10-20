@@ -249,6 +249,28 @@ def _target_grads_kernel(
     tl.store(grad_ptr + row * grad_stride_row + col, (dd * inv_temperature).to(grad_ptr.dtype.element_ty), mask=owned)
 
 
+@triton.jit
+def _write_row_columns_kernel(
+    grad_ptr,
+    rows_ptr,
+    ids_ptr,
+    values_ptr,
+    grad_stride_row,
+    n_ids,
+    n_unpadded_cols,
+    vocab_start,
+    BLOCK_K: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    row = tl.load(rows_ptr + pid).to(tl.int64)
+    lanes = tl.arange(0, BLOCK_K)
+    offs = pid * n_ids + lanes
+    col = tl.load(ids_ptr + offs, mask=lanes < n_ids, other=-1) - vocab_start
+    owned = (lanes < n_ids) & (col >= 0) & (col < n_unpadded_cols)
+    value = tl.load(values_ptr + offs, mask=owned, other=0.0)
+    tl.store(grad_ptr + row * grad_stride_row + col, value.to(grad_ptr.dtype.element_ty), mask=owned)
+
+
 def row_statistics(
     logits: torch.Tensor,
     rows: torch.Tensor,
@@ -368,4 +390,28 @@ def zero_unscored_rows(grad: torch.Tensor, rows: torch.Tensor, *, launch: Launch
     scored.index_fill_(0, rows, 1)  # a scalar fill: indexed assignment would copy the 1 from the host
     _zero_unscored_rows_kernel[(n_rows,)](
         grad, scored, grad.stride(0), grad.size(1), BLOCK_V=launch.block_v, num_warps=launch.num_warps
+    )
+
+
+def write_row_columns(
+    grad: torch.Tensor, rows: torch.Tensor, ids: torch.Tensor, values: torch.Tensor, *, vocab: VocabRange
+) -> None:
+    """Write ``values[r, k]`` at row ``rows[r]``, column of token ``ids[r, k]``, where this shard holds it.
+
+    A masked store: indexing ``grad`` with the ownership mask would sync on its count.
+    """
+    n_rows, n_ids = ids.shape
+    if not n_rows * n_ids:
+        return
+    _write_row_columns_kernel[(n_rows,)](
+        grad,
+        rows,
+        ids.contiguous(),
+        values.contiguous(),
+        grad.stride(0),
+        n_ids,
+        vocab.n_unpadded,
+        vocab.start,
+        BLOCK_K=max(triton.next_power_of_2(n_ids), 16),
+        num_warps=1,
     )
