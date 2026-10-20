@@ -52,9 +52,11 @@ RUN TORCH_TPU_PIN=$(python3 -c 'import importlib.metadata as m; print(m.version(
 
 # ====================================== Install torchtitan ============================================
 
-# with its own dependencies (the constraints keep torch)
+# with miles' torch_tpu patch and its own dependencies (the constraints keep torch)
+COPY docker/patch/torchtitan_torch_tpu.patch /tmp/torchtitan_torch_tpu.patch
 RUN git clone https://github.com/${TORCHTITAN_REPO}.git /root/torchtitan && \
     cd /root/torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
+    patch --fuzz=0 -p1 < /tmp/torchtitan_torch_tpu.patch && rm /tmp/torchtitan_torch_tpu.patch && \
     pip install -c /opt/torch-constraints.txt -e .
 
 # ====================================== Install main package ============================================
