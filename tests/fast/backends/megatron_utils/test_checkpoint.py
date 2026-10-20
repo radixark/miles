@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import parser_defaults
 
 from miles.backends.megatron_utils import checkpoint
 from miles.backends.training_utils.model_companion import ModelCompanion
@@ -66,7 +67,7 @@ class TestCheckpointTrainingProvenance:
     ) -> None:
         """HF loading preserves the existing non-finetune rollout numbering."""
         (tmp_path / "config.json").write_text("{}")
-        args = Namespace(load=str(tmp_path), finetune=False, ckpt_step=None, lora_rank=0)
+        args = Namespace(**{**parser_defaults(), "load": str(tmp_path), "finetune": False})
         monkeypatch.setattr(checkpoint, "get_args", lambda: args)
         monkeypatch.setattr(checkpoint, "_load_checkpoint_hf", lambda **_kwargs: (0, 0))
 
@@ -112,6 +113,25 @@ def test_layout_validation_uses_explicit_step(tmp_path, monkeypatch, layout):
     checkpoint.load_checkpoint([], None, None, None, False)
 
     validate.assert_called_once_with(str(tmp_path / "iter_0000007"))
+
+
+@pytest.mark.parametrize("hf_checkpoint", [False, True])
+def test_exit_on_missing_checkpoint_does_not_fall_back_to_hf(tmp_path, monkeypatch, hf_checkpoint):
+    if hf_checkpoint:
+        (tmp_path / "config.json").write_text("{}")
+    else:
+        (tmp_path / "iter_0000007").mkdir()
+    args = Namespace(
+        **{**parser_defaults(), "load": str(tmp_path), "finetune": False, "exit_on_missing_checkpoint": True}
+    )
+    monkeypatch.setattr(checkpoint, "get_args", lambda: args)
+    load_hf = Mock(return_value=(0, 0))
+    monkeypatch.setattr(checkpoint, "_load_checkpoint_hf", load_hf)
+
+    with nullcontext() if hf_checkpoint else pytest.raises(FileNotFoundError, match="checkpoint"):
+        checkpoint.load_checkpoint([], None, None, None, False)
+
+    assert load_hf.call_count == int(hf_checkpoint)
 
 
 class TestRawMbridgeCompanionIsolation:

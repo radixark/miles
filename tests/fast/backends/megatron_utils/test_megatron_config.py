@@ -858,6 +858,27 @@ class TestSynthesizedCriticTrainer:
             0.1,
         )
 
+    @pytest.mark.parametrize("native", [False, True])
+    def test_critic_initialization_uses_the_step_only_for_native_checkpoints(self, tmp_path, native):
+        critic_load = tmp_path / "critic"
+        critic_load.mkdir()
+        (critic_load / "config.json").write_text("{}")
+        if native:
+            (critic_load / "iter_0000007").mkdir()
+        args = _make_args(
+            use_critic=True,
+            load="/ckpt/actor",
+            critic_load=str(critic_load),
+            ckpt_step=7,
+            finetune=True,
+        )
+
+        actor, critic = [compute_trainer_args(args, trainer) for trainer in resolve_megatron_config(args).trainers]
+
+        assert actor.ckpt_step == args.ckpt_step == 7
+        assert critic.load == str(critic_load)
+        assert critic.ckpt_step == (7 if native else None)
+
     def test_an_internally_synthesized_override_bypasses_the_user_whitelist(self):
         """kl_coef and load are not per-policy yaml arguments, yet the critic must still be able to set them."""
         args = _make_args(use_critic=True, critic_load="/ckpt/critic")

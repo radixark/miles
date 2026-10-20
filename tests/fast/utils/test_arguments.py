@@ -3554,14 +3554,20 @@ class TestMilesValidateArgsDiskDeltaResume:
             + REQUIRED_ARGS
         )
 
-    def test_resuming_from_a_training_checkpoint_is_rejected(self, tmp_path):
+    @pytest.mark.parametrize("ckpt_step", [None, 0, 7])
+    def test_resuming_from_a_training_checkpoint_is_rejected(self, tmp_path, ckpt_step):
         """Initial synchronization does not enable checkpoint recovery."""
         load_dir = tmp_path / "ckpt"
         load_dir.mkdir()
-        (load_dir / "latest_checkpointed_iteration.txt").write_text("10")
+        if ckpt_step is None:
+            (load_dir / "latest_checkpointed_iteration.txt").write_text("10")
+        else:
+            (load_dir / f"iter_{ckpt_step:07d}").mkdir()
+        args = self._parse(load_dir, tmp_path)
+        args.ckpt_step = ckpt_step
 
         with pytest.raises(ValueError, match="cannot resume from a training checkpoint"):
-            miles_validate_args(self._parse(load_dir, tmp_path))
+            miles_validate_args(args)
 
     def test_a_load_directory_without_a_checkpoint_still_starts(self, tmp_path):
         """A fresh run points --load at a directory megatron has not written yet, and that is the supported shape."""

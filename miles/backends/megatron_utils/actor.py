@@ -363,11 +363,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self._finalize_pending_async_save()
 
         resume_from_ckpt = read_checkpoint_tracker_iteration(requested_load) is not None
-        if not resume_from_ckpt:
-            assert not self.args.fp16
-            assert not self.args.use_precision_aware_optimizer
-            assert not self.args.optimizer_cpu_offload
-            assert not self.args.offload_optimizer_states
+        if not resume_from_ckpt and not (self.args.ckpt_step is not None and self.args.load == requested_load):
             assert self.args.megatron_to_hf_mode != "bridge", "bridge mode unsupported"
             assert self.args.finetune
             assert self.args.no_load_optim
@@ -383,12 +379,19 @@ class MegatronTrainRayActor(TrainRayActor):
             )
         else:
             logger.info(
-                f"load_state found no checkpoint under --load {requested_load!r}; loading the state the run "
+                f"load_state found no recovery tracker under --load {requested_load!r}; loading the state the run "
                 f"started from"
             )
             overrider_for_loading = {}
-            self._post_init_random_state.restore()
-            if self.optimizer is not None:
+            reset_optim = self.args.finetune or self.args.no_load_optim
+            if reset_optim:
+                assert not self.args.fp16
+                assert not self.args.use_precision_aware_optimizer
+                assert not self.args.optimizer_cpu_offload
+                assert not self.args.offload_optimizer_states
+            if self.args.finetune or self.args.no_load_rng:
+                self._post_init_random_state.restore()
+            if reset_optim and self.optimizer is not None:
                 reset_optimizer_state(
                     self.optimizer,
                     stream_optimizer_state_to_disk=self.args.stream_optimizer_state_to_disk,

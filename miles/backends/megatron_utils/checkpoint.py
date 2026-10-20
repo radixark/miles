@@ -17,6 +17,7 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
+from miles.backends.megatron_utils.megatron_config import has_hf_checkpoint
 from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionSampleConsumptionUtils,
@@ -155,6 +156,8 @@ def load_checkpoint(
         if ckpt_step is not None and not args.finetune and result_iteration != ckpt_step:
             raise ValueError(f"Requested checkpoint step {ckpt_step}, but Megatron loaded step {result_iteration}")
     else:
+        if args.exit_on_missing_checkpoint and not has_hf_checkpoint(load_path):
+            raise FileNotFoundError(f"No checkpoint found under --load={load_path!r}")
         result_iteration, _ = _load_checkpoint_hf(
             ddp_model=ddp_model,
             optimizer=optimizer,

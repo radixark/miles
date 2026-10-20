@@ -401,6 +401,29 @@ def _stub_reset(actor_module, monkeypatch) -> None:
 
 
 class TestAReloadThatFindsNothingItSaved:
+    @pytest.mark.parametrize(
+        ("finetune", "no_load_optim", "no_load_rng"),
+        [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
+    )
+    def test_an_explicit_starting_checkpoint_is_restored_without_a_tracker(
+        self, actor_module, tmp_path, monkeypatch, finetune, no_load_optim, no_load_rng
+    ):
+        args = _args(tmp_path, ckpt_step=7, finetune=finetune, no_load_optim=no_load_optim, no_load_rng=no_load_rng)
+        (Path(args.load) / "iter_0000007").mkdir(parents=True)
+        original_args = vars(args).copy()
+        seen = _watch_load(actor_module, monkeypatch, args=args, iteration=0 if finetune else 7)
+        actor = _actor(actor_module, role="actor", args=args)
+        actor.optimizer = Mock()
+        reset = Mock()
+        monkeypatch.setattr(actor_module, "reset_optimizer_state", reset)
+
+        actor.load_state()
+
+        assert seen["args_during_load"] == original_args
+        assert vars(args) == original_args
+        assert actor._post_init_random_state.restores == int(finetune or no_load_rng)
+        assert reset.call_count == int(finetune or no_load_optim)
+
     def test_it_puts_the_trainer_back_where_the_run_began(self, actor_module, tmp_path, monkeypatch, caplog):
         """A run that has not saved yet still has a state to go back to: the one it was started from."""
         args = _cold_started_args(tmp_path)
@@ -412,7 +435,7 @@ class TestAReloadThatFindsNothingItSaved:
             assert actor.load_state() == 0
 
         assert seen["args_during_load"]["load"] == _reference_weights(tmp_path)
-        assert "found no checkpoint" in caplog.text
+        assert "found no recovery tracker" in caplog.text
 
     def test_it_loads_under_the_arguments_the_run_was_started_with(self, actor_module, tmp_path, monkeypatch):
         """Anything else would answer a different question than the one the trainer's own init answered."""

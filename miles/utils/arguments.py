@@ -3875,7 +3875,10 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
         )
-        if has_megatron_checkpoint(args.requested_load):
+        if has_megatron_checkpoint(
+            args.requested_load,
+            ckpt_step=getattr(args, "ckpt_step", None) if args.load == args.requested_load else None,
+        ):
             raise ValueError(
                 "--update-weight-transfer-mode=disk-delta cannot resume from a training checkpoint: "
                 f"Requested --load={args.requested_load}."
