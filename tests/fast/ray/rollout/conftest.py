@@ -145,6 +145,7 @@ def make_args(**overrides: Any) -> Namespace:
         seed=42,
         fp16=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         env_report=None,
         env_report_interval_seconds=3600.0,
         # checkpoint / data source

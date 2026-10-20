@@ -39,7 +39,11 @@ from miles.utils.processing_utils import (
     load_processor,
     load_tokenizer,
 )
-from miles.utils.replay_index import response_has_routed_experts, sampled_logprobs_from_meta_info
+from miles.utils.replay_index import (
+    response_has_routed_experts,
+    sampled_logprobs_from_meta_info,
+    set_outputs_via_store,
+)
 from miles.utils.types import Sample
 
 from .generate_utils.generate_endpoint_utils import (
@@ -211,6 +215,8 @@ async def generate(
         payload["return_routed_experts"] = True
     if getattr(args, "use_rollout_indexer_replay", False):
         payload["return_indexer_topk"] = True
+
+    set_outputs_via_store(payload, use_output_store=args.use_output_store, evaluation=evaluation)
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]

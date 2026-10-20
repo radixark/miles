@@ -13,6 +13,7 @@ from miles.utils.types import Sample
 def _parse_mask(meta_info: dict, num_output_tokens: int, *, support: bool = False) -> ReplayIndex:
     return ReplayIndex.from_meta_info(
         meta_info,
+        via_store=False,
         routed_experts_rows=None,
         num_layers=None,
         indexer_topk_rows=None,
@@ -53,6 +54,7 @@ def test_generate_payload_automatically_requests_sampling_mask(
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
     )
@@ -101,6 +103,7 @@ def test_evaluation_does_not_request_or_validate_training_sampling_support():
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
     )
@@ -261,6 +264,7 @@ def test_sampling_mask_rejects_support_without_sampled_token():
 def test_abort_before_sampling_does_not_require_sampling_metadata():
     index = ReplayIndex.from_meta_info(
         {"finish_reason": {"type": "abort"}},
+        via_store=False,
         routed_experts_rows=None,
         num_layers=None,
         indexer_topk_rows=None,

@@ -4,11 +4,13 @@ A ``ReplayIndex`` holds one ``ReplaySegments`` per field. A field is an ordered 
 row segments; each segment is a row range of one source:
 
 - inline: arrays that came in the response's ``meta_info``;
+- store: an object of the output store, named by the ``StoreRef`` in ``meta_info["output_store_ref"]``;
 - forced (sampling mask only): rows of tokens Miles inserted itself, such as tool observations.
 
 Rollout-side edits (truncation, multi-turn merge, additional R3) only rearrange segments and never
 read data. ``miles.utils.replay_assembly`` materializes the arrays, in the rollout executor or, with
-``--enable-delay-token-replay-assembly``, on the trainer.
+``--enable-delay-token-replay-assembly``, on the trainer. Only the trainer reads store objects
+(``miles.backends.training_utils.data.replay``), and inline and store data then take the same path.
 
 Rows: R3 and indexer top-k count prompt and response tokens minus the last token
 (``len(tokens) - 1``); the sampling mask counts response tokens.
@@ -23,22 +25,46 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import chain
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pybase64
 
 from miles.utils.retry_utils import NonRetryableError
 
+if TYPE_CHECKING:
+    from radix_transfer_plugins import StoreRef
+
 ROUTED_EXPERTS = "routed_experts"
 INDEXER_TOPK = "indexer_topk"
 SAMPLING_MASK = "sampling_mask"
 
-# Names of the arrays a segment holds, one per stored field.
+# Stored field names, as radix_transfer_plugins' TokenOutputStash names them.
 MASK_LENGTHS = "output_token_sampling_mask_lengths"
 MASK_TOKEN_IDS = "output_token_sampling_mask_token_ids"
 # Support log-prob mode only: a log-prob per support entry.
 MASK_LOGPROBS = "output_token_sampling_logprobs"
+
+OUTPUT_STORE_REF_KEY = "output_store_ref"
+# Support log-prob mode: each sampled token's entry of its support row, picked by SGLang.
+SELECTED_LOGPROBS_KEY = "output_token_sampling_selected_logprobs"
+# The only backend of phase 1: every engine Miles launches writes to the run's own Mooncake.
+SUPPORTED_STORE_BACKEND = "mooncake"
+
+# Request fields that ask SGLang for the replay outputs a ReplayIndex holds.
+REPLAY_REQUEST_KEYS = ("return_routed_experts", "return_indexer_topk", "return_sampling_mask")
+VIA_STORE_REQUEST_KEY = "return_outputs_via_store"
+
+
+def set_outputs_via_store(request: dict[str, Any], *, use_output_store: bool, evaluation: bool) -> None:
+    """Ask SGLang to return a training request's replay outputs through the output store.
+
+    Miles owns the field: a caller's own value is replaced, and evaluation requests never set it.
+    """
+    if use_output_store and not evaluation and any(request.get(key) for key in REPLAY_REQUEST_KEYS):
+        request[VIA_STORE_REQUEST_KEY] = True
+    else:
+        request.pop(VIA_STORE_REQUEST_KEY, None)
 
 
 class ReplayDataError(NonRetryableError, ValueError):
@@ -65,22 +91,24 @@ _LAYOUTS: tuple[_FieldLayout, ...] = (
 _LAYOUT_BY_NAME = {layout.name: layout for layout in _LAYOUTS}
 
 INLINE = "inline"
+STORE = "store"
 FORCED = "forced"
 
 
 @dataclass(frozen=True, eq=False)
 class ReplaySegment:
-    """Rows ``[start, stop)`` of one source; forced rows have no ``inline`` arrays."""
+    """Rows ``[start, stop)`` of one source; at most one of ``inline`` and ``ref`` is set."""
 
     start: int
     stop: int
     # Stored field name -> the whole inline array the rows index into.
     inline: Mapping[str, np.ndarray] | None = field(default=None, repr=False)
+    ref: StoreRef | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ReplaySegment):
             return NotImplemented
-        if (self.start, self.stop) != (other.start, other.stop):
+        if (self.start, self.stop, self.ref) != (other.start, other.stop, other.ref):
             return False
         if self.inline is None or other.inline is None:
             return self.inline is other.inline
@@ -94,7 +122,7 @@ class ReplaySegment:
     def kind(self) -> str:
         if self.inline is not None:
             return INLINE
-        return FORCED
+        return STORE if self.ref is not None else FORCED
 
     @property
     def num_rows(self) -> int:
@@ -112,6 +140,12 @@ class ReplaySegments:
     def num_rows(self) -> int:
         return sum(segment.num_rows for segment in self.segments)
 
+    @property
+    def source_kind(self) -> str | None:
+        """``inline`` or ``store``, or None when the field has only forced rows or none."""
+        kinds = {segment.kind for segment in self.segments} - {FORCED}
+        return next(iter(kinds), None)
+
     def prefix(self, num_rows: int) -> ReplaySegments:
         if not 0 <= num_rows <= self.num_rows:
             raise ReplayDataError(f"{self.name} prefix of {num_rows} rows is outside [0, {self.num_rows}]")
@@ -127,15 +161,18 @@ class ReplaySegments:
 
     def concat(self, *others: ReplaySegments) -> ReplaySegments:
         segments = self.segments + tuple(chain.from_iterable(other.segments for other in others))
+        _check_single_source(self.name, segments)
         if self.name != SAMPLING_MASK:
             _check_row_shapes(self.name, segments)
         return ReplaySegments(self.name, segments)
 
+    def refs(self) -> list[StoreRef]:
+        return [segment.ref for segment in self.segments if segment.ref is not None]
+
     def materialize_rows(self, fetched: Mapping[tuple[str, str], np.ndarray]) -> np.ndarray:
         """R3 or indexer top-k rows: ``[num_rows, num_layers, topk]``.
 
-        ``fetched`` maps (key, stored field name) to arrays of segments that are not inline; an index
-        of inline rows passes ``{}``.
+        ``fetched`` maps (store key, stored field name) to the array read for it.
         """
         layout = _LAYOUT_BY_NAME[self.name]
         (stored,) = layout.stored
@@ -195,6 +232,18 @@ class ReplayIndex:
 
     def is_empty(self) -> bool:
         return next(self.fields(), None) is None
+
+    def store_refs(self) -> list[StoreRef]:
+        return [ref for segments in self.fields() for ref in segments.refs()]
+
+    def store_reads(self) -> list[tuple[StoreRef, tuple[str, ...]]]:
+        """Each store object with the stored fields this sample reads from it."""
+        return [
+            (segment.ref, _segment_stored_names(_LAYOUT_BY_NAME[segments.name], segment))
+            for segments in self.fields()
+            for segment in segments.segments
+            if segment.ref is not None
+        ]
 
     # ----------------------------- rollout-side edits -----------------------------
 
@@ -259,6 +308,7 @@ class ReplayIndex:
         cls,
         meta_info: Mapping[str, Any],
         *,
+        via_store: bool,
         routed_experts_rows: int | None,
         num_layers: int | None,
         indexer_topk_rows: int | None,
@@ -269,19 +319,24 @@ class ReplayIndex:
         aborted: bool,
         allow_extra_routed_experts_row: bool = False,
     ) -> ReplayIndex:
-        """The only parser of a response's replay fields.
+        """The only parser of a response's replay fields, inline or through the output store.
 
-        A field whose expected rows are None is not parsed. Structural checks that need no data (rows, layers, the
+        ``via_store`` is whether the request set ``return_outputs_via_store``. A field whose expected
+        rows are None is not parsed. Structural checks that need no data (rows, layers, the
         sampling-mask length) run here, so a malformed response fails on arrival; checks that read
         data run at assembly (``miles.utils.replay_assembly``).
         ``allow_extra_routed_experts_row`` accepts R3 with one row past ``routed_experts_rows``
         (the legacy rollout's stop edge) and drops it.
         """
+        ref = _parse_store_ref(meta_info, via_store=via_store)
+        stored = {spec.name: spec for spec in ref.fields} if ref is not None else {}
         routed_experts = indexer_topk = None
         if routed_experts_rows is not None:
             routed_experts = _parse_rows_field(
                 meta_info,
                 ROUTED_EXPERTS,
+                ref=ref,
+                stored=stored,
                 rows=routed_experts_rows,
                 num_layers=num_layers,
                 allow_extra_row=allow_extra_routed_experts_row,
@@ -290,14 +345,18 @@ class ReplayIndex:
             indexer_topk = _parse_rows_field(
                 meta_info,
                 INDEXER_TOPK,
+                ref=ref,
+                stored=stored,
                 rows=indexer_topk_rows,
-                num_layers=_indexer_num_layers(meta_info, expected=indexer_num_streams),
+                num_layers=_indexer_num_layers(meta_info, stored, expected=indexer_num_streams),
                 allow_extra_row=False,
             )
         sampling_mask = None
         if return_sampling_mask:
             sampling_mask = _parse_sampling_mask(
                 meta_info,
+                ref=ref,
+                stored=stored,
                 support_logprobs=support_logprobs,
                 num_output_tokens=num_output_tokens,
                 aborted=aborted,
@@ -310,7 +369,7 @@ class ReplayIndex:
         """Split into a builtins descriptor and the inline arrays.
 
         Inline rows of each stored field are concatenated in segment order; the descriptor names
-        each segment's kind and row count.
+        each segment's kind and row count, and store segments carry their ref and row range.
         """
         descriptor: dict[str, list[dict[str, Any]]] = {}
         arrays: dict[str, np.ndarray] = {}
@@ -321,6 +380,8 @@ class ReplayIndex:
                 if segment.kind == INLINE:
                     entries.append({INLINE: segment.num_rows})
                     inline_parts.append(_slice_inline(layout, segment))
+                elif segment.kind == STORE:
+                    entries.append({STORE: _ref_to_plain(segment.ref), "start": segment.start, "stop": segment.stop})
                 else:
                     entries.append({FORCED: segment.num_rows})
             descriptor[segments.name] = entries
@@ -345,6 +406,9 @@ class ReplayIndex:
                     rows = int(entry[INLINE])
                     segments.append(ReplaySegment(start=cursor, stop=cursor + rows, inline=inline))
                     cursor += rows
+                elif STORE in entry:
+                    ref = _store_ref_from_builtins(entry[STORE])
+                    segments.append(ReplaySegment(start=int(entry["start"]), stop=int(entry["stop"]), ref=ref))
                 else:
                     segments.append(ReplaySegment(start=0, stop=int(entry[FORCED])))
             if inline is not None and cursor != _num_source_rows(layout, inline):
@@ -364,20 +428,23 @@ def sampled_logprobs_from_meta_info(
     returns ``output_token_sampling_logprobs``: one per output token in selected mode; in support
     mode a row per support, from which each sampled token's entry is picked.
     """
+    # A response whose sampling mask is in the output store has no support rows inline: in support mode
+    # its sampled log-probs are SGLang's own pick from them, output_token_sampling_selected_logprobs.
+    via_store = OUTPUT_STORE_REF_KEY in meta_info
+    key = SELECTED_LOGPROBS_KEY if support_logprobs and via_store else "output_token_sampling_logprobs"
     supports = meta_info.get("output_token_sampling_mask")
-    log_probs = meta_info.get("output_token_sampling_logprobs")
-    if supports is None or log_probs is None:
+    log_probs = meta_info.get(key)
+    if log_probs is None or (supports is None and not via_store):
         if _is_no_output_abort(meta_info, aborted=aborted, num_output_tokens=len(output_token_ids)):
             return []
         raise ValueError(
-            "SGLang response is missing output_token_sampling_mask or "
-            "output_token_sampling_logprobs; use an SGLang build with the "
+            f"SGLang response is missing the sampling mask or {key}; use an SGLang build with the "
             "native return_sampling_mask primitive"
         )
     if len(log_probs) != len(output_token_ids):
         raise ValueError(f"sampling log-prob length {len(log_probs)} != output token length {len(output_token_ids)}")
 
-    if support_logprobs:
+    if support_logprobs and not via_store:
         selected = []
         for token_id, support, row in zip(output_token_ids, supports, log_probs, strict=True):
             if not isinstance(row, (list, tuple)) or len(row) != len(support):
@@ -394,8 +461,11 @@ def sampled_logprobs_from_meta_info(
 
 
 def response_has_routed_experts(meta_info: Mapping[str, Any]) -> bool:
-    """Whether a response carries R3 rows; reads no data."""
-    return ROUTED_EXPERTS in meta_info
+    """Whether a response carries R3 rows, inline or in its output store object; reads no data."""
+    if ROUTED_EXPERTS in meta_info:
+        return True
+    ref = meta_info.get(OUTPUT_STORE_REF_KEY)
+    return ref is not None and any(spec["name"] == ROUTED_EXPERTS for spec in ref["fields"])
 
 
 # ============================== train dict columns ==============================
@@ -414,7 +484,8 @@ INLINE_TRAIN_COLUMNS: dict[str, tuple[str, np.dtype]] = {
 def compute_train_columns(indexes: Sequence[ReplayIndex]) -> dict[str, list[Any]]:
     """Train dict columns of a batch's replay indexes; empty when no sample has replay data.
 
-    A sample without inline rows of a stored field gets an empty array in that column.
+    A sample without inline rows of a stored field gets an empty array in that column, so a step
+    may mix inline and store samples.
     """
     wires = [index.to_wire() for index in indexes]
     if not any(descriptor for descriptor, _ in wires):
@@ -456,12 +527,28 @@ def stored_field_names(name: str) -> tuple[str, ...]:
 # ================================ helpers ================================
 
 
+def _check_single_source(name: str, segments: Sequence[ReplaySegment]) -> None:
+    """A field of one sample comes from one source; Miles' forced rows do not count (MA9)."""
+    sources = {
+        INLINE if segment.kind == INLINE else f"{STORE}:{segment.ref.backend}"
+        for segment in segments
+        if segment.kind != FORCED
+    }
+    if len(sources) > 1:
+        raise ReplayDataError(
+            f"{name} of one sample mixes replay data sources {sorted(sources)}; "
+            "every turn of a sample must return its replay data the same way"
+        )
+
+
 def _check_row_shapes(name: str, segments: Sequence[ReplaySegment]) -> None:
     """R3 and indexer rows of one sample share their [layers, topk] shape; known without reading data."""
     shapes = set()
     for segment in segments:
         if segment.inline is not None:
             shapes.add(tuple(segment.inline[name].shape[1:]))
+        elif segment.ref is not None:
+            shapes.update(tuple(spec.shape[1:]) for spec in segment.ref.fields if spec.name == name)
     if len(shapes) > 1:
         raise ReplayDataError(f"{name} segments of one sample have different row shapes {sorted(shapes)}")
 
@@ -490,12 +577,22 @@ def _num_source_rows(layout: _FieldLayout, arrays: Mapping[str, np.ndarray]) -> 
     return int(arrays[layout.stored[0]].shape[0])
 
 
+def _segment_stored_names(layout: _FieldLayout, segment: ReplaySegment) -> tuple[str, ...]:
+    """The stored fields of ``layout`` that the segment's source carries."""
+    present = segment.inline.keys() if segment.inline is not None else {spec.name for spec in segment.ref.fields}
+    return tuple(name for name in layout.stored if name in present)
+
+
 def _source_arrays(
     segment: ReplaySegment, layout: _FieldLayout, fetched: Mapping[tuple[str, str], np.ndarray]
 ) -> Mapping[str, np.ndarray]:
-    if segment.inline is None:
-        raise ReplayDataError(f"{layout.name} segment has no arrays")
-    return segment.inline
+    if segment.inline is not None:
+        return segment.inline
+    key = segment.ref.key
+    try:
+        return {name: fetched[(key, name)] for name in _segment_stored_names(layout, segment)}
+    except KeyError as e:
+        raise ReplayDataError(f"output store object {key} was not read for field {e.args[0][1]}") from None
 
 
 def _slice_inline(layout: _FieldLayout, segment: ReplaySegment) -> dict[str, np.ndarray]:
@@ -516,6 +613,44 @@ def _slice_mask(arrays: Mapping[str, np.ndarray], segment: ReplaySegment) -> dic
         if name in arrays:
             sliced[name] = arrays[name][id_start:id_stop]
     return sliced
+
+
+def _ref_to_plain(ref: StoreRef) -> dict[str, Any]:
+    """The ref as JSON types only: the train dict's msgpack codec rejects the tuples of ``to_builtins``."""
+    import msgspec
+
+    return msgspec.json.decode(msgspec.json.encode(ref))
+
+
+def _store_ref_from_builtins(value: Any) -> StoreRef:
+    # The package is needed only when a ref is present: runs without the output store do not install it.
+    from radix_transfer_plugins import StoreRef
+
+    ref = StoreRef.from_builtins(value)
+    if ref.backend != SUPPORTED_STORE_BACKEND:
+        raise ReplayDataError(
+            f"output store backend {ref.backend!r} is not supported; Miles reads only {SUPPORTED_STORE_BACKEND!r} refs"
+        )
+    return ref
+
+
+def _parse_store_ref(meta_info: Mapping[str, Any], *, via_store: bool) -> StoreRef | None:
+    value = meta_info.get(OUTPUT_STORE_REF_KEY)
+    inline_fields = [key for key in (ROUTED_EXPERTS, INDEXER_TOPK, "output_token_sampling_mask") if key in meta_info]
+    if not via_store:
+        if value is not None:
+            raise ReplayDataError("response carries an output_store_ref, but its request did not ask for one")
+        return None
+    if value is None:
+        if inline_fields:
+            raise ReplayDataError(
+                f"request set return_outputs_via_store but the response carries inline {inline_fields} and no "
+                "output_store_ref; a router between Miles and SGLang may have dropped return_outputs_via_store"
+            )
+        return None
+    if inline_fields:
+        raise ReplayDataError(f"response carries both an output_store_ref and inline {inline_fields}")
+    return _store_ref_from_builtins(value)
 
 
 def _decode_inline_rows(info: str, *, rows: int, num_layers: int, allow_extra_row: bool) -> np.ndarray:
@@ -541,10 +676,22 @@ def _parse_rows_field(
     meta_info: Mapping[str, Any],
     name: str,
     *,
+    ref: StoreRef | None,
+    stored: Mapping[str, Any],
     rows: int,
     num_layers: int | None,
     allow_extra_row: bool,
 ) -> ReplaySegments | None:
+    if name in stored:
+        spec = stored[name]
+        if len(spec.shape) != 3:
+            raise ReplayDataError(f"stored {name} has shape {spec.shape}; expected [rows, layers, topk]")
+        if num_layers is not None and spec.shape[1] != num_layers:
+            raise ReplayDataError(f"stored {name} has {spec.shape[1]} layers; expected {num_layers}")
+        stored_rows = spec.shape[0]
+        if stored_rows != rows and not (allow_extra_row and stored_rows == rows + 1):
+            raise ReplayDataError(f"stored {name} has {stored_rows} rows; expected {rows}")
+        return ReplaySegments(name, (ReplaySegment(start=0, stop=rows, ref=ref),))
     if (info := meta_info.get(name)) is None:
         return None
     if num_layers is None:
@@ -553,8 +700,12 @@ def _parse_rows_field(
     return ReplaySegments(name, (ReplaySegment(start=0, stop=rows, inline={name: array}),))
 
 
-def _indexer_num_layers(meta_info: Mapping[str, Any], *, expected: int | None) -> int | None:
-    if INDEXER_TOPK in meta_info:
+def _indexer_num_layers(
+    meta_info: Mapping[str, Any], stored: Mapping[str, Any], *, expected: int | None
+) -> int | None:
+    if INDEXER_TOPK in stored:
+        num_layers = stored[INDEXER_TOPK].shape[1] if len(stored[INDEXER_TOPK].shape) == 3 else None
+    elif INDEXER_TOPK in meta_info:
         num_layers = meta_info.get("indexer_topk_num_layers")
         if num_layers is None:
             raise ReplayDataError(
@@ -574,11 +725,17 @@ def _indexer_num_layers(meta_info: Mapping[str, Any], *, expected: int | None) -
 def _parse_sampling_mask(
     meta_info: Mapping[str, Any],
     *,
+    ref: StoreRef | None,
+    stored: Mapping[str, Any],
     support_logprobs: bool,
     num_output_tokens: int,
     aborted: bool,
 ) -> ReplaySegments:
-    if "output_token_sampling_mask" in meta_info:
+    if MASK_LENGTHS in stored:
+        segment = _stored_mask_segment(
+            meta_info, ref=ref, stored=stored, support_logprobs=support_logprobs, num_output_tokens=num_output_tokens
+        )
+    elif "output_token_sampling_mask" in meta_info:
         segment = _inline_mask_segment(
             meta_info, support_logprobs=support_logprobs, num_output_tokens=num_output_tokens
         )
@@ -595,6 +752,29 @@ def _parse_sampling_mask(
 def _is_no_output_abort(meta_info: Mapping[str, Any], *, aborted: bool, num_output_tokens: int) -> bool:
     finish_reason = meta_info.get("finish_reason") or {}
     return (aborted or finish_reason.get("type") == "abort") and num_output_tokens == 0
+
+
+def _stored_mask_segment(
+    meta_info: Mapping[str, Any],
+    *,
+    ref: StoreRef,
+    stored: Mapping[str, Any],
+    support_logprobs: bool,
+    num_output_tokens: int,
+) -> ReplaySegment:
+    required = (MASK_TOKEN_IDS, MASK_LOGPROBS) if support_logprobs else (MASK_TOKEN_IDS,)
+    missing = [name for name in required if name not in stored]
+    if missing:
+        raise ReplayDataError(f"output store ref carries {MASK_LENGTHS} without {missing}")
+    rows = stored[MASK_LENGTHS].shape[0]
+    if rows != num_output_tokens:
+        raise ReplayDataError(f"sampling support length {rows} != token length {num_output_tokens}")
+    if (length := meta_info.get("output_token_sampling_mask_length")) is not None and length != rows:
+        raise ReplayDataError(f"output_token_sampling_mask_length {length} != stored mask rows {rows}")
+    entries = stored[MASK_TOKEN_IDS].shape[0]
+    if support_logprobs and (logprobs := stored[MASK_LOGPROBS].shape[0]) != entries:
+        raise ReplayDataError(f"stored support log-probs have {logprobs} values for {entries} support entries")
+    return ReplaySegment(start=0, stop=rows, ref=ref)
 
 
 def _inline_mask_segment(

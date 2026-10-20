@@ -15,6 +15,7 @@ from miles.utils.lora.utils import (
     lora_base_cpu_backup_enabled,
     lora_rollout_enabled,
 )
+from miles.utils.output_store_config import SGLANG_OUTPUT_STORE_FIELDS, compute_sglang_output_store_args
 from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,12 @@ def _compute_server_args(
         kwargs["enable_return_routed_experts"] = True
     if args.use_rollout_indexer_replay:
         kwargs["enable_return_indexer_topk"] = True
+    if args.use_output_store:
+        assert set(SGLANG_OUTPUT_STORE_FIELDS) <= set(_record_field_names(ServerArgs)), (
+            "--use-output-store needs an sglang with --output-store-backend (sglang-miles with the "
+            "radix_transfer_plugins output store)"
+        )
+        kwargs.update(compute_sglang_output_store_args(args, local_hostname=host.strip("[]")))
     if args.fp16:
         kwargs["dtype"] = "float16"
     if engine_info_bootstrap_port is not None:

@@ -13,7 +13,12 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 from miles.rollout.generate_utils.sampling_mask import should_return_sampling_mask
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
-from miles.utils.replay_index import ReplayIndex, sampled_logprobs_from_meta_info
+from miles.utils.replay_index import (
+    VIA_STORE_REQUEST_KEY,
+    ReplayIndex,
+    sampled_logprobs_from_meta_info,
+    set_outputs_via_store,
+)
 from miles.utils.types import Sample
 
 
@@ -89,6 +94,7 @@ def compute_request_payload(
 
     if not evaluation:
         configure_rollout_topk_logprobs_request(args, payload)
+    set_outputs_via_store(payload, use_output_store=args.use_output_store, evaluation=evaluation)
     return payload, None
 
 
@@ -158,6 +164,7 @@ def compute_replay_index_from_response(
     """Parse one response's replay fields; ``config`` is the run args or the session server config."""
     return ReplayIndex.from_meta_info(
         meta_info,
+        via_store=bool(request.get(VIA_STORE_REQUEST_KEY)),
         routed_experts_rows=routed_experts_rows,
         num_layers=getattr(config, "num_layers", None),
         indexer_topk_rows=indexer_topk_rows,

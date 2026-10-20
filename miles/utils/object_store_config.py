@@ -58,7 +58,7 @@ def _resolve_field(field: _MooncakeStoreField, *, init_kwargs: dict[str, Any]) -
     return field.default
 
 
-def _parse_size(value: Any) -> int:
+def parse_size(value: Any) -> int:
     if isinstance(value, int):
         return value
     text = str(value).strip().lower()
@@ -94,7 +94,7 @@ _MOONCAKE_STORE_FIELDS: tuple[_MooncakeStoreField, ...] = (
         init_kwarg="local_buffer_size",
         config_key="local_buffer_size",
         env_var="MOONCAKE_LOCAL_BUFFER_SIZE",
-        parse=_parse_size,
+        parse=parse_size,
         default=32 * 1024**3,
         treats_falsy_as_unset=False,
     ),
@@ -123,7 +123,7 @@ _MOONCAKE_STORE_FIELDS: tuple[_MooncakeStoreField, ...] = (
         init_kwarg=_GLOBAL_SEGMENT_SIZE_KEY,
         config_key=_GLOBAL_SEGMENT_SIZE_KEY,
         env_var="MOONCAKE_GLOBAL_SEGMENT_SIZE",
-        parse=_parse_size,
+        parse=parse_size,
         default=8 * 1024**3,
         treats_falsy_as_unset=False,
     ),

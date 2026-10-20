@@ -30,6 +30,7 @@ _DUMP_PATH_ENV = "MILES_ROUTER_EQ_DUMP_PATH"
 
 
 def _dump_sample(sample: Sample) -> dict:
+    # Inline R3 only: this dump runs without the output store.
     re = (
         None if sample.replay_index.routed_experts is None else sample.replay_index.routed_experts.materialize_rows({})
     )

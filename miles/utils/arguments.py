@@ -43,6 +43,7 @@ from miles.utils.object_store_config import (
     compute_mooncake_init_kwargs_from_env,
     compute_mooncake_init_kwargs_vanilla,
 )
+from miles.utils.output_store_config import add_output_store_arguments, validate_output_store_args
 from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_args
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.score_centering import validate_score_centering_args
@@ -2872,6 +2873,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_cluster_arguments(parser)
         parser = add_train_arguments(parser)
         parser = add_rollout_arguments(parser)
+        parser = add_output_store_arguments(parser)
         parser = add_fault_tolerance_arguments(parser)
         parser = add_data_arguments(parser)
         parser = add_eval_arguments(parser)
@@ -3395,6 +3397,14 @@ def _resolve_event_logging(args: argparse.Namespace) -> None:
         )
 
 
+def _is_multi_policy(args: argparse.Namespace) -> bool:
+    return (
+        args.train_backend == "megatron"
+        and args.megatron_config is not None
+        and len([config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]) > 1
+    )
+
+
 def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
     if args.sample_ownership_grace_steps is None:
         args.sample_ownership_grace_steps = 2 if args.ci_test else 10
@@ -3407,11 +3417,7 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         args.custom_convert_samples_to_train_data_path is None
     ), "--enable-sample-ownership-checker is incompatible with --custom-convert-samples-to-train-data-path"
 
-    multi_policy = (
-        args.train_backend == "megatron"
-        and args.megatron_config is not None
-        and len([config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]) > 1
-    )
+    multi_policy = _is_multi_policy(args)
     unsupported = [
         reason
         for condition, reason in (
@@ -4238,6 +4244,13 @@ def miles_validate_args(args):
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
 
     _validate_deploy_component(args)
+
+    if args.use_output_store:
+        from miles.backends.sglang_utils.sglang_config import compute_has_pd_disaggregation
+
+        validate_output_store_args(
+            args, multi_policy=_is_multi_policy(args), pd_disaggregation=compute_has_pd_disaggregation(args)
+        )
 
 
 def validate_skip_actor_forward_only(args) -> None:

@@ -255,6 +255,25 @@ class TestSamplesWireCodec:
         assert out.replay_index.routed_experts.num_rows == 0
         assert out.replay_index.indexer_topk is None
 
+    def test_store_segments_cross_as_descriptors_only(self):
+        plugins = pytest.importorskip("radix_transfer_plugins")
+        FieldSpec, StoreRef = plugins.FieldSpec, plugins.StoreRef
+
+        ref = StoreRef(
+            backend="mooncake",
+            key="miles-output-store/run/abc",
+            fields=(FieldSpec(name="routed_experts", dtype="int32", shape=(4, 3, 2), codec="identity", nbytes=96),),
+        )
+        index = ReplayIndex(
+            routed_experts=ReplaySegments("routed_experts", (ReplaySegment(start=0, stop=3, ref=ref),))
+        )
+        payload = encode_samples([_computed_sample(replay_index=index)], {}, None)
+
+        assert not any(name.startswith("replay_index.") for name in safetensors.numpy.load(payload))
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample()).samples
+        (segment,) = out.replay_index.routed_experts.segments
+        assert segment.ref == ref and (segment.start, segment.stop) == (0, 3)
+
     def test_null_tokens_restore_fresh_empty_lists(self):
         # A null marker restores per-sample fresh instances, never one shared list.
         def null_out_tokens(meta, tensors):

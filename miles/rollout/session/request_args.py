@@ -23,6 +23,7 @@ from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.replay_index import set_outputs_via_store
 
 DEFAULT_TURN_ARGS_DROP_KEYS = ("input_ids", "messages")
 
@@ -111,6 +112,7 @@ def prepare_chat_request(
             request_args["return_sampling_mask"] = True
         else:
             request_args.pop("return_sampling_mask", None)
+    set_outputs_via_store(request_args, use_output_store=config.use_output_store, evaluation=evaluation)
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), response_intent=response_intent
     )

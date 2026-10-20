@@ -1164,6 +1164,7 @@ def test_delayed_dp_split_preserves_the_tinker_loss_vectors():
 def _inline_mask(sample: Sample, *, supports: list[list[int]]) -> ReplayIndex:
     return ReplayIndex.from_meta_info(
         {"output_token_sampling_mask": supports, "output_token_sampling_logprobs": [-0.5] * len(supports)},
+        via_store=False,
         routed_experts_rows=None,
         num_layers=None,
         indexer_topk_rows=None,

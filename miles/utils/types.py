@@ -187,7 +187,7 @@ class Sample:
     rollout_topk_token_ids: numpy.ndarray | None = None  # [response_length, k], int32; -1 pads unused slots
     rollout_topk_log_probs: numpy.ndarray | None = None  # [response_length, k], float32; -inf pads unused slots
     # Routed experts, indexer top-k and sampling mask from the rollout engine, as row segments of inline
-    # arrays; the replay assembly materializes them.
+    # arrays or output store objects; the replay assembly materializes them.
     replay_index: ReplayIndex = field(default_factory=ReplayIndex)
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD

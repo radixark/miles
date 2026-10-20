@@ -19,6 +19,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         use_sampling_support_replay=False,
+        use_output_store=False,
         sglang_speculative_algorithm=None,
         num_layers=None,
         moe_router_topk=None,

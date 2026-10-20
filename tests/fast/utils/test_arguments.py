@@ -3104,6 +3104,7 @@ def _make_skip_actor_forward_only_args(**overrides) -> SimpleNamespace:
         use_opd=False,
         use_rollout_entropy=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         use_rollout_logprobs=False,
         use_rollout_routing_replay=False,
         use_routing_replay=False,

@@ -26,6 +26,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             raise ValueError("Missing or nonfinite rollout log probabilities")
         routes = sample.replay_index.routed_experts
         if input.args.use_rollout_routing_replay:
+            # Rows only: the routing data may live in the output store, which the trainer reads.
             if routes is None or routes.num_rows != len(sample.tokens) - 1:
                 raise ValueError("Missing or misaligned routing replay")
         if sample.metadata["workplace_stop"] in {"truncated", "response_budget", "context_limit", "turn_limit"}:

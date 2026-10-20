@@ -24,6 +24,7 @@ def make_args(**overrides: object) -> SimpleNamespace:
         sglang_mem_fraction_static=0.7,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         fp16=False,
         lora_adapter_path=None,
         debug_rollout_only=False,

@@ -91,6 +91,7 @@ def _wiring_args(**overrides) -> Namespace:
         "use_opd": False,
         "use_rollout_routing_replay": False,
         "use_rollout_indexer_replay": False,
+        "use_output_store": False,
     }
     values.update(overrides)
     return Namespace(**values)

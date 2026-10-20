@@ -32,6 +32,7 @@ def _args(**overrides: object) -> Namespace:
         rollout_top_k=-1,
         use_sampling_support_replay=False,
         enable_delay_token_replay_assembly=False,
+        use_output_store=False,
         advantage_estimator="grpo",
         rewards_normalization=False,
         reward_key=None,

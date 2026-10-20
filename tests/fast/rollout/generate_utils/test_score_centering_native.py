@@ -20,6 +20,7 @@ def test_native_generate_producer_appends_each_call() -> None:
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         sglang_speculative_algorithm=None,
     )
     payload, status = compute_request_payload(args, [0, 1], {})
@@ -48,6 +49,7 @@ def test_filtered_native_generation_records_post_filter_distribution(candidate_c
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         sglang_speculative_algorithm=None,
     )
     payload, status = compute_request_payload(args, [0, 1], {"temperature": 0.7, "top_p": 0.6, "top_k": 3})
@@ -85,6 +87,7 @@ def test_greedy_evaluation_does_not_collect_training_candidates() -> None:
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         sglang_speculative_algorithm=None,
     )
     payload, _ = compute_request_payload(args, [0, 1], {"temperature": 0.0}, evaluation=True)

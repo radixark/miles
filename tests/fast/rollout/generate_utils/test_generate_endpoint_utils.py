@@ -9,6 +9,7 @@ def _make_args() -> SimpleNamespace:
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         use_sampling_support_replay=False,
         rollout_top_logprobs_num=0,
         lora_rank=0,

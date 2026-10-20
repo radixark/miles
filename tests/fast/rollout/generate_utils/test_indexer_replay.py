@@ -16,6 +16,7 @@ def _encode_int32(values: np.ndarray) -> str:
 def _parse(meta_info: dict, *, num_streams: int | None = None) -> ReplayIndex:
     return ReplayIndex.from_meta_info(
         meta_info,
+        via_store=False,
         routed_experts_rows=2,
         num_layers=None,
         indexer_topk_rows=2,

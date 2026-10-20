@@ -246,6 +246,7 @@ def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Ite
         use_session_server=version,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         use_sampling_support_replay=False,
         pause_generation_mode="retract",
         session_server_ip="127.0.0.1",

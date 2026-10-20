@@ -125,6 +125,7 @@ class TestConfigToArgv:
             apply_chat_template_kwargs={"enable_thinking": False},
             use_rollout_routing_replay=True,
             use_rollout_indexer_replay=False,
+            use_output_store=False,
             use_sampling_support_replay=False,
             sglang_speculative_algorithm=None,
             num_layers=None,

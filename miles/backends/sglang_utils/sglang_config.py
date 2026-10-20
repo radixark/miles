@@ -10,6 +10,7 @@ from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.lora.utils import is_multi_lora_enabled
+from miles.utils.output_store_config import SGLANG_OUTPUT_STORE_FIELDS
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
@@ -169,6 +170,10 @@ class ServerGroupConfig(FrozenStrictBaseModel):
             f"worker_type, so an override would make it talk to the wrong endpoint or serve a different role "
             f"than the one it registers with"
         )
+        assert not (set(SGLANG_OUTPUT_STORE_FIELDS) & set(raw.overrides)), (
+            f"sglang_overrides must not override {SGLANG_OUTPUT_STORE_FIELDS} ({raw.overrides=}): "
+            f"--use-output-store configures every engine's output store"
+        )
 
         rollout_pg_offset = _compute_rollout_offset(args)
         megatron_num_gpus = _compute_megatron_num_gpus(args)
@@ -290,6 +295,16 @@ def resolve_sglang_config(args) -> SglangConfig:
     """Build a SglangConfig from args, choosing the right source."""
     raw = _compute_raw_sglang_config(args)
     return SglangConfig.resolve(raw, args)
+
+
+def compute_has_pd_disaggregation(args) -> bool:
+    """Whether the launched engines include prefill or decode workers; needs no placement, so it runs at arg validation."""
+    raw = _compute_raw_sglang_config(args)
+    return any(
+        group.worker_type in (WorkerType.PREFILL, WorkerType.DECODE)
+        for model in raw.models
+        for group in model.server_groups
+    )
 
 
 def _compute_raw_sglang_config(args) -> _RawSglangConfig:

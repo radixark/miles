@@ -19,6 +19,7 @@ def _make_generate_args() -> Namespace:
         sglang_speculative_algorithm=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         use_sampling_support_replay=False,
         rollout_top_logprobs_num=0,
         partial_rollout=False,

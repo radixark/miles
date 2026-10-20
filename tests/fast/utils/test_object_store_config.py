@@ -22,13 +22,13 @@ class TestParseSize:
         ],
     )
     def test_parses_ints_and_unit_suffixes(self, value: Any, expected: int):
-        """_parse_size handles ints, plain digit strings, and kb/mb/gb suffixes case-insensitively."""
-        assert object_store_config._parse_size(value) == expected
+        """parse_size handles ints, plain digit strings, and kb/mb/gb suffixes case-insensitively."""
+        assert object_store_config.parse_size(value) == expected
 
     def test_rejects_garbage(self):
-        """_parse_size raises ValueError on a non-numeric string without a known unit."""
+        """parse_size raises ValueError on a non-numeric string without a known unit."""
         with pytest.raises(ValueError):
-            object_store_config._parse_size("lots")
+            object_store_config.parse_size("lots")
 
 
 class TestMooncakeStoreConfig:

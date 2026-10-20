@@ -283,7 +283,7 @@ class TestComputeSamplesFromRecords:
         record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10])
         record.request["return_sampling_mask"] = True
 
-        with pytest.raises(ValueError, match="missing output_token_sampling_"):
+        with pytest.raises(ValueError, match="missing the sampling mask or output_token_sampling_logprobs"):
             compute_samples_from_openai_records(_ARGS, [record], tok)
 
     def test_later_abort_preserves_terminal_status(self):

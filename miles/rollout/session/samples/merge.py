@@ -5,6 +5,7 @@ Owned by the session package so the assembly runs on the owning instance (record
 - Depends on `generate_utils.generate_endpoint_utils` for the replay parser (accepted utils-level dependency: the parser has other consumers on the single-turn `/generate` path and must not fork).
 - Order contract: `truncate_samples_by_total_tokens` runs BEFORE `merge_samples` — truncation is a turn-level budget decision (which turns survive; the overflowing turn is cut at a turn boundary, later turns are dropped) and the turn structure only exists pre-merge.
 - Additional R3 patches stay out of per-turn `Sample`s; after the ordinary merge selects the final token prefix, the session assembler concatenates the row segments of only the patches needed for that prefix.
+- Replay data are only indexed here (`ReplayIndex`): the session server never reads output store objects.
 """
 
 from argparse import Namespace

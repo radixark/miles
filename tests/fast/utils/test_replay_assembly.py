@@ -39,6 +39,7 @@ def _append_response(sample: Sample, output: list[int], supports: list[list[int]
     meta_info = _response(supports, rows=rows, seed=seed)
     new = ReplayIndex.from_meta_info(
         meta_info,
+        via_store=False,
         routed_experts_rows=rows,
         num_layers=LAYERS,
         indexer_topk_rows=rows,

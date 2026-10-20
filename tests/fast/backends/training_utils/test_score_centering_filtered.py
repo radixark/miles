@@ -35,6 +35,7 @@ def _support_mask(supports: list[list[int]], probabilities: list[list[float]]) -
             "output_token_sampling_mask": supports,
             "output_token_sampling_logprobs": [[math.log(p) for p in row] for row in probabilities],
         },
+        via_store=False,
         routed_experts_rows=None,
         num_layers=None,
         indexer_topk_rows=None,
@@ -175,6 +176,7 @@ def test_missing_support_probabilities_fail_closed() -> None:
     with pytest.raises(ReplayDataError, match="output_token_sampling_logprobs"):
         ReplayIndex.from_meta_info(
             {"output_token_sampling_mask": [[2, 3]]},
+            via_store=False,
             routed_experts_rows=None,
             num_layers=None,
             indexer_topk_rows=None,
