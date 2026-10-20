@@ -17,6 +17,7 @@ from miles.rollout.generate_hub import single_turn
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils import http_utils
 from miles.utils.function_registry import function_registry
+from miles.utils.lora.utils import LORA_ADAPTER_NAME
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -191,6 +192,18 @@ class TestBasicGeneration:
 
 
 class TestRadixCacheExtraKey:
+    def test_lora_routing_preserves_the_kv_cache_namespace(self, variant, generation_env):
+        generation_env.args.lora_rank = 8
+        sample = _make_sample()
+        sample.kv_cache_namespace = "train:-:7"
+
+        result = _run_generate(variant, generation_env, sample)
+
+        assert result.requests == [
+            {**expected_request(variant, extra_key="train:-:7"), "lora_path": LORA_ADAPTER_NAME}
+        ]
+        assert listify(result.sample) == [expected_sample(variant, kv_cache_namespace="train:-:7")]
+
     def test_a_started_sample_partitions_the_cache_by_its_kv_cache_namespace(self, variant, generation_env):
         """A sample with a kv_cache_namespace sends extra_key the namespace itself and keeps it."""
         sample = _make_sample()

@@ -10,6 +10,7 @@ from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub import single_turn
+from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.types import Sample
 
 SOLVER_URL = "http://solver-host:1111/generate"
@@ -29,33 +30,13 @@ class _FakeGenerate:
         return GenerateFnOutput(samples=sample)
 
 
-class _FakeTokenizer:
-    def apply_chat_template(self, messages: list[dict[str, str]], **kwargs) -> str:
-        return "\n".join(message["content"] for message in messages)
-
-    def encode(self, text: str, add_special_tokens: bool) -> list[int]:
-        return list(range(len(text)))
-
-
 def _make_input(*, prompt: str | list[dict[str, str]], label: str) -> GenerateFnInput:
     args = Namespace(
         megatron_config=encode_megatron_config("solver", "verifier"),
         use_critic=False,
         sglang_model_routers={"solver": ("solver-host", 1111), "verifier": ("verifier-host", 2222)},
-        sglang_router_policy="round_robin",
-        sglang_speculative_algorithm=None,
-        rollout_max_response_len=16,
-        rollout_max_context_len=None,
-        rollout_top_logprobs_num=0,
-        use_rollout_routing_replay=False,
-        use_rollout_indexer_replay=False,
-        use_sampling_support_replay=False,
-        lora_rank=0,
-        lora_adapter_path=None,
     )
-    state = SimpleNamespace(
-        args=args, tokenizer=_FakeTokenizer(), processor=None, rollout_request_headers_function=None
-    )
+    state = SimpleNamespace(args=args)
     sample = Sample(group_index=3, index=7, prompt=prompt, label=label)
     return GenerateFnInput(state=state, sample=sample, sampling_params={}, evaluation=False)
 
@@ -343,7 +324,10 @@ class TestGenerate:
 
 
 class TestGeneratePayloads:
-    async def test_both_policies_generate_under_the_key_of_the_input_sample(self, monkeypatch):
+    @pytest.mark.parametrize("variant", ["single_turn"])
+    async def test_both_policies_generate_under_the_key_of_the_input_sample(
+        self, monkeypatch, variant, generation_env
+    ):
         """The solver and verifier /generate payloads carry the same namespace key."""
         payloads: list[tuple[str, dict]] = []
         responses = {SOLVER_URL: "#### 18", VERIFIER_URL: "VERDICT: AGREE"}
@@ -353,8 +337,21 @@ class TestGeneratePayloads:
             return {"text": responses[url], "meta_info": {"finish_reason": {"type": "stop"}}}
 
         monkeypatch.setattr(single_turn, "post", fake_post)
-        generate_input = _make_input(prompt=[dict(role="user", content="What is 9 + 9?")], label="#### 18")
-        generate_input.sample.kv_cache_namespace = "train:-:7"
+        args = generation_env.args
+        args.megatron_config = encode_megatron_config("solver", "verifier")
+        args.sglang_model_routers = {"solver": ("solver-host", 1111), "verifier": ("verifier-host", 2222)}
+        generate_input = GenerateFnInput(
+            state=GenerateState(args),
+            sample=Sample(
+                group_index=3,
+                index=7,
+                prompt=[dict(role="user", content="What is 9 + 9?")],
+                label="#### 18",
+                kv_cache_namespace="train:-:7",
+            ),
+            sampling_params={},
+            evaluation=False,
+        )
 
         await solver_verifier.generate(generate_input)
 

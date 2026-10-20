@@ -12,9 +12,9 @@ The independent oracle checks:
 import json
 import random
 import uuid
-from types import SimpleNamespace
 
 import pytest
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 from tests.fast.rollout.session.test_samples import _make_record
 
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
@@ -24,22 +24,11 @@ from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
 
-_ARGS = SimpleNamespace(
-    miles_router_timeout=30,
+_ARGS = make_session_server_config(
+    use_session_server="v2",
     hf_checkpoint="Qwen/Qwen3-0.6B",
-    chat_template_path=None,
     apply_chat_template_kwargs={"enable_thinking": False},
-    tito_model="default",
-    sglang_speculative_algorithm=None,
-    use_rollout_routing_replay=False,
-    use_rollout_indexer_replay=False,
-    use_sampling_support_replay=False,
-    custom_rollout_request_headers_function_path=None,
-    lora_rank=0,
-    lora_adapter_path=None,
-    lora_train_only=False,
-    session_server_instance_id=uuid.uuid4().hex,
-    save_debug_trajectory_data=None,
+    instance_id=uuid.uuid4().hex,
     session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
     session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
 )
@@ -59,7 +48,7 @@ def core():
         chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
     )
     registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer)
-    return SessionCoreV2(_UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id)
+    return SessionCoreV2(_UnusedBackend(), registry, _ARGS, _ARGS.instance_id)
 
 
 class _Grower:

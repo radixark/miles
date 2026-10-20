@@ -85,11 +85,15 @@ async def test_post_rejects_duplicate_headers_before_dispatch(monkeypatch, distr
     monkeypatch.setattr(http_utils, "_distributed_post_enabled", distributed)
     monkeypatch.setattr(http_utils, "_post_actors", [object()])
     with (
-        patch.object(http_utils, "_next_actor", side_effect=AssertionError("must not dispatch to Ray")),
-        patch.object(http_utils, "_rollout_client", side_effect=AssertionError("must not create an HTTP client")),
+        patch.object(http_utils, "_next_actor", side_effect=AssertionError("must not dispatch to Ray")) as next_actor,
+        patch.object(
+            http_utils, "_rollout_client", side_effect=AssertionError("must not create an HTTP client")
+        ) as rollout_client,
         pytest.raises(ValueError, match="duplicate case-insensitive names"),
     ):
         await http_utils.post("http://unused.invalid/generate", {}, headers={"X-Policy": "one", "x-policy": "two"})
+    next_actor.assert_not_called()
+    rollout_client.assert_not_called()
 
 
 class TestResolveIp:
