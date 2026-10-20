@@ -330,13 +330,14 @@ def execute(args: ScriptArgs):
     )
     if not args.recipe.enable_thinking:
         agent_args += """--apply-chat-template-kwargs '{"enable_thinking": false}' """
-    if not args.fully_async:
-        # --fully-async selects its own rollout function, so agent/* metrics are logged only in sync mode.
-        agent_args += "--rollout-function-path generate.RolloutFn "
-    if args.filter_zero_std:
-        agent_args += (
-            "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter "
-        )
+    # tmax_metrics' filter hooks record every group before the zero-variance filter (Miles's, applied when
+    # filter_zero_std), and its log hook logs rollout/{agent,tools,unfiltered,trained}/* once per batch, in sync and
+    # fully-async mode alike (--fully-async rejects --rollout-function-path, so a rollout function cannot).
+    group_filter = "nonzero_std_filter" if args.filter_zero_std else "keep_all_filter"
+    agent_args += (
+        f"--dynamic-sampling-filter-path tmax_metrics.{group_filter} "
+        "--custom-rollout-log-function-path tmax_metrics.log_rollout_data "
+    )
 
     perf_args = (
         f"--tensor-model-parallel-size {args.tensor_model_parallel_size} "

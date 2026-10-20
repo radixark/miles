@@ -34,7 +34,8 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | `run_tmax_qwen3_5.py` | Launcher: `prepare` (download, extract tasks, prompt JSONL, torch_dist conversion) and `execute` |
 | `tmax_agent_function.py` | Agent loop for `agentic_tool_call.generate`, plus the over-sampling `abort` hook |
 | `tmax_sandbox.py` | Per-episode container on a Docker-API socket (Podman), ported from open-instruct |
-| `generate.py` | Reward function (`None` drops the group) and `agent/*` metrics |
+| `generate.py` | Reward function (`None` drops the group) |
+| `tmax_metrics.py` | Per-rollout W&B metrics open-instruct logs: episodes and tools, solve rates before the filter, trained-sample lengths and advantages |
 | `tmax_prompts.py` | open-instruct's system prompt |
 | `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes) |
 | `beaker/` | `submit.py` (config -> Beaker job, pinned to a commit), the job's entrypoint, open-instruct's vendored podman bring-up, and the registry mirror tooling |
@@ -198,8 +199,8 @@ above 1 nat).
 
 ### Fully async
 
-- `--fully-async` rejects `--colocate` and `--rollout-function-path`, so `agent/*` metrics are only logged
-  in synchronous mode; the per-episode log lines are written in both.
+- `--fully-async` rejects `--colocate` and `--rollout-function-path`, so the episode metrics are logged by a
+  `--custom-rollout-log-function-path` hook (`tmax_metrics.log_rollout_data`), which both modes call.
 - The abort hook matters only in synchronous mode: after over-sampling finishes a step, Miles waits for all
   pending episodes. Each episode runs in its own process (`--custom-agent-function-mode subproc`, the
   default), so `abort`, which runs in the rollout process, bumps a generation counter in a file scoped to
@@ -249,7 +250,6 @@ Open differences from open-instruct and the work on them are tracked in [ROADMAP
 - The first-turn prompt is not token-identical: SGLang's tool schema adds `"strict": false` and reorders the tool
   definition's keys, about 17 tokens. Tool observations are framed differently too (two newlines, trimmed output,
   several calls in one turn share one user block).
-- `agent/*` episode metrics are not logged in fully-async runs.
 - Podman comes from Ubuntu's apt (4.9) at job start; open-instruct's image builds 5.6.2 and crun 1.14.3.
 - Every agent process runs on the head node (`--pin-rollout-manager-to-head`); open-instruct's environment actors
   run on every node. The sandboxes still spread: the head drives the other nodes' podman over TCP.

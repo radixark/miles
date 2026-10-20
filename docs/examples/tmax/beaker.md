@@ -224,13 +224,15 @@ In W&B, a run and its group are named after the experiment name, in the config's
 - `rollout/fully_async/avg_staleness` and `stale_groups_filtered`;
 - `rollout/dynamic_filter/drop_zero_std_*`;
 - `train/train_rollout_logprob_abs_diff` (about 0.007 when healthy) and `train/grad_norm`;
+- `train/kl_loss`, the KL to the base model (open-instruct's `objective/kl2_avg`), and `train/entropy_loss`;
+- `rollout/agent/end_reason/*`, `rollout/agent/non_submitting_fraction`, `rollout/tools/{bash,env_reset}/*`;
+- `rollout/unfiltered/frac_solve_rate_*` (the groups' solve rates before the filter);
 - `perf/update_weights_time`.
 
-Ignore `perf/tokens_per_gpu_per_sec` and `perf/rollout_time` in fully-async runs. Episode-level statistics (end
-reasons, turns, tool errors) are not logged in fully-async mode, so read them from the trace files,
-`<trace_dir>/<run>/traces-<host>.jsonl`: one JSON record per episode with `reward`, `metrics.end_reason`,
-`metrics.turns`, `metrics.tool_errors`, `metrics.model_query_time_sum`, `metrics.env_execution_time_sum` and
-`metrics.total_time`.
+Ignore `perf/tokens_per_gpu_per_sec` and `perf/rollout_time` in fully-async runs. Every episode is also in the trace
+files, `<trace_dir>/<run>/traces-<host>.jsonl`: one JSON record per episode with `reward`, `metrics.end_reason`,
+`metrics.turns`, `metrics.tool_errors`, `metrics.model_query_time_sum`, `metrics.env_execution_time_sum`,
+`metrics.sandbox_start_time` and `metrics.total_time`.
 
 ## Failures and what they mean
 

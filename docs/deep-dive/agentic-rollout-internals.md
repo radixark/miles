@@ -896,8 +896,7 @@ servers (v1) on ports 30000-30031, router on 31000, agent server with
 (`download_and_process_data.py`). `--input-key prompt --metadata-key metadata`; no
 `--apply-chat-template`.
 
-**1. Rollout step starts.** `RolloutFn._call_train` (`generate.py:96`, a thin
-`InferenceRolloutFn` subclass that adds `agent/*` metrics) calls
+**1. Rollout step starts.** `InferenceRolloutFn._call_train` calls
 `generate_rollout_async`, which pulls 4 groups of 8 identical samples and starts 32
 `generate_and_rm` tasks.
 

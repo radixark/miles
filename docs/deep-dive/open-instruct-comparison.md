@@ -187,9 +187,9 @@ malformed and ends the episode on both sides. What differs is tokenization, time
 
 | Signal | open-instruct | Miles |
 |---|---|---|
-| End reasons, tool calls, tool errors, start failures, model vs env time | `tools/bash/*`, `tools/env_reset/failure_rate`, truncated / non-submitting fractions | `agent/*` from `examples/tmax/generate.RolloutFn`, only in synchronous mode (`--fully-async` rejects `--rollout-function-path`); per episode in the trace files |
+| End reasons, tool calls, tool errors, start failures, model vs env time | `tools/bash/*`, `tools/env_reset/failure_rate`, truncated / non-submitting fractions | `rollout/agent/*`, `rollout/tools/{bash,env_reset}/*` from `examples/tmax/tmax_metrics` (a `--custom-rollout-log-function-path` hook, so in both modes); per episode in the trace files |
 | Reward | `scores`, `val/avg_group_performance_pre_filter` | `rollout/raw_reward`, `rollout/raw_reward_unfiltered` |
-| Solve-rate distribution | `val/solve_rate_hist`, `batch/percent_solved_hist` | None |
+| Solve-rate distribution | `val/solve_rate_hist`, `batch/percent_solved_hist` | `rollout/unfiltered/frac_solve_rate_*` (per-group solve rate before the filter, in bins) |
 | Zero-variance drops | `batch/filtered_prompts*` | `rollout/dynamic_filter/drop_zero_std_*`; `rollout/zero_std/*` is computed after the filter and always 0 |
 | Train/rollout mismatch | `debug/vllm_vs_local_logprob_diff_{mean,max,std}` | `train/train_rollout_logprob_abs_diff`, `train/train_rollout_kl` (mean only) |
 | Staleness | `model_step_*`, `stale_results_dropped` | `rollout/fully_async/*` (average, max, token-weighted, version span), `rollout/weight_version/*` |
