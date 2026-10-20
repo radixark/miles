@@ -117,8 +117,8 @@ Where the agent loop runs differs:
 | Packing | `--pack_length 67584`, one pack per micro-batch; packs not divisible by DP are dropped | Dynamic batching, `--max-tokens-per-gpu 34816` (≥ max_seq_len / CP), balanced, nothing dropped |
 | Logits | `--lm_head_fp32 true` in trainer and vLLM | bf16 output layer; SGLang's `--sglang-enable-fp32-lm-head` exists but is not passed. bf16 rounding is most of the train/rollout gap, and only fixing both sides helps (see [Inference engines](#inference-engines)) |
 | Log-prob memory | `--use_liger_grpo_loss --liger_grpo_loss_chunk_size 8` (open-instruct's tiled LM-head loss) | `--log-probs-backend fused` |
-| Optimizer | AdamW, lr 1e-6, betas (0.9, 0.999), eps 1e-8, wd 0, constant LR, grad clip 1.0 | Adam, lr 1e-6, betas (0.9, **0.98**), wd 0, constant LR, `--clip-grad 1.0` |
-| Seed | 42 | Miles default 1234 (rollout seed 42) |
+| Optimizer | AdamW, lr 1e-6, betas (0.9, 0.999), eps 1e-8, wd 0, constant LR, grad clip 1.0 | Adam, lr 1e-6, betas (0.9, 0.999), eps 1e-8, wd 0, constant LR, `--clip-grad 1.0` (beta2 was 0.98 before branch `shashank/tmax-oi-parity`) |
+| Seed | 42 | `--seed 42` (Miles' default 1234 before branch `shashank/tmax-oi-parity`; rollout seed 42) |
 | Parallelism | ZeRO-3, Ulysses SP 4, 16 learners | TP 2 × CP 2 (+ SP), DP 4 on 16 GPUs |
 | Recompute | Full gradient checkpointing | `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1` |
 | Attention | Auto FA2/FA3; holmes variant `flash_4` | `--attention-backend flash` |
@@ -228,7 +228,7 @@ flags `run_tmax_qwen3_5.py` adds.
 | `--lm_head_fp32 true` | Not set |
 | `--use_liger_grpo_loss --liger_grpo_loss_chunk_size 8` | `--log-probs-backend fused` |
 | `--gradient_checkpointing` | `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1` |
-| `--seed 42` | Not set (1234) |
+| `--seed 42` | `--seed 42` |
 | `--active_sampling` | `filter_zero_std: true` (`apply_reward_nonzero_std_filter`) |
 | `--vllm_enable_prefix_caching` | SGLang radix cache (default), namespaced under v2 |
 | `--vllm_gdn_prefill_backend triton` | n/a (SGLang's own linear-attention kernels) |

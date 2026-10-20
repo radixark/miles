@@ -361,8 +361,10 @@ def execute(args: ScriptArgs):
         "--lr 1e-6 "
         "--lr-decay-style constant "
         "--weight-decay 0.0 "
+        # open-instruct's torch.optim.AdamW defaults: betas (0.9, 0.999), eps 1e-8 (also Megatron's default eps).
         "--adam-beta1 0.9 "
-        "--adam-beta2 0.98 "
+        "--adam-beta2 0.999 "
+        "--seed 42 "  # open-instruct's --seed 42 (Miles defaults to 1234)
     )
     if args.optimizer_cpu_offload:
         optimizer_args += (
