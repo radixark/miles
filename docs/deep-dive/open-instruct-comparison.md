@@ -111,7 +111,7 @@ Where the agent loop runs differs:
 |---|---|---|
 | Loss | `--loss_fn dppo --dppo_divergence_type tv --dppo_divergence_threshold 0.1`. Per token: `r = π/μ` (unclamped), `D = |μ − π|` on the sampled token, mask `M = 0` when `D > 0.1` and the update moves further away (`A > 0` with `r > 1`, or `A < 0` with `r < 1`); loss `−A·r·M`; no ratio clip (`grpo_utils.py`) | PPO clip, `--eps-clip 0.2 --eps-clip-high 0.28`. The two differ most on low-probability tokens: at `μ = 0.05` with `A > 0`, PPO stops the update at `π = 0.064`; DPPO allows up to `π = 0.15` |
 | Off-policy anchor | `--use_vllm_logprobs true` | `--use-rollout-logprobs` |
-| TIS, KL | TIS cap 0 (off); `--beta 0.0` (the reference model is still loaded and four KL estimators are logged at weight 0) | TIS off; no KL term |
+| TIS, KL | TIS cap 0 (off); `--beta 0.0` (the reference model is still loaded and four KL estimators are logged at weight 0) | TIS off; no KL term in the loss, but the KL to the base model is logged as `train/kl_loss` (`log_kl_to_base`, k3 = open-instruct's kl2) |
 | Advantages | `centered`: reward minus the group mean | `grpo --disable-grpo-std-normalization` (same) |
 | Aggregation | Token denominator, but each (rank, micro-batch) shard is weighted separately, so tokens in sparse shards weigh more | Exact global token mean, `--calculate-per-token-loss` |
 | Packing | `--pack_length 67584`, one pack per micro-batch; packs not divisible by DP are dropped | Dynamic batching, `--max-tokens-per-gpu 34816` (≥ max_seq_len / CP), balanced, nothing dropped |

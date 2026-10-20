@@ -63,6 +63,7 @@ Args:
       (rollout_data/<step>.pt) and --save-debug-train-data (train_data/<step>_<rank>.pt, with advantages and
       trainer logprobs), open-instruct's --save_traces + --save_trainer_logprobs (default: off).
   --policy-loss: dppo_tv (default; open-instruct's DPPO, threshold 0.1) or ppo_clip (clip 0.2 / 0.28).
+  --log-kl-to-base / --no-log-kl-to-base: log the KL to the base model (default: on; costs one more forward pass).
   --wandb-project: wandb project (default: miles-run_tmax_qwen3_5); with --exp-name restarts share one run.
   --wandb-entity: wandb entity (team) to log to (default: the API key's default entity).
   --docker-host: Docker API endpoint(s) of the podman daemons (default: inherit TMAX_DOCKER_HOST / DOCKER_HOST).
@@ -183,6 +184,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # dppo_tv: open-instruct's DPPO (binary-TV trust region, no ratio clip); ppo_clip: PPO clip 0.2 / 0.28, which the
     # runs before branch shashank/tmax-oi-parity used.
     policy_loss: Literal["dppo_tv", "ppo_clip"] = "dppo_tv"
+    # Log the KL to the base model (train/kl_loss), open-instruct's objective/kl2_avg: how far the policy has moved.
+    log_kl_to_base: bool = True
     wandb_project: str = ""
     # W&B entity (team) the run logs to; empty = the API key's default entity. Pinned so the run's URL is known at
     # submit time (beaker/submit.py puts it in the experiment description).
@@ -357,6 +360,11 @@ def execute(args: ScriptArgs):
         # first thing to rule out when a run stops improving.
         "--observe-training-entropy "
     )
+    if args.log_kl_to_base:
+        # KL to the base model (--ref-load), logged as train/kl_loss and not trained on (coefficient 0), as
+        # open-instruct logs it at --beta 0. k3 is open-instruct's kl2 (its default and the eval sheet's train_kl2).
+        # Costs the reference model's memory on the trainer GPUs and one more forward pass per step.
+        grpo_args += "--use-kl-loss --kl-loss-coef 0.0 --kl-loss-type k3 "
     if args.policy_loss == "dppo_tv":
         # open-instruct's --loss_fn dppo --dppo_divergence_type tv --dppo_divergence_threshold 0.1, anchored on the
         # rollout's log-probs (--use-rollout-logprobs above); no ratio clip.
