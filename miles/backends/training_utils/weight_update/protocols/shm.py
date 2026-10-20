@@ -1,0 +1,133 @@
+import contextlib
+from argparse import Namespace
+from collections import deque
+from collections.abc import Iterator, Sequence
+from concurrent.futures import Future
+
+import torch
+import torch.multiprocessing
+from sglang.srt.utils import MultiprocessingSerializer
+
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.protocols.utils.data_replica import (
+    OwnedBuckets,
+    get_data_replica_rank_and_size,
+)
+from miles.backends.training_utils.weight_update.protocols.utils.flattened_bucket import flatten_weight_bucket
+from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results
+from miles.utils import async_utils
+
+
+# buckets in flight across the host, enough to keep the engines loading while the next one is copied out; arbitrary
+# otherwise. Each replica rank gets its share, so /dev/shm holds about this many buckets whatever the rank count.
+_MAX_BUCKETS_IN_FLIGHT_PER_HOST = 4
+
+
+class UpdateWeightFromSharedMemory(WeightTransferProtocol):
+    """
+    Host weight sync through shared memory, for engines on the trainer's host. The ranks holding the
+    gathered buckets split them round-robin, copy each flattened bucket into a shared-memory tensor
+    once the collective gathers are done, and hand the engines its handle through
+    /update_weights_from_tensor; each engine maps it in place, with no file written or parsed.
+    A bucket is published as soon as it is on the host, so the copies overlap the engine loads. About
+    `_MAX_BUCKETS_IN_FLIGHT_PER_HOST` host copies are alive at once across the host, so host memory stays a
+    few buckets at any model size.
+    """
+
+    def __init__(self, args: Namespace) -> None:
+        super().__init__(args)
+        # each published host copy with its engine calls; a copy lives until every engine has loaded it
+        self._in_flight: deque[tuple[torch.Tensor, list[Future]]] = deque()
+
+    def connect(
+        self,
+        rollout_engines: Sequence[SGLangApiClient],
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
+        parallel_state: ParallelState,
+        placement: WeightUpdatePlacement,
+        selector: str,
+    ) -> None:
+        self.rollout_engines = rollout_engines
+        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, self.rollout_engines, engine_cell_ids)
+        self.group_name = "miles-shm"
+        self.is_sender = True
+        self._selector = selector
+        self._engine_tp_sizes = engine_gpu_counts
+        replica_rank, replica_size = get_data_replica_rank_and_size(parallel_state, placement)
+        self._owned_buckets = OwnedBuckets(replica_rank=replica_rank, replica_size=replica_size)
+        self._max_in_flight = max(1, _MAX_BUCKETS_IN_FLIGHT_PER_HOST // replica_size)
+
+    def begin_sync(self, weight_version: int, iter_buckets) -> bool:
+        self._owned_buckets.reset()
+        return True
+
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
+        self._owned_buckets.offer(bucket)
+
+    def after_base_weights(self) -> None:
+        # copied out only after the collective gathers finish, so the ranks' host copies run in parallel
+        cell_updaters = list(self.cell_updaters_of_cell_id.values())
+        for _, bucket in self._owned_buckets.take():
+            if len(self._in_flight) == self._max_in_flight:
+                self._wait_for_oldest_bucket()
+            host_tensor, metadata = _copy_to_host_bucket(bucket)
+            with _file_system_sharing():
+                futures = self._publish(cell_updaters, {"flattened_tensor": host_tensor, "metadata": metadata})
+            self._in_flight.append((host_tensor, futures))
+
+    def _publish(self, cell_updaters: list, bucket_payload: dict) -> list[Future]:
+        return [
+            updater.submit_client_call(
+                "update_weights_from_tensor",
+                # one serialization per receiving process: each takes its own reference to the /dev/shm file,
+                # which is unlinked once the references are released, so a shared payload fails a later reader
+                serialized_named_tensors=[
+                    MultiprocessingSerializer.serialize(bucket_payload, output_str=True) for _ in range(tp_size)
+                ],
+                load_format="flattened_bucket",
+                selector=self._selector,
+            )
+            for updater, tp_size in zip(cell_updaters, self._engine_tp_sizes, strict=True)
+            # a payload no engine opens keeps its reference, so the file would outlive the sync
+            if not updater.is_errored
+        ]
+
+    def finalize(self, weight_version: int) -> None:
+        while self._in_flight:
+            self._wait_for_oldest_bucket()
+
+    def _wait_for_oldest_bucket(self) -> None:
+        _, futures = self._in_flight.popleft()
+        check_weight_sync_results(async_utils.wait_futures(futures), is_lora=False)
+
+
+def _copy_to_host_bucket(bucket: list[tuple[str, torch.Tensor]]) -> tuple[torch.Tensor, list]:
+    """The bucket as one shared host byte tensor in the engine's flattened layout, copied tensor by tensor.
+
+    Flattening on the device would view each tensor as bytes, which TPU tiles with a padded trailing dimension
+    (64x for bf16), so the layout comes from meta tensors and each tensor is copied into its slice.
+    """
+    metadata = flatten_weight_bucket([(name, tensor.to("meta")) for name, tensor in bucket]).get_metadata()
+    with _file_system_sharing():
+        host_tensor = torch.empty(metadata[-1].end_idx, dtype=torch.uint8).share_memory_()
+    for (_, tensor), meta in zip(bucket, metadata, strict=True):
+        host_tensor[meta.start_idx : meta.end_idx].view(tensor.dtype).view(tensor.shape).copy_(tensor)
+    return host_tensor, metadata
+
+
+@contextlib.contextmanager
+def _file_system_sharing() -> Iterator[None]:
+    # the payload must name the /dev/shm file, which an unrelated process (the engine) can open; the strategy is
+    # process-wide, so it is set only while allocating and serializing
+    previous = torch.multiprocessing.get_sharing_strategy()
+    torch.multiprocessing.set_sharing_strategy("file_system")
+    try:
+        yield
+    finally:
+        torch.multiprocessing.set_sharing_strategy(previous)
