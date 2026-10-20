@@ -4,6 +4,7 @@ import torch
 
 from miles import platforms
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
+from miles.backends.training_utils.loss.hub.fixed_shape import fixed_shape_loss_enabled
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
 _TPU_ATTENTION_BACKENDS = ("sdpa_blocks", "splash")
@@ -74,10 +75,14 @@ def validate_torchtitan_args(args) -> None:
             f"--titan-tpu-attention splash tiles the sequence in 1024-token blocks; --seq-length {args.seq_length} "
             "is not a multiple of 1024"
         )
+    # without Triton, the fused log-prob op is the fixed-shape path's compiled program
     if args.log_probs_backend == "fused" and not platform.triton_kernels:
-        raise ValueError(
-            f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
-        )
+        if not fixed_shape_loss_enabled(args) or args.tensor_model_parallel_size != 1 or args.entropy_coef != 0:
+            raise ValueError(
+                f"--log-probs-backend fused on {platform.device_type} needs the fixed-shape loss "
+                "(loss/hub/fixed_shape.py), --tensor-model-parallel-size 1 and --entropy-coef 0; "
+                "use --log-probs-backend torch"
+            )
     # without dynamic shapes, packed microbatches are padded to a power-of-two bucket capped at --seq-length
     if not platforms.current_platform.dynamic_shapes:
         if args.use_dynamic_batch_size and args.max_tokens_per_gpu > args.seq_length:
