@@ -13,6 +13,7 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
 from miles.backends.training_utils.loss.hub.fixed_shape import (
+    _FusedLogProb,
     fixed_shape_policy_loss_function,
     get_fixed_shape_log_probs_and_entropy,
 )
@@ -124,7 +125,20 @@ def test_forward_log_probs_and_entropy_match(temperature):
     ],
 )
 def test_policy_loss_matches(overrides):
-    args = _args(**overrides)
+    _assert_policy_loss_matches(_args(**overrides))
+
+
+def test_the_fused_log_prob_backend_matches_the_per_sample_policy_loss():
+    """`--log-probs-backend fused` on TPU only swaps the row scorer; loss, metrics and gradients stay the same."""
+    # with Megatron installed the per-sample side's cross-entropy rounds the logits gradient to bf16
+    _assert_policy_loss_matches(
+        _args(entropy_coef=0.0),
+        fixed_shape_args=_args(entropy_coef=0.0, log_probs_backend="fused"),
+        grad_tolerance=dict(rtol=2**-7, atol=1e-6),
+    )
+
+
+def _assert_policy_loss_matches(args, *, fixed_shape_args=None, grad_tolerance=None):
     inputs = _inputs(args)
 
     logits = inputs["policy_logits"].clone().requires_grad_(True)
@@ -142,7 +156,7 @@ def test_policy_loss_matches(overrides):
 
     padded = _padded(inputs["policy_logits"]).requires_grad_(True)
     got_loss, got_metrics = fixed_shape_policy_loss_function(
-        args, make_batch(inputs, "policy_loss"), padded, sum_of_sample_mean=None
+        fixed_shape_args or args, make_batch(inputs, "policy_loss"), padded, sum_of_sample_mean=None
     )
     got_loss.backward()
 
@@ -151,5 +165,29 @@ def test_policy_loss_matches(overrides):
     for key, want in want_metrics.items():
         torch.testing.assert_close(got_metrics[key], want, rtol=1e-5, atol=1e-6, msg=key)
     num_packed = sum(inputs["total_lens"])
-    torch.testing.assert_close(padded.grad[:, :num_packed], logits.grad, rtol=1e-5, atol=1e-8)
+    torch.testing.assert_close(
+        padded.grad[:, :num_packed], logits.grad, **(grad_tolerance or dict(rtol=1e-5, atol=1e-8))
+    )
     assert torch.count_nonzero(padded.grad[:, num_packed:]) == 0
+
+
+@pytest.mark.parametrize("temperature", [1.0, 0.7])
+def test_fused_log_prob_matches_log_softmax(temperature):
+    """Log-probs, entropy and the logits gradient match the fp32 log-softmax path."""
+    torch.manual_seed(0)
+    logits = (torch.randn(PADDED_ROWS, VOCAB) * 3).to(torch.bfloat16).requires_grad_(True)
+    targets = torch.randint(0, VOCAB, (PADDED_ROWS,))
+    weights = torch.randn(PADDED_ROWS)
+
+    log_probs, entropy = _FusedLogProb.apply(logits, targets, temperature)
+    (log_probs * weights).sum().backward()
+    fused_grad, logits.grad = logits.grad, None
+
+    scaled = logits.float() / temperature
+    ref = torch.log_softmax(scaled, -1).gather(-1, targets[:, None]).squeeze(-1)
+    ref_entropy = -(torch.softmax(scaled, -1) * torch.log_softmax(scaled, -1)).sum(-1)
+    (ref * weights).sum().backward()
+
+    torch.testing.assert_close(log_probs, ref, atol=1e-5, rtol=0)
+    torch.testing.assert_close(entropy, ref_entropy.detach(), atol=1e-4, rtol=0)
+    torch.testing.assert_close(fused_grad.float(), logits.grad.float(), atol=1e-6, rtol=0)
