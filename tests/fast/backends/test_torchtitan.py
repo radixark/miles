@@ -21,6 +21,7 @@ register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 def _args(**overrides) -> Namespace:
     base = dict(
         titan_model_name="qwen3",
+        titan_tpu_attention="sdpa_blocks",
         seq_length=8192,
         micro_batch_size=1,
         use_dynamic_batch_size=False,
@@ -98,6 +99,17 @@ def test_the_triton_log_prob_kernel_is_refused_on_tpu(monkeypatch):
     _on_tpu(monkeypatch)
     with pytest.raises(ValueError, match="Triton"):
         validate_torchtitan_args(_args(use_dynamic_batch_size=False, log_probs_backend="fused"))
+
+
+def test_splash_attention_needs_a_tpu_and_whole_1024_token_tiles(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    with pytest.raises(ValueError, match="TPU only"):
+        validate_torchtitan_args(_args(titan_tpu_attention="splash"))
+    monkeypatch.setattr(titan_arguments.accelerator, "IS_TPU", True)
+    splash = dict(titan_tpu_attention="splash", use_dynamic_batch_size=False, log_probs_backend="torch")
+    with pytest.raises(ValueError, match="multiple of 1024"):
+        validate_torchtitan_args(_args(**splash, seq_length=3000, rollout_max_context_len=3000))
+    validate_torchtitan_args(_args(**splash))
 
 
 @pytest.mark.parametrize("seq_len", [1000, 1024, 3000, 8192])
