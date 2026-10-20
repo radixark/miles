@@ -53,7 +53,9 @@ def _make_input(*, prompt: str | list[dict[str, str]], label: str) -> GenerateFn
         lora_rank=0,
         lora_adapter_path=None,
     )
-    state = SimpleNamespace(args=args, tokenizer=_FakeTokenizer(), processor=None)
+    state = SimpleNamespace(
+        args=args, tokenizer=_FakeTokenizer(), processor=None, rollout_request_headers_function=None
+    )
     sample = Sample(group_index=3, index=7, prompt=prompt, label=label)
     return GenerateFnInput(state=state, sample=sample, sampling_params={}, evaluation=False)
 

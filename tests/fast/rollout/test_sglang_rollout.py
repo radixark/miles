@@ -32,7 +32,7 @@ class TestGenerateExtraKey:
     def _patch(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
         payloads: list[dict] = []
         tokenizer = SimpleNamespace(encode=lambda prompt, add_special_tokens: [1, 2, 3])
-        state = SimpleNamespace(tokenizer=tokenizer, processor=None)
+        state = SimpleNamespace(tokenizer=tokenizer, processor=None, rollout_request_headers_function=None)
 
         async def fake_post(url: str, payload: dict, headers: dict | None = None) -> dict:
             payloads.append(payload)
