@@ -122,6 +122,8 @@ class _Episode:
     messages: list[dict] = field(default_factory=list)
     gen_times: list[float] = field(default_factory=list)
     tool_times: list[float] = field(default_factory=list)
+    # Seconds from asking for the sandbox to holding it (or to giving up): open-instruct's tools/env_reset runtime.
+    sandbox_start_time: float = 0.0
 
 
 async def run(
@@ -148,9 +150,11 @@ async def run(
             image=metadata["image"], task_dir=os.path.join(os.environ["TMAX_TASK_DATA_DIR"], task_id)
         )
         async with sandbox as box:
+            episode.sandbox_start_time = time.monotonic() - t_start
             await _run_episode(episode, policy, box, request_kwargs)
     except SandboxInfraError as e:
         # Only the start can raise here: failures after it are observations inside the loop.
+        episode.sandbox_start_time = time.monotonic() - t_start
         await _handle_start_failure(episode, policy, request_kwargs, e)
 
     metrics = _metrics(episode, time.monotonic() - t_start)
@@ -331,6 +335,8 @@ def _metrics(episode: _Episode, total_time: float) -> dict[str, Any]:
         "tool_errors": episode.tool_errors,
         "end_reason": episode.end_reason,
         "submitted": float(episode.end_reason == "submitted"),
+        "start_failed": float(episode.end_reason == "start_failed"),
+        "sandbox_start_time": episode.sandbox_start_time,
         "model_query_time_sum": sum(episode.gen_times),
         "env_execution_time_sum": sum(episode.tool_times),
         "total_tool_time": sum(episode.tool_times),
