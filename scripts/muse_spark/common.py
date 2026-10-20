@@ -5,8 +5,8 @@ parallelism and engine sizing; this module only inserts those values. Requires s
 Muse-enabled Megatron/SGLang on every node. A multi-node run joins the Ray cluster before running with
 MILES_SCRIPT_EXTERNAL_RAY=1; a one-node run starts its own. The first run downloads the HF checkpoint and converts
 it into an adjacent _torch_dist release.
-Adam streams optimizer state to node-local NVMe; Muon keeps state/master weights on CPU and computes
-updates in GPU chunks. Each rollout performs one update.
+Adam streams optimizer state to node-local NVMe (except under LoRA, whose adapter state stays in memory); Muon keeps
+state/master weights on CPU and computes updates in GPU chunks. Each rollout performs one update.
 
 Args:
     model_org / model_dir / model_name: HF repository <model_org>/<model_name>, downloaded to
@@ -16,7 +16,7 @@ Args:
     tensor/pipeline/context/expert_model_parallel_size, decoder_first_last_pipeline_num_layers: Training layout;
         the last is the decoder layer count of the first and of the last pipeline stage.
     rollout_num_gpus_per_engine: GPUs per colocated SGLang engine, which is also its expert-parallel size.
-    optimizer / learning_rate: adam or muon, with learning rate 1e-6.
+    optimizer / learning_rate: adam or muon; the learning rate defaults to 1e-6, or 1e-5 with LoRA.
     offload_train_disk_dir: Node-local NVMe for Adam's streamed optimizer state; unset keeps the Miles
         default under $SCRATCH (/scratch).
     num_rollout / rollout_batch_size / n_samples_per_prompt: Rollouts, prompts per rollout, samples per prompt.
@@ -36,6 +36,10 @@ Args:
         on CPU into an HF checkpoint in the released layout under <run_dir>/hf;
         tools/convert_muse_spark_torch_dist_to_hf.py converts any other save. Defaults None: nothing is saved.
     extra_args / extra_env_vars: Additional training flags and runtime environment.
+    lora_rank / lora_alpha / lora_target_modules: Train a native LoRA adapter of this rank instead of every
+        weight; 0 (the default) trains every weight. The targets default to attention (q/gate/k/v/o); "attn,mlp" adds
+        the routed experts. Every weight update sends the base merged with the adapter, since Muse Spark's
+        SGLang model has no LoRA layers.
     partial: Smoke-test the recipe on one node with the last-four-layer checkpoint
         RadixArk/Muse-Spark-Open-last4-partial. Replaces the model, the cluster size, the layout (TP and EP of half
         the node over two pipeline stages, one engine for the node) and the rollout sizes (3 rollouts of 4x4
@@ -77,7 +81,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     data_dir: str = "/root/datasets"
     megatron_path: str = "/root/Megatron-LM"
     optimizer: Literal["adam", "muon"] = "adam"
-    learning_rate: float = 1e-6
+    learning_rate: float | None = None
     num_rollout: int = 30
     rollout_batch_size: int = 32
     n_samples_per_prompt: int = 16
@@ -102,6 +106,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     n_samples_per_eval_prompt: int = 4
     save_interval: int | None = None
     extra_args: str = ""
+    lora_rank: int = 0
+    lora_alpha: int = 32
+    lora_target_modules: str = "attn"
     partial: bool = False
 
     def __post_init__(self):
@@ -116,8 +123,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.rollout_num_gpus_per_engine = self.num_gpus_per_node
             self.num_rollout, self.rollout_batch_size, self.n_samples_per_prompt = 3, 4, 4
             self.rollout_max_response_len, self.rollout_max_context_len = 1024, 4096
+        if self.learning_rate is None:
+            self.learning_rate = 1e-5 if self.lora_rank else 1e-6
         if self.optimizer == "muon" and self.offload_train_disk_dir is not None:
             raise ValueError("--offload-train-disk-dir requires --optimizer adam")
+        if self.lora_rank and self.offload_train_disk_dir is not None:
+            raise ValueError("--offload-train-disk-dir streams full-model Adam state; LoRA keeps it in memory")
         if self.vlm and self.sglang_text_only:
             raise ValueError("--vlm needs the omni engine; drop --sglang-text-only")
         if self.eval_interval is not None and not self.vlm:
@@ -130,6 +141,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
                 if self.vlm
                 else f"{self.model_dir}/{self.model_name}/chat_template.jinja"
             )
+
+    @property
+    def stream_optimizer_state_to_disk(self) -> bool:
+        # A LoRA adapter's Adam state is small, and Miles cannot stream it.
+        return self.optimizer == "adam" and not self.lora_rank
 
     @property
     def run_dir(self) -> str:
@@ -281,7 +297,7 @@ def execute(args: ScriptArgs, entry_script: str):
         "--no-load-optim "
         "--no-save-optim "
     )
-    if args.optimizer == "adam":
+    if args.stream_optimizer_state_to_disk:
         optimizer_args += (
             "--stream-optimizer-state-to-disk "
             "--stream-optimizer-state-moment-dtype fp32 "
@@ -289,7 +305,7 @@ def execute(args: ScriptArgs, entry_script: str):
         )
         if args.offload_train_disk_dir is not None:
             optimizer_args += f"--offload-train-disk-dir {shlex.quote(args.offload_train_disk_dir)} "
-    else:
+    elif args.optimizer == "muon":
         optimizer_args += (
             "--muon-momentum 0.9 "
             "--muon-num-ns-steps 5 "
@@ -304,7 +320,7 @@ def execute(args: ScriptArgs, entry_script: str):
         "--colocate "
         "--offload-train "
         "--offload-rollout "
-        f"--offload-train-target {'disk' if args.optimizer == 'adam' else 'cpu'} "
+        f"--offload-train-target {'disk' if args.stream_optimizer_state_to_disk else 'cpu'} "
         f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
         f"--sglang-ep-size {args.rollout_num_gpus_per_engine} "
         "--sglang-pp-size 1 "
@@ -340,8 +356,17 @@ def execute(args: ScriptArgs, entry_script: str):
     )
     if args.pin_rollout_manager_to_head:
         misc_args += "--pin-rollout-manager-to-head "
+    if args.lora_rank:
+        misc_args += (
+            f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} "
+            f"--target-modules {shlex.quote(args.lora_target_modules)} "
+            "--experts-shared-outer-loras --lora-merge-for-rollout "
+        )
     if args.partial:
         misc_args += "--ci-test "
+        if args.lora_rank:
+            # --ci-test turns on the sample ownership checker, which reads the model companion LoRA training lacks.
+            misc_args += "--no-enable-sample-ownership-checker "
         if not args.vlm:
             # The text recipe's colocated engines zero the omni towers at startup and never receive them again.
             misc_args += (

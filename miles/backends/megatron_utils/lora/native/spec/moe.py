@@ -22,7 +22,15 @@ class GroupedExpertsSpec:
     The adapter widths come from the grouped host weights, so latent MoEs need no extra
     table entry. Shared experts stored as a list of sub-experts get one adapter over all of
     them here; a plain shared-expert MLP is adapted by the architecture's MLP spec instead.
+    ``leaves`` names one routed expert's gate, up and down projections.
     """
+
+    def __init__(self, leaves: tuple[str, str, str] = ("w1", "w3", "w2")):
+        self.leaves = leaves
+
+    @property
+    def supported_targets(self) -> frozenset[str]:
+        return frozenset(self.leaves)
 
     def attach(self, mlp: nn.Module, layer: nn.Module, context: AttachContext) -> int:
         from megatron.core import parallel_state
@@ -39,18 +47,19 @@ class GroupedExpertsSpec:
             is_ep=parallel_state.get_expert_model_parallel_world_size() > 1,
         )
         count = 0
-        fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, ["w1", "w3"])
+        gate, up, down = self.leaves
+        fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, [gate, up])
         # selectors address one expert ("experts.*.w1"); shared-outer adapters cover them all
-        if context.lora.selects(f"{fc1_prefix}0.w1") or context.lora.selects(f"{fc1_prefix}0.w3"):
+        if context.lora.selects(f"{fc1_prefix}0.{gate}") or context.lora.selects(f"{fc1_prefix}0.{up}"):
             experts.lora_fc1_adapter = LoRAGroupedFC1(
-                hf_prefix=fc1_prefix, reference=fc1.weight0, width=fc1.weight0.shape[1], **common
+                hf_prefix=fc1_prefix, reference=fc1.weight0, width=fc1.weight0.shape[1], leaves=(gate, up), **common
             )
             attach_adapter_forward(fc1, experts.lora_fc1_adapter, context.lora.scale)
             count += 1
-        fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, ["w2"])
-        if context.lora.selects(f"{fc2_prefix}0.w2"):
+        fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, [down])
+        if context.lora.selects(f"{fc2_prefix}0.{down}"):
             experts.lora_fc2_adapter = LoRAGroupedFC2(
-                hf_prefix=fc2_prefix, reference=fc2.weight0, width=fc2.weight0.shape[0], **common
+                hf_prefix=fc2_prefix, reference=fc2.weight0, width=fc2.weight0.shape[0], leaf=down, **common
             )
             attach_adapter_forward(fc2, experts.lora_fc2_adapter, context.lora.scale)
             count += 1

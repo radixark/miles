@@ -15,7 +15,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
-from miles.utils.lora.utils import lora_rollout_enabled
+from miles.utils.lora.utils import lora_sync_reads_adapter
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.orchestration_utils import init_orchestration_script
 
@@ -143,7 +143,7 @@ async def train(args, *, disposer: Disposer):
         if rollout_id + 1 < args.num_rollout or eval_due:
             if args.colocate_memory_peak_device == "gpu":
                 await actor_model.clear_memory()
-                if lora_rollout_enabled(args):
+                if lora_sync_reads_adapter(args):
                     await actor_model.offload_grad_buffer()
                 await inference_controller.onload_weights()
                 await offload_train()

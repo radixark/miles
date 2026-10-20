@@ -1,5 +1,6 @@
 """Adapter HF names come from the converter that names the base weights — no GPU."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -132,3 +133,35 @@ def test_a_converter_name_outside_the_hf_namespace_fails_instead_of_never_being_
 
     with pytest.raises(AssertionError, match=r"model.language_model.layers.0.self_attn.q_proj.weight"):
         naming.block_prefix(layer, qkv, ["q_proj", "k_proj", "v_proj"])
+
+
+def test_muse_spark_declares_the_names_its_converter_gives(tmp_path):
+    """The checkpoint stacks experts the converter names one at a time, so the spec declares the converter's names."""
+    from tests.fast.backends.megatron_utils.test_muse_spark_weights import _build_hf_config
+
+    (tmp_path / "config.json").write_text(json.dumps(_build_hf_config(dense_prefix=1)))
+    # hidden 16, 4 query heads, 2 KV groups, head_dim 4; experts: latent 8, intermediate 16; dense: intermediate 32
+    dense = _layer(1, mlp__linear_fc1__weight=((64, 16), 0, False), mlp__linear_fc2__weight=((16, 32), 1, False))
+    moe = _layer(
+        2,
+        self_attention__linear_qkv__weight=((48, 16), 0, False),
+        self_attention__linear_proj__weight=((16, 16), 1, False),
+        mlp__experts__linear_fc1__weight0=((32, 8), None, True),
+        mlp__experts__linear_fc2__weight0=((8, 16), None, True),
+    )
+    for layer in (dense, moe):
+        for weight in layer.parameters():
+            weight.data = weight.data.to(torch.bfloat16)
+    converter = ConverterNaming(SimpleNamespace(hf_checkpoint=str(tmp_path)), "muse_spark", tp_size=1, is_hf_name=_ANY)
+    declared = MODEL_SPECS["muse_spark"].declared_naming
+
+    for layer, path, leaves in [
+        (dense, "mlp__linear_fc1__weight", ["gate_proj", "up_proj"]),
+        (dense, "mlp__linear_fc2__weight", ["down_proj"]),
+        (moe, "self_attention__linear_qkv__weight", ["q_proj", "gate_proj", "k_proj", "v_proj"]),
+        (moe, "self_attention__linear_proj__weight", ["o_proj"]),
+        (moe, "mlp__experts__linear_fc1__weight0", ["gate_proj", "up_proj"]),
+        (moe, "mlp__experts__linear_fc2__weight0", ["down_proj"]),
+    ]:
+        weight = _weight(layer, path)
+        assert declared.block_prefix(layer, weight, leaves) == converter.block_prefix(layer, weight, leaves), path

@@ -255,3 +255,20 @@ def test_a_multi_node_entry_point_converts_across_the_ray_cluster(monkeypatch, s
     import_launch_script(U.repo_base_dir / script).main()
     (conversion,) = conversions
     assert conversion["multinode"] and conversion["megatron_model_type"] == "muse-spark-full"
+
+
+@pytest.mark.parametrize("script", [_H200, _B300])
+def test_lora_trains_an_attention_adapter_that_rollout_serves_merged(monkeypatch, script):
+    launcher = import_launch_script(U.repo_base_dir / script)
+    tokens, _ = _train_args(monkeypatch, launcher, lora_rank=16)
+    assert tokens[tokens.index("--lora-rank") + 1] == "16" and tokens[tokens.index("--lora-alpha") + 1] == "32"
+    assert tokens[tokens.index("--target-modules") + 1] == "attn"
+    # Muse Spark's SGLang model has no LoRA layers, so the engines get the base merged with the adapter.
+    assert {"--experts-shared-outer-loras", "--lora-merge-for-rollout"} <= set(tokens)
+    assert tokens[tokens.index("--lr") + 1] == "1e-05"
+    # the adapter's Adam state stays in memory: Miles cannot stream LoRA optimizer state to disk
+    assert "--stream-optimizer-state-to-disk" not in tokens
+    assert tokens[tokens.index("--offload-train-target") + 1] == "cpu"
+
+    full_model, _ = _train_args(monkeypatch, launcher)
+    assert "--lora-rank" not in full_model and full_model[full_model.index("--lr") + 1] == "1e-06"

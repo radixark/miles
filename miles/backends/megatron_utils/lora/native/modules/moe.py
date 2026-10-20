@@ -38,6 +38,7 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
     """Routed-expert fused gate/up adapter: shared A per branch, per-expert B.
 
     ``width`` is the experts' input width: the hidden size, or a latent MoE's latent size.
+    ``leaves`` names the gate and up projections in the export.
     """
 
     def __init__(
@@ -50,9 +51,11 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
         moe_intermediate: int,
         width: int,
         is_ep: bool,
+        leaves: tuple[str, str] = ("w1", "w3"),
     ):
         super().__init__(hf_prefix, (), context.tp_rank)
         self.context = context
+        self.leaves = leaves
         rank = context.lora.rank
         ep_group = "ep" if is_ep else None
         self.register_parameter(
@@ -99,28 +102,32 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
             )
 
     def export_plan(self, gather) -> list:
-        prefix = self.hf_prefix
+        gate, up = (f"{self.hf_prefix}{leaf}" for leaf in self.leaves)
         return [
-            (f"{prefix}w1.lora_A.weight", self.w1_A.unsqueeze(0)),
-            (f"{prefix}w3.lora_A.weight", self.w3_A.unsqueeze(0)),
-            (f"{prefix}w1.lora_B.weight", gather.request(self.w1_B, 0, group="ep")),
-            (f"{prefix}w3.lora_B.weight", gather.request(self.w3_B, 0, group="ep")),
+            (f"{gate}.lora_A.weight", self.w1_A.unsqueeze(0)),
+            (f"{up}.lora_A.weight", self.w3_A.unsqueeze(0)),
+            (f"{gate}.lora_B.weight", gather.request(self.w1_B, 0, group="ep")),
+            (f"{up}.lora_B.weight", gather.request(self.w3_B, 0, group="ep")),
         ]
 
     def load_plan(self, take) -> list:
         num_local = self.w1_B.shape[0]
         lo = _ep_rank() * num_local
         hi = lo + num_local
+        gate, up = (f"{self.hf_prefix}{leaf}" for leaf in self.leaves)
         return [
-            (self.w1_A, take(f"{self.hf_prefix}w1.lora_A.weight").squeeze(0)),
-            (self.w3_A, take(f"{self.hf_prefix}w3.lora_A.weight").squeeze(0)),
-            (self.w1_B, take(f"{self.hf_prefix}w1.lora_B.weight")[lo:hi]),
-            (self.w3_B, take(f"{self.hf_prefix}w3.lora_B.weight")[lo:hi]),
+            (self.w1_A, take(f"{gate}.lora_A.weight").squeeze(0)),
+            (self.w3_A, take(f"{up}.lora_A.weight").squeeze(0)),
+            (self.w1_B, take(f"{gate}.lora_B.weight")[lo:hi]),
+            (self.w3_B, take(f"{up}.lora_B.weight")[lo:hi]),
         ]
 
 
 class LoRAGroupedFC2(NativeLoRAAdapter):
-    """Routed-expert down adapter: per-expert A over the token buffer, shared B of the experts' output ``width``."""
+    """Routed-expert down adapter: per-expert A over the token buffer, shared B of the experts' output ``width``.
+
+    ``leaf`` names the down projection in the export.
+    """
 
     def __init__(
         self,
@@ -132,9 +139,11 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
         moe_intermediate: int,
         width: int,
         is_ep: bool,
+        leaf: str = "w2",
     ):
         super().__init__(hf_prefix, (), context.tp_rank)
         self.context = context
+        self.leaf = leaf
         rank = context.lora.rank
         ep_group = "ep" if is_ep else None
         self.register_parameter(
@@ -168,19 +177,20 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
             )
 
     def export_plan(self, gather) -> list:
-        prefix = self.hf_prefix
+        down = f"{self.hf_prefix}{self.leaf}"
         return [
-            (f"{prefix}w2.lora_A.weight", gather.request(self.w2_A, 0, group="ep")),
-            (f"{prefix}w2.lora_B.weight", self.w2_B.unsqueeze(0)),
+            (f"{down}.lora_A.weight", gather.request(self.w2_A, 0, group="ep")),
+            (f"{down}.lora_B.weight", self.w2_B.unsqueeze(0)),
         ]
 
     def load_plan(self, take) -> list:
         num_local = self.w2_A.shape[0]
         lo = _ep_rank() * num_local
         hi = lo + num_local
+        down = f"{self.hf_prefix}{self.leaf}"
         return [
-            (self.w2_A, take(f"{self.hf_prefix}w2.lora_A.weight")[lo:hi]),
-            (self.w2_B, take(f"{self.hf_prefix}w2.lora_B.weight").squeeze(0)),
+            (self.w2_A, take(f"{down}.lora_A.weight")[lo:hi]),
+            (self.w2_B, take(f"{down}.lora_B.weight").squeeze(0)),
         ]
 
 

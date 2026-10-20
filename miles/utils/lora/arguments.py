@@ -100,6 +100,16 @@ def add_lora_arguments(parser):
         ),
     )
     parser.add_argument(
+        "--lora-merge-for-rollout",
+        action="store_true",
+        default=False,
+        help=(
+            "Native LoRA (--megatron-to-hf-mode raw): every weight sync sends the base merged with "
+            "the adapter, W + (alpha/rank) * B @ A, as ordinary weights, so the rollout engines "
+            "serve the trained policy without SGLang LoRA support (e.g. Muse Spark)."
+        ),
+    )
+    parser.add_argument(
         "--experts-shared-outer-loras",
         action="store_true",
         default=False,
@@ -145,6 +155,15 @@ def validate_lora_args(args):
         return
     assert args.train_backend == "megatron", "LoRA injection is not implemented for FSDP; use --train-backend megatron"
     assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
+    if args.lora_merge_for_rollout:
+        assert args.megatron_to_hf_mode == "raw" and not args.multi_lora, (
+            "--lora-merge-for-rollout merges one native LoRA adapter: it needs --megatron-to-hf-mode raw "
+            "and no multi-LoRA"
+        )
+        assert not args.lora_train_only, "--lora-train-only keeps the engines on the frozen base; pass only one"
+        assert (
+            not args.check_lora_weight_equal
+        ), "--lora-merge-for-rollout syncs no adapter; check the merged weights with --check-weight-update-equal"
     hf_config = load_hf_config(args.hf_checkpoint)
     args.hf_lora_targets, args.lora_adapter_targets = _resolve_lora_targets(args, hf_config)
 

@@ -244,7 +244,8 @@ class LoRASplitAdapter(NativeLoRAAdapter):
     Shared machinery for every fused physical linear: parameter layout, the
     down/up drain, absent-slot zero-fill, and the export descriptor. Subclasses
     supply the physical slot widths (``rows_by_param_prefix``, in slot order) and an
-    optional output packing.
+    optional output permutation ``out_perm``, kept in host memory: a merged weight sync
+    reads the adapter while the sleeping trainer's GPU buffers are paused.
     """
 
     def __init__(
@@ -255,6 +256,7 @@ class LoRASplitAdapter(NativeLoRAAdapter):
         context: AttachContext,
         projections: Sequence[ProjectionSpec],
         rows_by_param_prefix: dict[str, int],
+        out_perm: torch.Tensor | None = None,
     ):
         projections = tuple(projections)
         param_prefixes = [projection.param_prefix for projection in projections]
@@ -275,6 +277,7 @@ class LoRASplitAdapter(NativeLoRAAdapter):
         super().__init__(hf_prefix, ordered, context.tp_rank)
         self.context = context
         self._rows_by_param_prefix = rows_by_param_prefix
+        self._out_perm = out_perm
         self._active = tuple(projection.param_prefix for projection in ordered)
         for name in self._active:
             self.register_parameter(
@@ -298,7 +301,9 @@ class LoRASplitAdapter(NativeLoRAAdapter):
         self._validate_projection_parameters()
 
     def _pack(self, delta: torch.Tensor) -> torch.Tensor:
-        return delta
+        if self._out_perm is None:
+            return delta
+        return delta.index_select(-1, self._out_perm.to(delta.device, non_blocking=True))
 
     def _pack_rows(self, delta: torch.Tensor) -> torch.Tensor:
         return self._pack(delta.t()).t()
@@ -358,15 +363,37 @@ class LoRASplitQKV(LoRASplitAdapter):
             context=context,
             projections=projections,
             rows_by_param_prefix={"q": q_rows, "k": num_kv * head_dim, "v": num_kv * head_dim},
-        )
-        self.register_buffer(
-            "out_perm",
-            build_qkv_permutation(num_q, num_kv, head_dim, reference.device, context.output_gate),
-            persistent=False,
+            out_perm=build_qkv_permutation(num_q, num_kv, head_dim, "cpu", context.output_gate),
         )
 
-    def _pack(self, delta: torch.Tensor) -> torch.Tensor:
-        return delta.index_select(-1, self.out_perm)
+
+class LoRASplitQGKV(LoRASplitAdapter):
+    """Independent Q/gate/K/V adapters of a fused QKV whose output gate is its own HF projection.
+
+    The B rows follow the HF checkpoint, which keeps each q/k head's two rotary halves
+    consecutive (Muse Spark); the packed delta lands in MCore's interleaved rotary pairs.
+    """
+
+    def __init__(
+        self,
+        *,
+        hf_prefix: str,
+        reference: torch.Tensor,
+        context: AttachContext,
+        projections: Sequence[ProjectionSpec],
+        num_q: int,
+        num_kv: int,
+        head_dim: int,
+    ):
+        q_rows, kv_rows = num_q * head_dim, num_kv * head_dim
+        super().__init__(
+            hf_prefix=hf_prefix,
+            reference=reference,
+            context=context,
+            projections=projections,
+            rows_by_param_prefix={"q": q_rows, "g": q_rows, "k": kv_rows, "v": kv_rows},
+            out_perm=build_qgkv_rotary_pair_permutation(num_q, num_kv, head_dim, "cpu"),
+        )
 
 
 class LoRASplitFC1(LoRASplitAdapter):
@@ -453,6 +480,26 @@ def build_qkv_permutation(
                 start = ((group * q_per_group + head) * q_slices + slice_index) * head_dim
                 index.extend(range(start, start + head_dim))
         index.extend(range(k_base + group * head_dim, k_base + (group + 1) * head_dim))
+        index.extend(range(v_base + group * head_dim, v_base + (group + 1) * head_dim))
+    return torch.tensor(index, dtype=torch.long, device=device)
+
+
+def build_qgkv_rotary_pair_permutation(num_q_heads: int, num_groups: int, head_dim: int, device) -> torch.Tensor:
+    """Map plain ``[q; g; k; v]`` rows, with each q/k head's rotary halves consecutive, into MCore's
+    per-query-group ``[q; g; k; v]`` layout with each q/k head's rotary pairs interleaved."""
+    q_per_group = num_q_heads // num_groups
+    half = head_dim // 2
+    # kernel row 2 * i + p of a head is checkpoint row p * half + i
+    rotary = [pair * half + i for i in range(half) for pair in range(2)]
+    g_base = num_q_heads * head_dim
+    k_base = 2 * g_base
+    v_base = k_base + num_groups * head_dim
+    index: list[int] = []
+    for group in range(num_groups):
+        heads = range(group * q_per_group, (group + 1) * q_per_group)
+        index.extend(head * head_dim + row for head in heads for row in rotary)
+        index.extend(g_base + head * head_dim + row for head in heads for row in range(head_dim))
+        index.extend(k_base + group * head_dim + row for row in rotary)
         index.extend(range(v_base + group * head_dim, v_base + (group + 1) * head_dim))
     return torch.tensor(index, dtype=torch.long, device=device)
 

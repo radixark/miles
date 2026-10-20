@@ -133,6 +133,7 @@ class TestConfigToArgv:
             lora_rank=0,
             lora_adapter_path=None,
             lora_train_only=False,
+            lora_merge_for_rollout=False,
             use_session_server="v2",
             session_message_matcher="strict",
             pause_generation_mode=None,

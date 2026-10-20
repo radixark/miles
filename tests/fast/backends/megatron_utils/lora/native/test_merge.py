@@ -232,3 +232,20 @@ def test_unadapted_weights_pass_through_untouched():
     merged = _merged(module)
     assert merged["norm"] is module.norm
     assert merged["mlp.linear_fc1.weight"] is module.mlp.linear_fc1.weight
+
+
+def test_merge_reads_host_weight_copies_by_name():
+    """A colocated weight sync reads the offload backup, not the live weights, so merging matches them by name."""
+    module = nn.Module()
+    module.mlp = nn.Module()
+    module.mlp.linear_fc1, module.mlp.linear_fc2 = _Linear(10, HIDDEN), _Linear(HIDDEN, 5)
+    SplitGateUpMLPSpec().attach(module.mlp, None, named(_context(), "model.layers.0.mlp."))
+    _randomize_adapters(module)
+    live = {name: parameter for name, parameter in module.named_parameters() if "lora" not in name}
+    copies = {name: parameter.detach().clone() for name, parameter in live.items()}
+
+    merged = merge_lora_into_weights([module], copies, {id(parameter): name for name, parameter in live.items()})
+
+    expected = _merged(module)
+    for name in live:
+        torch.testing.assert_close(merged[name], expected[name])

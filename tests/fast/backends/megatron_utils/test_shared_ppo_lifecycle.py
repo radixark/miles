@@ -414,10 +414,14 @@ def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
     assert worker._asleep is False
 
 
-def test_lora_sleep_pauses_the_grad_buffers_and_wake_up_resumes_them(actor_module, monkeypatch):
-    """The LoRA grad buffers have no host backup, so a sleep that leaves them out keeps them on the GPU."""
+@pytest.mark.parametrize(
+    "lora_args", [dict(lora_rank=8), dict(lora_rank=8, lora_merge_for_rollout=True)], ids=["served", "merged"]
+)
+def test_lora_sleep_pauses_the_grad_buffers_and_wake_up_resumes_them(actor_module, monkeypatch, lora_args):
+    """The LoRA grad buffers have no host backup, so a sleep that leaves them out keeps them on the GPU; the
+    sleeping trainer's weight sync reads the adapter whether the engines serve it or its merge."""
     worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
-    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+    vars(worker.args).update(lora_args)
 
     worker.sleep()
     worker.wake_up()
@@ -429,7 +433,7 @@ def test_lora_sleep_pauses_the_grad_buffers_and_wake_up_resumes_them(actor_modul
 def test_offload_grad_buffer_frees_them_once_and_sleep_does_not_pause_them_again(actor_module, monkeypatch):
     """offload_grad_buffer() and sleep() must pause the grad buffers exactly once between them."""
     worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
-    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+    worker.args.lora_rank = 8
 
     worker.offload_grad_buffer()
     worker.offload_grad_buffer()

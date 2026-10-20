@@ -70,6 +70,10 @@ class TestResolveRequestArgsByConfig:
         assert wire["lora_path"] == LORA_ADAPTER_NAME
         wire, _ = resolve_request_args_by_config({}, make_session_server_config(lora_rank=8, lora_train_only=True))
         assert "lora_path" not in wire
+        # the engines serve the base merged with the adapter and hold no adapter to select
+        config = make_session_server_config(lora_rank=8, lora_merge_for_rollout=True)
+        wire, _ = resolve_request_args_by_config({}, config)
+        assert "lora_path" not in wire
         wire, _ = resolve_request_args_by_config({}, make_session_server_config())
         assert "lora_path" not in wire
 

@@ -408,6 +408,7 @@ def _build_server_config(
         lora_rank=0,
         lora_adapter_path=None,
         lora_train_only=False,
+        lora_merge_for_rollout=False,
         timeout=600.0,
         backend_url=backend_url,
         host=ip,

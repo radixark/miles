@@ -33,6 +33,7 @@ def _prefix_paths(prefix, *paths):
 
 
 _QKVO_ATTENTION = _prefix_paths("self_attn", "q_proj", "k_proj", "v_proj", "o_proj")
+_QGKVO_ATTENTION = _prefix_paths("self_attn", "q_proj", "gate_proj", "k_proj", "v_proj", "o_proj")
 _DENSE_MLP = _prefix_paths("mlp", "gate_proj", "up_proj", "down_proj")
 _ROUTED_EXPERTS = _prefix_paths("mlp.experts.*", "gate_proj", "up_proj", "down_proj")
 _SHARED_EXPERTS = _prefix_paths("mlp.shared_experts", "gate_proj", "up_proj", "down_proj")
@@ -44,6 +45,12 @@ _GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "in_proj_b", 
 
 def _dense_targets(config):
     return _QKVO_ATTENTION, _DENSE_MLP
+
+
+def _muse_spark_targets(config):
+    mlp_types = config.get("mlp_layer_types") or ["sparse"] * config["num_hidden_layers"]
+    mlp = [*(_DENSE_MLP if "dense" in mlp_types else ()), *(_ROUTED_EXPERTS if "sparse" in mlp_types else ())]
+    return _QGKVO_ATTENTION, tuple(mlp)
 
 
 def _gpt_oss_targets(config):
@@ -217,6 +224,9 @@ _HF_LORA_MODELS = {
         unwrap_text_config=True,
     ),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
+    "muse_spark": _HfLoraModelSpec(
+        _muse_spark_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+    ),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
     "inkling_text": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_model": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
