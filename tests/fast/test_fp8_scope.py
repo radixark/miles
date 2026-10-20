@@ -37,8 +37,9 @@ def _convert(tmp_path, weights, strategy, **kwargs):
 def _assert_unchanged(actual, name, original, ignored):
     assert actual[name].dtype == original.dtype
     assert torch.equal(actual[name], original)
-    if name.endswith(".weight"):
+    if not name.endswith((".bias", "_bias")):
         assert name.removesuffix(".weight") in ignored
+    if name.endswith(".weight"):
         assert not any(key.startswith(name + "_") for key in actual)
 
 
@@ -52,6 +53,16 @@ def test_extra_high_precision_layers_preserve_weights_and_record_exclusions(tmp_
         "model.layers.0.linear_attn.conv1d.weight": torch.ones(5, 1, 3, dtype=torch.bfloat16),
         "model.layers.0.mlp.experts.0.gate_proj.bias": torch.ones(5, dtype=torch.bfloat16),
         "model.layers.0.input_layernorm.weight": torch.ones(5, dtype=torch.bfloat16),
+        "model.language_model.layers.0.mlp.experts.gate_up_proj": torch.ones(2, 10, 7, dtype=torch.bfloat16),
+        "model.language_model.layers.0.mlp.experts.down_proj": torch.ones(2, 7, 5, dtype=torch.bfloat16),
+        "mtp.layers.0.mlp.experts.gate_up_proj": torch.ones(2, 10, 7, dtype=torch.bfloat16),
+        "mtp.layers.0.mlp.experts.down_proj": torch.ones(2, 7, 5, dtype=torch.bfloat16),
+        "model.language_model.layers.0.hc_attn_fn": matrix.clone(),
+        "model.language_model.layers.0.linear_attn.A_log": torch.ones(5, dtype=torch.float32),
+        "model.language_model.layers.0.linear_attn.dt_bias": torch.ones(5, dtype=torch.float32),
+        "model.layers.0.mlp.gate.e_score_correction_bias": torch.ones(5, dtype=torch.float32),
+        "layers.0.attn.attn_sink": torch.ones(5, dtype=torch.float32),
+        "model.layers.0.self_attn.rotary_emb.inv_freq": torch.ones(5, dtype=torch.float32),
     }
     weights = {quantized: matrix} | preserved
     actual, ignored = _convert(
@@ -60,7 +71,9 @@ def test_extra_high_precision_layers_preserve_weights_and_record_exclusions(tmp_
     scale_suffix = "_scale_inv" if strategy == "block" else "_scale"
     assert set(actual) == set(weights) | {quantized + scale_suffix}
     assert actual[quantized].dtype == torch.float8_e4m3fn
-    assert set(ignored) == {name.removesuffix(".weight") for name in preserved if name.endswith(".weight")}
+    assert set(ignored) == {
+        name.removesuffix(".weight") for name in preserved if not name.endswith((".bias", "_bias"))
+    }
     for name, original in preserved.items():
         _assert_unchanged(actual, name, original, ignored)
 

@@ -163,7 +163,7 @@ def process_file(
                 scale_name = key.replace(".weight", ".weight_scale")
             q_weights[scale_name] = s
         else:
-            if key.endswith(".weight"):
+            if not key.endswith((".bias", "_bias")):
                 modules_to_not_convert.append(key.removesuffix(".weight"))
             q_weights[key] = weights[key]
 
