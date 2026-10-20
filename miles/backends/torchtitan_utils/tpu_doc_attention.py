@@ -1,7 +1,8 @@
-"""Packed-document causal attention for torchtitan on TPU, as query blocks over native SDPA.
+"""Packed-document causal attention for torchtitan on TPU, chosen by --titan-tpu-attention.
 
-torch_tpu runs FlexAttention as one dense L x L mask (torch_tpu/_internal/compile/flex_attention_redirect.py);
-per query block, SDPA sees only the keys at or before the block's end.
+torch_tpu runs FlexAttention as one dense L x L mask (torch_tpu/_internal/compile/flex_attention_redirect.py).
+`sdpa_blocks` runs query blocks over native SDPA, each seeing only the keys at or before the block's end;
+`splash` runs the Pallas splash-attention kernel with documents as segment ids (tpu_splash_attention.py).
 """
 
 import torch
@@ -50,13 +51,22 @@ def document_ids(positions: torch.Tensor) -> torch.Tensor:
     same documents as `(positions == 0).cumsum(-1)` without a cumulative op: libtpu's associative-scan
     emitter (>= 0.0.44) miscompiles cumsum for lengths that are not a multiple of 1024. google-pytorch/torchtitan's
     `segment_ids_from_positions` (torchtitan/models/common/attention.py) is the cumsum form.
+    The ids are non-decreasing, which the splash kernel's block skipping relies on.
     """
     arange = torch.arange(positions.shape[-1], device=positions.device, dtype=torch.int32)
     return arange - positions.to(torch.int32)
 
 
-def install() -> None:
-    """Route torchtitan's document-masked FlexAttention to `document_causal_attention`."""
+def install(backend: str) -> None:
+    """Route torchtitan's document-masked FlexAttention to the `backend` implementation."""
+    if backend == "splash":
+        from miles.backends.torchtitan_utils.tpu_splash_attention import splash_document_attention
+
+        def attention(q, k, v, doc_ids, *, scale=None, enable_gqa=False):
+            return splash_document_attention(q, k, v, doc_ids, scale=scale)
+
+    else:
+        attention = document_causal_attention
 
     def create_document_ids(self, positions, attn_config):
         return document_ids(positions)
@@ -74,7 +84,7 @@ def install() -> None:
         out_transform=None,
     ):
         assert score_mod is None and out_transform is None
-        out_BNLH = document_causal_attention(
+        out_BNLH = attention(
             q_BLNH.transpose(1, 2),
             k_BLNH.transpose(1, 2),
             v_BLNH.transpose(1, 2),
