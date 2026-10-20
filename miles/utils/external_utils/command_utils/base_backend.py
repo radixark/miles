@@ -38,7 +38,7 @@ CONVERSION_VERSION_FILE = "miles_conversion_version.txt"
 # weight layout change bumps it. Values 1 and 2 were written briefly by an earlier numbering and
 # are never trusted. 3: the layouts before the head-sharded linear-attention layer.
 # 4: Qwen3.5 / Qwen3-Next GDN weights in group-major rows. 5: Kimi-K3 KDA under linear_attn.*.
-CONVERSION_VERSION = "6"
+CONVERSION_VERSION = "5"
 
 
 class LaunchGuard:
