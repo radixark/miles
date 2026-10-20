@@ -25,7 +25,7 @@ It describes the differences. The work they imply is tracked in the port's
 | Token record | open-instruct tokenizes the conversation itself and appends generated tokens | The session server records token ids, logprobs and loss masks for every call (TITO); the training sample is assembled when the episode is collected |
 | Weight sync | NCCL broadcast from learner rank 0 to every engine, driven by `weight_sync_thread` through Ray RPCs; 2 h timeout (`WEIGHT_SYNC_TIMEOUT_S`) | NCCL broadcast from trainer rank 0 in buckets, each announced to every engine by an HTTP `POST /update_weights_from_distributed`; no timeout on the HTTP wait |
 | Async | `--async_steps N`, `--inflight_updates` (engines pause with `mode="keep"`) | `--fully-async`, `--max-weight-staleness`, `--async-data-buffer-capacity-factor`, `--pause-generation-mode in_place` |
-| Policy loss | DPPO (binary TV divergence, threshold 0.1) | PPO clip 0.2 / 0.28; DPPO not implemented |
+| Policy loss | DPPO (binary TV divergence, threshold 0.1) | DPPO, `--policy-loss-type dppo_tv` (PPO clip 0.2 / 0.28 before branch `shashank/tmax-oi-parity`) |
 | Launch | `mason.py`: the code is baked into the Beaker image | `examples/tmax/beaker/submit.py`: the job clones the repository at a pinned commit |
 
 ## One step, side by side
@@ -224,7 +224,7 @@ flags `run_tmax_qwen3_5.py` adds.
 | `--use_vllm_logprobs true` | `--use-rollout-logprobs` |
 | `--truncated_importance_sampling_ratio_cap 0.0` | TIS off (default) |
 | `--advantage_normalization_type centered` | `--advantage-estimator grpo --disable-grpo-std-normalization` |
-| `--loss_fn dppo --dppo_divergence_type tv --dppo_divergence_threshold 0.1` | `--eps-clip 0.2 --eps-clip-high 0.28` (not equivalent) |
+| `--loss_fn dppo --dppo_divergence_type tv --dppo_divergence_threshold 0.1` | `--policy-loss-type dppo_tv --dppo-tv-threshold 0.1` |
 | `--lm_head_fp32 true` | Not set |
 | `--use_liger_grpo_loss --liger_grpo_loss_chunk_size 8` | `--log-probs-backend fused` |
 | `--gradient_checkpointing` | `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1` |

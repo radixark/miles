@@ -12,7 +12,6 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Item | Why | How |
 |---|---|---|
 | **Rotate the Docker Hub token and the W&B API key; scrub old W&B configs** | The Docker token was printed in Beaker job logs from 2026-09-25 until `de58153970`. The W&B key was on the logged train command until `07bf7f9d74`, and Miles uploads its arguments as the W&B config, so earlier runs' configs still hold it | Rotate both and update the Beaker secrets (`<user>_DOCKER_PAT`, `<user>_WANDB_API_KEY`); relaunch the mirrors; delete `wandb_key` from earlier runs' configs. Upstream: have Miles redact the key before uploading its config. Not confirmed done |
-| **DPPO loss** | The recipe's named algorithm; PPO clip behaves differently on low-probability tokens | A custom loss through `--loss-type custom_loss`: binary TV divergence, threshold 0.1, no ratio clip, anchored on rollout log-probs. Per token, so safe under context parallelism. Log the kept-token fraction |
 | **Episode and tool statistics in fully-async runs** | `agent/*` (end reasons, turns, tool errors, sandbox start failures, model vs environment time) is only logged in synchronous mode, because `--fully-async` rejects `--rollout-function-path`; in prod about 30% of episodes hit the 64-step limit and W&B cannot show it | A per-rollout logging hook that fully async calls; until then, read the trace files |
 | **Durable checkpoints** | open-instruct keeps an HF snapshot every 20 steps forever; the pruner keeps only the newest 3 Megatron checkpoints, so step 20, 40, … are gone by the time anyone evaluates them | Let the pruner keep every 20th iteration and convert offline, or `--save-hf` with its own pruning |
 | **Rollout-node CPU starvation** | Evidence in [INVESTIGATIONS.md](INVESTIGATIONS.md). The engines on one rollout node slowed to a crawl twice: a 47-minute step after step 15, and a 320 s weight sync. Then Ray declared that node dead for missed heartbeats, failing retry 1. The old run's weight-sync `ReadError` fits the same pattern. The leading suspect is the up to 128 sandboxes per node, which run without CPU limits next to the engines | Options A–C in [INVESTIGATIONS.md](INVESTIGATIONS.md#open-decisions): a per-node host sampler, `nice -n 19` sandbox commands, sandboxes off the rollout nodes. Only if the `ReadError` recurs: make a dropped sync reply non-fatal (option K) |
@@ -74,6 +73,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Adam beta2 0.999 and `--seed 42` as in open-instruct | branch `shashank/tmax-oi-parity` |
 | Training entropy logged (`--observe-training-entropy`) | branch `shashank/tmax-oi-parity` |
 | W&B entity pinned (`wandb_entity: ai2-llm`); the W&B run's URL in the Beaker description | branch `shashank/tmax-oi-parity` |
+| DPPO loss (`--policy-loss-type dppo_tv`, Miles core), the default `policy_loss` | branch `shashank/tmax-oi-parity` |
 | Registry mirrors, `mirror_url: auto`, authenticated pulls | `0b910d7822`, `bfd6826c2b`, `dafe101cff` |
 | Docker Hub token out of the job log | `de58153970` |
 | Env-step exceptions become failed-step observations | `212c6ad522` |

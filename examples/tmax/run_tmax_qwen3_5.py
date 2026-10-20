@@ -62,6 +62,7 @@ Args:
   --dump-training-data: also save each step's training batch there, as Miles' --save-debug-rollout-data
       (rollout_data/<step>.pt) and --save-debug-train-data (train_data/<step>_<rank>.pt, with advantages and
       trainer logprobs), open-instruct's --save_traces + --save_trainer_logprobs (default: off).
+  --policy-loss: dppo_tv (default; open-instruct's DPPO, threshold 0.1) or ppo_clip (clip 0.2 / 0.28).
   --wandb-project: wandb project (default: miles-run_tmax_qwen3_5); with --exp-name restarts share one run.
   --wandb-entity: wandb entity (team) to log to (default: the API key's default entity).
   --docker-host: Docker API endpoint(s) of the podman daemons (default: inherit TMAX_DOCKER_HOST / DOCKER_HOST).
@@ -179,6 +180,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # Also dump every step's training batch next to them: rollout_data/<step>.pt (tokens, rewards, rollout logprobs)
     # and train_data/<step>_<rank>.pt (advantages, trainer logprobs), open-instruct's --save_trainer_logprobs.
     dump_training_data: bool = False
+    # dppo_tv: open-instruct's DPPO (binary-TV trust region, no ratio clip); ppo_clip: PPO clip 0.2 / 0.28, which the
+    # runs before branch shashank/tmax-oi-parity used.
+    policy_loss: Literal["dppo_tv", "ppo_clip"] = "dppo_tv"
     wandb_project: str = ""
     # W&B entity (team) the run logs to; empty = the API key's default entity. Pinned so the run's URL is known at
     # submit time (beaker/submit.py puts it in the experiment description).
@@ -352,9 +356,14 @@ def execute(args: ScriptArgs):
         # Logged, not trained on (detached at coefficient 0): open-instruct's runs show entropy, and a collapse is the
         # first thing to rule out when a run stops improving.
         "--observe-training-entropy "
-        "--eps-clip 0.2 "
-        "--eps-clip-high 0.28 "
     )
+    if args.policy_loss == "dppo_tv":
+        # open-instruct's --loss_fn dppo --dppo_divergence_type tv --dppo_divergence_threshold 0.1, anchored on the
+        # rollout's log-probs (--use-rollout-logprobs above); no ratio clip.
+        grpo_args += "--policy-loss-type dppo_tv --dppo-tv-threshold 0.1 "
+    else:
+        grpo_args += "--eps-clip 0.2 --eps-clip-high 0.28 "
+
     if args.opd_teacher is not None:
         grpo_args += (
             "--use-opd "
