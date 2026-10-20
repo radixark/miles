@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+from miles.backends.megatron_utils.lora.native import resolve_adapter_targets, validate_native_lora_args
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
@@ -163,8 +164,6 @@ def validate_lora_args(args):
 def validate_lora_args_after_megatron(args):
     """LoRA checks that read Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
     if is_lora_enabled(args) and args.megatron_to_hf_mode == "raw":
-        from miles.backends.megatron_utils.lora.native import validate_native_lora_args
-
         validate_native_lora_args(args)
 
 
@@ -218,8 +217,6 @@ def _resolve_lora_targets(args, hf_config):
 
     adapter_targets = list(hf_targets)
     if args.megatron_to_hf_mode == "raw":
-        from miles.backends.megatron_utils.lora.native import resolve_adapter_targets
-
         adapter_targets = resolve_adapter_targets(
             hf_config.to_dict(),
             hf_targets,
