@@ -10,6 +10,7 @@ import logging
 from collections import Counter
 
 from miles.rollout.base_types import RolloutFnTrainInput, RolloutFnTrainOutput
+from miles.rollout.filter_hub.base_types import iter_samples
 from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
 from miles.utils.types import Sample
 
@@ -43,7 +44,8 @@ class RolloutFn(InferenceRolloutFn):
 
     async def _call_train(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         output = await super()._call_train(input)
-        samples = [s for group in output.samples for s in (group if isinstance(group, list) else [group])]
+        # A group holds a Sample per episode, or with session server v2 a list[Sample] per episode.
+        samples = [s for group in output.samples for s in iter_samples(group)]
         agent_metrics = aggregate_agent_metrics(samples)
         if agent_metrics:
             output.metrics = {**(output.metrics or {}), **agent_metrics}

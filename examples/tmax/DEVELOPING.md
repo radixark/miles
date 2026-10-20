@@ -117,6 +117,12 @@ ruff check examples/tmax
 uv run --no-project --python /stage/.venv/bin/python --with "pytest-asyncio==0.24.0" \
     python -m pytest -q --noconftest -p no:cacheprovider -o addopts="" tests/fast/utils/test_ray_utils.py
 
+# Tests that import SGLang (e.g. tests/fast/examples/tmax/test_generate.py): the wheel alone, no deps, in a scratch dir
+uv pip install --no-deps --target /tmp/sgl_nodeps "sglang==0.5.21" --python /stage/.venv/bin/python
+PYTHONPATH=/tmp/sgl_nodeps uv run --no-project --python /stage/.venv/bin/python --with "pytest-asyncio==0.24.0" \
+    --with orjson --with IPython --with pylatexenc \
+    python -m pytest -q --noconftest -p no:cacheprovider -o addopts="" tests/fast/examples/tmax
+
 # After editing any examples/**/README.md: regenerate the docs site pages (pre-commit checks this)
 python scripts/tools/sync_example_docs.py
 
