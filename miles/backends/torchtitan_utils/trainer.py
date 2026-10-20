@@ -89,7 +89,8 @@ class TitanTrainer(Trainer):
                 tokens = torch.nn.functional.pad(tokens, (0, pad), value=0)
                 extra = torch.arange(pad, device=positions.device, dtype=positions.dtype)
                 positions = torch.cat([positions, extra.unsqueeze(0)], dim=1)
-            return tokens, positions
+            # per-sample tensors may live on the host (loss/hub/fixed_shape.py): pad there, then copy once
+            return tokens.to(self.device), positions.to(self.device)
 
         input_dicts = []
         for batch in batches:
