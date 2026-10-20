@@ -464,6 +464,8 @@ class TestResolveArgsCheckpointLoad:
 
         assert args.load == load
         assert args.requested_load == load
+        for name, value in selector.items():
+            assert getattr(args, name) == value
         assert args.start_rollout_id is None
         assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
 
