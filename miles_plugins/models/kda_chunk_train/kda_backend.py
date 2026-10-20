@@ -14,9 +14,9 @@ repeated backward passes on identical inputs are bit-identical). The forward is 
   **logits** (``use_beta_sigmoid_in_kernel=True``; the sigmoid runs inside its first stage) and produces
   exactly the saved set the backward consumes. ``dbeta`` is then the gradient with respect to the logits.
 
-``--kda-backend deterministic`` is the alias :data:`DETERMINISTIC_DEFAULT` names: the fla-forward mode until
-the U1 evidence for the Cake forward is complete on both architectures, then the Cake-forward mode (the flip
-is one constant here plus the tests that pin the alias). The kernels take any sequence length and the
+``--kda-backend deterministic`` is the alias :data:`DETERMINISTIC_DEFAULT` names: the Cake-forward mode
+(``deterministic_cake_fwd``); ``deterministic_fla_fwd`` stays selectable as the comparator whose forward is fla's
+bits (the alias is one constant here plus the tests that pin it). The kernels take any sequence length and the
 variable-length ``thd`` packs RL batches produce through their ``cu_seqlens`` directly, chunking every
 sequence from its own first token as fla does.
 
@@ -78,7 +78,7 @@ _CHUNK_SIZE = 64
 # --kda-backend values of the deterministic family and the forward source each one selects.
 FLA_FORWARD = "deterministic_fla_fwd"  # fla forward + deterministic backward (comparator / same-kernel arm)
 CAKE_FORWARD = "deterministic_cake_fwd"  # Cake forward + deterministic backward
-DETERMINISTIC_DEFAULT = FLA_FORWARD  # what plain "deterministic" means (flips to CAKE_FORWARD with the U1 evidence)
+DETERMINISTIC_DEFAULT = CAKE_FORWARD  # what plain "deterministic" means: the Cake forward (the fla-forward mode stays the comparator)
 FORWARD_SOURCES = {FLA_FORWARD: "fla", CAKE_FORWARD: "cake"}
 DETERMINISTIC_BACKENDS = ("deterministic", FLA_FORWARD, CAKE_FORWARD)
 

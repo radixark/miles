@@ -195,7 +195,8 @@ backward passes on identical inputs are bit-identical. Two forwards pair with it
 `--kda-backend deterministic_fla_fwd` keeps FLA's forward (the output and the saved tensors are
 bit-identical to FLA's), `--kda-backend deterministic_cake_fwd` runs the Cake forward (five kernel
 launches, bit-deterministic, the same chunk layout as the backward), and `--kda-backend deterministic`
-is the alias of the family's current default (`deterministic_fla_fwd`). Pass it through the launcher
+is the alias of the family's current default (`deterministic_cake_fwd`, so `deterministic` runs the Cake
+forward: its output is within the kernels' contract of FLA's, atol = rtol = 1e-2, not FLA's bits). Pass it through the launcher
 with `--extra-args "--kda-backend deterministic"`. The switch sits on the shared head-sharded
 linear-attention layer (`kda_recurrence(..., backend=...)` in `miles_plugins/models/linear_attn.py`),
 so it covers every KDA layer of the model; `fla` is the unchanged default path.

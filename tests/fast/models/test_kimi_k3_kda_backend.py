@@ -2,7 +2,7 @@
 
 ``--kda-backend deterministic_fla_fwd`` keeps fla's forward and swaps in Miles' deterministic chunked
 backward; ``deterministic_cake_fwd`` runs the Cake forward with it; ``deterministic`` is the alias of the
-family's current default (pinned here: the fla forward until the U1 evidence flips it). All three are the
+family's current default (pinned here: the Cake forward). All three are the
 drop-in ``miles_plugins.models.kda_chunk_train.kda_backend.chunk_kda`` the shared ``kda_recurrence`` runs.
 The GPU checks need a Blackwell (SM100a/SM103a) device with flash-linear-attention, Megatron and an
 ``nvcc`` toolchain for the first-use build; they skip otherwise. The routing checks run anywhere with torch.
@@ -60,14 +60,14 @@ def test_deterministic_backward_domain_requires_head_dim_128():
 
 
 def test_deterministic_modes_and_the_default_alias():
-    """Three ``--kda-backend`` values of the family; ``deterministic`` currently means the fla forward (the flip
-    to the Cake forward is the one constant ``DETERMINISTIC_DEFAULT`` plus this pin)."""
+    """Three ``--kda-backend`` values of the family; ``deterministic`` means the Cake forward (the alias is the one
+    constant ``DETERMINISTIC_DEFAULT`` plus this pin; ``deterministic_fla_fwd`` stays the fla-forward comparator)."""
     from miles.utils.arguments import KDA_BACKENDS
 
     assert KDA_BACKENDS == ("fla", "deterministic", "deterministic_fla_fwd", "deterministic_cake_fwd")
     assert drop_in.DETERMINISTIC_BACKENDS == ("deterministic", "deterministic_fla_fwd", "deterministic_cake_fwd")
-    assert drop_in.DETERMINISTIC_DEFAULT == "deterministic_fla_fwd"
-    assert drop_in.forward_source("deterministic") == "fla"
+    assert drop_in.DETERMINISTIC_DEFAULT == "deterministic_cake_fwd"
+    assert drop_in.forward_source("deterministic") == "cake"
     assert drop_in.forward_source("deterministic_fla_fwd") == "fla"
     assert drop_in.forward_source("deterministic_cake_fwd") == "cake"
     with pytest.raises(ValueError, match="not a deterministic KDA backend"):
@@ -76,7 +76,8 @@ def test_deterministic_modes_and_the_default_alias():
     fla_fwd = drop_in.chunk_kda_for("deterministic_fla_fwd")
     assert cake.takes_beta_logits is True and fla_fwd.takes_beta_logits is False
     assert drop_in.chunk_kda_for("deterministic") is drop_in.chunk_kda_for("deterministic")
-    assert drop_in.chunk_kda_for("deterministic").forward_source == "fla"
+    assert drop_in.chunk_kda_for("deterministic").forward_source == "cake"
+    assert drop_in.chunk_kda_for("deterministic").takes_beta_logits is True
 
 
 def test_outside_contract_beta_convention_follows_the_forward_source():
@@ -198,12 +199,13 @@ def _run(kda_recurrence, backend: str, inputs: dict[str, torch.Tensor], cu_seqle
     ids=["t256", "t512", "packed_2x256", "t1000", "packed_var4", "packed_2_unequal"],
 )
 def test_deterministic_backend_matches_fla(seq_len, cu_seqlens):
-    """Same forward bits; gradients within the bf16 tolerance of FLA's own backward (fixed and packed layouts)."""
+    """fla-forward mode: same forward bits; gradients within the bf16 tolerance of FLA's own backward (fixed and
+    packed layouts). The default alias runs the Cake forward, covered by the Cake-forward checks below."""
     kda_recurrence = _kda_recurrence()
     cu = None if cu_seqlens is None else torch.tensor(cu_seqlens, dtype=torch.int32, device="cuda")
     inputs = _inputs(seq_len, seed=460)
     fla_out, fla_grads = _run(kda_recurrence, "fla", inputs, cu)
-    det_out, det_grads = _run(kda_recurrence, "deterministic", inputs, cu)
+    det_out, det_grads = _run(kda_recurrence, "deterministic_fla_fwd", inputs, cu)
     torch.testing.assert_close(det_out, fla_out, rtol=0, atol=0)
     for name in _GRADS:
         assert det_grads[name].dtype == fla_grads[name].dtype, name
@@ -224,13 +226,14 @@ def test_deterministic_backend_backward_is_bit_deterministic(seq_len, cu_seqlens
 
 
 def test_deterministic_backend_falls_back_outside_domain(monkeypatch):
-    """A call the deterministic backward does not cover (here: a device outside its list) still trains, through fla."""
+    """A call the deterministic backward does not cover (here: a device outside its list) still trains, through fla
+    (fla-forward mode: fla's bits; the Cake-forward mode's fallback is checked below within the contract)."""
     kda_recurrence = _kda_recurrence()
     monkeypatch.setattr(drop_in, "_BLACKWELL_CAPABILITIES", ())
     monkeypatch.setattr(drop_in, "_fallback_warned", False)
     inputs = _inputs(200, seed=462)
     with pytest.warns(UserWarning, match="fell back to fla"):
-        det_out, det_grads = _run(kda_recurrence, "deterministic", inputs, None)
+        det_out, det_grads = _run(kda_recurrence, "deterministic_fla_fwd", inputs, None)
     fla_out, fla_grads = _run(kda_recurrence, "fla", inputs, None)
     torch.testing.assert_close(det_out, fla_out, rtol=0, atol=0)
     for name in _GRADS:
@@ -257,14 +260,17 @@ def _no_fallback():
     return guard()
 
 
-def test_deterministic_alias_is_bitwise_the_fla_forward_mode():
-    """``deterministic`` and ``deterministic_fla_fwd`` are one code path today (pins the alias at X1)."""
+def test_deterministic_alias_is_bitwise_the_cake_forward_mode():
+    """``deterministic`` and ``deterministic_cake_fwd`` are one code path (pins the alias: Cake forward + deterministic
+    backward); the fla-forward comparator is a different forward, so its output is not the alias's bits."""
     kda_recurrence = _kda_recurrence()
     inputs = _inputs(640, seed=470)
     cu = torch.tensor([0, 100, 640], dtype=torch.int32, device="cuda")
     with _no_fallback():
         a_out, a_grads = _run(kda_recurrence, "deterministic", inputs, cu)
-        b_out, b_grads = _run(kda_recurrence, "deterministic_fla_fwd", inputs, cu)
+        b_out, b_grads = _run(kda_recurrence, _CAKE, inputs, cu)
+        c_out, _ = _run(kda_recurrence, "deterministic_fla_fwd", inputs, cu)
+    assert not torch.equal(a_out, c_out), "the alias still runs fla's forward"
     assert torch.equal(a_out, b_out)
     for name in _GRADS:
         assert torch.equal(a_grads[name], b_grads[name]), name

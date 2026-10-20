@@ -504,7 +504,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "FLA): "
                     "'deterministic_fla_fwd' keeps FLA's forward, 'deterministic_cake_fwd' runs the Cake forward "
                     "(five launches, bit-deterministic), and 'deterministic' is the alias of the family's current "
-                    "default (deterministic_fla_fwd)."
+                    "default (deterministic_cake_fwd)."
                 ),
             )
             parser.add_argument(

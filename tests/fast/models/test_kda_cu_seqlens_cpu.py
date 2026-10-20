@@ -386,10 +386,19 @@ def _drop_in_kwargs(t, **extra):
     )
 
 
-def test_cp_routes_to_the_deterministic_path_on_the_context_boundaries_with_no_warning(monkeypatch):
+@pytest.mark.parametrize(
+    ("forward_source", "expected_source"),
+    [(None, "cake"), ("cake", "cake"), ("fla", "fla")],
+    ids=["default-alias", "cake", "fla"],
+)
+def test_cp_routes_to_the_deterministic_path_on_the_context_boundaries_with_no_warning(
+    monkeypatch, forward_source, expected_source
+):
     """Context parallelism is in the domain. With an fla CP context the drop-in takes
     the rank-local boundaries from the context (device ``cu_seqlens`` and its host copy, as fla overrides them),
-    hands the context to the deterministic autograd function and does not warn; fla's ``chunk_kda`` is not called.
+    hands the context and the forward source to the deterministic autograd function and does not warn; fla's
+    ``chunk_kda`` is not called. The default alias is the Cake forward, whose contract takes beta logits with
+    ``use_beta_sigmoid_in_kernel=True``; ``forward_source="fla"`` keeps fla's convention (post-sigmoid beta).
     (``build_fla_cp_context`` receiving the micro-batch's host copy: ``test_cp_context_is_built_once_per_microbatch``.)"""
     fla_kda = pytest.importorskip("fla.ops.kda")
     fla_recorder = _Recorder()
@@ -407,15 +416,21 @@ def test_cp_routes_to_the_deterministic_path_on_the_context_boundaries_with_no_w
     local = torch.tensor([0, 8], dtype=torch.int32)
     host = torch.tensor([0, 8], dtype=torch.int64)
     ctx = SimpleNamespace(group=object(), cu_seqlens=local, cu_seqlens_cpu=host, is_first_rank=True, is_last_rank=False)
+    kwargs = _drop_in_kwargs(t, cu_seqlens_cpu=host, cp_context=ctx)
+    if expected_source == "cake":
+        kwargs.update(beta=t["beta_logits"], use_beta_sigmoid_in_kernel=True)
+    if forward_source is not None:
+        kwargs["forward_source"] = forward_source
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for _ in range(3):
-            out, _ = drop_in.chunk_kda(**_drop_in_kwargs(t, cu_seqlens_cpu=host, cp_context=ctx))
+            out, _ = drop_in.chunk_kda(**kwargs)
     assert not [w for w in caught if "fell back to fla" in str(w.message)]
     assert not fla_recorder.calls and len(applied) == 3 and out is t["q"]
     for args in applied:
-        cu_seqlens, cu_seqlens_cpu, source, cp_context = args[9], args[10], args[11], args[12]
-        assert cu_seqlens is local and cu_seqlens_cpu is host and cp_context is ctx and source == "fla"
+        beta, cu_seqlens, cu_seqlens_cpu, source, cp_context = args[4], args[9], args[10], args[11], args[12]
+        assert beta is kwargs["beta"] and cu_seqlens is local and cu_seqlens_cpu is host and cp_context is ctx
+        assert source == expected_source
 
 
 def test_cp_context_without_a_host_copy_falls_back_to_fla_with_exactly_one_warning(monkeypatch):
@@ -606,7 +621,9 @@ def test_tensor_and_tuple_host_copies_give_identical_results():
     out_t, grads_t = _fwd_bwd(kda_recurrence, "deterministic", inputs, cu, host, upstream)
     out_s, grads_s = _fwd_bwd(kda_recurrence, "deterministic", inputs, cu, tuple(cu_list), upstream)
     out_f, grads_f = _fwd_bwd(kda_recurrence, "fla", inputs, cu, host, upstream)
-    assert torch.equal(out_t, out_s) and torch.equal(out_t, out_f)
+    assert torch.equal(out_t, out_s)
+    # the default alias runs the Cake forward: within the kernels' contract of fla's output, not its bits
+    torch.testing.assert_close(out_t.float(), out_f.float(), atol=1e-2, rtol=1e-2)
     for name in _GRADS:
         assert torch.equal(grads_t[name], grads_s[name]), name
         torch.testing.assert_close(grads_t[name].float(), grads_f[name].float(), atol=1e-2, rtol=1e-2, msg=name)
@@ -620,7 +637,7 @@ def test_no_host_copy_fallback_matches_fla_bit_for_bit(monkeypatch):
     inputs = _inputs(cu_list[-1], seed=581)
     upstream = torch.randn_like(inputs["v"])
     with pytest.warns(UserWarning, match="cu_seqlens_cpu"):
-        out_d, grads_d = _fwd_bwd(kda_recurrence, "deterministic", inputs, cu, None, upstream)
+        out_d, grads_d = _fwd_bwd(kda_recurrence, "deterministic_fla_fwd", inputs, cu, None, upstream)
     out_f, grads_f = _fwd_bwd(kda_recurrence, "fla", inputs, cu, None, upstream)
     assert torch.equal(out_d, out_f)
     for name in _GRADS:
