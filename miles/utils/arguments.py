@@ -864,7 +864,7 @@ def miles_validate_args(args):
             setattr(args, k, v)
 
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "disk", "shm"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1282,6 +1282,34 @@ def miles_validate_args(args):
         assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
 
+    if args.update_weight_transfer_mode in ("disk", "shm"):
+        mode = args.update_weight_transfer_mode
+        # colocate always syncs through CUDA IPC (get_weight_transfer_protocol)
+        assert not args.colocate, f"--update-weight-transfer-mode {mode} needs disaggregated engines; drop --colocate"
+        assert args.lora_rank <= 0, f"LoRA weight sync is not supported for --update-weight-transfer-mode {mode}"
+        assert (
+            args.prefill_num_servers is None
+        ), f"--update-weight-transfer-mode {mode} has not been tested when PD is enabled"
+    if args.update_weight_transfer_mode == "shm":
+        # the engines open the shared-memory tensors by /dev/shm file name, so they must share the trainer's host
+        assert args.actor_num_nodes == 1, "--update-weight-transfer-mode shm needs the trainer on one node"
+        # each engine rank opens the payload at its TP rank; PP stages share TP ranks, so one payload would be
+        # opened by several processes and its /dev/shm file unlinked while another stage still needs it
+        assert args.sglang_pp_size == 1, "--update-weight-transfer-mode shm does not support --sglang-pp-size > 1"
+    if args.update_weight_transfer_mode == "disk":
+        # /update_weights_from_disk reloads the draft model from the same directory, which has no draft weights
+        assert args.sglang_speculative_algorithm is None or args.enable_mtp_training, (
+            "--update-weight-transfer-mode disk reloads the speculative draft model from the trainer's "
+            "checkpoint; set --enable-mtp-training or drop --sglang-speculative-algorithm"
+        )
+        assert args.update_weight_disk_dir, (
+            "--update-weight-transfer-mode disk needs --update-weight-disk-dir on a filesystem "
+            "both the trainer and the rollout engines can read"
+        )
+        assert os.path.isdir(args.hf_checkpoint), (
+            "--update-weight-transfer-mode disk needs --hf-checkpoint to be a local directory: "
+            "each published version copies its config and tokenizer files"
+        )
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
             "Disk-delta weight transfer mode is not compatible with --colocate. Colocate transfers "
