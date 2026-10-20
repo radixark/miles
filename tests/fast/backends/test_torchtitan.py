@@ -8,6 +8,7 @@ import torch
 from tests.ci.ci_register import register_cpu_ci
 
 from miles import platforms
+from miles.backends.torchtitan_utils import arguments as titan_arguments
 from miles.backends.torchtitan_utils import parallel as tp
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser, validate_torchtitan_args
@@ -94,18 +95,26 @@ def test_a_tpu_microbatch_cannot_outgrow_the_largest_length_bucket(monkeypatch):
     validate_torchtitan_args(_args(use_dynamic_batch_size=False, micro_batch_size=1, log_probs_backend="torch"))
 
 
-def test_the_triton_log_prob_kernel_is_refused_on_tpu(monkeypatch):
+def test_the_tpu_fused_log_prob_needs_the_fixed_shape_loss(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
     _on_tpu(monkeypatch)
-    with pytest.raises(ValueError, match="Triton"):
-        validate_torchtitan_args(_args(use_dynamic_batch_size=False, log_probs_backend="fused"))
+    tpu_fused = dict(
+        use_dynamic_batch_size=False, log_probs_backend="fused", tensor_model_parallel_size=1, entropy_coef=0
+    )
+    monkeypatch.setattr(titan_arguments, "fixed_shape_loss_enabled", lambda args: False)
+    with pytest.raises(ValueError, match="fixed-shape loss"):
+        validate_torchtitan_args(_args(**tpu_fused))
+    monkeypatch.setattr(titan_arguments, "fixed_shape_loss_enabled", lambda args: True)
+    validate_torchtitan_args(_args(**tpu_fused))
+    with pytest.raises(ValueError, match="entropy-coef 0"):
+        validate_torchtitan_args(_args(**{**tpu_fused, "entropy_coef": 0.01}))
 
 
 def test_splash_attention_needs_a_tpu_and_whole_1024_token_tiles(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
     with pytest.raises(ValueError, match="TPU only"):
         validate_torchtitan_args(_args(titan_tpu_attention="splash"))
-    monkeypatch.setattr(titan_arguments.accelerator, "IS_TPU", True)
+    _on_tpu(monkeypatch)
     splash = dict(titan_tpu_attention="splash", use_dynamic_batch_size=False, log_probs_backend="torch")
     with pytest.raises(ValueError, match="multiple of 1024"):
         validate_torchtitan_args(_args(**splash, seq_length=3000, rollout_max_context_len=3000))
