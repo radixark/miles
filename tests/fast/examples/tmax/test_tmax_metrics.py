@@ -85,7 +85,9 @@ def test_the_filter_wrapper_keeps_miles_decision():
     assert tmax_metrics.nonzero_std_filter(ARGS, _group(0, [1.0, 0.0])).keep
     assert not tmax_metrics.nonzero_std_filter(ARGS, _group(1, [1.0, 1.0])).keep
     assert tmax_metrics.missing_reward_filter(ARGS, _group(2, [1.0, 1.0])).keep
-    assert not tmax_metrics.missing_reward_filter(ARGS, _group(3, [1.0, None])).keep, "a missing reward drops the group"
+    assert not tmax_metrics.missing_reward_filter(
+        ARGS, _group(3, [1.0, None])
+    ).keep, "a missing reward drops the group"
 
 
 def test_recorded_groups_are_logged_once(logged):
