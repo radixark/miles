@@ -181,9 +181,7 @@ general FSDP weight-update path.
 
 <Warning>
 **Development version:** This integration uses unreleased ModelExpress features
-and may introduce breaking changes. Until
-[ModelExpress #826](https://github.com/ai-dynamo/modelexpress/pull/826) merges,
-install the integration branch shown below; use `main` after it merges.
+and may introduce breaking changes. Install from `main` as shown below.
 </Warning>
 
 Install the optional ModelExpress client on every trainer and rollout worker.
@@ -192,7 +190,7 @@ In the Miles image, prepare the S3 dependencies before installing MX:
 ```bash
 uv pip install 'boto3>=1.35.2' 'protobuf>=5.27.2,<7'
 uv pip install --no-deps \
-  "git+https://github.com/ai-dynamo/modelexpress@hwoo/delta-refit-miles#subdirectory=modelexpress_client/python"
+  "git+https://github.com/ai-dynamo/modelexpress@main#subdirectory=modelexpress_client/python"
 ```
 
 ```mermaid
