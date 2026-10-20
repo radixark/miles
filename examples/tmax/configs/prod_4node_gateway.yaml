@@ -29,7 +29,10 @@ max_tokens_per_gpu: 34816                     # >= max_seq_len / CP, so the long
 optimizer_cpu_offload: false
 sglang_mem_fraction_static: 0.8
 sandbox_start_concurrency: 64                 # concurrent container starts on the fleet, rollout-wide
-start_failure: zero                           # SWERL_RESET_FAILURE_ZERO_REWARD=1
+# A container the fleet cannot start (capacity exhausted, handshake failures) is the fleet's failure, not the
+# policy's: drop its group, as for containers the fleet loses, instead of training on a zero (prod_4node: zero, as
+# open-instruct's SWERL_RESET_FAILURE_ZERO_REWARD=1 for local podman).
+start_failure: drop
 save_interval: 5                              # --checkpoint_state_freq 5 (holmes resume config)
 # Cross-node collectives on this layout have stalled for minutes and recovered (a 318 s weight sync after
 # step 12) or not: Megatron's default 10 min collective timeout and SGLang's 300 s scheduler watchdog each killed
