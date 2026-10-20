@@ -4,6 +4,7 @@ import os
 import torch
 import torch.distributed as dist
 
+from miles import platforms
 from miles.platforms import current_platform
 
 logger = logging.getLogger(__name__)
@@ -19,8 +20,15 @@ class Replay:
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list: list[torch.Tensor] = []
+        # ids popped eagerly before a compiled forward (torchtitan_utils/routing_replay.py): a compiled block
+        # that pops them itself specializes on forward_index and recompiles for every microbatch
+        self.staged_forward: torch.Tensor | None = None
 
     def record(self, top_indices: torch.Tensor):
+        if platforms.IS_TPU:
+            # a compiled TPU graph cannot take the host copy as an input; the ids are small
+            self.top_indices_list.append(top_indices.to(platforms.current_platform.current_device()))
+            return
         buf = torch.empty_like(top_indices, device="cpu", pin_memory=True)
         buf.copy_(top_indices)
         self.top_indices_list.append(buf)
@@ -47,6 +55,7 @@ class Replay:
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list = []
+        self.staged_forward = None
 
     def clear_forward(self):
         self.forward_index = 0
@@ -104,14 +113,9 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
-            # fill padding tokens with arange to avoid invalid reading
-            all_invalid = (top_indices == -1).all(dim=-1)
-            if all_invalid.any():
-                ar = (
-                    torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
-                    % scores.shape[1]
-                )
-                top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
+            top_indices = manager.fill_unreplayed_rows(
+                top_indices, scores, topk, old_topk_fn, return_probs, *args, **kwargs
+            )
 
             if return_probs:
                 return scores.gather(1, top_indices), top_indices
@@ -138,6 +142,8 @@ class BaseReplayManager:
                 return result
 
             elif stage == "replay_forward":
+                if replay.staged_forward is not None:
+                    return _get_replay_result(replay.staged_forward, scores, topk, *args, **kwargs)
                 return _get_replay_result(replay.pop_forward(), scores, topk, *args, **kwargs)
 
             elif stage == "replay_backward":
@@ -147,6 +153,18 @@ class BaseReplayManager:
                 return old_topk_fn(scores, topk, *args, **kwargs)
 
         return new_topk_fn
+
+    def fill_unreplayed_rows(self, top_indices, scores, topk, old_topk_fn, return_probs, *args, **kwargs):
+        """Replace the rows that carry no replayed ids, which downstream must not read as indices."""
+        # fill padding tokens with arange to avoid invalid reading; a partially -1 row is kept as is
+        all_invalid = (top_indices == -1).all(dim=-1)
+        if all_invalid.any():
+            ar = (
+                torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
+                % scores.shape[1]
+            )
+            top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
+        return top_indices
 
     def register_to_module(self, module, attr_name: str, stream_idx: int | None = None):
         if not self.enabled:
@@ -229,6 +247,21 @@ class RoutingReplayManager(BaseReplayManager):
     enable_check_replay_result = False
     replay_check_max_mismatch_fraction = 1e-2
     kept_in_train_dump = True
+
+    def fill_unreplayed_rows(self, top_indices, scores, topk, old_topk_fn, return_probs, *args, **kwargs):
+        """On TPU, a row with any id outside [0, num_experts) takes the router's own top-k.
+
+        sglang-torchtpu reports the prompt rows it could not capture as -1, so those are real tokens: routed by
+        the router they spread over the experts instead of all landing on experts 0..topk-1. Computed
+        unconditionally, so torch.compile (fullgraph) sees no branch on the data. Elsewhere only padding rows
+        carry no ids, and they keep the base fill.
+        """
+        if not platforms.IS_TPU:
+            return super().fill_unreplayed_rows(top_indices, scores, topk, old_topk_fn, return_probs, *args, **kwargs)
+        own = old_topk_fn(scores, topk, *args, **kwargs)
+        own_indices = own[1] if return_probs else own
+        invalid = ((top_indices < 0) | (top_indices >= scores.shape[1])).any(dim=-1)
+        return torch.where(invalid.unsqueeze(-1), own_indices.to(top_indices.dtype), top_indices)
 
 
 class IndexerReplayManager(BaseReplayManager):
