@@ -180,8 +180,8 @@ malformed and ends the episode on both sides. What differs is tokenization, time
 | In-flight rollouts at a restart | Lost; their prompts are skipped | Lost; their prompts are skipped |
 | Trained batches on disk | `--save_traces` JSONL per trained sample with advantages; `--save_trainer_logprobs` | `dump_training_data`: `rollout_data/<step>.pt` and `train_data/<step>_<rank>.pt` (about 200 MB per step in prod) |
 | Every episode as text | No (filtered rollouts only behind a flag) | `trace_dir`: every episode's messages, reward and metrics, filtered groups included |
-| W&B | Entity `ai2-llm`, one run per submission, tags (commit, branch, PR), Beaker URL in the config | One run per submission; entity unset (the key owner's default); no tags or Beaker link |
-| Beaker description | Updated after every step with the W&B URL and progress/ETA (needs `BEAKER_TOKEN`) | Fixed at submit |
+| W&B | Entity `ai2-llm`, one run per submission, tags (commit, branch, PR), Beaker URL in the config | One run per submission; entity `ai2-llm` (`wandb_entity`); no tags or Beaker link |
+| Beaker description | Updated after every step with the W&B URL and progress/ETA (needs `BEAKER_TOKEN`) | Fixed at submit; includes the W&B run's URL |
 
 ## Metrics
 

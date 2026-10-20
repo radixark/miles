@@ -32,6 +32,7 @@ data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
 output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
 trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
 wandb_project: oe-general-agents
+wandb_entity: ai2-llm
 
 beaker:
   cluster: ai2/holmes

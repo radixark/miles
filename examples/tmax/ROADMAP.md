@@ -24,7 +24,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | SGLang attention backend | SGLang picks `triton` for Qwen3.5 on B300; `trtllm_mha` is 1.75× faster at 32k context with the same log-probs. Validate in a 4-GPU Miles smoke, then pass `--sglang-attention-backend trtllm_mha` (option F) |
 | fp32 LM head on both sides | Measured: the train/rollout gap drops 0.0065 → 0.0044, but only with fp32 on both sides. Pass `--sglang-enable-fp32-lm-head`, and make Megatron's output layer accumulate in fp32, which is a Miles core change (option G) |
 | Token-identical first turn | SGLang's tool schema adds `"strict": false` and reorders keys: about 17 extra tokens per prompt. Render the tool from the raw dict, then diff token ids against a decoded open-instruct rollout |
-| W&B and Beaker visibility | Pin the W&B entity (`ai2-llm`); put the W&B URL in the Beaker description at submit time; update progress and ETA per step (needs a `BEAKER_TOKEN` secret); export `WANDB_TAGS` / `WANDB_NOTES` with commit and Beaker link |
+| W&B and Beaker visibility | Update progress and ETA per step (needs a `BEAKER_TOKEN` secret); export `WANDB_TAGS` / `WANDB_NOTES` with commit and Beaker link |
 | Fail fast on a stalled rollout | Fully async only warns every 30 s when no group completes; add a watchdog that exits so the Beaker retry resumes, or evaluate `--use-fault-tolerance` |
 | Fully-async throughput metrics | `perf/rollout_time` measures the buffer drain, so `perf/tokens_per_gpu_per_sec` is meaningless and some `perf/longest_*` go negative; `rollout/zero_std/*` is computed after the filter and is always 0. Fix upstream or hide |
 | open-instruct metrics worth porting | Solve-rate distribution before the filter, solved vs unsolved trajectory length, advantage min/max/std, max train/rollout log-prob gap, episode and token counters, entropy (`--observe-training-entropy`) |
@@ -73,6 +73,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Head-node lookup through the GCS (Miles core) | `ef3dcd4861` |
 | Adam beta2 0.999 and `--seed 42` as in open-instruct | branch `shashank/tmax-oi-parity` |
 | Training entropy logged (`--observe-training-entropy`) | branch `shashank/tmax-oi-parity` |
+| W&B entity pinned (`wandb_entity: ai2-llm`); the W&B run's URL in the Beaker description | branch `shashank/tmax-oi-parity` |
 | Registry mirrors, `mirror_url: auto`, authenticated pulls | `0b910d7822`, `bfd6826c2b`, `dafe101cff` |
 | Docker Hub token out of the job log | `de58153970` |
 | Env-step exceptions become failed-step observations | `212c6ad522` |

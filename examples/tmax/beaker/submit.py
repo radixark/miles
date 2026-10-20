@@ -38,9 +38,30 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import tmax_wandb  # noqa: E402
+
 _REPO = Path(__file__).resolve().parents[3]
 _ENTRY = "examples/tmax/beaker/tmax_beaker_entry.sh"
 _SNAPSHOT = "/tmp/miles_snapshot"
+
+
+def _description(*, config: dict, config_stem: str, exp_name: str, commit: str, overrides: list[str]) -> str:
+    """The experiment's Beaker description: config, run name, commit, and the W&B run's URL when it is known.
+
+    The URL needs the entity and project (the config's wandb_entity / wandb_project, or their launcher overrides) and
+    a run name; the launcher logs the run under the same id (tmax_wandb.run_id).
+    """
+    text = f"Miles TMax {config_stem} {exp_name} @ {commit[:9]}".replace("  ", " ")
+    wandb = {key: config.get(key, "") for key in ("wandb_entity", "wandb_project")}
+    for flag, key in (("--wandb-entity", "wandb_entity"), ("--wandb-project", "wandb_project")):
+        if flag in overrides[:-1]:
+            wandb[key] = overrides[overrides.index(flag) + 1]
+    if exp_name and all(wandb.values()):
+        text += " | W&B " + tmax_wandb.run_url(
+            entity=wandb["wandb_entity"], project=wandb["wandb_project"], exp_name=exp_name
+        )
+    return text
 
 
 def main() -> None:
@@ -62,7 +83,9 @@ def main() -> None:
         overrides=args.overrides,
         exclude_hosts=args.exclude_host,
         exp_name=exp_name,
-        description=f"Miles TMax {config_path.stem} {exp_name} @ {commit[:9]}".replace("  ", " "),
+        description=_description(
+            config=config, config_stem=config_path.stem, exp_name=exp_name, commit=commit, overrides=args.overrides
+        ),
     )
     text = yaml.safe_dump(spec, sort_keys=False)
     if args.dry_run:

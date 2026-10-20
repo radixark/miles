@@ -63,6 +63,7 @@ Args:
       (rollout_data/<step>.pt) and --save-debug-train-data (train_data/<step>_<rank>.pt, with advantages and
       trainer logprobs), open-instruct's --save_traces + --save_trainer_logprobs (default: off).
   --wandb-project: wandb project (default: miles-run_tmax_qwen3_5); with --exp-name restarts share one run.
+  --wandb-entity: wandb entity (team) to log to (default: the API key's default entity).
   --docker-host: Docker API endpoint(s) of the podman daemons (default: inherit TMAX_DOCKER_HOST / DOCKER_HOST).
   --model-dir / --data-dir / --output-dir: checkpoint / dataset / output directories.
 
@@ -90,7 +91,6 @@ Smoke test on four 80GB+ GPUs:
 import dataclasses
 import json
 import os
-import re
 import shlex
 import sys
 from dataclasses import dataclass
@@ -98,6 +98,7 @@ from pathlib import Path
 from typing import Literal
 
 import pandas as pd
+import tmax_wandb
 import typer
 import yaml
 from tmax_prompts import TMAX_SYSTEM_PROMPT
@@ -179,6 +180,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # and train_data/<step>_<rank>.pt (advantages, trainer logprobs), open-instruct's --save_trainer_logprobs.
     dump_training_data: bool = False
     wandb_project: str = ""
+    # W&B entity (team) the run logs to; empty = the API key's default entity. Pinned so the run's URL is known at
+    # submit time (beaker/submit.py puts it in the experiment description).
+    wandb_entity: str = ""
     save_interval: int = 20
     exp_name: str = ""
     extra_args: str = ""
@@ -468,11 +472,11 @@ def _wandb_args(args: ScriptArgs) -> str:
     # without --wandb-key, wandb reads WANDB_API_KEY, which every process of the job inherits.
     if "--wandb-key" in tokens:
         del tokens[tokens.index("--wandb-key") : tokens.index("--wandb-key") + 2]
-    overrides = {"--wandb-project": args.wandb_project}
+    overrides = {"--wandb-project": args.wandb_project, "--wandb-team": args.wandb_entity}
     if args.exp_name:
         overrides |= {
             "--wandb-group": args.exp_name,
-            "--wandb-run-id": re.sub(r"[^A-Za-z0-9_-]", "_", args.exp_name)[:64],
+            "--wandb-run-id": tmax_wandb.run_id(args.exp_name),
         }
     for flag, value in overrides.items():
         if not value:
