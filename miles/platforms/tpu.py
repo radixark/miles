@@ -11,6 +11,8 @@ class TpuPlatform(Platform):
     # the tpu compile backend takes static shapes only
     dynamic_shapes = False
     nvml_numa_affinity = False
+    # torch_tpu lowers compiled graphs to XLA
+    compile_backend = "tpu"
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         # touching the device before init_process_group breaks the multi-process rendezvous

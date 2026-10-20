@@ -9,6 +9,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 from transformers import PretrainedConfig, PreTrainedTokenizerBase
 
+from miles import platforms
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch, get_data_iterator, get_rollout_data
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.loss.hub.logit_processors import get_rollout_topk_mismatch
@@ -292,6 +293,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 extra_metrics=metrics.extra_metrics,
                 should_log=state.is_metrics_rank,
             )
+        if platforms.IS_TPU:
+            # free the last step's gradients before the log-prob passes and the weight sync hold HBM
+            runner.zero_grad()
 
     def _fetch_batches(self, progress, data_iterator: DataIterator, keys: list[str]) -> Iterator[dict]:
         for _ in progress:

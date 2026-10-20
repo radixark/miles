@@ -39,7 +39,12 @@ class RayCommandBackend(BaseCommandBackend):
             None if config.external_mooncake else self._resolve_mooncake_master_port(request.train_args)
         )
 
-        self._clean_up_previous_run(external_ray=external_ray)
+        # on TPU the external engine shares the host (scripts/tpu); it is not this run's to kill.
+        # The launcher does not import torch, so it reads MILES_ACCELERATOR rather than miles.platforms.
+        tpu_external_engines = os.environ.get("MILES_ACCELERATOR") == "tpu" and ArgvManipulator.is_defined(
+            shlex.split(request.train_args), "--rollout-external-engine-addrs"
+        )
+        self._clean_up_previous_run(external_ray=external_ray, kill_sglang=not tpu_external_engines)
 
         if not external_ray:
             self.exec_command_cpu(
@@ -96,9 +101,9 @@ class RayCommandBackend(BaseCommandBackend):
     ) -> list[str | None]:
         return exec_command_all_ray_nodes(cmd, capture_output=capture_output, num_nodes=num_nodes)
 
-    def _clean_up_previous_run(self, external_ray: bool) -> None:
+    def _clean_up_previous_run(self, external_ray: bool, kill_sglang: bool) -> None:
         self.exec_command_cpu(
-            "pkill -9 sglang; "
+            f"{'pkill -9 sglang; ' if kill_sglang else ''}"
             "sleep 3; "
             f"{'' if external_ray else 'ray stop --force; '}"
             f"{'' if external_ray else 'pkill -9 ray; '}"
