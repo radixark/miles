@@ -117,6 +117,7 @@ def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> Pa
             max_seqlen_kv=batch["max_seqlen"],
             qkv_format="thd",
             cu_seqlens_host=batch["cu_seqlens_host"],
+            total_tokens=batch["cu_seqlens_host"][-1],
         )
         batch["packed_seq_params"] = packed_seq_params
         return packed_seq_params
