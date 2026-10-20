@@ -10,6 +10,7 @@ from torchtitan.distributed.activation_checkpoint import FullAC
 from torchtitan.protocols.model_spec import ModelSpec
 from torchtitan.trainer import Trainer
 
+from miles import platforms
 from miles.backends.torchtitan_utils import lora
 from miles.backends.torchtitan_utils.components import EmptyDataLoader, TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
@@ -117,6 +118,11 @@ def build_trainer_config(
     config.training.steps = max(lr_total_steps, 1)
     config.training.max_norm = args.backend.clip_grad
     config.training.disable_cuda_graphs = True
+    # a static-shape platform (TPU) always compiles, whatever --titan-compile says: eager runs every op separately
+    if args.titan_compile or not platforms.current_platform.dynamic_shapes:
+        config.compile.enable = True
+        config.compile.components = ["model"]
+        config.compile.backend = platforms.current_platform.compile_backend
 
     config.optimizer.param_groups = [
         ParamGroupConfig(
