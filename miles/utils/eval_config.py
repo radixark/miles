@@ -6,6 +6,11 @@ from typing import Any
 
 from miles.utils.args.custom_function import CustomFunctionConfig
 
+
+def uses_synced_eval(transfer_mode, has_eval_pool):
+    return transfer_mode == "gpu-delta" and has_eval_pool
+
+
 _MISSING = object()
 
 # TODO: This is ugly, temporarily leave this. We should unify all the config name for dataset, default, and args. (advice from Tom.)
