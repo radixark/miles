@@ -168,7 +168,13 @@ def normalize_advantages(
         assert (
             all_advs.size() == all_masks.size()
         ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
-        dp_group = parallel_state.effective_dp.group
+        dp = parallel_state.effective_dp
+        # the fixed-shape loss keeps per-sample tensors on the host, where only gloo can reduce them
+        if all_advs.device.type == "cpu":
+            assert dp.gloo_group is not None, "host-side advantages need a gloo data-parallel group"
+            dp_group = dp.gloo_group
+        else:
+            dp_group = dp.group
 
         whitened_advs_flat = distributed_masked_whiten(
             all_advs,
