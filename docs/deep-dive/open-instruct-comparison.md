@@ -175,7 +175,7 @@ malformed and ends the episode on both sides. What differs is tokenization, time
 |---|---|---|
 | Training state | DeepSpeed model, optimizer, scheduler, per-rank RNG, counters, dataloader and data-prep state every `--checkpoint_state_freq` steps (holmes: 5) | Megatron `torch_dist` model, optimizer, scheduler and RNG, plus the dataset position, every `save_interval` steps (5); about 117 GB each for the 9B |
 | Retention | Last 3; incomplete checkpoints removed at start | Newest 3 kept by the entry script's pruner (`keep_last_n_checkpoints`) |
-| HF snapshots | Every 20 steps (`--save_freq`), never pruned | None during training |
+| HF snapshots | Every 20 steps (`--save_freq`), never pruned | `hf_snapshot_every: 20`: `--save-hf` at every save (every 5 steps), the snapshots after every 20 steps kept, the rest pruned |
 | Which jobs resume | Retries of one submission | Retries of one submission: `submit.py` names each submission `<exp_name>_YYYYMMDD_HHMMSS`; `--exp-name` continues an existing run |
 | In-flight rollouts at a restart | Lost; their prompts are skipped | Lost; their prompts are skipped |
 | Trained batches on disk | `--save_traces` JSONL per trained sample with advantages; `--save_trainer_logprobs` | `dump_training_data`: `rollout_data/<step>.pt` and `train_data/<step>_<rank>.pt` (about 200 MB per step in prod) |

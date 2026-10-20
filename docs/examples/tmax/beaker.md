@@ -57,7 +57,8 @@ Before submitting:
    head marks the run done (exit 0); a failed or preempted head stops them through Beaker.
 5. **The head** (rank 0):
    - starts a checkpoint pruner (every 10 min it keeps the newest `keep_last_n_checkpoints`, never the one
-     `latest_checkpointed_iteration.txt` names);
+     `latest_checkpointed_iteration.txt` names, and of the HF snapshots only every `hf_snapshot_every`-th and the
+     newest finished one);
    - runs `run_tmax_qwen3_5.py prepare` (download and conversion, cached on weka);
    - starts the Ray head and waits up to 30 min for every GPU to join;
    - adds the workers' forwarded shards to `TMAX_DOCKER_HOST`;
@@ -103,7 +104,12 @@ Ethernet).
   position, and W&B continues the run. In-flight rollouts are lost; their prompts are skipped, not regenerated.
 - **A new submission starts fresh**, even from the same config. `--exp-name <run>` continues an existing run.
 - **Checkpoints are big.** One Qwen3.5-9B checkpoint with Adam state is about 117 GB, so `keep_last_n_checkpoints: 3`
-  holds about 350 GB. No HF checkpoints are exported during training.
+  holds about 350 GB. With `hf_snapshot_every: 20` (the prod configs) the policy is also exported in HF format at
+  every save, to `<checkpoints>/hf/step_<rollout_id>` (the weights after `rollout_id + 1` steps, so `step_19` is
+  after 20), about 18 GB each; the snapshots after every 20 steps are kept, about 450 GB over 500 steps. They are
+  the language model's weights under the base model's `Qwen3_5ForConditionalGeneration` config, without the vision
+  tower or the MTP layers (Megatron trains neither), like an offline conversion: graft those back from the base model
+  (`convert_qwen35_causallm_to_cg.py`) before evaluating one.
 - **Dumps are smaller.** `dump_training_data` writes about 200 MB per step (`rollout_data/<step>.pt`,
   `train_data/<step>_<rank>.pt`, plus Miles' `dashboard_columns/`), about 100 GB over 500 steps. The per-episode
   trace JSONL grows by about 70 KB per episode.

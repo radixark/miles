@@ -64,6 +64,7 @@ Args:
       trainer logprobs), open-instruct's --save_traces + --save_trainer_logprobs (default: off).
   --policy-loss: dppo_tv (default; open-instruct's DPPO, threshold 0.1) or ppo_clip (clip 0.2 / 0.28).
   --log-kl-to-base / --no-log-kl-to-base: log the KL to the base model (default: on; costs one more forward pass).
+  --hf-snapshot-every: export HF weights at every save and keep every Nth (default: 0, off; prod: 20).
   --wandb-project: wandb project (default: miles-run_tmax_qwen3_5); with --exp-name restarts share one run.
   --wandb-entity: wandb entity (team) to log to (default: the API key's default entity).
   --docker-host: Docker API endpoint(s) of the podman daemons (default: inherit TMAX_DOCKER_HOST / DOCKER_HOST).
@@ -191,6 +192,11 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # submit time (beaker/submit.py puts it in the experiment description).
     wandb_entity: str = ""
     save_interval: int = 20
+    # Also export the policy in HF format at every save (--save-hf <checkpoint_dir>/hf/step_<rollout_id>, the weights
+    # after rollout_id + 1 steps), and keep every hf_snapshot_every-th one for evaluation, as open-instruct keeps an HF
+    # snapshot every 20 steps (beaker/tmax_beaker_entry.sh prunes the rest). 0 turns it off. A multiple of
+    # save_interval, since snapshots are written at saves.
+    hf_snapshot_every: int = 0
     exp_name: str = ""
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -198,6 +204,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
+        assert self.hf_snapshot_every >= 0 and self.hf_snapshot_every % self.save_interval == 0, (
+            f"hf_snapshot_every ({self.hf_snapshot_every}) must be 0 or a multiple of save_interval "
+            f"({self.save_interval}): HF snapshots are written at saves"
+        )
         if self.opd_teacher is not None:
             student, teacher = _RECIPES[self.model_name], _RECIPES[self.opd_teacher]
             assert student.megatron_model_type == teacher.megatron_model_type, (
@@ -305,6 +315,8 @@ def execute(args: ScriptArgs):
         f"--save {args.checkpoint_dir} "
         f"--save-interval {args.save_interval} "
     )
+    if args.hf_snapshot_every:
+        ckpt_args += f"--save-hf {args.checkpoint_dir}/hf/step_{{rollout_id}} "  # export errors are logged, not fatal
 
     rollout_args = (
         f"--prompt-data {args.prompt_data} "

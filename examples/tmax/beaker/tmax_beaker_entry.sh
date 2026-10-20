@@ -144,30 +144,42 @@ if [ "$NUM_NODES" -gt 1 ] && [ "$RANK" != 0 ]; then
 fi
 
 # ---- 3. Keep the newest KEEP_LAST_N_CHECKPOINTS training checkpoints (open-instruct --keep_last_n_checkpoints) ----
-read -r CKPT_DIR MODEL_DIR < <(python - "$CONFIG" <<'PY'
+# and every hf_snapshot_every-th HF snapshot (open-instruct keeps one every 20 steps) ----
+read -r CKPT_DIR MODEL_DIR HF_SNAPSHOT_EVERY < <(python - "$CONFIG" <<'PY'
 import os, sys, yaml
 c = yaml.safe_load(open(sys.argv[1]))
 exp = os.environ.get("MILES_SCRIPT_EXP_NAME") or c.get("exp_name")  # submit.py's per-submission run name
 ckpt = f"{c['output_dir']}/{exp}/checkpoints" if exp and c.get("output_dir") else "-"
-print(ckpt, c.get("model_dir", "/root/models"))
+print(ckpt, c.get("model_dir", "/root/models"), int(c.get("hf_snapshot_every", 0)))
 PY
 )
 [ "$CKPT_DIR" = "-" ] && CKPT_DIR=""
-if [ "${KEEP_LAST_N_CHECKPOINTS:-0}" -gt 0 ] && [ -n "$CKPT_DIR" ]; then
+if { [ "${KEEP_LAST_N_CHECKPOINTS:-0}" -gt 0 ] || [ "$HF_SNAPSHOT_EVERY" -gt 0 ]; } && [ -n "$CKPT_DIR" ]; then
     (
         while sleep 600; do
-            python - "$CKPT_DIR" "$KEEP_LAST_N_CHECKPOINTS" <<'PY' || true
+            python - "$CKPT_DIR" "${KEEP_LAST_N_CHECKPOINTS:-0}" "$HF_SNAPSHOT_EVERY" <<'PY' || true
 import re, shutil, sys
 from pathlib import Path
-ckpt_dir, keep = Path(sys.argv[1]), int(sys.argv[2])
+ckpt_dir, keep, hf_every = Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
 tracker = ckpt_dir / "latest_checkpointed_iteration.txt"
-if tracker.exists():
+if keep > 0 and tracker.exists():
     latest = tracker.read_text().strip()
     iters = sorted((d for d in ckpt_dir.glob("iter_*") if re.fullmatch(r"iter_\d+", d.name)), key=lambda d: int(d.name[5:]))
     protected = f"iter_{int(latest):07d}" if latest.isdigit() else None  # the checkpoint a resume loads
     for old in iters[:-keep]:
         if old.name != protected:
             print(f"pruning old checkpoint {old}", flush=True)
+            shutil.rmtree(old, ignore_errors=True)
+# HF snapshots hf/step_<rollout_id> hold the weights after rollout_id + 1 steps. Keep those after a multiple of
+# hf_every steps, and the newest finished one; a snapshot still being written (no .complete marker) is never touched.
+if hf_every > 0 and (ckpt_dir / "hf").is_dir():
+    done = sorted(
+        (d for d in (ckpt_dir / "hf").glob("step_*") if re.fullmatch(r"step_\d+", d.name) and (d / ".complete").exists()),
+        key=lambda d: int(d.name[5:]),
+    )
+    for old in done[:-1]:
+        if (int(old.name[5:]) + 1) % hf_every:
+            print(f"pruning HF snapshot {old}", flush=True)
             shutil.rmtree(old, ignore_errors=True)
 PY
         done
