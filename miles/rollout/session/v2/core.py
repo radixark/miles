@@ -157,12 +157,7 @@ class SessionCoreV2(SessionCore):
         headers = {**headers, "X-SMG-Routing-Key": session_id}
         if self.rollout_request_headers_function is not None:
             headers = await maybe_await(self.rollout_request_headers_function(headers, evaluation=session.evaluation))
-        try:
-            validate_request_headers(headers)
-        except ValueError as exc:
-            if self.rollout_request_headers_function is not None:
-                raise
-            return Response(content=_render_json({"error": str(exc)}), status_code=400, media_type=JSON_MEDIA_TYPE)
+        validate_request_headers(headers)
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
