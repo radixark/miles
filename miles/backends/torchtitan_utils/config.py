@@ -118,6 +118,7 @@ def build_trainer_config(
     config.training.steps = max(lr_total_steps, 1)
     config.training.max_norm = args.backend.clip_grad
     config.training.disable_cuda_graphs = True
+    config.training.mixed_precision_reduce = args.titan_fsdp_reduce_dtype
     # a static-shape platform (TPU) always compiles, whatever --titan-compile says: eager runs every op separately
     if args.backend.titan_compile or not platforms.current_platform.dynamic_shapes:
         config.compile.enable = True

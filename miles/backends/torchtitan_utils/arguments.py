@@ -28,6 +28,8 @@ class TorchtitanArgs(FSDPArgs):
     titan_fsdp_gather_once: bool = False
     # packed-document attention on TPU: "sdpa_blocks" (query blocks over SDPA) or "splash" (Pallas kernel)
     titan_tpu_attention: str = "sdpa_blocks"
+    # FSDP's gradient reduce dtype: bfloat16 halves the gradient accumulation and reduce-scatter buffers
+    titan_fsdp_reduce_dtype: str = "float32"
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -64,6 +66,8 @@ def validate_torchtitan_args(args) -> None:
         )
 
     platform = platforms.current_platform
+    if args.titan_fsdp_reduce_dtype not in ("float32", "bfloat16"):
+        raise ValueError(f"--titan-fsdp-reduce-dtype {args.titan_fsdp_reduce_dtype!r}: expected float32 or bfloat16")
     if args.titan_tpu_attention not in _TPU_ATTENTION_BACKENDS:
         raise ValueError(
             f"--titan-tpu-attention {args.titan_tpu_attention!r}: expected one of {_TPU_ATTENTION_BACKENDS}"
