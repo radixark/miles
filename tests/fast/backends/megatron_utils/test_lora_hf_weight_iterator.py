@@ -18,6 +18,7 @@ class TestHfWeightIteratorFactory:
     def _make_args(self, mode="bridge"):
         return Namespace(
             megatron_to_hf_mode=mode,
+            update_weight_transfer_mode="broadcast",
             hf_checkpoint="/fake/path",
             update_weight_buffer_size=1,
         )

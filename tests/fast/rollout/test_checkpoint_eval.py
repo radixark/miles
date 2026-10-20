@@ -22,6 +22,8 @@ def make_args(**overrides) -> Namespace:
         sglang_router_policy=None,
         rollout_num_gpus=4,
         rollout_num_gpus_per_engine=2,
+        update_weight_transfer_mode="broadcast",
+        sglang=SimpleNamespace(models=[]),
         eval_num_gpus=1,
         eval_num_gpus_per_engine=1,
         eval_uses_snapshots=True,

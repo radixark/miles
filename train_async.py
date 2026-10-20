@@ -71,7 +71,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
     if args.offload_rollout:
         await inference_controller.onload_kv()
 
-    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor)
+    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor, inference_controller=inference_controller)
     disposer.add(eval_dispatcher.drain)
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:

@@ -230,6 +230,11 @@ RUN cd /sgl-workspace/sglang && \
     pip install -e radix_transfer_plugins --no-deps && \
     python3 -c "import radix_transfer_plugins.stashes.token_output"
 
+# Install GPU-delta's prebuilt nvCOMP C library without changing Torch/CUDA dependencies.
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      pip install --no-deps nvidia-libnvcomp-cu13==5.3.0.16; \
+    fi
+
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
 
