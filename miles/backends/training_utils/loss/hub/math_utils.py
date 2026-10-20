@@ -277,6 +277,33 @@ def compute_policy_loss(
     return pg_losses, clipfrac
 
 
+def compute_dppo_tv_policy_loss(
+    ppo_kl: torch.Tensor,
+    log_probs: torch.Tensor,
+    behavior_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    threshold: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """DPPO with the binary total-variation divergence (https://arxiv.org/abs/2602.04879, Eqs. 11-13).
+
+    Per token, with ``r = π/μ`` (``μ`` the behavior policy, i.e. the rollout's log-probs) and the binary divergence
+    ``D = |μ(y) - π(y)|`` on the sampled token, the loss is ``-A · r · M``, where the mask ``M`` is 0 only for an
+    update that both leaves the trust region (``D > threshold``) and pushes further away (``A > 0`` with ``r > 1``,
+    or ``A < 0`` with ``r < 1``). There is no ratio clip. Matches open-instruct's ``--loss_fn dppo
+    --dppo_divergence_type tv``.
+
+    Returns the per-token loss and the masked indicator (1 where ``M`` is 0), logged as the clip fraction.
+    """
+    ratio = _safe_exp_neg_ppo_kl(ppo_kl)
+    with torch.no_grad():
+        mu = behavior_log_probs.clamp(min=-30.0, max=0.0).exp()
+        pi = log_probs.detach().clamp(min=-30.0, max=0.0).exp()
+        outside = (mu - pi).abs() > threshold
+        masked = outside & (((advantages > 0) & (ratio > 1.0)) | ((advantages < 0) & (ratio < 1.0)))
+    pg_losses = torch.where(masked, torch.zeros_like(ratio), -ratio * advantages)
+    return pg_losses, masked.float()
+
+
 def compute_log_probs(
     logits: torch.Tensor,
     tokens: torch.Tensor,
