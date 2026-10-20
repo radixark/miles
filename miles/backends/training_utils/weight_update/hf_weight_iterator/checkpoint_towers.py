@@ -5,6 +5,7 @@ import os
 
 import torch
 from safetensors import safe_open
+
 from miles.utils import accelerator
 
 _TOWERS = ("visual", "audio")

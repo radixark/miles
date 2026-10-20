@@ -153,9 +153,6 @@ class TrainRayActor(NodeProbeMixin):
 
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
 
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        accelerator.set_local_device(local_rank)
-
         if args.debug_deterministic_collective:
             register_det_nccl_backend()
             args.distributed_backend = DET_NCCL_BACKEND_NAME
@@ -172,6 +169,7 @@ class TrainRayActor(NodeProbeMixin):
             backend=backend,
             timeout=timedelta(minutes=args.distributed_timeout_minutes),
         )
+        accelerator.bind_local_device(int(os.environ.get("LOCAL_RANK", 0)))
         init_gloo_group()
 
         args.rank = dist.get_rank()

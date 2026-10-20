@@ -2,6 +2,7 @@ from collections.abc import Callable, Iterable
 
 import torch
 import torch.nn as nn
+
 from miles.utils import accelerator
 
 
@@ -22,8 +23,10 @@ def _map_optimizer_state(optimizers: Iterable[torch.optim.Optimizer], fn: Callab
 
 
 @torch.no_grad()
-def move_train_state(model_parts: list[nn.Module], optimizers: Iterable[torch.optim.Optimizer], device: str) -> None:
-    fn = _to_pinned_host if device == "cpu" else _to_device
+def move_train_state(
+    model_parts: list[nn.Module], optimizers: Iterable[torch.optim.Optimizer], *, to_host: bool
+) -> None:
+    fn = _to_pinned_host if to_host else _to_device
     for module in model_parts:
         module._apply(fn)
     _map_optimizer_state(optimizers, fn)

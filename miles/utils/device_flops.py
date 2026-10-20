@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from functools import cache
 
 _PEAK_BF16_TFLOPS: dict[str, float] = {
     "A100": 312.0,
@@ -30,17 +29,8 @@ def peak_bf16_tflops(device_name: str) -> float | None:
     return None
 
 
-@cache
-def _current_device_name() -> str | None:
-    import torch
-
+def local_peak_bf16_tflops() -> float | None:
     from miles.utils import accelerator
 
-    if accelerator.IS_TPU or not torch.cuda.is_available():
-        return None
-    return torch.cuda.get_device_name()
-
-
-def local_peak_bf16_tflops() -> float | None:
-    device_name = _current_device_name()
+    device_name = accelerator.device_name()
     return peak_bf16_tflops(device_name) if device_name else None

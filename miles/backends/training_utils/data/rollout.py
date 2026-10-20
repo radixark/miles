@@ -48,7 +48,7 @@ def get_rollout_data(
         train_parallel_config=train_parallel_config,
         witness_info=witness_info,
     )
-    # move tokens to GPU in advance
+    # move tokens to the device in advance
     rollout_data["tokens"] = [
         torch.tensor(t, dtype=torch.long, device=accelerator.current_device()) for t in rollout_data["tokens"]
     ]
@@ -67,7 +67,7 @@ def get_rollout_data(
         ]
 
     if "multimodal_train_inputs" in rollout_data:
-        # Move multimodal training tensors to GPU in advance
+        # Move multimodal training tensors to the device in advance
         rollout_data["multimodal_train_inputs"] = [
             (
                 {key: tensor.to(device=accelerator.current_device()) for key, tensor in mm_dict.items()}
