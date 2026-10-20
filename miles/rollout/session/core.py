@@ -345,7 +345,12 @@ class SessionCore:
         headers = {**headers, "X-SMG-Routing-Key": session_id}
         if self.rollout_request_headers_function is not None:
             headers = await maybe_await(self.rollout_request_headers_function(headers, evaluation=session.evaluation))
-        validate_request_headers(headers)
+        try:
+            validate_request_headers(headers)
+        except ValueError as exc:
+            if self.rollout_request_headers_function is not None:
+                raise
+            return Response(content=_render_json({"error": str(exc)}), status_code=400, media_type=JSON_MEDIA_TYPE)
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
@@ -436,7 +441,10 @@ class SessionCore:
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes
     ) -> Response:
         headers = {**headers, "X-SMG-Routing-Key": session_id}
-        validate_request_headers(headers)
+        try:
+            validate_request_headers(headers)
+        except ValueError as exc:
+            return Response(content=_render_json({"error": str(exc)}), status_code=400, media_type=JSON_MEDIA_TYPE)
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), path, body=body, headers=headers
         )
