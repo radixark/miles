@@ -2,9 +2,10 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["replay"])
 
+import pytest
 import torch
 
-from miles.utils.replay_base import BaseReplayManager
+from miles.utils.replay_base import BaseReplayManager, Replay
 
 
 class _FakeReplay:
@@ -51,3 +52,16 @@ def test_get_topk_fn_preserves_partial_padding():
     topk_fn = manager.get_topk_fn(_topk, return_probs=False)
 
     torch.testing.assert_close(topk_fn(scores, 3), replayed_top_indices)
+
+
+@pytest.mark.parametrize(
+    "stored,expected", [(torch.int16, torch.int32), (torch.int32, torch.int32), (torch.int64, torch.int64)]
+)
+def test_replay_pop_hands_gather_an_int32_or_int64_index(monkeypatch, stored, expected):
+    """Rollout ids are stored int16 on the host; torch.gather rejects int16 indices."""
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
+    replay = Replay()
+    replay.top_indices_list = [torch.tensor([[3, -1]], dtype=stored)] * 2
+    for popped in (replay.pop_forward(), replay.pop_backward()):
+        assert popped.dtype == expected
+        assert popped.tolist() == [[3, -1]]

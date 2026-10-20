@@ -14,6 +14,7 @@ from copy import copy, deepcopy
 import numpy as np
 import safetensors.numpy
 import torch
+from sglang.srt.state_capturer.routed_experts_codec import ROUTED_EXPERTS_DTYPES
 
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample, WeightVersionsPerCall
@@ -24,8 +25,9 @@ class ValueSpec:
     """Wire contract of one computed field."""
 
     codec: str  # "tensor" | "tensor_list" | "sampling_mask" | "json"
-    dtype: np.dtype | None = None  # tensor codecs: pinned on both sides; a mismatch raises instead of converting
-    strict: bool = False  # encode never converts, only validates (R3 replay tensors must arrive as int32)
+    # tensor codecs: pinned on both sides (a tuple admits any of them); a mismatch raises instead of converting
+    dtype: np.dtype | tuple[np.dtype, ...] | None = None
+    strict: bool = False  # encode never converts, only validates
     null: object = None  # decoded value for a null-marked field; copied per sample so no instance is shared
 
 
@@ -40,7 +42,7 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "rollout_topk_token_ids": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "rollout_topk_log_probs": ValueSpec("tensor", np.dtype(np.float32), strict=True),
     "rollout_sampling_mask": ValueSpec("sampling_mask"),
-    "rollout_routed_experts": ValueSpec("tensor", np.dtype(np.int32), strict=True),
+    "rollout_routed_experts": ValueSpec("tensor", ROUTED_EXPERTS_DTYPES, strict=True),
     "rollout_indexer_topk": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "status": ValueSpec("json"),
     "weight_versions": ValueSpec("json"),
@@ -80,6 +82,13 @@ class SamplesReply:
     samples: list[Sample]
     session_metadata: dict
     empty_reason: str | None
+
+
+def _check_dtype(field: str, spec: ValueSpec, dtype: np.dtype) -> None:
+    allowed = spec.dtype if isinstance(spec.dtype, tuple) else (spec.dtype,)
+    if dtype not in allowed:
+        expected = " or ".join(str(d) for d in allowed)
+        raise ValueError(f"{field} must have dtype {expected}, got {dtype}")
 
 
 def _asarray_wire(field: str, value, dtype: np.dtype) -> np.ndarray:
@@ -173,8 +182,7 @@ def encode_samples(
                 continue
             if spec.strict:
                 arr = np.asarray(value)
-                if arr.dtype != spec.dtype:
-                    raise ValueError(f"{field} must have dtype {spec.dtype}, got {arr.dtype}")
+                _check_dtype(field, spec, arr.dtype)
             else:
                 arr = _asarray_wire(field, value, spec.dtype)
             # ascontiguousarray is a correctness requirement: the numpy adapter
@@ -261,8 +269,7 @@ def decode_samples_and_merge_input_sample(
                 )
                 continue
             arr = tensors.pop(f"{field}.{sample_index}")  # KeyError propagates: a promised tensor must exist
-            if arr.dtype != spec.dtype:
-                raise ValueError(f"{field} must have dtype {spec.dtype}, got {arr.dtype}")
+            _check_dtype(field, spec, arr.dtype)
             setattr(sample, field, arr.tolist() if spec.codec == "tensor_list" else arr)
         samples.append(sample)
     if tensors:

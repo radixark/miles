@@ -18,10 +18,10 @@ import json
 import uuid
 
 import numpy as np
-import pybase64
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sglang.srt.state_capturer.routed_experts_codec import RoutedExpertsEncoder
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 from tests.fast.rollout.session.test_samples import _make_record
 
@@ -96,8 +96,7 @@ def spec_core():
 
 
 def _r3_b64(num_tokens: int, seed: int) -> str:
-    arr = np.arange(seed, seed + num_tokens * NUM_LAYERS * TOPK, dtype=np.int32)
-    return pybase64.b64encode(arr.tobytes()).decode("ascii")
+    return RoutedExpertsEncoder().encode(_expected_r3(seed, num_tokens))
 
 
 def _two_turn_records():
@@ -328,8 +327,7 @@ async def test_session_metadata_matches_get_session(core):
 def _r3_slice_b64(seed: int, start_row: int, end_row: int) -> str:
     """Rows [start_row, end_row) of the same arange stream `_r3_b64(seed=...)`
     encodes in full, so addition patches rebuild exactly `_expected_r3`."""
-    arr = np.arange(seed + start_row * NUM_LAYERS * TOPK, seed + end_row * NUM_LAYERS * TOPK, dtype=np.int32)
-    return pybase64.b64encode(arr.tobytes()).decode("ascii")
+    return RoutedExpertsEncoder().encode(_expected_r3(seed, end_row)[start_row:])
 
 
 def _two_turn_addition_records(turn2_start_len: int = 4):

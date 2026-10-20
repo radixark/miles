@@ -11,6 +11,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
     compute_routing_headers,
+    request_routed_experts_patch,
     update_sample_from_response,
 )
 from miles.rollout.generate_utils.tool_call_utils import (
@@ -61,6 +62,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if payload is None:
             sample.status = halt_status
             break
+        request_routed_experts_patch(args, payload, sample)
 
         gen_t0 = time.time()
         output = await post(url, payload, headers=compute_routing_headers(args, sample))

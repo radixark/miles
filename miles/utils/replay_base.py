@@ -11,6 +11,12 @@ def _get_rank():
     return dist.get_rank() if dist.is_initialized() else 0
 
 
+def _to_device_indices(top_indices: torch.Tensor) -> torch.Tensor:
+    # rollout ids stay int16 in host memory; gather takes int32/int64, so widen on device
+    top_indices = top_indices.to(torch.cuda.current_device())
+    return top_indices.to(torch.int32) if top_indices.dtype == torch.int16 else top_indices
+
+
 class Replay:
     def __init__(self, stream_idx: int | None = None):
         self.stream_idx = stream_idx
@@ -34,12 +40,12 @@ class Replay:
             )
         top_indices = self.top_indices_list[self.forward_index]
         self.forward_index += 1
-        return top_indices.to(torch.cuda.current_device())
+        return _to_device_indices(top_indices)
 
     def pop_backward(self) -> torch.Tensor:
         top_indices = self.top_indices_list[self.backward_index]
         self.backward_index += 1
-        return top_indices.to(torch.cuda.current_device())
+        return _to_device_indices(top_indices)
 
     def clear(self):
         self.forward_index = 0

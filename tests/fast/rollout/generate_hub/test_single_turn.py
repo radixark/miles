@@ -3,10 +3,10 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=220, suite="stage-b-cpu", labels=["rollout"])
 
 import numpy as np
-import pybase64
 import pytest
 import torch
 from PIL import Image
+from sglang.srt.state_capturer.routed_experts_codec import RoutedExpertsEncoder
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 from transformers import AutoProcessor
 
@@ -302,7 +302,7 @@ class TestRoutedExperts:
 
         generation_env.args.num_layers = num_layers
         generation_env.args.moe_router_topk = moe_router_topk
-        routed_experts_str = pybase64.b64encode(routed_experts_array.tobytes()).decode("ascii")
+        routed_experts_str = RoutedExpertsEncoder().encode(routed_experts_array)
         generation_env.mock_server.process_fn = lambda _: ProcessResult(
             text=RESPONSE_TEXT,
             finish_reason="stop",
