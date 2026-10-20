@@ -33,8 +33,8 @@ class Platform:
     def current_device(self) -> torch.device:
         return torch.device(self.device_type, torch.accelerator.current_device_index())
 
-    def install_titan_attention(self) -> None:
-        """Route torchtitan's document-masked attention to this platform's kernel; CUDA keeps FlexAttention."""
+    def install_titan_attention(self, backend: str) -> None:
+        """Route torchtitan's document-masked attention to this platform's `backend` kernel; CUDA keeps FlexAttention."""
 
     @functools.cache  # noqa: B019 -- one instance per process
     def device_name(self) -> str | None:
