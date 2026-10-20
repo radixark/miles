@@ -5,11 +5,12 @@ import pytest
 from miles.utils.metric_checker import MetricChecker
 
 
-def _make_checker(expect_num: int | None = None) -> MetricChecker:
+def _make_checker(expect_num: int | None = None, *, early_stop: bool = False) -> MetricChecker:
     args = Namespace(
         ci_metric_checker_key="eval/gsm8k",
         ci_metric_checker_threshold=0.4,
         ci_metric_checker_expect_num=expect_num,
+        ci_metric_checker_early_stop=early_stop,
     )
     return MetricChecker(args)
 
@@ -62,3 +63,23 @@ def test_no_eval_always_fails(expect_num: int | None):
     """The checker rejects a run with no eval under either expectation mode."""
     with pytest.raises(AssertionError, match="no metrics checked"):
         _make_checker(expect_num=expect_num).dispose()
+
+
+class TestEarlyStop:
+    def test_threshold_crossing_requests_stop_and_remains_satisfied(self):
+        checker = _make_checker(early_stop=True)
+        assert checker.on_eval({"eval/gsm8k": 0.39}) is False
+        assert checker.on_eval({"eval/gsm8k": 0.4}) is True
+        assert checker.on_eval({"eval/gsm8k": 0.3}) is True
+        checker.dispose()
+
+    def test_disabled_early_stop_preserves_the_full_run(self):
+        checker = _make_checker()
+        assert checker.on_eval({"eval/gsm8k": 0.5}) is False
+        checker.dispose()
+
+    def test_never_reaching_threshold_still_fails(self):
+        checker = _make_checker(early_stop=True)
+        assert checker.on_eval({"eval/gsm8k": 0.3}) is False
+        with pytest.raises(AssertionError, match="accuracy check failed"):
+            checker.dispose()

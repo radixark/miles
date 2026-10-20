@@ -59,7 +59,8 @@ async def train(args, *, disposer: Disposer):
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
-        await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
+        if await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint):
+            return
 
     async def save_training_model(model, rollout_id, force_sync):
         if args.use_critic and args.offload_train:
@@ -150,7 +151,15 @@ async def train(args, *, disposer: Disposer):
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
             await inference_controller.prepare_eval()
-            await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
+            if await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1):
+                # Release the already-prefetched batch without training it. Awaiting
+                # also preserves generation failures instead of hiding them on exit.
+                if has_next_rollout:
+                    if rollout_data_next_future is not None:
+                        remove_rollout_data_refs(args, await rollout_data_next_future)
+                    elif not args.fully_async and weight_update_due:
+                        remove_rollout_data_refs(args, rollout_data_curr_ref)
+                break
 
         if (
             args.debug_exit_after_rollout is not None

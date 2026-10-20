@@ -83,6 +83,7 @@ class TestValidateMultiPolicyArgs:
             (dict(colocate=True), "does not support --colocate"),
             (dict(fully_async=False), "only supported for --fully-async"),
             (dict(use_critic=True), "does not support --use-critic"),
+            (dict(ci_metric_checker_early_stop=True), "does not support --ci-metric-checker-early-stop"),
             (dict(debug_rollout_only=True), "does not support --debug-rollout-only"),
             (dict(async_unused_samples_handler="retry"), "retry"),
             (dict(dump_details="/tmp/dump"), "--dump-details"),

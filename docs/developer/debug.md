@@ -91,6 +91,8 @@ least one eval must report `key >= x`. Set `--ci-metric-checker-expect-num <n>` 
 require exactly `n` eval checks and require all of them to succeed. A run with no eval
 always fails.
 
+With `train.py` or `train_async.py`, add `--ci-metric-checker-early-stop` to stop training after the first shared-engine evaluation that meets the threshold, including the initial evaluation. It requires `--ci-test`, a metric key and threshold, and `--eval-interval`; it cannot be combined with snapshot evaluation or `--ci-metric-checker-expect-num`. Normal teardown still runs, and reaching the rollout cap without a passing evaluation still fails. The multi-policy driver rejects this option.
+
 **Gradient-norm comparison.** `--ci-save-grad-norm <path>` writes the grad norm, and
 `--ci-load-grad-norm <path>` asserts a later run matches within `rel_tol=abs_tol=0.03`.
 Both accept `{role}`, `{rollout_id}` and `{step_id}` in the path, and only rank 0

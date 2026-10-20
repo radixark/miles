@@ -2270,6 +2270,19 @@ class TestSnapshotEvalValidation:
             ]
         )
 
+    def test_snapshot_eval_rejects_metric_early_stop(self, tmp_path):
+        args = self._snapshot_eval_args(
+            tmp_path,
+            "--ci-test",
+            "--ci-metric-checker-key",
+            "eval/gsm8k",
+            "--ci-metric-checker-threshold",
+            "0.55",
+            "--ci-metric-checker-early-stop",
+        )
+        with pytest.raises(AssertionError, match="requires shared-engine evaluation"):
+            miles_validate_args(args)
+
     def test_snapshot_eval_rejects_load_debug_rollout_data(self, tmp_path):
         """The replay path loads no rollout functions, so there is nothing to run the eval with."""
         args = self._snapshot_eval_args(tmp_path, "--load-debug-rollout-data", "/tmp/rollout_{rollout_id}.pt")

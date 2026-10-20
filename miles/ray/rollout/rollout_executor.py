@@ -235,7 +235,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         hf_dir: str | None = None,
         export_time_seconds: float | None = None,
         require_marker: bool = True,
-    ) -> None:
+    ) -> bool | None:
         if self.args.debug_train_only and not self.args.eval_uses_snapshots:
             return
 
@@ -258,7 +258,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         if self._metric_checker is not None:
-            self._metric_checker.on_eval(metrics)
+            return self._metric_checker.on_eval(metrics)
 
     async def _eval_checkpoint(
         self, rollout_id: int, hf_dir: str | None, export_time_seconds: float | None, require_marker: bool

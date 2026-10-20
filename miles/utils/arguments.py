@@ -2711,6 +2711,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
             )
             parser.add_argument(
+                "--ci-metric-checker-early-stop",
+                action="store_true",
+                help="Stop training after a shared-engine CI evaluation reaches the metric threshold.",
+            )
+            parser.add_argument(
                 "--ci-metric-checker-expect-num",
                 type=int,
                 default=None,
@@ -4048,6 +4053,18 @@ def miles_validate_args(args):
             "--namespaced-radix-cache requires the class-based rollout API; "
             "unset MILES_USE_LEGACY_ROLLOUT_V1 or pass --no-namespaced-radix-cache"
         )
+
+    if args.ci_metric_checker_early_stop:
+        assert (
+            args.ci_test and args.ci_metric_checker_key is not None
+        ), "--ci-metric-checker-early-stop requires --ci-test and --ci-metric-checker-key"
+        assert (
+            args.ci_metric_checker_threshold is not None and args.eval_interval is not None
+        ), "--ci-metric-checker-early-stop requires --ci-metric-checker-threshold and --eval-interval"
+        assert (
+            args.ci_metric_checker_expect_num is None
+        ), "--ci-metric-checker-early-stop cannot be combined with --ci-metric-checker-expect-num"
+        assert not args.eval_uses_snapshots, "--ci-metric-checker-early-stop requires shared-engine evaluation"
 
     # Both snapshot postures drive the same RolloutManager._eval_checkpoint path.
     # (The fleet-vs-CheckpointEvalFn conflict is asserted where the posture is derived.)

@@ -24,17 +24,19 @@ class EvalDispatcher:
         self.pending: deque[tuple[int, asyncio.Task, str | None]] = deque()
         self._exported: list[str] = []
 
-    async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> None:
-        """A caller-supplied ``hf_dir`` is an existing checkpoint, not one of our exports."""
+    async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> bool:
+        """Return whether shared-engine CI eval requests early stopping.
+
+        A caller-supplied ``hf_dir`` is an existing checkpoint, not one of our exports.
+        """
         if not self.args.eval_uses_snapshots:
-            await self.rollout_manager.eval(rollout_id)
-            return
+            return bool(await self.rollout_manager.eval(rollout_id))
 
         await self._reap_finished()
         if len(self.pending) >= self.args.eval_max_in_flight:
             if self.args.eval_overflow_policy == "skip" and not force:
                 await self.rollout_manager.report_eval_skip(rollout_id, "busy")
-                return
+                return False
             await self._settle(*self.pending.popleft())
 
         export_time = None
@@ -50,7 +52,7 @@ class EvalDispatcher:
                 except Exception as e:
                     logger.error(f"HF snapshot export for eval {rollout_id} failed: {e}")
                     await self.rollout_manager.report_eval_skip(rollout_id, "export_failed")
-                    return
+                    return False
                 exported_dir = hf_dir
 
         task = asyncio.ensure_future(
@@ -59,6 +61,7 @@ class EvalDispatcher:
             )
         )
         self.pending.append((rollout_id, task, exported_dir))
+        return False
 
     async def drain(self) -> None:
         while self.pending:

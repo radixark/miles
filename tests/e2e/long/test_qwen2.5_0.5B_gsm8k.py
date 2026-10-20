@@ -5,6 +5,7 @@ from tests.utils.dirs import get_test_data_dir, get_test_model_dir
 
 from miles.utils.external_utils import command_utils
 
+# Runtime varies with the step that first reaches the accuracy threshold.
 register_cuda_ci(
     est_time=7000, suite="stage-c-2-gpu-h200", labels=["long"], hardware=["hopper", "blackwell"], num_gpus=2
 )
@@ -25,6 +26,7 @@ def prepare():
 
 
 def execute():
+    infinite_run = command_utils.get_env_enable_infinite_run()
     U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}/ "
 
@@ -35,7 +37,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        f"--num-rollout {3000 if command_utils.get_env_enable_infinite_run() else 250} "
+        f"--num-rollout {3000 if infinite_run else 200} "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 1024 "
@@ -90,8 +92,11 @@ def execute():
         "--ci-test "
         "--ci-disable-kl-checker "
         "--ci-metric-checker-key eval/gsm8k "
-        "--ci-metric-checker-threshold 0.55 "  # loose threshold at 250 step
+        "--ci-metric-checker-threshold 0.55 "
     )
+
+    if not infinite_run:
+        ci_args += "--ci-metric-checker-early-stop "
 
     misc_args = (
         # default dropout in megatron is 0.1

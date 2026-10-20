@@ -14,7 +14,7 @@ class MetricChecker:
         self.args = args
         self._check_results: list[bool] = []
 
-    def on_eval(self, metrics: dict[str, float]):
+    def on_eval(self, metrics: dict[str, float]) -> bool:
         actual_value = metrics.get(self.args.ci_metric_checker_key)
         assert actual_value is not None, f"{metrics=} {self.args.ci_metric_checker_key=}"
 
@@ -22,6 +22,10 @@ class MetricChecker:
         logger.info(f"[MetricChecker] {check_success=} {actual_value=} {self.args.ci_metric_checker_threshold=}")
 
         self._check_results.append(check_success)
+        should_stop = self.args.ci_metric_checker_early_stop and any(self._check_results)
+        if should_stop:
+            logger.info("[MetricChecker] threshold reached; stopping training")
+        return should_stop
 
     def dispose(self):
         assert self._check_results, "[MetricChecker] no metrics checked"

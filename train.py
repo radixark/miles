@@ -97,9 +97,10 @@ async def train(args, *, disposer: Disposer):
     if args.num_rollout > args.start_rollout_id and args.eval_interval is not None and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
         if args.start_rollout_id == 0:
-            await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
-        else:
-            await eval_dispatcher.dispatch(args.start_rollout_id - 1)
+            if await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint):
+                return
+        elif await eval_dispatcher.dispatch(args.start_rollout_id - 1):
+            return
 
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
@@ -160,7 +161,8 @@ async def train(args, *, disposer: Disposer):
 
         if eval_due:
             await inference_controller.prepare_eval()
-            await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
+            if await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1):
+                break
 
         if (
             args.debug_exit_after_rollout is not None

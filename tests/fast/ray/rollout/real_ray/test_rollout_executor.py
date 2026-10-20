@@ -779,12 +779,14 @@ class TestLegacyRolloutProtocol:
 
 
 class _RecordingMetricChecker:
-    def __init__(self) -> None:
+    def __init__(self, should_stop: bool = False) -> None:
+        self.should_stop = should_stop
         self.evaluated: list[dict] = []
         self.disposed = False
 
-    def on_eval(self, metrics: dict) -> None:
+    def on_eval(self, metrics: dict) -> bool:
         self.evaluated.append(metrics)
+        return self.should_stop
 
     def dispose(self) -> None:
         self.disposed = True
@@ -811,8 +813,9 @@ class _RecordingCheckpointEvalFn(CheckpointEvalFn):
 
 @pytest.mark.asyncio
 class TestLifecycle:
+    @pytest.mark.parametrize("should_stop", [False, True])
     async def test_eval_reports_the_logged_metrics_to_the_metric_checker(
-        self, ray_local_mode, patch_low_level, monkeypatch
+        self, ray_local_mode, patch_low_level, monkeypatch, should_stop
     ):
         """The CI accuracy checker is fed exactly the eval metrics that were logged."""
         import miles.ray.rollout.rollout_executor as rexec
@@ -822,13 +825,13 @@ class TestLifecycle:
         )
 
         executor = await _make_executor(_make_test_args())
-        checker = _RecordingMetricChecker()
+        checker = _RecordingMetricChecker(should_stop=should_stop)
         executor._metric_checker = checker
         executor.eval_generate_rollout = lambda input: RolloutFnEvalOutput(
             data={"my_dataset": {"rewards": [1.0]}}, metrics={}
         )
 
-        await executor.eval(rollout_id=4)
+        assert await executor.eval(rollout_id=4) is should_stop
 
         assert checker.evaluated == [{"eval/accuracy": 0.75}]
 

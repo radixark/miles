@@ -16,6 +16,7 @@ from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutpu
 from miles.ray import placement_group, wiring
 from miles.utils import object_store
 from miles.utils.async_utils import with_disposer
+from miles.utils.metric_checker import MetricChecker
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -367,3 +368,56 @@ class TestTerminalLifecycle:
             events.index(event) < events.index("manager_shutdown") for event in events if event.endswith("_dispose")
         )
         assert events.index("manager_shutdown") < events.index("manager_kill")
+
+
+@pytest.mark.parametrize(
+    "early_stop,first_passing_eval,trained",
+    [
+        (True, 0, []),
+        (True, 1, [0, 1]),
+        (True, 3, [0, 1, 2, 3]),
+        (False, 1, [0, 1, 2, 3]),
+        (True, None, [0, 1, 2, 3]),
+    ],
+)
+async def test_ci_metric_early_stop_preserves_teardown(monkeypatch, early_stop, first_passing_eval, trained):
+    events = []
+    args = _make_args(
+        num_rollout=4,
+        eval_interval=2,
+        eval_uses_snapshots=False,
+        ci_test=True,
+        ci_metric_checker_key="eval/gsm8k",
+        ci_metric_checker_threshold=0.55,
+        ci_metric_checker_expect_num=None,
+        ci_metric_checker_early_stop=early_stop,
+    )
+    components = _install_driver_fakes(monkeypatch, args, events)
+    checker = MetricChecker(args)
+    evaluated = []
+    released = []
+
+    async def evaluate(rollout_id):
+        evaluated.append(rollout_id)
+        score = 0.55 if first_passing_eval is not None and rollout_id >= first_passing_eval else 0.5
+        return checker.on_eval({"eval/gsm8k": score})
+
+    async def dispose():
+        events.append("executor_dispose")
+        checker.dispose()
+
+    components.rollout_executor.eval = evaluate
+    components.rollout_executor.dispose = dispose
+    monkeypatch.setattr(train_driver, "remove_rollout_data_refs", lambda _args, pack: released.append(pack))
+    if first_passing_eval is None:
+        with pytest.raises(AssertionError, match="accuracy check failed"):
+            await with_disposer(train_driver.train, args)
+    else:
+        await with_disposer(train_driver.train, args)
+
+    assert components.actor_model.trained == trained
+    assert "actor_dispose" in events
+    assert "executor_dispose" in events
+    assert "inference_dispose" in events
+    if early_stop and first_passing_eval is not None:
+        assert evaluated == [step for step in [0, 1, 3] if step <= first_passing_eval]

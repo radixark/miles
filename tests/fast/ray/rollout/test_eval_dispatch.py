@@ -83,3 +83,15 @@ class TestSettle:
 
         assert dispatcher.rollout_manager.log == []
         assert dispatcher._exported == [exported_dir]
+
+
+@pytest.mark.parametrize("should_stop", [False, True])
+async def test_shared_eval_returns_the_checker_stop_signal(should_stop):
+    dispatcher = make_dispatcher(eval_uses_snapshots=False)
+
+    async def evaluate(rollout_id):
+        assert rollout_id == 19
+        return should_stop
+
+    dispatcher.rollout_manager.eval = evaluate
+    assert await dispatcher.dispatch(19) is should_stop
