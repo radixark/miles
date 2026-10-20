@@ -30,7 +30,7 @@ def peak_bf16_tflops(device_name: str) -> float | None:
 
 
 def local_peak_bf16_tflops() -> float | None:
-    from miles.utils import accelerator
+    from miles.platforms import current_platform
 
-    device_name = accelerator.device_name()
+    device_name = current_platform.device_name()
     return peak_bf16_tflops(device_name) if device_name else None

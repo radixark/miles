@@ -10,7 +10,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor, Replicate
 
-from miles.utils import accelerator
+from miles.platforms import current_platform
 
 
 def gather_full_param(param: torch.Tensor, *, async_op: bool = False) -> torch.Tensor:
@@ -19,7 +19,7 @@ def gather_full_param(param: torch.Tensor, *, async_op: bool = False) -> torch.T
     Non-DTensor inputs are returned moved to the accelerator unchanged. With ``async_op=True`` the all-gather is
     issued async and the returned tensor carries a ``.wait()`` the caller must drain before use.
     """
-    full = param.to(accelerator.current_device())
+    full = param.to(current_platform.current_device())
     if not isinstance(full, DTensor):
         return full
     if dist.get_world_size() == 1:

@@ -3,7 +3,7 @@ from collections.abc import Callable, Iterable
 import torch
 import torch.nn as nn
 
-from miles.utils import accelerator
+from miles.platforms import current_platform
 
 
 def _to_pinned_host(tensor: torch.Tensor) -> torch.Tensor:
@@ -11,7 +11,7 @@ def _to_pinned_host(tensor: torch.Tensor) -> torch.Tensor:
 
 
 def _to_device(tensor: torch.Tensor) -> torch.Tensor:
-    return tensor.to(accelerator.current_device(), non_blocking=True)
+    return tensor.to(current_platform.current_device(), non_blocking=True)
 
 
 def _map_optimizer_state(optimizers: Iterable[torch.optim.Optimizer], fn: Callable) -> None:
