@@ -72,6 +72,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | W&B key off the logged command line | `07bf7f9d74` |
 | Head-node lookup through the GCS (Miles core) | `ef3dcd4861` |
 | Adam beta2 0.999 and `--seed 42` as in open-instruct | branch `shashank/tmax-oi-parity` |
+| Training entropy logged (`--observe-training-entropy`) | branch `shashank/tmax-oi-parity` |
 | Registry mirrors, `mirror_url: auto`, authenticated pulls | `0b910d7822`, `bfd6826c2b`, `dafe101cff` |
 | Docker Hub token out of the job log | `de58153970` |
 | Env-step exceptions become failed-step observations | `212c6ad522` |

@@ -345,6 +345,9 @@ def execute(args: ScriptArgs):
         "--use-rollout-logprobs "
         "--calculate-per-token-loss "
         "--entropy-coef 0.0 "
+        # Logged, not trained on (detached at coefficient 0): open-instruct's runs show entropy, and a collapse is the
+        # first thing to rule out when a run stops improving.
+        "--observe-training-entropy "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
     )
