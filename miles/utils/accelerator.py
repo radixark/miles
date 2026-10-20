@@ -18,10 +18,16 @@ if IS_TPU:
     import torch_tpu  # noqa: F401  registers the tpu device with torch
 
 
-def bind_local_device(local_rank: int) -> None:
-    """Bind this process to its device. Call after init_process_group: TPU binds its one visible device at
-    process-group init (touching it earlier breaks the rendezvous), CUDA binds lazily."""
-    torch.accelerator.set_device_index(0 if IS_TPU else local_rank)
+def bind_device_before_process_group(local_rank: int) -> None:
+    # CUDA binds before init_process_group, as it always has; a TPU touched this early breaks the rendezvous
+    if not IS_TPU:
+        torch.cuda.set_device(f"cuda:{local_rank}")
+
+
+def bind_device_after_process_group() -> None:
+    # TPU binds its one visible device once the process group is up
+    if IS_TPU:
+        torch.accelerator.set_device_index(0)
 
 
 def current_device() -> torch.device:
@@ -37,5 +43,11 @@ def device_name() -> str | None:
 
 
 def compile_dynamic(fn):
-    # the TPU compile backend rejects dynamic shapes; these helpers only fuse kernels
+    """`torch.compile(dynamic=True)` on CUDA; on TPU, whose compile backend rejects dynamic shapes, `fn` runs eager.
+
+    Only for helpers without data-dependent control flow (`compute_approx_kl`, `compute_policy_loss`, the entropy's
+    `mul_reduce`). Eager results are numerically close to the compiled ones, not bit-identical: fusion can change
+    reduction order and intermediate rounding. Eager `mul_reduce` also materializes the [rows, vocab] product the
+    fused kernel avoids, one more fp32 transient per log-prob chunk.
+    """
     return fn if IS_TPU else torch.compile(dynamic=True)(fn)
