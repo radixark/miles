@@ -866,6 +866,66 @@ class TestUpdatableModelSelection:
         return _make_controller({srv.model_name: srv for srv in servers})
 
     @pytest.mark.asyncio
+    async def test_explicit_eval_selection_preserves_lock_metadata_and_rollout_default(self, monkeypatch):
+        monkeypatch.setattr(inference_controller_module, "CELLS_READY_TIMEOUT_SECONDS", 0)
+        rollout_cell = _FakeUpdatableCell("rollout-incarnation", cell_id="rollout-cell", api_client="rollout")
+        rollout_cell.is_pending_weights_or_serving = False
+        eval_cell = _FakeUpdatableCell(
+            "eval-incarnation", cell_id="eval-cell", api_client="eval", num_gpus_per_engine=2, gpu_offset=8
+        )
+        rollout = _RecordingServer({"rollout-cell": rollout_cell}, model_name="default", update_weights=True)
+        eval_server = _RecordingServer({"eval-cell": eval_cell}, model_name="eval", update_weights=False)
+        controller = self._controller(rollout, eval_server)
+        controller._eval_fleet = object()
+
+        info = await controller.start_update_weights(receiver_pool="eval")
+
+        assert info == UpdatableEngines(
+            rollout_engines=["eval"],
+            engine_gpu_counts=[2],
+            engine_gpu_offsets=[8],
+            engine_cell_ids=["eval-cell"],
+            snapshot_cell_id_to_hashes={"eval-cell": "eval-incarnation"},
+            receiver_pool="eval",
+        )
+        assert controller.context_lock.locked
+        await controller.end_update_weights(info.snapshot_cell_id_to_hashes, failed_cell_ids=[])
+        assert eval_cell.marked_ready == 1
+        assert rollout_cell.marked_ready == 0
+        assert not controller.context_lock.locked
+
+        with pytest.raises(AssertionError, match="Server for model_id 'eval' is frozen"):
+            await controller.start_update_weights(model_id="eval")
+        assert not controller.context_lock.locked
+
+        rollout_cell.is_pending_weights_or_serving = True
+        info = await controller.start_update_weights()
+        assert info.receiver_pool == "rollout"
+        assert info.rollout_engines == ["rollout"]
+        await controller.abort_update_weights()
+        assert not controller.context_lock.locked
+        assert eval_server.update_weights is False
+
+    @pytest.mark.parametrize(
+        "receiver_pool,model_id,has_eval_pool,message",
+        [
+            ("unknown", None, True, "Unknown receiver pool"),
+            ("eval", None, False, "no dedicated eval pool"),
+            ("eval", "actor", True, "does not select a training model"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_invalid_receiver_pool_selection_releases_lock(
+        self, receiver_pool, model_id, has_eval_pool, message
+    ):
+        controller = self._controller()
+        controller._eval_fleet = object() if has_eval_pool else None
+
+        with pytest.raises(ValueError, match=message):
+            await controller.start_update_weights(model_id=model_id, receiver_pool=receiver_pool)
+        assert not controller.context_lock.locked
+
+    @pytest.mark.asyncio
     async def test_only_the_updatable_models_engines_receive_weights(self):
         """A frozen reference model handed the trainer's weights stops being the baseline the
         KL term is measured against."""
