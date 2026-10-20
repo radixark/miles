@@ -26,6 +26,8 @@ import tmax_agent_function  # noqa: E402
 import tmax_gateway  # noqa: E402
 import tmax_sandbox  # noqa: E402
 
+from miles.rollout.agentic import rollout_limits  # noqa: E402
+
 SANDBOX_LOST_PIDS = {
     "detail": {
         "code": "sandbox_lost",
@@ -313,6 +315,29 @@ def test_abort_closes_live_containers(gateway, task_dir, monkeypatch):
 
     assert run(gateway, episode, monkeypatch) == 1
     assert "container0001" in gateway.closed
+
+
+def test_job_exit_closes_every_rollout_process_containers(gateway, task_dir, monkeypatch, tmp_path):
+    """close-all, which the head runs when the job stops, reaches the containers of every rollout process on the host."""
+    monkeypatch.setattr(tmax_gateway.tempfile, "tempdir", str(tmp_path))  # only this test's live-container records
+
+    async def two_rollout_processes():
+        first = tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir)
+        await first.__aenter__()
+        monkeypatch.setenv(rollout_limits.SCOPE_ENV_VAR, "another-rollout-process")
+        second = tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir)
+        await second.__aenter__()
+        return await tmax_gateway.close_all_live_sandboxes(timeout_s=10)
+
+    assert run(gateway, two_rollout_processes, monkeypatch) == 2
+    assert sorted(gateway.closed) == ["container0001", "container0002"] and not gateway.containers
+    assert not [p for d in tmp_path.glob("miles-tmax-gateway-live-*") for p in d.iterdir()], "records removed"
+
+
+def test_job_exit_with_nothing_live_closes_nothing(gateway, task_dir, monkeypatch, tmp_path):
+    monkeypatch.setattr(tmax_gateway.tempfile, "tempdir", str(tmp_path))
+    assert run(gateway, lambda: tmax_gateway.close_all_live_sandboxes(timeout_s=10), monkeypatch) == 0
+    assert gateway.closed == []
 
 
 def test_missing_gateway_url_is_a_configuration_error(gateway, task_dir, monkeypatch):

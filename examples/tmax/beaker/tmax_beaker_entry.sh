@@ -290,10 +290,21 @@ PY
     done
     export MILES_SCRIPT_EXTERNAL_RAY=1 MILES_SCRIPT_NUM_NODES=$NUM_NODES
 fi
-eval python examples/tmax/run_tmax_qwen3_5.py execute "$CONFIG" "${EXTRA_ARGS:-}"
+if [ "$SANDBOX_BACKEND" = gateway ]; then
+    # However the job ends (finished, failed, preempted, cancelled), close the containers it still holds on the fleet:
+    # left behind, they keep fleet capacity until the replicas' idle timeout (2 h) and the next attempt's containers
+    # cannot start (2026-10-20, FAILURE_MODES.md). Beaker's SIGTERM ends this shell through the TERM trap, which runs
+    # the EXIT trap; the training commands below run in the background so that `wait`, unlike a foreground command,
+    # lets the trap run at once.
+    trap 'timeout 90 python examples/tmax/tmax_gateway.py close-all --timeout-s 60 || true' EXIT
+    trap 'exit 143' TERM INT
+fi
+eval python examples/tmax/run_tmax_qwen3_5.py execute "$CONFIG" "${EXTRA_ARGS:-}" &
+wait $!
 # `ray job submit` also returns 0 when its log stream drops while the job still runs (2026-10-17): wait for the job
 # itself, and fail the replica unless it SUCCEEDED, before marking anything done.
-python examples/tmax/beaker/follow_ray_job.py
+python examples/tmax/beaker/follow_ray_job.py &
+wait $!
 if [ "$NUM_NODES" -gt 1 ]; then
     python - "$HEAD_DONE" <<'PY'
 import sys, ray

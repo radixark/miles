@@ -187,7 +187,10 @@ beaker:
   goes to `<output_dir>/<run>/literegistry-gateway-<UTC time>.log` on weka, one file per attempt. Before training starts, the head waits up to 30 min for the gateway to
   list `gateway_min_replicas` podman replicas. The gateway finds the fleet's Redis through the head registry, so it
   follows a Redis move, and prints the first replica's `session_limits` once enough are listed. `gateway_url` skips
-  all this and uses a running gateway.
+  all this and uses a running gateway. However the job ends, including Beaker's SIGTERM on preemption or cancel
+  (SIGKILL follows 5 min later), the head closes the containers it still holds on the fleet
+  (`tmax_gateway.py close-all`, at most 60 s); otherwise they keep fleet capacity for the replicas' 2 h idle timeout
+  and the next attempt's containers cannot start.
 - **What a container costs.** Started from the dev box, a container took 7.5–9.4 s to start, including the pull
   through the fleet's mirrors and setup, and each command took 0.3–0.6 s. In the Beaker smoke, from holmes, the
   median command took 1.2 s (p90 2.3 s), its own run time included.

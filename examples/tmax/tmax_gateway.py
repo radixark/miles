@@ -90,6 +90,8 @@ _RETRY_MAX_S = 8.0
 # Transient gateway answers: a replica still starting the exec, an owner briefly unreachable, a dropped connection.
 # A request that failed without a status never reached the gateway.
 _TRANSIENT_STATUSES = frozenset({408, 500, 502, 503, 504})
+# Containers closed at once when the job stops (close_all_live_sandboxes).
+_CLOSE_CONCURRENCY = 64
 
 
 def _live_dir() -> Path:
@@ -373,3 +375,47 @@ async def close_live_sandboxes() -> int:
             except PodmanGatewayError as e:  # one already lost counts as closed too
                 logger.debug(f"closing gateway sandbox {affinity_id[:12]}: {e}")
     return len(ids)
+
+
+async def close_all_live_sandboxes(timeout_s: float = 60.0) -> int:
+    """Close every container any rollout process on this host still holds on the fleet; returns how many it tried.
+
+    The head runs it when the job stops (beaker/tmax_beaker_entry.sh, ``python tmax_gateway.py close-all``): without
+    it a preempted or cancelled run leaves its containers holding fleet capacity until the replicas' idle timeout
+    (2 h), and the next attempt's containers cannot start (2026-10-20). Best effort, within ``timeout_s``.
+    """
+    paths = [
+        p for d in Path(tempfile.gettempdir()).glob("miles-tmax-gateway-live-*") if d.is_dir() for p in d.iterdir()
+    ]
+    if not paths:
+        return 0
+    slots = asyncio.Semaphore(_CLOSE_CONCURRENCY)
+    async with _client() as client:
+
+        async def close(path: Path) -> None:
+            async with slots:
+                path.unlink(missing_ok=True)
+                try:
+                    await client.close(path.name)
+                except Exception as e:  # lost, expired or unreachable: nothing more to do at exit
+                    logger.debug(f"closing gateway sandbox {path.name[:12]}: {e}")
+
+        try:
+            await asyncio.wait_for(asyncio.gather(*(close(path) for path in paths)), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            logger.warning(f"closing {len(paths)} gateway sandboxes did not finish within {timeout_s:.0f}s")
+    return len(paths)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Gateway backend maintenance, run by beaker/tmax_beaker_entry.sh.")
+    parser.add_argument("command", choices=["close-all"])
+    parser.add_argument("--timeout-s", type=float, default=60.0)
+    cli = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    print(
+        f"asked the fleet to close {asyncio.run(close_all_live_sandboxes(cli.timeout_s))} gateway sandboxes",
+        flush=True,
+    )
