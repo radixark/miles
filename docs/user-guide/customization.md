@@ -87,7 +87,11 @@ def customize_headers(headers: dict[str, str], *, evaluation: bool) -> dict[str,
 ```
 
 Set `--custom-rollout-request-headers-function-path my_module.customize_headers`. Both sync
-and async functions are supported; use async for external lookups without blocking.
+and async functions are supported. For example, refreshing an expired OAuth access token
+requires contacting the authorization server before setting `Authorization`; an async
+function can do this without blocking other requests. The credential provider should
+cache tokens and coordinate concurrent refreshes. Use timeouts for external I/O:
+rollout abort waits for the function to finish. Do not suppress task cancellation.
 
 The function receives the default headers with their original casing, including
 `X-SMG-Routing-Key` when set (the session ID for session forwarding).
