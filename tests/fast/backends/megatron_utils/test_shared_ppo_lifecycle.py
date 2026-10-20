@@ -342,6 +342,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     worker._asleep = asleep
     worker._heartbeat = Mock()
     worker.weight_updater = Mock()
+    worker.weight_updater.receiver_pool.side_effect = lambda _pool: nullcontext()
     worker.weight_updater.conn_status = Mock(spec=ConnStatusManager)
     worker.weight_updater.conn_status.needs_reconnect.return_value = False
     info = UpdatableEngines(
@@ -361,6 +362,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
 
     assert reload_groups.call_count == int(asleep)
     assert destroy_groups.call_count == int(asleep)
+    worker.weight_updater.receiver_pool.assert_called_once_with("rollout")
 
 
 def _lifecycle_worker(actor_module, monkeypatch, asleep):
@@ -803,6 +805,23 @@ class _RecordingWeightUpdater:
         self.connect_calls: list[dict[str, Any]] = []
         self.update_weights_calls: int = 0
         self.protocol = SimpleNamespace(cell_updaters_of_cell_id={})
+        self.active_receiver_pool: str | None = None
+        self.receiver_pool_calls: list[str] = []
+        self.mark_trainer_stale_calls = 0
+
+    @contextmanager
+    def receiver_pool(self, pool: str) -> Iterator[None]:
+        assert self.active_receiver_pool is None
+        self.receiver_pool_calls.append(pool)
+        self.active_receiver_pool = pool
+        try:
+            yield
+        finally:
+            self.active_receiver_pool = None
+
+    def mark_trainer_stale(self) -> None:
+        self.mark_trainer_stale_calls += 1
+        self.conn_status.mark_trainer_stale()
 
     def connect_rollout_engines(
         self,
@@ -843,6 +862,7 @@ class _RecordingWeightUpdater:
         pass
 
     def update_weights(self, weight_version: int) -> None:
+        assert self.active_receiver_pool is not None
         self.update_weights_calls += 1
 
 
@@ -964,7 +984,9 @@ def test_switch_model_rejects_unknown_tag_even_when_marked_active(
     worker.weights_backuper.restore.assert_not_called()
 
 
-def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu_count: int) -> Any:
+def _updatable_engines(
+    rollout_engines: list[Any], snapshot: dict[str, str], gpu_count: int, receiver_pool: str = "rollout"
+) -> Any:
     from miles.ray.rollout.inference_controller import UpdatableEngines
 
     assert len(snapshot) == len(rollout_engines), "the snapshot describes one worker generation per engine"
@@ -974,6 +996,7 @@ def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu
         engine_gpu_offsets=[index * gpu_count for index in range(len(rollout_engines))],
         engine_cell_ids=list(snapshot),
         snapshot_cell_id_to_hashes=snapshot,
+        receiver_pool=receiver_pool,
     )
 
 
@@ -1008,7 +1031,7 @@ def test_connection_uses_safe_allocations_when_offloading(
     monkeypatch.setattr(actor_module, "reload_process_groups", Mock())
     monkeypatch.setattr(actor_module, "destroy_process_groups", Mock())
     worker.weight_updater.connect_rollout_engines = check_connection
-    engines = _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=8)
+    engines = _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=8, receiver_pool="eval")
 
     if connect_fails:
         with pytest.raises(RuntimeError, match="connection failed"):
@@ -1019,6 +1042,8 @@ def test_connection_uses_safe_allocations_when_offloading(
     assert not inside_safe_region
     assert saver.disable.call_count == ((1 if connect_fails else 2) if offload_train else 0)
     assert worker.weight_updater.update_weights_calls == int(not connect_fails)
+    assert worker.weight_updater.receiver_pool_calls == ["eval"]
+    assert worker.weight_updater.active_receiver_pool is None
 
 
 def test_update_weights_reconnects_once_per_rollout_snapshot(
@@ -1054,22 +1079,43 @@ def test_update_weights_reconnects_once_per_rollout_snapshot(
     assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b", "cell-1": "hash-b"})
 
 
-@pytest.mark.parametrize("weight_version", [0, 7])
-def test_actor_returns_model_version_after_update_weights_returns(
-    actor_module: Any, monkeypatch: pytest.MonkeyPatch, weight_version: int
+@pytest.mark.parametrize(
+    "receiver_pool,weight_version,interval,copy_old_actor,backup_tag",
+    [
+        ("rollout", 0, 1, True, "rollout_actor"),
+        ("rollout", 7, 2, False, "old_actor"),
+        ("eval", 0, 1, False, None),
+        ("eval", 7, 2, False, None),
+    ],
+)
+def test_actor_update_preserves_model_version_and_only_advances_rollout_weight_queue(
+    actor_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    receiver_pool: str,
+    weight_version: int,
+    interval: int,
+    copy_old_actor: bool,
+    backup_tag: str | None,
 ) -> None:
-    """A normal updater return preserves the actor model version, including zero."""
     worker = _weight_update_worker(actor_module, monkeypatch)
     worker.model[0].model_companion.weight_version.fill_(weight_version)
+    worker.args.keep_old_actor = True
+    worker.args.update_weights_interval = interval
 
     result = worker.update_weights(
-        _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4),
+        _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4, receiver_pool=receiver_pool),
         debug_weight_update_id="update-0",
         rollout_id=0,
     )
 
     assert type(result) is WeightUpdateOutput
     assert result == WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=())
+    assert worker.weight_updater.receiver_pool_calls == [receiver_pool]
+    assert worker.weight_updater.active_receiver_pool is None
+    assert worker.weights_backuper.copy.call_args_list == (
+        [call(src_tag="rollout_actor", dst_tag="old_actor")] if copy_old_actor else []
+    )
+    assert worker.weights_backuper.backup.call_args_list == ([call(backup_tag)] if backup_tag else [])
 
 
 def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
@@ -1094,6 +1140,7 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     )
 
     assert len(updater.connect_calls) == 2
+    assert updater.mark_trainer_stale_calls == 1
 
 
 def test_switch_model_restores_discarded_values_with_the_normal_backuper(

@@ -927,6 +927,12 @@ class MegatronTrainRayActor(TrainRayActor):
             return WeightUpdateOutput(weight_version=None, failed_cell_ids=())
 
         assert self.weight_updater is not None, "weight update requires a weight updater"
+        with self.weight_updater.receiver_pool(info.receiver_pool):
+            return self._update_receiver_weights(info, debug_weight_update_id, rollout_id)
+
+    def _update_receiver_weights(
+        self, info: UpdatableEngines, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
         rollout_engines = info.rollout_engines
 
         process_groups_are_temporary = self.args.offload_train and self._asleep
@@ -974,7 +980,7 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.args.ci_test and not is_lora_enabled(self.args):
                 self.weight_updater.verify_engine_version(updated_engines, weight_version=weight_version)
 
-            if getattr(self.args, "keep_old_actor", False):
+            if info.receiver_pool == "rollout" and getattr(self.args, "keep_old_actor", False):
                 if self.args.update_weights_interval == 1:
                     logger.info("updating model queue: rollout_actor -> old_actor, actor -> rollout_actor")
                     # Queue-style update: rollout_actor params -> old_actor, actor params -> rollout_actor
@@ -1053,7 +1059,7 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_world_size=dist.get_world_size(),
         )
         if self.weight_updater is not None:
-            self.weight_updater.conn_status.mark_trainer_stale()
+            self.weight_updater.mark_trainer_stale()
 
 
 def _materialize_critic_values(

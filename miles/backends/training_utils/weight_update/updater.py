@@ -20,6 +20,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.receiver_pool import ReceiverPools
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
@@ -76,6 +77,13 @@ class WeightUpdater:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
+        self._receiver_pools = ReceiverPools()
+
+    def receiver_pool(self, pool_id: str):
+        return self._receiver_pools.activate(self, pool_id)
+
+    def mark_trainer_stale(self) -> None:
+        self._receiver_pools.mark_trainer_stale(self)
 
     def connect_rollout_engines(
         self,

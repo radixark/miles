@@ -1055,6 +1055,26 @@ class TestMemoryLifecycleFanOut:
 
 
 class TestUpdatableEnginesPayload:
+    @pytest.mark.parametrize("receiver_pool", ["rollout", "eval"])
+    def test_slice_preserves_receiver_pool_and_selected_engine_snapshot(self, receiver_pool):
+        updatable = UpdatableEngines(
+            rollout_engines=["client-0", "client-1"],
+            engine_gpu_counts=[2, 4],
+            engine_gpu_offsets=[0, 2],
+            engine_cell_ids=["engine-0", "engine-1"],
+            snapshot_cell_id_to_hashes={"engine-0": "hash-a", "engine-1": "hash-b"},
+            receiver_pool=receiver_pool,
+        )
+
+        assert updatable[1:] == UpdatableEngines(
+            rollout_engines=["client-1"],
+            engine_gpu_counts=[4],
+            engine_gpu_offsets=[2],
+            engine_cell_ids=["engine-1"],
+            snapshot_cell_id_to_hashes={"engine-1": "hash-b"},
+            receiver_pool=receiver_pool,
+        )
+
     @pytest.mark.asyncio
     async def test_start_update_weights_returns_clients_gpu_layout_and_generation_snapshot(self):
         """The trainer indexes these lists in parallel, so swapping or dropping one misplaces every shard."""

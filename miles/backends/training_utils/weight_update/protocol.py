@@ -26,6 +26,8 @@ class WeightTransferProtocol(ABC):
 
     required_placement: ClassVar[WeightUpdatePlacement] = WeightUpdatePlacement(gather_pp=False)
     supports_lora: ClassVar[bool] = False
+    # Opt in only when separate instances own independent transfer state.
+    supports_receiver_pools: ClassVar[bool] = False
     use_weight_update_session: ClassVar[bool] = True
     needs_base_resync_for_lora: bool = False
 
