@@ -34,6 +34,7 @@ _ARGS = SimpleNamespace(
     use_rollout_routing_replay=False,
     use_rollout_indexer_replay=False,
     use_sampling_support_replay=False,
+    custom_rollout_request_headers_function_path=None,
     lora_rank=0,
     lora_adapter_path=None,
     lora_train_only=False,
