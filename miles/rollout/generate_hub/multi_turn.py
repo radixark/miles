@@ -22,6 +22,7 @@ from miles.utils.async_utils import maybe_await
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import post
 from miles.utils.lifecycle import TrajectoryLifecycle
+from miles.utils.types import Sample
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
@@ -68,6 +69,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             headers = await maybe_await(
                 input.state.rollout_request_headers_function(headers or {}, evaluation=input.evaluation)
             )
+        if input.state.aborted:
+            sample.status = Sample.Status.ABORTED
+            break
         gen_t0 = time.time()
         output = await post(url, payload, headers=headers)
         sink = None if input.evaluation else TrajectoryLifecycle().sink

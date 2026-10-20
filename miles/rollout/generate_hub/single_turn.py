@@ -52,6 +52,9 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
         headers = await maybe_await(
             input.state.rollout_request_headers_function(headers or {}, evaluation=input.evaluation)
         )
+    if input.state.aborted:
+        sample.status = Sample.Status.ABORTED
+        return GenerateFnOutput(samples=sample)
     output = await post(url, payload, headers=headers)
     await update_sample_from_response(args, sample, payload=payload, output=output)
 

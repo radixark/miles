@@ -237,6 +237,10 @@ async def generate(
     if state.rollout_request_headers_function is not None:
         headers = await maybe_await(state.rollout_request_headers_function(headers or {}, evaluation=evaluation))
 
+    if state.aborted:
+        sample.status = Sample.Status.ABORTED
+        return sample
+
     output = await post(url, payload, headers=headers)
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
