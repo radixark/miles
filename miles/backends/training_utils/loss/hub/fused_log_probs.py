@@ -249,10 +249,8 @@ class _FusedSupportLogProbs(torch.autograd.Function):
             vocab_entropy_grad,
             options.temperature,
         )
-        local_cols = support - options.vocab.start
-        owned = options.vocab.holds(support)
-        # support ids are unique within a row, so this plain assignment writes each column once
-        grad[rows.unsqueeze(1).expand_as(support)[owned], local_cols[owned]] = support_grad[owned].to(grad.dtype)
+        # support ids are unique within a row, so each column is written once
+        kernels.write_row_columns(grad, rows, support, support_grad, vocab=options.vocab)
         if options.inplace_backward:
             torch.autograd.graph.increment_version(logits)
         return grad, None, None, None, None, None
