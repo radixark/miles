@@ -1,3 +1,4 @@
+import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import ParallelState
@@ -17,3 +18,27 @@ def get_data_replica_rank_and_size(parallel_state: ParallelState, placement: Wei
     all_column_ids: list = [None] * dist.get_world_size()
     dist.all_gather_object(all_column_ids, column_id)
     return sorted(set(all_column_ids)).index(column_id), dist.get_world_size() // parallel_state.pp.size
+
+
+class OwnedBuckets:
+    """The buckets one rank publishes: the ranks holding identical gathered data take them round-robin."""
+
+    def __init__(self, *, replica_rank: int, replica_size: int) -> None:
+        self._replica_rank = replica_rank
+        self._replica_size = replica_size
+        self._next_index = 0
+        self._owned: list[tuple[int, list[tuple[str, torch.Tensor]]]] = []
+
+    def reset(self) -> None:
+        self._next_index = 0
+        self._owned = []
+
+    def offer(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
+        if self._next_index % self._replica_size == self._replica_rank:
+            self._owned.append((self._next_index, bucket))
+        self._next_index += 1
+
+    def take(self) -> list[tuple[int, list[tuple[str, torch.Tensor]]]]:
+        """The owned buckets with their stream index, handed over so none stays alive after the sync."""
+        owned, self._owned = self._owned, []
+        return owned
