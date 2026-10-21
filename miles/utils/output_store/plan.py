@@ -8,21 +8,22 @@ columns of the inline path.
 
 Three things, and nothing else:
 
-- ``Seg``: rows ``[start, end)`` of one object, or ``end - start`` forced rows;
+- ``Seg``: rows ``[start, end)`` of one object, or ``end - start`` rows no object of this
+  response holds (``ref`` None; each field says what they are);
 - ``Segments``: one field's segments plus how events edit them and how its training columns are
   built from the objects. One subclass per stored field;
 - ``StorePlan``: the sample's fields and the objects it owns. It holds no rule of its own: every
   operation is the same call on each field.
 
 What a row of an object means is SGLang's definition: a forward field (routed experts, indexer
-top-k) stores a row per forward position, and may start at ``routed_experts_start_len``; the
-sampling mask stores a row per output token. A sample's fields count rows like the inline path:
-forward fields ``len(tokens) - 1``, the mask ``response_length``.
+top-k) stores a row per forward position; routed experts may start at ``routed_experts_start_len``
+(an incremental forward); the sampling mask stores a row per output token. A sample's fields count
+rows like the inline path: forward fields ``len(tokens) - 1``, the mask ``response_length``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
@@ -49,7 +50,7 @@ class StorePlanError(NonRetryableError, ValueError):
 
 
 class Seg(NamedTuple):
-    """Rows ``[start, end)`` of one object; ``ref`` None means forced rows."""
+    """Rows ``[start, end)`` of one object; with ``ref`` None, ``end - start`` rows no object holds."""
 
     ref: StoreRef | None
     start: int
@@ -93,27 +94,26 @@ class Segments:
         ref: StoreRef | None,
         specs: Mapping[str, Any],
         *,
-        expected: int,
-        allow_extra_row: bool,
+        request: Mapping[str, Any],
+        num_tokens: int,
+        response_length: int,
         no_output_abort: bool,
     ) -> Segments:
-        """The field's rows of one response: all ``expected`` rows of its object, checked against the ref.
+        """The field's rows of one response, from its ref; ``specs`` maps stored array names to its field specs."""
+        raise NotImplementedError
 
-        ``specs`` maps stored array names to the ref's field specs. ``allow_extra_row`` accepts an
-        object with one row more than expected (a stop-edge row) and leaves it out.
-        """
+    @classmethod
+    def _whole_object(cls, ref: StoreRef | None, specs: Mapping[str, Any], rows: int) -> tuple[Seg, ...]:
+        """All rows of the response's object, which must hold exactly ``rows``."""
         spec = specs.get(cls.stored[0])
         if spec is None:
-            if no_output_abort and expected == 0:
-                return cls()
             raise StorePlanError(f"the request asked for {cls.name}, but the response's output store ref has none")
-        rows = spec.shape[0]
-        if rows != expected and not (allow_extra_row and rows == expected + 1):
-            raise StorePlanError(f"stored {cls.stored[0]} has {rows} rows; expected {expected}")
-        return cls((Seg(ref, 0, expected),) if expected else ())
+        if spec.shape[0] != rows:
+            raise StorePlanError(f"stored {cls.stored[0]} has {spec.shape[0]} rows; expected {rows}")
+        return (Seg(ref, 0, rows),) if rows else ()
 
-    def append(self, new: Segments, *, seq_start: int) -> Segments:
-        """A later response of the same sample, whose forward started at sequence position ``seq_start``."""
+    def append(self, new: Segments) -> Segments:
+        """A later response of the same sample."""
         raise NotImplementedError
 
     def insert(self, n: int) -> Segments:
@@ -125,24 +125,54 @@ class Segments:
         raise NotImplementedError
 
     def materialize(
-        self, objects: Mapping[str, Mapping[str, np.ndarray]], *, response_tokens: np.ndarray, args: Any
+        self,
+        objects: Mapping[str, Mapping[str, np.ndarray]],
+        *,
+        response_tokens: np.ndarray,
+        support_topk: int,
+        indexer_streams: int | None,
     ) -> dict[str, Any]:
         """The field's training columns of this sample.
 
         ``objects`` maps a store key to the object's stored arrays; ``response_tokens`` is the
-        sample's response.
+        sample's response. ``support_topk`` is k when the requests asked SGLang for support
+        log-probs (support mode with top-k collection), else 0; ``indexer_streams`` is the model's
+        indexer layer count, or None.
         """
         raise NotImplementedError
 
 
 class ForwardSegments(Segments):
-    """A forward output: a row per sequence position but the last. Never forced."""
+    """A forward output: a row per sequence position but the last.
+
+    A segment without a ref holds rows an earlier response covered: an incremental forward stores
+    only the rows after them, and ``append`` takes those rows from the plan before. A full forward
+    has none, so it replaces every row.
+    """
 
     column: ClassVar[str]
+    # The request field giving the sequence position a forward's object starts at.
+    start_key: ClassVar[str | None] = None
 
-    def append(self, new: Segments, *, seq_start: int) -> Segments:
-        # The forward covered the sequence from seq_start on; seq_start 0 replaces every row.
-        return type(self)(self.prefix(seq_start).segs + new.segs)
+    @classmethod
+    def from_ref(
+        cls,
+        ref: StoreRef | None,
+        specs: Mapping[str, Any],
+        *,
+        request: Mapping[str, Any],
+        num_tokens: int,
+        response_length: int,
+        no_output_abort: bool,
+    ) -> Segments:
+        start = (request.get(cls.start_key) or 0) if cls.start_key else 0
+        covered = (Seg(None, 0, start),) if start else ()
+        return cls(covered + cls._whole_object(ref, specs, num_tokens - 1 - start))
+
+    def append(self, new: Segments) -> Segments:
+        first = new.segs[0] if new.segs else None
+        covered = first.end - first.start if first is not None and first.ref is None else 0
+        return type(self)(self.prefix(covered).segs + new.segs[1 if covered else 0 :])
 
     def insert(self, n: int) -> Segments:
         # The next forward covers the inserted tokens.
@@ -153,14 +183,19 @@ class ForwardSegments(Segments):
         return num_tokens - 1
 
     def materialize(
-        self, objects: Mapping[str, Mapping[str, np.ndarray]], *, response_tokens: np.ndarray, args: Any
+        self,
+        objects: Mapping[str, Mapping[str, np.ndarray]],
+        *,
+        response_tokens: np.ndarray,
+        support_topk: int,
+        indexer_streams: int | None,
     ) -> dict[str, Any]:
         (name,) = self.stored
         rows = np.concatenate([objects[seg.ref.key][name][seg.start : seg.end] for seg in self.segs])
-        self.check(rows, args)
+        self.check(rows, indexer_streams=indexer_streams)
         return {self.column: rows}
 
-    def check(self, rows: np.ndarray, args: Any) -> None:
+    def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
         """The field's check of this sample's rows."""
 
 
@@ -172,8 +207,9 @@ class RoutedExpertsSegments(ForwardSegments):
     request_key = "return_routed_experts"
     required_by = "use_rollout_routing_replay"
     column = "rollout_routed_experts"
+    start_key = "routed_experts_start_len"
 
-    def check(self, rows: np.ndarray, args: Any) -> None:
+    def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
         # As on the inline path: all zeros means the engine did not capture routed experts.
         if rows.size and not rows.any():
             raise StorePlanError(
@@ -191,11 +227,10 @@ class IndexerTopkSegments(ForwardSegments):
     required_by = "use_rollout_indexer_replay"
     column = "rollout_indexer_topk"
 
-    def check(self, rows: np.ndarray, args: Any) -> None:
-        expected = getattr(args, "rollout_indexer_topk_num_streams", None)
-        if expected is not None and rows.shape[1] != expected:
+    def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
+        if indexer_streams is not None and rows.shape[1] != indexer_streams:
             raise StorePlanError(
-                f"stored indexer_topk has {rows.shape[1]} streams but the model has {expected} indexer layers; "
+                f"stored indexer_topk has {rows.shape[1]} streams but the model has {indexer_streams} indexer layers; "
                 "replaying it would map streams to the wrong layers."
             )
 
@@ -211,7 +246,23 @@ class SamplingMaskSegments(Segments):
     stored = (MASK_LENGTHS, MASK_TOKEN_IDS, MASK_LOGPROBS)
     request_key = "return_sampling_mask"
 
-    def append(self, new: Segments, *, seq_start: int) -> Segments:
+    @classmethod
+    def from_ref(
+        cls,
+        ref: StoreRef | None,
+        specs: Mapping[str, Any],
+        *,
+        request: Mapping[str, Any],
+        num_tokens: int,
+        response_length: int,
+        no_output_abort: bool,
+    ) -> Segments:
+        # A response aborted before any output token may store no mask at all.
+        if no_output_abort and response_length == 0 and cls.stored[0] not in specs:
+            return cls()
+        return cls(cls._whole_object(ref, specs, response_length))
+
+    def append(self, new: Segments) -> Segments:
         return type(self)(self.segs + new.segs)
 
     def insert(self, n: int) -> Segments:
@@ -222,9 +273,14 @@ class SamplingMaskSegments(Segments):
         return response_length
 
     def materialize(
-        self, objects: Mapping[str, Mapping[str, np.ndarray]], *, response_tokens: np.ndarray, args: Any
+        self,
+        objects: Mapping[str, Mapping[str, np.ndarray]],
+        *,
+        response_tokens: np.ndarray,
+        support_topk: int,
+        indexer_streams: int | None,
     ) -> dict[str, Any]:
-        support_mode = args.rollout_sampling_logprobs_mode == "support"
+        support_mode = support_topk > 0
         response_tokens = np.asarray(response_tokens)
         # Typed empties, so a mask with no rows (a no-output abort) concatenates to empty columns.
         lengths = [np.empty(0, dtype=np.int32)]
@@ -253,13 +309,13 @@ class SamplingMaskSegments(Segments):
         offsets = np.concatenate(([0], np.cumsum(row_lengths)))
         ids = np.concatenate(ids).astype(np.int32, copy=False)
         forced = np.concatenate(forced)
-        check_support(ids, offsets, response_tokens, exactly_once=support_mode)
+        _check_support(ids, offsets, response_tokens, exactly_once=support_mode)
         columns = {
             "rollout_sampling_mask_ids": torch.from_numpy(ids),
             "rollout_sampling_mask_offsets": torch.from_numpy(offsets),
         }
-        if support_mode and (k := args.rollout_top_logprobs_num):
-            topk_ids, topk_logprobs = support_topk(ids, offsets, np.concatenate(logprobs), forced, k)
+        if support_mode:
+            topk_ids, topk_logprobs = _support_topk(ids, offsets, np.concatenate(logprobs), forced, support_topk)
             columns["rollout_topk_token_ids"] = topk_ids
             columns["rollout_topk_log_probs"] = topk_logprobs
         return columns
@@ -268,7 +324,7 @@ class SamplingMaskSegments(Segments):
 FIELDS: tuple[type[Segments], ...] = (RoutedExpertsSegments, IndexerTopkSegments, SamplingMaskSegments)
 
 
-def check_support(ids: np.ndarray, offsets: np.ndarray, sampled_tokens: np.ndarray, *, exactly_once: bool) -> None:
+def _check_support(ids: np.ndarray, offsets: np.ndarray, sampled_tokens: np.ndarray, *, exactly_once: bool) -> None:
     """Every support is non-empty and holds its sampled token (exactly once in support mode)."""
     row_lengths = np.diff(offsets)
     if (empty := row_lengths == 0).any():
@@ -282,7 +338,7 @@ def check_support(ids: np.ndarray, offsets: np.ndarray, sampled_tokens: np.ndarr
         raise StorePlanError(f"sampled token {int(sampled_tokens[row])} {what} its sampling support (row {row})")
 
 
-def support_topk(
+def _support_topk(
     ids: np.ndarray, offsets: np.ndarray, logprobs: np.ndarray, forced: np.ndarray, k: int
 ) -> tuple[np.ndarray, np.ndarray]:
     """Support-mode top-k candidates ``[rows, k]``: each row's support and its log-probs.
@@ -318,48 +374,42 @@ class StorePlan:
     fields: dict[str, Segments]
     owned_refs: tuple[StoreRef, ...]
 
-    def field(self, name: str) -> Segments | None:
-        return self.fields.get(name)
-
-    def with_field(self, name: str, segments: Segments) -> StorePlan:
-        return replace(self, fields={**self.fields, name: segments})
-
     @classmethod
     def from_response(
         cls,
         ref: StoreRef | None,
         *,
-        requested: Collection[str],
+        request: Mapping[str, Any],
         num_tokens: int,
         response_length: int,
-        allow_extra_seq_row: bool = False,
         no_output_abort: bool = False,
     ) -> StorePlan:
         """The plan of one response; reads only the ref.
 
-        ``num_tokens`` is the length of the sequence the response's forward covered (prompt plus
-        output), ``response_length`` its output length. A requested field must be in the ref,
-        except an empty sampling mask of a no-output abort. ``allow_extra_seq_row`` drops the
-        stop-edge row the legacy rollout's forward fields may carry.
+        ``request`` is what Miles sent: the fields it asked for and where an incremental forward
+        starts. ``num_tokens`` is the length of the sequence the response's forward covered (prompt
+        plus output), ``response_length`` its output length. A requested field must be in the ref,
+        except an empty sampling mask of a no-output abort.
         """
         specs = {spec.name: spec for spec in ref.fields} if ref is not None else {}
         fields = {
             field.name: field.from_ref(
                 ref,
                 specs,
-                expected=field.expected_rows(num_tokens=num_tokens, response_length=response_length),
-                allow_extra_row=allow_extra_seq_row and issubclass(field, ForwardSegments),
+                request=request,
+                num_tokens=num_tokens,
+                response_length=response_length,
                 no_output_abort=no_output_abort,
             )
             for field in FIELDS
-            if field.name in requested
+            if request.get(field.request_key)
         }
         return cls(fields=fields, owned_refs=() if ref is None else (ref,))
 
-    def append_response(self, new: StorePlan, *, seq_start: int = 0) -> StorePlan:
+    def append_response(self, new: StorePlan) -> StorePlan:
         """Add a later response of the same sample."""
         return StorePlan(
-            fields=_zip_fields(self, new, lambda a, b: a.append(b, seq_start=seq_start)),
+            fields=_zip_fields(self, new, lambda a, b: a.append(b)),
             owned_refs=_union_refs(self.owned_refs, new.owned_refs),
         )
 
@@ -387,12 +437,24 @@ class StorePlan:
                 raise StorePlanError(f"{name} has {segments.num_rows()} rows; expected {expected}")
 
     def materialize(
-        self, objects: Mapping[str, Mapping[str, np.ndarray]], *, response_tokens: np.ndarray, args: Any
+        self,
+        objects: Mapping[str, Mapping[str, np.ndarray]],
+        *,
+        response_tokens: np.ndarray,
+        support_topk: int,
+        indexer_streams: int | None,
     ) -> dict[str, Any]:
-        """Every field's training columns of this sample."""
+        """Every field's training columns of this sample; see ``Segments.materialize``."""
         columns = {}
         for segments in self.fields.values():
-            columns.update(segments.materialize(objects, response_tokens=response_tokens, args=args))
+            columns.update(
+                segments.materialize(
+                    objects,
+                    response_tokens=response_tokens,
+                    support_topk=support_topk,
+                    indexer_streams=indexer_streams,
+                )
+            )
         return columns
 
     def to_builtins(self) -> tuple[dict[str, list[list[Any]]], list[StoreRef]]:
