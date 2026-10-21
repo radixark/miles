@@ -203,8 +203,11 @@ class IndexerTopkSegments(ForwardSegments):
 class SamplingMaskSegments(Segments):
     """The sampling mask: a row per response token, each row the CSR support the token was sampled from.
 
-    A forced row (a token Miles inserted) was not sampled: its support is the token itself, with
-    log-prob 0, which nothing reads (the top-k candidates leave forced rows empty).
+    A forced row (a token Miles inserted) was not sampled and is never trained on (loss mask 0);
+    it still needs a row, and the row needs a valid token id: the loss fills logits outside the
+    support with -inf, so an empty support (or a dummy id) makes that row's log-softmax NaN, and
+    NaN survives the loss mask. The token itself is the valid filler the inline path uses, with
+    log-prob 0; the top-k candidates leave forced rows empty.
     """
 
     name = "sampling_mask"
@@ -235,6 +238,7 @@ class SamplingMaskSegments(Segments):
         for seg in self.segs:
             n = seg.end - seg.start
             if seg.ref is None:
+                # Fill, not data: the position's own token keeps the row valid (see the class docstring).
                 lengths.append(np.ones(n, dtype=np.int32))
                 ids.append(response_tokens[position : position + n].astype(np.int32))
                 logprobs.append(np.zeros(n, dtype=np.float32))
