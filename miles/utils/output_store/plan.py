@@ -8,7 +8,7 @@ columns of the inline path.
 
 Three things, and nothing else:
 
-- ``Seg``: rows ``[start, end)`` of one object, or ``end - start`` forced rows;
+- ``Seg``: rows ``[start, end)`` of one object, or forced rows at response positions ``[start, end)``;
 - ``Segments``: one field's segments plus how events edit them and how its training columns are
   built from the objects. One subclass per stored field;
 - ``StorePlan``: the sample's fields and the objects it owns. It holds no rule of its own: every
@@ -49,7 +49,7 @@ class StorePlanError(NonRetryableError, ValueError):
 
 
 class Seg(NamedTuple):
-    """Rows ``[start, end)`` of one object; ``ref`` None means forced rows."""
+    """Rows ``[start, end)`` of one object; with ``ref`` None, forced rows at those response positions."""
 
     ref: StoreRef | None
     start: int
@@ -215,7 +215,8 @@ class SamplingMaskSegments(Segments):
         return type(self)(self.segs + new.segs)
 
     def insert(self, n: int) -> Segments:
-        return type(self)(self.segs + (Seg(None, 0, n),)) if n else self
+        rows = self.num_rows()
+        return type(self)(self.segs + (Seg(None, rows, rows + n),)) if n else self
 
     @staticmethod
     def expected_rows(*, num_tokens: int, response_length: int) -> int:
@@ -231,12 +232,11 @@ class SamplingMaskSegments(Segments):
         ids = [np.empty(0, dtype=np.int32)]
         logprobs = [np.empty(0, dtype=np.float32)]
         forced = [np.empty(0, dtype=bool)]
-        position = 0
         for seg in self.segs:
             n = seg.end - seg.start
             if seg.ref is None:
                 lengths.append(np.ones(n, dtype=np.int32))
-                ids.append(response_tokens[position : position + n].astype(np.int32))
+                ids.append(response_tokens[seg.start : seg.end].astype(np.int32))
                 logprobs.append(np.zeros(n, dtype=np.float32))
             else:
                 arrays = objects[seg.ref.key]
@@ -247,7 +247,6 @@ class SamplingMaskSegments(Segments):
                 if support_mode:
                     logprobs.append(arrays[MASK_LOGPROBS][a:b])
             forced.append(np.full(n, seg.ref is None))
-            position += n
 
         row_lengths = np.concatenate(lengths).astype(np.int64)
         offsets = np.concatenate(([0], np.cumsum(row_lengths)))
