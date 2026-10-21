@@ -120,7 +120,7 @@ class TestEdits:
 
     def test_a_tool_observation_adds_forced_mask_rows_only(self):
         plan = response("a", prompt=3, output=2).insert_tokens(3)
-        assert segs(plan, R3) == [("a", 0, 4)] and segs(plan, MASK) == [("a", 0, 2), (None, 2, 5)]
+        assert segs(plan, R3) == [("a", 0, 4)] and segs(plan, MASK) == [("a", 0, 2), (None, 0, 3)]
         assert plan.insert_tokens(0) == plan
 
     def test_session_merge_puts_forced_rows_between_turns_and_keeps_the_later_forward(self):
@@ -130,7 +130,7 @@ class TestEdits:
         plan = turn1.merge_turn(turn2, observation_tokens=3)
 
         assert segs(plan, R3) == [("b", 0, 8)]
-        assert segs(plan, MASK) == [("a", 0, 2), (None, 2, 5), ("b", 0, 1)]
+        assert segs(plan, MASK) == [("a", 0, 2), (None, 0, 3), ("b", 0, 1)]
         plan.validate(num_tokens=9, response_length=6)
 
     def test_strip_tail_cuts_across_segments_and_keeps_every_ref(self):
@@ -138,7 +138,7 @@ class TestEdits:
 
         plan = plan.strip_tail(2)
 
-        assert segs(plan, R3) == [("b", 0, 6)] and segs(plan, MASK) == [("a", 0, 2), (None, 2, 4)]
+        assert segs(plan, R3) == [("b", 0, 6)] and segs(plan, MASK) == [("a", 0, 2), (None, 0, 2)]
         assert [r.key for r in plan.owned_refs] == ["a", "b"]
         plan.validate(num_tokens=7, response_length=4)
 
@@ -175,7 +175,7 @@ class TestTable:
         back = StorePlan.from_table(table, refs)
 
         assert table.dtype == np.int32 and table.shape[1] == 4
-        assert table.tolist() == [[0, 1, 0, 8], [1, -1, 0, 0], [2, 0, 0, 2], [2, -1, 2, 5], [2, 1, 0, 1]]
+        assert table.tolist() == [[0, 1, 0, 8], [1, -1, 0, 0], [2, 0, 0, 2], [2, -1, 0, 3], [2, 1, 0, 1]]
         assert back == plan and [r.key for r in refs] == ["a", "b", "x"]
 
     def test_a_plan_without_fields_is_an_empty_table(self):
@@ -244,7 +244,7 @@ class TestMaterializeMask:
     def test_forced_rows_hold_their_token_and_columns_match_the_inline_layout(self):
         objects = {"a": mask_arrays([[5, 6], [7, 8, 9]]), "b": mask_arrays([[11], [12, 13]])}
         # Sampled 6, 8; forced 40, 41; then row 1 of object b (sampled 13).
-        plan = rows_of(MASK, ("a", 0, 2), (None, 2, 4), ("b", 1, 2))
+        plan = rows_of(MASK, ("a", 0, 2), (None, 0, 2), ("b", 1, 2))
 
         columns = plan.materialize(objects, response_tokens=np.asarray([6, 8, 40, 41, 13]), args=args())
 
@@ -256,7 +256,7 @@ class TestMaterializeMask:
 
     def test_support_mode_builds_the_top_k_candidates_with_forced_rows_empty(self):
         objects = {"a": mask_arrays([[5, 6], [7, 8, 9]], [[-0.5, -1.0], [-0.1, -0.2, -0.3]])}
-        plan = rows_of(MASK, ("a", 0, 2), (None, 2, 3))
+        plan = rows_of(MASK, ("a", 0, 2), (None, 0, 1))
         support = args(rollout_sampling_logprobs_mode="support", rollout_top_logprobs_num=3)
 
         columns = plan.materialize(objects, response_tokens=np.asarray([6, 8, 40]), args=support)
