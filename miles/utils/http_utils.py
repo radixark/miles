@@ -180,19 +180,25 @@ class GeneralHttpClientProvider:
     _TIMEOUT = httpx.Timeout(connect=_CONNECT_TIMEOUT, read=None, write=_WRITE_TIMEOUT, pool=_POOL_TIMEOUT)
     _LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=None)
 
-    # TODO: entries are never evicted and the clients are never aclose()d, so a caller that keeps
-    # creating event loops (repeated asyncio.run) leaks one client and its keep-alive sockets per
-    # loop. Today's call sites use a bounded number of loops; add eviction before that stops holding.
+    # One client per event loop; an entry whose loop has closed is dropped on the next lookup, so
+    # repeated asyncio.run calls do not accumulate clients. A dropped client is never aclose()d
+    # (its loop is gone), so its keep-alive sockets are released when it is garbage-collected.
     _clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
 
     @classmethod
     def client(cls) -> httpx.AsyncClient:
         loop = asyncio.get_running_loop()
+        cls._evict_closed_loops()
         client = cls._clients.get(loop)
         if client is None:
             client = httpx.AsyncClient(timeout=cls._TIMEOUT, limits=cls._LIMITS)
             cls._clients[loop] = client
         return client
+
+    @classmethod
+    def _evict_closed_loops(cls) -> None:
+        for loop in [loop for loop in cls._clients if loop.is_closed()]:
+            del cls._clients[loop]
 
 
 # TODO: the client below is not general — it carries a rollout-specific connection limit and an
