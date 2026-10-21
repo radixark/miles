@@ -182,6 +182,11 @@ class ForwardSegments(Segments):
     def append(self, new: Segments) -> Segments:
         first = new.segs[0] if new.segs else None
         covered = first.end - first.start if first is not None and first.ref is None else 0
+        if self.num_rows() < covered:
+            # Otherwise the later rows would sit at the wrong sequence positions.
+            raise StorePlanError(
+                f"{self.name} continues from row {covered}, but only {self.num_rows()} rows precede it"
+            )
         return type(self)(self.prefix(covered).segs + new.segs[1 if covered else 0 :])
 
     def insert(self, n: int) -> Segments:

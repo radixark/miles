@@ -156,6 +156,21 @@ class TestEdits:
         assert segs(plan, MASK) == [("a", 0, 2), (None, 0, 3), ("b", 0, 1)]
         plan.validate(num_tokens=9, response_length=6)
 
+    def test_an_incremental_forward_needs_every_row_before_it(self):
+        # Rows 0..3 came before, but the next object starts at position 5: a row is missing.
+        before = response("a", prompt=3, output=2, requested={R3})
+        later = StorePlan.from_response(
+            Ref("b", (Spec(R3, "int32", (3, 2, 4)),)),
+            request=request({R3}, routed_experts_start_len=5),
+            num_tokens=9,
+            response_length=1,
+        )
+        with pytest.raises(StorePlanError, match="continues from row 5, but only 4 rows precede it"):
+            before.append_response(later)
+        # Nothing precedes the first response of a sample.
+        with pytest.raises(StorePlanError, match="continues from row 5, but only 0 rows precede it"):
+            RoutedExpertsSegments().append(later.fields[R3])
+
     def test_a_tool_observation_adds_forced_mask_rows_only(self):
         plan = response("a", prompt=3, output=2).insert_tokens(3)
         assert segs(plan, R3) == [("a", 0, 4)] and segs(plan, MASK) == [("a", 0, 2), (None, 0, 3)]
