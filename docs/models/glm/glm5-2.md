@@ -132,12 +132,28 @@ Adam, `--lr 1e-6 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 -
 
 The launcher exposes these as flags:
 
+- `--dsa-attention-backend {tilelang,cake}` — DSA indexer + sparse-attention kernels on the training side (default `tilelang`, the fused TileLang `SparseMLA` / `lighting_indexer`). `cake` selects the generated deterministic kernels in `miles/kernels/attention/dsa/cake` (Blackwell SM100a / SM103a): bit-identical forward and backward across calls (no floating-point atomics; key-side gradients reduced in a fixed order), same `thd` contract, replay-manager top-k and cross-layer index sharing unchanged. The kernels build on first use as torch CUDA extensions (`TORCH_EXTENSIONS_DIR`); `tests/e2e/megatron/test_glm5_2_5layer_dsa_cake.py` runs the 5-layer smoke test on either backend (`MILES_DSA_BACKEND`).
 - `--fp8-rollout` — runs `tools/convert_hf_to_fp8.py --strategy block --block-size 128 128` and feeds the FP8 directory to SGLang (Megatron stays BF16). Combined with `--use-deepep` it also switches SGLang's MoE all-to-all to DeepEP (`--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto`).
 - `--enable-mtp` — adds SGLang EAGLE speculative decoding with `--sglang-speculative-draft-attention-backend nsa`; `low-latency` drafts deeper (num-steps 5, draft-tokens 6) than `balanced` (1, 2). Full model only — the MTP layer is pruned away in the 5-layer variant.
 - `--enable-pd` (default `True`, forced off on 1 node) — enables prefill/decode disaggregation.
 - `--sglang-config {low-latency, balanced}` — `low-latency` (default) runs TP-8 engines with PD; `balanced` is the GLM-5.2 cookbook serving shape: one 4-GPU engine per node with dp-attention + DeepEP. `balanced` is incompatible with PD and requires GPUs per node divisible by 4.
 - `--use-deepep` (default `True`) — enables Megatron-side DeepEP (`--moe-enable-deepep --moe-token-dispatcher-type flex`); falls back to `alltoall`. On GB300 you must pass `--no-megatron-use-deepep` (known Megatron DeepEP failure; the launcher asserts).
 - On B200/GB300 (without `balanced` or FP8 + DeepEP) the launcher pins `--sglang-moe-runner-backend`: `flashinfer_trtllm_routed` for FP8 rollout, `triton` for BF16.
+
+**Measured kernel speed of `--dsa-attention-backend cake`** at the GLM-5.2 training shapes (64 attention heads, `index_topk` 2048, `thd`; 32 indexer heads; `r` = query rows per rank). CUPTI device time of the kernel launches, cold L2, median; ratio = TileLang time / cake time, > 1 = cake faster. The forward runs tcgen05 stages on 8 / 16 / 32 / 64 local heads (the 8-head stage is the swap-AB form: keys on the MMA's M axis, the heads on N); the backward runs tcgen05 rows kernels on 8 / 16 / 32 local heads (swap-AB, one CTA per query row) and on 64 local heads (the key-side gradient accumulated over the heads in tensor memory), and reduces its key-side partials with a fixed 4-way FP32 tree (no floating-point atomics), so both stay bit-deterministic run to run. The lightning-indexer logits run a tcgen05 stage for every indexer head count; the indexer backward runs a tcgen05 rows kernel for 32 index heads at a padded `index_topk` of 1024 or more (the GLM-5.2 shape; below that the register-MMA stage stays selected, measured 3-7 % faster at topk 512) and for 64 index heads. The register-MMA stages stay in the package as the fallback (`MILES_DSA_ATTENTION_TC=0`, `MILES_DSA_ATTENTION_BWD_TC=0`, `MILES_DSA_INDEXER_TC=0`, `MILES_DSA_INDEXER_BWD_TC=0`; non-Blackwell architectures).
+
+| kernel | local heads | B200 r2048 / r4096 | GB300 r2048 / r4096 | numerics vs the register-MMA stages |
+|---|---|---|---|---|
+| attention fwd | 8 (TP 8) | 2.06x / 2.14x | 2.00x / 2.13x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 8 heads on N) |
+| attention fwd | 16 (TP 4) | 1.80x / 1.86x | 1.76x / 1.81x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 16 heads on N) |
+| attention fwd | 64 (TP 1) | 4.31x / 3.94x | 4.16x / 4.16x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
+| attention bwd | 8 (TP 8) | 5.51x / 2.74x | 5.44x / 2.96x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
+| attention bwd | 16 (TP 4) | 5.47x / 2.72x | 5.42x / 2.97x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
+| attention bwd | 64 (TP 1) | 5.07x / 2.83x | 5.47x / 3.20x | fixed-order FP32 (tcgen05 rows kernel: dKV over the 64 heads in tensor memory; delta kernel) |
+| indexer logits (`thd`) | 32 index heads | 5.02x / 5.75x | 4.89x / 5.96x | bit-identical to the register-MMA stage (FP32 dot products on tcgen05; the head sum in the register-MMA stage's chain order) |
+| indexer bwd | 32 index heads | 1.73x / 1.48x | 1.76x / 1.44x | fixed-order FP32 (tcgen05 rows kernel + the same split-4 reducer; max dq error vs the FP64 reference identical to three digits to the register-MMA stage) |
+
+`tests/manual/kernels/dsa/bench_dsa_backends.py` reproduces the comparison with its own timer.
 
 ## 6. Pairs Well With
 

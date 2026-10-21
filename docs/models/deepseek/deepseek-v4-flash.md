@@ -185,7 +185,24 @@ SGLANG_ARGS=(
 
 The launcher sets the required env vars for you: `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, `SGLANG_HEALTH_CHECK_TIMEOUT=120`, `SGLANG_DG_CACHE_DIR_PER_PROCESS=1`, and `SGLANG_OPT_FP8_WO_A_GEMM=0`. Because `--train-deterministic` defaults to on, a stock run also gets `--deterministic-mode` plus `NCCL_ALGO=Ring`, `NVTE_ALLOW_NONDETERMINISTIC_ALGO=0` and `CUBLAS_WORKSPACE_CONFIG=:4096:8`; pass `--no-train-deterministic` to drop those four.
 
-On the Megatron side, V4 needs `--qkv-format bshd` with CP-aware data slicing. The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
+On the Megatron side, V4 needs `--qkv-format bshd` with CP-aware data slicing. With `--dsv4-impl miles`, `--dsa-attention-backend {tilelang,cake}` picks the indexer + sparse-attention kernels: `tilelang` (default) runs the per-sample TileLang kernels, `cake` the generated deterministic kernels in `miles/kernels/attention/dsa/cake` (Blackwell SM100a / SM103a) — the batched indexer in one launch, `bshd` sparse attention with the FP32 attention sink, and bit-identical gradients across calls (`tests/e2e/megatron/test_deepseek_v4_flash_4layer_dsa_cake.py`). The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
+
+**Measured kernel speed of `--dsa-attention-backend cake`** at the DeepSeek-V4-Flash training shapes (64 attention heads, 512 selected + 128 window slots, `bshd`; `sbhd` indexer with compress ratio 4; `r` = query rows per rank). CUPTI device time of the kernel launches, cold L2, median; ratio = TileLang time / cake time, > 1 = cake faster. The forward runs tcgen05 stages on 8 / 16 / 32 / 64 local heads (the 8-head stage, the TP-8 production shape, is the swap-AB form: keys on the MMA's M axis and the 8 heads on N, so no query rows are padded to a 16-head tile); the backward runs tcgen05 rows kernels on 8 / 16 / 32 local heads (swap-AB, one CTA per query row) and on 64 local heads (the key-side gradient accumulated over the heads in tensor memory), and reduces its key-side partials with a fixed 4-way FP32 tree (no floating-point atomics), so both stay bit-deterministic run to run. The lightning-indexer logits and the indexer backward run tcgen05 stages as well (64 index heads here; the backward keeps one fixed-order FP32 partial per row and slot and the same segmented reducer). The register-MMA stages stay in the package as the fallback (`MILES_DSA_ATTENTION_TC=0`, `MILES_DSA_ATTENTION_BWD_TC=0`, `MILES_DSA_INDEXER_TC=0`, `MILES_DSA_INDEXER_BWD_TC=0`; non-Blackwell architectures).
+
+| kernel | local heads | B200 r2048 / r4096 | GB300 r2048 / r4096 | numerics vs the register-MMA stages |
+|---|---|---|---|---|
+| attention fwd | 64 (TP 1) | 3.90x / 3.93x | 4.27x / 4.17x | fixed-order FP32 (same tolerances; 1-2 bf16 ulp) |
+| attention fwd | 32 (TP 2) | 2.09x / 2.08x | 2.35x / 2.31x | fixed-order FP32 |
+| attention fwd | 16 (TP 4) | 1.89x / 1.89x | 2.13x / 2.09x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 16 heads on N) |
+| attention fwd | 8 (TP 8) | 2.03x / 2.00x | 2.28x / 2.21x | fixed-order FP32 (swap-AB stage: keys on the MMA M axis, the 8 heads on N) |
+| attention bwd | 64 (TP 1) | 1.98x / 1.79x | 1.80x / 1.68x | fixed-order FP32 (tcgen05 rows kernel: dKV over the 64 heads in tensor memory; delta kernel) |
+| attention bwd | 32 (TP 2) | 1.91x / 1.65x | 1.60x / 1.44x | fixed-order FP32 (swap-AB rows kernel: keys on the MMA M axis, dKV over the heads in tensor memory; delta kernel) |
+| attention bwd | 16 (TP 4) | 1.72x / 1.33x | 1.43x / 1.23x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
+| attention bwd | 8 (TP 8) | 1.68x / 1.33x | 1.43x / 1.22x | fixed-order FP32 (swap-AB rows kernel; delta kernel) |
+| indexer logits (`sbhd`) | 64 index heads | 2.82x / 3.90x | 2.75x / 3.91x | bit-identical to the register-MMA stage (FP32 dot products on tcgen05; the head sum in the register-MMA stage's chain order) |
+| indexer bwd | 64 index heads | 1.36x / 1.50x | 1.39x / 1.51x | fixed-order FP32 (tcgen05 rows kernel + the same split-4 reducer; max dq error vs the FP64 reference identical to three digits to the register-MMA stage) |
+
+Every shape is faster than TileLang on both architectures. `tests/manual/kernels/dsa/bench_dsa_backends.py` reproduces the comparison with its own timer.
 
 ### 5.4 Optimizer
 
