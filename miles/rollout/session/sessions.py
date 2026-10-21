@@ -120,8 +120,8 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         return await core.get_session(session_id)
 
     @app.delete("/sessions/{session_id}")
-    async def delete_session(session_id: str):
-        return await core.delete_session(session_id)
+    async def delete_session(session_id: str, samples_received: bool = True):
+        return await core.delete_session(session_id, samples_received=samples_received)
 
     @app.post("/sessions/{session_id}/v1/chat/completions")
     async def chat_completions(request: Request, session_id: str):

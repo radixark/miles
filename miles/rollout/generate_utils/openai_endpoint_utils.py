@@ -96,6 +96,7 @@ class OpenAIEndpointTracer:
         body: dict = {"max_seq_len": max_seq_len}
         if agent_metadata is not None:
             body["metadata"] = agent_metadata
+        reply = None
         try:
             # Timeouts and transport errors propagate after cleanup, for `generate` to handle.
             payload = await post_buffer_no_retry(
@@ -103,23 +104,26 @@ class OpenAIEndpointTracer:
                 body,
                 timeout=_SESSION_REQUEST_TIMEOUT,
             )
+            reply = await asyncio.to_thread(
+                decode_samples_and_merge_input_sample,
+                payload,
+                input_sample,
+                fields=self.samples_wire_fields,
+            )
         except PostStatusError as exc:
             if exc.status == OutputStoreContractError.status_code:
                 # Raised again here so the rollout stops, as for a StorePlanError on /generate.
                 raise StorePlanError(f"session {self.session_id}: {exc.body}") from exc
             raise
         finally:
+            # Without a decoded reply, the session's DELETE also deletes the objects it handed over.
+            delete_url = self.base_url if reply is not None else f"{self.base_url}?samples_received=false"
             try:
                 await asyncio.wait_for(
-                    post(self.base_url, {}, action="delete"),
+                    post(delete_url, {}, action="delete"),
                     timeout=_SESSION_REQUEST_TIMEOUT,
                 )
             except Exception as e:
                 logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
 
-        return await asyncio.to_thread(
-            decode_samples_and_merge_input_sample,
-            payload,
-            input_sample,
-            fields=self.samples_wire_fields,
-        )
+        return reply

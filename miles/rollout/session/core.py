@@ -37,6 +37,7 @@ from miles.rollout.session.samples.merge import (
     merge_samples_with_addition_r3,
     truncate_samples_by_total_tokens,
 )
+from miles.rollout.session.store_refs import response_store_ref
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.output_store.plan import StorePlanError
 
@@ -221,6 +222,32 @@ class SessionCore:
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
+        # The output store client deleting what this server's sessions did not hand over; None without one.
+        self._output_store = None
+
+    async def _take_store_ref(self, session, request_body: dict, result: dict) -> None:
+        """Record the output store ref of a proxied response before anything can drop the response."""
+        if (ref := response_store_ref(request_body, result)) is None:
+            return
+        if session.closing:
+            # DELETE has taken, or is taking, this session's refs; nobody else will see this one.
+            await self._delete_store_refs([ref])
+        else:
+            session.store_refs.arrived[ref.key] = ref
+
+    async def _delete_store_refs(self, refs: list) -> None:
+        if not refs:
+            return
+        if self._output_store is None:
+            raise StorePlanError(
+                f"{len(refs)} output store refs to delete, but the session server has no store client"
+            )
+        try:
+            # Off the loop: deletion is a blocking Mooncake call.
+            await asyncio.to_thread(self._output_store.delete_many, refs)
+        except Exception:
+            # The session is already gone, so failing the request would only make the client retry into 404s.
+            logger.exception("Failed to delete %d output store refs; their objects stay in Mooncake", len(refs))
 
     async def close(self) -> None:
         await asyncio.to_thread(self._sample_executor.shutdown, wait=True, cancel_futures=True)
@@ -333,9 +360,16 @@ class SessionCore:
             raise OutputStoreContractError(str(exc)) from exc
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
-        return _samples_response(encode_samples(samples, metadata, fields=fields))
+        response = _samples_response(encode_samples(samples, metadata, fields=fields))
+        session.store_refs.hand_over(samples)
+        return response
 
-    async def delete_session(self, session_id: str) -> Response:
+    async def delete_session(self, session_id: str, *, samples_received: bool = True) -> Response:
+        """Drop the session and delete the output store objects its client does not hold.
+
+        ``samples_received=False`` is the client reporting it never got a ``/samples`` reply, so even
+        the refs a reply handed over are deleted.
+        """
         session = self.registry.get_session(session_id)
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
@@ -346,6 +380,7 @@ class SessionCore:
             self.registry.remove_session(session_id)
         finally:
             session.lock.release()
+        await self._delete_store_refs(session.store_refs.kept_by_session(samples_received=samples_received))
         return Response(status_code=204)
 
     async def chat_completions(
@@ -395,6 +430,7 @@ class SessionCore:
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
         )
+        await self._take_store_ref(session, request_body, result)
 
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the
         # agent can retry or handle the error.

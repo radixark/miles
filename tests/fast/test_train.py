@@ -7,6 +7,7 @@ import train as train_driver
 from tests.fast.fixtures.driver_fakes import (
     FakeInferenceController,
     FakeObjectStore,
+    FakeRemoteMethod,
     FakeRolloutExecutor,
     FakeTrainingModel,
     FakeWorkerManager,
@@ -402,3 +403,21 @@ class TestTerminalLifecycle:
             events.index(event) < events.index("manager_shutdown") for event in events if event.endswith("_dispose")
         )
         assert events.index("manager_shutdown") < events.index("manager_kill")
+
+
+class TestOutputStoreRelease:
+    async def test_each_rollout_is_released_once_it_has_trained(self, monkeypatch: pytest.MonkeyPatch):
+        """The executor may delete a rollout's stored objects only after every trainer read them."""
+        events: list[str] = []
+        args = _make_args(num_rollout=3)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        trained_at_release: list[tuple[int, list[int]]] = []
+
+        async def release(rollout_id: int) -> None:
+            trained_at_release.append((rollout_id, list(components.actor_model.trained)))
+
+        components.rollout_executor.release = FakeRemoteMethod(release)
+
+        await with_disposer(train_driver.train, args)
+
+        assert trained_at_release == [(0, [0]), (1, [0, 1]), (2, [0, 1, 2])]
