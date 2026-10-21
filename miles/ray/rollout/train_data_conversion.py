@@ -149,14 +149,7 @@ def convert_samples_to_train_data(
                         f"Rollout top-k logprobs collection requires {field}; "
                         f"sample_index={sample.index}. Custom rollout producers must record probabilities during generation."
                     )
-        if store_support:
-            for sample in samples:
-                if SamplingMaskSegments.name not in sample.rollout_store_plan.fields:
-                    raise StorePlanError(
-                        "Support-mode rollout top-k logprobs are built from the stored sampling mask; "
-                        f"the output store plan of sample_index={sample.index} has none."
-                    )
-        else:
+        if not store_support:
             if args.ci_test:
                 for sample in samples:
                     validate_rollout_topk_logprobs_sample(sample, k)
@@ -248,6 +241,12 @@ def _check_store_plans(args, samples: list[Sample]) -> None:
         if field.required_by and getattr(args, field.required_by, False) and field.name not in names:
             raise StorePlanError(
                 f"--{field.required_by.replace('_', '-')} is set but the samples' output store plans have no {field.name}."
+            )
+    if args.rollout_top_logprobs_num and args.rollout_sampling_logprobs_mode == "support":
+        if SamplingMaskSegments.name not in names:
+            raise StorePlanError(
+                "Support-mode rollout top-k logprobs are built from the stored sampling mask; "
+                "the samples' output store plans have none."
             )
 
 
