@@ -84,13 +84,30 @@ class TestFromResponse:
         with pytest.raises(StorePlanError, match="asked for routed_experts"):
             StorePlan.from_response(ref("a", mask_rows=2), request=request({R3}), num_tokens=5, response_length=2)
 
-    def test_a_no_output_abort_gets_an_empty_mask_without_a_ref(self):
-        plan = StorePlan.from_response(
-            None, request=request({MASK}), num_tokens=3, response_length=0, no_output_abort=True
+    def test_a_no_output_abort_may_store_nothing(self):
+        # Aborted in SGLang's waiting queue: no forward ran, and no ref came back.
+        plan = StorePlan.from_response(None, request=request(), num_tokens=3, response_length=0, no_output_abort=True)
+        assert plan.fields == {
+            R3: RoutedExpertsSegments(),
+            INDEXER: IndexerTopkSegments(),
+            MASK: SamplingMaskSegments(),
+        }
+        assert plan.owned_refs == ()
+        # Aborted after its prefill: the forward rows are stored, the mask is not.
+        prefilled = StorePlan.from_response(
+            ref("a", seq_rows=2), request=request({R3, MASK}), num_tokens=3, response_length=0, no_output_abort=True
         )
-        assert plan.fields[MASK] == SamplingMaskSegments() and plan.owned_refs == ()
-        with pytest.raises(StorePlanError, match="asked for sampling_mask"):
-            StorePlan.from_response(None, request=request({MASK}), num_tokens=3, response_length=0)
+        assert segs(prefilled, R3) == [("a", 0, 2)] and segs(prefilled, MASK) == []
+        with pytest.raises(StorePlanError, match="asked for routed_experts"):
+            StorePlan.from_response(None, request=request(), num_tokens=3, response_length=0)
+        with pytest.raises(StorePlanError, match="asked for routed_experts"):
+            StorePlan.from_response(
+                ref("a", mask_rows=0),
+                request=request({R3, MASK}),
+                num_tokens=3,
+                response_length=0,
+                no_output_abort=True,
+            )
 
     def test_row_counts_are_checked_against_the_sample(self):
         with pytest.raises(StorePlanError, match="has 4 rows; expected 5"):
@@ -247,10 +264,13 @@ class TestMaterializeForward:
         partial = rows_of(R3, ("b", 1, 3)).materialize(objects, response_tokens=np.empty(0), **opts())
         np.testing.assert_array_equal(partial["rollout_routed_experts"], b[1:3])
 
-    def test_all_zero_routed_experts_are_rejected(self):
-        objects = {"a": {R3: np.zeros((3, 2, 4), dtype=np.int32)}}
+    def test_all_zero_routed_experts_are_rejected_per_object(self):
+        objects = {"a": {R3: r3(4, 1)}, "b": {R3: np.zeros((3, 2, 4), dtype=np.int32)}}
         with pytest.raises(StorePlanError, match="all zeros"):
-            rows_of(R3, ("a", 0, 3)).materialize(objects, response_tokens=np.empty(0), **opts())
+            rows_of(R3, ("a", 0, 4), ("b", 0, 3)).materialize(objects, response_tokens=np.empty(0), **opts())
+        # Expert 0 is valid: only a whole object of zeros is rejected, not the zero rows a plan keeps.
+        objects["b"][R3] = np.concatenate([np.zeros((2, 2, 4), dtype=np.int32), r3(1, 2)])
+        rows_of(R3, ("a", 0, 4), ("b", 0, 2)).materialize(objects, response_tokens=np.empty(0), **opts())
 
     def test_indexer_streams_must_match_the_model(self):
         objects = {"a": {INDEXER: r3(3, 3, streams=2)}}

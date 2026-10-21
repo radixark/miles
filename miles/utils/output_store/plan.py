@@ -99,14 +99,20 @@ class Segments:
         response_length: int,
         no_output_abort: bool,
     ) -> Segments:
-        """The field's rows of one response, from its ref; ``specs`` maps stored array names to its field specs."""
-        raise NotImplementedError
+        """The field's rows of one response: every row of its object; ``specs`` is the ref's specs by stored name."""
+        rows = cls.expected_rows(num_tokens=num_tokens, response_length=response_length)
+        return cls(cls._whole_object(ref, specs, rows, no_output_abort=no_output_abort))
 
     @classmethod
-    def _whole_object(cls, ref: StoreRef | None, specs: Mapping[str, Any], rows: int) -> tuple[Seg, ...]:
+    def _whole_object(
+        cls, ref: StoreRef | None, specs: Mapping[str, Any], rows: int, *, no_output_abort: bool
+    ) -> tuple[Seg, ...]:
         """All rows of the response's object, which must hold exactly ``rows``."""
         spec = specs.get(cls.stored[0])
         if spec is None:
+            # Aborted in SGLang's waiting queue: no ref; aborted after prefill: no mask.
+            if no_output_abort and (ref is None or rows == 0):
+                return ()
             raise StorePlanError(f"the request asked for {cls.name}, but the response's output store ref has none")
         if spec.shape[0] != rows:
             raise StorePlanError(f"stored {cls.stored[0]} has {spec.shape[0]} rows; expected {rows}")
@@ -169,8 +175,9 @@ class ForwardSegments(Segments):
         no_output_abort: bool,
     ) -> Segments:
         start = (request.get(cls.start_key) or 0) if cls.start_key else 0
+        rows = cls.expected_rows(num_tokens=num_tokens, response_length=response_length)
         covered = (Seg(None, 0, start),) if start else ()
-        return cls(covered + cls._whole_object(ref, specs, num_tokens - 1 - start))
+        return cls(covered + cls._whole_object(ref, specs, rows - start, no_output_abort=no_output_abort))
 
     def append(self, new: Segments) -> Segments:
         first = new.segs[0] if new.segs else None
@@ -194,12 +201,12 @@ class ForwardSegments(Segments):
         indexer_streams: int | None,
     ) -> dict[str, Any]:
         (name,) = self.stored
-        rows = np.concatenate([objects[seg.ref.key][name][seg.start : seg.end] for seg in self.segs])
-        self.check(rows, indexer_streams=indexer_streams)
-        return {self.column: rows}
+        for key in dict.fromkeys(seg.ref.key for seg in self.segs):
+            self.check(objects[key][name], indexer_streams=indexer_streams)
+        return {self.column: np.concatenate([objects[seg.ref.key][name][seg.start : seg.end] for seg in self.segs])}
 
     def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
-        """The field's check of this sample's rows."""
+        """The field's check of every row one response stored."""
 
 
 class RoutedExpertsSegments(ForwardSegments):
@@ -213,7 +220,7 @@ class RoutedExpertsSegments(ForwardSegments):
     start_key = "routed_experts_start_len"
 
     def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
-        # As on the inline path: all zeros means the engine did not capture routed experts.
+        # As on the inline path, per response: all zeros means the engine did not capture routed experts.
         if rows.size and not rows.any():
             raise StorePlanError(
                 "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
@@ -249,22 +256,6 @@ class SamplingMaskSegments(Segments):
     name = "sampling_mask"
     stored = (MASK_LENGTHS, MASK_TOKEN_IDS, MASK_LOGPROBS)
     request_key = "return_sampling_mask"
-
-    @classmethod
-    def from_ref(
-        cls,
-        ref: StoreRef | None,
-        specs: Mapping[str, Any],
-        *,
-        request: Mapping[str, Any],
-        num_tokens: int,
-        response_length: int,
-        no_output_abort: bool,
-    ) -> Segments:
-        # A response aborted before any output token may store no mask at all.
-        if no_output_abort and response_length == 0 and cls.stored[0] not in specs:
-            return cls()
-        return cls(cls._whole_object(ref, specs, response_length))
 
     def append(self, new: Segments) -> Segments:
         return type(self)(self.segs + new.segs)
@@ -393,7 +384,8 @@ class StorePlan:
         ``request`` is what Miles sent: the fields it asked for and where an incremental forward
         starts. ``num_tokens`` is the length of the sequence the response's forward covered (prompt
         plus output), ``response_length`` its output length. A requested field must be in the ref,
-        except an empty sampling mask of a no-output abort.
+        unless the response is a no-output abort with no ref, or with no rows of that field to store;
+        that field then gets none of the response's rows.
         """
         specs = {spec.name: spec for spec in ref.fields} if ref is not None else {}
         fields = {
