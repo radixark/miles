@@ -61,6 +61,25 @@ def test_four_layer_layout_follows_the_gpu_count(num_gpus_per_node, expected_tp)
     assert args.rollout_ep_size == 1
 
 
+def test_four_layer_cp2_on_a_4_gpu_node_derives_tp2_ep2():
+    """CP takes its share of the node before TP; EP keeps following TP (launcher-only CP wiring)."""
+    args = _four_layer(context_parallel_size=2, num_gpus_per_node=4)
+    assert args.context_parallel_size == 2
+    assert args.tensor_parallel_size == 2
+    assert args.expert_parallel_size == 2
+
+
+def test_four_layer_cp_must_divide_the_gpus():
+    """The 4-layer layout now runs the TP*CP*PP divisibility check instead of refusing CP outright."""
+    with pytest.raises(ValueError, match=r"TP1\*CP3\*PP1=3 must divide the 4 training GPUs"):
+        _four_layer(context_parallel_size=3, num_gpus_per_node=4)
+
+
+def test_four_layer_pipeline_parallel_is_still_unwired():
+    with pytest.raises(NotImplementedError, match="Pipeline parallelism"):
+        _four_layer(pipeline_parallel_size=2, num_gpus_per_node=4)
+
+
 def test_four_layer_rollout_tp_can_span_nodes():
     """TP16 pads the Marlin MoE intermediate, the layout the padding fix is only decidable on."""
     args = _four_layer(num_nodes=2, num_gpus_per_node=8, rollout_tp_size=16, rollout_ep_size=1)

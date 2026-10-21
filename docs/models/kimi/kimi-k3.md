@@ -185,6 +185,34 @@ weight sync, the adapter export is leaking and the run will die later rather tha
   `miles/backends/megatron_utils/megatron_to_hf/kimi_k3.py`, and the model itself in
   `miles_plugins/models/kimi_k3/`.
 
+### 5.6 Deterministic KDA backward (`--kda-backend deterministic*`)
+
+By default the KDA delta-rule core runs forward and backward through flash-linear-attention
+(`--kda-backend fla`). On Blackwell (SM100a/SM103a) the deterministic family runs the backward
+through Miles' own deterministic chunked KDA training backward
+(`miles_plugins/models/kda_chunk_train`): fixed-order reductions and no atomics, so repeated
+backward passes on identical inputs are bit-identical. Two forwards pair with it:
+`--kda-backend deterministic_fla_fwd` keeps FLA's forward (the output and the saved tensors are
+bit-identical to FLA's), `--kda-backend deterministic_cake_fwd` runs the Cake forward (five kernel
+launches, bit-deterministic, the same chunk layout as the backward), and `--kda-backend deterministic`
+is the alias of the family's current default (`deterministic_cake_fwd`, so `deterministic` runs the Cake
+forward: its output is within the kernels' contract of FLA's, atol = rtol = 1e-2, not FLA's bits). Pass it through the launcher
+with `--extra-args "--kda-backend deterministic"`. The switch sits on the shared head-sharded
+linear-attention layer (`kda_recurrence(..., backend=...)` in `miles_plugins/models/linear_attn.py`),
+so it covers every KDA layer of the model; `fla` is the unchanged default path.
+
+The kernel ships as generated CUDA sources and builds on first use as a torch CUDA extension
+(`nvcc` and `ninja` from the image; cached under `TORCH_EXTENSIONS_DIR`, so the first backward
+of a fresh cache pays a few minutes of compilation). It covers `K = V = 128` for any sequence
+length, for the variable-length `thd` packs RL batches produce -- the packed `cu_seqlens` go
+straight to the kernel, which chunks every sequence from its own first token exactly as FLA
+does (no host-side repacking or padding copies) -- and for context parallelism: under CP the
+deterministic kernels run on each rank's local shard and the inter-rank state is exchanged
+through FLA's own CP pre-process kernels (the deterministic kernels' CP host protocol), so no
+fallback happens on CP shards. Calls outside the domain -- other GPUs, other head sizes --
+fall back to FLA's backward for that call and warn once per process, so the run always
+trains; only the determinism guarantee is then limited to the covered calls.
+
 ## 6. Pairs Well With
 
 - [LoRA](/advanced/lora)

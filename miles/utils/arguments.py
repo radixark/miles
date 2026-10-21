@@ -55,6 +55,7 @@ from miles.utils.workers.worker_provider.static import parse_host_and_port
 logger = logging.getLogger(__name__)
 
 LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
+KDA_BACKENDS = ("fla", "deterministic", "deterministic_fla_fwd", "deterministic_cake_fwd")
 
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
 
@@ -487,6 +488,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Backend for Qwen GDN linear-attention layers. "
                     "'fla' (flash-linear-attention) is portable and runs on any supported GPU. "
                     "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+."
+                ),
+            )
+            parser.add_argument(
+                "--kda-backend",
+                type=str,
+                choices=KDA_BACKENDS,
+                default="fla",
+                help=(
+                    "Backend for Kimi K3 KDA linear-attention layers. "
+                    "'fla' (flash-linear-attention) runs forward and backward through FLA's Triton kernels. "
+                    "The deterministic family runs the backward through Miles' deterministic chunked KDA training "
+                    "backward (miles_plugins/models/kda_chunk_train; SM100a/SM103a, K = V = 128, any fixed or packed "
+                    "sequence lengths, context parallelism through FLA's CP state exchange; other calls fall back to "
+                    "FLA): "
+                    "'deterministic_fla_fwd' keeps FLA's forward, 'deterministic_cake_fwd' runs the Cake forward "
+                    "(five launches, bit-deterministic), and 'deterministic' is the alias of the family's current "
+                    "default (deterministic_cake_fwd)."
                 ),
             )
             parser.add_argument(

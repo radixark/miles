@@ -129,11 +129,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
             )
 
         if self.is_4layer:
-            if self.pipeline_parallel_size != 1 or self.context_parallel_size != 1:
-                raise NotImplementedError("Pipeline and context parallelism are only wired for the full model")
-            return
-
-        if self.num_gpus != _VALIDATED_FULL_MODEL_GPUS and self.tp_size_override is None:
+            # context parallelism shares the launcher wiring below; pipeline parallelism stays full-model only
+            if self.pipeline_parallel_size != 1:
+                raise NotImplementedError("Pipeline parallelism is only wired for the full model")
+        elif self.num_gpus != _VALIDATED_FULL_MODEL_GPUS and self.tp_size_override is None:
             raise ValueError(
                 f"The full-model layout is derived for {_VALIDATED_FULL_MODEL_GPUS} GPUs; pass --tp-size-override "
                 f"(and --ep-size-override) for {self.num_gpus} GPUs"
@@ -187,7 +186,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.tp_size_override is not None:
             return self.tp_size_override
         if self.is_4layer:
-            return min(8, self.num_gpus)
+            return min(8, self.num_gpus // self.context_parallel_size)
         if self.pipeline_parallel_size == 1:
             return 32
         return self.num_gpus // (self.pipeline_parallel_size * self.context_parallel_size)

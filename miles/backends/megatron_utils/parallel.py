@@ -103,12 +103,34 @@ def verify_megatron_parallel_state(
 
 @dataclass
 class PackedSeqParamsWithHostCuSeqlens(PackedSeqParams):
-    """``PackedSeqParams`` plus the host copy of ``cu_seqlens_q`` that ``get_batch`` already built."""
+    """``PackedSeqParams`` plus the host copies of ``cu_seqlens_q`` that ``get_batch`` already built.
+
+    ``cu_seqlens_host`` is the tuple of ints from ``get_batch``; ``cu_seqlens_cpu`` is the same
+    boundaries as one CPU ``torch.int64`` tensor -- the host half of the KDA layers' boundary contract
+    (device int32 ``cu_seqlens_q`` + ``cu_seqlens_cpu``; see ``kda_chunk_train.kda_backend``). It is
+    built exactly once per micro-batch, here, and every KDA layer's forward, recompute forward and
+    backward of that micro-batch reads this one object, so no layer copies the boundaries off the
+    device and fla's identity-keyed ``tensor_cache`` hits for all of them.
+
+    Under context parallelism the first KDA layer builds this rank's fla CP context once per
+    micro-batch and keeps it, with the int64 host copy of the rank-local boundaries, in
+    ``fla_cp_context`` / ``fla_cp_cu_seqlens_cpu`` for the later layers and the recompute forward.
+    """
 
     cu_seqlens_host: tuple[int, ...] = field(kw_only=True)
+    cu_seqlens_cpu: torch.Tensor | None = field(default=None, kw_only=True)
+    fla_cp_context: object = field(default=None, kw_only=True, repr=False, compare=False)
+    fla_cp_cu_seqlens_cpu: torch.Tensor | None = field(default=None, kw_only=True, repr=False, compare=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.cu_seqlens_cpu is None:
+            self.cu_seqlens_cpu = torch.tensor(self.cu_seqlens_host, dtype=torch.int64)
 
 
 def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> PackedSeqParams:
+    """One ``PackedSeqParamsWithHostCuSeqlens`` per micro-batch (``thd``), carrying the device
+    ``cu_seqlens`` and its host copies; ``None`` for ``bshd``."""
     if args.qkv_format == "thd":
         packed_seq_params = PackedSeqParamsWithHostCuSeqlens(
             cu_seqlens_q=batch["cu_seqlens"],
