@@ -43,6 +43,10 @@ MASK_TOKEN_IDS = "output_token_sampling_mask_token_ids"
 # uses the same name for the sampled tokens' log-probs, one per token, which are never stored.
 MASK_SUPPORT_LOGPROBS = "output_token_sampling_logprobs"
 
+# The request field that has SGLang store the response's replay arrays, and the meta_info key of the ref.
+OUTPUT_STORE_REQUEST_KEY = "return_outputs_via_store"
+OUTPUT_STORE_REF_KEY = "output_store_ref"
+
 
 class StorePlanError(NonRetryableError, ValueError):
     """A plan edit, a response's ref or an object breaks the plan's contract.

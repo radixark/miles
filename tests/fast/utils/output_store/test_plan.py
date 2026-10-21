@@ -1,6 +1,8 @@
 """Seg / Segments / StorePlan: edits read only refs; materialize reads objects given as plain dicts."""
 
 import json
+import sys
+import types
 from dataclasses import replace
 from typing import NamedTuple
 
@@ -44,6 +46,13 @@ class Ref(NamedTuple):
     @classmethod
     def from_builtins(cls, value: dict) -> "Ref":
         return cls(value["key"], tuple(Spec(f["name"], f["dtype"], tuple(f["shape"])) for f in value["fields"]))
+
+
+def fake_store_refs(monkeypatch) -> None:
+    """CPU CI has no radix_transfer_plugins: refs read back as ``Ref`` wherever they are decoded."""
+    module = types.ModuleType("radix_transfer_plugins")
+    module.StoreRef = Ref
+    monkeypatch.setitem(sys.modules, "radix_transfer_plugins", module)
 
 
 def ref(key: str, *, seq_rows: int | None = None, mask_rows: int | None = None) -> Ref:
@@ -231,8 +240,7 @@ class TestValidate:
 class TestDict:
     @pytest.fixture(autouse=True)
     def _fake_refs(self, monkeypatch):
-        # CPU CI has no radix_transfer_plugins: read the fake refs back instead.
-        monkeypatch.setattr("miles.utils.output_store.plan.store_ref_from_dict", Ref.from_builtins)
+        fake_store_refs(monkeypatch)
 
     def test_round_trip_keeps_fields_forced_rows_empty_fields_and_unused_refs(self):
         plan = response("a", prompt=3, output=2).merge_turn(response("b", prompt=8, output=1), observation_tokens=3)

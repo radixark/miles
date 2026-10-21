@@ -8,7 +8,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from tests.fast.ray.rollout.conftest import make_args, make_rollout_config, make_sample, make_samples_grouped
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
-from tests.fast.utils.output_store.test_plan import ALL, INDEXER, MASK, R3, Ref, response
+from tests.fast.utils.output_store.test_plan import ALL, INDEXER, MASK, R3, fake_store_refs, response
 
 from miles.ray.rollout import train_data_conversion
 from miles.ray.rollout.train_data_conversion import (
@@ -940,8 +940,7 @@ class TestSplitTrainDataByDp:
 
     def test_store_plans_survive_the_object_store(self, ray_local_mode: None, monkeypatch: pytest.MonkeyPatch) -> None:
         """A converted, split and stored plan reads back as the sample's plan."""
-        # CPU CI has no radix_transfer_plugins: read the fake refs back instead.
-        monkeypatch.setattr("miles.utils.output_store.plan.store_ref_from_dict", Ref.from_builtins)
+        fake_store_refs(monkeypatch)
         samples = [_store_sample(0), _store_sample(1)]
         data = convert_samples_to_train_data(make_args(rewards_normalization=False), samples, {}, None, None)
 

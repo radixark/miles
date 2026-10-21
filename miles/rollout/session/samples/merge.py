@@ -9,6 +9,7 @@ Owned by the session package so the assembly runs on the owning instance (record
 
 from argparse import Namespace
 from copy import deepcopy
+from dataclasses import replace
 
 import numpy as np
 
@@ -18,9 +19,16 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 )
 from miles.rollout.generate_utils.rollout_topk_logprobs import append_rollout_topk_logprobs
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata
+from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata, read_sampled_logprobs
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
+from miles.utils.output_store.plan import (
+    OUTPUT_STORE_REF_KEY,
+    OUTPUT_STORE_REQUEST_KEY,
+    RoutedExpertsSegments,
+    StorePlan,
+    store_ref_from_dict,
+)
 from miles.utils.types import Sample, WeightVersionsPerCall
 
 
@@ -125,21 +133,32 @@ def _compute_sample_from_openai_record(
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
 
     sample = Sample()
+    via_store = record.request.get(OUTPUT_STORE_REQUEST_KEY, False)
     if record.request.get("return_sampling_mask", False):
-        output_log_probs = append_sampling_metadata(
-            sample,
-            output_token_ids,
-            choice["meta_info"],
-            aborted=finish_reason == "abort",
-            sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
-        )
+        if via_store:
+            # Only the mask rows are stored; the sampled tokens' log-probs, one per token, stay in meta_info.
+            output_log_probs = read_sampled_logprobs(
+                choice["meta_info"],
+                output_token_ids,
+                sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
+            )
+        else:
+            output_log_probs = append_sampling_metadata(
+                sample,
+                output_token_ids,
+                choice["meta_info"],
+                aborted=finish_reason == "abort",
+                sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
+            )
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
+    # With the output store, the trainer builds support-mode candidates from the stored mask.
     if not evaluation and (
-        record.request.get("top_logprobs") or record.request.get("sampling_logprobs_mode") == "support"
+        record.request.get("top_logprobs")
+        or (record.request.get("sampling_logprobs_mode") == "support" and not via_store)
     ):
         append_rollout_topk_logprobs(
             sample,
@@ -151,6 +170,16 @@ def _compute_sample_from_openai_record(
         None if use_addition_r3 else get_routed_experts_from_response(args, choice, len(sample.tokens) - 1)
     )
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, choice, sample)
+    if via_store:
+        # Rows of the untrimmed turn, so the TITO trim below cuts the plan like the tokens. Routed experts
+        # come from the records after the merge (adopt_session_records); a copy, since turn_args_history
+        # shares the request dict. A record never holds an abort: the session rejects it before recording.
+        sample.rollout_store_plan = StorePlan.from_response(
+            store_ref_from_dict(choice["meta_info"].get(OUTPUT_STORE_REF_KEY)),
+            request={**record.request, RoutedExpertsSegments.request_key: False},
+            num_tokens=len(sample.tokens),
+            response_length=len(output_token_ids),
+        )
     sample.weight_versions = [WeightVersionsPerCall.from_meta_info(choice["meta_info"], output_end=len(sample.tokens))]
 
     if trim_count > 0:
@@ -170,6 +199,39 @@ def _compute_sample_from_openai_record(
     sample.prefix_cache_info.add(choice.get("meta_info", {}))
 
     return sample
+
+
+def adopt_session_records(merged: Sample, records: list[SessionRecord]) -> None:
+    """Complete a merged sample's output store plan from its session's records.
+
+    The per-turn plans leave routed experts out: a TITO trim of a turn would cut a row that the
+    next turn's incremental object starts after. Like ``merge_samples_with_addition_r3``, they are
+    rebuilt from the untrimmed records, each continuing from its ``routed_experts_start_len``. The
+    sample also owns every record's object, so objects of turns the merge dropped are deleted with it.
+    """
+    plan = merged.rollout_store_plan
+    if plan is None:
+        return
+    choices = [record.response["choices"][0] for record in records]
+    refs = [store_ref_from_dict(choice["meta_info"].get(OUTPUT_STORE_REF_KEY)) for choice in choices]
+    if any(record.request.get(RoutedExpertsSegments.request_key) for record in records):
+        required = len(merged.tokens) - 1
+        rows = RoutedExpertsSegments()
+        for record, choice, ref in zip(records, choices, refs, strict=True):
+            if rows.num_rows() >= required:
+                # The merge stopped early: later records lie past the merged tokens.
+                break
+            num_output = len(choice["meta_info"]["output_token_logprobs"])
+            turn = StorePlan.from_response(
+                ref,
+                request=record.request,
+                num_tokens=len(record.request["input_ids"]) + num_output,
+                response_length=num_output,
+            )
+            rows = rows.append(turn.fields[RoutedExpertsSegments.name])
+        plan = replace(plan, fields={**plan.fields, RoutedExpertsSegments.name: rows.prefix(required)})
+    merged.rollout_store_plan = plan.adopt_refs(ref for ref in refs if ref is not None)
+    merged.validate()
 
 
 def merge_samples_with_addition_r3(
