@@ -108,7 +108,7 @@ Adam at `--lr 1e-6`. With EP 16 on 16 GPUs, expert data parallelism is 1, so the
 ### 5.4 Notable quirks
 
 - **`--window-attn-skip-freq` reads backwards**: Megatron treats a 1 as window attention, not a skip. Step5 passes 1 for `layer % 4 != 3`, the 69 sliding-window layers, with `--window-size 511,0`: the query plus 511 previous keys, 512 in total.
-- **Frozen DSA indexer**: in the full-parameter recipe every parameter but the indexer trains, and the full-attention layers recompute the rollout's region selection with it. The weight sync never sends it; the engine keeps its own copy.
+- **`--reuse-indexer-on-recompute`**: disabled by default. With activation recomputation enabled, reuse selected block IDs to skip the entire frozen Indexer during backward recomputation, including projections, block compression, scoring, TopK and sequence-parallel all-gather. Applies to both short and long training packs. Caching uses extra GPU memory.
 - **`--sglang-max-total-tokens 2097152`** is a correctness bound: an unbounded KV pool overflows the DSA kernels' int32 strides.
 - **`--sglang-moe-runner-backend triton`**: routing replay needs the engine's materialized top-k ids.
 

@@ -51,6 +51,7 @@ from miles.utils.workers.argv_utils import with_relax_parser_required_args, with
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
 from miles.utils.workers.worker_provider.static import parse_host_and_port
+from miles_plugins.models.step5.arguments import add_step5_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -2601,6 +2602,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
             add_dsv4_arguments(parser)
             add_dsa_arguments(parser)
+            add_step5_arguments(parser)
             parser.add_argument(
                 "--custom-megatron-init-path",
                 type=str,

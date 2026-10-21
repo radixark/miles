@@ -168,7 +168,9 @@ The trainer recomputes the full-attention layers' region selection with the froz
 The full-attention layers run the indexer's selection through the sparse region attention kernel
 (`miles_plugins/models/step5/sparse_attention.py`). `tests/fast-gpu/test_step5_sparse_attention.py` checks it
 against the dense layer it replaced, at TP 1, 2 and 4 with and without sequence parallelism, and checks that
-full-layer recompute selects the forward's regions bit for bit.
+full-layer recompute selects the forward's regions bit for bit. It also compares block IDs, attention outputs
+and gradients with reuse enabled versus disabled, and checks that reuse reduces Indexer calls from two to one.
+See the [Step5 model guide](../../../docs/models/stepfun/step5.md#54-notable-quirks).
 
 11. Time one layer's attention on its real input (step 9's capture), against the dense layer, with and without
     Megatron's activation checkpoint:
@@ -178,6 +180,10 @@ full-layer recompute selects the forward's regions bit for bit.
         tests/manual/step5/bench_sparse_attention_layer.py --hf-checkpoint /scratch/step5_slices/step5-5layer-bf16 \
         --inputs /scratch/step5_golden/indexer_inputs.pt --prompt text0-32768 --sequence-parallel
     ```
+
+    Compare `sparse_recompute_ms` (reuse disabled) with `sparse_recompute_reuse_ms` (reuse enabled).
+    Both runs keep the Indexer frozen and report forward, backward and total time, with corresponding
+    `*_peak_mib` memory increments.
 
     On GB300 at TP4 + SP, one 32,768-token sequence of the first full-attention layer (original layer 3; medians, ms, and peak MiB over the weights):
 

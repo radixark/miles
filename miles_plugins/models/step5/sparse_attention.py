@@ -1,8 +1,8 @@
 """Step5 full attention over regions selected by the frozen DSA indexer.
 
 Each KV group keeps up to 512 earlier eight-token regions plus the query's own.
-Sequences of at most 4,104 tokens therefore use the dense causal mask. Full-layer
-recomputation reruns the deterministic selection.
+Sequences of at most 4,104 tokens therefore use the dense causal mask. Optional
+selection reuse skips the frozen Indexer during full-layer recomputation.
 """
 
 import torch
@@ -10,6 +10,7 @@ from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.process_groups_config import ProcessGroupCollection
+from megatron.core.tensor_parallel.random import is_checkpointing
 from megatron.core.transformer.attention import SelfAttentionSubmodules
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.module import MegatronModule
@@ -73,6 +74,7 @@ class Step5SparseAttention(Step5Attention):
         pp_layer_offset: int | None = None,
         is_mtp_layer: bool = False,
         name: str | None = None,
+        reuse_indexer_on_recompute: bool = False,
     ) -> None:
         super().__init__(
             config=config,
@@ -94,6 +96,21 @@ class Step5SparseAttention(Step5Attention):
         ), "the forward below has neither selective core-attention recompute nor activation offloading"
         # The bridge and weight sync name its tensors ``self_attention.indexer.*``.
         self.indexer = Step5Indexer(config, tp_group=self.pg_collection.tp)
+        self.reuse_indexer_on_recompute = reuse_indexer_on_recompute
+
+    def _select_regions(self, hidden_states: torch.Tensor, packed_seq_params: PackedSeqParams) -> RegionSelection:
+        if not (self.reuse_indexer_on_recompute and self.training and is_checkpointing()):
+            return self.indexer.select_regions(hidden_states, packed_seq_params)
+        # Megatron's checkpoint disables gradients in forward and enables them in recomputation.
+        if torch.is_grad_enabled():
+            return packed_seq_params._step5_indexer_selections.pop(self.layer_number)
+
+        selection = self.indexer.select_regions(hidden_states, packed_seq_params)
+        # The packed object belongs to this microbatch; layers use separate keys.
+        cache = getattr(packed_seq_params, "_step5_indexer_selections", {})
+        cache[self.layer_number] = selection
+        packed_seq_params._step5_indexer_selections = cache
+        return selection
 
     def forward(
         self,
@@ -119,7 +136,7 @@ class Step5SparseAttention(Step5Attention):
         assert inference_context is None and inference_params is None, "Step5 sparse attention has no inference path"
         assert packed_seq_params is not None and packed_seq_params.qkv_format == "thd", "the indexer reads THD packs"
         assert rotary_pos_emb is not None, "Step5 rotates q and k in every layer"
-        selection = self.indexer.select_regions(hidden_states, packed_seq_params)
+        selection = self._select_regions(hidden_states, packed_seq_params)
 
         query, key, value, gate = self.get_query_key_value_tensors(hidden_states, head_wise_gate=True)
         # value is still a strided QKV projection view; the sparse kernel requires contiguous storage

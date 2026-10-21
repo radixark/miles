@@ -92,6 +92,17 @@ def test_recompute_selects_the_forwards_regions_bit_for_bit(results, layout, pac
     assert result["checkpointed_out_equal"]
 
 
+@pytest.mark.parametrize("layout", _LAYOUTS, ids=_layout_id)
+@pytest.mark.parametrize("pack", ["short", "long"])
+def test_reuse_preserves_selections_outputs_and_gradients(results, layout, pack):
+    result = results[layout][pack]
+    assert result["reuse_selection_passes"] == 1
+    assert result["reuse_selection_equal"]
+    assert result["reuse_out_equal"]
+    assert result["reuse_gradient_errors"].keys() == set(_GRADIENTS)
+    assert all(error < 1e-2 for error in result["reuse_gradient_errors"].values()), result["reuse_gradient_errors"]
+
+
 def test_long_sequences_select_by_score(results):
     long = results[_REFERENCE]["long"]
     first = long["selection"][: long["lengths"][0]]

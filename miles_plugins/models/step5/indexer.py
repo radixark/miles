@@ -1,8 +1,9 @@
 """Select causal attention regions with Step5's frozen DSA indexer.
 
 Each query keeps up to 512 earlier eight-token regions per KV group plus its own.
-Selection is recomputed under `no_grad`; the frozen weights are checkpointed and synced
+Selection runs under `no_grad`; the frozen weights are checkpointed and synced
 like every other weight. `indexer_ops` documents the remaining scoring-rounding differences.
+Attention can reuse cached block IDs to skip the frozen Indexer during backward recomputation.
 """
 
 import itertools

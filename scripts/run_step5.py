@@ -48,6 +48,8 @@ Args:
     --rollout-max-response-len: 32768 on 2 x 8, 8192 on 4 x 8, and 1024 otherwise unless set.
     --eval-aime / --no-eval-aime: the 2 x 8 AIME 2026 evals.
     --ray-hostfile: MPI-style hostfile; its other hosts join the ray cluster over ssh.
+    --reuse-indexer-on-recompute: cache block IDs to skip the frozen Indexer during activation recomputation
+        (disabled by default). Trades memory for less computation.
 
 Example:
     hf download pb09204048/Step-5-Preview-5layer --local-dir /scratch/step5_slices/Step5-5layer
@@ -145,6 +147,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout: int = 3
     rollout_max_response_len: int | None = None
     eval_aime: bool = True
+    reuse_indexer_on_recompute: bool = False
     ray_hostfile: str | None = None
     extra_args: str = ""
 
@@ -329,6 +332,7 @@ def train(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--model-name step5 "
+        f"{'--reuse-indexer-on-recompute ' if args.reuse_indexer_on_recompute else ''}"
         "--qkv-format thd "
     )
     if task.has_images:

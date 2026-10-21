@@ -9,6 +9,7 @@ import json
 import os
 import statistics
 from collections.abc import Callable
+from unittest.mock import patch
 
 import torch
 import torch.distributed as dist
@@ -167,8 +168,8 @@ def main() -> None:
     grad = torch.randn(x.shape, device="cuda", dtype=torch.bfloat16) * 1e-2
     rotary = sparse.rotary_pos_emb(length)
 
-    def call(module, h):
-        return module(h, None, rotary_pos_emb=rotary, packed_seq_params=packed)[0]
+    def call(module, h, packed_seq_params):
+        return module(h, None, rotary_pos_emb=rotary, packed_seq_params=packed_seq_params)[0]
 
     def indexer():
         start, end = _events()
@@ -180,13 +181,26 @@ def main() -> None:
     def layer(module, recompute: bool):
         def run():
             h = x.detach().requires_grad_()
+            forward_packed = PackedSeqParams(
+                cu_seqlens_q=cu_seqlens,
+                cu_seqlens_kv=cu_seqlens,
+                max_seqlen_q=length,
+                max_seqlen_kv=length,
+                qkv_format="thd",
+            )
             fwd, bwd = _events(), _events()
             fwd[0].record()
-            out = tensor_parallel.checkpoint(lambda t: call(module, t), False, h) if recompute else call(module, h)
+            out = (
+                tensor_parallel.checkpoint(lambda t: call(module, t, forward_packed), False, h)
+                if recompute
+                else call(module, h, forward_packed)
+            )
             fwd[1].record()
             bwd[0].record()
             out.backward(grad)
             bwd[1].record()
+            # Keep parameter gradients out of the next run's memory baseline.
+            module.zero_grad(set_to_none=True)
             return {"fwd": fwd, "bwd": bwd, "total": (fwd[0], bwd[1])}
 
         return run
@@ -197,7 +211,7 @@ def main() -> None:
         captured_core["args"] = tuple(a.detach() if torch.is_tensor(a) else a for a in core_args)
 
     handle = sparse.core_attention.register_forward_pre_hook(capture)
-    call(sparse, x)
+    call(sparse, x, packed)
     handle.remove()
     q, k, v, selection = captured_core["args"]
 
@@ -228,6 +242,10 @@ def main() -> None:
             key = f"{name}_recompute" if recompute else name
             report[f"{key}_ms"] = _median_ms(layer(module, recompute), args.iters)
             report[f"{key}_peak_mib"] = _peak_mib(layer(module, recompute))
+    # Keep the Indexer frozen in both runs; only toggle the reuse setting.
+    with patch.object(sparse, "reuse_indexer_on_recompute", True):
+        report["sparse_recompute_reuse_ms"] = _median_ms(layer(sparse, True), args.iters)
+        report["sparse_recompute_reuse_peak_mib"] = _peak_mib(layer(sparse, True))
     if dist.get_rank() == 0:
         print(json.dumps(report), flush=True)
     parallel_state.destroy_model_parallel()

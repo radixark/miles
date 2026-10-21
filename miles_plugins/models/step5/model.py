@@ -52,7 +52,12 @@ def configure_step5(config: TransformerConfig) -> None:
     config.use_te_activation_func = False
 
 
-def build_step5_spec(config: TransformerConfig, vp_stage: int | None = None) -> TransformerBlockSubmodules:
+def build_step5_spec(
+    config: TransformerConfig,
+    vp_stage: int | None = None,
+    *,
+    reuse_indexer_on_recompute: bool = False,
+) -> TransformerBlockSubmodules:
     dense_mlp = partial(
         MLP.as_mlp_submodule,
         submodules=MLPSubmodules(linear_fc1=TEColumnParallelLinear, linear_fc2=TERowParallelLinear),
@@ -62,6 +67,7 @@ def build_step5_spec(config: TransformerConfig, vp_stage: int | None = None) -> 
     )
     sliding_window = _attention_spec(Step5Attention, core_attention=TEDotProductAttention)
     full = _attention_spec(Step5SparseAttention, core_attention=Step5SparseCoreAttention)
+    full.params["reuse_indexer_on_recompute"] = reuse_indexer_on_recompute
     layer_specs = [
         _layer_spec(
             self_attention=full if is_full_attention_layer(config, layer_number) else sliding_window,
@@ -79,7 +85,11 @@ def build_step5_spec(config: TransformerConfig, vp_stage: int | None = None) -> 
 def get_step5_spec(args: argparse.Namespace, config: TransformerConfig, vp_stage: int | None):
     check_matches_checkpoint(config, load_hf_config(args.hf_checkpoint).text_config)
     configure_step5(config)
-    return build_step5_spec(config, vp_stage=vp_stage)
+    return build_step5_spec(
+        config,
+        vp_stage=vp_stage,
+        reuse_indexer_on_recompute=getattr(args, "reuse_indexer_on_recompute", False),
+    )
 
 
 def _attention_spec(module, *, core_attention) -> ModuleSpec:

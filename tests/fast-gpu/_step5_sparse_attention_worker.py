@@ -3,6 +3,7 @@
 import argparse
 import itertools
 import os
+from unittest.mock import patch
 
 import torch
 import torch.distributed as dist
@@ -29,7 +30,7 @@ SKIP_PATTERN, LAYER_NUMBER = [1, 1, 1, 0], 4
 PACKS = {
     # every region selected, so the sparse layer is dense causal attention
     "short": [4104, 1, 333, 1024, 7, 11],
-    # the first and third sequences select past position 4103; a region grid tail and a lone token
+    # the first sequence selects past position 4103; a region grid tail and a lone token
     "long": [5000, 1, 2603, 396],
 }
 
@@ -182,6 +183,10 @@ def _forward_backward(module, ranks: _Ranks, hidden: torch.Tensor, grad: torch.T
     x = ranks.tokens(hidden).clone().requires_grad_()
     out = _call(module, x, packed)
     out.backward(ranks.tokens(grad))
+    return _collect_results(module, ranks, x, out)
+
+
+def _collect_results(module, ranks: _Ranks, x: torch.Tensor, out: torch.Tensor) -> dict:
     qkv = ranks.gather(module.linear_qkv.weight.grad, dim=0)
     q, k, v, g = split_qkv_and_gate(
         qkv, num_query_groups=GROUPS, num_attention_heads=HEADS, head_dim=HEAD_DIM, tp_size=ranks.tp_size
@@ -199,8 +204,8 @@ def _forward_backward(module, ranks: _Ranks, hidden: torch.Tensor, grad: torch.T
     }
 
 
-def _recomputed_selections(module, ranks: _Ranks, hidden, grad, packed) -> tuple[list[torch.Tensor], torch.Tensor]:
-    """Forward under Megatron's activation checkpoint, then backward: the indexer runs in both passes."""
+def _recomputed_selections(module, ranks: _Ranks, hidden, grad, packed) -> tuple[list[torch.Tensor], dict]:
+    """Run checkpointed forward/backward and record Indexer block IDs."""
     recorded = []
     select_regions = module.indexer.select_regions
 
@@ -217,7 +222,15 @@ def _recomputed_selections(module, ranks: _Ranks, hidden, grad, packed) -> tuple
         out.backward(ranks.tokens(grad))
     finally:
         del module.indexer.select_regions
-    return recorded, ranks.all_tokens(out.detach())
+    return recorded, _collect_results(module, ranks, x, out)
+
+
+def _reused_selections(module, ranks: _Ranks, hidden, grad, packed) -> tuple[list[torch.Tensor], dict]:
+    """Reuse Indexer block IDs during backward recomputation and consume the cache."""
+    with patch.object(module, "reuse_indexer_on_recompute", True):
+        recorded, result = _recomputed_selections(module, ranks, hidden, grad, packed)
+        assert not getattr(packed, "_step5_indexer_selections", {})
+    return recorded, result
 
 
 def main() -> None:
@@ -250,16 +263,28 @@ def main() -> None:
         hidden = torch.randn(tokens, 1, HIDDEN, device="cuda", dtype=torch.bfloat16, generator=generator)
         grad = torch.randn(tokens, 1, HIDDEN, device="cuda", dtype=torch.bfloat16, generator=generator) * 0.01
         selection = sparse.indexer.select_regions(ranks.tokens(hidden), packed)
-        recorded, checkpointed_out = _recomputed_selections(sparse, ranks, hidden, grad, packed)
+        baseline_recorded, baseline = _recomputed_selections(sparse, ranks, hidden, grad, packed)
+
+        reuse_packed = _packed(lengths)
+        reuse_recorded, reuse_result = _reused_selections(sparse, ranks, hidden, grad, reuse_packed)
+
         sparse_result = _forward_backward(sparse, ranks, hidden, grad, packed)
         results[name] = {
             "lengths": lengths,
             "sparse": sparse_result,
             "dense": _forward_backward(dense, ranks, hidden, grad, packed),
             "selection": ranks.gather(selection.region_ids, dim=1),
-            "selection_passes": len(recorded),
-            "recomputed_selection_equal": all(torch.equal(ids, selection.region_ids) for ids in recorded),
-            "checkpointed_out_equal": torch.equal(checkpointed_out, sparse_result["out"]),
+            "selection_passes": len(baseline_recorded),
+            "recomputed_selection_equal": all(torch.equal(ids, selection.region_ids) for ids in baseline_recorded),
+            "checkpointed_out_equal": torch.equal(baseline["out"], sparse_result["out"]),
+            "reuse_selection_passes": len(reuse_recorded),
+            "reuse_selection_equal": all(torch.equal(ids, reuse_recorded[0]) for ids in baseline_recorded),
+            "reuse_out_equal": torch.equal(reuse_result["out"], baseline["out"]),
+            "reuse_gradient_errors": {
+                key: (value.float() - baseline[key].float()).norm() / baseline[key].float().norm().clamp_min(1e-12)
+                for key, value in reuse_result.items()
+                if key.startswith("d_")
+            },
         }
 
     if dist.get_rank() == 0:

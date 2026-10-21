@@ -11,6 +11,7 @@ from tests.fast.launch_scripts.py_harness import (
     install_command_recorder,
 )
 
+
 _LAUNCHER = REPO_ROOT / "scripts/run_step5.py"
 
 
@@ -28,6 +29,20 @@ def _flag_values(command: str) -> dict[str, str | None]:
         for i, flag in enumerate(argv)
         if flag.startswith("--")
     }
+
+
+@pytest.mark.parametrize("task", ["dapo_math", "geo3k"])
+@pytest.mark.parametrize(
+    "settings,reuse",
+    [
+        ({}, False),
+        ({"reuse_indexer_on_recompute": True}, True),
+    ],
+)
+def test_launcher_passes_the_indexer_reuse_setting(monkeypatch, tmp_path, task, settings, reuse):
+    commands = _record(monkeypatch, tmp_path, "train", {"task": task, **settings})
+    flags = _flag_values(commands[-1])
+    assert ("--reuse-indexer-on-recompute" in flags) is reuse
 
 
 def test_geo3k_prepare_downloads_the_image_dataset(monkeypatch, tmp_path):
