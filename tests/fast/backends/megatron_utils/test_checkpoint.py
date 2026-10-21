@@ -105,3 +105,21 @@ class TestRawMbridgeCompanionIsolation:
             assert companion.weight_version.item() == 7
             assert companion.sample_consumptions.tolist() == [[1, 2, 3, 4, 0]]
             torch.testing.assert_close(model.weight, torch.full_like(model.weight, 5))
+
+
+class TestHideCriticValueHead:
+    @pytest.mark.parametrize("vlm", [False, True])
+    def test_value_head_is_hidden_and_restored(self, vlm: bool) -> None:
+        value_head = checkpoint.LinearForLastLayer(4, 1, config=SimpleNamespace(sequence_parallel=False))
+        owner = torch.nn.Module()
+        owner.output_layer = value_head
+        if vlm:
+            model = torch.nn.Module()
+            model.language_model = owner
+        else:
+            model = owner
+
+        with checkpoint._hide_critic_value_head_from_hf_load([model]):
+            assert not hasattr(owner, "output_layer")
+
+        assert owner.output_layer is value_head

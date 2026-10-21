@@ -4,7 +4,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.megatron_utils.model_provider import _maybe_install_witness
+from miles.backends.megatron_utils.model_provider import (
+    LinearForLastLayer,
+    _maybe_install_witness,
+    _set_critic_output_layer,
+)
 from miles.backends.training_utils.model_companion import ModelCompanion
 
 
@@ -28,3 +32,43 @@ class TestModelCompanionInstallation:
         assert len(companions) == 1
         assert companions[0].chunk_index == 2
         assert companions[0].sample_consumptions.numel() == 0
+
+
+class _LanguageModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.output_layer = torch.nn.Linear(4, 10)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        out = self.output_layer(hidden)
+        return out[0] if isinstance(out, tuple) else out
+
+
+class _VLMWrapper(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.language_model = _LanguageModel()
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return self.language_model(hidden)
+
+
+class TestCriticOutputLayer:
+    config = SimpleNamespace(hidden_size=4, sequence_parallel=False)
+
+    def test_value_head_goes_on_vlm_language_model(self) -> None:
+        model = _VLMWrapper()
+
+        _set_critic_output_layer(model, self.config)
+
+        assert isinstance(model.language_model.output_layer, LinearForLastLayer)
+        assert not hasattr(model, "output_layer")
+        assert model(torch.zeros(3, 4)).shape == (3, 1)
+
+    def test_value_head_replaces_plain_model_output_layer(self) -> None:
+        model = _LanguageModel()
+
+        _set_critic_output_layer(model, self.config)
+
+        assert isinstance(model.output_layer, LinearForLastLayer)
+        assert model(torch.zeros(3, 4)).shape == (3, 1)

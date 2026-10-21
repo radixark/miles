@@ -140,6 +140,13 @@ class LinearForLastLayer(torch.nn.Linear):
         return logits, None
 
 
+def _set_critic_output_layer(model: torch.nn.Module, config: TransformerConfig) -> None:
+    head_owner = getattr(model, "language_model", None)
+    if head_owner is None:
+        head_owner = model
+    head_owner.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
+
+
 def get_model_provider_func(
     args: argparse.Namespace,
     role: Literal["actor", "critic"] = "actor",
@@ -164,9 +171,7 @@ def get_model_provider_func(
                 model = custom_model_provider(pre_process=pre_process, post_process=post_process)
             # Apply critic output layer if needed
             if post_process and role == "critic":
-                model.output_layer = LinearForLastLayer(
-                    input_size=model.config.hidden_size, output_size=1, config=model.config
-                )
+                _set_critic_output_layer(model, model.config)
             _maybe_install_witness(args, model, vp_stage=vp_stage)
             return model
 
@@ -197,9 +202,7 @@ def get_model_provider_func(
                 provider._pg_collection = pg_collection
             model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
             if post_process and role == "critic":
-                model.output_layer = LinearForLastLayer(
-                    input_size=model.config.hidden_size, output_size=1, config=model.config
-                )
+                _set_critic_output_layer(model, model.config)
             assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
             ModelCompanionInstallationUtils.install(model=model, chunk_index=vp_stage or 0)
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.

@@ -73,7 +73,10 @@ def _make_value_model_hook(hidden_size: int):
         for index, model_chunk in enumerate(model_list):
             if not model_post_process[index]:
                 continue
-            model_chunk.output_layer = LinearForLastLayer(
+            head_owner = getattr(model_chunk, "language_model", None)
+            if head_owner is None:
+                head_owner = model_chunk
+            head_owner.output_layer = LinearForLastLayer(
                 input_size=hidden_size,
                 output_size=1,
                 config=model_chunk.config,
