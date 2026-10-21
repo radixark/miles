@@ -12,10 +12,14 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from copy import deepcopy
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Run id captured at init; lets threads without the (thread-local) active run still log.
+_run_id: str | None = None
 
 
 # Helpers/utils
@@ -69,6 +73,8 @@ def init_mlflow(args, *, primary: bool = True, **kwargs) -> None:
 def _init_mlflow_primary(args, experiment_name: str) -> None:
     import mlflow
 
+    global _run_id
+
     run_name = args.mlflow_run_name or args.wandb_group
 
     tags = {}
@@ -81,6 +87,7 @@ def _init_mlflow_primary(args, experiment_name: str) -> None:
     mlflow.log_params(_compute_config_for_logging(args))
 
     args.mlflow_run_id = run.info.run_id
+    _run_id = run.info.run_id
     logger.info("MLflow run started: %s (experiment=%s, name=%s)", run.info.run_id, experiment_name, run_name)
 
 
@@ -88,11 +95,14 @@ def _init_mlflow_secondary(args) -> None:
     """Attach to an existing MLflow run created by the primary rank."""
     import mlflow
 
+    global _run_id
+
     run_id = args.mlflow_run_id or os.environ.get("MLFLOW_RUN_ID")
     if run_id is None:
         return
 
     mlflow.start_run(run_id=run_id)
+    _run_id = run_id
     logger.info("MLflow secondary attached to run: %s", run_id)
 
 
@@ -104,18 +114,29 @@ def _init_mlflow_secondary(args) -> None:
 def log_metrics(metrics: dict[str, Any], step: int | None = None) -> None:
     import mlflow
 
-    if mlflow.active_run() is None:
-        return
-
     sanitized: dict[str, float] = {}
     for k, v in metrics.items():
         try:
             sanitized[_sanitize_key(k)] = float(v)
         except (TypeError, ValueError):
             continue
+    if not sanitized:
+        return
 
-    if sanitized:
-        mlflow.log_metrics(sanitized, step=int(step) if step is not None else None)
+    step = int(step) if step is not None else None
+    if mlflow.active_run() is not None:
+        mlflow.log_metrics(sanitized, step=step)
+        return
+
+    # The active run is thread-local; fall back to the init-captured run id.
+    if _run_id is None:
+        return
+    from mlflow.entities import Metric
+    from mlflow.tracking import MlflowClient
+
+    timestamp_ms = int(time.time() * 1000)
+    entities = [Metric(key=k, value=v, timestamp=timestamp_ms, step=step or 0) for k, v in sanitized.items()]
+    MlflowClient().log_batch(_run_id, metrics=entities)
 
 
 # ---------------------------------------------------------------------------
