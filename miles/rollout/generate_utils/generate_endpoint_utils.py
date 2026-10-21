@@ -18,6 +18,53 @@ from miles.utils.processing_utils import encode_image_for_rollout_engine, extrac
 from miles.utils.types import Sample
 
 
+def image_pad_id_for(state) -> int | None:
+    """The id of the image placeholder the engine expands, or None when no
+    placeholder applies. The TITO family's image-token table decides first
+    (``TITOTokenizer.image_tokens``: a family whose placeholder the engine
+    does not expand collapses nothing); without a TITO family, the HF vision
+    processor names the token (``processor.image_token``); a text model has
+    neither."""
+    tito = getattr(state, "tito_tokenizer", None)
+    tokens = getattr(tito, "image_tokens", None)
+    if tokens is not None:
+        if not tokens.expands:
+            return None
+        return int(tito.image_token_ids()["placeholder"])
+    processor = getattr(state, "processor", None)
+    token = getattr(processor, "image_token", None) if processor is not None else None
+    if not token:
+        return None
+    pad = state.tokenizer.convert_tokens_to_ids(token)
+    unk = getattr(state.tokenizer, "unk_token_id", None)
+    if not isinstance(pad, int) or pad == unk:
+        return None
+    return int(pad)
+
+
+def collapse_image_pads(input_ids: list[int], image_pad_id: int) -> list[int]:
+    """``input_ids`` with every run of image placeholders reduced to one.
+
+    An HF vision processor writes the placeholder once per image patch group
+    (Qwen3-VL: 336 for a 1024x576 screenshot, the model's view). SGLang's
+    exact-token path (sgl-project/sglang#26555) expects one placeholder per
+    image in the request and expands it to the same count itself; a request
+    that already carries the expansion falls back to decoding and
+    re-tokenizing the prompt, so the engine runs ids the training record does
+    not hold (60 to 85 percent of screenshot turns differed by 1 to 2 ids on
+    Qwen3.8-27B-VL). The training record keeps the expanded ids; only the
+    wire form collapses."""
+    out: list[int] = []
+    previous_pad = False
+    for token in input_ids:
+        is_pad = token == image_pad_id
+        if is_pad and previous_pad:
+            continue
+        out.append(token)
+        previous_pad = is_pad
+    return out
+
+
 # Make this an isolated function because users may want to compute their own
 def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
@@ -62,7 +109,15 @@ def compute_request_payload(
     *,
     evaluation: bool = False,
     kv_cache_namespace: str | None = None,
+    image_pad_id: int | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
+    """The ``/generate`` request for ``input_ids`` (the model's view: the
+    image placeholders already expanded by the processor). With images the
+    request carries one placeholder per image (``collapse_image_pads``,
+    ``image_pad_id`` from ``image_pad_id_for``); images without a known
+    placeholder are refused rather than sent expanded, which the engine would
+    re-tokenize. The context arithmetic uses the expanded length, which is
+    what the engine runs."""
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
     if x := args.rollout_max_context_len:
@@ -85,6 +140,14 @@ def compute_request_payload(
         payload["lora_path"] = LORA_ADAPTER_NAME
     if image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+        if image_pad_id is None:
+            raise ValueError(
+                "the sample carries images but no image placeholder is known for this model: the TITO "
+                "family has no entry in the image-token table (ImageTokens, "
+                "miles.utils.chat_template_utils.tito_tokenizer) and the processor names no image_token; "
+                "the engine would re-tokenize the prompt"
+            )
+        payload["input_ids"] = collapse_image_pads(input_ids, image_pad_id)
     if kv_cache_namespace is not None:
         payload["extra_key"] = kv_cache_namespace
 
@@ -94,11 +157,19 @@ def compute_request_payload(
 
 
 async def update_sample_from_response(
-    args, sample: Sample, payload: dict, output: dict, update_loss_mask: bool = False
+    args,
+    sample: Sample,
+    payload: dict,
+    output: dict,
+    update_loss_mask: bool = False,
+    prompt_ids: list[int] | None = None,
 ):
+    """``prompt_ids`` is the model's view of the prompt (image placeholders
+    expanded); it defaults to the request's ``input_ids``, which differ only
+    when the request collapsed the placeholders (``compute_request_payload``)."""
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and not sample.tokens:
-        sample.tokens = payload["input_ids"]
+        sample.tokens = list(prompt_ids) if prompt_ids is not None else payload["input_ids"]
 
     if x := output["meta_info"].get("output_token_logprobs"):
         new_response_tokens = [item[1] for item in x]

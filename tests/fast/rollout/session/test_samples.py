@@ -1125,3 +1125,89 @@ class TestPrefixCacheInfo:
 
         assert samples[0].prefix_cache_info.cached_tokens == 0
         assert samples[0].prefix_cache_info.total_prompt_tokens == 0
+
+
+# ── test: images on the session path ─────────────────────────────────
+
+
+class TestImagesInSamples:
+    """A record whose messages carry images: the prompt's placeholders are
+    expanded to the processor's counts, the images ride along in the
+    trainer's PNG format, and the engine's reported prompt length must agree
+    (miles.rollout.session.media)."""
+
+    PAD = 151655
+
+    @staticmethod
+    def _store():
+        from tests.fast.rollout.session.test_media import FakeProcessor, _data_url, _png
+
+        from miles.rollout.session.media import MediaStore, normalize_messages
+
+        store = MediaStore(FakeProcessor(), TestImagesInSamples.PAD)
+        url = _data_url(_png())  # 64x64: 4 tokens
+        messages = normalize_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": url}}],
+                }
+            ],
+            store,
+        )
+        return store, messages
+
+    def _record(self, messages, prompt_tokens):
+        record = _make_record([1, self.PAD, 2], [7, 8], prompt_tokens=prompt_tokens)
+        record.request["messages"] = messages
+        return record
+
+    def test_placeholders_expand_and_images_ride_along(self):
+        store, messages = self._store()
+        samples = compute_samples_from_openai_records(
+            _ARGS, [self._record(messages, prompt_tokens=6)], _mock_tokenizer(), media=store
+        )
+        (sample,) = samples
+        assert sample.tokens == [1, self.PAD, self.PAD, self.PAD, self.PAD, 2, 7, 8]
+        assert sample.response_length == 2 and sample.loss_mask == [1, 1]
+        assert sample.multimodal_train_inputs["image_grid_thw"].tolist() == [[1, 4, 4]]
+        assert sample.multimodal_train_inputs["image_png_lengths"].tolist() == [len(store.entries.popitem()[1].png)]
+
+    def test_the_engine_prompt_length_must_match_the_expansion(self):
+        store, messages = self._store()
+        with pytest.raises(ValueError, match="did not run the request ids as sent"):
+            compute_samples_from_openai_records(
+                _ARGS, [self._record(messages, prompt_tokens=3)], _mock_tokenizer(), media=store
+            )
+
+    def test_a_text_record_is_unchanged_and_images_need_a_store(self):
+        record = _make_record([1, 2], [7], prompt_tokens=2)
+        (sample,) = compute_samples_from_openai_records(_ARGS, [record], _mock_tokenizer(), media=None)
+        assert sample.tokens == [1, 2, 7] and sample.multimodal_train_inputs is None
+        _, messages = self._store()
+        with pytest.raises(ValueError, match="no image processor"):
+            compute_samples_from_openai_records(_ARGS, [self._record(messages, 6)], _mock_tokenizer(), media=None)
+
+    def test_merged_turns_carry_the_last_turn_images(self):
+        from tests.fast.rollout.session.test_media import _data_url, _png
+
+        from miles.rollout.session.media import normalize_messages
+
+        store, first_messages = self._store()
+        second_messages = normalize_messages(
+            first_messages
+            + [
+                {"role": "assistant", "content": "r"},
+                {"role": "user", "content": [{"type": "image_url", "image_url": {"url": _data_url(_png(width=128))}}]},
+            ],
+            store,
+        )
+        first = self._record(first_messages, prompt_tokens=6)
+        # 7 ids sent; the engine expands the two placeholders to 4 and 8 tokens: 7 - 2 + 4 + 8 = 17.
+        second = _make_record([1, self.PAD, 2, 7, 8, 9, self.PAD], [5], prompt_tokens=17)
+        second.request["messages"] = second_messages
+        turns = compute_samples_from_openai_records(_ARGS, [first, second], _mock_tokenizer(), media=store)
+        merged = merge_samples(turns, _mock_tokenizer())
+        assert merged.multimodal_train_inputs["image_grid_thw"].tolist() == [[1, 4, 4], [1, 4, 8]]
+        assert merged.response_length == len(merged.tokens) - 6, "the first turn's expanded prompt is 6 ids"
+        assert merged.loss_mask == [1, 1] + [0] * (1 + 8) + [1]

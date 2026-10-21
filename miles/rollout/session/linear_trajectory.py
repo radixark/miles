@@ -6,6 +6,7 @@ from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session.media import MediaStore
 from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
@@ -92,6 +93,9 @@ class LinearTrajectory:
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
+    # The session's images (miles.rollout.session.media): stored messages and
+    # records reference them as ``mm://`` URLs; None on a text-only server.
+    media: MediaStore | None = field(default=None, repr=False, compare=False)
 
     @property
     def turn_args(self) -> dict[str, Any]:
@@ -376,10 +380,14 @@ class SessionRegistry:
         *,
         tito_tokenizer: TITOTokenizer,
         message_matcher: SessionMessageMatcher | None = None,
+        processor: Any = None,
     ):
         self.sessions: dict[str, LinearTrajectory] = {}
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
+        # The model's image processor (None for a text-only model): every
+        # session's MediaStore counts and grids its images with it.
+        self.processor = processor
         self.comparator = tito_tokenizer.create_comparator()
         self.message_matcher: SessionMessageMatcher = (
             message_matcher if message_matcher is not None else strict_message_matches
@@ -402,8 +410,20 @@ class SessionRegistry:
             evaluation=evaluation,
             sampling_defaults=dict(sampling_defaults or {}),
             sampling_support_replay=sampling_support_replay,
+            media=self.new_media_store(),
         )
         return session_id
+
+    def new_media_store(self) -> MediaStore:
+        tito = self.tito_tokenizer
+        tokens = getattr(tito, "image_tokens", None)
+        pad_lookup = getattr(tito, "image_pad_id", None)
+        return MediaStore(
+            self.processor,
+            pad_lookup() if callable(pad_lookup) else None,
+            expands=tokens.expands if tokens is not None else True,
+            family=type(tito).__name__ if tito is not None else None,
+        )
 
     def get_session(self, session_id: str) -> LinearTrajectory:
         session = self.sessions.get(session_id)

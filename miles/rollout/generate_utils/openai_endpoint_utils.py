@@ -21,7 +21,12 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
-_SESSION_REQUEST_TIMEOUT = 120
+# The samples op of a long session (600 turns, 15 fold leaves, 40 live
+# screenshots each) builds every leaf's sample and its PNG bytes; 120 s was
+# exceeded by 320-turn sessions on 2026-10-13 (160 to 190 s), and the episode
+# was written off with its group. The build now runs off the server's event
+# loop (SessionCoreV2.collect_samples); this is the backstop, not the fix.
+_SESSION_REQUEST_TIMEOUT = 300
 
 
 class OpenAIEndpointTracer:

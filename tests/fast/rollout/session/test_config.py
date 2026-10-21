@@ -31,6 +31,8 @@ _ARGS_TO_CONFIG_FIELD = {
     "rollout_top_logprobs_num": "rollout_top_logprobs_num",
     "rollout_sampling_logprobs_mode": "rollout_sampling_logprobs_mode",
     "rollout_temperature": "rollout_temperature",
+    "tito_session_mismatch_rate": "tito_session_mismatch_rate",
+    "session_chat_timing_log": "session_chat_timing_log",
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
@@ -67,6 +69,8 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    tito_session_mismatch_rate=0.25,
+    session_chat_timing_log=True,
 )
 
 
@@ -158,7 +162,12 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_top_logprobs_num=0,
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
+    tito_session_mismatch_rate=1.0,
+    session_chat_timing_log=False,
 )
+
+# The samples-op diagnostics default like the flags do: every session, no timing log.
+_DEFAULTED_FIELDS = ("tito_session_mismatch_rate", "session_chat_timing_log")
 
 
 class TestSessionServerConfig:
@@ -192,9 +201,16 @@ class TestSessionServerConfig:
         with pytest.raises(ValidationError):
             SessionServerConfig(**{**_COMPLETE_CONFIG_KWARGS, "use_session_server": value})
 
-    @pytest.mark.parametrize("missing", sorted(SessionServerConfig.model_fields))
+    def test_the_diagnostics_fields_default_like_their_flags(self):
+        """A config built without the samples-op diagnostics computes the mismatch for every session and logs no timing."""
+        kwargs = {name: value for name, value in _COMPLETE_CONFIG_KWARGS.items() if name not in _DEFAULTED_FIELDS}
+        config = SessionServerConfig(**kwargs)
+        assert config.tito_session_mismatch_rate == 1.0
+        assert config.session_chat_timing_log is False
+
+    @pytest.mark.parametrize("missing", sorted(set(SessionServerConfig.model_fields) - set(_DEFAULTED_FIELDS)))
     def test_every_field_is_required(self, missing: str):
-        """Omitting any single field must fail, so none can be silently defaulted."""
+        """Omitting any single field (except the defaulted diagnostics) must fail, so none can be silently defaulted."""
         kwargs = {name: value for name, value in _COMPLETE_CONFIG_KWARGS.items() if name != missing}
         with pytest.raises(ValidationError):
             SessionServerConfig(**kwargs)

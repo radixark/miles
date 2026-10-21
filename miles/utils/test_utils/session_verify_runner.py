@@ -159,6 +159,7 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         f"--session-verify-cycles {ns.session_verify_cycles}",
         f"--tool-call-failure-mode {ns.tool_call_failure_mode}",
         f"--tito-model {ns.tito_model}",
+        "--tito-session-mismatch-rate 1.0",
         f"--session-message-matcher {ns.session_message_matcher}",
         f"--rollout-num-gpus-per-engine {ns.rollout_num_gpus_per_engine}",
         f"--sglang-reasoning-parser {ns.sglang_reasoning_parser}",
