@@ -48,6 +48,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
+from miles.utils.output_store.config import connect_output_store, output_store_backend_config
 from miles.utils.output_store.dropped import store_refs_of, take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
 from miles.utils.simple_checkpointer import atomic_save_folder
@@ -110,6 +111,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
+        if args.use_output_store:
+            self._delete_store_refs = connect_output_store(output_store_backend_config(args)).delete_many
 
         init_http_client(args)
 

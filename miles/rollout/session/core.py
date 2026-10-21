@@ -212,6 +212,7 @@ class SessionCore:
         session_server_instance_id=None,
         *,
         use_addition_r3=False,
+        output_store=None,
     ):
         self.backend = backend
         self.registry = registry
@@ -223,7 +224,7 @@ class SessionCore:
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
         # The output store client deleting what this server's sessions did not hand over; None without one.
-        self._output_store = None
+        self._output_store = output_store
 
     async def _take_store_ref(self, session, request_body: dict, result: dict) -> None:
         """Record the output store ref of a proxied response before anything can drop the response."""

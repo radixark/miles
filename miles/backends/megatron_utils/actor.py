@@ -653,6 +653,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_data, store_get_result = get_rollout_data(
                     args=self.args,
                     rollout_data_ref=rollout_data_ref,
+                    output_store_read=self.output_store_read,
                     witness_info=witness_info,
                     train_parallel_config=get_parallel_state().train_parallel_config(
                         supports_precomputed_schedule=True

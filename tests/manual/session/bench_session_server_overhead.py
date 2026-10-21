@@ -422,6 +422,7 @@ def _build_server_config(
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
         rollout_temperature=1.0,
+        output_store_backend_config=None,
     )
 
 

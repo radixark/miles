@@ -1,8 +1,7 @@
 """The session server deletes the output store objects of a session that its client did not take.
 
 Drives v1 and v2 cores in-process with a backend that answers like SGLang for an opted-in request:
-a ref in meta_info, an abort answered 200 with finish_reason abort and its ref all the same. The
-client opts in itself; nothing in the session server sets it yet.
+a ref in meta_info, an abort answered 200 with finish_reason abort and its ref all the same.
 """
 
 import json
@@ -94,6 +93,7 @@ def build_core(monkeypatch, tokenizer, *, v2: bool, finish_reasons: list[str]):
         use_rollout_routing_replay=True,
         num_layers=LAYERS,
         moe_router_topk=TOPK,
+        output_store_backend_config={"master_server_address": "unused"},
         use_session_server="v2" if v2 else None,
         session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves" if v2 else None,
         session_sample_postprocessor_path=(
@@ -103,15 +103,18 @@ def build_core(monkeypatch, tokenizer, *, v2: bool, finish_reasons: list[str]):
     tito_tokenizer = get_tito_tokenizer(tokenizer, tokenizer_type="default", chat_template_kwargs={})
     backend = _Backend(tokenizer, finish_reasons)
     if v2:
-        core = SessionCoreV2(backend, SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer), config)
+        core = SessionCoreV2(
+            backend, SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer), config, output_store=store
+        )
     else:
-        core = SessionCore(backend, SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer), config)
-    core._output_store = store
+        core = SessionCore(
+            backend, SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer), config, output_store=store
+        )
     return core, backend, store
 
 
 async def chat(core, session_id: str):
-    body = json.dumps({"messages": [{"role": "user", "content": "hi"}], OUTPUT_STORE_REQUEST_KEY: True}).encode()
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
     return await core.chat_completions(session_id, method="POST", query="", headers={}, body=body)
 
 
@@ -181,6 +184,30 @@ async def test_the_delete_route_passes_the_clients_report_on(monkeypatch, tokeni
         assert (await client.delete("/sessions/sid?samples_received=false")).status_code == 204
 
     assert reports == [True, False]
+
+
+async def test_the_session_routes_hand_the_run_store_to_the_core(monkeypatch, tokenizer):
+    store = _Store()
+    connected, stores = [], []
+
+    async def delete_session(self, session_id, *, samples_received):
+        stores.append(self._output_store)
+        return Response(status_code=204)
+
+    monkeypatch.setattr(SessionCore, "delete_session", delete_session)
+    monkeypatch.setattr(sessions, "load_tokenizer", lambda *args, **kwargs: tokenizer)
+    monkeypatch.setattr(sessions, "connect_output_store", lambda config: connected.append(config) or store)
+    app = FastAPI()
+    store_config = {"master_server_address": "unused"}
+    config = make_session_server_config(
+        hf_checkpoint=HF_CHECKPOINT, apply_chat_template_kwargs={}, output_store_backend_config=store_config
+    )
+    sessions.setup_session_routes(app, backend=None, config=config)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://session") as client:
+        assert (await client.delete("/sessions/sid")).status_code == 204
+
+    assert connected == [store_config]
+    assert stores == [store]
 
 
 @pytest.mark.parametrize("v2", [False, True], ids=["v1", "v2"])

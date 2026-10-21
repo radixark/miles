@@ -249,3 +249,51 @@ Mooncake stores one replica by default. Request additional replicas with:
 ```
 
 Additional replicas require additional Store capacity.
+
+## Replay data through the output store
+
+With `--use-output-store`, SGLang puts the routed experts (`--use-rollout-routing-replay`),
+indexer top-k (`--use-rollout-indexer-replay`) and sampling mask (sampling-support
+replay, on with a positive `--rollout-top-k`) of each training response in this
+Mooncake and returns a ref instead of the arrays. The rollout records which stored rows
+each sample uses, the trainer reads them back, and the objects are deleted once nothing
+can read them: a trained rollout's objects after its `train` step, and objects of dropped
+samples and abandoned session turns with them. The trainer receives the same columns as
+without the option.
+
+```bash
+--object-store-backend mooncake \
+--use-output-store \
+--output-store-local-buffer-size 1gb
+```
+
+Requirements:
+
+- An SGLang build with the output store (`ServerArgs.output_store_backend`) and the
+  `radix_transfer_plugins` package it ships, on every engine, trainer and the session
+  server. Miles configures the store of every engine it launches; do not pass
+  `output_store_backend` through `--sglang-*` flags or `sglang_overrides`.
+- A router that forwards `return_outputs_via_store`: `--use-miles-router`, or an
+  `sgl-router` wheel from `radixark/sgl-router-for-miles` with that fix. A router that
+  drops it fails the rollout instead of falling back to inline arrays.
+- `--output-store-local-buffer-size` sets the local buffer of every output store client;
+  an engine puts all stored arrays of a response through it at once, so it must hold one
+  response's routed experts, indexer top-k and sampling mask together.
+- Store capacity for every rollout batch that is alive at once. A batch's objects stay
+  stored from generation until its `train` step, so the segments the training nodes
+  contribute (`global_segment_size` per node, above) must hold, next to Miles' own
+  rollout data, max staleness + 1 batches of stored arrays: the batch in training and
+  the ones generated ahead of it, where max staleness is how many rollout batches the
+  run can generate ahead of the one in training. Multiply by `--mooncake-replica-num`.
+  Otherwise the store fills up and Mooncake evicts objects to make room.
+
+Not supported, rejected at launch: a launch that replays none of these three arrays,
+`--cluster-backend kubernetes`, PD disaggregation, external rollout engines, the legacy
+rollout, a custom convert function, multi-policy training, split deployments,
+`--debug-rollout-only`, and saving (including through `--dump-details`), loading or
+injecting debug rollout data. The built-in generate functions reject multimodal prompts
+when they send them.
+
+Stored objects do not survive a restart. On resume, untrained rollout batches and
+fully-async buffer groups that were saved with refs are generated again instead of
+replayed.

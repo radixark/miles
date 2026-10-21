@@ -8,6 +8,7 @@ from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.backends.megatron_utils.megatron_config import MegatronConfig
 from miles.rollout.session.config import SessionServerConfig, compute_session_server_config
+from miles.utils.output_store.config import output_store_backend_config
 
 _ARGS_TO_CONFIG_FIELD = {
     "miles_router_timeout": "timeout",
@@ -37,6 +38,8 @@ _ARGS_TO_CONFIG_FIELD = {
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
+# Derived from several args, tested on their own below.
+_DERIVED_FIELDS = ("output_store_backend_config",)
 
 _DISTINCT_ARGS_VALUES = dict(
     miles_router_timeout=31.5,
@@ -63,11 +66,12 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    use_output_store=False,
 )
 
 
 def _make_args(**overrides) -> Namespace:
-    values = {**_DISTINCT_ARGS_VALUES, **overrides}
+    values = {**_DISTINCT_ARGS_VALUES, "use_output_store": False, **overrides}
     speculative_algorithm = values.pop("sglang_speculative_algorithm")
     moe_router_topk = values.pop("moe_router_topk")
     return Namespace(
@@ -80,7 +84,7 @@ def _make_args(**overrides) -> Namespace:
 class TestComputeSessionServerConfig:
     def test_every_config_field_has_a_known_source(self):
         """Adding a config field without extending this test's mapping must fail here."""
-        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values())
+        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values()) | set(_DERIVED_FIELDS)
         assert covered == set(SessionServerConfig.model_fields)
 
     def test_call_site_fields_are_copied(self):
@@ -112,6 +116,25 @@ class TestComputeSessionServerConfig:
             backend_url="http://10.0.0.2:3000",
         )
         assert config.use_session_server is flag_value
+
+    def test_the_output_store_config_leaves_the_host_to_the_server(self):
+        store_args = dict(
+            use_output_store=True,
+            mooncake_store_init_kwargs={"master_server_address": "10.0.0.1:50051", "local_hostname": "10.0.0.2"},
+            output_store_local_buffer_size="64mb",
+            mooncake_replica_num=1,
+            run_uuid="abcd",
+        )
+        config = compute_session_server_config(
+            _make_args(**store_args), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://x:1"
+        )
+        off = compute_session_server_config(
+            _make_args(), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://x:1"
+        )
+
+        assert config.output_store_backend_config == output_store_backend_config(_make_args(**store_args))
+        assert config.output_store_backend_config["local_hostname"] is None
+        assert off.output_store_backend_config is None
 
     def test_older_args_default_rollout_temperature(self) -> None:
         """Older session inputs retain the default temperature after owner migration."""
@@ -152,6 +175,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_top_logprobs_num=0,
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
+    output_store_backend_config=None,
 )
 
 

@@ -34,6 +34,7 @@ def make_args(**overrides: object) -> SimpleNamespace:
         multi_lora=False,
         multi_lora_n_adapters=1,
         lora_adapter_targets=[f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
+        use_output_store=False,
     )
     defaults.update(overrides)
     return SimpleNamespace(**with_parser_defaults_and_sglang_config(defaults))
@@ -193,3 +194,24 @@ class TestAttentionDpLoRA:
         pinned = {"lora_name": "miles_lora", "lora_path": "/fake/adapter", "pinned": True}
         assert server_args["lora_paths"] == [pinned if attention_dp else "miles_lora=/fake/adapter"]
         assert server_args["max_loras_per_batch"] == (2 if attention_dp else 1)
+
+
+class TestOutputStore:
+    def test_every_engine_writes_to_the_run_store_with_its_own_host(self, monkeypatch):
+        """The engine's address goes into its store config, without the IPv6 brackets."""
+        hosts = []
+
+        def server_args(args, *, local_hostname):
+            hosts.append(local_hostname)
+            return {"output_store_backend": "mooncake"}
+
+        monkeypatch.setattr(sglang_engine, "sglang_output_store_server_args", server_args)
+        monkeypatch.setattr(sglang_engine, "_record_field_names", lambda record: ("output_store_backend",))
+
+        kwargs = compute(make_args(use_output_store=True), host="[::1]")
+
+        assert hosts == ["::1"]
+        assert kwargs["output_store_backend"] == "mooncake"
+
+    def test_without_the_switch_no_store_is_set(self):
+        assert "output_store_backend" not in compute(make_args())

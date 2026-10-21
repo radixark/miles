@@ -41,9 +41,23 @@ class SessionCoreV2(SessionCore):
     transport shell (health, create/delete, raw proxy)."""
 
     def __init__(
-        self, backend, registry: SessionRegistryV2, config, session_server_instance_id=None, *, use_addition_r3=False
+        self,
+        backend,
+        registry: SessionRegistryV2,
+        config,
+        session_server_instance_id=None,
+        *,
+        use_addition_r3=False,
+        output_store=None,
     ):
-        super().__init__(backend, registry, config, session_server_instance_id, use_addition_r3=use_addition_r3)
+        super().__init__(
+            backend,
+            registry,
+            config,
+            session_server_instance_id,
+            use_addition_r3=use_addition_r3,
+            output_store=output_store,
+        )
         # Import-path only in production: function_registry is process-local.
         self.sample_picker = load_function(config.session_sample_picker_path, sync_required=True)
         self.sample_postprocessor = load_function(config.session_sample_postprocessor_path, sync_required=True)

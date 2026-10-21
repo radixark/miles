@@ -2,7 +2,6 @@ from pydantic import model_validator
 from typing_extensions import Self
 
 from miles.backends.megatron_utils.checkpoint_request import CHECKPOINT_LOAD_FIELDS
-
 from miles.utils.args.component_multi_lora import MultiLoraOnlyConfig
 from miles.utils.args.component_orchestrator import OrchestratorOnlyConfig
 from miles.utils.args.component_rollout import InferenceControllerOnlyConfig, RolloutOnlyConfig
@@ -30,6 +29,7 @@ from miles.utils.args.configs.on_policy_distillation import (
     OnPolicyDistillationConfig,
     OnPolicyDistillationRolloutOnlyConfig,
 )
+from miles.utils.args.configs.output_store import OutputStoreConfig
 from miles.utils.args.configs.prefill_decode_disaggregation import PrefillDecodeDisaggregationConfig
 from miles.utils.args.configs.prometheus import PrometheusConfig
 from miles.utils.args.configs.reward_model import RewardModelConfig, RewardModelRolloutOnlyConfig
@@ -66,6 +66,7 @@ class OrchestratorConfig(
     NetworkConfig,
     RewardModelConfig,
     RolloutBufferConfig,
+    OutputStoreConfig,
     CustomMegatronPluginsConfig,
     Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
@@ -101,6 +102,7 @@ class TrainerConfig(
     NetworkConfig,
     RewardModelConfig,
     RolloutBufferConfig,
+    OutputStoreConfig,
     CustomMegatronPluginsConfig,
     Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
@@ -183,6 +185,7 @@ class InferenceControllerConfig(
     NetworkConfig,
     RewardModelConfig,
     RolloutBufferConfig,
+    OutputStoreConfig,
     CustomMegatronPluginsConfig,
     Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
@@ -230,6 +233,7 @@ class RolloutConfig(
     NetworkConfig,
     RewardModelConfig,
     RolloutBufferConfig,
+    OutputStoreConfig,
     CustomMegatronPluginsConfig,
     Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
@@ -266,6 +270,7 @@ class MultiLoraConfig(
     NetworkConfig,
     RewardModelConfig,
     RolloutBufferConfig,
+    OutputStoreConfig,
     CustomMegatronPluginsConfig,
     Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
@@ -317,6 +322,7 @@ class AllConfig(
     RewardModelConfig,
     RewardModelRolloutOnlyConfig,
     RolloutBufferConfig,
+    OutputStoreConfig,
     RolloutBufferRolloutOnlyConfig,
     MtpTrainingConfig,
     PrefillDecodeDisaggregationConfig,

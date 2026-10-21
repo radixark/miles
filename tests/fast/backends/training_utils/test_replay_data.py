@@ -67,6 +67,7 @@ def test_fill_replay_bshd_token_alignment(
         allgather_cp=allgather_cp,
         train_backend="megatron",
         backend=SimpleNamespace(sequence_parallel=sequence_parallel),
+        save_debug_train_data=None,
     )
 
     for cp_rank in range(cp_size):
@@ -129,15 +130,19 @@ def test_fill_replay_bshd_token_alignment(
                 torch.testing.assert_close(replay.recorded[0], expected[:, stream])
 
 
+@pytest.mark.parametrize("save_debug_train_data", [None, "/tmp/{rollout_id}_{rank}.pt"])
 @pytest.mark.parametrize("sequence_first", [False, True])
 @pytest.mark.parametrize("tp_size,sequence_parallel", [(1, False), (2, True)])
-def test_fill_replay_thd_preserves_packed_order(monkeypatch, sequence_first, tp_size, sequence_parallel):
+def test_fill_replay_thd_preserves_packed_order(
+    monkeypatch, sequence_first, tp_size, sequence_parallel, save_debug_train_data
+):
     args = SimpleNamespace(
         qkv_format="thd",
         allgather_cp=False,
         train_backend="megatron",
         backend=SimpleNamespace(sequence_parallel=sequence_parallel),
         data_pad_size_multiplier=2,
+        save_debug_train_data=save_debug_train_data,
     )
     expected = torch.tensor([0, 1, -1, 2, 3, -1])
     if tp_size == 2:
@@ -165,6 +170,8 @@ def test_fill_replay_thd_preserves_packed_order(monkeypatch, sequence_first, tp_
         )
         local_expected = expected.chunk(tp_size)[tp_rank] if sequence_parallel else expected
         torch.testing.assert_close(replay.recorded[0][:, 0], local_expected)
+        # Only a train-data dump keeps the consumed column.
+        assert ("routes" in rollout_data) == (save_debug_train_data is not None)
 
 
 class TestNativeReplayOwnership:
@@ -174,7 +181,13 @@ class TestNativeReplayOwnership:
         """Native replay preserves token routing and padding without reading Megatron-only sequence parallelism."""
         state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
         monkeypatch.setattr(parallel, "_parallel_state", state)
-        args = SimpleNamespace(qkv_format="bshd", allgather_cp=False, train_backend="fsdp", backend=SimpleNamespace())
+        args = SimpleNamespace(
+            qkv_format="bshd",
+            allgather_cp=False,
+            train_backend="fsdp",
+            backend=SimpleNamespace(),
+            save_debug_train_data=None,
+        )
         batch = {
             "routes": [torch.tensor([[[11]], [[12]]])],
             "tokens": [torch.tensor([1, 2, 3])],
