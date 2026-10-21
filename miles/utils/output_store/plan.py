@@ -49,7 +49,7 @@ OUTPUT_STORE_REF_KEY = "output_store_ref"
 
 
 class StorePlanError(NonRetryableError, ValueError):
-    """A plan edit, a response's ref or an object breaks the plan's contract.
+    """A plan edit, a response's ref or inline sampled log-probs, or an object breaks the output store contract.
 
     Retrying cannot fix it. A ``ValueError``, so the session server answers it with 422.
     """

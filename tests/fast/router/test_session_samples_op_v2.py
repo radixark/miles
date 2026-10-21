@@ -25,7 +25,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.fast.fixtures.session_fixtures import make_session_server_config
-from tests.fast.rollout.session.test_samples import _make_record, _store_record
+from tests.fast.rollout.session.test_samples import _make_record, _routed_experts, _store_record
 from tests.fast.utils.output_store.test_plan import fake_store_refs
 
 from miles.rollout.session.errors import TokenizationError
@@ -469,11 +469,7 @@ async def test_store_branched_tree_materializes_each_leaf(monkeypatch):
 
     for sample, leaf, name in zip(reply.samples, leaves, ("a", "b"), strict=True):
         assert sample.tokens == leaf.token_ids
-        tokens = np.asarray(sample.tokens[len(sample.tokens) - sample.response_length :])
-        columns = sample.rollout_store_plan.materialize(
-            objects, response_tokens=tokens, support_topk=0, indexer_streams=None
-        )
-        assert np.array_equal(columns["rollout_routed_experts"], np.concatenate([shared, leaf_rows[name]]))
+        assert np.array_equal(_routed_experts(sample, objects), np.concatenate([shared, leaf_rows[name]]))
         assert [ref.key for ref in sample.rollout_store_plan.owned_refs] == ["root", name]
 
 

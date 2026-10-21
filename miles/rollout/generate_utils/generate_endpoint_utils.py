@@ -117,20 +117,21 @@ async def update_sample_from_response(
         new_response_tokens, new_response_log_probs = [], []
 
     via_store = payload.get(OUTPUT_STORE_REQUEST_KEY, False)
+    sampling_logprobs_mode = payload.get("sampling_logprobs_mode", "selected")
     if payload.get("return_sampling_mask", False):
         if via_store:
             # Only the mask rows are stored; the sampled tokens' log-probs, one per token, stay in meta_info.
             new_response_log_probs = read_sampled_logprobs(
                 output["meta_info"],
                 new_response_tokens,
-                sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+                sampling_logprobs_mode=sampling_logprobs_mode,
             )
         else:
             new_response_log_probs = append_sampling_metadata(
                 sample,
                 new_response_tokens,
                 output["meta_info"],
-                sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+                sampling_logprobs_mode=sampling_logprobs_mode,
             )
 
     # Update sample with tokens directly - avoiding re-tokenization
@@ -142,12 +143,12 @@ async def update_sample_from_response(
         sample.rollout_log_probs = []
     sample.rollout_log_probs += new_response_log_probs
     # With the output store, the trainer builds support-mode candidates from the stored mask.
-    if payload.get("top_logprobs_num") or (payload.get("sampling_logprobs_mode") == "support" and not via_store):
+    if payload.get("top_logprobs_num") or (sampling_logprobs_mode == "support" and not via_store):
         append_rollout_topk_logprobs(
             sample,
             output["meta_info"],
             args.rollout_top_logprobs_num,
-            sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+            sampling_logprobs_mode=sampling_logprobs_mode,
         )
 
     if update_loss_mask:

@@ -134,13 +134,14 @@ def _compute_sample_from_openai_record(
 
     sample = Sample()
     via_store = record.request.get(OUTPUT_STORE_REQUEST_KEY, False)
+    sampling_logprobs_mode = record.request.get("sampling_logprobs_mode", "selected")
     if record.request.get("return_sampling_mask", False):
         if via_store:
             # Only the mask rows are stored; the sampled tokens' log-probs, one per token, stay in meta_info.
             output_log_probs = read_sampled_logprobs(
                 choice["meta_info"],
                 output_token_ids,
-                sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
+                sampling_logprobs_mode=sampling_logprobs_mode,
             )
         else:
             output_log_probs = append_sampling_metadata(
@@ -148,7 +149,7 @@ def _compute_sample_from_openai_record(
                 output_token_ids,
                 choice["meta_info"],
                 aborted=finish_reason == "abort",
-                sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
+                sampling_logprobs_mode=sampling_logprobs_mode,
             )
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
@@ -157,14 +158,13 @@ def _compute_sample_from_openai_record(
     sample.loss_mask = [1] * len(output_token_ids)
     # With the output store, the trainer builds support-mode candidates from the stored mask.
     if not evaluation and (
-        record.request.get("top_logprobs")
-        or (record.request.get("sampling_logprobs_mode") == "support" and not via_store)
+        record.request.get("top_logprobs") or (sampling_logprobs_mode == "support" and not via_store)
     ):
         append_rollout_topk_logprobs(
             sample,
             choice["meta_info"],
             args.rollout_top_logprobs_num,
-            sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
+            sampling_logprobs_mode=sampling_logprobs_mode,
         )
     sample.rollout_routed_experts = (
         None if use_addition_r3 else get_routed_experts_from_response(args, choice, len(sample.tokens) - 1)

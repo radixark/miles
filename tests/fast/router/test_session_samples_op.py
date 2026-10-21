@@ -23,7 +23,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.fast.fixtures.session_fixtures import make_session_server_config
-from tests.fast.rollout.session.test_samples import _make_record, _store_record
+from tests.fast.rollout.session.test_samples import _make_record, _routed_experts, _store_record
 from tests.fast.utils.output_store.test_plan import fake_store_refs
 
 from miles.rollout.session.core import SessionCore
@@ -427,14 +427,6 @@ def _two_turn_store_records(turn2_start_len: int | None = 4):
     return [turn1, turn2], {"turn1": arrays1, "turn2": arrays2}
 
 
-def _store_routed_experts(sample: Sample, objects: dict) -> np.ndarray:
-    tokens = np.asarray(sample.tokens[len(sample.tokens) - sample.response_length :])
-    columns = sample.rollout_store_plan.materialize(
-        objects, response_tokens=tokens, support_topk=0, indexer_streams=None
-    )
-    return columns["rollout_routed_experts"]
-
-
 @pytest.mark.parametrize(("use_addition", "turn2_start_len"), [(True, 4), (False, None)])
 async def test_store_assembled_sample_matches_full_reference(
     addition_core, core, monkeypatch, use_addition, turn2_start_len
@@ -451,7 +443,7 @@ async def test_store_assembled_sample_matches_full_reference(
 
     assert m.tokens == _ACCUMULATED and m.loss_mask == [1, 1, 0, 0, 1, 1]
     assert m.rollout_routed_experts is None and m.rollout_sampling_mask is None
-    assert np.array_equal(_store_routed_experts(m, objects), _expected_r3(100, 8))
+    assert np.array_equal(_routed_experts(m, objects), _expected_r3(100, 8))
     assert [ref.key for ref in m.rollout_store_plan.owned_refs] == ["turn1", "turn2"]
 
 
