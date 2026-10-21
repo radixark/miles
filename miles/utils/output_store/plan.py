@@ -145,13 +145,16 @@ class Segments:
 class ForwardSegments(Segments):
     """A forward output: a row per sequence position but the last.
 
-    A segment without a ref holds rows an earlier response covered: an incremental forward stores
-    only the rows after them, and ``append`` takes those rows from the plan before. A full forward
-    has none, so it replaces every row.
+    The request's start position (``start_key``) alone decides how a response's rows combine
+    with the earlier ones; ``from_ref`` reads it once:
+
+    - 0: the object holds every row, and ``append`` replaces all earlier rows;
+    - ``start`` > 0: the object holds rows from ``start`` on, preceded by a ref-less segment of
+      ``start`` rows, which ``append`` fills with the earlier plan's first ``start`` rows.
     """
 
     column: ClassVar[str]
-    # The request field giving the sequence position a forward's object starts at.
+    # The request field holding the field's start position; None means always 0.
     start_key: ClassVar[str | None] = None
 
     @classmethod
@@ -226,6 +229,7 @@ class IndexerTopkSegments(ForwardSegments):
     request_key = "return_indexer_topk"
     required_by = "use_rollout_indexer_replay"
     column = "rollout_indexer_topk"
+    # No start_key: SGLang stores every indexer row of each forward, so a response replaces them all.
 
     def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
         if indexer_streams is not None and rows.shape[1] != indexer_streams:
