@@ -20,6 +20,7 @@ from miles.utils.output_store.plan import (
     StorePlan,
     StorePlanError,
     combine_plans,
+    store_ref_from_dict,
 )
 
 R3, INDEXER, MASK = (cls.name for cls in FIELDS)
@@ -35,6 +36,14 @@ class Spec(NamedTuple):
 class Ref(NamedTuple):
     key: str
     fields: tuple[Spec, ...]
+
+    def to_builtins(self) -> dict:
+        # As StoreRef.to_builtins: tuple-typed fields stay tuples.
+        return {"key": self.key, "fields": tuple(spec._asdict() for spec in self.fields)}
+
+    @classmethod
+    def from_builtins(cls, value: dict) -> "Ref":
+        return cls(value["key"], tuple(Spec(f["name"], f["dtype"], tuple(f["shape"])) for f in value["fields"]))
 
 
 def ref(key: str, *, seq_rows: int | None = None, mask_rows: int | None = None) -> Ref:
@@ -219,26 +228,53 @@ class TestValidate:
             plan.validate(num_tokens=5, response_length=3)
 
 
-class TestBuiltins:
+class TestDict:
+    @pytest.fixture(autouse=True)
+    def _fake_refs(self, monkeypatch):
+        # CPU CI has no radix_transfer_plugins: read the fake refs back instead.
+        monkeypatch.setattr("miles.utils.output_store.plan.store_ref_from_dict", Ref.from_builtins)
+
     def test_round_trip_keeps_fields_forced_rows_empty_fields_and_unused_refs(self):
         plan = response("a", prompt=3, output=2).merge_turn(response("b", prompt=8, output=1), observation_tokens=3)
         plan = plan.adopt_refs([ref("x")])
         plan = replace(plan, fields={**plan.fields, INDEXER: IndexerTopkSegments()})
 
-        fields, refs = plan.to_builtins()
+        value = plan.to_dict()
 
-        assert fields == {
+        assert value["fields"] == {
             R3: [["b", 0, 8]],
             INDEXER: [],
             MASK: [["a", 0, 2], [None, 0, 3], ["b", 0, 1]],
         }
-        assert json.loads(json.dumps(fields)) == fields
-        assert [r.key for r in refs] == ["a", "b", "x"]
-        assert StorePlan.from_builtins(fields, refs) == plan
+        assert [r["key"] for r in value["refs"]] == ["a", "b", "x"]
+        assert StorePlan.from_dict(value) == plan
+
+    def test_the_dict_holds_json_types_only(self):
+        # The train dict's msgpack codec packs with strict_types, which rejects tuples and numpy scalars.
+        value = response("a", prompt=3, output=2).insert_tokens(2).to_dict()
+        assert json.loads(json.dumps(value)) == value  # a tuple would come back as an unequal list
 
     def test_a_plan_without_fields_round_trips(self):
         plan = StorePlan(fields={}, owned_refs=(ref("a"),))
-        assert StorePlan.from_builtins(*plan.to_builtins()) == plan
+        assert StorePlan.from_dict(plan.to_dict()) == plan
+
+
+def test_no_ref_stays_none():
+    assert store_ref_from_dict(None) is None
+
+
+def test_store_refs_round_trip():
+    rtp = pytest.importorskip("radix_transfer_plugins")
+    spec = rtp.FieldSpec(name=R3, dtype="int32", shape=(4, 2, 4), codec="raw", nbytes=128)
+    plan = StorePlan.from_response(
+        rtp.StoreRef(backend="mooncake", key="k", fields=(spec,)),
+        request=request({R3}),
+        num_tokens=5,
+        response_length=2,
+    )
+    value = plan.to_dict()
+    assert json.loads(json.dumps(value)) == value
+    assert StorePlan.from_dict(value) == plan
 
 
 # ============================== materialize ==============================

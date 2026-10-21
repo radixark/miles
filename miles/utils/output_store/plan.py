@@ -23,7 +23,8 @@ rows like the inline path: forward fields ``len(tokens) - 1``, the mask ``respon
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
@@ -458,20 +459,24 @@ class StorePlan:
             )
         return columns
 
-    def to_builtins(self) -> tuple[dict[str, list[list[Any]]], list[StoreRef]]:
-        """The plan as JSON types, plus ``owned_refs`` for the caller's wire to encode.
+    def to_dict(self) -> dict[str, Any]:
+        """The plan in JSON types, for the session wire and the train dict.
 
         Each field maps to its segments as ``[store key, start, end]``, ``[None, start, end]``
-        for forced rows; a field with no rows is an empty list.
+        for forced rows; a field with no rows is an empty list. ``refs`` holds every owned ref.
         """
-        fields = {
-            name: [[None if seg.ref is None else seg.ref.key, seg.start, seg.end] for seg in segments.segs]
-            for name, segments in self.fields.items()
+        return {
+            "fields": {
+                name: [[None if seg.ref is None else seg.ref.key, seg.start, seg.end] for seg in segments.segs]
+                for name, segments in self.fields.items()
+            },
+            # StoreRef.to_builtins keeps tuples, which the train dict's msgpack codec rejects.
+            "refs": [json.loads(json.dumps(ref.to_builtins())) for ref in self.owned_refs],
         }
-        return fields, list(self.owned_refs)
 
     @classmethod
-    def from_builtins(cls, fields: Mapping[str, Sequence[Sequence[Any]]], refs: Sequence[StoreRef]) -> StorePlan:
+    def from_dict(cls, value: Mapping[str, Any]) -> StorePlan:
+        refs = tuple(store_ref_from_dict(ref) for ref in value["refs"])
         by_key = {ref.key: ref for ref in refs}
         by_name = {field.name: field for field in FIELDS}
         return cls(
@@ -479,10 +484,20 @@ class StorePlan:
                 name: by_name[name](
                     tuple(Seg(None if key is None else by_key[key], start, end) for key, start, end in segs)
                 )
-                for name, segs in fields.items()
+                for name, segs in value["fields"].items()
             },
-            owned_refs=tuple(refs),
+            owned_refs=refs,
         )
+
+
+def store_ref_from_dict(value: Mapping[str, Any] | None) -> StoreRef | None:
+    """A ref as SGLang returns it or ``StorePlan.to_dict`` writes it; None (no ref) stays None."""
+    if value is None:
+        return None
+    # Not a Miles dependency: only output store runs install it.
+    from radix_transfer_plugins import StoreRef
+
+    return StoreRef.from_builtins(value)
 
 
 def _zip_fields(a: StorePlan, b: StorePlan, combine) -> dict[str, Segments]:
