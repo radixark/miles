@@ -28,23 +28,18 @@ from miles.utils.object_store import (
 )
 
 
-class _RecordingProcessor:
-    def __init__(self) -> None:
-        self.prompts = []
-
-    def extract_media(self, prompt):
-        self.prompts.append(prompt)
-        return {"images": ["image"], "videos": []}
-
-
-def test_mixed_dataset_uses_processor_only_for_structured_prompts(tmp_path) -> None:
+def test_mixed_dataset_keeps_ordered_media_refs_for_structured_prompts(tmp_path) -> None:
     text_prompt = "Fix the bug"
+    first, second = tmp_path / "first.png", tmp_path / "second.png"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
     multimodal_prompt = [
         {
             "role": "user",
             "content": [
-                {"type": "image", "image": "image.png"},
-                {"type": "text", "text": "Describe it"},
+                {"type": "image", "image": str(second)},
+                {"type": "text", "text": "Compare it with"},
+                {"type": "image", "image": f"file://{first}"},
             ],
         }
     ]
@@ -58,12 +53,11 @@ def test_mixed_dataset_uses_processor_only_for_structured_prompts(tmp_path) -> N
         )
         + "\n"
     )
-    processor = _RecordingProcessor()
 
     dataset = Dataset(
         str(prompt_path),
         tokenizer=None,
-        processor=processor,
+        processor=None,
         max_length=None,
         prompt_key="prompt",
         apply_chat_template=False,
@@ -72,11 +66,7 @@ def test_mixed_dataset_uses_processor_only_for_structured_prompts(tmp_path) -> N
     assert dataset.samples[0].prompt == text_prompt
     assert dataset.samples[0].multimodal_inputs is None
     assert dataset.samples[1].prompt == multimodal_prompt
-    assert dataset.samples[1].multimodal_inputs == {
-        "images": ["image"],
-        "videos": [],
-    }
-    assert processor.prompts == [multimodal_prompt]
+    assert dataset.samples[1].multimodal_inputs == {"images": [str(second), str(first)]}
 
 
 def _ref(payload: Any) -> StoreObjectRef:
