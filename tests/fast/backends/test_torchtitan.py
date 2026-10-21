@@ -36,6 +36,7 @@ def _args(**overrides) -> Namespace:
         stream_optimizer_state_to_disk=False,
         stream_optimizer_state_moment_dtype="fp32",
         fp16=False,
+        titan_fsdp_gather_once=False,
         colocate=False,
         update_weight_transfer_mode="shm",
         lr_decay_style="constant",
@@ -145,6 +146,10 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
     for cuda_only in (dict(update_weight_transfer_mode="broadcast"), dict(colocate=True)):
         with pytest.raises(ValueError, match="disk or shm"):
             validate_torchtitan_args(_args(log_probs_backend="torch", use_dynamic_batch_size=False, **cuda_only))
+    monkeypatch.undo()
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    with pytest.raises(ValueError, match="gather-once"):
+        validate_torchtitan_args(_args(titan_fsdp_gather_once=True, pipeline_model_parallel_size=2))
 
 
 def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
