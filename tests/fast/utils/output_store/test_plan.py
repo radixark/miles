@@ -11,7 +11,7 @@ import torch
 from miles.utils.output_store.plan import (
     FIELDS,
     MASK_LENGTHS,
-    MASK_LOGPROBS,
+    MASK_SUPPORT_LOGPROBS,
     MASK_TOKEN_IDS,
     IndexerTopkSegments,
     RoutedExpertsSegments,
@@ -54,7 +54,7 @@ def ref(key: str, *, seq_rows: int | None = None, mask_rows: int | None = None) 
     if mask_rows is not None:
         specs.append(Spec(MASK_LENGTHS, "int32", (mask_rows,)))
         specs.append(Spec(MASK_TOKEN_IDS, "int32", (3 * mask_rows,)))
-        specs.append(Spec(MASK_LOGPROBS, "float32", (3 * mask_rows,)))
+        specs.append(Spec(MASK_SUPPORT_LOGPROBS, "float32", (3 * mask_rows,)))
     return Ref(key, tuple(specs))
 
 
@@ -294,7 +294,7 @@ def mask_arrays(supports: list[list[int]], logprobs: list[list[float]] | None = 
         MASK_TOKEN_IDS: np.asarray([t for s in supports for t in s], dtype=np.int32),
     }
     if logprobs is not None:
-        arrays[MASK_LOGPROBS] = np.asarray([v for r in logprobs for v in r], dtype=np.float32)
+        arrays[MASK_SUPPORT_LOGPROBS] = np.asarray([v for r in logprobs for v in r], dtype=np.float32)
     return arrays
 
 

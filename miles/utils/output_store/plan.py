@@ -39,8 +39,9 @@ if TYPE_CHECKING:
 # Stored array names, as radix_transfer_plugins' TokenOutputStash names them.
 MASK_LENGTHS = "output_token_sampling_mask_lengths"
 MASK_TOKEN_IDS = "output_token_sampling_mask_token_ids"
-# Support log-prob mode only: a log-prob per support entry.
-MASK_LOGPROBS = "output_token_sampling_logprobs"
+# Support log-prob mode only: a log-prob per support entry. In selected mode SGLang's meta_info
+# uses the same name for the sampled tokens' log-probs, one per token, which are never stored.
+MASK_SUPPORT_LOGPROBS = "output_token_sampling_logprobs"
 
 
 class StorePlanError(NonRetryableError, ValueError):
@@ -260,7 +261,7 @@ class SamplingMaskSegments(Segments):
     """
 
     name = "sampling_mask"
-    stored = (MASK_LENGTHS, MASK_TOKEN_IDS, MASK_LOGPROBS)
+    stored = (MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS)
     request_key = "return_sampling_mask"
 
     def append(self, new: Segments) -> Segments:
@@ -302,7 +303,7 @@ class SamplingMaskSegments(Segments):
                 lengths.append(arrays[MASK_LENGTHS][seg.start : seg.end])
                 ids.append(arrays[MASK_TOKEN_IDS][a:b])
                 if support_mode:
-                    logprobs.append(arrays[MASK_LOGPROBS][a:b])
+                    logprobs.append(arrays[MASK_SUPPORT_LOGPROBS][a:b])
             forced.append(np.full(n, seg.ref is None))
             position += n
 

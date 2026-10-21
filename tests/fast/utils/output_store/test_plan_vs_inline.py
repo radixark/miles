@@ -18,7 +18,13 @@ import torch
 from miles.rollout.generate_utils import tool_call_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import update_sample_from_response
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.utils.output_store.plan import MASK_LENGTHS, MASK_LOGPROBS, MASK_TOKEN_IDS, SamplingMaskSegments, StorePlan
+from miles.utils.output_store.plan import (
+    MASK_LENGTHS,
+    MASK_SUPPORT_LOGPROBS,
+    MASK_TOKEN_IDS,
+    SamplingMaskSegments,
+    StorePlan,
+)
 from miles.utils.types import Sample
 
 MASK = SamplingMaskSegments.name
@@ -75,7 +81,7 @@ def generate(rng: np.random.Generator, *, mode: str, k: int, abort: bool) -> Res
         MASK_TOKEN_IDS: np.asarray([t for s in supports for t in s], dtype=np.int32),
     }
     if mode == "support":
-        arrays[MASK_LOGPROBS] = np.asarray([v for row in support_logprobs for v in row], dtype=np.float32)
+        arrays[MASK_SUPPORT_LOGPROBS] = np.asarray([v for row in support_logprobs for v in row], dtype=np.float32)
     return Response(tokens, meta_info, arrays)
 
 
