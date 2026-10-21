@@ -11,7 +11,7 @@ Three things, and nothing else:
 - ``Seg``: rows ``[start, end)`` of one object, or ``end - start`` rows no object of this
   response holds (``ref`` None; each field says what they are);
 - ``Segments``: one field's segments plus how events edit them and how its training columns are
-  built from the objects. One subclass per stored field;
+  built from the objects. One leaf subclass per field; the two forward fields share ``ForwardSegments``;
 - ``StorePlan``: the sample's fields and the objects it owns. It holds no rule of its own: every
   operation is the same call on each field.
 
@@ -311,13 +311,15 @@ class SamplingMaskSegments(Segments):
         offsets = np.concatenate(([0], np.cumsum(row_lengths)))
         ids = np.concatenate(ids).astype(np.int32, copy=False)
         forced = np.concatenate(forced)
-        _check_support(ids, offsets, response_tokens, exactly_once=support_mode)
+        _check_support(ids=ids, offsets=offsets, sampled_tokens=response_tokens, exactly_once=support_mode)
         columns = {
             "rollout_sampling_mask_ids": torch.from_numpy(ids),
             "rollout_sampling_mask_offsets": torch.from_numpy(offsets),
         }
         if support_mode:
-            topk_ids, topk_logprobs = _support_topk(ids, offsets, np.concatenate(logprobs), forced, support_topk)
+            topk_ids, topk_logprobs = _support_topk(
+                ids=ids, offsets=offsets, logprobs=np.concatenate(logprobs), forced=forced, k=support_topk
+            )
             columns["rollout_topk_token_ids"] = topk_ids
             columns["rollout_topk_log_probs"] = topk_logprobs
         return columns
@@ -464,7 +466,7 @@ class StorePlan:
         """The plan in JSON types, for the session wire and the train dict.
 
         Each field maps to its segments as ``[store key, start, end]``, ``[None, start, end]``
-        for forced rows; a field with no rows is an empty list. ``refs`` holds every owned ref.
+        for rows no object holds; a field with no rows is an empty list. ``refs`` holds every owned ref.
         """
         return {
             "fields": {

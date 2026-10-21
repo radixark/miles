@@ -86,7 +86,7 @@ def generate(rng: np.random.Generator, *, mode: str, k: int, abort: bool) -> Res
 
 
 def inline_response(sample: Sample, response: Response, *, mode: str, k: int) -> None:
-    # The request fields configure_rollout_topk_logprobs_request sets for a sampling-mask request.
+    # A sampling-mask request as compute_request_payload builds it; support mode adds sampling_logprobs_mode.
     payload = {"input_ids": sample.tokens, "return_sampling_mask": True}
     if mode == "support":
         payload["sampling_logprobs_mode"] = "support"
