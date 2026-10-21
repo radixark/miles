@@ -1,5 +1,6 @@
 """Seg / Segments / StorePlan: edits read only refs; materialize reads objects given as plain dicts."""
 
+import json
 from argparse import Namespace
 from typing import NamedTuple
 
@@ -166,22 +167,25 @@ class TestValidate:
             plan.validate(num_tokens=5, response_length=3)
 
 
-class TestTable:
+class TestBuiltins:
     def test_round_trip_keeps_fields_forced_rows_empty_fields_and_unused_refs(self):
         plan = response("a", prompt=3, output=2).merge_turn(response("b", prompt=8, output=1), observation_tokens=3)
         plan = plan.adopt_refs([ref("x")]).with_field(INDEXER, IndexerTopkSegments())
 
-        table, refs = plan.to_table()
-        back = StorePlan.from_table(table, refs)
+        fields, refs = plan.to_builtins()
 
-        assert table.dtype == np.int32 and table.shape[1] == 4
-        assert table.tolist() == [[0, 1, 0, 8], [1, -1, 0, 0], [2, 0, 0, 2], [2, -1, 0, 3], [2, 1, 0, 1]]
-        assert back == plan and [r.key for r in refs] == ["a", "b", "x"]
+        assert fields == {
+            R3: [["b", 0, 8]],
+            INDEXER: [],
+            MASK: [["a", 0, 2], [None, 0, 3], ["b", 0, 1]],
+        }
+        assert json.loads(json.dumps(fields)) == fields
+        assert [r.key for r in refs] == ["a", "b", "x"]
+        assert StorePlan.from_builtins(fields, refs) == plan
 
-    def test_a_plan_without_fields_is_an_empty_table(self):
+    def test_a_plan_without_fields_round_trips(self):
         plan = StorePlan(fields={}, owned_refs=(ref("a"),))
-        table, refs = plan.to_table()
-        assert table.shape == (0, 4) and StorePlan.from_table(table, refs) == plan
+        assert StorePlan.from_builtins(*plan.to_builtins()) == plan
 
 
 # ============================== materialize ==============================

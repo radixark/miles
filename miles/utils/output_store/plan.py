@@ -265,9 +265,7 @@ class SamplingMaskSegments(Segments):
         return columns
 
 
-# The order is the wire's field index (StorePlan.to_table).
 FIELDS: tuple[type[Segments], ...] = (RoutedExpertsSegments, IndexerTopkSegments, SamplingMaskSegments)
-_FIELD_INDEX = {cls.name: i for i, cls in enumerate(FIELDS)}
 
 
 def check_support(ids: np.ndarray, offsets: np.ndarray, sampled_tokens: np.ndarray, *, exactly_once: bool) -> None:
@@ -397,30 +395,31 @@ class StorePlan:
             columns.update(segments.materialize(objects, response_tokens=response_tokens, args=args))
         return columns
 
-    def to_table(self) -> tuple[np.ndarray, list[StoreRef]]:
-        """int32 ``[n, 4]`` rows of ``(field, obj, start, end)``; ``obj`` indexes ``owned_refs``.
+    def to_builtins(self) -> tuple[dict[str, list[list[Any]]], list[StoreRef]]:
+        """The plan as JSON types, plus ``owned_refs`` for the caller's wire to encode.
 
-        Forced rows have ``obj = -1``; a field present with no rows gets one forced ``(0, 0)`` row.
+        Each field maps to its segments as ``[store key, start, end]``, ``[None, start, end]``
+        for forced rows; a field with no rows is an empty list.
         """
-        index = {ref.key: i for i, ref in enumerate(self.owned_refs)}
-        table = []
-        for name, segments in self.fields.items():
-            f = _FIELD_INDEX[name]
-            if not segments.segs:
-                table.append((f, -1, 0, 0))
-            for seg in segments.segs:
-                table.append((f, -1 if seg.ref is None else index[seg.ref.key], seg.start, seg.end))
-        return np.asarray(table, dtype=np.int32).reshape(-1, 4), list(self.owned_refs)
+        fields = {
+            name: [[None if seg.ref is None else seg.ref.key, seg.start, seg.end] for seg in segments.segs]
+            for name, segments in self.fields.items()
+        }
+        return fields, list(self.owned_refs)
 
     @classmethod
-    def from_table(cls, table: np.ndarray, refs: Sequence[StoreRef]) -> StorePlan:
-        segs: dict[int, list[Seg]] = {}
-        for f, obj, start, end in table.tolist():
-            rows = segs.setdefault(f, [])
-            if obj >= 0 or start != end:
-                rows.append(Seg(None if obj < 0 else refs[obj], start, end))
-        fields = {FIELDS[f].name: FIELDS[f](tuple(rows)) for f, rows in sorted(segs.items())}
-        return cls(fields=fields, owned_refs=tuple(refs))
+    def from_builtins(cls, fields: Mapping[str, Sequence[Sequence[Any]]], refs: Sequence[StoreRef]) -> StorePlan:
+        by_key = {ref.key: ref for ref in refs}
+        by_name = {field.name: field for field in FIELDS}
+        return cls(
+            fields={
+                name: by_name[name](
+                    tuple(Seg(None if key is None else by_key[key], start, end) for key, start, end in segs)
+                )
+                for name, segs in fields.items()
+            },
+            owned_refs=tuple(refs),
+        )
 
 
 def _zip_fields(a: StorePlan, b: StorePlan, combine) -> dict[str, Segments]:
