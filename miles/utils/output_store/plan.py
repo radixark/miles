@@ -497,6 +497,22 @@ class StorePlan:
             owned_refs=refs,
         )
 
+    def reads(self) -> dict[str, tuple[StoreRef, list[str]]]:
+        """What ``materialize`` reads, by store key: the ref, and its arrays that the plan's rows come from.
+
+        Only arrays the object stores: support log-probs exist only for support requests. Objects
+        the plan owns without using, such as replaced forward rows, are not read.
+        """
+        reads: dict[str, tuple[StoreRef, list[str]]] = {}
+        for segments in self.fields.values():
+            for seg in segments.segs:
+                if seg.ref is None:
+                    continue
+                stored = {spec.name for spec in seg.ref.fields}
+                names = reads.setdefault(seg.ref.key, (seg.ref, []))[1]
+                names += [name for name in segments.stored if name in stored and name not in names]
+        return reads
+
 
 def store_ref_from_dict(value: Mapping[str, Any] | None) -> StoreRef | None:
     """A ref as SGLang returns it or ``StorePlan.to_dict`` writes it; None (no ref) stays None."""

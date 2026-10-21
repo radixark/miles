@@ -227,6 +227,28 @@ class TestEdits:
             combine_plans(with_mask, None, lambda a, b: a)
 
 
+class TestReads:
+    def test_only_the_arrays_the_rows_come_from_are_read_once_per_object(self):
+        plan = response("a", prompt=3, output=2).merge_turn(response("b", prompt=8, output=1), observation_tokens=3)
+        plan = plan.adopt_refs([ref("x", seq_rows=4)])
+
+        reads = plan.reads()
+
+        # "a"'s forward rows were replaced by "b"'s; "x" is owned but unused.
+        assert {key: names for key, (_, names) in reads.items()} == {
+            "b": [R3, INDEXER, MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS],
+            "a": [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS],
+        }
+        assert reads["b"][0] is plan.fields[R3].segs[0].ref
+
+    def test_support_log_probs_are_read_only_where_stored(self):
+        # A selected-mode request: SGLang stores no support log-probs.
+        selected = Ref("s", (Spec(MASK_LENGTHS, "int32", (2,)), Spec(MASK_TOKEN_IDS, "int32", (3,))))
+        plan = StorePlan.from_response(selected, request=request({MASK}), num_tokens=5, response_length=2)
+        assert {key: names for key, (_, names) in plan.reads().items()} == {"s": [MASK_LENGTHS, MASK_TOKEN_IDS]}
+        assert StorePlan(fields={}, owned_refs=(ref("x"),)).reads() == {}
+
+
 class TestValidate:
     def test_rows_must_match_the_sample(self):
         plan = response("a", prompt=3, output=2)
