@@ -1,6 +1,4 @@
-import base64
 import inspect
-import io
 import logging
 import os
 from collections.abc import Mapping
@@ -161,13 +159,3 @@ def load_processor(name_or_path: str, **kwargs):
         proc = None
 
     return proc
-
-
-def encode_image_for_rollout_engine(image) -> str:
-    """Load an image from path, ensure RGB, encode as PNG base64 string."""
-    buffer = io.BytesIO()
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    image.save(buffer, format="PNG")
-    image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{image_base64}"
