@@ -254,7 +254,7 @@ def _torch_log_probs_and_entropy(
                 response_indices,
                 tp_rank=parallel_state.tp.rank,
             )
-        if getattr(args, "loss_type", None) == "score_centering" and sampling_mask is None:
+        if getattr(args, "loss_type", None) == "sc_bpo" and sampling_mask is None:
             # Reference KL compares these with the score-centering actor score, which
             # normalizes over the true vocabulary instead of Megatron's padded one.
             log_prob, entropy = selected_log_probs_and_entropy(

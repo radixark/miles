@@ -437,7 +437,7 @@ def run_forward_backward_pass(
 
     sampling_mask_keys = (
         ("rollout_sampling_mask_ids", "rollout_sampling_mask_offsets")
-        if args.use_sampling_support_replay and args.loss_type in ("policy_loss", "score_centering")
+        if args.use_sampling_support_replay and args.loss_type in ("policy_loss", "sc_bpo", "bpo")
         else ()
     )
 
@@ -530,7 +530,7 @@ def run_forward_backward_pass(
                 forward_kwargs.update(x)
 
             output_tensor = model(
-                **forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss", "score_centering")
+                **forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss", "sc_bpo", "bpo")
             )
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):

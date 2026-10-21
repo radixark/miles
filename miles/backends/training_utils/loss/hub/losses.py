@@ -67,7 +67,7 @@ def policy_loss_function(
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Compute policy loss (PPO/GSPO) and metrics.
+    """Compute policy loss (PPO/GSPO/BPO) and metrics.
 
     Computes current log-probabilities and entropy from model logits, then
     calculates PPO-style clipped policy gradient loss. For GSPO, gathers
@@ -208,9 +208,22 @@ def policy_loss_function(
         advantages.new_zeros(()),
     )
 
-    pg_loss, pg_clipfrac = compute_policy_loss(
-        ppo_kl, advantages, args.eps_clip, args.eps_clip_high, getattr(args, "eps_clip_c", None)
-    )
+    if getattr(args, "loss_type", None) == "bpo":
+        # https://arxiv.org/pdf/2609.15987v1, Eqs. (14)-(15)
+        scores = torch.where(active_tokens, log_probs, 0.0)
+        with torch.no_grad():
+            old_scores = torch.where(active_tokens, old_log_probs, 0.0)
+            weight = (args.bpo_smoothing - old_scores.expm1()) / (args.bpo_smoothing - scores.expm1())
+            clipped = ((advantages > 0) & (weight > 1 + args.eps_clip_high)) | (
+                (advantages < 0) & (weight < 1 - args.eps_clip)
+            )
+            coefficient = advantages * weight.clamp(max=args.bpo_weight_cap) * ~clipped
+        pg_loss = -coefficient * torch.where(coefficient != 0, scores, 0.0)
+        pg_clipfrac = clipped.to(log_probs.dtype)
+    else:
+        pg_loss, pg_clipfrac = compute_policy_loss(
+            ppo_kl, advantages, args.eps_clip, args.eps_clip_high, getattr(args, "eps_clip_c", None)
+        )
 
     if getattr(args, "dump_details", None) is not None:
         from miles.backends.training_utils.metrics.debug_dump import maybe_dump_policy_loss_debug
@@ -519,9 +532,9 @@ def get_loss_function(args: Namespace, loss_fn: str | None = None) -> LossFuncti
 
         return TINKER_LOSS_FUNCTIONS[loss_fn]
     match args.loss_type:
-        case "score_centering":
+        case "sc_bpo":
             return score_centering_loss_function
-        case "policy_loss":
+        case "policy_loss" | "bpo":
             return policy_loss_function
         case "value_loss":
             return value_loss_function

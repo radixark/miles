@@ -1,4 +1,4 @@
-"""Configuration contracts for score centering (arXiv:2609.20807)."""
+"""Configuration for Score Centering / Bellman Policy Optimization (arXiv:2609.20807; https://arxiv.org/pdf/2609.15987v1)."""
 
 import math
 import os
@@ -8,7 +8,7 @@ from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sam
 
 
 def validate_score_centering_args(args: Namespace) -> None:
-    if getattr(args, "loss_type", None) != "score_centering":
+    if getattr(args, "loss_type", None) != "sc_bpo":
         return
     if args.rollout_top_logprobs_num <= 0:
         raise ValueError("Score centering requires a positive --rollout-top-logprobs-num")

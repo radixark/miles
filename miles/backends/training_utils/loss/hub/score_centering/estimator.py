@@ -1,4 +1,4 @@
-"""Score centering from arXiv:2609.20807, Appendix A.
+"""Score Centering / Bellman Policy Optimization (arXiv:2609.20807; https://arxiv.org/pdf/2609.15987v1).
 
 The sampler distribution is fixed data. Both the importance weights and the
 head residual must be detached: differentiating either changes the estimator.

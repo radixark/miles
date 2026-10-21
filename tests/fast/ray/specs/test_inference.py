@@ -499,7 +499,7 @@ class TestInferenceEngineEnvVars:
         assert envs["DUMPER_NON_INTRUSIVE_MODE"] == "all"
         assert envs["SGLANG_RETURN_ORIGINAL_LOGPROB"] == "0"
 
-    @pytest.mark.parametrize("loss_type", ["policy_loss", "score_centering"])
+    @pytest.mark.parametrize("loss_type", ["policy_loss", "sc_bpo"])
     def test_training_enforces_sampler_logprobs_on_workers(self, monkeypatch, loss_type):
         monkeypatch.setenv("SGLANG_RETURN_ORIGINAL_LOGPROB", "1")
         envs = compute_inference_engine_env_vars(make_args(loss_type=loss_type))

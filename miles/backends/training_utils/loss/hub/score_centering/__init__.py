@@ -1,4 +1,4 @@
-"""Score centering from arXiv:2609.20807, Appendix A."""
+"""Score Centering / Bellman Policy Optimization (arXiv:2609.20807; https://arxiv.org/pdf/2609.15987v1)."""
 
 from miles.backends.training_utils.loss.hub.score_centering.estimator import (
     ScoreCenteringInputs,

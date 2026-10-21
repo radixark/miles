@@ -159,7 +159,7 @@ def convert_samples_to_train_data(
 
         train_data["rollout_sampling_mask_ids"] = sampling_mask_ids
         train_data["rollout_sampling_mask_offsets"] = sampling_mask_offsets
-        if k and args.loss_type == "score_centering" and args.rollout_sampling_logprobs_mode == "support":
+        if k and args.loss_type == "sc_bpo" and args.rollout_sampling_logprobs_mode == "support":
             _compact_candidate_ids(train_data)
 
     if samples[0].rollout_routed_experts is not None:
