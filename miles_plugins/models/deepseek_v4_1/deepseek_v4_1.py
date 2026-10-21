@@ -42,6 +42,12 @@ from miles_plugins.models.deepseek_v4_1.engram import DeepSeekV41Engram
 from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor
 from miles_plugins.models.deepseek_v4_1.ops.indexer import DeepSeekV41Indexer
 from miles_plugins.models.deepseek_v4_1.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
+from miles.kernels.attention.dsa.backend import (
+    check_cake_topk_backend,
+    cake_dsa_ops,
+    cake_topk_key_bound,
+    resolve_dsa_attention_backend,
+)
 
 HC_FUSED = os.environ.get("MILES_DSV41_HC_FUSED", "0") == "1"
 
@@ -353,6 +359,7 @@ class DeepSeekV41Attention(MegatronModule):
         self.eps = config.layernorm_epsilon
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
+        self.attention_backend = resolve_dsa_attention_backend(getattr(config, "dsa_attention_backend", None))
         assert self.compress_ratio in (0, 1, 2)
         assert self.head_dim == 512 and self.rope_head_dim == 64 and self.window_size == 128
 
@@ -545,13 +552,18 @@ class DeepSeekV41Attention(MegatronModule):
 
         topk_idxs = topk_idxs.int()
         kv = copy_to_tensor_model_parallel_region(kv, group=self.tp_group, all_reduce_grad_fp32=True)
-        o = sparse_attention(
-            q,
-            kv.unsqueeze(2),
-            topk_idxs.unsqueeze(2),
-            self.softmax_scale,
-            attn_sink=self.core_attention.attn_sink,
-        )
+        if self.attention_backend == "cake":
+            o = cake_dsa_ops().sparse_attention(
+                q, kv, topk_idxs, sm_scale=self.softmax_scale, attn_sink=self.core_attention.attn_sink, layout="bshd"
+            )
+        else:
+            o = sparse_attention(
+                q,
+                kv.unsqueeze(2),
+                topk_idxs.unsqueeze(2),
+                self.softmax_scale,
+                attn_sink=self.core_attention.attn_sink,
+            )
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
         o = o.view(bsz, seqlen, self.n_local_groups, -1)
@@ -623,6 +635,17 @@ def get_dsv41_spec(args, config, vp_stage):
     config.v41_hf_checkpoint = args.hf_checkpoint
     config.v41_runtime = V41Runtime()
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    # The indexer scores one compressed-key row of ceil(seq_length / ratio) keys per query (CP all-gathers the
+    # keys): the smallest nonzero compress ratio of the layer schedule bounds the row length.
+    check_cake_topk_backend(
+        args.miles_dsa_topk_backend,
+        getattr(config, "dsa_indexer_topk", None),
+        model="DeepSeek-V4.1",
+        max_keys=cake_topk_key_bound(
+            getattr(args, "seq_length", None), getattr(config, "csa_compress_ratios", None) or ()
+        ),
+    )
+    config.dsa_attention_backend = resolve_dsa_attention_backend(getattr(args, "dsa_attention_backend", None))
     _install_patches(config)
 
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec

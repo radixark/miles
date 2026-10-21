@@ -23,9 +23,14 @@ def add_dsa_arguments(parser: ArgumentParser) -> ArgumentParser:
     )
     group.add_argument(
         "--miles-dsa-topk-backend",
-        choices=["torch", "flashinfer"],
+        choices=["torch", "flashinfer", "cake"],
         default="torch",
-        help="DSA indexer top-k backend for both raw DSA implementations.",
+        help=(
+            "DSA indexer top-k backend for both raw DSA implementations. 'cake' is the generated "
+            "deterministic kernel in miles/kernels/attention/dsa/cake (Blackwell SM100a/SM103a, top-k <= 512, "
+            "score-descending slots with a -1 tail, bit-identical across runs); --dsa-impl miles only, and "
+            "rejected at startup for models that select more than 512 keys per query (GLM-5 / DeepSeek-V3.2: 2048)."
+        ),
     )
     return parser
 
@@ -34,6 +39,11 @@ def normalize_dsa_args(args: Namespace, hf_config) -> None:
     """Map the shared Miles DSA spec and HF indexer conventions to native Megatron."""
     if args.dsa_impl != "megatron":
         return
+    if getattr(args, "miles_dsa_topk_backend", "torch") == "cake":
+        raise ValueError(
+            "--miles-dsa-topk-backend cake is only available with --dsa-impl miles (the generated top-k kernel "
+            "is wired through the miles_plugins specs and selects at most 512 keys per query)"
+        )
     if getattr(args, "megatron_to_hf_mode", "raw") != "raw":
         raise ValueError("--dsa-impl megatron requires --megatron-to-hf-mode raw")
     if tuple(getattr(args, "spec", None) or ()) not in (MILES_DSA_SPEC, MEGATRON_DSA_SPEC):

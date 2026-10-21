@@ -27,11 +27,21 @@ from megatron.core.transformer.transformer_config import MLATransformerConfig
 from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, lighting_indexer, sparse_attention
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.replay_base import indexer_replay_manager
+from miles.kernels.attention.dsa.backend import (
+    check_cake_topk_backend,
+    cake_dsa_ops,
+    cake_topk_key_bound,
+    resolve_dsa_attention_backend,
+)
 from miles_plugins.models.normalization import rms_norm
 
 # Names of the indexer submodules. On a DSA model with *cross-layer index
 # sharing* these only exist on "computing" layers; "skip" layers drop them.
 _INDEXER_SUBMODULE_NAMES = ("wq_b", "wk", "k_norm", "weights_proj")
+
+# Keys the indexer selects per query (DeepSeek-V3.2 / GLM-5 family); above the cake top-k kernel's 512 slots.
+INDEX_TOPK = 2048
+_TOPK_BACKENDS = ("torch", "flashinfer", "cake")
 
 
 def is_skip_topk_layer(layer_number: int, skip_topk_offset: int, topk_freq: int) -> bool:
@@ -87,6 +97,7 @@ class DSAMultiLatentAttention(Attention):
         attn_mask_type: AttnMaskType,
         attention_type: str,
         topk_backend: str = "torch",
+        attention_backend: str = "tilelang",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -160,10 +171,15 @@ class DSAMultiLatentAttention(Attention):
             tp_group=self.pg_collection.tp,
         )
 
-        self.index_topk = 2048
-        if topk_backend not in ("torch", "flashinfer"):
+        self.index_topk = INDEX_TOPK
+        if topk_backend not in _TOPK_BACKENDS:
             raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
+        # ``cake`` fills at most 512 slots per query: rejected here (and in get_glm5_spec) for this family.
+        check_cake_topk_backend(topk_backend, self.index_topk, model="GLM-5 / DeepSeek-V3.2 (DSAMLASelfAttention)")
         self.topk_backend = topk_backend
+        # ``tilelang``: the miles.kernels DSA ops; ``cake``: the generated deterministic
+        # kernels in miles/kernels/attention/dsa/cake (same thd contract).
+        self.attention_backend = resolve_dsa_attention_backend(attention_backend)
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
         # Cross-layer index sharing (optional). When the HF config provides
@@ -247,15 +263,28 @@ class DSAMultiLatentAttention(Attention):
                 ends_block = ends[start:end]
                 starts_block = starts_block.to(torch.int32)
                 ends_block = ends_block.to(torch.int32)
-                indexer_topk_scores_block, topk_indices_block = lighting_indexer(
-                    index_q_block,
-                    index_k,
-                    w_block,
-                    starts_block,
-                    ends_block,
-                    self.index_topk,
-                    topk_fn=indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False),
-                )
+                topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
+                if self.attention_backend == "cake":
+                    indexer_topk_scores_block, topk_indices_block = cake_dsa_ops().lightning_indexer(
+                        index_q_block,
+                        index_k,
+                        w_block.squeeze(-1),
+                        starts_block,
+                        ends_block,
+                        self.index_topk,
+                        layout="thd",
+                        topk_backend=topk_fn,
+                    )
+                else:
+                    indexer_topk_scores_block, topk_indices_block = lighting_indexer(
+                        index_q_block,
+                        index_k,
+                        w_block,
+                        starts_block,
+                        ends_block,
+                        self.index_topk,
+                        topk_fn=topk_fn,
+                    )
 
                 indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)
                 indexer_topk_scores.append(indexer_topk_scores_block)
@@ -302,13 +331,18 @@ class DSAMultiLatentAttention(Attention):
             ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
             _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
-        core_attn_out = sparse_attention(
-            q.unsqueeze(0),
-            kv.unsqueeze(0),
-            topk_indices.unsqueeze(0),
-            self.softmax_scale,
-            d_v=self.config.kv_lora_rank,
-        ).squeeze(0)
+        if self.attention_backend == "cake":
+            core_attn_out = cake_dsa_ops().sparse_attention(
+                q, kv, topk_indices, sm_scale=self.softmax_scale, layout="thd"
+            )
+        else:
+            core_attn_out = sparse_attention(
+                q.unsqueeze(0),
+                kv.unsqueeze(0),
+                topk_indices.unsqueeze(0),
+                self.softmax_scale,
+                d_v=self.config.kv_lora_rank,
+            ).squeeze(0)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, wv)
 
         core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
@@ -339,6 +373,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
         topk_backend: str = "torch",
+        attention_backend: str = "tilelang",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -352,6 +387,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             attn_mask_type=attn_mask_type,
             attention_type="self",
             topk_backend=topk_backend,
+            attention_backend=attention_backend,
             is_mtp_layer=is_mtp_layer,
             cp_comm_type=cp_comm_type,
             model_comm_pgs=model_comm_pgs,
@@ -746,6 +782,14 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
 
 def get_glm5_spec(args, config, vp_stage):
     hf_config = load_hf_config(args.hf_checkpoint)
+    # Fail before the model is built: the cake top-k kernel cannot serve this family's 2048-key selection.
+    # The thd indexer scores the whole (CP-gathered) packed stream, so the key-row bound is --seq-length.
+    check_cake_topk_backend(
+        args.miles_dsa_topk_backend,
+        INDEX_TOPK,
+        model="GLM-5 / DeepSeek-V3.2 (get_glm5_spec)",
+        max_keys=cake_topk_key_bound(getattr(args, "seq_length", None)),
+    )
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
@@ -795,6 +839,7 @@ def get_glm5_spec(args, config, vp_stage):
         params={
             "attn_mask_type": AttnMaskType.causal,
             "topk_backend": args.miles_dsa_topk_backend,
+            "attention_backend": getattr(args, "dsa_attention_backend", "tilelang"),
         },
         submodules=DSASelfAttentionSubmodules(
             linear_q_down_proj=backend.linear(),
