@@ -25,7 +25,7 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
     # Handle Partial Rollout resuming
     if len(sample.response) > 0:
         input_ids = sample.tokens
-        sampling_params["max_new_tokens"] -= len(sample.tokens) - len(prompt_ids)
+        sampling_params["max_new_tokens"] -= sample.response_length
 
         assert sampling_params["max_new_tokens"] >= 0
         if sampling_params["max_new_tokens"] == 0:
@@ -34,6 +34,8 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
     else:
         input_ids = prompt_ids
 
+    # A partial-rollout resume resends the tokens SGLang already expanded, so nothing is expanded again.
+    mm_token_expansion_start_len = len(input_ids) if len(sample.response) > 0 else 0
     payload, halt_status = compute_request_payload(
         args,
         input_ids=input_ids,
@@ -41,6 +43,7 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
         multimodal_inputs=sample.multimodal_inputs,
         evaluation=input.evaluation,
         kv_cache_namespace=sample.kv_cache_namespace,
+        mm_token_expansion_start_len=mm_token_expansion_start_len,
     )
     if payload is None:
         sample.status = halt_status
