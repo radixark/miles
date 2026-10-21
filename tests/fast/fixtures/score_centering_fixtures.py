@@ -40,6 +40,7 @@ def _args(**overrides: object) -> Namespace:
         true_on_policy_mode=False,
         allgather_cp=False,
         log_probs_chunk_size=2,
+        log_probs_backend="torch",
         vocab_size=8,
         entropy_coef=0,
         observe_training_entropy=False,

@@ -60,7 +60,7 @@ def main() -> None:
     device = torch.device("cuda", torch.cuda.current_device())
     logits = (torch.randn(args.rows, args.vocab, device=device) * 3).to(torch.bfloat16)
     rows = torch.arange(args.rows, device=device)
-    targets = torch.randint(0, args.vocab, (args.rows,), device=device)
+    targets = torch.randint(0, args.vocab, (args.rows, 1), device=device)
     logits_bytes = logits.numel() * logits.element_size()
 
     copy_tbps = 2 * logits_bytes / _median_ms(lambda: logits.clone()) / 1e9  # a copy reads and writes
@@ -73,13 +73,15 @@ def main() -> None:
     def stats(launch):
         for with_entropy in (False, True):
             kernels.row_statistics(
-                logits, rows, targets, vocab=vocab, temperature=TEMPERATURE, with_entropy=with_entropy, launch=launch
+                logits, rows, vocab=vocab, temperature=TEMPERATURE, with_entropy=with_entropy, launch=launch
             )
 
-    softmax_stats = kernels.row_statistics(
-        logits, rows, targets, vocab=vocab, temperature=TEMPERATURE, with_entropy=True
-    ).as_softmax_stats()
-    grad_log_probs = torch.randn(args.rows, device=device)
+    logit_max, sum_exp, sum_exp_logit = kernels.row_statistics(
+        logits, rows, vocab=vocab, temperature=TEMPERATURE, with_entropy=True
+    )
+    target_logit = (logits.gather(1, targets).float() - logit_max.unsqueeze(1)) / TEMPERATURE
+    softmax_stats = kernels.ShardStats(logit_max, sum_exp, sum_exp_logit, target_logit).as_softmax_stats()
+    grad_log_probs = torch.randn(args.rows, 1, device=device)
     grad_entropy = torch.randn(args.rows, device=device)
     grad = torch.empty_like(logits)
 

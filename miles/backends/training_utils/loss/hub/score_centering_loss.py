@@ -6,12 +6,13 @@ from collections.abc import Callable
 import torch
 
 from miles.backends.training_utils.data.context_parallel import (
+    LocalResponseRows,
     allgather_cp_redistribute,
     get_local_response_loss_masks,
     slice_log_prob_with_cp,
 )
-from miles.backends.training_utils.loss.hub.logit_processors import _iter_response_chunks
-from miles.backends.training_utils.loss.hub.math_utils import compute_approx_kl
+from miles.backends.training_utils.loss.hub.logit_processors import _iter_response_chunks, fused_response_log_probs
+from miles.backends.training_utils.loss.hub.math_utils import compute_approx_kl, true_vocab_size
 from miles.backends.training_utils.loss.hub.score_centering import (
     ScoreCenteringInputs,
     score_centering_loss,
@@ -45,6 +46,27 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
     support_only = replay and not args.use_kl_loss
     if with_entropy:
         result["entropy"] = []
+    if args.log_probs_backend == "fused":
+        # a Megatron flag; other backends' logits are exactly the vocabulary
+        vocab_size = true_vocab_size(getattr(args, "vocab_size", None), logits.size(-1), parallel.tp.size)
+        # startup rejects sampling-support replay with the fused backend, so every row is full-vocabulary
+        selected, entropy = fused_response_log_probs(
+            logits,
+            args=args,
+            unconcat_tokens=batch["unconcat_tokens"],
+            total_lengths=batch["total_lengths"],
+            response_lengths=batch["response_lengths"],
+            max_seq_lens=batch.get("max_seq_lens"),
+            sample_candidates=lambda i, sample_rows: _local_candidate_ids(batch, i, sample_rows, vocab_size),
+            with_entropy=with_entropy,
+        )
+        result["selected"] = selected
+        if args.use_kl_loss:
+            result["kl_log_probs"] = [sample[:, 0] for sample in selected]
+        if with_entropy:
+            result["entropy"] = entropy
+        _redistribute_allgather_cp(args, batch, logits, result)
+        return result
     chunks = _iter_response_chunks(
         logits,
         args=args,
@@ -85,7 +107,24 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
         result["selected"].append(selected)
         if with_entropy:
             result["entropy"].append(entropy)
-    if args.allgather_cp and parallel.cp.size > 1:
+    _redistribute_allgather_cp(args, batch, logits, result)
+    return result
+
+
+def _local_candidate_ids(batch: RolloutBatch, sample: int, sample_rows: LocalResponseRows, vocab_size: int):
+    """``[R, K]`` CPU candidate ids of the local rows, checked against the vocabulary while on the CPU.
+
+    The check raises the same readable error as selected_log_probs_and_entropy on the torch backend,
+    before the fused op's device-side assert would stop the process.
+    """
+    candidates = _candidate_ids(batch, sample, torch.as_tensor(list(sample_rows.response_indices), dtype=torch.long))
+    if ((candidates < -1) | (candidates >= vocab_size)).any():
+        raise ValueError("Score-centering token ID is outside the model vocabulary")
+    return candidates
+
+
+def _redistribute_allgather_cp(args: Namespace, batch: RolloutBatch, logits: torch.Tensor, result: dict) -> None:
+    if args.allgather_cp and get_parallel_state().cp.size > 1:
         allgather_cp_redistribute(
             result,
             logits=logits,
@@ -94,7 +133,6 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
             response_lengths=batch["response_lengths"],
             max_seq_lens=batch.get("max_seq_lens"),
         )
-    return result
 
 
 def _local_candidates(args: Namespace, batch: RolloutBatch, key: str, device: torch.device) -> torch.Tensor:
