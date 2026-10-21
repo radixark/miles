@@ -47,22 +47,13 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
     if with_entropy:
         result["entropy"] = []
     if args.log_probs_backend == "fused":
-        # a Megatron flag; other backends' logits are exactly the vocabulary
-        vocab_size = true_vocab_size(getattr(args, "vocab_size", None), logits.size(-1), parallel.tp.size)
-        # startup rejects sampling-support replay with the fused backend, so every row is full-vocabulary
-        selected, entropy = fused_response_log_probs(
-            logits,
-            args=args,
-            unconcat_tokens=batch["unconcat_tokens"],
-            total_lengths=batch["total_lengths"],
-            response_lengths=batch["response_lengths"],
-            max_seq_lens=batch.get("max_seq_lens"),
-            sample_candidates=lambda i, sample_rows: _local_candidate_ids(batch, i, sample_rows, vocab_size),
-            with_entropy=with_entropy,
+        # replay with reference KL is rejected at startup, so replay here means support-only
+        assert support_only or not replay, "score centering replays the support only without reference KL"
+        result["selected"], entropy = _fused_candidate_log_probs(
+            args, batch, logits, with_entropy=with_entropy, support_only=support_only
         )
-        result["selected"] = selected
         if args.use_kl_loss:
-            result["kl_log_probs"] = [sample[:, 0] for sample in selected]
+            result["kl_log_probs"] = [sample[:, 0] for sample in result["selected"]]
         if with_entropy:
             result["entropy"] = entropy
         _redistribute_allgather_cp(args, batch, logits, result)
@@ -109,6 +100,36 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
             result["entropy"].append(entropy)
     _redistribute_allgather_cp(args, batch, logits, result)
     return result
+
+
+def _fused_candidate_log_probs(
+    args: Namespace, batch: RolloutBatch, logits: torch.Tensor, *, with_entropy: bool, support_only: bool
+) -> tuple[list[torch.Tensor], list[torch.Tensor] | None]:
+    """Per sample, ``[R, 1 + K]`` scores of the sampled token and the candidates, and the entropy, in
+    one fused call: over the recorded support under filtered sampling, otherwise over the vocabulary."""
+    # a Megatron flag; other backends' logits are exactly the vocabulary
+    vocab_size = true_vocab_size(getattr(args, "vocab_size", None), logits.size(-1), get_parallel_state().tp.size)
+    candidate_ids = lambda i, sample_rows: _local_candidate_ids(batch, i, sample_rows, vocab_size)  # noqa: E731
+    scores = fused_response_log_probs(
+        logits,
+        args=args,
+        unconcat_tokens=batch["unconcat_tokens"],
+        total_lengths=batch["total_lengths"],
+        response_lengths=batch["response_lengths"],
+        max_seq_lens=batch.get("max_seq_lens"),
+        # the candidates are the whole support under filtered sampling, otherwise more targets
+        sample_candidates=None if support_only else candidate_ids,
+        sample_support=candidate_ids if support_only else None,
+        with_entropy=with_entropy,
+        entropy_over_support=support_only,
+    )
+    if not support_only:
+        return scores.log_probs, scores.entropy
+    selected = [
+        torch.cat((sampled.unsqueeze(-1), support), dim=-1)
+        for sampled, support in zip(scores.log_probs, scores.support_log_probs, strict=True)
+    ]
+    return selected, scores.entropy
 
 
 def _local_candidate_ids(batch: RolloutBatch, sample: int, sample_rows: LocalResponseRows, vocab_size: int):
