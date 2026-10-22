@@ -32,6 +32,8 @@ class ScoreCenteringInputs:
     mis_low: float = 0.5
     mis_high: float = 5.0
     eps: float = 1e-6
+    # The head is the sampler's whole support (sampling-support replay), so neither side has a tail.
+    complete_support: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -78,7 +80,11 @@ def score_centering_loss(inputs: ScoreCenteringInputs) -> tuple[torch.Tensor, Sc
     with torch.no_grad():
         p, q = head_probs(train_head, inputs.head_mask), head_probs(rollout_head, inputs.head_mask)
         p_mass, q_mass = p.sum(-1), q.sum(-1)
-        rho = (1 - q_mass).clamp_min(inputs.eps) / (1 - p_mass).clamp_min(inputs.eps)
+        if inputs.complete_support:
+            # Deriving empty tails from 1 - mass would let renormalization rounding cross eps (#4204).
+            rho = torch.ones_like(p_mass)
+        else:
+            rho = (1 - q_mass).clamp_min(inputs.eps) / (1 - p_mass).clamp_min(inputs.eps)
         alpha = sampling.tail_scale(rho, p.dtype)
         residual = sampling.head_mass(p, q, train_head - rollout_head) - alpha.unsqueeze(-1) * p
         weight = sampling.sample_weight(
