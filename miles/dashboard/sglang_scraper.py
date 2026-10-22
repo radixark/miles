@@ -185,10 +185,12 @@ class SglangScraper:
     def _whitelisted_lines(self, text: str) -> str:
         """The page's whitelisted samples alone: the parser is pure Python and
         a dp-attention engine's page is 30x its whitelisted lines. Comment
-        lines go too; untyped, each sample parses under its own full name."""
+        lines go too; untyped, each sample parses under its own full name.
+        Lines split on "\n" only, as the parser does: a label value may hold
+        other Unicode line breaks."""
         return "".join(
-            line
-            for line in text.splitlines(keepends=True)
+            line + "\n"
+            for line in text.split("\n")
             if not line.startswith("#") and _normalize_metric_name(_parse_sample_name(line)) in self.whitelist
         )
 

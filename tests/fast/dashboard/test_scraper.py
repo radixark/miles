@@ -171,3 +171,16 @@ def test_prefiltered_page_yields_what_the_whole_page_does(page):
     scraper._ingest("http://e:1", text, now=1.0)
     assert [(s.metric, s.labels, s.value) for s in got] == expected
     assert expected, "fixture has no whitelisted samples"
+
+
+def test_prefilter_keeps_a_label_holding_a_unicode_line_break():
+    """str.splitlines also breaks on \x85 and
+    ; the parser splits on "\\n"
+        only, so such a label value must reach it whole."""
+    from prometheus_client.parser import text_string_to_metric_families
+
+    text = 'sglang:num_running_reqs{model_name="a\x85b c"} 3.0\nsglang:other_metric 1.0\n'
+    scraper = SglangScraper(lambda sample: None, mode=ScrapeMode.DIRECT, engine_addrs=lambda: [])
+    [family] = text_string_to_metric_families(scraper._whitelisted_lines(text))
+    [sample] = family.samples
+    assert sample.labels["model_name"] == "a\x85b c" and sample.value == 3.0
