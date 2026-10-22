@@ -544,3 +544,22 @@ def test_engine_stream_with_only_a_partial_line_makes_no_engine_claim(tmp_path):
     store = MetricStore.load(tmp_path)
     assert compute_advisories(store) == []
     assert not store.has_stream(Stream.ENGINE_SERIES)
+
+
+def test_abort_storm_run_share_counts_the_newest_scrape(tmp_path, monkeypatch):
+    """The run-long view keeps one scrape per bucket and can drop the newest:
+    counters flat for an hour, then one storm in the last scrape."""
+    from miles.dashboard.store import _ThinnedEngineSeries
+
+    monkeypatch.setattr(_ThinnedEngineSeries, "SCRAPES_PER_ENGINE", 50)
+    last = 2001
+    samples = []
+    for k in range(last + 1):
+        requests, aborts = (200.0, 100.0) if k == last else (0.0, 0.0)
+        samples += [
+            _engine("sglang_num_requests_total", requests, ts=2.0 * k),
+            _engine("sglang_num_aborted_requests_total", aborts, ts=2.0 * k),
+        ]
+    [advisory] = compute_advisories(_store(tmp_path, args={}, engine_samples=samples))
+    assert advisory.level == "warning"
+    assert "(100/200; 50% over the run)" in advisory.message
