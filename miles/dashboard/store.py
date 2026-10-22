@@ -515,9 +515,8 @@ class _ThinnedEngineSeries:
     def __init__(
         self, reader: _PartitionReader, parse: Callable[[bytes, Path, int], pl.DataFrame], empty: pl.DataFrame
     ):
-        self._reader = reader
+        self._cursor = _AppendCursor(reader)
         self._parse = parse
-        self._offsets: dict[str, int] = {}
         self._kept_scrapes = empty
         self._bucket_s = 0.0  # 0 keeps every scrape
         # a scrape can straddle two flushes: its later rows follow the first ones in
@@ -527,18 +526,9 @@ class _ThinnedEngineSeries:
 
     def kept_scrapes(self) -> tuple[pl.DataFrame, int]:
         with self._lock:
-            for key, path in self._reader.files():
-                offset = self._offsets.get(key, 0)
-                if path.stat().st_size <= offset:
-                    continue
-                with open(path, "rb") as f:
-                    f.seek(offset)
-                    appended = f.read()
-                complete_nbytes = appended.rfind(b"\n") + 1
-                if complete_nbytes:
-                    self._append_thinned(self._parse(appended[:complete_nbytes], path, offset))
-                    self.version += 1
-                self._offsets[key] = offset + complete_nbytes
+            for path, offset, complete_lines in self._cursor.appended():
+                self._append_thinned(self._parse(complete_lines, path, offset))
+                self.version += 1
             return self._kept_scrapes, self.version
 
     def _append_thinned(self, rows: pl.DataFrame) -> None:
