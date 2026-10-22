@@ -758,13 +758,15 @@ export async function renderTimeline(view, meta, route) {
   view.replaceChildren(
     toolbar,
     selRow,
-    mfuPanel,
-    advisoryPanel,
     carpet.root,
     fleet.root,
     bubbleStrip,
     el("div", { class: "panel" }, [canvas]),
     legendPanel,
+    // below the lanes: they land after them and change in follow mode, and
+    // must not shift the carpet or lanes under a brush in progress
+    mfuPanel,
+    advisoryPanel,
   );
   renderToolbar();
   applyRange(meta.time_range);
