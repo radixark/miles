@@ -17,7 +17,6 @@ class TestAbort:
             partial_rollout=True,
             sglang_router_ip="router",
             sglang_router_port=30000,
-            use_miles_router=True,
         )
         state = SimpleNamespace(args=args, aborted=False)
         sample = SimpleNamespace(response="partial", metadata={})
@@ -25,8 +24,8 @@ class TestAbort:
         posted_urls: list[str] = []
         hook_finished = asyncio.Event()
 
-        async def fake_get(url: str) -> dict[str, list[str]]:
-            return {"urls": ["http://healthy", "http://unresponsive"]}
+        async def fake_get(url: str) -> dict[str, list[dict[str, str]]]:
+            return {"workers": [{"url": "http://healthy"}, {"url": "http://unresponsive"}]}
 
         async def fake_post(url: str, payload: dict[str, bool]) -> None:
             posted_urls.append(url)

@@ -110,6 +110,8 @@ The router exposes a small FastAPI surface used internally by Miles:
 
 | Endpoint | Method | What |
 |---|---|---|
-| `/add_worker` | POST | Register an SGLang engine |
-| `/list_workers` | GET | List registered workers |
+| `/workers` | POST | Register an SGLang engine (`{"url": ...}`), as on sgl-router |
+| `/workers` | GET | List registered workers with their ids |
+| `/workers/{id}` | DELETE | Unregister a worker |
+| `/add_worker`, `/remove_worker`, `/list_workers` | POST / POST / GET | The same, in sgl-router's pre-0.2.2 API |
 | any other path | GET / POST / PUT / DELETE | Proxied to a selected SGLang worker — e.g. `/generate`, `/v1/chat/completions`, `/health`. |

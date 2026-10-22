@@ -248,14 +248,8 @@ async def _sglang_worker_urls(args: Namespace) -> list[str]:
     from miles.utils.http_utils import get
 
     router_url = _generate_url(args).removesuffix("/generate")
-    if not getattr(args, "use_miles_router", False):
-        try:
-            response = await get(f"{router_url}/workers")
-            return [worker["url"] for worker in response["workers"]]
-        except Exception:
-            logger.debug("SGLang /workers lookup failed; trying Miles /list_workers.", exc_info=True)
-    response = await get(f"{router_url}/list_workers")
-    return list(response["urls"])
+    response = await get(f"{router_url}/workers")
+    return [worker["url"] for worker in response["workers"]]
 
 
 def _finish_reason(output: dict[str, Any]) -> str:

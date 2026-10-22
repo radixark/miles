@@ -108,9 +108,9 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
 
     port = http_utils.find_available_port(28000)
 
-    @app.get("/list_workers")
+    @app.get("/workers")
     async def list_workers():
-        return {"urls": [f"http://127.0.0.1:{port}"]}
+        return {"workers": [{"url": f"http://127.0.0.1:{port}"}]}
 
     @app.post("/abort_request")
     async def abort():

@@ -3,8 +3,6 @@ import logging
 from argparse import Namespace
 from collections.abc import Callable
 
-import sglang_router
-from packaging.version import parse
 from tqdm import tqdm
 
 from miles.rollout.base_types import RolloutFnTrainOutput, stamp_kv_cache_namespace
@@ -67,13 +65,8 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
 
 async def get_worker_urls(args: Namespace):
-    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
-        urls = response["urls"]
-    else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        urls = [worker["url"] for worker in response["workers"]]
-    return router_worker_base_urls(urls)
+    response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+    return router_worker_base_urls([worker["url"] for worker in response["workers"]])
 
 
 def submit_generate_tasks(
