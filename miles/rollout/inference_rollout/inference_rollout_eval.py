@@ -79,7 +79,9 @@ async def eval_rollout_single_dataset(
         top_p=dataset_cfg.top_p,
         top_k=dataset_cfg.top_k,
         max_new_tokens=dataset_cfg.max_response_len,
+        min_new_tokens=dataset_cfg.min_new_tokens,
     )
+    base_sampling_params.update(stop=dataset_cfg.stop, stop_token_ids=dataset_cfg.stop_token_ids)
 
     tasks = []
     # do multiple samples for eval prompts

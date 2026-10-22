@@ -33,6 +33,21 @@ DATASET_RUNTIME_SPECS: dict[str, dict[str, tuple[str, ...]]] = {
         "default_keys": ("max_response_len",),
         "arg_attrs": ("eval_max_response_len", "rollout_max_response_len"),
     },
+    "stop": {
+        "dataset_keys": ("stop",),
+        "default_keys": ("stop",),
+        "arg_attrs": ("rollout_stop",),
+    },
+    "stop_token_ids": {
+        "dataset_keys": ("stop_token_ids",),
+        "default_keys": ("stop_token_ids",),
+        "arg_attrs": ("rollout_stop_token_ids",),
+    },
+    "min_new_tokens": {
+        "dataset_keys": ("min_new_tokens",),
+        "default_keys": ("min_new_tokens",),
+        "arg_attrs": ("eval_min_new_tokens",),
+    },
 }
 
 DATASET_SAMPLE_SPECS: dict[str, dict[str, tuple[str, ...]]] = {

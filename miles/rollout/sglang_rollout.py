@@ -21,7 +21,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
     configure_rollout_topk_logprobs_request,
 )
 from miles.rollout.inference_rollout.compatibility import load_generate_function
-from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
+from miles.rollout.inference_rollout.inference_rollout_common import compute_sampling_params, stamp_sample_lineage
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
@@ -639,17 +639,15 @@ async def eval_rollout_single_dataset(
         )
     dataset = EVAL_PROMPT_DATASET[cache_key]
 
-    base_sampling_params = dict(
+    base_sampling_params = compute_sampling_params(
+        args,
         temperature=dataset_cfg.temperature,
         top_p=dataset_cfg.top_p,
         top_k=dataset_cfg.top_k,
         max_new_tokens=dataset_cfg.max_response_len,
-        stop=args.rollout_stop,
-        stop_token_ids=args.rollout_stop_token_ids,
-        skip_special_tokens=args.rollout_skip_special_tokens,
-        no_stop_trim=True,
-        spaces_between_special_tokens=False,
+        min_new_tokens=dataset_cfg.min_new_tokens,
     )
+    base_sampling_params.update(stop=dataset_cfg.stop, stop_token_ids=dataset_cfg.stop_token_ids)
 
     tasks = []
     # do multiple samples for eval prompts
