@@ -208,7 +208,10 @@ beaker:
     `affinity_owner_lost`, `binding_lost`) leaves the reward missing, so the missing-reward filter drops the group
     rather than training on a false 0. As literegistry prescribes, the episode never continues in a replacement
     container; local podman instead recreates a vanished container once.
-  - Transient gateway answers (`408`, `5xx`, a dropped connection) are retried; every request is safe to repeat.
+  - Transient gateway answers (`408`, `5xx`, a dropped connection) are retried; every command is safe to repeat.
+    A handshake is retried too, up to 3 times per episode start: about 2% of them hang until the gateway's 300 s
+    admission deadline (`504 affinity_admission_timeout`, on both fleets in October 2026). A timed-out handshake
+    may still start a container nobody can name, which idles out after 2 h whether or not it is resent.
 - **The fleet** is shared and managed outside this job. Its roster is at `<gateway>/v1/models`: on 2026-10-16, 172
   podman replicas, 8 mirrors and the fleet's own gateway.
 - **Check it from a dev box.** Start a gateway from the same registry with `python -m literegistry.gateway

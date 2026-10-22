@@ -17,9 +17,12 @@ Per episode, through a ``PodmanSession``:
 * close: removes the container.
 
 The gateway sends a pinned command once and reports a transport failure (``502``/``503``/``504``) instead of
-replaying it; every request here is safe to repeat (a ``mkdir`` lock makes a repeated launch a no-op, each upload
-chunk is its own file), so those are retried. The binding expires after 15 idle minutes, so a keepalive exec runs
-while the container idles through a long generation.
+replaying it; every command here is safe to repeat (a ``mkdir`` lock makes a repeated launch a no-op, each upload
+chunk is its own file), so those are retried. So is a handshake, up to 3 times per episode start: about 2% of them hang
+until the gateway's 300 s admission deadline (``504``, on both fleets in October 2026). One that timed out may still
+start a container nobody can name, which idles out after the replica's 2 h idle timeout whether or not the handshake
+is resent, so resending costs no more than failing the start would, and keeps the episode's group. The binding expires
+after 15 idle minutes, so a keepalive exec runs while the container idles through a long generation.
 
 A container the fleet reports lost (``PodmanContainerLostError``: the replica's watchdog removed it past its limits,
 4 GB of RSS or 2048 processes on 2026-10-16, it stopped because its init process died, or its replica left the
@@ -82,9 +85,9 @@ _DONE_MARKER = "__SWERL_GATEWAY_DONE__"
 _PENDING_MARKER = "__SWERL_GATEWAY_PENDING__"
 _WORK_DIR = "/tmp/.swerl_gateway"
 
-_HANDSHAKE_ATTEMPTS = 5
+# A hung handshake costs the gateway's 300 s admission deadline, so 3 attempts bound a start at about 15 min.
+_HANDSHAKE_ATTEMPTS = 3
 _REQUEST_ATTEMPTS = 4
-_REQUEST_TIMEOUT_S = 300.0  # a handshake pulls the image; an exec returns within its own timeout
 _RETRY_BASE_S = 0.5
 _RETRY_MAX_S = 8.0
 # Transient gateway answers: a replica still starting the exec, an owner briefly unreachable, a dropped connection.
@@ -102,7 +105,9 @@ def _live_dir() -> Path:
 
 
 def _client() -> PodmanClient:
-    return PodmanClient(_settings().gateway_url, workdir="/", request_timeout=_REQUEST_TIMEOUT_S)
+    # The client's request timeout (310 s) outlasts the gateway's 300 s admission deadline, so a handshake gets the
+    # gateway's verdict instead of timing out first.
+    return PodmanClient(_settings().gateway_url, workdir="/")
 
 
 class TmaxGatewaySandbox(SandboxBase):
@@ -133,14 +138,14 @@ class TmaxGatewaySandbox(SandboxBase):
                 raise
             except Exception as e:  # a lost or failed container before the episode started: try a fresh one
                 last_error = e
+                if self._session is None:  # the handshake failed, after its own retries
+                    break
                 await self._close_container()
                 if attempt + 1 < _START_ATTEMPTS:
                     delay = min(_START_RETRY_BASE_S * 2**attempt, _START_RETRY_MAX_S)
                     await asyncio.sleep(delay + random.uniform(0.0, _START_RETRY_JITTER_S))
         await self._release()
-        raise SandboxInfraError(
-            f"sandbox start failed {_START_ATTEMPTS}x for image={self._image}: {last_error!r}"
-        ) from last_error
+        raise SandboxInfraError(f"sandbox start failed for image={self._image}: {last_error!r}") from last_error
 
     async def _release(self) -> None:
         if self._keepalive is not None:
@@ -329,7 +334,7 @@ def _describe_loss(error: PodmanContainerLostError) -> str:
 
 
 async def _retry(call: Callable[[], Awaitable], attempts: int):
-    """Run ``call``, retrying transient gateway failures; every request this backend sends is safe to repeat."""
+    """Run ``call``, retrying transient gateway failures; see the module docstring for why each request may repeat."""
     for attempt in range(1, attempts + 1):
         started = time.monotonic()
         try:
