@@ -21,9 +21,7 @@ _LOG_RATIO_EXP_CLAMP = 20.0
 
 
 def _megatron_core_installed() -> bool:
-    """A pip install for the FSDP or torchtitan backend has no Megatron. ``megatron.core`` holds the fused
-    kernel: megatron-energon alone installs a bare ``megatron`` namespace. A broken Megatron install still
-    fails loudly at its import instead of silently switching implementations."""
+    """``megatron.core`` holds the fused kernel; megatron-energon alone installs a bare ``megatron``."""
     try:
         return importlib.util.find_spec("megatron.core") is not None
     except ModuleNotFoundError:  # no megatron package at all
@@ -326,18 +324,16 @@ def compute_log_probs(
 
 
 class _VocabParallelCrossEntropy(torch.autograd.Function):
-    """Megatron's ``fused_vocab_parallel_cross_entropy`` math in plain torch, for installs without Megatron.
+    """Megatron's ``fused_vocab_parallel_cross_entropy`` in plain torch, for installs without Megatron.
 
-    Logits are ``[seq, batch, vocab / tp]``, split over ``group`` (None: the default group, as in
-    ``torch.distributed``) along the vocabulary. Unlike
-    Megatron's, it leaves its input untouched and returns the gradient in the input's dtype.
+    Logits are ``[seq, batch, vocab / tp]``, split over ``group`` along the vocabulary. Unlike Megatron's,
+    it leaves its input untouched and returns the gradient in the input's dtype.
     """
 
     @staticmethod
     def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup | None) -> torch.Tensor:
         ctx.input_dtype = logits.dtype
-        # The one full-size copy: it keeps the caller's logits untouched, and the rest works on it in
-        # place as Megatron's kernel does, so the fallback needs no more memory than that kernel.
+        # the one full-size copy; the rest is in place, as in Megatron
         logits = logits.to(torch.float32, copy=True)
         logits_max = logits.max(dim=-1)[0]
         dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=group)
@@ -351,7 +347,7 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         exp_logits = logits.exp_()
         sum_exp_logits = exp_logits.sum(dim=-1)
 
-        # One all-reduce for both, as Megatron batches them.
+        # one all-reduce for both, as in Megatron
         predicted_and_sum = torch.cat((predicted_logits, sum_exp_logits))
         dist.all_reduce(predicted_and_sum, op=dist.ReduceOp.SUM, group=group)
         predicted_logits, sum_exp_logits = predicted_and_sum.split(predicted_logits.size(0))
@@ -363,7 +359,7 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
         softmax, target_mask, masked_target = ctx.saved_tensors
-        # d(loss)/d(logits) = softmax - one_hot(target), the one-hot only on the rank owning the target.
+        # softmax - one_hot(target); the one-hot lives on the rank owning the target
         grad_input = softmax.scatter_add_(-1, masked_target.unsqueeze(-1), -(~target_mask).unsqueeze(-1).float())
         return grad_input.mul_(grad_output.unsqueeze(-1)).to(ctx.input_dtype), None, None
 

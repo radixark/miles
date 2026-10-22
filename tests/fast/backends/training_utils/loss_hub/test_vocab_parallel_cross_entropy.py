@@ -1,4 +1,4 @@
-"""The torch-only vocab-parallel cross entropy that stands in for Megatron's fused one when it is absent."""
+"""The plain-torch vocab-parallel cross entropy must compute what Megatron's fused kernel does."""
 
 import sys
 
@@ -18,7 +18,7 @@ def _full_logits(dtype: torch.dtype) -> torch.Tensor:
 
 
 def _target() -> torch.Tensor:
-    # Covers both shards of a TP=2 split, including each shard's first and last id.
+    # each TP=2 shard's first and last id
     return torch.tensor([[0, 11], [5, 6], [6, 5], [11, 0], [3, 9]])
 
 
@@ -76,11 +76,11 @@ def _check_compute_log_probs_without_megatron(group: dist.ProcessGroup) -> None:
     math_utils._MEGATRON_INSTALLED = False
     logits = _full_logits(torch.float32)[:, 0]
     tokens = _target()[:, 0]
-    # [seq, 1], the shape compute_log_probs has always returned
+    # compute_log_probs returns [seq, 1]
     expected = torch.log_softmax(logits, dim=-1).gather(-1, tokens.unsqueeze(-1))
 
     torch.testing.assert_close(compute_log_probs(logits, tokens, group), expected, atol=1e-6, rtol=1e-6)
-    # None is the default group, as in torch.distributed and the callers that pass it
+    # None: the default group
     torch.testing.assert_close(compute_log_probs(logits, tokens, None), expected, atol=1e-6, rtol=1e-6)
 
 
@@ -99,7 +99,7 @@ def _run_checks(rank: int, world_size: int, port: int) -> None:
 
 @pytest.mark.parametrize("world_size", [1, 2])
 def test_vocab_parallel_cross_entropy(world_size: int) -> None:
-    """One process group per tensor-parallel size: spawning is what costs, so every check shares it."""
+    """Loss and gradient match a full-vocabulary log-softmax and Megatron's kernel on every TP shard."""
     run_multiprocess(_run_checks, world_size=world_size)
 
 
