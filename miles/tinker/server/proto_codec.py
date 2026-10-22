@@ -4,6 +4,7 @@ import numpy as np
 
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.encoding import build_datum
+from miles.tinker.server.model_input import decode_model_input
 from tinker.proto import tinker_public_pb2 as public_pb
 
 PROTO_CONTENT_TYPE = "application/x-protobuf"
@@ -27,27 +28,43 @@ def maybe_decompress(body: bytes, content_encoding: str | None) -> bytes:
     return body
 
 
-def decode_forward_backward_request(body: bytes) -> tuple[str, dict]:
+def decode_forward_backward_request(body: bytes, processor=None) -> tuple[str, dict]:
     """ForwardBackwardRequest proto -> (op, internal payload)."""
     message = public_pb.ForwardBackwardRequest()
     message.ParseFromString(body)
     op = "forward_only" if message.forward_only else "forward_backward"
     try:
-        return op, _decode_forward_backward(message)
-    except (UserInputError, KeyError, TypeError, ValueError, IndexError) as error:
+        return op, _decode_forward_backward(message, processor)
+    except (UserInputError, KeyError, TypeError, ValueError, IndexError, OSError) as error:
         return op, {"model_id": message.model_id, "seq_id": message.seq_id, "validation_error": str(error)}
 
 
-def _decode_forward_backward(message) -> dict:
+def _decode_forward_backward(message, processor) -> dict:
     datums = []
     for index, datum in enumerate(message.data):
-        tokens: list[int] = []
+        chunks = []
         for chunk in datum.model_input:
-            if chunk.WhichOneof("chunk") != "encoded_text":
-                raise UserInputError(f"unsupported model_input chunk type: {chunk.WhichOneof('chunk')}")
-            tokens.extend(np.frombuffer(chunk.encoded_text.tokens, dtype=np.int32).tolist())
+            kind = chunk.WhichOneof("chunk")
+            if kind == "encoded_text":
+                chunks.append(
+                    {"type": kind, "tokens": np.frombuffer(chunk.encoded_text.tokens, dtype=np.int32).tolist()}
+                )
+            elif kind == "image":
+                chunks.append(
+                    {
+                        "type": kind,
+                        "data": chunk.image.data,
+                        "format": chunk.image.format,
+                        "expected_tokens": (
+                            chunk.image.expected_tokens if chunk.image.HasField("expected_tokens") else None
+                        ),
+                    }
+                )
+            else:
+                raise UserInputError(f"unsupported model_input chunk type: {kind}")
+        tokens, multimodal_inputs, _ = decode_model_input({"chunks": chunks}, processor)
         inputs = {name: _decode_tensor(name, tensor) for name, tensor in datum.loss_fn_inputs.items()}
-        datums.append(build_datum(tokens, inputs, index))
+        datums.append(build_datum(tokens, inputs, index, multimodal_inputs))
 
     loss_fn_config = dict(message.loss_fn_config)
     # Tinker SDK's v2 protobuf config supports both numeric and string values.
