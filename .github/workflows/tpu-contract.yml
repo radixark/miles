@@ -6,20 +6,12 @@ name: TPU contract (sglang-torchtpu, CPU)
 
 on:
   pull_request:
+    # the tests scan every server arg miles reads, so any miles file can break the contract
     paths:
-      - "miles/utils/accelerator.py"
-      - "miles/utils/arguments.py"
-      - "miles/ray/specs/inference.py"
-      - "miles/rollout/generate_utils/**"
-      - "miles/rollout/session/**"
+      - "miles/**"
+      - "scripts/tpu/**"
       - "requirements.txt"
       - "tests/ci/requirements-ci-cpu.txt"
-      - "miles/backends/sglang_utils/**"
-      - "miles/backends/torchtitan_utils/**"
-      - "miles/backends/training_utils/replay/**"
-      - "miles/backends/training_utils/weight_update/**"
-      - "miles/ray/rollout/external_engine_provider.py"
-      - "miles/utils/replay_base.py"
       - "docker/Dockerfile.tpu"
       - "tests/fast/backends/tpu/**"
       - ".github/workflows/tpu-contract.yml"
@@ -56,7 +48,11 @@ jobs:
         if: github.event_name == 'pull_request'
         id: pin
         shell: bash
-        run: echo "commit=$(sed -n 's/^ARG SGLANG_TPU_COMMIT=//p' docker/Dockerfile.tpu)" >> "$GITHUB_OUTPUT"
+        # an empty ref would check out sglang-torchtpu's default branch instead of the pin
+        run: |
+          commit=$(sed -n 's/^ARG SGLANG_TPU_COMMIT=//p' docker/Dockerfile.tpu)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "no 40-hex ARG SGLANG_TPU_COMMIT in docker/Dockerfile.tpu: '$commit'"; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Checkout sglang-torchtpu at the pin
         if: github.event_name == 'pull_request'
