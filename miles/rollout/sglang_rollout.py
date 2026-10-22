@@ -22,6 +22,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 )
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
+from miles.rollout.rm_hub import async_rm, batched_async_rm, remote_rm_connection_pool
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
@@ -49,7 +50,6 @@ from .generate_utils.generate_endpoint_utils import (
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from .generate_utils.sampling_mask import append_sampling_metadata, should_return_sampling_mask
-from .rm_hub import async_rm, batched_async_rm
 
 __all__ = ["generate_rollout", "get_model_url"]
 
@@ -471,6 +471,7 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     return aborted_samples
 
 
+@remote_rm_connection_pool()
 async def generate_rollout_async(
     args: Namespace, rollout_id: int, data_source: Callable[[int], list[list[Sample]]]
 ) -> tuple[RolloutFnTrainOutput, list[list[Sample]]]:
@@ -591,6 +592,7 @@ async def generate_rollout_async(
 EVAL_PROMPT_DATASET = {}
 
 
+@remote_rm_connection_pool()
 async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict[str, list[Any]]], list[list[Sample]]]:
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 

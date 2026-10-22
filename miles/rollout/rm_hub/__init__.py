@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
 import random
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 
 import aiohttp
 
@@ -15,14 +17,33 @@ from .math_utils import extract_answer as extract_boxed_answer
 from .math_utils import grade_answer_verl
 
 
+_remote_rm_pool: ContextVar[tuple[asyncio.AbstractEventLoop, aiohttp.TCPConnector] | None] = ContextVar(
+    "remote_rm_pool", default=None
+)
+
+
+@asynccontextmanager
+async def remote_rm_connection_pool():
+    async with aiohttp.TCPConnector(limit=0) as connector:
+        token = _remote_rm_pool.set((asyncio.get_running_loop(), connector))
+        try:
+            yield
+        finally:
+            _remote_rm_pool.reset(token)
+
+
 async def remote_rm(args, sample: Sample):
     payload = {
         "prompt": sample.prompt,
         "response": sample.response,
         "label": sample.label,
     }
-    session_kwargs = {}
-    async with aiohttp.ClientSession(**session_kwargs) as session:
+    pool = _remote_rm_pool.get()
+    connector = pool[1] if pool is not None and pool[0] is asyncio.get_running_loop() else None
+    if connector is not None and connector.closed:
+        connector = None
+    # Share connections within a rollout, but keep each sample's cookies isolated.
+    async with aiohttp.ClientSession(connector=connector, connector_owner=connector is None) as session:
         async with session.post(args.rm_url, json=payload) as resp:
             resp.raise_for_status()
             return await resp.json()
