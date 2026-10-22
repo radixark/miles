@@ -25,6 +25,7 @@ from miles.dashboard.store import GpuSample, MetricStore, Stream
 _TIMEOUT_S = 1800
 _DEFAULT_LANE_COUNT = 8  # views_timeline.js DEFAULT_LANES
 _FOLLOW_REDRAW_S = 5.0  # views_timeline.js FOLLOW_REDRAW_MS
+_ADVISORY_REFRESH_S = 30.0  # views_timeline.js ADVISORY_REFRESH_MS
 
 
 @contextmanager
@@ -216,13 +217,24 @@ def _rebase_row(row: dict, hour_ts: float) -> dict:
 
 def bench_follow(dump_details: Path, *, port: int, duration_s: float) -> dict:
     """``serve --follow`` over a growing dump, polled like the timeline's follow
-    loop: meta, then loadData and loadAdvisories in parallel, then the carpet."""
+    loop: meta, loadData, then the carpet; the advisory on its own slower loop."""
     appender = LiveTelemetryAppender(dump_details / "dashboard")
     cycles = []
+    advisory_seconds = []
     with serve(dump_details, port=port, follow=True) as (pid, startup_s), ThreadPoolExecutor(max_workers=8) as pool:
         selection = _default_lane_selection(port)
         appender.thread.start()
         deadline = time.monotonic() + duration_s
+
+        def poll_advisory() -> None:
+            while time.monotonic() < deadline:
+                seconds, _, _ = timed_get(port, "/api/advisory")
+                advisory_seconds.append(round(seconds, 2))
+                print(f"  advisory {len(advisory_seconds)}: {seconds:.2f}s", flush=True)
+                time.sleep(max(0.0, _ADVISORY_REFRESH_S - seconds))  # setInterval skips ticks while one is in flight
+
+        advisory_poller = threading.Thread(target=poll_advisory, daemon=True)
+        advisory_poller.start()
         while time.monotonic() < deadline:
             cycle = _time_follow_cycle(port, pool, selection)
             cycle["rss_mb"] = round(_rss_mb(pid))
@@ -230,6 +242,7 @@ def bench_follow(dump_details: Path, *, port: int, duration_s: float) -> dict:
             print(f"  cycle {len(cycles)}: {cycle} appended={appender.appended_rows:,}", flush=True)
             time.sleep(max(0.0, _FOLLOW_REDRAW_S - cycle["cycle_s"]))  # setInterval skips ticks while a cycle runs
         appender.stopped.set()
+        advisory_poller.join()
     cycle_seconds = sorted(cycle["cycle_s"] for cycle in cycles)
     return dict(
         startup_s=round(startup_s, 2),
@@ -237,6 +250,7 @@ def bench_follow(dump_details: Path, *, port: int, duration_s: float) -> dict:
         cycle_p50_s=cycle_seconds[len(cycle_seconds) // 2],
         cycle_max_s=cycle_seconds[-1],
         rss_max_mb=max(cycle["rss_mb"] for cycle in cycles),
+        advisory_s=advisory_seconds,
         cycle_detail=cycles,
     )
 
@@ -269,8 +283,7 @@ def _time_follow_cycle(port: int, pool: ThreadPoolExecutor, selection: str) -> d
             window | dict(metric="sglang_num_running_reqs", max_points=4000, lanes=selection),
         )
 
-    for request in (pool.submit(load_data), pool.submit(get, "advisory", "/api/advisory")):
-        request.result()
+    load_data()
     get("heatmap util", "/api/timeline/heatmap", window | dict(metric="util", x_buckets=1200))
     return dict(cycle_s=round(time.perf_counter() - cycle_start, 2)) | seconds_by_request
 

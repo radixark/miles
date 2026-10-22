@@ -42,6 +42,8 @@ const MUTED = "#7a7168";
 const GRID = "#e8e1d8";
 
 const FOLLOW_REDRAW_MS = 5000;
+// advisory claims span >=30 min of run history: a 5 s refresh only re-asks the same question
+const ADVISORY_REFRESH_MS = 30000;
 const LANE_CAP = 32;
 const DEFAULT_LANES = 8; // no-selection default: evenly spaced across the cluster
 const QUICK_PICKS = [
@@ -195,16 +197,23 @@ export async function renderTimeline(view, meta, route) {
     for (const p of processesRes.processes) processesByLane.get(`${p.node}:${p.gpu}`)?.push(p);
   }
 
-  // whole-run heuristic suggestions (design §config-tuning-advisory): cheap
-  // to recompute but not viewport-scoped, so it refreshes on follow-mode
-  // ticks rather than on every pan/zoom like loadData()
+  // whole-run heuristic suggestions (design §config-tuning-advisory): not
+  // viewport-scoped, and it reads hours of every engine's series, so it renders its
+  // own panels when it lands instead of holding back the lanes
+  let advisoryRequestInFlight = false;
   async function loadAdvisories() {
+    if (advisoryRequestInFlight) return;
+    advisoryRequestInFlight = true;
     try {
       const res = await api("/api/advisory");
       advisories = res.advisories;
       mfu = res.mfu;
+      renderMfu();
+      renderAdvisories();
     } catch {
       /* transient fetch failure: keep the last-known list */
+    } finally {
+      advisoryRequestInFlight = false;
     }
   }
 
@@ -759,7 +768,8 @@ export async function renderTimeline(view, meta, route) {
   );
   renderToolbar();
   applyRange(meta.time_range);
-  await Promise.all([loadData(), loadAdvisories()]);
+  loadAdvisories();
+  await loadData();
   await refreshOverview(); // topology decides carpet vs fleet panels
   renderAll();
   if (!manyLanes()) carpet.redraw(); // selection markers need the loaded lane list
@@ -772,14 +782,16 @@ export async function renderTimeline(view, meta, route) {
   // ------------------------- follow-mode auto refresh -----------------------
   let refreshing = false;
   let intervalId = null;
+  let advisoryIntervalId = null;
   if (meta.mode === "follow") {
+    advisoryIntervalId = setInterval(loadAdvisories, ADVISORY_REFRESH_MS);
     intervalId = setInterval(async () => {
       if (refreshing) return;
       refreshing = true;
       try {
         // fresh global range (cheap edge-stamp read); getMeta() is cached
         applyRange((await api("/api/meta")).time_range);
-        await Promise.all([loadData(), loadAdvisories()]);
+        await loadData();
         renderAll();
         await carpet.refresh(carpetRange());
       } catch {
@@ -791,6 +803,7 @@ export async function renderTimeline(view, meta, route) {
   }
   setViewCleanup(() => {
     if (intervalId !== null) clearInterval(intervalId);
+    if (advisoryIntervalId !== null) clearInterval(advisoryIntervalId);
     clearTimeout(carpetTimer);
     clearTimeout(reloadTimer);
     carpet.destroy();
