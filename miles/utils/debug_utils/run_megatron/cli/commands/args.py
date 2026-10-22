@@ -64,7 +64,7 @@ class RunAndCompareArgs(CommonRunArgs):
     baseline_extra_args: str = _field(default="", help="Extra megatron args for baseline run only")
     target_extra_args: str = _field(default="", help="Extra megatron args for target run only")
     diff_threshold: float | None = _field(default=None, help="Activation diff pass/fail threshold")
-    logprob_threshold: float | None = _field(default=None, help="Logprob max abs diff threshold")
+    logprob_threshold: float | None = _field(default=None, help="Logprob mean abs diff threshold")
 
 
 @dataclasses.dataclass
@@ -78,4 +78,4 @@ class CompareArgs:
     diff_threshold: float | None = _field(default=None, help="Pass/fail threshold")
     baseline_logprob_dir: Path | None = _field(default=None, help="Baseline logprob JSON directory")
     target_logprob_dir: Path | None = _field(default=None, help="Target logprob JSON directory")
-    logprob_threshold: float | None = _field(default=None, help="Logprob max abs diff threshold")
+    logprob_threshold: float | None = _field(default=None, help="Logprob mean abs diff threshold")
