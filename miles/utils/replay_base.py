@@ -26,8 +26,9 @@ class Replay:
 
     def record(self, top_indices: torch.Tensor):
         if platforms.IS_TPU:
-            # a compiled TPU graph cannot take the host copy as an input; the ids are small
-            self.top_indices_list.append(top_indices.to(platforms.current_platform.current_device()))
+            # rollout ids stay on the host, so the per-microbatch pad runs there and pop_forward copies one
+            # bucket shape; ids recorded inside a compiled forward stay on the device, which cannot copy out
+            self.top_indices_list.append(top_indices.clone() if top_indices.device.type == "cpu" else top_indices)
             return
         buf = torch.empty_like(top_indices, device="cpu", pin_memory=True)
         buf.copy_(top_indices)
