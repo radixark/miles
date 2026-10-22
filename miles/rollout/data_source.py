@@ -52,7 +52,13 @@ class RolloutDataSource(DataSource):
             tokenizer = load_tokenizer(
                 args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
             )
-            processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+            # In token space Miles never runs the processor: media prompts are measured by their text tokens.
+            # TODO: mark a sample whose expanded prompt exceeds the context as truncated; SGLang rejects it now.
+            processor = (
+                None
+                if args.multimodal_token_space_processing
+                else load_processor(args.hf_checkpoint, trust_remote_code=True)
+            )
 
             # TODO move (during the refactor)
             if (d := args.dump_details) is not None:

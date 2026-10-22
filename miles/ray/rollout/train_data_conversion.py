@@ -7,6 +7,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 from miles.utils.lora.utils import is_multi_lora_enabled
+from miles.utils.media_refs import has_media
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
@@ -45,6 +46,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
+    "multimodal_inputs": ValueSpec(codec="msgpack_ragged"),
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
     "weight_versions": ValueSpec(codec="msgpack_ragged"),
@@ -183,6 +185,9 @@ def convert_samples_to_train_data(
 
     if any(sample.multimodal_train_inputs is not None for sample in samples):
         train_data["multimodal_train_inputs"] = [sample.multimodal_train_inputs for sample in samples]
+    if any(has_media(sample.multimodal_inputs) for sample in samples) and args.multimodal_token_space_processing:
+        # The trainer rebuilds the processor tensors from these references.
+        train_data["multimodal_inputs"] = [sample.multimodal_inputs for sample in samples]
 
     if any(sample.weight_versions for sample in samples):
         train_data["weight_versions"] = [[call.to_dict() for call in sample.weight_versions] for sample in samples]
@@ -380,7 +385,7 @@ def can_precompute_dp_schedule(
         return False
     if is_multi_lora_enabled(args):
         return False
-    if "multimodal_train_inputs" in data:
+    if "multimodal_train_inputs" in data or "multimodal_inputs" in data:
         return False
     if "rollout_ids" not in data:
         return False
@@ -465,6 +470,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
         for key in [
             "tokens",
             "multimodal_train_inputs",
+            "multimodal_inputs",
             "response_lengths",
             "rewards",
             "truncated",
