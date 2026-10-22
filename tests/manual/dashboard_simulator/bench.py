@@ -102,7 +102,7 @@ def bench_static(dump_details: Path, *, port: int, repeats: int) -> dict:
             (
                 "engine_series",
                 "/api/timeline/engine_series",
-                window | dict(metric="sglang_num_running_reqs", max_points=4000),
+                window | dict(metric="sglang_num_running_reqs", max_points=4000, lanes=selection),
             ),
             ("advisory", "/api/advisory", None),
             ("fleet", "/api/timeline/fleet", window | dict(x_buckets=600)),
@@ -266,7 +266,7 @@ def _time_follow_cycle(port: int, pool: ThreadPoolExecutor, selection: str) -> d
         get(
             "engine_series",
             "/api/timeline/engine_series",
-            window | dict(metric="sglang_num_running_reqs", max_points=4000),
+            window | dict(metric="sglang_num_running_reqs", max_points=4000, lanes=selection),
         )
 
     for request in (pool.submit(load_data), pool.submit(get, "advisory", "/api/advisory")):

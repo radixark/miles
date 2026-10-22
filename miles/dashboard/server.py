@@ -231,13 +231,18 @@ def make_app(
         t1: float | None = None,
         max_points: int = 2000,
         per_dp_rank: bool = False,
+        lanes: str | None = None,
     ):
         with _translate_errors():
             _check_window(t0, t1)
             if max_points < 2:
                 raise ValueError(f"{max_points=} must be >= 2")
+            selected_lanes = store.resolve_lanes(lanes)
+            addrs = None if selected_lanes is None else store.engine_addrs_on_lanes(selected_lanes)
             return dict(
-                series=store.engine_series(metric, t0=t0, t1=t1, max_points=max_points, per_dp_rank=per_dp_rank)
+                series=store.engine_series(
+                    metric, t0=t0, t1=t1, max_points=max_points, per_dp_rank=per_dp_rank, addrs=addrs
+                )
             )
 
     @app.get("/api/sandboxes")
