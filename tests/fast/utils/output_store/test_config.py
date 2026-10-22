@@ -117,19 +117,39 @@ class TestStoreClients:
         extra = json.loads(server_args["output_store_backend_extra_config"])
         assert extra == {**output_store_backend_config(args), "local_hostname": "10.0.0.7"}
 
-    def test_a_client_without_a_host_resolves_its_own_when_it_connects(self, monkeypatch):
+    def test_an_engine_names_no_device_without_an_init_kwarg(self, monkeypatch):
+        """SGLang reads no MOONCAKE_* variable, and the building process's MOONCAKE_DEVICE may be another node's."""
+        monkeypatch.setenv("MOONCAKE_DEVICE", "mlx5_builder")
+        args = make_args(mooncake_store_init_kwargs={"master_server_address": "10.0.0.1:50051"})
+
+        server_args = sglang_output_store_server_args(args, local_hostname="10.0.0.7")
+
+        assert "device_name" not in json.loads(server_args["output_store_backend_extra_config"])
+
+    def test_a_client_resolves_its_own_host_and_device_when_it_connects(self, monkeypatch):
+        """An init kwarg names the device for every client; otherwise the connecting node's MOONCAKE_DEVICE does."""
         created = []
         module = types.ModuleType("radix_transfer_plugins")
         module.create_backend = lambda name, config: created.append((name, json.loads(config))) or "backend"
         module.OutputStore = lambda *, backend: SimpleNamespace(backend=backend)
         monkeypatch.setitem(sys.modules, "radix_transfer_plugins", module)
+        # Built on one node...
+        monkeypatch.setenv("MOONCAKE_DEVICE", "mlx5_builder")
+        named = output_store_backend_config(make_args())
+        unnamed = output_store_backend_config(
+            make_args(mooncake_store_init_kwargs={"master_server_address": "10.0.0.1:50051"})
+        )
+        # ...connected on another.
         monkeypatch.setenv("MOONCAKE_LOCAL_HOSTNAME", "10.0.0.9")
+        monkeypatch.setenv("MOONCAKE_DEVICE", "mlx5_client")
 
-        store = connect_output_store(output_store_backend_config(make_args()))
+        for config in (named, unnamed):
+            assert connect_output_store(config).backend == "backend"
 
-        assert store.backend == "backend"
-        [(name, config)] = created
-        assert name == "mooncake" and config["local_hostname"] == "10.0.0.9"
+        assert [(name, config["local_hostname"], config["device_name"]) for name, config in created] == [
+            ("mooncake", "10.0.0.9", "mlx5_0"),
+            ("mooncake", "10.0.0.9", "mlx5_client"),
+        ]
 
     def test_no_reader_without_the_switch(self):
         assert output_store_reader(make_args(use_output_store=False)) is None

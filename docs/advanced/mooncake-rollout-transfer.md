@@ -279,6 +279,9 @@ Requirements:
 - `--output-store-local-buffer-size` sets the local buffer of every output store client;
   an engine puts all stored arrays of a response through it at once, so it must hold one
   response's routed experts, indexer top-k and sampling mask together.
+- An RDMA device for engines through `device_name` in `--mooncake-store-init-kwargs`
+  when they need one: SGLang reads no `MOONCAKE_*` variable. The other clients also
+  read `MOONCAKE_DEVICE` on their own node.
 - Store capacity for every rollout batch that is alive at once. A batch's objects stay
   stored from generation until its `train` step, so the segments the training nodes
   contribute (`global_segment_size` per node, above) must hold, next to Miles' own

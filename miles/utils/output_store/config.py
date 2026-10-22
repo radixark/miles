@@ -117,11 +117,12 @@ def check_output_store_args(args: argparse.Namespace) -> None:
 def output_store_backend_config(args: argparse.Namespace, *, local_hostname: str | None = None) -> dict[str, Any]:
     """The radix_transfer_plugins ``MooncakeConfig`` of a client of this run's output store.
 
-    The connection comes from Miles' own Mooncake config. ``local_hostname`` is the client's own
-    address: an engine passes its host; None leaves it to ``connect_output_store`` in the process
-    that connects, which may run on another node than the one building the config.
+    The connection comes from Miles' own Mooncake config. ``local_hostname`` and ``device_name`` belong
+    to the client's node, which may not be the node building the config: an engine passes its host, and
+    None leaves either to ``connect_output_store`` in the process that connects.
     """
-    mooncake = compute_mooncake_store_config(args.mooncake_store_init_kwargs or {}, contribute_segment=False)
+    init_kwargs = args.mooncake_store_init_kwargs or {}
+    mooncake = compute_mooncake_store_config(init_kwargs, contribute_segment=False)
     return {
         "master_server_address": mooncake["master_server_addr"],
         "local_hostname": local_hostname,
@@ -130,7 +131,8 @@ def output_store_backend_config(args: argparse.Namespace, *, local_hostname: str
         "key_prefix": f"{_KEY_PREFIX_BASE}/{args.run_uuid}",
         "protocol": mooncake["protocol"],
         "metadata_server": mooncake["metadata_server"],
-        "device_name": mooncake["rdma_devices"],
+        # MOONCAKE_DEVICE may differ by node, so only an init kwarg names the device for every client.
+        "device_name": init_kwargs.get("device_name") or None,
         "replica_num": args.mooncake_replica_num,
     }
 
@@ -138,6 +140,10 @@ def output_store_backend_config(args: argparse.Namespace, *, local_hostname: str
 def sglang_output_store_server_args(args: argparse.Namespace, *, local_hostname: str) -> dict[str, str]:
     """The ``ServerArgs`` fields that make an engine write to the run's output store."""
     config = output_store_backend_config(args, local_hostname=local_hostname)
+    if config["device_name"] is None:
+        # SGLang reads no MOONCAKE_* variable: without an init kwarg, the engine names Mooncake no device,
+        # as Miles' own client does without MOONCAKE_DEVICE.
+        del config["device_name"]
     return {"output_store_backend": _BACKEND, "output_store_backend_extra_config": json.dumps(config)}
 
 
@@ -146,10 +152,11 @@ def connect_output_store(config: dict[str, Any]) -> OutputStore:
     # radix_transfer_plugins ships with SGLang and is not a Miles dependency.
     from radix_transfer_plugins import OutputStore, create_backend
 
-    if config["local_hostname"] is None:
-        # This host, resolved as Miles resolves its own Mooncake client's (MOONCAKE_LOCAL_HOSTNAME or the node IP).
-        local_hostname = compute_mooncake_store_config({}, contribute_segment=False)["local_hostname"]
-        config = {**config, "local_hostname": local_hostname}
+    # This node's address and device, resolved as Miles resolves its own Mooncake client's
+    # (MOONCAKE_LOCAL_HOSTNAME or the node IP, and MOONCAKE_DEVICE).
+    local = compute_mooncake_store_config({}, contribute_segment=False)
+    node_values = {"local_hostname": local["local_hostname"], "device_name": local["rdma_devices"]}
+    config = {**config, **{key: value for key, value in node_values.items() if config[key] is None}}
 
     return OutputStore(backend=create_backend(_BACKEND, json.dumps(config)))
 
