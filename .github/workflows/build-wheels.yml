@@ -11,8 +11,8 @@ name: Build Wheels
 #   te          radixark/TransformerEngine miles-main  x86_64, docker-build runner
 #   sglang      sgl-project/sglang sglang-miles        x86_64 + aarch64, GitHub-hosted
 #
-# sglang goes to its own sglang-miles-<arch> releases, which keep every version for
-# Miles wheels that pin one, so it never touches the rolling set the image installs.
+# sglang goes to its own sglang-miles-<arch> releases, which keep every version a Miles
+# wheel may pin, outside the rolling set the image installs.
 #
 # There is no self-hosted ARM64 runner, so aarch64 int4_qat and te are rebuilt
 # by hand with the miles-wheels README commands.
@@ -122,8 +122,7 @@ jobs:
 
           # Sets BUILT to the commit release $1's manifest $2 records, empty when the
           # release holds none yet. A failed lookup fails the job instead of reading as
-          # "never built", except a missing release when $3 is allow-missing: the
-          # sglang-miles history releases are created by their first publish.
+          # "never built", except a missing release with $3 allow-missing (created on first publish).
           read_built() {
             local url err
             err=$(mktemp)
@@ -177,8 +176,7 @@ jobs:
           ROUTER_MATRIX=$(jq -cn --argjson x "$ROUTER_X86" --argjson a "$ROUTER_ARM64" '[
             (if $x then {arch: "x86_64", build_arch: "x86", runner: "ubuntu-24.04"} else empty end),
             (if $a then {arch: "aarch64", build_arch: "aarch64", runner: "ubuntu-24.04-arm"} else empty end)]')
-          # glibc 2.35 runners cap auditwheel's tag at manylinux_2_35, so the wheel
-          # installs on Ubuntu 22.04 and newer.
+          # glibc 2.35: the wheel installs on Ubuntu 22.04 and newer
           SGLANG_MATRIX=$(jq -cn --argjson x "$SGLANG_X86" --argjson a "$SGLANG_ARM64" '[
             (if $x then {arch: "x86_64", build_arch: "x86", runner: "ubuntu-22.04"} else empty end),
             (if $a then {arch: "aarch64", build_arch: "aarch64", runner: "ubuntu-22.04-arm"} else empty end)]')
@@ -382,7 +380,7 @@ jobs:
           WHEEL_DIR="${RUNNER_TEMP}/wheels" python miles-wheels/build_wheels.py build --cuda "$CUDA" \
             --arch ${{ matrix.build_arch }} --only sglang --sglang-ref "$SGLANG_SHA"
 
-      # Not wheels-<arch>-*: the rolling-release publish job downloads that pattern.
+      # not wheels-<arch>-*, which the rolling-release publish job downloads
       - uses: actions/upload-artifact@v4
         with:
           name: sglang-${{ matrix.arch }}
@@ -392,9 +390,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Same credentials and boundary as publish below, into the history releases.
-  # Each arch publishes on its own: its history release stands alone, so an arch whose
-  # build failed (no artifact) must not hold back the other.
+  # each arch publishes alone; a failed arch has no artifact
   publish-sglang:
     needs: [check, build-sglang]
     if: always() && contains(fromJSON('["success", "failure"]'), needs.build-sglang.result)
