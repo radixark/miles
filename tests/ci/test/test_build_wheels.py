@@ -119,10 +119,27 @@ def test_sglang_builds_both_arches_on_github_runners_only_when_stale(tmp_path, b
     assert json.loads(outputs["publish_matrix"]) == []
 
 
-def test_a_release_that_does_not_exist_yet_reads_as_never_built(tmp_path):
+def test_a_history_release_that_does_not_exist_yet_reads_as_never_built(tmp_path):
     result, outputs = run_check(tmp_path, "sglang", ["sglang"], force="false", missing_release=True)
     assert result.returncode == 0, result.stderr
     assert len(json.loads(outputs["sglang_matrix"])) == 2
+
+
+def test_a_missing_rolling_release_still_stops_the_run(tmp_path):
+    """Only the history releases are created by their first publish; the image's releases must exist."""
+    result, outputs = run_check(tmp_path, "sgl-router", ["sgl-router"], force="false", missing_release=True)
+    assert result.returncode != 0
+    assert "cannot read release" in result.stdout  # the ::error:: annotation
+    assert not outputs
+
+
+def test_each_sglang_arch_publishes_whatever_the_other_did():
+    job = WORKFLOW["jobs"]["publish-sglang"]
+    assert '"failure"' in job["if"] and '"success"' in job["if"]
+    download = next(step for step in job["steps"] if step.get("uses") == "actions/download-artifact@v4")
+    upload = job["steps"][-1]
+    assert download["continue-on-error"] is True
+    assert upload["if"] == f"steps.{download['id']}.outcome == 'success'"
 
 
 @pytest.mark.parametrize(

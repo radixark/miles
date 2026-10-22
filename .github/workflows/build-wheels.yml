@@ -121,14 +121,16 @@ jobs:
           is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
 
           # Sets BUILT to the commit release $1's manifest $2 records, empty when the
-          # release or the manifest does not exist yet. Any other failed lookup fails
-          # the job instead of reading as "never built".
+          # release holds none yet. A failed lookup fails the job instead of reading as
+          # "never built", except a missing release when $3 is allow-missing: the
+          # sglang-miles history releases are created by their first publish.
           read_built() {
             local url err
             err=$(mktemp)
             if ! url=$(gh api "repos/${WHEELS_REPO}/releases/tags/$1" \
               --jq ".assets[] | select(.name == \"$2\") | .url" 2>"$err"); then
-              grep -q "HTTP 404" "$err" || { cat "$err" >&2; fail "cannot read release $1"; }
+              { [ "${3:-}" = allow-missing ] && grep -q "HTTP 404" "$err"; } \
+                || { cat "$err" >&2; fail "cannot read release $1"; }
               url=""
             fi
             BUILT=""
@@ -137,10 +139,10 @@ jobs:
                 || fail "cannot read $2 from release $1"
             fi
           }
-          # stale <source sha> <release tag> <manifest>
+          # stale <source sha> <release tag> <manifest> [allow-missing]
           stale() {
             [ "$FORCE" = true ] && return 0
-            read_built "$2" "$3"
+            read_built "$2" "$3" "${4:-}"
             [ "$1" != "$BUILT" ]
           }
           wanted() { [ "$WHEELS_INPUT" = all ] || [ "$WHEELS_INPUT" = "$1" ]; }
@@ -168,8 +170,8 @@ jobs:
           if wanted sglang; then
             SGLANG_SHA=$(gh api "repos/${SGLANG_REPO}/commits/${SGLANG_REF}" --jq .sha)
             is_sha "$SGLANG_SHA" || fail "cannot resolve ${SGLANG_REPO}@${SGLANG_REF}"
-            if stale "$SGLANG_SHA" "${SGLANG_HISTORY_RELEASE}-x86_64" sglang-source.json; then SGLANG_X86=true; fi
-            if stale "$SGLANG_SHA" "${SGLANG_HISTORY_RELEASE}-aarch64" sglang-source.json; then SGLANG_ARM64=true; fi
+            if stale "$SGLANG_SHA" "${SGLANG_HISTORY_RELEASE}-x86_64" sglang-source.json allow-missing; then SGLANG_X86=true; fi
+            if stale "$SGLANG_SHA" "${SGLANG_HISTORY_RELEASE}-aarch64" sglang-source.json allow-missing; then SGLANG_ARM64=true; fi
           fi
 
           ROUTER_MATRIX=$(jq -cn --argjson x "$ROUTER_X86" --argjson a "$ROUTER_ARM64" '[
@@ -391,9 +393,11 @@ jobs:
           retention-days: 7
 
   # Same credentials and boundary as publish below, into the history releases.
+  # Each arch publishes on its own: its history release stands alone, so an arch whose
+  # build failed (no artifact) must not hold back the other.
   publish-sglang:
     needs: [check, build-sglang]
-    if: always() && needs.build-sglang.result == 'success'
+    if: always() && contains(fromJSON('["success", "failure"]'), needs.build-sglang.result)
     strategy:
       fail-fast: false
       matrix:
@@ -421,11 +425,14 @@ jobs:
           python-version: '3.12'
 
       - uses: actions/download-artifact@v4
+        id: download
+        continue-on-error: true
         with:
           name: sglang-${{ matrix.arch }}
           path: ${{ runner.temp }}/wheels
 
       - name: Sync into the sglang-miles history release
+        if: steps.download.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           BUILD_ARCH: ${{ matrix.build_arch }}
