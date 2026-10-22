@@ -22,7 +22,8 @@ chunk is its own file), so those are retried. So is a handshake, up to 3 times p
 until the gateway's 300 s admission deadline (``504``, on both fleets in October 2026). One that timed out may still
 start a container nobody can name, which idles out after the replica's 2 h idle timeout whether or not the handshake
 is resent, so resending costs no more than failing the start would, and keeps the episode's group. The binding expires
-after 15 idle minutes, so a keepalive exec runs while the container idles through a long generation.
+after 15 idle minutes, so a keepalive renews it (``/affinity/renew``, which runs nothing in the container) while
+the container idles through a long generation.
 
 A container the fleet reports lost (``PodmanContainerLostError``: the replica's watchdog removed it past its limits,
 4 GB of RSS or 2048 processes on 2026-10-16, it stopped because its init process died, or its replica left the
@@ -119,7 +120,7 @@ class TmaxGatewaySandbox(SandboxBase):
             raise ValueError("the gateway sandbox backend needs TMAX_GATEWAY_URL")
         self._client: PodmanClient | None = None
         self._session: PodmanSession | None = None
-        self._lock = asyncio.Lock()  # one exec at a time per container; the keepalive skips while one runs
+        self._lock = asyncio.Lock()  # one exec at a time per container
         self._last_request = time.monotonic()
         self._keepalive: asyncio.Task | None = None
 
@@ -277,17 +278,17 @@ class TmaxGatewaySandbox(SandboxBase):
             logger.warning(f"gateway job-dir cleanup failed (ignored): {str(e)[:200]}")
 
     async def _keepalive_loop(self) -> None:
-        """Refresh the binding's TTL while the container idles between turns."""
+        """Renew the binding's TTL while the container idles between turns."""
         interval = _settings().gateway_keepalive_s
         while True:
             await asyncio.sleep(interval)
-            if self._lock.locked() or time.monotonic() - self._last_request < interval / 2:
-                continue  # a command is running, or ran recently, which refreshes the TTL itself
-            async with self._lock:
-                try:
-                    await self._call("true", timeout=15.0)
-                except PodmanGatewayError as e:  # a lost container surfaces on the episode's next command
-                    logger.warning(f"gateway keepalive failed: {e}")
+            session = self._session
+            if session is None or time.monotonic() - self._last_request < interval / 2:
+                continue  # a command ran recently, which refreshes the TTL itself
+            try:
+                await self._client.renew(session.affinity_id)
+            except PodmanGatewayError as e:  # a lost binding surfaces on the episode's next command
+                logger.warning(f"gateway keepalive failed: {e}")
 
     # ------------------------------------------------------------------ file IO
 

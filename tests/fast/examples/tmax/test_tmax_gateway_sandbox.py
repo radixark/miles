@@ -76,6 +76,10 @@ class FakeGateway:
             return web.json_response(
                 {"affinity_id": cid, "container_id": cid, "instance_id": "replica-1", "image": payload["image"]}
             )
+        if op == "renew":
+            if payload["affinity_id"] not in self.containers:
+                return web.json_response({"error": "strict affinity binding was not found or has expired"}, status=404)
+            return web.json_response({"status": "renewed", "expires_at": 0.0})
         if op == "close":
             self.closed.append(payload["affinity_id"])
             self.containers.pop(payload["affinity_id"], None)
@@ -324,6 +328,20 @@ def test_handshakes_give_up_after_their_attempts(gateway, task_dir, monkeypatch)
     with pytest.raises(tmax_sandbox.SandboxInfraError):
         run(gateway, episode, monkeypatch)
     assert gateway.requests == ["handshake"] * tmax_gateway._HANDSHAKE_ATTEMPTS
+
+
+def test_keepalive_renews_the_binding_without_running_a_command(gateway, task_dir, monkeypatch):
+    monkeypatch.setenv("TMAX_GATEWAY_KEEPALIVE_S", "0.05")
+
+    async def idle_episode():
+        async with tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir):
+            execs = gateway.requests.count("podman")
+            await asyncio.sleep(0.4)  # a long generation: no commands
+            return execs
+
+    execs_before_idle = run(gateway, idle_episode, monkeypatch)
+    assert gateway.requests.count("renew") >= 2
+    assert gateway.requests.count("podman") == execs_before_idle, "the keepalive ran nothing in the container"
 
 
 def test_a_container_lost_while_starting_is_replaced(gateway, task_dir, monkeypatch):
