@@ -1,9 +1,28 @@
 """Pack and gather converted expert tensors and scales across training ranks."""
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
+from torch.distributed import Work
+
+
+class _CompositeWork(Work):
+    """Aggregates multiple Work handles so callers can wait once.
+
+    Mirrors the pattern used elsewhere in the codebase (e.g. test_utils.det_process_group._CoalescedP2PWork).
+    """
+
+    def __init__(self, works: list[Work]) -> None:
+        super().__init__()
+        self._works = works
+
+    def wait(self, timeout: timedelta | None = None) -> bool:
+        for work in self._works:
+            if not (work.wait() if timeout is None else work.wait(timeout)):
+                return False
+        return True
 
 
 @dataclass(frozen=True)
@@ -47,6 +66,7 @@ class ExpertGather:
         self._local_index = self._source_ranks.index(dist.get_rank())
         self._layouts: tuple[_PayloadLayout, ...] | None = None
         self._payload_sizes: tuple[int, ...] = ()
+        self._source_indices: tuple[int, ...] = ()
         self._single_source: int | None = None
         self._total_bytes = 0
         self._uniform = False
@@ -67,6 +87,7 @@ class ExpertGather:
             self._total_bytes = sum(self._payload_sizes)
             self._uniform = len(set(self._payload_sizes)) == 1
             sources = [index for index, size in enumerate(self._payload_sizes) if size]
+            self._source_indices: tuple[int, ...] = tuple(sources)
             self._single_source = sources[0] if len(sources) == 1 else None
 
         local_layout = self._layouts[self._local_index]
@@ -94,8 +115,14 @@ class ExpertGather:
         if self._uniform:
             # Native NCCL all-gather, in place: no flattened temporary or copies.
             return dist.all_gather_into_tensor(storage, local_payload, group=self._group, async_op=True)
-        # NCCL coalesces uneven all-gather internally into one Work handle.
-        return dist.all_gather(payloads, local_payload, group=self._group, async_op=True)
+        # Multi-source uneven sizes: issue one async broadcast per non-empty source.
+        # This stays off NCCL's AllGatherV planner path (see issue #4003), which
+        # has a tuner-plugin out-of-bounds bug in NCCL 2.29.x/2.30.x.
+        works = [
+            dist.broadcast(payloads[src_idx], src=self._source_ranks[src_idx], group=self._group, async_op=True)
+            for src_idx in self._source_indices
+        ]
+        return _CompositeWork(works)
 
 
 def _build_payload_layout(units):
