@@ -129,8 +129,9 @@ def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: G
 
 
 def validate_save_options(payload: dict) -> None:
-    if payload.get("ttl_seconds") is not None:
-        raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
+    ttl_seconds = payload.get("ttl_seconds")
+    if ttl_seconds is not None and (type(ttl_seconds) is not int or ttl_seconds <= 0):
+        raise UserInputError("ttl_seconds must be a positive integer number of seconds")
     if payload.get("user_metadata") is not None:
         raise UserInputError("user_metadata is not supported by this gateway")
 

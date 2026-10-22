@@ -1,6 +1,8 @@
 """The service preserves request ordering, tenant isolation, and failure isolation."""
 
 import asyncio
+import json
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from tests.fast.tinker.harness import (
     model_payload,
 )
 
+from miles.tinker.core import utils as utils_module
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
@@ -852,3 +855,129 @@ async def test_dispatcher_shutdown_stops_model_creation_and_sampling(tmp_path, m
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+_PAST = "2000-01-01T00:00:00+00:00"
+_FUTURE = "2999-01-01T00:00:00+00:00"
+
+
+def _seed_checkpoint(checkpoint_root, model_id: str, kind: str, name: str, meta: dict) -> Path:
+    """Write a checkpoint dir straight to disk, bypassing the save path, for sweeper tests."""
+    checkpoint_dir = Path(checkpoint_root) / model_id / kind / name
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "META.json").write_text(json.dumps(meta))
+    return checkpoint_dir
+
+
+async def test_a_checkpoint_past_its_ttl_will_not_load(service, monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(utils_module.time, "time", lambda: now[0])
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "kept", "overwrite": False, "ttl_seconds": 60},
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+
+    now[0] += 61
+    fresh_id = await created_model(service)
+    load = service.submit("tenant", "load_state", {"model_id": fresh_id, "seq_id": 1, "path": path, "optimizer": True})
+    future = await await_settled(service, "tenant", load)
+    assert (future.state, future.error_category) == (FAILED, "user")
+    assert "expired" in future.error
+
+
+async def test_a_checkpoint_within_its_ttl_still_loads(service, monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(utils_module.time, "time", lambda: now[0])
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "kept", "overwrite": False, "ttl_seconds": 600},
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+
+    now[0] += 60
+    fresh_id = await created_model(service)
+    load = service.submit("tenant", "load_state", {"model_id": fresh_id, "seq_id": 1, "path": path, "optimizer": True})
+    assert (await await_settled(service, "tenant", load)).state == DONE
+
+
+async def test_a_checkpoint_written_before_ttl_support_still_loads(service):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "legacy", "overwrite": False}
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    meta_file = (
+        Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "legacy")) / "META.json"
+    )
+    meta = json.loads(meta_file.read_text())
+    del meta["expires_at"]  # a gateway from before this change never wrote the key
+    meta_file.write_text(json.dumps(meta))
+
+    fresh_id = await created_model(service)
+    load = service.submit("tenant", "load_state", {"model_id": fresh_id, "seq_id": 1, "path": path, "optimizer": True})
+    assert (await await_settled(service, "tenant", load)).state == DONE
+
+
+async def test_the_sweeper_deletes_a_checkpoint_past_its_ttl(service):
+    dead = _seed_checkpoint(service.config.checkpoint_root, "model-x", "weights", "old", {"expires_at": _PAST})
+    live = _seed_checkpoint(service.config.checkpoint_root, "model-x", "weights", "new", {"expires_at": _FUTURE})
+
+    await service._expire_checkpoints()
+
+    assert not dead.exists(), "an expired checkpoint must be removed"
+    assert live.exists(), "a checkpoint still inside its TTL must be left alone"
+
+
+async def test_the_sweeper_retires_a_sampling_session_bound_to_an_expired_checkpoint(service, monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(utils_module.time, "time", lambda: now[0])
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": 60})
+    result = (await await_settled(service, "tenant", save)).result
+    sampling_session_id = result["sampling_session_id"]
+    assert sampling_session_id in service.sampling_sessions
+
+    now[0] += 61
+    await service._expire_checkpoints()
+
+    assert sampling_session_id not in service.sampling_sessions
+    with pytest.raises(UserInputError, match="unknown sampling session"):
+        service.get_sampler("tenant", sampling_session_id)
+
+
+async def test_a_save_reclaims_a_name_whose_checkpoint_has_expired(service, monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(utils_module.time, "time", lambda: now[0])
+    model_id = await created_model(service)
+    first = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "slot", "overwrite": False, "ttl_seconds": 60},
+    )
+    assert (await await_settled(service, "tenant", first)).state == DONE
+
+    now[0] += 61  # overwrite=False still succeeds because the colliding name has expired
+    second = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 2, "name": "slot", "overwrite": False}
+    )
+    assert (await await_settled(service, "tenant", second)).state == DONE
+
+
+async def test_the_sweeper_sweeps_once_at_startup(tmp_path):
+    gateway = make_service(tmp_path)
+    dead = _seed_checkpoint(gateway.config.checkpoint_root, "model-x", "weights", "old", {"expires_at": _PAST})
+    run_task = asyncio.create_task(gateway.run())
+    try:
+        deadline = time.monotonic() + 5
+        while dead.exists():
+            assert time.monotonic() < deadline, "the startup sweep never deleted the expired checkpoint"
+            await asyncio.sleep(0.01)
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
