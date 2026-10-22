@@ -233,7 +233,7 @@ class TestReads:
         plan = response("a", prompt=3, output=2).merge_turn(response("b", prompt=8, output=1), observation_tokens=3)
         plan = plan.adopt_refs([ref("x", seq_rows=4)])
 
-        reads = store_reads([plan, plan])
+        reads = store_reads([plan, plan], support_topk=2)
 
         # "a"'s forward rows were replaced by "b"'s; "x" is owned but unused.
         assert {key: names for key, (_, names) in reads.items()} == {
@@ -247,16 +247,19 @@ class TestReads:
         # Another sample whose forward rows still come from "a".
         alone = response("a", prompt=3, output=2)
 
-        reads = store_reads([merged, alone])
+        reads = store_reads([merged, alone], support_topk=2)
 
         assert reads["a"][1] == [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS, R3, INDEXER]
 
-    def test_support_log_probs_are_read_only_where_stored(self):
+    def test_support_log_probs_are_read_only_in_support_mode(self):
         # A selected-mode request: SGLang stores no support log-probs.
         selected = Ref("s", (Spec(MASK_LENGTHS, "int32", (2,)), Spec(MASK_TOKEN_IDS, "int32", (3,))))
         plan = StorePlan.from_response(selected, request=request({MASK}), num_tokens=5, response_length=2)
-        assert {key: names for key, (_, names) in store_reads([plan]).items()} == {"s": [MASK_LENGTHS, MASK_TOKEN_IDS]}
-        assert store_reads([StorePlan(fields={}, owned_refs=(ref("x"),))]) == {}
+
+        assert store_reads([plan], support_topk=0)["s"][1] == [MASK_LENGTHS, MASK_TOKEN_IDS]
+        # Asked for though the ref lacks them, so the read fails instead of materialize.
+        assert store_reads([plan], support_topk=2)["s"][1] == [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS]
+        assert store_reads([StorePlan(fields={}, owned_refs=(ref("x"),))], support_topk=2) == {}
 
 
 class TestValidate:

@@ -154,6 +154,10 @@ class Segments:
         """
         raise NotImplementedError
 
+    def needed(self, *, support_topk: int) -> tuple[str, ...]:
+        """The stored arrays ``materialize`` reads from this field's objects."""
+        return self.stored
+
 
 class ForwardSegments(Segments):
     """A forward output: a row per sequence position but the last.
@@ -278,6 +282,10 @@ class SamplingMaskSegments(Segments):
     @staticmethod
     def expected_rows(*, num_tokens: int, response_length: int) -> int:
         return response_length
+
+    def needed(self, *, support_topk: int) -> tuple[str, ...]:
+        # Support log-probs exist only for support requests.
+        return self.stored if support_topk else (MASK_LENGTHS, MASK_TOKEN_IDS)
 
     def materialize(
         self,
@@ -498,21 +506,22 @@ class StorePlan:
         )
 
 
-def store_reads(plans: Iterable[StorePlan]) -> dict[str, tuple[StoreRef, list[str]]]:
-    """What ``materialize`` reads for these plans, by store key: the ref, and its arrays the plans' rows come from.
+def store_reads(plans: Iterable[StorePlan], *, support_topk: int) -> dict[str, tuple[StoreRef, list[str]]]:
+    """What ``materialize`` reads for these plans, by store key: the ref, and the arrays it needs from the object.
 
-    Each object and array once. Only arrays the object stores: support log-probs exist only for
-    support requests. Objects a plan owns without using, such as replaced forward rows, are not read.
+    Each object and array once; ``support_topk`` as in ``Segments.materialize``. An array the ref
+    lacks is still asked for, so the read, not ``materialize``, fails on it. Objects a plan owns
+    without using, such as replaced forward rows, are not read.
     """
     reads: dict[str, tuple[StoreRef, list[str]]] = {}
     for plan in plans:
         for segments in plan.fields.values():
+            needed = segments.needed(support_topk=support_topk)
             for seg in segments.segs:
                 if seg.ref is None:
                     continue
-                stored = {spec.name for spec in seg.ref.fields}
                 names = reads.setdefault(seg.ref.key, (seg.ref, []))[1]
-                names += [name for name in segments.stored if name in stored and name not in names]
+                names += [name for name in needed if name not in names]
     return reads
 
 

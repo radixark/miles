@@ -28,7 +28,7 @@ def materialize_store_columns(args: Namespace, rollout_data: dict, *, read: Call
     plans = [StorePlan.from_dict(entry) for entry in entries]
     k = args.rollout_top_logprobs_num
     support_topk = k if requests_support_logprobs(args) else 0
-    objects = _read_objects(plans, read)
+    objects = _read_objects(plans, read, support_topk=support_topk)
     columns = [
         plan.materialize(
             objects,
@@ -49,9 +49,9 @@ def materialize_store_columns(args: Namespace, rollout_data: dict, *, read: Call
     compact_score_centering_candidates(args, rollout_data)
 
 
-def _read_objects(plans: Sequence[StorePlan], read: Callable) -> dict[str, dict[str, Any]]:
+def _read_objects(plans: Sequence[StorePlan], read: Callable, *, support_topk: int) -> dict[str, dict[str, Any]]:
     """Read every object the shard's plans take rows from, once."""
-    requests = store_reads(plans)
+    requests = store_reads(plans, support_topk=support_topk)
     try:
         stashes = read(list(requests.values()))
     except (KeyError, ValueError) as e:
