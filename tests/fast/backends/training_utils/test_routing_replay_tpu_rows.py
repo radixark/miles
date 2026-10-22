@@ -21,21 +21,26 @@ def _sample(prefill_rows: int, decode_rows: int, *, prefill_value: int = -1) -> 
 
 def test_uncaptured_prefill_rows_pass_and_are_counted(caplog):
     with caplog.at_level(logging.INFO):
-        check_tpu_rollout_routed_experts([_sample(5, 3), _sample(2, 4)])
+        check_tpu_rollout_routed_experts([_sample(5, 3), _sample(2, 4)], response_lengths=[4, 5])
     assert "7/14 rows carry no engine ids" in caplog.text
 
 
 def test_an_engine_capturing_in_compiled_prefill_is_refused():
     """Prefill capture corrupts compiled TPU prefill programs; the run must not train on its rollouts."""
     with pytest.raises(RuntimeError, match="sglang-torchtpu#1580"):
-        check_tpu_rollout_routed_experts([_sample(5, 3, prefill_value=4)])
+        check_tpu_rollout_routed_experts([_sample(5, 3, prefill_value=4)], response_lengths=[4])
 
 
 def test_a_one_token_response_decodes_no_rows_and_passes():
     """Its rows are all prefill rows, so all -1, correctly."""
-    check_tpu_rollout_routed_experts([_sample(6, 0), _sample(2, 4), _sample(0, 0)])
+    check_tpu_rollout_routed_experts([_sample(6, 0), _sample(2, 4), _sample(0, 0)], response_lengths=[1, 5, 1])
 
 
-def test_a_batch_without_any_routed_experts_is_refused():
-    with pytest.raises(RuntimeError, match="no routed experts for any row"):
-        check_tpu_rollout_routed_experts([_sample(6, 0), _sample(3, 0)])
+def test_a_shard_of_only_one_token_responses_passes():
+    """A data-parallel rank can draw only immediate-EOS samples while other ranks hold decoded ids."""
+    check_tpu_rollout_routed_experts([_sample(6, 0), _sample(3, 0)], response_lengths=[1, 1])
+
+
+def test_decoded_rows_without_any_routed_experts_are_refused():
+    with pytest.raises(RuntimeError, match="no routed experts for any of 4 decoded rows"):
+        check_tpu_rollout_routed_experts([_sample(6, 0), _sample(8, 0)], response_lengths=[1, 5])
