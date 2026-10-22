@@ -209,7 +209,11 @@ class TestComputeZeroStdMetrics:
         args = make_args(advantage_estimator="grpo", reward_key=None)
         samples = make_samples_grouped(2, 4, rewards=[0.0, 0.5, 1.0, 0.7, 0.2, 0.8, 0.3, 0.6])
         out = _compute_zero_std_metrics(args, samples)
-        assert out == {"zero_std/all_zero_percentage": 0.0, "zero_std/all_one_percentage": 0.0}
+        assert out == {
+            "zero_std/all_zero_percentage": 0.0,
+            "zero_std/all_one_percentage": 0.0,
+            "zero_std/percentage": 0.0,
+        }
 
     def test_grpo_zero_std_groups_produce_bucket_counts_and_percentages(self):
         """1 group all-1, 1 group all-0, 1 group mixed → bucket counts plus the

@@ -1,10 +1,7 @@
 from dataclasses import replace
 
-import polars as pl
-from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
 
 from miles.dashboard.advisory import compute_advisories
-from miles.dashboard.dump_reader import DumpReader, RolloutIds
 from miles.dashboard.store import (
     EngineSample,
     GpuSample,
@@ -338,53 +335,38 @@ def test_kv_bound_concurrency_names_the_real_bottleneck(tmp_path):
     assert "do NOT lower" in advisory.message
 
 
-class _StubReader:
-    def __init__(self, groups_df, summary_df):
-        self._groups = groups_df
-        self._summary = summary_df
-
-    def rollout_ids(self):
-        return RolloutIds(train=[3], eval=[])
-
-    def groups(self, rollout_id, *, evaluation=False):
-        return self._groups
-
-    def summary(self, rollout_id, *, evaluation=False):
-        return self._summary
-
-
-def _summary_df(truncated):
-    return pl.DataFrame({"truncated": truncated})
+def _rollout_store(tmp_path, metrics: dict, *, args: dict | None = None) -> MetricStore:
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="advisory-test", start_ts=0.0, args=args or {}))
+    writer.append(MetricsRecord(ts=1.0, step_key="rollout/step", step=3, metrics=metrics))
+    writer.flush()
+    return MetricStore.load(tmp_path)
 
 
 def test_zero_std_groups_are_warning(tmp_path):
-    store = _store(tmp_path, args={}, engine_samples=[])
-    groups = pl.DataFrame({"reward_mean": [0.0, 0.0, 0.5], "zero_std": [True, True, False]})
-    [advisory] = compute_advisories(store, _StubReader(groups, _summary_df([False] * 8)))
+    """Read off the logged rollout metrics: the advisory reads no dump."""
+    store = _rollout_store(
+        tmp_path, {"rollout/zero_std/percentage": 2 / 3, "rollout/zero_std/all_zero_percentage": 2 / 3}
+    )
+    [advisory] = compute_advisories(store)
     assert advisory.level == "warning"
-    assert "zero reward std" in advisory.message
+    assert "67% of groups in rollout 3 have zero reward std" in advisory.message
+    assert "systematic failure" not in advisory.message
 
 
 def test_all_zero_rewards_note_systematic_failure(tmp_path):
-    store = _store(tmp_path, args={}, engine_samples=[])
-    groups = pl.DataFrame({"reward_mean": [0.0, 0.0], "zero_std": [True, True]})
-    [advisory] = compute_advisories(store, _StubReader(groups, _summary_df([False] * 8)))
+    store = _rollout_store(tmp_path, {"rollout/zero_std/percentage": 1.0, "rollout/zero_std/all_zero_percentage": 1.0})
+    [advisory] = compute_advisories(store)
     assert "systematic failure" in advisory.message
 
 
-def test_null_rewards_are_missing_data_not_zero_std(tmp_path):
-    store = _store(tmp_path, args={}, engine_samples=[])
-    groups = pl.DataFrame(
-        {"reward_mean": [None, None], "zero_std": [False, False]},
-        schema={"reward_mean": pl.Float64, "zero_std": pl.Boolean},
-    )
-    assert compute_advisories(store, _StubReader(groups, _summary_df([False] * 8))) == []
+def test_run_without_rollout_metrics_makes_no_rollout_claim(tmp_path):
+    assert compute_advisories(_rollout_store(tmp_path, {})) == []
 
 
 def test_truncation_warning_cites_per_turn_cap(tmp_path):
-    store = _store(tmp_path, args={"rollout_max_response_len": 8192}, engine_samples=[])
-    groups = pl.DataFrame({"reward_mean": [0.5], "zero_std": [False]})
-    [advisory] = compute_advisories(store, _StubReader(groups, _summary_df([True] * 3 + [False] * 5)))
+    store = _rollout_store(tmp_path, {"rollout/truncated_ratio": 3 / 8}, args={"rollout_max_response_len": 8192})
+    [advisory] = compute_advisories(store)
     assert advisory.level == "warning"
     assert "--rollout-max-response-len" in advisory.message
 
@@ -445,14 +427,6 @@ def test_no_mfu_metric_no_claim(tmp_path):
         )
     writer.flush()
     assert compute_advisories(MetricStore.load(tmp_path)) == []
-
-
-def test_blank_newest_step_does_not_break_rollout_advisories(tmp_path):
-    dump_dir = tmp_path / "dump"
-    dump_dummy_run(dump_dir, steps=2, with_eval=False)
-    blank_samples(dump_dir, 1)
-    store = _store(tmp_path, args={}, engine_samples=[])
-    assert compute_advisories(store, DumpReader(dump_dir)) == []
 
 
 def test_stall_older_than_the_baseline_window_is_still_judged(tmp_path):
