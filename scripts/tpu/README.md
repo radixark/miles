@@ -20,7 +20,7 @@ pip install torch==2.14.1 torchvision==0.29.1 --extra-index-url https://download
 # torchtitan v0.3.0 (the commit miles pins) with miles' torch_tpu patch: device calls, FSDP reduce, compile
 git clone https://github.com/pytorch/torchtitan.git && cd torchtitan
 git checkout $(sed -n 's/^ARG TORCHTITAN_COMMIT=//p' /path/to/miles/docker/Dockerfile)
-patch --fuzz=0 -p1 < /path/to/miles/docker/patch/torchtitan_torch_tpu.patch
+patch --fuzz=0 -p1 < /path/to/miles/docker/tpu_patch/torchtitan_torch_tpu.patch
 pip install -e . && cd ..
 
 # miles itself (its transformers pin replaces the image's)

@@ -15,7 +15,6 @@ Args:
   --recipe: smoke (3 short rollouts), bench (4 full-shape rollouts, no eval) or full.
   --model-dir / --data-dir: Directory holding Qwen3-4B / dapo-math-17k and aime-2024.
   --sglang-port: Port of the sglang server `train` connects to.
-  --enable-compile: Per-block torch.compile (default: on).
   --weight-transfer: shm (default) or disk.
   --wandb-project: wandb project; empty disables wandb (the key comes from WANDB_API_KEY or ~/.netrc).
 
@@ -67,7 +66,6 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     sglang_port: int = 30000
     sglang_env_script: str = "/sgl-workspace/sglang/benchmark/tpu/common_env.sh"
     weight_dir: str = "/dev/shm/miles_weights"
-    enable_compile: bool = True
     weight_transfer: Literal["shm", "disk"] = "shm"
     wandb_project: str = "miles-tpu"
     extra_args: str = ""
@@ -222,14 +220,10 @@ def _execute(args: ScriptArgs):
         "--micro-batch-size 1 "
         "--gradient-checkpointing "
         "--distributed-backend tpu_dist "
+        "--use-dynamic-batch-size "
+        # headroom under the fixed shape: rebalancing the packed microbatches can exceed the packing budget
+        f"--max-tokens-per-gpu {SEQ_LEN - 1024} "
     )
-    if args.enable_compile:
-        train_backend_args += (
-            "--titan-compile "
-            "--use-dynamic-batch-size "
-            # headroom under the fixed shape: rebalancing the packed microbatches can exceed the packing budget
-            f"--max-tokens-per-gpu {SEQ_LEN - 1024} "
-        )
 
     misc_args = (
         "--actor-num-nodes 1 "
