@@ -25,7 +25,7 @@ It describes the differences. The work they imply is tracked in the port's
 | Token record | open-instruct tokenizes the conversation itself and appends generated tokens | The session server records token ids, logprobs and loss masks for every call (TITO); the training sample is assembled when the episode is collected |
 | Weight sync | NCCL broadcast from learner rank 0 to every engine, driven by `weight_sync_thread` through Ray RPCs; 2 h timeout (`WEIGHT_SYNC_TIMEOUT_S`) | NCCL broadcast from trainer rank 0 in buckets, each announced to every engine by an HTTP `POST /update_weights_from_distributed`; no timeout on the HTTP wait |
 | Async | `--async_steps N`, `--inflight_updates` (engines pause with `mode="keep"`) | `--fully-async`, `--max-weight-staleness`, `--async-data-buffer-capacity-factor`, `--pause-generation-mode in_place` |
-| Policy loss | DPPO (binary TV divergence, threshold 0.1) | PPO clip 0.2 / 0.28; DPPO not implemented |
+| Policy loss | DPPO (binary TV divergence, threshold 0.1) | DPPO, `--policy-loss-type dppo_tv` (PPO clip 0.2 / 0.28 before branch `shashank/tmax-oi-parity`) |
 | Launch | `mason.py`: the code is baked into the Beaker image | `examples/tmax/beaker/submit.py`: the job clones the repository at a pinned commit |
 
 ## One step, side by side
@@ -111,14 +111,14 @@ Where the agent loop runs differs:
 |---|---|---|
 | Loss | `--loss_fn dppo --dppo_divergence_type tv --dppo_divergence_threshold 0.1`. Per token: `r = π/μ` (unclamped), `D = |μ − π|` on the sampled token, mask `M = 0` when `D > 0.1` and the update moves further away (`A > 0` with `r > 1`, or `A < 0` with `r < 1`); loss `−A·r·M`; no ratio clip (`grpo_utils.py`) | PPO clip, `--eps-clip 0.2 --eps-clip-high 0.28`. The two differ most on low-probability tokens: at `μ = 0.05` with `A > 0`, PPO stops the update at `π = 0.064`; DPPO allows up to `π = 0.15` |
 | Off-policy anchor | `--use_vllm_logprobs true` | `--use-rollout-logprobs` |
-| TIS, KL | TIS cap 0 (off); `--beta 0.0` (the reference model is still loaded and four KL estimators are logged at weight 0) | TIS off; no KL term |
+| TIS, KL | TIS cap 0 (off); `--beta 0.0` (the reference model is still loaded and four KL estimators are logged at weight 0) | TIS off; no KL term in the loss, but the KL to the base model is logged as `train/kl_loss` (`log_kl_to_base`, k3 = open-instruct's kl2) |
 | Advantages | `centered`: reward minus the group mean | `grpo --disable-grpo-std-normalization` (same) |
 | Aggregation | Token denominator, but each (rank, micro-batch) shard is weighted separately, so tokens in sparse shards weigh more | Exact global token mean, `--calculate-per-token-loss` |
 | Packing | `--pack_length 67584`, one pack per micro-batch; packs not divisible by DP are dropped | Dynamic batching, `--max-tokens-per-gpu 34816` (≥ max_seq_len / CP), balanced, nothing dropped |
 | Logits | `--lm_head_fp32 true` in trainer and vLLM | bf16 output layer; SGLang's `--sglang-enable-fp32-lm-head` exists but is not passed. bf16 rounding is most of the train/rollout gap, and only fixing both sides helps (see [Inference engines](#inference-engines)) |
 | Log-prob memory | `--use_liger_grpo_loss --liger_grpo_loss_chunk_size 8` (open-instruct's tiled LM-head loss) | `--log-probs-backend fused` |
-| Optimizer | AdamW, lr 1e-6, betas (0.9, 0.999), eps 1e-8, wd 0, constant LR, grad clip 1.0 | Adam, lr 1e-6, betas (0.9, **0.98**), wd 0, constant LR, `--clip-grad 1.0` |
-| Seed | 42 | Miles default 1234 (rollout seed 42) |
+| Optimizer | AdamW, lr 1e-6, betas (0.9, 0.999), eps 1e-8, wd 0, constant LR, grad clip 1.0 | Adam, lr 1e-6, betas (0.9, 0.999), eps 1e-8, wd 0, constant LR, `--clip-grad 1.0` (beta2 was 0.98 before branch `shashank/tmax-oi-parity`) |
+| Seed | 42 | `--seed 42` (Miles' default 1234 before branch `shashank/tmax-oi-parity`; rollout seed 42) |
 | Parallelism | ZeRO-3, Ulysses SP 4, 16 learners | TP 2 × CP 2 (+ SP), DP 4 on 16 GPUs |
 | Recompute | Full gradient checkpointing | `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1` |
 | Attention | Auto FA2/FA3; holmes variant `flash_4` | `--attention-backend flash` |
@@ -155,6 +155,7 @@ malformed and ends the episode on both sides. What differs is tokenization, time
 
 | | open-instruct | Miles |
 |---|---|---|
+| Where sandboxes run | Podman daemons in the training job; branch `literegistry_podman` adds `backend: gateway`, a LiteRegistry podman fleet behind a co-located gateway | Same two choices: `sandbox_backend: podman` (default) or `gateway` (`tmax_gateway.py`, a port of open-instruct's `GatewayBackend`) |
 | Podman | 5.6.2 and crun 1.14.3 built into the image | Ubuntu apt podman 4.9, installed at job start |
 | Bring-up | `scripts/docker/docker_login.sh`: N daemons per node with their own storage, mirror config, Docker Hub login, janitors | Same script, vendored byte-identical in `examples/tmax/beaker/podman/` |
 | Container options | 4 GB memory and swap, host network, auto user namespace, cgroups disabled | Same `containers.conf` |
@@ -175,21 +176,21 @@ malformed and ends the episode on both sides. What differs is tokenization, time
 |---|---|---|
 | Training state | DeepSpeed model, optimizer, scheduler, per-rank RNG, counters, dataloader and data-prep state every `--checkpoint_state_freq` steps (holmes: 5) | Megatron `torch_dist` model, optimizer, scheduler and RNG, plus the dataset position, every `save_interval` steps (5); about 117 GB each for the 9B |
 | Retention | Last 3; incomplete checkpoints removed at start | Newest 3 kept by the entry script's pruner (`keep_last_n_checkpoints`) |
-| HF snapshots | Every 20 steps (`--save_freq`), never pruned | None during training |
+| HF snapshots | Every 20 steps (`--save_freq`), never pruned | `hf_snapshot_every: 20`: `--save-hf` at every save (every 5 steps), the snapshots after every 20 steps kept, the rest pruned |
 | Which jobs resume | Retries of one submission | Retries of one submission: `submit.py` names each submission `<exp_name>_YYYYMMDD_HHMMSS`; `--exp-name` continues an existing run |
 | In-flight rollouts at a restart | Lost; their prompts are skipped | Lost; their prompts are skipped |
 | Trained batches on disk | `--save_traces` JSONL per trained sample with advantages; `--save_trainer_logprobs` | `dump_training_data`: `rollout_data/<step>.pt` and `train_data/<step>_<rank>.pt` (about 200 MB per step in prod) |
 | Every episode as text | No (filtered rollouts only behind a flag) | `trace_dir`: every episode's messages, reward and metrics, filtered groups included |
-| W&B | Entity `ai2-llm`, one run per submission, tags (commit, branch, PR), Beaker URL in the config | One run per submission; entity unset (the key owner's default); no tags or Beaker link |
-| Beaker description | Updated after every step with the W&B URL and progress/ETA (needs `BEAKER_TOKEN`) | Fixed at submit |
+| W&B | Entity `ai2-llm`, one run per submission, tags (commit, branch, PR), Beaker URL in the config | One run per submission; entity `ai2-llm` (`wandb_entity`); no tags or Beaker link |
+| Beaker description | Updated after every step with the W&B URL and progress/ETA (needs `BEAKER_TOKEN`) | Fixed at submit; includes the W&B run's URL |
 
 ## Metrics
 
 | Signal | open-instruct | Miles |
 |---|---|---|
-| End reasons, tool calls, tool errors, start failures, model vs env time | `tools/bash/*`, `tools/env_reset/failure_rate`, truncated / non-submitting fractions | `agent/*` from `examples/tmax/generate.RolloutFn`, only in synchronous mode (`--fully-async` rejects `--rollout-function-path`); per episode in the trace files |
+| End reasons, tool calls, tool errors, start failures, model vs env time | `tools/bash/*`, `tools/env_reset/failure_rate`, truncated / non-submitting fractions | `rollout/agent/*`, `rollout/tools/{bash,env_reset}/*` from `examples/tmax/tmax_metrics` (a `--custom-rollout-log-function-path` hook, so in both modes); per episode in the trace files |
 | Reward | `scores`, `val/avg_group_performance_pre_filter` | `rollout/raw_reward`, `rollout/raw_reward_unfiltered` |
-| Solve-rate distribution | `val/solve_rate_hist`, `batch/percent_solved_hist` | None |
+| Solve-rate distribution | `val/solve_rate_hist`, `batch/percent_solved_hist` | `rollout/unfiltered/frac_solve_rate_*` (per-group solve rate before the filter, in bins) |
 | Zero-variance drops | `batch/filtered_prompts*` | `rollout/dynamic_filter/drop_zero_std_*`; `rollout/zero_std/*` is computed after the filter and always 0 |
 | Train/rollout mismatch | `debug/vllm_vs_local_logprob_diff_{mean,max,std}` | `train/train_rollout_logprob_abs_diff`, `train/train_rollout_kl` (mean only) |
 | Staleness | `model_step_*`, `stale_results_dropped` | `rollout/fully_async/*` (average, max, token-weighted, version span), `rollout/weight_version/*` |
@@ -224,11 +225,11 @@ flags `run_tmax_qwen3_5.py` adds.
 | `--use_vllm_logprobs true` | `--use-rollout-logprobs` |
 | `--truncated_importance_sampling_ratio_cap 0.0` | TIS off (default) |
 | `--advantage_normalization_type centered` | `--advantage-estimator grpo --disable-grpo-std-normalization` |
-| `--loss_fn dppo --dppo_divergence_type tv --dppo_divergence_threshold 0.1` | `--eps-clip 0.2 --eps-clip-high 0.28` (not equivalent) |
+| `--loss_fn dppo --dppo_divergence_type tv --dppo_divergence_threshold 0.1` | `--policy-loss-type dppo_tv --dppo-tv-threshold 0.1` |
 | `--lm_head_fp32 true` | Not set |
 | `--use_liger_grpo_loss --liger_grpo_loss_chunk_size 8` | `--log-probs-backend fused` |
 | `--gradient_checkpointing` | `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1` |
-| `--seed 42` | Not set (1234) |
+| `--seed 42` | `--seed 42` |
 | `--active_sampling` | `filter_zero_std: true` (`apply_reward_nonzero_std_filter`) |
 | `--vllm_enable_prefix_caching` | SGLang radix cache (default), namespaced under v2 |
 | `--vllm_gdn_prefill_backend triton` | n/a (SGLang's own linear-attention kernels) |

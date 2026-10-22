@@ -43,6 +43,7 @@ The options below are the ones presented during the investigations; none is impl
 | H | `PYTHONFAULTHANDLER=1` in the Beaker env | Captures a Python stack if the rollout executor segfaults again | One env var | Bundle with the next restart |
 | I | More episodes in flight (1024, 256 sandboxes per node) | Uses idle engine capacity during long-tail phases | Doubles sandbox load per node, which is the suspected cause of the stalls | Not before A–C |
 | J | Episode wall-clock cap (`episode_timeout_s`) | Bounds long-tail episodes | open-instruct has no cap | Not now |
+| L | Sandboxes on a LiteRegistry podman fleet: `sandbox_backend: gateway`, open-instruct's `literegistry_podman` setup | Removes the sandboxes, and their CPU load, from the training and SGLang nodes altogether ([2026-10-16 entry](#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet)) | Implemented on branch `shashank/tmax-gateway`, 4-GPU smoke passed; depends on a fleet run outside the job | The 4-node run (fleet capacity first) |
 | M | Worker replicas' watch on the Ray head. (1) None: workers leave when the head marks the run done, or through Beaker's `propagateFailure` when the head's job fails. (2) open-instruct's: 6 failed `ray status` checks 5 s apart, with no timeout on a check. (3) A ~20-minute tolerance (`HEAD_MISS_LIMIT` 80, `aeb4f9ecd3`) | The ported check (6 misses with a 10 s timeout each, about 90 s) failed three podman attempts on 2026-10-17 while a starved head was slow to answer | (1) relies on Beaker noticing a failed head; a head that hangs without exiting would leave the workers waiting | **(1), taken 2026-10-19 by the user, after (2) ended resume 6 on a starved head that had recovered from 5 misses minutes before; (2) was used 2026-10-17 to 19** |
 | K | Make a dropped weight-sync reply non-fatal: treat it as "outcome unknown" after a completed broadcast and verify the engines' weight version | Survives the `ReadError` seen once in the old run | Miles core change; check upstream first | Only if it recurs |
 
@@ -50,6 +51,10 @@ Suggested next restart: A + B + F + H (and G once the trainer side exists), vali
 resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to continue from the latest checkpoint.
 
 ## Ideas to explore
+
+- **Remote sandbox fleets** (from the user). open-instruct has two alternatives to colocated podman:
+  1. A LiteRegistry podman fleet behind a local gateway (branch `literegistry_podman`). Now option L, ported.
+  2. A hosted OpenSandbox service on GCP (branch `pd_open_sandbox_cuda13`, paid). Not explored yet.
 
 Larger directions to evaluate against the evidence below. Add yours here.
 
@@ -263,6 +268,87 @@ the backend can be trusted at prod scale.
   servers, agents) rather than its engines.
 - **Options:** A, B, C, E (above) and L, the gateway backend (on branch `shashank/tmax-gateway`), which takes the
   sandboxes off the nodes altogether.
+
+## 2026-10-16: gateway backend (sandboxes on a podman fleet)
+
+- **The idea:** open-instruct's answer to colocated podman. A separate Beaker deployment runs rootless podman
+  replicas and Docker Hub mirrors that heartbeat into Redis; a LiteRegistry gateway routes each container's requests
+  to the replica that owns it. The training job runs no podman.
+- **Port:** `tmax_gateway.TmaxGatewaySandbox` (branch `shashank/tmax-gateway`), behind `sandbox_backend: gateway`. It
+  follows open-instruct's `GatewayBackend` but talks to the gateway through literegistry's own client,
+  `literegistry-podman-client`, which owns the API and its error types. It tracks the current literegistry release:
+  the user's call, since the fleet is launched from that repository, so there is no handling for older ones. On
+  Beaker the head starts a gateway on localhost from the fleet's head registry. Mechanics are in the
+  [Beaker runbook](beaker/README.md#sandboxes-on-a-podman-fleet-gateway-backend).
+- **Fleet on 2026-10-16:** the registry
+  `/weka/oe-adapt-default/gfaria/primebeaker/registries/podman-terminal-jupiter-head.sqlite3` points at Redis on
+  `jupiter-cs-aus-159`. The roster listed 172 podman replicas (`podman128-cap8-*` and `tmax-source-replay512-*`, on
+  neptune and jupiter hosts), 8 Docker Hub mirrors and a gateway. It is reachable from the dev box.
+- **Tests:**
+  - **Unit tests:** 12 against a fake gateway, a real HTTP server driven through literegistry's client
+    (`tests/fast/examples/tmax/test_tmax_gateway_sandbox.py`; skipped where the client is not installed).
+  - **Live loss:** a command spawning 3,000 processes ended its episode after 5.9 s with
+    `SandboxLostError: pids_limit (3012 tasks > 2048)`.
+  - **Live, from the dev box through a local gateway** (3 real tasks):
+    - containers started in 7.5–9.4 s and commands took 0.3–0.6 s;
+    - the persistent shell kept `cwd` and exports;
+    - a 70 s command finished past the replica's 60 s exec cap, and a 2 MB output was truncated as usual;
+    - the withheld tests ran in 1.4–2 s.
+  - **Beaker:** 4-GPU smoke `smoke_gateway.yaml` (experiment `01M51R3GETB3QFWJJ7YCDCGJCV`, commit `45644f34ea`)
+    passed:
+    - the head's gateway listed 172 replicas within 70 s of start, the literegistry install included;
+    - 3 steps trained, from 94 episodes, 38 of them solved, with no failed sandbox starts;
+    - the median sandbox command from holmes took 1.2 s (p90 2.3 s), the command's own run time included;
+    - the job exited 0.
+  - **Beaker, on the final code** (experiment `01M51W45C2XH6KAHYA0ACQN2X5`, commit `37f1609b5e`) passed:
+    - the head printed the fleet's `session_limits` (8 sessions, 4 GB, 2,048 processes) and saw 172 replicas 14 s
+      after starting its gateway;
+    - 3 steps trained (train/rollout log-prob gap 0.0071, 0.0085, 0.0069), every weight sync succeeded, and the job
+      exited 0;
+    - of 101 traced episodes, 37 were solved; 49 submitted, 49 filled the context, 2 made no tool call, and 1 was lost
+      to `pids_limit` (its trace records `sandbox_lost_reason: pids_limit`; the agent ran a fuzzing script) and ended
+      at once, in its own container;
+    - the 11 tool errors were all commands that ran past the 120 s tool timeout; the gateway itself failed no step;
+    - sandbox time per turn: median 0.9 s, p90 3.7 s, the command's own run time included.
+- **Differences from local podman:**
+  - output is read up to 512 KB of stdout and 128 KB of stderr instead of 1 MB each;
+  - replicas enforce the limits local podman only requests: each container may use 4 GB of RSS and 2,048 processes
+    (a userspace watchdog checks every 5 s), up to 8 containers per replica, and a 2 h idle timeout. A breach
+    answers `410 {"code": "sandbox_lost", "reason": "memory_limit" | "pids_limit"}`; the smoke hit `pids_limit` once,
+    at 4,538 processes;
+  - a container the fleet reports lost ends the episode with reward 0 (`sandbox_lost`), and the episode never
+    continues in a replacement container, as literegistry prescribes. The first smoke instead re-handshook a
+    `sandbox_lost` answer and got 59 lost-sandbox tool errors; fixed by classifying errors with literegistry's own
+    client.
+- **What the port adds on top of literegistry's client.** The client sends one request and classifies its answer;
+  these episode-level pieces, carried over from the first version of the port, still hold under 1.0.57:
+  - a keepalive every 5 min, since an idle binding expires after 900 s while the policy thinks;
+  - retries of transient answers;
+  - commands longer than the replica's 60 s exec cap run detached and are polled to completion;
+  - uploads over the 1 MB stdin cap go in 512 KB chunks;
+  - when a polled command's status file never appears, a trivial exec checks whether the container is gone before
+    the step fails as a tool error;
+  - a `404` for the binding ends the episode as a loss (`binding_lost`) rather than failing every later step;
+  - the loss reason goes into the episode metrics and trace (`sandbox_lost_reason`), and the head logs the fleet's
+    `session_limits` at startup.
+- **Contract:** literegistry 1.0.57, the release the fleet runs (gfaria's checkout
+  `/weka/oe-adapt-default/gfaria/literegistry`, and on PyPI). The head's gateway is pinned to it.
+  - The gateway now sends a pinned command once and never replays it.
+  - Transport failures come back as `503 affinity_owner_unavailable` or `502`/`504`, with an `execution_outcome`
+    (`not_sent` or `unknown`). Our requests are safe to repeat, so the port retries them.
+  - A request's `command` is capped at 16 KB, its stdin at 1 MB and its timeout at 60 s.
+  - `literegistry-podman-client` 0.1.4 raises `PodmanContainerLostError` for `410 sandbox_lost` (reasons
+    `memory_limit`, `pids_limit`, `container_stopped`, `unknown`) and `410 affinity_owner_lost`. It treats a generic
+    404 or 503 as a gateway error, not a loss; the port treats a 404 as one (see above).
+- **Decided 2026-10-17, how a lost container scores:** the policy's losses (`memory_limit`, `pids_limit`,
+  `container_stopped`) score 0, like an OOM kill; the fleet's (`unknown`, `affinity_owner_lost`, `binding_lost`)
+  leave the reward missing, so the group is dropped. Prompted by the 4-node gateway run (Beaker
+  `01M54060ECZQ0CN4XF1A5FZPZ6`, `prod_4node_gateway.yaml`): from 06:08 to 06:11 UTC on 2026-10-17, 309 of its
+  containers were lost in bursts (153, 75 and 81 a minute) for reason `unknown`, with every fleet replica job still
+  up, against about 0.5% of episodes outside the bursts.
+- **Open questions:**
+  - Fleet capacity when 512 of our episodes share it with other users' jobs.
+  - Whether cross-cluster latency (holmes to jupiter/neptune) adds up over 64-step episodes.
 
 ## 2026-10-16: rollout node declared dead (retry 1 failure)
 

@@ -30,10 +30,12 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 |---|---|
 | `run_tmax_qwen3_5.py` | Launcher: `prepare` (download, extract tasks, prompt JSONL, torch_dist conversion) and `execute` |
 | `tmax_agent_function.py` | Agent loop for `agentic_tool_call.generate`, plus the over-sampling `abort` hook |
-| `tmax_sandbox.py` | Per-episode container on a Docker-API socket (Podman), ported from open-instruct |
-| `generate.py` | Reward function (`None` drops the group) and `agent/*` metrics |
+| `tmax_sandbox.py` | Per-episode container: the episode logic shared by both backends, and the podman backend (a Docker-API socket), ported from open-instruct |
+| `tmax_gateway.py` | The gateway backend: containers on a LiteRegistry podman fleet through literegistry's own client, after open-instruct's `GatewayBackend` |
+| `generate.py` | Reward function (`None` drops the group) |
+| `tmax_metrics.py` | Per-rollout W&B metrics open-instruct logs: episodes and tools, solve rates before the filter, trained-sample lengths and advantages |
 | `tmax_prompts.py` | open-instruct's system prompt |
-| `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes) |
+| `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes, `smoke_gateway.yaml` uses the podman fleet) |
 | `beaker/` | `submit.py` (config -> Beaker job, pinned to a commit), the job's entrypoint, open-instruct's vendored podman bring-up, and the registry mirror tooling |
 | `tools/` | `watch_run.py` (one line per step, slow sync or failure of a running Beaker experiment) and `check_samples.py` (trained samples vs episode traces) |
 
@@ -73,9 +75,15 @@ python examples/tmax/run_tmax_qwen3_5.py prepare examples/tmax/configs/smoke_syn
 python examples/tmax/run_tmax_qwen3_5.py execute examples/tmax/configs/smoke_sync.yaml --num-rollout 1
 ```
 
-The sandboxes need a Docker-compatible API socket (podman), whose containers can pull
-`docker.io/hamishi740/swerl-tmax-v3:*`, and `pip install docker`. The launcher hands the sockets in
-`TMAX_DOCKER_HOST` (comma-separated) to the rollout; `docker_host` overrides them.
+Sandboxes come from one of two backends (`sandbox_backend`):
+
+- **`podman`** (the default) runs containers on Podman daemons the job brings up itself. It needs a
+  Docker-compatible API socket whose containers can pull `docker.io/hamishi740/swerl-tmax-v3:*`, and
+  `pip install docker`. The launcher hands the sockets in `TMAX_DOCKER_HOST` (comma-separated) to the rollout;
+  `docker_host` overrides them.
+- **`gateway`** runs containers on a LiteRegistry podman fleet through its gateway (`gateway_url`, or
+  `TMAX_GATEWAY_URL`), so no sandbox shares a node with training or SGLang. On Beaker the head starts the gateway
+  itself ([Sandboxes on a podman fleet](beaker/README.md#sandboxes-on-a-podman-fleet-gateway-backend)).
 
 ### Beaker
 
@@ -195,8 +203,8 @@ above 1 nat).
 
 ### Fully async
 
-- `--fully-async` rejects `--colocate` and `--rollout-function-path`, so `agent/*` metrics are only logged
-  in synchronous mode; the per-episode log lines are written in both.
+- `--fully-async` rejects `--colocate` and `--rollout-function-path`, so the episode metrics are logged by a
+  `--custom-rollout-log-function-path` hook (`tmax_metrics.log_rollout_data`), which both modes call.
 - The abort hook matters only in synchronous mode: after over-sampling finishes a step, Miles waits for all
   pending episodes. Each episode runs in its own process (`--custom-agent-function-mode subproc`, the
   default), so `abort`, which runs in the rollout process, bumps a generation counter in a file scoped to
@@ -246,7 +254,6 @@ Open differences from open-instruct and the work on them are tracked in [ROADMAP
 - The first-turn prompt is not token-identical: SGLang's tool schema adds `"strict": false` and reorders the tool
   definition's keys, about 17 tokens. Tool observations are framed differently too (two newlines, trimmed output,
   several calls in one turn share one user block).
-- `agent/*` episode metrics are not logged in fully-async runs.
 - Podman comes from Ubuntu's apt (4.9) at job start; open-instruct's image builds 5.6.2 and crun 1.14.3.
 - Every agent process runs on the head node (`--pin-rollout-manager-to-head`); open-instruct's environment actors
   run on every node. The sandboxes still spread: the head drives the other nodes' podman over TCP.

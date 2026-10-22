@@ -58,8 +58,9 @@ Collected from the pages above; each is traced to code there.
   still count in the divisor. FSDP and torchtitan average per sample.
 - **In fully-async runs `perf/rollout_time` times only the buffer drain**, so the `perf/tokens_per_*` rates are
   inflated and the `_without_non_generation` rates go negative.
-- **`--fully-async` refuses `--rollout-function-path`**, so metrics a custom rollout function adds (such as an
-  agent's `agent/*` episode statistics) never appear in fully-async runs.
+- **`--fully-async` refuses `--rollout-function-path`**, so metrics a custom rollout function adds never appear in
+  fully-async runs; log them from a `--custom-rollout-log-function-path` hook instead, as `examples/tmax/tmax_metrics`
+  does.
 - **Agent functions run in a child process per call by default** (`--custom-agent-function-mode subproc`):
   module-level state, locks and caches in an agent module last one episode, and the module's `abort` hook runs in
   the rollout process, not in the agents. Share limits through `miles.rollout.agentic.rollout_limits`.

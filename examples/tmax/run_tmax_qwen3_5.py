@@ -62,7 +62,15 @@ Args:
   --dump-training-data: also save each step's training batch there, as Miles' --save-debug-rollout-data
       (rollout_data/<step>.pt) and --save-debug-train-data (train_data/<step>_<rank>.pt, with advantages and
       trainer logprobs), open-instruct's --save_traces + --save_trainer_logprobs (default: off).
+  --policy-loss: dppo_tv (default; open-instruct's DPPO, threshold 0.1) or ppo_clip (clip 0.2 / 0.28).
+  --log-kl-to-base / --no-log-kl-to-base: log the KL to the base model (default: on; costs one more forward pass).
+  --hf-snapshot-every: export HF weights at every save and keep every Nth (default: 0, off; prod: 20).
   --wandb-project: wandb project (default: miles-run_tmax_qwen3_5); with --exp-name restarts share one run.
+  --wandb-entity: wandb entity (team) to log to (default: the API key's default entity).
+  --sandbox-backend: podman (daemons of this job, the default) or gateway (a LiteRegistry podman fleet; see
+      tmax_gateway.py).
+  --gateway-url: the fleet's gateway for --sandbox-backend gateway (default: inherit TMAX_GATEWAY_URL, which
+      beaker/tmax_beaker_entry.sh exports for the gateway it starts).
   --docker-host: Docker API endpoint(s) of the podman daemons (default: inherit TMAX_DOCKER_HOST / DOCKER_HOST).
   --model-dir / --data-dir / --output-dir: checkpoint / dataset / output directories.
 
@@ -90,7 +98,6 @@ Smoke test on four 80GB+ GPUs:
 import dataclasses
 import json
 import os
-import re
 import shlex
 import sys
 from dataclasses import dataclass
@@ -98,6 +105,7 @@ from pathlib import Path
 from typing import Literal
 
 import pandas as pd
+import tmax_wandb
 import typer
 import yaml
 from tmax_prompts import TMAX_SYSTEM_PROMPT
@@ -158,6 +166,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     sglang_mem_fraction_static: float = 0.7
     num_prompts: int = 0
     max_steps: int = 64
+    # podman: containers on podman daemons this job runs; gateway: on a LiteRegistry podman fleet (tmax_gateway.py).
+    sandbox_backend: Literal["podman", "gateway"] = "podman"
+    # The fleet's gateway; empty inherits TMAX_GATEWAY_URL (the Beaker entrypoint exports the gateway it starts).
+    gateway_url: str = ""
     # Comma-separated Docker API endpoints of the sandbox daemons; empty inherits TMAX_DOCKER_HOST / DOCKER_HOST
     # from the launching environment (the Beaker entrypoint exports the shard sockets it started).
     docker_host: str = ""
@@ -178,8 +190,21 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # Also dump every step's training batch next to them: rollout_data/<step>.pt (tokens, rewards, rollout logprobs)
     # and train_data/<step>_<rank>.pt (advantages, trainer logprobs), open-instruct's --save_trainer_logprobs.
     dump_training_data: bool = False
+    # dppo_tv: open-instruct's DPPO (binary-TV trust region, no ratio clip); ppo_clip: PPO clip 0.2 / 0.28, which the
+    # runs before branch shashank/tmax-oi-parity used.
+    policy_loss: Literal["dppo_tv", "ppo_clip"] = "dppo_tv"
+    # Log the KL to the base model (train/kl_loss), open-instruct's objective/kl2_avg: how far the policy has moved.
+    log_kl_to_base: bool = True
     wandb_project: str = ""
+    # W&B entity (team) the run logs to; empty = the API key's default entity. Pinned so the run's URL is known at
+    # submit time (beaker/submit.py puts it in the experiment description).
+    wandb_entity: str = ""
     save_interval: int = 20
+    # Also export the policy in HF format at every save (--save-hf <checkpoint_dir>/hf/step_<rollout_id>, the weights
+    # after rollout_id + 1 steps), and keep every hf_snapshot_every-th one for evaluation, as open-instruct keeps an HF
+    # snapshot every 20 steps (beaker/tmax_beaker_entry.sh prunes the rest). 0 turns it off. A multiple of
+    # save_interval, since snapshots are written at saves.
+    hf_snapshot_every: int = 0
     exp_name: str = ""
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -187,6 +212,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
+        assert self.hf_snapshot_every >= 0 and self.hf_snapshot_every % self.save_interval == 0, (
+            f"hf_snapshot_every ({self.hf_snapshot_every}) must be 0 or a multiple of save_interval "
+            f"({self.save_interval}): HF snapshots are written at saves"
+        )
         if self.opd_teacher is not None:
             student, teacher = _RECIPES[self.model_name], _RECIPES[self.opd_teacher]
             assert student.megatron_model_type == teacher.megatron_model_type, (
@@ -201,6 +230,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     @property
     def sandbox_docker_host(self) -> str:
         return self.docker_host or os.environ.get("TMAX_DOCKER_HOST") or os.environ.get("DOCKER_HOST", "")
+
+    @property
+    def sandbox_gateway_url(self) -> str:
+        return self.gateway_url or os.environ.get("TMAX_GATEWAY_URL", "")
 
     @property
     def checkpoint_dir(self) -> str:
@@ -287,6 +320,9 @@ def _write_prompt_data(args: ScriptArgs) -> None:
 @command_utils.dataclass_cli
 def execute(args: ScriptArgs):
     U = args.create_backend()
+    assert (
+        args.sandbox_backend != "gateway" or args.sandbox_gateway_url
+    ), "--sandbox-backend gateway needs --gateway-url or TMAX_GATEWAY_URL"
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
@@ -294,6 +330,8 @@ def execute(args: ScriptArgs):
         f"--save {args.checkpoint_dir} "
         f"--save-interval {args.save_interval} "
     )
+    if args.hf_snapshot_every:
+        ckpt_args += f"--save-hf {args.checkpoint_dir}/hf/step_{{rollout_id}} "  # export errors are logged, not fatal
 
     rollout_args = (
         f"--prompt-data {args.prompt_data} "
@@ -319,13 +357,16 @@ def execute(args: ScriptArgs):
     )
     if not args.recipe.enable_thinking:
         agent_args += """--apply-chat-template-kwargs '{"enable_thinking": false}' """
-    if not args.fully_async:
-        # --fully-async selects its own rollout function, so agent/* metrics are logged only in sync mode.
-        agent_args += "--rollout-function-path generate.RolloutFn "
-    if args.filter_zero_std:
-        agent_args += (
-            "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter "
-        )
+    # tmax_metrics' filter hooks record every group before the filter, then apply Miles's: the zero-variance filter
+    # when filter_zero_std (which also drops groups with a missing reward), else the missing-reward filter alone, so
+    # a sandbox the fleet lost drops its group rather than training on a false 0. Its log hook logs
+    # rollout/{agent,tools,unfiltered,trained}/* once per batch, in sync and fully-async mode alike (--fully-async
+    # rejects --rollout-function-path, so a rollout function cannot).
+    group_filter = "nonzero_std_filter" if args.filter_zero_std else "missing_reward_filter"
+    agent_args += (
+        f"--dynamic-sampling-filter-path tmax_metrics.{group_filter} "
+        "--custom-rollout-log-function-path tmax_metrics.log_rollout_data "
+    )
 
     perf_args = (
         f"--tensor-model-parallel-size {args.tensor_model_parallel_size} "
@@ -345,9 +386,22 @@ def execute(args: ScriptArgs):
         "--use-rollout-logprobs "
         "--calculate-per-token-loss "
         "--entropy-coef 0.0 "
-        "--eps-clip 0.2 "
-        "--eps-clip-high 0.28 "
+        # Logged, not trained on (detached at coefficient 0): open-instruct's runs show entropy, and a collapse is the
+        # first thing to rule out when a run stops improving.
+        "--observe-training-entropy "
     )
+    if args.log_kl_to_base:
+        # KL to the base model (--ref-load), logged as train/kl_loss and not trained on (coefficient 0), as
+        # open-instruct logs it at --beta 0. k3 is open-instruct's kl2 (its default and the eval sheet's train_kl2).
+        # Costs the reference model's memory on the trainer GPUs and one more forward pass per step.
+        grpo_args += "--use-kl-loss --kl-loss-coef 0.0 --kl-loss-type k3 "
+    if args.policy_loss == "dppo_tv":
+        # open-instruct's --loss_fn dppo --dppo_divergence_type tv --dppo_divergence_threshold 0.1, anchored on the
+        # rollout's log-probs (--use-rollout-logprobs above); no ratio clip.
+        grpo_args += "--policy-loss-type dppo_tv --dppo-tv-threshold 0.1 "
+    else:
+        grpo_args += "--eps-clip 0.2 --eps-clip-high 0.28 "
+
     if args.opd_teacher is not None:
         grpo_args += (
             "--use-opd "
@@ -361,8 +415,10 @@ def execute(args: ScriptArgs):
         "--lr 1e-6 "
         "--lr-decay-style constant "
         "--weight-decay 0.0 "
+        # open-instruct's torch.optim.AdamW defaults: betas (0.9, 0.999), eps 1e-8 (also Megatron's default eps).
         "--adam-beta1 0.9 "
-        "--adam-beta2 0.98 "
+        "--adam-beta2 0.999 "
+        "--seed 42 "  # open-instruct's --seed 42 (Miles defaults to 1234)
     )
     if args.optimizer_cpu_offload:
         optimizer_args += (
@@ -405,7 +461,8 @@ def execute(args: ScriptArgs):
         misc_args += "--colocate "
     if args.num_nodes > 1:
         # The agent processes run where the RolloutExecutor does: on the head, whose podman sockets are the unix://
-        # endpoints in TMAX_DOCKER_HOST and the only address the other nodes' podman forwards accept.
+        # endpoints in TMAX_DOCKER_HOST and the only address the other nodes' podman forwards accept, and which runs
+        # the gateway the entrypoint starts for --sandbox-backend gateway.
         misc_args += "--pin-rollout-manager-to-head "
 
     if args.dump_training_data:
@@ -437,6 +494,8 @@ def execute(args: ScriptArgs):
         extra_env_vars={
             "PYTHONPATH": f"{args.megatron_path}:{_SCRIPT_DIR}:{command_utils.repo_base_dir}",
             "TMAX_TASK_DATA_DIR": args.task_data_dir,
+            "TMAX_SANDBOX_BACKEND": args.sandbox_backend,
+            "TMAX_GATEWAY_URL": args.sandbox_gateway_url,
             "TMAX_DOCKER_HOST": args.sandbox_docker_host,
             "TMAX_MAX_STEPS": str(args.max_steps),
             "TMAX_START_CONCURRENCY": str(args.sandbox_start_concurrency),
@@ -463,11 +522,11 @@ def _wandb_args(args: ScriptArgs) -> str:
     # without --wandb-key, wandb reads WANDB_API_KEY, which every process of the job inherits.
     if "--wandb-key" in tokens:
         del tokens[tokens.index("--wandb-key") : tokens.index("--wandb-key") + 2]
-    overrides = {"--wandb-project": args.wandb_project}
+    overrides = {"--wandb-project": args.wandb_project, "--wandb-team": args.wandb_entity}
     if args.exp_name:
         overrides |= {
             "--wandb-group": args.exp_name,
-            "--wandb-run-id": re.sub(r"[^A-Za-z0-9_-]", "_", args.exp_name)[:64],
+            "--wandb-run-id": tmax_wandb.run_id(args.exp_name),
         }
     for flag, value in overrides.items():
         if not value:

@@ -1654,6 +1654,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="number of iterations to linearly warmup for critic model.",
             )
 
+            parser.add_argument(
+                "--policy-loss-type",
+                type=str,
+                choices=["ppo_clip", "dppo_tv"],
+                default="ppo_clip",
+                help=(
+                    "Per-token policy loss of --loss-type policy_loss. 'ppo_clip': PPO's clipped ratio "
+                    "(--eps-clip, --eps-clip-high, --eps-clip-c). 'dppo_tv': DPPO with the binary total-variation "
+                    "trust region (https://arxiv.org/abs/2602.04879), no ratio clip: an update is masked only when "
+                    "|μ(y) - π(y)| > --dppo-tv-threshold and it pushes the ratio further from 1. Needs "
+                    "--use-rollout-logprobs (μ is the rollout policy). train/pg_clipfrac is then the masked fraction."
+                ),
+            )
+            parser.add_argument(
+                "--dppo-tv-threshold",
+                type=float,
+                default=0.1,
+                help="DPPO's trust-region radius on the binary TV divergence (--policy-loss-type dppo_tv).",
+            )
             parser.add_argument("--eps-clip", type=float, default=0.2, help="PPO clip range")
             parser.add_argument("--eps-clip-high", type=float, default=None, help="PPO clip upper range")
             parser.add_argument(
@@ -3329,6 +3348,19 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
     return generate_run_uuid()
 
 
+def validate_policy_loss_type_args(args) -> None:
+    if args.policy_loss_type != "dppo_tv":
+        return
+    assert (
+        args.loss_type == "policy_loss"
+    ), f"--policy-loss-type dppo_tv is a per-token loss of --loss-type policy_loss, not {args.loss_type}"
+    assert (
+        args.use_rollout_logprobs
+    ), "--policy-loss-type dppo_tv anchors its trust region on the rollout policy: set --use-rollout-logprobs"
+    assert args.advantage_estimator != "gspo", "--policy-loss-type dppo_tv is per token; GSPO uses sequence ratios"
+    assert args.dppo_tv_threshold > 0, f"--dppo-tv-threshold must be positive, got {args.dppo_tv_threshold}"
+
+
 def validate_log_probs_backend_args(args) -> None:
     """Reject settings the fused log-prob op does not cover, at startup rather than mid-run."""
     if args.log_probs_backend != "fused":
@@ -3521,6 +3553,7 @@ def miles_validate_args(args):
     validate_rollout_topk_logprobs_args(args)
 
     validate_log_probs_backend_args(args)
+    validate_policy_loss_type_args(args)
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(

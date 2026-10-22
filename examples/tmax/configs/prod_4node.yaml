@@ -28,6 +28,7 @@ sandbox_start_concurrency: 64                 # SWERL_DOCKER_START_CONCURRENCY, 
 sandbox_exec_concurrency: 256                 # SWERL_DOCKER_EXEC_CONCURRENCY, per node
 start_failure: zero                           # SWERL_RESET_FAILURE_ZERO_REWARD=1
 save_interval: 5                              # --checkpoint_state_freq 5 (holmes resume config)
+hf_snapshot_every: 20                         # --checkpoint_hf_freq 20 kept forever; HF export at every save
 # Cross-node collectives on this layout have stalled for minutes and recovered (a 318 s weight sync after
 # step 12) or not: Megatron's default 10 min collective timeout and SGLang's 300 s scheduler watchdog each killed
 # a run. open-instruct waits far longer (--backend_timeout 1200, i.e. 20 h; weight sync 2 h).
@@ -38,6 +39,7 @@ output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashank
 trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
 dump_training_data: true                      # --save_traces + --save_trainer_logprobs: each step's batch, tokens on
 wandb_project: oe-general-agents
+wandb_entity: ai2-llm
 
 beaker:
   cluster: ai2/holmes

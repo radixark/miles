@@ -24,7 +24,10 @@ Failure semantics:
   so the sample is ABORTED and the whole group is dropped;
 * a bash command or the tests failing for infra reasons: the error is the
   observation and the episode continues (a vanished container is recreated once);
-* sandbox OOM or the optional episode wall-clock cap: reward 0;
+* sandbox OOM, a remote sandbox the policy got removed (gateway backend: over its memory or process
+  limit, or stopped), or the optional episode wall-clock cap: reward 0;
+* a remote sandbox the fleet lost (gateway backend: its replica left, its binding expired, or it vanished
+  for a reason the replica cannot name): ``reward=None``, so the missing-reward filter drops the group;
 * over-sampling abort: ``reward=None``; the group is discarded anyway.
 
 Each call runs in its own process under ``--custom-agent-function-mode subproc``
@@ -58,7 +61,16 @@ from pathlib import Path
 from typing import Any
 
 from openai import AsyncOpenAI
-from tmax_sandbox import SandboxInfraError, SandboxOOMError, TmaxSandbox, remove_owned_sandboxes
+from tmax_gateway import TmaxGatewaySandbox, close_live_sandboxes
+from tmax_sandbox import (
+    SandboxBase,
+    SandboxInfraError,
+    SandboxLostError,
+    SandboxOOMError,
+    TmaxSandbox,
+    backend_name,
+    remove_owned_sandboxes,
+)
 
 from miles.rollout.agentic.rollout_limits import current_scope, rollout_lock
 from miles.rollout.agentic.session import openai_session_url
@@ -91,6 +103,16 @@ _FORMAT_ERROR = (
 _ABORT_POLL_S = 1.0
 
 
+# Losses the fleet caused rather than the policy; a lost episode scores 0 for any other reason (memory_limit,
+# pids_limit, container_stopped: the agent can stop its own container).
+_FLEET_LOSS_REASONS = frozenset({"unknown", "affinity_owner_lost", "binding_lost"})
+
+
+def _lost_sandbox_reward(reason: str) -> float | None:
+    """None (drop the group) for a loss the fleet caused, 0 for one the policy did."""
+    return None if reason in _FLEET_LOSS_REASONS else 0.0
+
+
 class _Aborted(Exception):
     """The rollout step aborted this episode (over-sampling); its group is discarded."""
 
@@ -117,11 +139,15 @@ class _Episode:
     tool_calls: int = 0
     tool_errors: int = 0
     end_reason: str = "max_steps"
+    # Why the gateway backend's fleet lost the container (end_reason sandbox_lost): memory_limit, pids_limit, ...
+    sandbox_lost_reason: str = ""
     reward: float | None = 0.0
     last_total_tokens: int = 0
     messages: list[dict] = field(default_factory=list)
     gen_times: list[float] = field(default_factory=list)
     tool_times: list[float] = field(default_factory=list)
+    # Seconds from asking for the sandbox to holding it (or to giving up): open-instruct's tools/env_reset runtime.
+    sandbox_start_time: float = 0.0
 
 
 async def run(
@@ -144,13 +170,15 @@ async def run(
     t_start = time.monotonic()
 
     try:
-        sandbox = TmaxSandbox(
+        sandbox = _make_sandbox(
             image=metadata["image"], task_dir=os.path.join(os.environ["TMAX_TASK_DATA_DIR"], task_id)
         )
         async with sandbox as box:
+            episode.sandbox_start_time = time.monotonic() - t_start
             await _run_episode(episode, policy, box, request_kwargs)
     except SandboxInfraError as e:
         # Only the start can raise here: failures after it are observations inside the loop.
+        episode.sandbox_start_time = time.monotonic() - t_start
         await _handle_start_failure(episode, policy, request_kwargs, e)
 
     metrics = _metrics(episode, time.monotonic() - t_start)
@@ -168,8 +196,14 @@ async def abort(args) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(str(_abort_generation() + 1))
     tmp.replace(path)  # atomic, so a reader never sees a half-written counter
-    removed = await remove_owned_sandboxes()
+    removed = await (close_live_sandboxes() if backend_name() == "gateway" else remove_owned_sandboxes())
     logger.info(f"TMax abort: signalled in-flight episodes, removed {removed} sandboxes")
+
+
+def _make_sandbox(image: str, task_dir: str) -> SandboxBase:
+    """A container from the configured backend: podman daemons of this job, or a LiteRegistry podman fleet."""
+    backend = TmaxGatewaySandbox if backend_name() == "gateway" else TmaxSandbox
+    return backend(image=image, task_dir=task_dir)
 
 
 async def _run_episode(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox, request_kwargs: dict) -> None:
@@ -178,6 +212,9 @@ async def _run_episode(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox,
         await asyncio.wait_for(_loop(episode, policy, box, request_kwargs), timeout=timeout_s)
     except TimeoutError:
         episode.end_reason, episode.reward = "episode_timeout", 0.0
+    except SandboxLostError as e:  # the remote container was removed or lost under the episode
+        episode.end_reason, episode.sandbox_lost_reason = "sandbox_lost", e.reason
+        episode.reward = _lost_sandbox_reward(e.reason)
     except SandboxOOMError:
         episode.end_reason, episode.reward = "oom", 0.0
     except _Aborted:
@@ -330,7 +367,10 @@ def _metrics(episode: _Episode, total_time: float) -> dict[str, Any]:
         "tool_calls": episode.tool_calls,
         "tool_errors": episode.tool_errors,
         "end_reason": episode.end_reason,
+        **({"sandbox_lost_reason": episode.sandbox_lost_reason} if episode.sandbox_lost_reason else {}),
         "submitted": float(episode.end_reason == "submitted"),
+        "start_failed": float(episode.end_reason == "start_failed"),
+        "sandbox_start_time": episode.sandbox_start_time,
         "model_query_time_sum": sum(episode.gen_times),
         "env_execution_time_sum": sum(episode.tool_times),
         "total_tool_time": sum(episode.tool_times),

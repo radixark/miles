@@ -57,7 +57,8 @@ Before submitting:
    head marks the run done (exit 0); a failed or preempted head stops them through Beaker.
 5. **The head** (rank 0):
    - starts a checkpoint pruner (every 10 min it keeps the newest `keep_last_n_checkpoints`, never the one
-     `latest_checkpointed_iteration.txt` names);
+     `latest_checkpointed_iteration.txt` names, and of the HF snapshots only every `hf_snapshot_every`-th and the
+     newest finished one);
    - runs `run_tmax_qwen3_5.py prepare` (download and conversion, cached on weka);
    - starts the Ray head and waits up to 30 min for every GPU to join;
    - adds the workers' forwarded shards to `TMAX_DOCKER_HOST`;
@@ -87,6 +88,11 @@ Before submitting:
 | `dockerhub_username` | `$DOCKERHUB_USERNAME` | Login for sandbox image pulls |
 | `secrets` | `DOCKER_PAT`, `HF_TOKEN`, `WANDB_API_KEY` from `<user>_DOCKER_PAT` etc. | Env var → Beaker secret |
 | `env` | none | Extra env vars, e.g. `NCCL_DEBUG: WARN` |
+| `gateway_registry` | unset | With `sandbox_backend: gateway`: the podman fleet's head registry (`head+sqlite:///weka/…/head.sqlite3`); the head starts a gateway from it. See [Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend) |
+| `gateway_url` | unset | With `sandbox_backend: gateway`: a running gateway to use instead |
+| `gateway_min_replicas` | `1` | Podman replicas the gateway must list before training starts |
+| `literegistry_version` | `1.0.57` | The literegistry release the head's gateway runs (the fleet's) |
+| `literegistry_podman_client_version` | `0.1.4` | The `literegistry-podman-client` release the agents use |
 
 `submit.py` also sets `NUM_NODES`, `BEAKER_ALLOW_SUBCONTAINERS=1`, `BEAKER_SKIP_DOCKER_SOCKET=1`,
 `PYTORCH_ALLOC_CONF=expandable_segments:True`, `SANDBOX_SHARDS`, `MIRROR_URL`, `KEEP_LAST_N_CHECKPOINTS`,
@@ -103,7 +109,12 @@ Ethernet).
   position, and W&B continues the run. In-flight rollouts are lost; their prompts are skipped, not regenerated.
 - **A new submission starts fresh**, even from the same config. `--exp-name <run>` continues an existing run.
 - **Checkpoints are big.** One Qwen3.5-9B checkpoint with Adam state is about 117 GB, so `keep_last_n_checkpoints: 3`
-  holds about 350 GB. No HF checkpoints are exported during training.
+  holds about 350 GB. With `hf_snapshot_every: 20` (the prod configs) the policy is also exported in HF format at
+  every save, to `<checkpoints>/hf/step_<rollout_id>` (the weights after `rollout_id + 1` steps, so `step_19` is
+  after 20), about 18 GB each; the snapshots after every 20 steps are kept, about 450 GB over 500 steps. They are
+  the language model's weights under the base model's `Qwen3_5ForConditionalGeneration` config, without the vision
+  tower or the MTP layers (Megatron trains neither), like an offline conversion: graft those back from the base model
+  (`convert_qwen35_causallm_to_cg.py`) before evaluating one.
 - **Dumps are smaller.** `dump_training_data` writes about 200 MB per step (`rollout_data/<step>.pt`,
   `train_data/<step>_<rank>.pt`, plus Miles' `dashboard_columns/`), about 100 GB over 500 steps. The per-episode
   trace JSONL grows by about 70 KB per episode.
@@ -157,6 +168,55 @@ python examples/tmax/beaker/registry_mirror/registry_mirror.py warm     # open-i
   for 10 minutes, so most pulls are cache misses on the node anyway.
 - **After rotating the Docker Hub token**, update the Beaker secret, then relaunch the mirrors, which read it at
   start.
+
+## Sandboxes on a podman fleet (gateway backend)
+
+With `sandbox_backend: gateway` in the config, the job runs no podman: every episode's container lives on a
+LiteRegistry podman fleet, a separate deployment of rootless podman replicas and Docker Hub mirrors that heartbeat
+into a Redis registry ([literegistry](https://github.com/goncalorafaria/literegistry),
+`literegistry_podman_beaker`). This is open-instruct's `literegistry_podman` setup. It takes the sandboxes, and the
+CPU they burn, off the nodes that train and run SGLang ([INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md)).
+
+```yaml
+sandbox_backend: gateway
+beaker:
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-terminal-jupiter-head.sqlite3
+```
+
+- **What the head does.** It installs `literegistry-podman-client` (the agents' client) into the training
+  environment, and literegistry into a venv of its own, since literegistry pins starlette and pulls streamlit, which
+  the training environment cannot take. It then starts `python -m literegistry.gateway
+  --registry=<gateway_registry> --register=False` on `127.0.0.1:24750`, restarting it if it exits; the gateway's log
+  goes to `<output_dir>/<run>/literegistry-gateway-<UTC time>.log` on weka, one file per attempt. Before training starts, the head waits up to 30 min for the gateway to
+  list `gateway_min_replicas` podman replicas. The gateway finds the fleet's Redis through the head registry, so it
+  follows a Redis move, and prints the first replica's `session_limits` once enough are listed. `gateway_url` skips
+  all this and uses a running gateway. However the job ends, including Beaker's SIGTERM on preemption or cancel
+  (SIGKILL follows 5 min later), the head closes the containers it still holds on the fleet
+  (`tmax_gateway.py close-all`, at most 60 s); otherwise they keep fleet capacity for the replicas' 2 h idle timeout
+  and the next attempt's containers cannot start.
+- **What a container costs.** Started from the dev box, a container took 7.5–9.4 s to start, including the pull
+  through the fleet's mirrors and setup, and each command took 0.3–0.6 s. In the Beaker smoke, from holmes, the
+  median command took 1.2 s (p90 2.3 s), its own run time included.
+- **Episode behavior** stays as with local podman, with these differences:
+  - Output is read up to 512 KB of stdout and 128 KB of stderr, rather than 1 MB each, so the tail of a huge output
+    comes from an earlier position.
+  - Replicas enforce the limits local podman only requests: 4 GB of RSS and 2,048 processes per container,
+    checked by a userspace watchdog every 5 s. They also allow 8 containers per replica and a 2 h idle timeout
+    (`session_limits` in the roster).
+  - A container the fleet reports lost ends the episode (`end=sandbox_lost`): `410 sandbox_lost` (a watchdog
+    breach, a stopped container, or `unknown`), `410 affinity_owner_lost` (its replica left the roster), or a `404`
+    for its binding (the gateway no longer knows the container; the keepalive normally prevents this). The trace and
+    the episode metrics record why, as `sandbox_lost_reason`. A loss the policy caused (`memory_limit`,
+    `pids_limit`, `container_stopped`) scores 0, like an OOM kill; a loss the fleet caused (`unknown`,
+    `affinity_owner_lost`, `binding_lost`) leaves the reward missing, so the missing-reward filter drops the group
+    rather than training on a false 0. As literegistry prescribes, the episode never continues in a replacement
+    container; local podman instead recreates a vanished container once.
+  - Transient gateway answers (`408`, `5xx`, a dropped connection) are retried; every request is safe to repeat.
+- **The fleet** is shared and managed outside this job. Its roster is at `<gateway>/v1/models`: on 2026-10-16, 172
+  podman replicas, 8 mirrors and the fleet's own gateway.
+- **Check it from a dev box.** Start a gateway from the same registry with `python -m literegistry.gateway
+  --registry=<gateway_registry> --host=127.0.0.1 --port=24711 --register=False`. Then `curl
+  127.0.0.1:24711/v1/models` lists the replicas.
 
 ## Multi-node
 
@@ -224,13 +284,15 @@ In W&B, a run and its group are named after the experiment name, in the config's
 - `rollout/fully_async/avg_staleness` and `stale_groups_filtered`;
 - `rollout/dynamic_filter/drop_zero_std_*`;
 - `train/train_rollout_logprob_abs_diff` (about 0.007 when healthy) and `train/grad_norm`;
+- `train/kl_loss`, the KL to the base model (open-instruct's `objective/kl2_avg`), and `train/entropy_loss`;
+- `rollout/agent/end_reason/*`, `rollout/agent/non_submitting_fraction`, `rollout/tools/{bash,env_reset}/*`;
+- `rollout/unfiltered/frac_solve_rate_*` (the groups' solve rates before the filter);
 - `perf/update_weights_time`.
 
-Ignore `perf/tokens_per_gpu_per_sec` and `perf/rollout_time` in fully-async runs. Episode-level statistics (end
-reasons, turns, tool errors) are not logged in fully-async mode, so read them from the trace files,
-`<trace_dir>/<run>/traces-<host>.jsonl`: one JSON record per episode with `reward`, `metrics.end_reason`,
-`metrics.turns`, `metrics.tool_errors`, `metrics.model_query_time_sum`, `metrics.env_execution_time_sum` and
-`metrics.total_time`.
+Ignore `perf/tokens_per_gpu_per_sec` and `perf/rollout_time` in fully-async runs. Every episode is also in the trace
+files, `<trace_dir>/<run>/traces-<host>.jsonl`: one JSON record per episode with `reward`, `metrics.end_reason`,
+`metrics.turns`, `metrics.tool_errors`, `metrics.model_query_time_sum`, `metrics.env_execution_time_sum`,
+`metrics.sandbox_start_time`, `metrics.total_time`, and on a gateway-backend loss `metrics.sandbox_lost_reason`.
 
 ## Failures and what they mean
 
@@ -246,6 +308,8 @@ What to do when a symptom shows up. Every failure mode seen so far, with its sta
 | `the actor's node was terminated unexpectedly: health check failed due to missing too many heartbeats`, then `Killing server cell_id=…` | A node too busy for Ray's heartbeat; Ray declares it dead and its engines are disposed. The job then fails | The Beaker retry resumes from the last checkpoint |
 | `benching sandbox daemon tcp://<node>:2375x … ReadTimeout` | That node's podman daemons too slow to answer | Episodes move to other daemons for about 5 min; repeated benching of one node goes with the starvation above |
 | `!!!!!!! Segfault encountered !!!!!!!` from `RolloutExecutor`, then `EOFError: Ran out of input` from agent processes | A native crash in the rollout executor; no stack in the job log | The retry resumes. Set `PYTHONFAULTHANDLER: "1"` in the config's `env` to capture a stack next time |
+| `gateway http://127.0.0.1:24750: N podman replicas (need M)` and the head exits | Gateway backend: the fleet's registry is unreachable or lists too few replicas | Check the registry path and the fleet's roster (`/v1/models`); see [Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend) |
+| `end=sandbox_lost` in episode logs | Gateway backend: the replica removed or stopped the container (its resource watchdog, or the agent killed PID 1), its replica left, or its binding expired | `sandbox_lost_reason` in the trace says which: the policy's limits and a stopped container score 0, the fleet's losses drop the group; a burst of `unknown` is the fleet's, see [INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md) |
 | `Failed collecting samples: ReadError('')` from `agentic_tool_call.py` | Fetching an episode from the session server failed; the whole group is dropped | 2.5-3% of episodes on the pre-rebase code; none so far on the rebased code (upstream's session-server and transport fixes) |
 | `http_utils.py … Error: , retrying... (attempt 1/60, url=…/sessions` with `starlette.requests.ClientDisconnect` on the session server | A session-create request dropped mid-body | Harmless: retried and succeeded |
 | `AttributeError` mentioning `enable_prefill_weight_versions` at start | Image older than session server v2 needs | Pin `dev-202610151741` or newer |

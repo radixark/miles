@@ -66,8 +66,8 @@ run_tmax_qwen3_5.py execute
 | Launcher | `run_tmax_qwen3_5.py` | `ScriptArgs` holds every knob. A YAML config becomes `MILES_SCRIPT_*` env defaults, so command-line flags override it and an exported variable wins over the file. `prepare` downloads the dataset, extracts the task directories, writes the prompt JSONL (system prompt plus `metadata: {task_id, image}`), downloads the HF model and converts it to `torch_dist`. `execute` builds the train command in blocks (checkpoint, rollout, agent, optimizer, GRPO, W&B, perf, SGLang, misc), chooses `train.py` or `train_async.py`, and passes the sandbox settings to the agent processes as `TMAX_*` env vars |
 | Generate function | Miles' `miles/rollout/generate_hub/agentic_tool_call.py` | Opens the session, runs the agent function, collects the session even if the agent failed, and marks the sample aborted when collection fails or no model call was recorded |
 | Agent function | `tmax_agent_function.run` | The episode loop: [How an episode runs](README.md#how-an-episode-runs). Returns `{"reward", "agent_metrics"}`; session server v2 merges them into the sample's metadata |
-| Sandbox | `tmax_sandbox.TmaxSandbox` | docker-py against podman's Docker-compatible API. Each episode picks a random non-benched daemon on a node below its sandbox cap; start and exec concurrency are per node; a pull happens once per daemon and image |
-| Reward and metrics | `generate.py` | `reward_func` returns the agent's reward (`None` drops the group). `RolloutFn` adds `agent/*` metrics, which only works in synchronous mode |
+| Sandbox | `tmax_sandbox.SandboxBase` and its backends | `SandboxBase` holds the episode logic both backends share: the persistent shell, observations, the withheld tests and the reward. `TmaxSandbox` (podman) uses docker-py against podman's Docker-compatible API; each episode picks a random non-benched daemon on a node below its sandbox cap, start and exec concurrency are per node, and a pull happens once per daemon and image. `tmax_gateway.TmaxGatewaySandbox` (gateway) puts the container on a LiteRegistry podman fleet through literegistry's own client (`literegistry-podman-client`), tracking the current literegistry release; commands are launched detached and waited for in bounded execs |
+| Reward and metrics | `generate.py`, `tmax_metrics.py` | `reward_func` returns the agent's reward (`None` drops the group). `tmax_metrics`' filter hooks record each group before the zero-variance filter and its log hook (`--custom-rollout-log-function-path`) logs `rollout/{agent,tools,unfiltered,trained}/*` per batch, in both modes |
 | Abort hook | `tmax_agent_function.abort` | Miles calls `<agent module>.abort(args)` when synchronous over-sampling has enough groups (`miles/utils/misc.call_agent_abort_hook`). It bumps a counter file and removes this rollout's containers; episodes race their work against the counter |
 | Traces | `tmax_agent_function._write_trace` | One JSON line per episode in `<trace_dir>/<run>/traces-<host>.jsonl` (messages, reward, metrics), written under a cross-process lock |
 | Training dumps | `--save-debug-rollout-data` / `--save-debug-train-data` | `dump_training_data: true` writes each step's trained batch next to the traces |
@@ -113,11 +113,12 @@ uvx --from black==24.3.0 black examples/tmax
 uvx --from isort==5.13.2 isort examples/tmax
 ruff check examples/tmax
 
-# Unit tests that need no GPU
+# Unit tests that need no GPU (the gateway backend's need literegistry's client, and skip without it)
 uv run --no-project --python /stage/.venv/bin/python --with "pytest-asyncio==0.24.0" \
-    python -m pytest -q --noconftest -p no:cacheprovider -o addopts="" tests/fast/utils/test_ray_utils.py
+    --with "literegistry-podman-client==0.1.4" python -m pytest -q --noconftest -p no:cacheprovider -o addopts="" \
+    tests/fast/utils/test_ray_utils.py tests/fast/examples/tmax
 
-# Tests that import SGLang (e.g. tests/fast/examples/tmax/test_generate.py): the wheel alone, no deps, in a scratch dir
+# Tests that import SGLang: the wheel alone, no deps, in a scratch dir
 uv pip install --no-deps --target /tmp/sgl_nodeps "sglang==0.5.21" --python /stage/.venv/bin/python
 PYTHONPATH=/tmp/sgl_nodeps uv run --no-project --python /stage/.venv/bin/python --with "pytest-asyncio==0.24.0" \
     --with orjson --with IPython --with pylatexenc \

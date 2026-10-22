@@ -14,6 +14,7 @@ from miles.backends.training_utils.loss.hub.corrections import vanilla_tis_funct
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss.hub.math_utils import (
     compute_approx_kl,
+    compute_dppo_tv_policy_loss,
     compute_ess_ratio_contribution,
     compute_gspo_kl,
     compute_opsm_mask,
@@ -208,9 +209,15 @@ def policy_loss_function(
         advantages.new_zeros(()),
     )
 
-    pg_loss, pg_clipfrac = compute_policy_loss(
-        ppo_kl, advantages, args.eps_clip, args.eps_clip_high, getattr(args, "eps_clip_c", None)
-    )
+    if getattr(args, "policy_loss_type", "ppo_clip") == "dppo_tv":
+        # ppo_kl here is log μ - log π, μ being the rollout's log-probs (--use-rollout-logprobs, checked at startup).
+        pg_loss, pg_clipfrac = compute_dppo_tv_policy_loss(
+            ppo_kl, log_probs, old_log_probs, advantages, threshold=args.dppo_tv_threshold
+        )
+    else:
+        pg_loss, pg_clipfrac = compute_policy_loss(
+            ppo_kl, advantages, args.eps_clip, args.eps_clip_high, getattr(args, "eps_clip_c", None)
+        )
 
     if getattr(args, "dump_details", None) is not None:
         from miles.backends.training_utils.metrics.debug_dump import maybe_dump_policy_loss_debug
