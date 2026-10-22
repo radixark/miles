@@ -43,7 +43,7 @@ index d61720380..edc6b7fc9 100644
  from torchtitan.models.common.feed_forward import FeedForward
  from torchtitan.models.common.linear import Linear
  from torchtitan.protocols.module import Module
-+from torchtitan.tools.utils import device_type, integer_cumsum
++from torchtitan.tools.utils import integer_cumsum
  
  from .token_dispatcher import LocalTokenDispatcher
  
@@ -60,7 +60,7 @@ index d61720380..edc6b7fc9 100644
          op here -- rather than behind a tensor-subclass ``__torch_function__`` --
          means it is captured by FX tracers such as graph_trainer's make_fx path.
          """
-+        if device_type == "tpu":
++        if A.device.type == "tpu":
 +            return _TpuGroupedMM.apply(A, B_t, offs)
          return torch._grouped_mm(A, B_t, offs=offs)
  
@@ -273,7 +273,7 @@ index b5303b020..c9e11953b 100644
 +    fails to lower while the float32 cumsum is fine, so on TPU the prefix sum runs in float32 and is
 +    cast back. Exact while the sums stay below 2**24.
 +    """
-+    if device_type != "tpu" or x.is_floating_point():
++    if x.device.type != "tpu" or x.is_floating_point():
 +        return torch.cumsum(x, dim, dtype=dtype)
 +    return torch.cumsum(x, dim, dtype=torch.float32).to(dtype or x.dtype)
 +
