@@ -1,6 +1,7 @@
 # Adapt from https://github.com/OpenRLHF/OpenRLHF/blob/10c733694ed9fbb78a0a2ff6a05efc7401584d46/openrlhf/models/utils.py
 # and https://github.com/OpenRLHF/OpenRLHF/blob/10c733694ed9fbb78a0a2ff6a05efc7401584d46/openrlhf/trainer/ppo_utils/experience_maker.py
 
+import importlib.util
 from argparse import Namespace
 from pathlib import Path
 
@@ -17,6 +18,9 @@ from miles.backends.training_utils.data.context_parallel import (
 from miles.backends.training_utils.parallel import get_parallel_state
 
 _LOG_RATIO_EXP_CLAMP = 20.0
+# A pip install for the FSDP or torchtitan backend has no Megatron; a broken Megatron install
+# still fails loudly at its import instead of silently switching implementations.
+_MEGATRON_INSTALLED = importlib.util.find_spec("megatron") is not None
 
 
 def _safe_clamp_log_ratio(log_ratio: torch.Tensor) -> torch.Tensor:
@@ -294,8 +298,10 @@ def compute_log_probs(
         log_probs = torch.log_softmax(full_logits, dim=-1)
         return log_probs.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
 
-    # TODO: when megatron is not installed, fall back to naive implementation
-    from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
+    if _MEGATRON_INSTALLED:
+        from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
+    else:
+        fused_vocab_parallel_cross_entropy = vocab_parallel_cross_entropy
 
     # convert to [seq_len, batch_size, vocab_size] as expected by fused_vocab_parallel_cross_entropy
     logits = logits.unsqueeze(1)
@@ -309,6 +315,50 @@ def compute_log_probs(
         return log_probs.detach()
 
     return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
+
+
+class _VocabParallelCrossEntropy(torch.autograd.Function):
+    """Megatron's ``fused_vocab_parallel_cross_entropy`` math in plain torch, for installs without Megatron.
+
+    Logits are ``[seq, batch, vocab / tp]``, split over ``group`` along the vocabulary. Unlike
+    Megatron's, it leaves its input untouched and returns the gradient in the input's dtype.
+    """
+
+    @staticmethod
+    def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
+        ctx.input_dtype = logits.dtype
+        logits = logits.float()
+        logits_max = logits.max(dim=-1)[0]
+        dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=group)
+        logits = logits - logits_max.unsqueeze(-1)
+
+        partition_vocab_size = logits.size(-1)
+        vocab_start = group.rank() * partition_vocab_size
+        target_mask = (target < vocab_start) | (target >= vocab_start + partition_vocab_size)
+        masked_target = (target - vocab_start).masked_fill(target_mask, 0)
+        predicted_logits = logits.gather(-1, masked_target.unsqueeze(-1)).squeeze(-1).masked_fill(target_mask, 0.0)
+        exp_logits = logits.exp()
+        sum_exp_logits = exp_logits.sum(dim=-1)
+
+        # One all-reduce for both, as Megatron batches them.
+        predicted_and_sum = torch.cat((predicted_logits, sum_exp_logits))
+        dist.all_reduce(predicted_and_sum, op=dist.ReduceOp.SUM, group=group)
+        predicted_logits, sum_exp_logits = predicted_and_sum.split(predicted_logits.size(0))
+
+        softmax = exp_logits.div_(sum_exp_logits.unsqueeze(-1))
+        ctx.save_for_backward(softmax, target_mask, masked_target)
+        return torch.log(sum_exp_logits) - predicted_logits
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        softmax, target_mask, masked_target = ctx.saved_tensors
+        # d(loss)/d(logits) = softmax - one_hot(target), the one-hot only on the rank owning the target.
+        grad_input = softmax.scatter_add(-1, masked_target.unsqueeze(-1), -(~target_mask).unsqueeze(-1).float())
+        return (grad_input * grad_output.unsqueeze(-1)).to(ctx.input_dtype), None, None
+
+
+def vocab_parallel_cross_entropy(logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup):
+    return _VocabParallelCrossEntropy.apply(logits, target, group)
 
 
 def _apply_sampling_mask(
