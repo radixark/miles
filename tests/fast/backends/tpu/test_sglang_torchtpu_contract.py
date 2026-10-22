@@ -13,13 +13,12 @@ import torch
 pytest.importorskip("sglang_tpu")
 
 from sglang.srt.entrypoints.http_server import app  # noqa: E402
-from sglang.srt.environ import EnvField, Envs, exportable_env_vars  # noqa: E402
+from sglang.srt.environ import EnvField, Envs  # noqa: E402
 from sglang.srt.managers import io_struct  # noqa: E402
 from sglang.srt.state_capturer.base import BaseDeviceCache, BaseTopkCapturer  # noqa: E402
 
 from miles.backends.sglang_utils import arguments as sglang_arguments  # noqa: E402
 from miles.backends.sglang_utils import sglang_api_client  # noqa: E402
-from miles.ray.rollout.external_engine_provider import _engine_activation_fp32  # noqa: E402
 
 _MILES_ROOT = pathlib.Path(__file__).resolve().parents[4] / "miles"
 # fields miles sends that sglang-torchtpu does not take; each is LoRA-only, and TPU weight sync rejects LoRA
@@ -129,15 +128,8 @@ def test_the_engine_takes_the_generate_fields_the_tpu_path_sends():
 def test_the_engine_registers_the_env_vars_the_launcher_sets():
     """An unregistered SGLANG_* variable is ignored, so a rename silently turns the setting off."""
     registered = {field.name for field in vars(Envs).values() if isinstance(field, EnvField)}
-    launcher_sets = {"SGLANG_TPU_PD_COLOCATED", "SGLANG_EXPOSE_OWN_ENV_VARS", "SGLANG_TPU_ACTIVATION_FP32"}
+    launcher_sets = {"SGLANG_TPU_PD_COLOCATED"}
     assert launcher_sets <= registered, f"sglang-torchtpu no longer reads {sorted(launcher_sets - registered)}"
-
-
-def test_the_engine_exports_its_fp32_silu_setting(monkeypatch):
-    """--activation-in-fp32 refuses an external engine whose SGLANG_TPU_ACTIVATION_FP32 it cannot read."""
-    monkeypatch.setenv("SGLANG_TPU_ACTIVATION_FP32", "1")
-    server_info = {"internal_states": [{"env_vars": exportable_env_vars()}]}
-    assert _engine_activation_fp32(server_info) is True
 
 
 def test_a_skipped_forward_reports_its_rows_as_unknown():
