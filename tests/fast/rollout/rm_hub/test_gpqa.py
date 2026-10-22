@@ -57,6 +57,22 @@ class TestExtractLetterFromResponse:
     def test_extract_letter(self, response, expected):
         assert _extract_letter_from_response(response, "ABCD") == expected
 
+    @pytest.mark.parametrize(
+        "response,valid_letters,expected",
+        [
+            ("Considering every option carefully, the answer is B.", "ABCD", "B"),
+            ("The answer is definitely B", "ABCD", "B"),
+            ("Each choice differs. Final answer: (C)", "ABCD", "C"),
+            ("B) is correct", "ABCD", "B"),
+            ("The answer is (B)", "ABCDEFGHIJ", "B"),
+            ("The answer is (B)", "ABCD", "B"),
+            ("The answer is I", "ABCDEFGHIJ", "I"),
+            ("Answer: (A)", "ABCD", "A"),
+        ],
+    )
+    def test_extract_standalone_letter(self, response, valid_letters, expected):
+        assert _extract_letter_from_response(response, valid_letters) == expected
+
 
 class TestComputeGpqaReward:
     @pytest.mark.parametrize(
@@ -80,6 +96,8 @@ class TestComputeGpqaReward:
             ("Answer: A", "", {"choices": {"A": "Paris", "B": "London"}, "correct_letter": "A"}, 1.0),
             ("The answer is Paris", "Paris", {"choices": ["Paris", "London", "Berlin", "Rome"]}, 1.0),
             ("Let me think step by step...</think>The answer is A", "A", None, 1.0),
+            ("Considering every option carefully, the answer is B.", "B", None, 1.0),
+            ("The answer is (B)", "B", {"choices": [f"Option {i}" for i in range(10)]}, 1.0),
         ],
     )
     def test_compute_gpqa_reward(self, response, label, metadata, expected):

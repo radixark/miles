@@ -28,14 +28,14 @@ def _extract_letter_from_response(response: str, valid_letters: Iterable[str]) -
 
     text = _strip_chain_of_thought(response)
     patterns = [
-        r"(?:answer|option|choice)\s*(?:is|:)?\s*([A-Z])",
-        r"([A-Z])\s*(?:is\s*(?:the)?\s*correct)",
-        r"final\s*(?:answer|option)\s*(?:is|:)?\s*([A-Z])",
+        r"(?i:answer|option|choice)\s*(?i:is|:)?\s*\(?([A-Z])\b",
+        r"\b([A-Z])\)?\s*(?i:is\s*(?:the\s*)?correct)",
+        r"(?i:final\s*(?:answer|option))\s*(?i:is|:)?\s*\(?([A-Z])\b",
     ]
 
     valid_letters = {letter.upper() for letter in valid_letters}
     for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
+        match = re.search(pattern, text)
         if match:
             letter = match.group(1).upper()
             if letter in valid_letters:
