@@ -1,6 +1,6 @@
 """The TMax gateway sandbox backend against a fake LiteRegistry gateway.
 
-The fake is a real HTTP server speaking literegistry 1.0.57's /affinity/* contract, driven through literegistry's own
+The fake is a real HTTP server speaking literegistry 1.0.63's /affinity/* contract, driven through literegistry's own
 client, with a tiny in-container model: the launcher exec records the command, wait execs answer with its scripted
 result, uploads decode their base64 stdin. That is enough to check the launch-then-wait protocol, chunked uploads, the
 episode logic shared with the podman backend, retries, and how a lost container ends the episode.
@@ -327,7 +327,10 @@ def test_job_exit_closes_every_rollout_process_containers(gateway, task_dir, mon
         monkeypatch.setenv(rollout_limits.SCOPE_ENV_VAR, "another-rollout-process")
         second = tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir)
         await second.__aenter__()
-        return await tmax_gateway.close_all_live_sandboxes(timeout_s=10)
+        closed = await tmax_gateway.close_all_live_sandboxes(timeout_s=10)
+        for box in (first, second):  # the processes' own HTTP pools, which a killed process never closes
+            await box._client.aclose()
+        return closed
 
     assert run(gateway, two_rollout_processes, monkeypatch) == 2
     assert sorted(gateway.closed) == ["container0001", "container0002"] and not gateway.containers

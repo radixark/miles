@@ -91,8 +91,8 @@ Before submitting:
 | `gateway_registry` | unset | With `sandbox_backend: gateway`: the podman fleet's head registry (`head+sqlite:///weka/…/head.sqlite3`); the head starts a gateway from it. See [Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend) |
 | `gateway_url` | unset | With `sandbox_backend: gateway`: a running gateway to use instead |
 | `gateway_min_replicas` | `1` | Podman replicas the gateway must list before training starts |
-| `literegistry_version` | `1.0.57` | The literegistry release the head's gateway runs (the fleet's) |
-| `literegistry_podman_client_version` | `0.1.4` | The `literegistry-podman-client` release the agents use |
+| `literegistry_version` | `1.0.63` | The literegistry release the head's gateway runs |
+| `literegistry_podman_client_version` | `0.1.7` | The `literegistry-podman-client` release the agents use |
 
 `submit.py` also sets `NUM_NODES`, `BEAKER_ALLOW_SUBCONTAINERS=1`, `BEAKER_SKIP_DOCKER_SOCKET=1`,
 `PYTORCH_ALLOC_CONF=expandable_segments:True`, `SANDBOX_SHARDS`, `MIRROR_URL`, `KEEP_LAST_N_CHECKPOINTS`,

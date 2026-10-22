@@ -115,7 +115,7 @@ ruff check examples/tmax
 
 # Unit tests that need no GPU (the gateway backend's need literegistry's client, and skip without it)
 uv run --no-project --python /stage/.venv/bin/python --with "pytest-asyncio==0.24.0" \
-    --with "literegistry-podman-client==0.1.4" python -m pytest -q --noconftest -p no:cacheprovider -o addopts="" \
+    --with "literegistry-podman-client==0.1.7" python -m pytest -q --noconftest -p no:cacheprovider -o addopts="" \
     tests/fast/utils/test_ray_utils.py tests/fast/examples/tmax
 
 # After editing any examples/**/README.md: regenerate the docs site pages (pre-commit checks this)
