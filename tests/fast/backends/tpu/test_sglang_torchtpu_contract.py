@@ -132,15 +132,14 @@ def test_the_engine_registers_the_env_vars_the_launcher_sets():
     assert launcher_sets <= registered, f"sglang-torchtpu no longer reads {sorted(launcher_sets - registered)}"
 
 
-def test_a_skipped_forward_reports_its_rows_as_unknown():
-    """Routing replay on TPU relies on prefill rows coming back as -1 (sgl-project/sglang-torchtpu#1580)."""
+def test_routed_experts_come_back_in_the_layout_miles_decodes():
+    """Rollout decodes routed experts as int32 [num_tokens - 1, layers, topk] (sglang_rollout.py)."""
     capturer = object.__new__(BaseTopkCapturer)
-    capturer.num_layers, capturer.topk_size, capturer.skip_capture = 2, 2, False
+    capturer.num_layers, capturer.topk_size = 2, 2
     capturer.device_cache = BaseDeviceCache(max_batch_size=4, num_layers=2, topk_size=2, device="cpu", name="t")
     capturer.host_cache = SimpleNamespace(buffer=torch.zeros(8, 2, 2, dtype=torch.int32))
 
-    def forward(out_cache_loc: list[int], *, skip: bool) -> None:
-        capturer.skip_capture = skip
+    def forward(out_cache_loc: list[int]) -> None:
         for layer in range(2):
             capturer.capture(layer, torch.tensor([[layer, 5]] * len(out_cache_loc), dtype=torch.int32))
         loc = torch.tensor(out_cache_loc)
@@ -148,15 +147,13 @@ def test_a_skipped_forward_reports_its_rows_as_unknown():
             SimpleNamespace(out_cache_loc=loc, out_cache_loc_virtual=None), can_run_graph=False, cuda_graph_batch=None
         )
 
-    forward([0, 1, 2], skip=True)  # a compiled prefill
-    forward([3], skip=False)  # a decode step
-    assert not capturer.skip_capture, "the flag must clear after the skipped forward"
+    forward([0, 1, 2])  # a prefill
+    forward([3])  # a decode step
 
     pool = SimpleNamespace(req_to_token=torch.arange(8).unsqueeze(0))
     rows = capturer.get_topk(req_pool_idx=0, seqlen=5, req_to_token_pool=pool)
-    assert rows.dtype == torch.int32 and rows.shape == (4, 2, 2), "miles decodes [num_tokens - 1, layers, topk] int32"
-    assert (rows[:3] == -1).all()
-    assert rows[3].tolist() == [[0, 5], [1, 5]]
+    assert rows.dtype == torch.int32 and rows.shape == (4, 2, 2)
+    assert rows.tolist() == [[[0, 5], [1, 5]]] * 4
 
 
 def test_every_server_arg_miles_reads_is_registered():
