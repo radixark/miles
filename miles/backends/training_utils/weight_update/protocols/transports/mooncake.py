@@ -17,10 +17,12 @@ class MooncakeTransport:
     def __init__(self) -> None:
         self._transfer_engine = _create_transfer_engine()
 
-    def connect_peer(self, transfer_engine_info: tuple[str, dict]) -> str:
-        session_id, _ = transfer_engine_info
-        assert session_id is not None, "a rollout engine rank published its weights without a Mooncake session"
-        return session_id
+    def connect_peer(self, transfer_engine_info: dict) -> str:
+        return transfer_engine_info["session_id"]
+
+    def remove_peers(self) -> None:
+        # this side keeps no state per Mooncake session
+        pass
 
     def register_tensor(self, tensor: torch.Tensor) -> int:
         ret = self._transfer_engine.register_memory(tensor.data_ptr(), tensor.nbytes)

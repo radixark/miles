@@ -1204,6 +1204,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=600.0,
                 help="Seconds the trainer controller waits for one trainer cell's update_weights before giving it up.",
             )
+            parser.add_argument(
+                "--p2p-transport",
+                choices=["mooncake", "nixl"],
+                default="mooncake",
+                help=(
+                    "What a P2P weight update writes over. The rollout engines must publish their weights for it: "
+                    "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine for mooncake, "
+                    "--sglang-remote-instance-weight-loader-start-seed-via-nixl for nixl."
+                ),
+            )
             return parser
 
         def add_fault_tolerance_arguments(parser):
