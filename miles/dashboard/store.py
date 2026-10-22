@@ -375,28 +375,29 @@ class _PartitionReader:
 
     def edge_stamps(self) -> list[float]:
         """Global-range candidates from the first line of the oldest file and
-        the complete lines in the newest file's tail — no full scan. One flush
-        writes a batch in arrival order, so its last line need not be its newest."""
-        files = [(key, path) for key, path in self.files() if path.stat().st_size > 0]
-        if not files:
-            return []
+        the complete lines in the tail of the newest file holding any — no
+        full scan. One flush writes a batch in arrival order, so its last line
+        need not be its newest; and the newest file can hold only a line still
+        being written, which must not leave the oldest row as the edge."""
+        files = [path for _, path in self.files() if path.stat().st_size > 0]
         lines = []
-        with open(files[0][1], "rb") as f:
-            lines.append(f.readline())
-        with open(files[-1][1], "rb") as f:
-            f.seek(0, 2)
-            tail_start = max(0, f.tell() - 65536)
-            f.seek(tail_start)
-            tail = f.read()
-        complete = tail[: tail.rfind(b"\n") + 1]
-        lines.extend(complete.splitlines()[1 if tail_start else 0 :])  # a mid-file seek cuts the first
-        stamps: list[float] = []
-        for line in lines:
-            try:
-                stamps.extend(self._line_stamps(json.loads(line)))
-            except json.JSONDecodeError:
-                pass  # partial line mid-append: no complete record to stamp yet
-        return stamps
+        if files:
+            with open(files[0], "rb") as f:
+                first_line = f.readline()
+            if first_line.endswith(b"\n"):
+                lines.append(first_line)
+        for path in reversed(files):
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                tail_start = max(0, f.tell() - 65536)
+                f.seek(tail_start)
+                tail = f.read()
+            # a mid-file seek cuts the first line
+            tail_lines = tail[: tail.rfind(b"\n") + 1].splitlines()[1 if tail_start else 0 :]
+            if tail_lines:
+                lines.extend(tail_lines)
+                break
+        return [stamp for line in lines for stamp in self._line_stamps(json.loads(line))]
 
 
 class _AppendCursor:
