@@ -65,7 +65,7 @@ def _make_routing_replay_manager(top_indices):
 
 def test_routing_rows_without_replayed_ids_take_the_routers_own_topk_on_tpu(monkeypatch):
     """Uncaptured rows (-1) and ids outside the experts are routed by the router, not pinned to experts 0..topk-1."""
-    monkeypatch.setattr(replay_base.accelerator, "IS_TPU", True)
+    monkeypatch.setattr(replay_base.platforms, "IS_TPU", True)
     scores = torch.tensor([[0.0, 4.0, 1.0, 3.0, 2.0]] * 3)
     replayed = torch.tensor([[-1, -1], [0, 7], [2, 0]], dtype=torch.int32)
     manager = _make_routing_replay_manager(replayed)
@@ -85,7 +85,7 @@ def test_routing_padding_rows_keep_the_arange_fill_off_tpu():
 
 
 def test_routing_replay_returns_the_probs_of_the_filled_rows_on_tpu(monkeypatch):
-    monkeypatch.setattr(replay_base.accelerator, "IS_TPU", True)
+    monkeypatch.setattr(replay_base.platforms, "IS_TPU", True)
 
     def topk_with_probs(scores, topk):
         values, indices = torch.topk(scores, topk, dim=1)
@@ -102,8 +102,8 @@ def test_routing_replay_returns_the_probs_of_the_filled_rows_on_tpu(monkeypatch)
 
 def test_a_staged_forward_replays_without_popping(monkeypatch):
     """torchtitan pops ids before the compiled blocks run; the blocks must read the staged ids, not pop again."""
-    monkeypatch.setattr(replay_base.accelerator, "IS_TPU", True)
-    monkeypatch.setattr(replay_base.accelerator, "current_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(replay_base.platforms, "IS_TPU", True)
+    monkeypatch.setattr(replay_base.current_platform, "current_device", lambda: torch.device("cpu"))
     manager = RoutingReplayManager()
     manager.enabled = True
     manager.stage = "replay_forward"
