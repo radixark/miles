@@ -497,21 +497,23 @@ class StorePlan:
             owned_refs=refs,
         )
 
-    def reads(self) -> dict[str, tuple[StoreRef, list[str]]]:
-        """What ``materialize`` reads, by store key: the ref, and its arrays that the plan's rows come from.
 
-        Only arrays the object stores: support log-probs exist only for support requests. Objects
-        the plan owns without using, such as replaced forward rows, are not read.
-        """
-        reads: dict[str, tuple[StoreRef, list[str]]] = {}
-        for segments in self.fields.values():
+def store_reads(plans: Iterable[StorePlan]) -> dict[str, tuple[StoreRef, list[str]]]:
+    """What ``materialize`` reads for these plans, by store key: the ref, and its arrays the plans' rows come from.
+
+    Each object and array once. Only arrays the object stores: support log-probs exist only for
+    support requests. Objects a plan owns without using, such as replaced forward rows, are not read.
+    """
+    reads: dict[str, tuple[StoreRef, list[str]]] = {}
+    for plan in plans:
+        for segments in plan.fields.values():
             for seg in segments.segs:
                 if seg.ref is None:
                     continue
                 stored = {spec.name for spec in seg.ref.fields}
                 names = reads.setdefault(seg.ref.key, (seg.ref, []))[1]
                 names += [name for name in segments.stored if name in stored and name not in names]
-        return reads
+    return reads
 
 
 def store_ref_from_dict(value: Mapping[str, Any] | None) -> StoreRef | None:

@@ -6,9 +6,10 @@ from typing import Any
 
 import numpy as np
 
-from miles.ray.rollout.train_data_conversion import _compact_candidate_ids
+from miles.ray.rollout.train_data_conversion import compact_score_centering_candidates
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
-from miles.utils.output_store.plan import StorePlan, StorePlanError
+from miles.utils.output_store.plan import StorePlan, StorePlanError, store_reads
+from miles.utils.rollout_topk_logprobs import requests_support_logprobs
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample
 
@@ -26,8 +27,7 @@ def materialize_store_columns(args: Namespace, rollout_data: dict, *, read: Call
         raise StorePlanError("the rollout data has output store plans, but this trainer has no output store reader")
     plans = [StorePlan.from_dict(entry) for entry in entries]
     k = args.rollout_top_logprobs_num
-    # Requests asked SGLang for support log-probs exactly in support mode with top-k collected.
-    support_topk = k if args.rollout_sampling_logprobs_mode == "support" else 0
+    support_topk = k if requests_support_logprobs(args) else 0
     objects = _read_objects(plans, read)
     columns = [
         plan.materialize(
@@ -43,21 +43,15 @@ def materialize_store_columns(args: Namespace, rollout_data: dict, *, read: Call
     # convert gave every plan the same fields, so every sample has the same columns.
     for name in columns[0] if columns else ():
         rollout_data[name] = [sample_columns[name] for sample_columns in columns]
-    if support_topk:
-        if args.ci_test:
-            # Before compaction drops the dense candidate ids.
-            _validate_candidates(rollout_data, k)
-        if args.loss_type == "score_centering":
-            _compact_candidate_ids(rollout_data)
+    if support_topk and args.ci_test:
+        # Before compaction drops the dense candidate ids.
+        _validate_candidates(rollout_data, k)
+    compact_score_centering_candidates(args, rollout_data)
 
 
 def _read_objects(plans: Sequence[StorePlan], read: Callable) -> dict[str, dict[str, Any]]:
     """Read every object the shard's plans take rows from, once."""
-    requests: dict[str, tuple[Any, list[str]]] = {}
-    for plan in plans:
-        for key, (ref, names) in plan.reads().items():
-            merged = requests.setdefault(key, (ref, []))[1]
-            merged += [name for name in names if name not in merged]
+    requests = store_reads(plans)
     try:
         stashes = read(list(requests.values()))
     except (KeyError, ValueError) as e:
