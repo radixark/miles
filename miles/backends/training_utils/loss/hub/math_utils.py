@@ -309,22 +309,20 @@ def compute_log_probs(
         return log_probs.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
 
     if _MEGATRON_INSTALLED:
-        from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
+        from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy as cross_entropy
     else:
-        fused_vocab_parallel_cross_entropy = vocab_parallel_cross_entropy
+        cross_entropy = vocab_parallel_cross_entropy
 
-    # convert to [seq_len, batch_size, vocab_size] as expected by fused_vocab_parallel_cross_entropy
+    # convert to [seq_len, batch_size, vocab_size] as cross_entropy expects
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
 
     if debug_unified_grad_fused_logprob and not torch.is_grad_enabled():
         with torch.enable_grad():
-            log_probs = -fused_vocab_parallel_cross_entropy(
-                logits.detach().requires_grad_(True), tokens, process_group
-            )
+            log_probs = -cross_entropy(logits.detach().requires_grad_(True), tokens, process_group)
         return log_probs.detach()
 
-    return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
+    return -cross_entropy(logits, tokens, process_group)
 
 
 class _VocabParallelCrossEntropy(torch.autograd.Function):
