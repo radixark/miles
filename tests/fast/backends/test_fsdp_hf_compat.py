@@ -353,7 +353,7 @@ def test_each_arch_passes_the_packing_kwargs_its_modeling_reads():
     boundaries = _packed_boundaries(2, 3)
     for model_type in ("qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen3_next"):
         assert "seq_idx" in _adapter(model_type).packing_kwargs(**boundaries), model_type
-    # Stock HF attention takes the varlen boundaries; max_length stays a Python int for FlashAttention-4.
+    # stock HF attention: varlen boundaries, max_length an int
     for model_type in ("glm4_moe_lite", "qwen3", "qwen3_moe", "qwen3_vl"):
         kwargs = _adapter(model_type).packing_kwargs(**boundaries)
         assert set(kwargs) == {"cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k"}, model_type
@@ -364,8 +364,7 @@ def test_each_arch_passes_the_packing_kwargs_its_modeling_reads():
 
 
 def test_qwen3_attention_receives_the_packed_boundaries(monkeypatch):
-    """Without them HF re-derives the boundaries from position_ids in every layer, and hands FlashAttention-4
-    a 0-d tensor max_length it rejects."""
+    """Without them HF re-derives the boundaries per layer and hands FlashAttention-4 a tensor max_length."""
     from transformers import AttentionInterface, Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 
@@ -404,6 +403,7 @@ def test_qwen3_attention_receives_the_packed_boundaries(monkeypatch):
 
 
 def test_qwen3_vl_keeps_packing_kwargs_out_of_its_vision_tower():
+    """The text rows' packing kwargs must not reach the vision tower."""
     calls = []
 
     class Tower(torch.nn.Module):

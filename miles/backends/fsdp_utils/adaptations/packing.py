@@ -3,8 +3,8 @@
 The FSDP backend packs several documents into one ``[1, T]`` forward row; stateful layers (Mamba2,
 GatedDeltaNet) and attention must reset per document. ``get_batch`` records the boundaries
 (``cu_seqlens``, ``max_seqlen``) and ``hf_attention_packing_kwargs`` / ``hf_packing_kwargs`` hand them
-to HF modeling. NemotronH's patch
-only sees ``position_ids`` inside the model forward, so ``packed_seq_context`` re-derives them there.
+to HF modeling. NemotronH's patch only sees ``position_ids`` inside the model forward, so
+``packed_seq_context`` re-derives them there.
 """
 
 import functools
@@ -41,9 +41,7 @@ HF_PACKING_KWARG_NAMES = frozenset({"cu_seq_lens_q", "cu_seq_lens_k", "max_lengt
 
 
 def hf_attention_packing_kwargs(*, cu_seqlens: torch.Tensor, max_seqlen: int) -> dict[str, object]:
-    """The boundaries flash attention reads, so HF takes its varlen path instead of re-deriving them from
-    ``position_ids`` in every layer. That fallback also hands the kernel ``max_length`` as a 0-d tensor,
-    which FlashAttention-4 rejects; ``max_seqlen`` stays a Python int here."""
+    """The varlen boundaries HF attention reads; ``max_length`` stays an int, which FlashAttention-4 needs."""
     return {
         "cu_seq_lens_q": cu_seqlens,
         "cu_seq_lens_k": cu_seqlens,
@@ -73,13 +71,8 @@ def hf_packing_kwargs(
 
 
 def keep_packing_kwargs_out_of_vision(model: nn.Module) -> None:
-    """Drop the language model's packing kwargs at the vision tower's forward; a no-op for text-only
-    checkpoints and for a tower already wrapped.
-
-    HF's multimodal forward also hands its ``**kwargs`` to the vision tower. Its flash-attention blocks
-    override the boundary kwargs with the image's own, but the rest (``seq_idx``, the text rows'
-    document ids) would still reach them.
-    """
+    """Drop the language model's packing kwargs at the vision tower's forward; idempotent, and a no-op
+    without a tower. HF hands the tower its ``**kwargs`` too, so ``seq_idx`` would otherwise reach it."""
     visual = getattr(
         getattr(model, "model", None), "visual", None
     )  # config-access-exempt: HF text-only and vision wrappers expose different model and visual modules

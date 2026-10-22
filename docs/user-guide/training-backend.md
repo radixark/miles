@@ -380,11 +380,9 @@ targets are Megatron-only: both `--offload-train-target disk` and
   you do not need that guarantee.
 - `--attn-implementation` picks the `transformers` attention backend: `flash_attention_2` by
   default, with `flash_attention_3`, `sdpa` and `eager` passed straight through.
-  `flash_attention_4` runs on the FlashAttention-4 package SGLang already installs, so an install
-  without a `flash-attn` build can train with it. Packed documents reach it through the
-  architecture's adapter (`passes_attention_packing_kwargs`, set for Qwen3, Qwen3-MoE, Qwen3-VL and
-  GLM-4.7-Flash; Qwen3.5 passes its own); without them `transformers` re-derives the boundaries
-  in every layer and FlashAttention-4 rejects the result.
+  `flash_attention_4` uses the FlashAttention-4 that SGLang installs, so it trains without a
+  `flash-attn` build. It needs an adapter that passes the packed-document boundaries: Qwen3,
+  Qwen3-MoE, Qwen3-VL, GLM-4.7-Flash and Qwen3.5.
 - An architecture with fussier numerics can register its own policy, see
   [when an HF model needs help](#going-deeper-when-an-hf-model-needs-help).
 
