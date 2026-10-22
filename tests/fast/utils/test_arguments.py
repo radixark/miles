@@ -19,6 +19,7 @@ from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
 from miles.utils.arguments import (
+    CAKE_BACKEND_ARGS,
     FULLY_ASYNC_ROLLOUT_PATH,
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,
@@ -37,6 +38,7 @@ from miles.utils.arguments import (
     supports_partial_target_weight_update,
     validate_async_off_policy_correction,
     validate_log_probs_backend_args,
+    validate_miles_ext_kernels_args,
     validate_skip_actor_forward_only,
 )
 from miles.utils.env_report.redaction import _SECRET_ARG_NAMES, _SECRET_ENV_VAR_PATTERN
@@ -3740,3 +3742,39 @@ class TestWeightUpdateFaultToleranceSupport:
 
         with pytest.raises(AssertionError, match="weight_update FT requires Megatron"):
             miles_validate_args(args)
+
+
+class TestMilesExtKernels:
+    def _parse(self, argv: list[str]) -> argparse.Namespace:
+        with patch.object(sys, "argv", ["test", *argv, *REQUIRED_ARGS]):
+            parser = argparse.ArgumentParser()
+            get_miles_extra_args_provider()(parser)
+            return parser.parse_args()
+
+    @pytest.mark.parametrize("name", CAKE_BACKEND_ARGS)
+    def test_a_cake_backend_requires_the_flag(self, name: str) -> None:
+        args = self._parse([])
+        setattr(args, name, "cake")
+
+        with pytest.raises(ValueError, match=f"--{name.replace('_', '-')} cake requires --use-miles-ext-kernels"):
+            validate_miles_ext_kernels_args(args)
+
+    def test_the_flag_registers_and_validates_the_ext_arguments(self) -> None:
+        import miles_ext_kernels
+
+        with patch.object(miles_ext_kernels, "add_arguments") as add_arguments:
+            args = self._parse(["--use-miles-ext-kernels"])
+        add_arguments.assert_called_once()
+
+        args.linear_attention_backend = "cake"
+        with patch.object(miles_ext_kernels, "validate_args") as validate_args:
+            validate_miles_ext_kernels_args(args)
+        validate_args.assert_called_once_with(args)
+
+    def test_without_the_flag_the_ext_arguments_are_not_registered(self) -> None:
+        import miles_ext_kernels
+
+        with patch.object(miles_ext_kernels, "add_arguments") as add_arguments:
+            args = self._parse([])
+        add_arguments.assert_not_called()
+        assert args.use_miles_ext_kernels is False

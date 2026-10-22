@@ -40,6 +40,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+          submodules: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -108,7 +109,7 @@ jobs:
 
       - name: Configure source paths
         shell: bash
-        run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/3rdparty/miles-ext-kernels:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         shell: bash
