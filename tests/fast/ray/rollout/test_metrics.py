@@ -151,6 +151,15 @@ class TestComputeZeroStdMetrics:
         assert out[f"zero_std/count_{round(one, 1)}"] == 1
         assert out["zero_std/all_zero_percentage"] == pytest.approx(1 / 3)
         assert out["zero_std/all_one_percentage"] == pytest.approx(1 / 3)
+        assert out["zero_std/percentage"] == pytest.approx(2 / 3)
+
+    @pytest.mark.parametrize("reward", [0.5, 0.0])
+    def test_percentage_counts_every_uniform_group_not_only_binary(self, reward):
+        """Groups uniform at any reward give zero advantage, not only all-0 / all-1."""
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = make_samples_grouped(2, 2, rewards=[reward, reward, 0.0, 1.0])
+
+        assert _compute_zero_std_metrics(args, samples)["zero_std/percentage"] == pytest.approx(1 / 2)
 
     def test_mixed_numeric_types_and_unequal_group_sizes_count_groups_equally(self):
         args = make_args(advantage_estimator="grpo", reward_key=None)
