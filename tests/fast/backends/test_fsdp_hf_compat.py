@@ -371,12 +371,13 @@ def test_qwen3_attention_receives_the_packed_boundaries(monkeypatch):
 
     seen = []
 
-    def flash_stand_in(module, query, key, value, attention_mask, scaling=None, **kwargs):
+    def attention_stand_in(module, query, key, value, attention_mask, scaling=None, **kwargs):
         seen.append(kwargs)
         out = torch.nn.functional.scaled_dot_product_attention(query, key, value, scale=scaling, enable_gqa=True)
         return out.transpose(1, 2), None
 
-    monkeypatch.setitem(AttentionInterface._global_mapping, "flash_stand_in", flash_stand_in)
+    # not a "flash" name, which transformers would resolve to a real FlashAttention kernel
+    monkeypatch.setitem(AttentionInterface._global_mapping, "attention_stand_in", attention_stand_in)
     cfg = Qwen3Config(
         vocab_size=64,
         hidden_size=16,
@@ -386,7 +387,7 @@ def test_qwen3_attention_receives_the_packed_boundaries(monkeypatch):
         num_key_value_heads=1,
         head_dim=8,
     )
-    cfg._attn_implementation = "flash_stand_in"
+    cfg._attn_implementation = "attention_stand_in"
     model = Qwen3ForCausalLM(cfg).eval()
 
     with torch.no_grad():
