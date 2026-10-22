@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable
 import torch
 import torch.nn as nn
 
+from miles.backends.fsdp_utils.adaptations.packing import hf_attention_packing_kwargs
 from miles.backends.fsdp_utils.adaptations.precision import PrecisionPolicy
 from miles.backends.fsdp_utils.adaptations.routing_replay import RoutingReplayAdapter
 
@@ -25,6 +26,9 @@ class ArchAdapter:
     verified: bool = False
     # None means the architecture has no MoE router to replay.
     routing_replay: RoutingReplayAdapter | None = None
+    # True when the HF modeling takes the flash-attention boundary kwargs through **kwargs. Off by
+    # default: remote code may not accept them.
+    passes_attention_packing_kwargs: bool = False
 
     def resolve_precision(self, base: PrecisionPolicy, args: Namespace) -> PrecisionPolicy:
         """Adjust the backend's default precision policy for this architecture."""
@@ -42,7 +46,9 @@ class ArchAdapter:
     ) -> dict[str, object]:
         """Extra forward kwargs that tell this architecture's modeling where the packed documents that
         ``get_batch`` recorded start."""
-        return {}
+        if not self.passes_attention_packing_kwargs:
+            return {}
+        return hf_attention_packing_kwargs(cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
 
     def param_transform(self, name: str, param: torch.Tensor) -> ParamExpand | None:
         """How to rewrite ``param`` for the rollout engine at weight sync, or None to stream it unchanged."""

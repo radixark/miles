@@ -2,13 +2,16 @@
 
 The FSDP backend packs several documents into one ``[1, T]`` forward row; stateful layers (Mamba2,
 GatedDeltaNet) and attention must reset per document. ``get_batch`` records the boundaries
-(``cu_seqlens``, ``max_seqlen``) and ``hf_packing_kwargs`` hands them to HF modeling. NemotronH's patch
+(``cu_seqlens``, ``max_seqlen``) and ``hf_attention_packing_kwargs`` / ``hf_packing_kwargs`` hand them
+to HF modeling. NemotronH's patch
 only sees ``position_ids`` inside the model forward, so ``packed_seq_context`` re-derives them there.
 """
 
+import functools
 from dataclasses import dataclass
 
 import torch
+import torch.nn as nn
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,18 @@ def packed_seq_context(position_ids: torch.Tensor | None) -> PackedSeqContext | 
 HF_PACKING_KWARG_NAMES = frozenset({"cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k", "seq_idx"})
 
 
+def hf_attention_packing_kwargs(*, cu_seqlens: torch.Tensor, max_seqlen: int) -> dict[str, object]:
+    """The boundaries flash attention reads, so HF takes its varlen path instead of re-deriving them from
+    ``position_ids`` in every layer. That fallback also hands the kernel ``max_length`` as a 0-d tensor,
+    which FlashAttention-4 rejects; ``max_seqlen`` stays a Python int here."""
+    return {
+        "cu_seq_lens_q": cu_seqlens,
+        "cu_seq_lens_k": cu_seqlens,
+        "max_length_q": max_seqlen,
+        "max_length_k": max_seqlen,
+    }
+
+
 def hf_packing_kwargs(
     *, cu_seqlens: torch.Tensor, cu_seqlens_host: tuple[int, ...], max_seqlen: int
 ) -> dict[str, object]:
@@ -52,9 +67,31 @@ def hf_packing_kwargs(
         output_size=cu_seqlens_host[-1],
     )
     return {
-        "cu_seq_lens_q": cu_seqlens,
-        "cu_seq_lens_k": cu_seqlens,
-        "max_length_q": max_seqlen,
-        "max_length_k": max_seqlen,
+        **hf_attention_packing_kwargs(cu_seqlens=cu_seqlens, max_seqlen=max_seqlen),
         "seq_idx": seq_idx.unsqueeze(0),
     }
+
+
+def keep_packing_kwargs_out_of_vision(model: nn.Module) -> None:
+    """Drop the language model's packing kwargs at the vision tower's forward; a no-op for text-only
+    checkpoints and for a tower already wrapped.
+
+    HF's multimodal forward also hands its ``**kwargs`` to the vision tower. Its flash-attention blocks
+    override the boundary kwargs with the image's own, but the rest (``seq_idx``, the text rows'
+    document ids) would still reach them.
+    """
+    visual = getattr(
+        getattr(model, "model", None), "visual", None
+    )  # config-access-exempt: HF text-only and vision wrappers expose different model and visual modules
+    if visual is None or getattr(
+        visual.forward, "_drops_lm_packing_kwargs", False
+    ):  # config-access-exempt: the wrapping function attaches this idempotence marker dynamically
+        return
+    vision_forward = visual.forward
+
+    @functools.wraps(vision_forward)
+    def forward(*args, **kwargs):
+        return vision_forward(*args, **{k: v for k, v in kwargs.items() if k not in HF_PACKING_KWARG_NAMES})
+
+    forward._drops_lm_packing_kwargs = True
+    visual.forward = forward
