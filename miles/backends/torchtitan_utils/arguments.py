@@ -58,15 +58,18 @@ def validate_torchtitan_args(args) -> None:
 
     if platforms.IS_TPU and args.log_probs_backend == "fused":
         raise ValueError("--log-probs-backend fused is a Triton kernel; on TPU use --log-probs-backend torch")
-    if (
-        not platforms.current_platform.dynamic_shapes
-        and args.use_dynamic_batch_size
-        and args.max_tokens_per_gpu > args.seq_length
-    ):
-        raise ValueError(
-            f"--max-tokens-per-gpu {args.max_tokens_per_gpu} exceeds --seq-length {args.seq_length}: without "
-            "dynamic shapes, packed microbatches are padded to a power-of-two bucket capped at --seq-length"
-        )
+    # without dynamic shapes, packed microbatches are padded to a power-of-two bucket capped at --seq-length
+    if not platforms.current_platform.dynamic_shapes:
+        if args.use_dynamic_batch_size and args.max_tokens_per_gpu > args.seq_length:
+            raise ValueError(
+                f"--max-tokens-per-gpu {args.max_tokens_per_gpu} exceeds --seq-length {args.seq_length}, "
+                "the largest length bucket"
+            )
+        if not args.use_dynamic_batch_size and args.micro_batch_size > 1:
+            raise ValueError(
+                f"--micro-batch-size {args.micro_batch_size} can pack more than --seq-length {args.seq_length} "
+                "tokens, the largest length bucket; use --use-dynamic-batch-size with --max-tokens-per-gpu"
+            )
 
     # colocate syncs through CUDA IPC and broadcast/p2p/disk-delta through NCCL, none of which a TPU engine has
     if platforms.IS_TPU and (args.colocate or args.update_weight_transfer_mode not in ("disk", "shm")):

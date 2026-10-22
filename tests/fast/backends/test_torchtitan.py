@@ -22,6 +22,8 @@ def _args(**overrides) -> Namespace:
     base = dict(
         titan_model_name="qwen3",
         seq_length=8192,
+        micro_batch_size=1,
+        use_dynamic_batch_size=False,
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
         expert_model_parallel_size=1,
@@ -75,11 +77,15 @@ def _on_tpu(monkeypatch) -> None:
 def test_a_tpu_microbatch_cannot_outgrow_the_largest_length_bucket(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
     _on_tpu(monkeypatch)
-    with pytest.raises(ValueError, match="power-of-two bucket"):
+    with pytest.raises(ValueError, match="max-tokens-per-gpu 16384 exceeds"):
         validate_torchtitan_args(
             _args(use_dynamic_batch_size=True, max_tokens_per_gpu=16384, log_probs_backend="torch")
         )
     validate_torchtitan_args(_args(use_dynamic_batch_size=True, max_tokens_per_gpu=8192, log_probs_backend="torch"))
+    # fixed-size microbatches pack micro_batch_size samples, each up to --seq-length
+    with pytest.raises(ValueError, match="micro-batch-size 2"):
+        validate_torchtitan_args(_args(use_dynamic_batch_size=False, micro_batch_size=2, log_probs_backend="torch"))
+    validate_torchtitan_args(_args(use_dynamic_batch_size=False, micro_batch_size=1, log_probs_backend="torch"))
 
 
 def test_the_triton_log_prob_kernel_is_refused_on_tpu(monkeypatch):
