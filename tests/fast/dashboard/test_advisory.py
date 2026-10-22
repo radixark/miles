@@ -492,3 +492,42 @@ def test_earlier_long_stalls_do_not_raise_the_baseline(tmp_path):
 
     [advisory] = compute_advisories(MetricStore.load(tmp_path))
     assert advisory.level == "critical" and "train_wait" in advisory.message
+
+
+def test_tuning_advice_follows_the_recent_engine_state(tmp_path):
+    """A busy hour a day ago does not describe the engines now; the default
+    window ends at the newest scrape."""
+    day = 86400.0
+    store = _store(
+        tmp_path,
+        args={"sglang_max_running_requests": 100},
+        engine_samples=[
+            _engine("sglang_num_running_reqs", 90.0, ts=1.0),
+            _engine("sglang_num_running_reqs", 5.0, ts=day),
+        ],
+    )
+    [advisory] = compute_advisories(store)
+    assert "Peak concurrency (5)" in advisory.message
+
+
+def test_healthy_run_reads_no_run_long_engine_series(tmp_path, monkeypatch):
+    """Polled every few seconds by the live view: without an alarm to explain,
+    nothing may read the whole engine history."""
+    store = _store(
+        tmp_path,
+        args={"sglang_max_running_requests": 100},
+        engine_samples=[
+            _engine("sglang_num_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_requests_total", 1000.0, ts=2.0),
+            _engine("sglang_num_running_reqs", 90.0, ts=2.0),
+        ],
+    )
+    queried_windows = []
+    engine_series = store.engine_series
+    monkeypatch.setattr(
+        store,
+        "engine_series",
+        lambda metric, **kw: queried_windows.append((kw.get("t0"), kw.get("t1"))) or engine_series(metric, **kw),
+    )
+    compute_advisories(store)
+    assert queried_windows and (None, None) not in queried_windows

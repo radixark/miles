@@ -1338,6 +1338,10 @@ class MetricStore:
         {"sglang_token_usage", "sglang_cache_hit_rate", "sglang_kv_transfer_latency_ms"}
     )
 
+    def newest_engine_scrape_ts(self) -> float | None:
+        stamps = self._readers[Stream.ENGINE_SERIES].edge_stamps()
+        return max(stamps) if stamps else None
+
     def engine_metric_names(self) -> list[str]:
         """Distinct scraped engine metrics — the L0 sglang category catalog.
 
