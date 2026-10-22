@@ -18,9 +18,19 @@ from miles.backends.training_utils.data.context_parallel import (
 from miles.backends.training_utils.parallel import get_parallel_state
 
 _LOG_RATIO_EXP_CLAMP = 20.0
-# A pip install for the FSDP or torchtitan backend has no Megatron; a broken Megatron install
-# still fails loudly at its import instead of silently switching implementations.
-_MEGATRON_INSTALLED = importlib.util.find_spec("megatron") is not None
+
+
+def _megatron_core_installed() -> bool:
+    """A pip install for the FSDP or torchtitan backend has no Megatron. ``megatron.core`` holds the fused
+    kernel: megatron-energon alone installs a bare ``megatron`` namespace. A broken Megatron install still
+    fails loudly at its import instead of silently switching implementations."""
+    try:
+        return importlib.util.find_spec("megatron.core") is not None
+    except ModuleNotFoundError:  # no megatron package at all
+        return False
+
+
+_MEGATRON_INSTALLED = _megatron_core_installed()
 
 
 def _safe_clamp_log_ratio(log_ratio: torch.Tensor) -> torch.Tensor:
@@ -320,12 +330,13 @@ def compute_log_probs(
 class _VocabParallelCrossEntropy(torch.autograd.Function):
     """Megatron's ``fused_vocab_parallel_cross_entropy`` math in plain torch, for installs without Megatron.
 
-    Logits are ``[seq, batch, vocab / tp]``, split over ``group`` along the vocabulary. Unlike
+    Logits are ``[seq, batch, vocab / tp]``, split over ``group`` (None: the default group, as in
+    ``torch.distributed``) along the vocabulary. Unlike
     Megatron's, it leaves its input untouched and returns the gradient in the input's dtype.
     """
 
     @staticmethod
-    def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
+    def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup | None) -> torch.Tensor:
         ctx.input_dtype = logits.dtype
         logits = logits.float()
         logits_max = logits.max(dim=-1)[0]
@@ -333,7 +344,7 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         logits = logits - logits_max.unsqueeze(-1)
 
         partition_vocab_size = logits.size(-1)
-        vocab_start = group.rank() * partition_vocab_size
+        vocab_start = dist.get_rank(group) * partition_vocab_size
         target_mask = (target < vocab_start) | (target >= vocab_start + partition_vocab_size)
         masked_target = (target - vocab_start).masked_fill(target_mask, 0)
         predicted_logits = logits.gather(-1, masked_target.unsqueeze(-1)).squeeze(-1).masked_fill(target_mask, 0.0)
@@ -357,7 +368,7 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         return (grad_input * grad_output.unsqueeze(-1)).to(ctx.input_dtype), None, None
 
 
-def vocab_parallel_cross_entropy(logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup):
+def vocab_parallel_cross_entropy(logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup | None):
     return _VocabParallelCrossEntropy.apply(logits, target, group)
 
 

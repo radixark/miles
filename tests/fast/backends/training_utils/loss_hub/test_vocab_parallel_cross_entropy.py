@@ -80,6 +80,8 @@ def _check_compute_log_probs_without_megatron(group: dist.ProcessGroup) -> None:
     expected = torch.log_softmax(logits, dim=-1).gather(-1, tokens.unsqueeze(-1))
 
     torch.testing.assert_close(compute_log_probs(logits, tokens, group), expected, atol=1e-6, rtol=1e-6)
+    # None is the default group, as in torch.distributed and the callers that pass it
+    torch.testing.assert_close(compute_log_probs(logits, tokens, None), expected, atol=1e-6, rtol=1e-6)
 
 
 def _run_checks(rank: int, world_size: int, port: int) -> None:
@@ -99,3 +101,25 @@ def _run_checks(rank: int, world_size: int, port: int) -> None:
 def test_vocab_parallel_cross_entropy(world_size: int) -> None:
     """One process group per tensor-parallel size: spawning is what costs, so every check shares it."""
     run_multiprocess(_run_checks, world_size=world_size)
+
+
+def _find_spec_seeing(found: dict[str, bool]):
+    def find_spec(name: str):
+        if name.split(".")[0] not in found:  # importing the parent package fails, as find_spec does
+            raise ModuleNotFoundError(name)
+        return object() if found.get(name, False) else None
+
+    return find_spec
+
+
+@pytest.mark.parametrize(
+    "found,installed",
+    [
+        ({"megatron": True, "megatron.core": True}, True),
+        ({"megatron": True}, False),  # megatron-energon's bare namespace, no megatron.core
+        ({}, False),  # no megatron package at all
+    ],
+)
+def test_megatron_counts_as_installed_only_with_megatron_core(monkeypatch, found, installed) -> None:
+    monkeypatch.setattr(math_utils.importlib.util, "find_spec", _find_spec_seeing(found))
+    assert math_utils._megatron_core_installed() is installed
