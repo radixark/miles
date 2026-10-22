@@ -33,80 +33,69 @@ def _grad_output() -> torch.Tensor:
     return torch.randn(SEQ, BATCH, generator=torch.Generator().manual_seed(11))
 
 
-def _check_against_full_softmax(rank: int, world_size: int, port: int) -> None:
-    init_gloo(rank, world_size, port=port)
-    try:
-        group = dist.new_group(list(range(world_size)))
-        shard = VOCAB // world_size
-        for dtype, tol in ((torch.float32, 1e-6), (torch.bfloat16, 1e-2)):
-            full = _full_logits(dtype)
-            expected_loss, expected_grad = _reference(full, _target())
-            local = full[..., rank * shard : (rank + 1) * shard].clone().requires_grad_()
-            local_before = local.detach().clone()
-
-            loss = vocab_parallel_cross_entropy(local, _target(), group)
-            loss.backward(_grad_output())
-
-            torch.testing.assert_close(loss, expected_loss, atol=tol, rtol=tol)
-            assert local.grad.dtype == dtype
-            torch.testing.assert_close(
-                local.grad, expected_grad[..., rank * shard : (rank + 1) * shard], atol=tol, rtol=tol
-            )
-            torch.testing.assert_close(local.detach(), local_before, atol=0, rtol=0)
-    finally:
-        dist.destroy_process_group()
-
-
-@pytest.mark.parametrize("world_size", [1, 2])
-def test_matches_the_full_vocabulary_log_softmax_on_every_shard(world_size: int) -> None:
+def _check_against_full_softmax(rank: int, world_size: int, group: dist.ProcessGroup) -> None:
     """Loss and gradient equal a plain log-softmax over the whole vocabulary, however it is split."""
-    run_multiprocess(_check_against_full_softmax, world_size=world_size)
+    shard = VOCAB // world_size
+    for dtype, tol in ((torch.float32, 1e-6), (torch.bfloat16, 1e-2)):
+        full = _full_logits(dtype)
+        expected_loss, expected_grad = _reference(full, _target())
+        local = full[..., rank * shard : (rank + 1) * shard].clone().requires_grad_()
+        local_before = local.detach().clone()
+
+        loss = vocab_parallel_cross_entropy(local, _target(), group)
+        loss.backward(_grad_output())
+
+        torch.testing.assert_close(loss, expected_loss, atol=tol, rtol=tol)
+        assert local.grad.dtype == dtype
+        torch.testing.assert_close(
+            local.grad, expected_grad[..., rank * shard : (rank + 1) * shard], atol=tol, rtol=tol
+        )
+        torch.testing.assert_close(local.detach(), local_before, atol=0, rtol=0)
 
 
-def _check_against_megatron(rank: int, world_size: int, port: int) -> None:
+def _check_against_megatron(rank: int, world_size: int, group: dist.ProcessGroup) -> None:
+    """Where Megatron is installed, the stand-in computes what its fused kernel computes."""
     from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
 
+    shard = VOCAB // world_size
+    full = _full_logits(torch.bfloat16)
+    results = []
+    for fn in (vocab_parallel_cross_entropy, fused_vocab_parallel_cross_entropy):
+        local = full[..., rank * shard : (rank + 1) * shard].clone().requires_grad_()
+        loss = fn(local, _target(), group)
+        loss.backward(_grad_output())
+        results.append((loss.detach(), local.grad))
+    (loss, grad), (megatron_loss, megatron_grad) = results
+    torch.testing.assert_close(loss, megatron_loss, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(grad, megatron_grad, atol=0, rtol=0)
+
+
+def _check_compute_log_probs_without_megatron(group: dist.ProcessGroup) -> None:
+    """The FSDP and torchtitan log-prob path imports nothing from Megatron when it is not installed."""
+    sys.modules["megatron"] = None  # importing any of it now raises, as on an install without it
+    math_utils._MEGATRON_INSTALLED = False
+    logits = _full_logits(torch.float32)[:, 0]
+    tokens = _target()[:, 0]
+    # [seq, 1], the shape compute_log_probs has always returned
+    expected = torch.log_softmax(logits, dim=-1).gather(-1, tokens.unsqueeze(-1))
+
+    torch.testing.assert_close(compute_log_probs(logits, tokens, group), expected, atol=1e-6, rtol=1e-6)
+
+
+def _run_checks(rank: int, world_size: int, port: int) -> None:
     init_gloo(rank, world_size, port=port)
     try:
         group = dist.new_group(list(range(world_size)))
-        shard = VOCAB // world_size
-        full = _full_logits(torch.bfloat16)
-        results = []
-        for fn in (vocab_parallel_cross_entropy, fused_vocab_parallel_cross_entropy):
-            local = full[..., rank * shard : (rank + 1) * shard].clone().requires_grad_()
-            loss = fn(local, _target(), group)
-            loss.backward(_grad_output())
-            results.append((loss.detach(), local.grad))
-        (loss, grad), (megatron_loss, megatron_grad) = results
-        torch.testing.assert_close(loss, megatron_loss, atol=1e-6, rtol=1e-6)
-        torch.testing.assert_close(grad, megatron_grad, atol=0, rtol=0)
+        _check_against_full_softmax(rank, world_size, group)
+        _check_against_megatron(rank, world_size, group)
+        if world_size == 1:
+            # last: it hides Megatron from the rest of this process
+            _check_compute_log_probs_without_megatron(group)
     finally:
         dist.destroy_process_group()
 
 
 @pytest.mark.parametrize("world_size", [1, 2])
-def test_matches_megatron_fused_cross_entropy(world_size: int) -> None:
-    """Where Megatron is installed, the stand-in computes what its fused kernel computes."""
-    pytest.importorskip("megatron.core.fusions.fused_cross_entropy")
-    run_multiprocess(_check_against_megatron, world_size=world_size)
-
-
-def _check_compute_log_probs_without_megatron(rank: int, world_size: int, port: int) -> None:
-    sys.modules["megatron"] = None  # importing any of it now raises, as on an install without it
-    math_utils._MEGATRON_INSTALLED = False
-    init_gloo(rank, world_size, port=port)
-    try:
-        group = dist.new_group([0])
-        logits = _full_logits(torch.float32)[:, 0]
-        tokens = _target()[:, 0]
-        # [seq, 1], the shape compute_log_probs has always returned
-        expected = torch.log_softmax(logits, dim=-1).gather(-1, tokens.unsqueeze(-1))
-
-        torch.testing.assert_close(compute_log_probs(logits, tokens, group), expected, atol=1e-6, rtol=1e-6)
-    finally:
-        dist.destroy_process_group()
-
-
-def test_compute_log_probs_runs_without_megatron() -> None:
-    """The FSDP and torchtitan log-prob path imports nothing from Megatron when it is not installed."""
-    run_multiprocess(_check_compute_log_probs_without_megatron, world_size=1)
+def test_vocab_parallel_cross_entropy(world_size: int) -> None:
+    """One process group per tensor-parallel size: spawning is what costs, so every check shares it."""
+    run_multiprocess(_run_checks, world_size=world_size)
