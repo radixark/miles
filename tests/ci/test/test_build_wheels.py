@@ -22,10 +22,11 @@ SOURCES = {
         "b" * 40,
     ),
     "te": ("repos/radixark/TransformerEngine/commits/miles-main", "c" * 40),
+    "sglang": ("repos/sgl-project/sglang/commits/sglang-miles", "e" * 40),
 }
 
 
-def run_check(tmp_path, wheels, selected, *, force="true", failure=None, built=None):
+def run_check(tmp_path, wheels, selected, *, force="true", failure=None, built=None, missing_release=False):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -37,6 +38,8 @@ def run_check(tmp_path, wheels, selected, *, force="true", failure=None, built=N
         "sources = json.loads(os.environ['SOURCES'])\n"
         "if endpoint == os.environ['FAILURE']:\n"
         "    sys.exit('selected lookup unavailable')\n"
+        "if '/releases/tags/' in endpoint and os.environ['MISSING_RELEASE']:\n"
+        "    sys.exit('gh: Not Found (HTTP 404)')\n"
         "if endpoint in sources:\n"
         "    print(sources[endpoint])\n"
         "elif '/releases/tags/' in endpoint:\n"
@@ -62,9 +65,11 @@ def run_check(tmp_path, wheels, selected, *, force="true", failure=None, built=N
             "WHEELS_INPUT": wheels,
             "FORCE": force,
             "TE_REF": "miles-main",
+            "SGLANG_REF": "sglang-miles",
             "SOURCES": json.dumps(dict(SOURCES[name] for name in selected)),
             "FAILURE": failure or "",
             "MOCK_RELEASE_COMMIT": built or "",
+            "MISSING_RELEASE": "1" if missing_release else "",
         },
         capture_output=True,
         text=True,
@@ -80,7 +85,13 @@ def test_scoped_dispatch_does_not_resolve_other_sources(tmp_path, wheels):
     assert bool(json.loads(outputs["router_matrix"])) == (wheels == "sgl-router")
     assert outputs["int4_x86"] == str(wheels == "int4_qat").lower()
     assert outputs["te_x86"] == str(wheels == "te").lower()
-    for name, output in [("sgl-router", "router_sha"), ("int4_qat", "int4_sha"), ("te", "te_sha")]:
+    assert bool(json.loads(outputs["sglang_matrix"])) == (wheels == "sglang")
+    for name, output in [
+        ("sgl-router", "router_sha"),
+        ("int4_qat", "int4_sha"),
+        ("te", "te_sha"),
+        ("sglang", "sglang_sha"),
+    ]:
         assert outputs[output] == (SOURCES[name][1] if name == wheels else "")
 
 
@@ -92,12 +103,64 @@ def test_router_builds_only_when_manifest_is_missing_or_stale(tmp_path, built):
     assert len(json.loads(outputs["publish_matrix"])) == (0 if built == "a" * 40 else 2)
 
 
+@pytest.mark.parametrize("built", [None, "d" * 40, "e" * 40])
+def test_sglang_builds_both_arches_on_github_runners_only_when_stale(tmp_path, built):
+    result, outputs = run_check(tmp_path, "sglang", ["sglang"], force="false", built=built)
+    assert result.returncode == 0, result.stderr
+    matrix = json.loads(outputs["sglang_matrix"])
+    build_matrix = json.loads(outputs["sglang_build_matrix"])
+    if built == "e" * 40:
+        assert matrix == build_matrix == []
+        return
+    assert {(entry["arch"], entry["runner"]) for entry in matrix} == {
+        ("x86_64", "ubuntu-22.04"),
+        ("aarch64", "ubuntu-22.04-arm"),
+    }
+    # one build per arch and Python version, each on its arch's runner
+    pythons = json.loads(WORKFLOW["env"]["SGLANG_PYTHONS"])
+    assert sorted((entry["arch"], entry["runner"], entry["python"]) for entry in build_matrix) == sorted(
+        (entry["arch"], entry["runner"], python) for entry in matrix for python in pythons
+    )
+    # sglang publishes through its own job, never into the rolling releases.
+    assert json.loads(outputs["publish_matrix"]) == []
+
+
+def test_a_history_release_that_does_not_exist_yet_reads_as_never_built(tmp_path):
+    result, outputs = run_check(tmp_path, "sglang", ["sglang"], force="false", missing_release=True)
+    assert result.returncode == 0, result.stderr
+    assert len(json.loads(outputs["sglang_matrix"])) == 2
+
+
+def test_a_missing_rolling_release_still_stops_the_run(tmp_path):
+    """Only the history releases are created by their first publish; the image's releases must exist."""
+    result, outputs = run_check(tmp_path, "sgl-router", ["sgl-router"], force="false", missing_release=True)
+    assert result.returncode != 0
+    assert "cannot read release" in result.stdout  # the ::error:: annotation
+    assert not outputs
+
+
+def test_each_sglang_arch_publishes_whatever_built():
+    job = WORKFLOW["jobs"]["publish-sglang"]
+    assert '"failure"' in job["if"] and '"success"' in job["if"]
+    download = next(step["with"] for step in job["steps"] if step.get("uses") == "actions/download-artifact@v4")
+    upload = WORKFLOW["jobs"]["build-sglang"]["steps"]
+    upload = next(step["with"] for step in upload if step.get("uses") == "actions/upload-artifact@v4")
+    # every Python version's artifact of this arch, and none of the other arch's
+    assert upload["name"] == "sglang-${{ matrix.arch }}-py${{ matrix.python }}"
+    assert download == {**download, "pattern": "sglang-${{ matrix.arch }}-py*", "merge-multiple": True}
+
+
 @pytest.mark.parametrize(
     "failure",
-    [SOURCES["sgl-router"][0], f"repos/radixark/miles-wheels/releases/tags/{WHEELS_TAG_X86}"],
+    [
+        SOURCES["sgl-router"][0],
+        f"repos/radixark/miles-wheels/releases/tags/{WHEELS_TAG_X86}",
+        "repos/radixark/miles-wheels/releases/tags/sglang-miles-x86_64",
+    ],
 )
 def test_selected_lookup_failure_stops_the_run(tmp_path, failure):
-    result, outputs = run_check(tmp_path, "sgl-router", ["sgl-router"], force="false", failure=failure)
+    wheels = "sglang" if "sglang-miles" in failure else "sgl-router"
+    result, outputs = run_check(tmp_path, wheels, [wheels], force="false", failure=failure)
     assert result.returncode != 0
     assert "selected lookup unavailable" in result.stderr
     assert not outputs
@@ -173,10 +236,61 @@ def test_publish_keeps_superseded_wheels_only_when_asked(tmp_path, keep, arch, b
         assert upload["args"] == expected
 
 
-def test_wheels_publish_scopes_the_ci_app_token():
+@pytest.mark.parametrize("arch,build_arch", [("x86_64", "x86"), ("aarch64", "aarch64")])
+@pytest.mark.parametrize("built_wheels", [True, False])
+def test_sglang_publish_uploads_into_the_history_release(tmp_path, arch, build_arch, built_wheels):
+    """An arch with wheels uploads them into its history release; one whose builds all failed skips."""
+    steps = WORKFLOW["jobs"]["publish-sglang"]["steps"]
+    build = WORKFLOW["jobs"]["build-sglang"]["steps"]
+    upload = next(step["with"] for step in build if step.get("uses") == "actions/upload-artifact@v4")
+    # the rolling-release publish job downloads wheels-<arch>-*; sglang must not match it
+    assert not upload["name"].startswith("wheels-")
+    (tmp_path / "wheels").mkdir()
+    if built_wheels:
+        (tmp_path / "wheels" / "sglang-0.5.22+miles.g0-cp312-cp312-manylinux_2_35_x86_64.whl").touch()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "python").symlink_to(sys.executable)
+    pip = bin_dir / "pip"
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+    uploader = tmp_path / "miles-wheels" / "build_wheels.py"
+    uploader.parent.mkdir()
+    log = tmp_path / "upload.json"
+    uploader.write_text(
+        "import json, os, sys\n"
+        "json.dump({'wheel_dir': os.environ['WHEEL_DIR'], 'args': sys.argv[1:]}, open(os.environ['UPLOAD_LOG'], 'w'))\n"
+    )
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", steps[-1]["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            **WORKFLOW["env"],
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "RUNNER_TEMP": str(tmp_path),
+            "UPLOAD_LOG": str(log),
+            "BUILD_ARCH": build_arch,
+            "CUDA": "130",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    if not built_wheels:
+        assert not log.exists()
+        return
+    upload = json.loads(log.read_text())
+    assert upload["wheel_dir"] == f"{tmp_path}/wheels"
+    assert upload["args"] == ["upload", "--cuda", "130", "--arch", build_arch, "--history-release", "sglang-miles"]
+
+
+@pytest.mark.parametrize("job", ["publish", "publish-sglang"])
+def test_wheels_publish_scopes_the_ci_app_token(job):
     token = next(
         step["with"]
-        for step in WORKFLOW["jobs"]["publish"]["steps"]
+        for step in WORKFLOW["jobs"][job]["steps"]
         if step.get("uses", "").startswith("actions/create-github-app-token@")
     )
     assert token["client-id"] == "${{ vars.CI_APP_CLIENT_ID }}"
