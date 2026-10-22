@@ -51,7 +51,8 @@ class _OkResponse:
         return {"success": True}
 
 
-# the engine calls of the TPU path: weight-update session, shm/disk weight sync, version, pause/resume, checksum
+# the engine calls of the TPU path: weight-update session, shm/disk weight sync, version, pause/resume, checksum,
+# and the abort every rollout ends with
 _CALLS = {
     "begin_weight_update": ("BeginWeightUpdateReqInput", lambda c: c.begin_weight_update(selector="all")),
     "end_weight_update": ("EndWeightUpdateReqInput", lambda c: c.end_weight_update()),
@@ -66,6 +67,7 @@ _CALLS = {
     "update_weight_version": ("UpdateWeightVersionReqInput", lambda c: c.update_weight_version("1")),
     "pause_generation": ("PauseGenerationReqInput", lambda c: c.pause_generation(mode="retract")),
     "weights_checker": ("CheckWeightsReqInput", lambda c: c.check_weights(action="checksum")),
+    "abort_request": ("AbortReq", lambda c: c.abort_all_requests()),
 }
 
 
