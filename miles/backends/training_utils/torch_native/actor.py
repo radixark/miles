@@ -12,6 +12,7 @@ from transformers import PretrainedConfig, PreTrainedTokenizerBase
 
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch, get_data_iterator, get_rollout_data
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.loss.hub.entropy_control import update_adaptive_entropy
 from miles.backends.training_utils.loss.objective import (
     compute_advantages_and_returns,
     count_loss_tokens,
@@ -271,9 +272,11 @@ class TorchNativeTrainRayActor(TrainRayActor):
                     role="actor",
                     rank=state.intra_dp_cp.rank,
                 )
+            loss_dict = aggregate_train_losses(losses_reduced)
+            update_adaptive_entropy(args, loss_dict)
             log_train_step(
                 args=args,
-                loss_dict=aggregate_train_losses(losses_reduced),
+                loss_dict=loss_dict,
                 grad_norm=metrics.grad_norm,
                 rollout_id=rollout_id,
                 step_id=step_id,

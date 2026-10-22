@@ -10,6 +10,7 @@ import torch
 from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
 
 from miles.backends.training_utils.data.rollout import DataIterator
+from miles.backends.training_utils.loss.hub.entropy_control import entropy_coef_to_apply
 from miles.backends.training_utils.model_companion import ModelCompanion
 from miles.utils.test_utils.fault_injector.models import FaultHookName
 
@@ -507,3 +508,76 @@ def test_ft_discard_stays_invalid_with_finite_gradient_norm(
     )
 
     assert outcome is model_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY
+
+
+@pytest.mark.parametrize(
+    "grad_norm,found_inf,disable_optimizer,has_optimizer,expected_steps",
+    [
+        pytest.param(1.0, False, False, True, 1, id="applied"),
+        pytest.param(float("nan"), False, False, True, 0, id="nan-grad-norm"),
+        pytest.param(float("inf"), False, False, True, 0, id="inf-grad-norm"),
+        pytest.param(torch.tensor(float("nan")), False, False, True, 0, id="tensor-nan-grad-norm"),
+        pytest.param(torch.tensor(float("inf")), False, False, True, 0, id="tensor-inf-grad-norm"),
+        pytest.param(1.0, True, False, True, 0, id="found-inf"),
+        pytest.param(1.0, False, True, True, 0, id="disabled-optimizer"),
+        pytest.param(1.0, False, False, False, 0, id="missing-optimizer"),
+    ],
+)
+def test_adaptive_entropy_updates_only_after_an_applied_optimizer_step(
+    train_one_step_env: TrainOneStepEnv,
+    monkeypatch: pytest.MonkeyPatch,
+    grad_norm: float | torch.Tensor,
+    found_inf: bool,
+    disable_optimizer: bool,
+    has_optimizer: bool,
+    expected_steps: int,
+) -> None:
+    """A skipped step's NaN entropy must not move the coefficient or reopen the bonus gate."""
+    from miles.backends.megatron_utils import model as model_module
+
+    env = train_one_step_env
+    env.args.enable_sample_ownership_checker = False
+    env.args.check_for_nan_in_loss_and_grad = False
+    env.args.debug_disable_optimizer = disable_optimizer
+    env.args.use_adaptive_entropy = True
+    env.args.entropy_coef = 0.01
+    env.args.entropy_target = 0.5
+    env.args.entropy_coef_delta = 0.005
+    env.args.entropy_coef_min = 0.0
+    env.args.entropy_coef_max = 0.03
+    env.args.adaptive_entropy_coef = 0.015
+    env.args.adaptive_entropy_last = 0.9
+    loss_reduced = {"entropy_loss": 0.4 if expected_steps else float("nan"), "pg_loss": 1.0}
+    optimizer = FakeFiniteOptimizer()
+    monkeypatch.setattr(optimizer, "prepare_grads", lambda: found_inf)
+    monkeypatch.setattr(optimizer, "get_grad_norm", lambda: grad_norm)
+    monkeypatch.setattr(model_module, "mpu", FakeMpu(is_last_pipeline_stage=True))
+    monkeypatch.setattr(model_module, "aggregate_train_losses", lambda *_args: loss_reduced)
+
+    losses, _, outcome = model_module.train_one_step(
+        args=env.args,
+        rollout_id=7,
+        step_id=0,
+        data_iterator=env.data_iterator,
+        model=env.model,
+        optimizer=optimizer if has_optimizer else None,
+        opt_param_scheduler=FakeScheduler(),
+        num_microbatches=1,
+        num_rollouts=1,
+        witness_info=None,
+        attempt=2,
+    )
+
+    assert outcome is model_module.TrainStepOutcome.NORMAL
+    assert optimizer.step_count == expected_steps
+    assert losses["pg_loss"] == 1.0
+    if expected_steps:
+        assert env.args.adaptive_entropy_coef == pytest.approx(0.02)
+        assert env.args.adaptive_entropy_last == 0.4
+        assert entropy_coef_to_apply(env.args) == pytest.approx(0.02)
+        assert losses["entropy_coef"] == pytest.approx(0.02)
+    else:
+        assert env.args.adaptive_entropy_coef == 0.015
+        assert env.args.adaptive_entropy_last == 0.9
+        assert entropy_coef_to_apply(env.args) == 0.0
+        assert "entropy_coef" not in losses
