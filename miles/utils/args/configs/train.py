@@ -94,6 +94,12 @@ class TrainConfig(BaseConfig):
             help="The method to convert megatron weights to hugging face weights for SGLang.",
         ),
     ] = "raw"
+    freeze_vision_model: A[
+        bool,
+        Arg(
+            help="Train only the language model of a Megatron-Bridge VL model; freezes the vision tower and its projection."
+        ),
+    ] = False
     dsa_attention_backend: A[
         str,
         Arg(

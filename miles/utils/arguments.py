@@ -1628,6 +1628,11 @@ def miles_validate_args(args):
     _resolve_event_logging(args)
     _resolve_sample_ownership_check(args)
 
+    if args.freeze_vision_model and args.megatron_to_hf_mode != "bridge":
+        raise ValueError(
+            "--freeze-vision-model applies to Megatron-Bridge VL models; set --megatron-to-hf-mode bridge."
+        )
+
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
         assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
