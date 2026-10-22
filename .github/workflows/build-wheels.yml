@@ -71,6 +71,8 @@ env:
   TE_REPO: radixark/TransformerEngine
   SGLANG_REPO: sgl-project/sglang
   SGLANG_HISTORY_RELEASE: sglang-miles
+  # the Python versions sglang supports; its wheel is per interpreter (Rust extensions)
+  SGLANG_PYTHONS: '["3.11", "3.12", "3.13"]'
 
 jobs:
   check:
@@ -78,6 +80,7 @@ jobs:
     outputs:
       router_matrix: ${{ steps.check.outputs.router_matrix }}
       sglang_matrix: ${{ steps.check.outputs.sglang_matrix }}
+      sglang_build_matrix: ${{ steps.check.outputs.sglang_build_matrix }}
       publish_matrix: ${{ steps.check.outputs.publish_matrix }}
       int4_x86: ${{ steps.check.outputs.int4_x86 }}
       te_x86: ${{ steps.check.outputs.te_x86 }}
@@ -180,6 +183,8 @@ jobs:
           SGLANG_MATRIX=$(jq -cn --argjson x "$SGLANG_X86" --argjson a "$SGLANG_ARM64" '[
             (if $x then {arch: "x86_64", build_arch: "x86", runner: "ubuntu-22.04"} else empty end),
             (if $a then {arch: "aarch64", build_arch: "aarch64", runner: "ubuntu-22.04-arm"} else empty end)]')
+          SGLANG_BUILD_MATRIX=$(jq -cn --argjson m "$SGLANG_MATRIX" --argjson p "$SGLANG_PYTHONS" \
+            '[$m[] as $arch | $p[] as $python | $arch + {python: $python}]')
           X86_ANY=false
           if [ "$ROUTER_X86" = true ] || [ "$INT4_X86" = true ] || [ "$TE_X86" = true ]; then X86_ANY=true; fi
           PUBLISH_MATRIX=$(jq -cn --argjson x "$X86_ANY" --argjson a "$ROUTER_ARM64" '[
@@ -197,6 +202,7 @@ jobs:
           {
             echo "router_matrix=${ROUTER_MATRIX}"
             echo "sglang_matrix=${SGLANG_MATRIX}"
+            echo "sglang_build_matrix=${SGLANG_BUILD_MATRIX}"
             echo "publish_matrix=${PUBLISH_MATRIX}"
             echo "int4_x86=${INT4_X86}"
             echo "te_x86=${TE_X86}"
@@ -357,7 +363,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.check.outputs.sglang_matrix) }}
+        include: ${{ fromJSON(needs.check.outputs.sglang_build_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     env:
@@ -371,8 +377,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          # Match the Miles Docker runtime.
-          python-version: '3.12'
+          python-version: ${{ matrix.python }}
 
       - name: Build the sglang wheel
         run: |
@@ -383,14 +388,14 @@ jobs:
       # not wheels-<arch>-*, which the rolling-release publish job downloads
       - uses: actions/upload-artifact@v4
         with:
-          name: sglang-${{ matrix.arch }}
+          name: sglang-${{ matrix.arch }}-py${{ matrix.python }}
           path: |
             ${{ runner.temp }}/wheels/*.whl
             ${{ runner.temp }}/wheels/*-source.json
           if-no-files-found: error
           retention-days: 7
 
-  # each arch publishes alone; a failed arch has no artifact
+  # each arch publishes alone, every Python version that built; a failed build has no artifact
   publish-sglang:
     needs: [check, build-sglang]
     if: always() && contains(fromJSON('["success", "failure"]'), needs.build-sglang.result)
@@ -421,18 +426,20 @@ jobs:
           python-version: '3.12'
 
       - uses: actions/download-artifact@v4
-        id: download
-        continue-on-error: true
         with:
-          name: sglang-${{ matrix.arch }}
+          pattern: sglang-${{ matrix.arch }}-py*
+          merge-multiple: true
           path: ${{ runner.temp }}/wheels
 
       - name: Sync into the sglang-miles history release
-        if: steps.download.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           BUILD_ARCH: ${{ matrix.build_arch }}
         run: |
+          if ! compgen -G "${RUNNER_TEMP}/wheels/*.whl" > /dev/null; then
+            echo "no sglang wheel built for ${BUILD_ARCH}"
+            exit 0
+          fi
           pip install packaging
           WHEEL_DIR="${RUNNER_TEMP}/wheels" python miles-wheels/build_wheels.py upload \
             --cuda "$CUDA" --arch "$BUILD_ARCH" --history-release "$SGLANG_HISTORY_RELEASE"

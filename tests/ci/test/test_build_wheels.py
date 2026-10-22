@@ -108,13 +108,19 @@ def test_sglang_builds_both_arches_on_github_runners_only_when_stale(tmp_path, b
     result, outputs = run_check(tmp_path, "sglang", ["sglang"], force="false", built=built)
     assert result.returncode == 0, result.stderr
     matrix = json.loads(outputs["sglang_matrix"])
+    build_matrix = json.loads(outputs["sglang_build_matrix"])
     if built == "e" * 40:
-        assert matrix == []
+        assert matrix == build_matrix == []
         return
     assert {(entry["arch"], entry["runner"]) for entry in matrix} == {
         ("x86_64", "ubuntu-22.04"),
         ("aarch64", "ubuntu-22.04-arm"),
     }
+    # one build per arch and Python version, each on its arch's runner
+    pythons = json.loads(WORKFLOW["env"]["SGLANG_PYTHONS"])
+    assert sorted((entry["arch"], entry["runner"], entry["python"]) for entry in build_matrix) == sorted(
+        (entry["arch"], entry["runner"], python) for entry in matrix for python in pythons
+    )
     # sglang publishes through its own job, never into the rolling releases.
     assert json.loads(outputs["publish_matrix"]) == []
 
@@ -133,13 +139,15 @@ def test_a_missing_rolling_release_still_stops_the_run(tmp_path):
     assert not outputs
 
 
-def test_each_sglang_arch_publishes_whatever_the_other_did():
+def test_each_sglang_arch_publishes_whatever_built():
     job = WORKFLOW["jobs"]["publish-sglang"]
     assert '"failure"' in job["if"] and '"success"' in job["if"]
-    download = next(step for step in job["steps"] if step.get("uses") == "actions/download-artifact@v4")
-    upload = job["steps"][-1]
-    assert download["continue-on-error"] is True
-    assert upload["if"] == f"steps.{download['id']}.outcome == 'success'"
+    download = next(step["with"] for step in job["steps"] if step.get("uses") == "actions/download-artifact@v4")
+    upload = WORKFLOW["jobs"]["build-sglang"]["steps"]
+    upload = next(step["with"] for step in upload if step.get("uses") == "actions/upload-artifact@v4")
+    # every Python version's artifact of this arch, and none of the other arch's
+    assert upload["name"] == "sglang-${{ matrix.arch }}-py${{ matrix.python }}"
+    assert download == {**download, "pattern": "sglang-${{ matrix.arch }}-py*", "merge-multiple": True}
 
 
 @pytest.mark.parametrize(
@@ -229,14 +237,17 @@ def test_publish_keeps_superseded_wheels_only_when_asked(tmp_path, keep, arch, b
 
 
 @pytest.mark.parametrize("arch,build_arch", [("x86_64", "x86"), ("aarch64", "aarch64")])
-def test_sglang_publish_uploads_into_the_history_release(tmp_path, arch, build_arch):
+@pytest.mark.parametrize("built_wheels", [True, False])
+def test_sglang_publish_uploads_into_the_history_release(tmp_path, arch, build_arch, built_wheels):
+    """An arch with wheels uploads them into its history release; one whose builds all failed skips."""
     steps = WORKFLOW["jobs"]["publish-sglang"]["steps"]
-    download = next(step["with"] for step in steps if step.get("uses") == "actions/download-artifact@v4")
-    assert download["name"] == "sglang-${{ matrix.arch }}"
     build = WORKFLOW["jobs"]["build-sglang"]["steps"]
     upload = next(step["with"] for step in build if step.get("uses") == "actions/upload-artifact@v4")
-    # The rolling-release publish job downloads wheels-<arch>-*; sglang must not match it.
+    # the rolling-release publish job downloads wheels-<arch>-*; sglang must not match it
     assert not upload["name"].startswith("wheels-")
+    (tmp_path / "wheels").mkdir()
+    if built_wheels:
+        (tmp_path / "wheels" / "sglang-0.5.22+miles.g0-cp312-cp312-manylinux_2_35_x86_64.whl").touch()
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -267,6 +278,9 @@ def test_sglang_publish_uploads_into_the_history_release(tmp_path, arch, build_a
         text=True,
     )
     assert result.returncode == 0, result.stderr
+    if not built_wheels:
+        assert not log.exists()
+        return
     upload = json.loads(log.read_text())
     assert upload["wheel_dir"] == f"{tmp_path}/wheels"
     assert upload["args"] == ["upload", "--cuda", "130", "--arch", build_arch, "--history-release", "sglang-miles"]
