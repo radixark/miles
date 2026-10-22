@@ -31,15 +31,23 @@ def _make_replay_manager(top_indices):
     return manager
 
 
-def test_get_topk_fn_fills_all_invalid_rows_with_arange():
-    # an all-(-1) row is a masked/pad token; fill it with arange to avoid reading
-    # invalid (-1) positions downstream
-    scores = torch.arange(5, dtype=torch.float32).unsqueeze(0)
-    manager = _make_replay_manager(torch.tensor([[-1, -1, -1]], dtype=torch.int32))
+def test_get_topk_fn_strides_across_noncontiguous_invalid_rows():
+    # BSHD padding can recur at the same position in each sample. Stride by
+    # invalid-row ordinal so those rows do not alias to the same expert block.
+    scores = torch.arange(8, dtype=torch.float32).repeat(8, 1)
+    replayed_top_indices = torch.tensor(
+        [[6, 7], [6, 7], [6, 7], [-1, -1], [6, 7], [6, 7], [6, 7], [-1, -1]],
+        dtype=torch.int32,
+    )
+    manager = _make_replay_manager(replayed_top_indices)
 
     topk_fn = manager.get_topk_fn(_topk, return_probs=False)
 
-    torch.testing.assert_close(topk_fn(scores, 3), torch.tensor([[0, 1, 2]], dtype=torch.int32))
+    expected = torch.tensor(
+        [[6, 7], [6, 7], [6, 7], [0, 1], [6, 7], [6, 7], [6, 7], [2, 3]],
+        dtype=torch.int32,
+    )
+    torch.testing.assert_close(topk_fn(scores, 2), expected)
 
 
 def test_get_topk_fn_preserves_partial_padding():
