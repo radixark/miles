@@ -4,6 +4,7 @@ import threading
 import time
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from miles.dashboard.store import EngineSample, Meta, MetricStore
@@ -241,3 +242,26 @@ def test_resumed_dir_without_a_catalog_keeps_its_earlier_engine_metrics(tmp_path
     resumed_writer.flush()
     names = MetricStore.load(tmp_path).engine_metric_names()
     assert {"sglang_cache_hit_rate", "sglang_num_running_reqs"} <= set(names)
+
+
+def test_kept_scrape_counts_track_the_view_across_split_scrapes(tmp_path, monkeypatch):
+    """The bound check reads per-engine counts kept from each append; they must
+    equal a recount of the view, a scrape split across two flushes included."""
+    from miles.dashboard.store import _ThinnedEngineSeries
+
+    monkeypatch.setattr(_ThinnedEngineSeries, "SCRAPES_PER_ENGINE", 5)
+    writer = MetricStore(tmp_path / "dashboard")
+    writer.write_meta(Meta(run_name="t", start_ts=0.0, args={}))
+    store = MetricStore.load(tmp_path / "dashboard")
+    for k in range(60):
+        for rank in range(2):
+            writer.append(
+                EngineSample(ts=k * 3.0, addr="http://e:1", metric="m", labels={"dp_rank": str(rank)}, value=1.0)
+            )
+            writer.flush()  # every scrape straddles a flush
+        store.engine_series("m")
+    view = store._thinned_engine_series
+    kept, _ = view.kept_scrapes()
+    recount = dict(kept.group_by("addr").agg(pl.col("ts").n_unique()).iter_rows())
+    assert view._kept_scrape_count_by_addr == recount
+    assert max(recount.values()) <= 2 * _ThinnedEngineSeries.SCRAPES_PER_ENGINE

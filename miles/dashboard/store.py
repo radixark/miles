@@ -521,6 +521,8 @@ class _ThinnedEngineSeries:
         self._bucket_s = 0.0  # 0 keeps every scrape
         # a scrape can straddle two flushes: its later rows follow the first ones in
         self._last_kept_ts_by_addr: dict[str, float] = {}
+        # updated from each append's kept rows, so the bound check never scans the whole view
+        self._kept_scrape_count_by_addr: dict[str, int] = {}
         self.version = 0
         self._lock = threading.Lock()
 
@@ -532,13 +534,30 @@ class _ThinnedEngineSeries:
             return self._kept_scrapes, self.version
 
     def _append_thinned(self, rows: pl.DataFrame) -> None:
-        self._kept_scrapes = pl.concat([self._kept_scrapes, self._thin(rows)], rechunk=False)
-        while (
-            self._kept_scrapes.select(pl.col("ts").n_unique().over("addr").max()).item() > 2 * self.SCRAPES_PER_ENGINE
-        ):
+        continued = dict(self._last_kept_ts_by_addr)
+        kept = self._thin(rows)
+        self._kept_scrapes = pl.concat([self._kept_scrapes, kept], rechunk=False)
+        # the one scrape a chunk can share with the view is the continued one
+        new_scrapes = (
+            kept.select("addr", "ts")
+            .unique()
+            .join(
+                pl.DataFrame(
+                    dict(addr=list(continued), ts=list(continued.values())), schema=dict(addr=pl.String, ts=pl.Float64)
+                ),
+                on=["addr", "ts"],
+                how="anti",
+            )
+        )
+        for addr, count in new_scrapes.group_by("addr").len().iter_rows():
+            self._kept_scrape_count_by_addr[addr] = self._kept_scrape_count_by_addr.get(addr, 0) + count
+        while max(self._kept_scrape_count_by_addr.values(), default=0) > 2 * self.SCRAPES_PER_ENGINE:
             self._bucket_s = 2 * self._bucket_s if self._bucket_s else self._compute_initial_bucket_s()
             self._last_kept_ts_by_addr = {}
             self._kept_scrapes = self._thin(self._kept_scrapes)
+            self._kept_scrape_count_by_addr = dict(
+                self._kept_scrapes.group_by("addr").agg(pl.col("ts").n_unique()).iter_rows()
+            )
         self._kept_scrapes = (
             self._kept_scrapes.rechunk() if self._kept_scrapes.n_chunks() > 256 else self._kept_scrapes
         )
