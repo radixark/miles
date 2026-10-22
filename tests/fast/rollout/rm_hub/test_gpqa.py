@@ -68,6 +68,7 @@ class TestExtractLetterFromResponse:
             ("The answer is (B)", "ABCD", "B"),
             ("The answer is I", "ABCDEFGHIJ", "I"),
             ("Answer: (A)", "ABCD", "A"),
+            ("Choice (B) is incorrect; the answer is C", "ABCD", "C"),
         ],
     )
     def test_extract_standalone_letter(self, response, valid_letters, expected):

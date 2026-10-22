@@ -28,9 +28,10 @@ def _extract_letter_from_response(response: str, valid_letters: Iterable[str]) -
 
     text = _strip_chain_of_thought(response)
     patterns = [
-        r"(?i:answer|option|choice)\s*(?i:is|:)?\s*\(?([A-Z])\b",
-        r"\b([A-Z])\)?\s*(?i:is\s*(?:the\s*)?correct)",
         r"(?i:final\s*(?:answer|option))\s*(?i:is|:)?\s*\(?([A-Z])\b",
+        r"(?i:answer)\s*(?i:is|:)?\s*\(?([A-Z])\b",
+        r"(?i:option|choice)\s*(?i:is|:)?\s*\(?([A-Z])\b",
+        r"\b([A-Z])\)?\s*(?i:is\s*(?:the\s*)?correct)",
     ]
 
     valid_letters = {letter.upper() for letter in valid_letters}
