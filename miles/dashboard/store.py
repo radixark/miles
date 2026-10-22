@@ -369,7 +369,8 @@ class _PartitionReader:
 
     def edge_stamps(self) -> list[float]:
         """Global-range candidates from the first line of the oldest file and
-        the last complete line of the newest — no full scan."""
+        the complete lines in the newest file's tail — no full scan. One flush
+        writes a batch in arrival order, so its last line need not be its newest."""
         files = [(key, path) for key, path in self.files() if path.stat().st_size > 0]
         if not files:
             return []
@@ -378,11 +379,11 @@ class _PartitionReader:
             lines.append(f.readline())
         with open(files[-1][1], "rb") as f:
             f.seek(0, 2)
-            f.seek(max(0, f.tell() - 65536))
+            tail_start = max(0, f.tell() - 65536)
+            f.seek(tail_start)
             tail = f.read()
         complete = tail[: tail.rfind(b"\n") + 1]
-        if complete:
-            lines.append(complete.splitlines()[-1])
+        lines.extend(complete.splitlines()[1 if tail_start else 0 :])  # a mid-file seek cuts the first
         stamps: list[float] = []
         for line in lines:
             try:

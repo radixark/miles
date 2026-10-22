@@ -357,3 +357,13 @@ def test_close_landing_mid_read_in_a_newer_partition_still_pairs_its_open(tmp_pa
     store.open_phase_events()
     assert flushed
     assert store.open_phase_events() == []
+
+
+def test_time_range_edge_is_the_newest_row_not_the_last_written(tmp_path):
+    """One flush writes a batch in arrival order: its last line need not be its newest."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="edge", start_ts=BASE, args={}))
+    for ts in (BASE + 20, BASE + 30, BASE + 10):
+        writer.append(GpuSample(ts=ts, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
+    writer.flush()
+    assert MetricStore.load(tmp_path).time_range()[1] == BASE + 30
