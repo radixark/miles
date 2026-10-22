@@ -119,3 +119,18 @@ def test_a_staged_forward_replays_without_popping(monkeypatch):
     torch.testing.assert_close(topk_fn(scores, 2), torch.tensor([[3, 1]], dtype=torch.int32))
     torch.testing.assert_close(topk_fn(scores, 2), torch.tensor([[3, 1]], dtype=torch.int32))
     assert replay.forward_index == 1
+
+
+def test_tpu_rollout_ids_stay_on_the_host_until_popped(monkeypatch):
+    """Host ids are padded per microbatch; on the device each new length would compile a new program."""
+    monkeypatch.setattr(replay_base.platforms, "IS_TPU", True)
+    monkeypatch.setattr(replay_base.current_platform, "current_device", lambda: torch.device("meta"))
+    replay = RoutingReplayManager().create_replay()
+    rollout_ids = torch.tensor([[3, 1]], dtype=torch.int32)
+    replay.record(rollout_ids)
+    replay.record(torch.empty(1, 2, dtype=torch.int32, device="meta"))  # recorded inside a forward
+
+    assert replay.top_indices_list[0].device.type == "cpu"
+    assert replay.top_indices_list[0].data_ptr() != rollout_ids.data_ptr()
+    assert replay.top_indices_list[1].device.type == "meta"
+    assert replay.pop_forward().device.type == "meta"
