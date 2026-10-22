@@ -202,3 +202,42 @@ def test_scrape_split_across_flushes_keeps_every_dp_rank(tmp_path, monkeypatch):
     series_per_dp_rank = store.engine_series("sglang_num_running_reqs", per_dp_rank=True, max_points=10_000)
     last_ts_by_dp_rank = {s["labels"]["dp_rank"]: s["ts"][-1] for s in series_per_dp_rank}
     assert len(set(last_ts_by_dp_rank.values())) == 1, f"a split scrape kept only some ranks: {last_ts_by_dp_rank}"
+
+
+def _engine_sample(metric: str, ts: float) -> EngineSample:
+    return EngineSample(ts=ts, addr="http://e:1", metric=metric, labels={}, value=1.0)
+
+
+def test_failed_catalog_rewrite_is_retried(tmp_path, monkeypatch):
+    """The collector retries a flush that raised: the retry must still add the
+    names whose catalog rewrite failed."""
+    import miles.dashboard.store as store_module
+
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="t", start_ts=0.0, args={}))
+    writer.append(_engine_sample("sglang_num_running_reqs", 1.0))
+    writer.flush()
+    writer.append(_engine_sample("sglang_gen_throughput", 2.0))
+    replace = store_module.os.replace
+    monkeypatch.setattr(store_module.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        writer.flush()
+    monkeypatch.setattr(store_module.os, "replace", replace)
+    writer.flush()
+    assert "sglang_gen_throughput" in MetricStore.load(tmp_path).engine_metric_names()
+
+
+def test_resumed_dir_without_a_catalog_keeps_its_earlier_engine_metrics(tmp_path):
+    """A dir written before the catalog existed, resumed by a writer that has
+    one: a catalog of the new names alone would hide the earlier ones."""
+    old_writer = MetricStore(tmp_path)
+    old_writer.write_meta(Meta(run_name="t", start_ts=0.0, args={}))
+    old_writer.append(_engine_sample("sglang_cache_hit_rate", 1.0))
+    old_writer.flush()
+    (tmp_path / MetricStore.ENGINE_CATALOG_FILENAME).unlink()  # as written before the catalog existed
+
+    resumed_writer = MetricStore(tmp_path)
+    resumed_writer.append(_engine_sample("sglang_num_running_reqs", 2.0))
+    resumed_writer.flush()
+    names = MetricStore.load(tmp_path).engine_metric_names()
+    assert {"sglang_cache_hit_rate", "sglang_num_running_reqs"} <= set(names)

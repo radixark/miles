@@ -636,6 +636,7 @@ class MetricStore:
         self._engine_parts_version = -1
         self._engine_parts_cache: dict[tuple[str, bool], dict[tuple[str, str], pl.DataFrame]] = {}
         self._cataloged_engine_metrics: set[str] | None = None  # write-side accumulator
+        self._writes_engine_catalog: bool | None = None  # decided at the first merge
 
     def _make_reader(self, stream: Stream) -> _PartitionReader:
         if stream is Stream.ENGINE_SERIES:
@@ -791,17 +792,30 @@ class MetricStore:
 
     def _merge_engine_catalog(self) -> None:
         """Fold buffered engine metric names into ``engine_catalog.json``, so
-        the sglang category needs no stream scan. Atomic rewrite, only when changed."""
+        the sglang category needs no stream scan.
+
+        The catalog exists only if it covers the whole stream: a dir whose
+        engine stream predates it (written by older code, now resumed) gets
+        none, and readers keep scanning. Atomic rewrite, only when changed;
+        the accumulator moves only once the rewrite landed, so a failed flush
+        rewrites it on retry."""
         path = self.dir / self.ENGINE_CATALOG_FILENAME
-        if self._cataloged_engine_metrics is None:
+        if self._writes_engine_catalog is None:
+            self._writes_engine_catalog = path.exists() or not self._readers[Stream.ENGINE_SERIES].has_data()
             self._cataloged_engine_metrics = set(json.loads(path.read_text())["metrics"]) if path.exists() else set()
+        if not self._writes_engine_catalog:
+            return
         names = {sample.metric for sample in self._buffers[Stream.ENGINE_SERIES]}
         if names <= self._cataloged_engine_metrics:
             return
-        self._cataloged_engine_metrics |= names
+        merged = self._cataloged_engine_metrics | names
         staging_path = self.dir / (self.ENGINE_CATALOG_FILENAME + ".tmp")
-        staging_path.write_text(json.dumps(dict(version=1, metrics=sorted(self._cataloged_engine_metrics))))
+        with open(staging_path, "w") as f:
+            f.write(json.dumps(dict(version=1, metrics=sorted(merged))))
+            f.flush()
+            os.fsync(f.fileno())  # a rename can outlive unsynced data across a crash
         os.replace(staging_path, path)
+        self._cataloged_engine_metrics = merged
 
     # ------------------------------ read side -------------------------------
 
