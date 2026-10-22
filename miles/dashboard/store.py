@@ -1223,7 +1223,7 @@ class MetricStore:
                     if not covered:
                         # External engines register without GPU identity; fall
                         # back to every known lane on the engines' nodes.
-                        engine_nodes = {engine["addr"].split("//")[-1].split(":")[0] for engine in window["engines"]}
+                        engine_nodes = {_engine_host(engine["addr"]) for engine in window["engines"]}
                         covered = {
                             (lane["node"], lane["gpu"]) for lane in self.lanes() if lane["node"] in engine_nodes
                         }
@@ -1500,7 +1500,7 @@ class MetricStore:
                 if engine["gpus"]:
                     if any((node, gpu) in lanes for node, gpu in engine["gpus"]):
                         addrs.add(engine["addr"])
-                elif any(node == engine["addr"].split("//")[-1].split(":")[0] for node, _ in lanes):
+                elif any(node == _engine_host(engine["addr"]) for node, _ in lanes):
                     addrs.add(engine["addr"])
         return addrs
 
@@ -1850,6 +1850,11 @@ def _metric_by_suffix(metrics: dict[str, float], base_key: str) -> float | None:
 
 def _engine_labels(labels_json: str) -> dict:
     return {k: v for k, v in json.loads(labels_json).items() if v is not None}
+
+
+def _engine_host(addr: str) -> str:
+    """An engine addr's host: an external engine (no GPU identity) runs on the node it names."""
+    return addr.split("//")[-1].split(":")[0]
 
 
 def stride_downsample(xs, ys, max_points: int) -> tuple[np.ndarray, np.ndarray]:
