@@ -320,7 +320,13 @@ class _PartitionReader:
         return out
 
     def has_data(self) -> bool:
-        return any(path.stat().st_size > 0 for _, path in self.files())
+        """Whether a complete record exists: a writer mid-append leaves a file
+        holding a partial line, which no reader parses yet."""
+        for _, path in self.files():
+            with open(path, "rb") as f:
+                if f.readline().endswith(b"\n"):
+                    return True
+        return False
 
     def window(self, t0: float | None, t1: float | None) -> Any:
         """Concatenated block over the partitions intersecting [t0, t1]."""

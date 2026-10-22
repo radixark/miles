@@ -531,3 +531,16 @@ def test_healthy_run_reads_no_run_long_engine_series(tmp_path, monkeypatch):
     )
     compute_advisories(store)
     assert queried_windows and (None, None) not in queried_windows
+
+
+def test_engine_stream_with_only_a_partial_line_makes_no_engine_claim(tmp_path):
+    """The live collector's first engine write can be mid-line when polled:
+    the stream exists but holds no record yet."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="partial", start_ts=0.0, args={}))
+    writer.flush()
+    (tmp_path / Stream.ENGINE_SERIES.value).mkdir()
+    (tmp_path / Stream.ENGINE_SERIES.value / "19700101_00.jsonl").write_bytes(b'{"ts":1')
+    store = MetricStore.load(tmp_path)
+    assert compute_advisories(store) == []
+    assert not store.has_stream(Stream.ENGINE_SERIES)
