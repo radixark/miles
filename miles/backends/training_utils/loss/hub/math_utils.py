@@ -338,17 +338,19 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
     @staticmethod
     def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup | None) -> torch.Tensor:
         ctx.input_dtype = logits.dtype
-        logits = logits.float()
+        # The one full-size copy: it keeps the caller's logits untouched, and the rest works on it in
+        # place as Megatron's kernel does, so the fallback needs no more memory than that kernel.
+        logits = logits.to(torch.float32, copy=True)
         logits_max = logits.max(dim=-1)[0]
         dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=group)
-        logits = logits - logits_max.unsqueeze(-1)
+        logits.sub_(logits_max.unsqueeze(-1))
 
         partition_vocab_size = logits.size(-1)
         vocab_start = dist.get_rank(group) * partition_vocab_size
         target_mask = (target < vocab_start) | (target >= vocab_start + partition_vocab_size)
         masked_target = (target - vocab_start).masked_fill(target_mask, 0)
         predicted_logits = logits.gather(-1, masked_target.unsqueeze(-1)).squeeze(-1).masked_fill(target_mask, 0.0)
-        exp_logits = logits.exp()
+        exp_logits = logits.exp_()
         sum_exp_logits = exp_logits.sum(dim=-1)
 
         # One all-reduce for both, as Megatron batches them.
@@ -364,8 +366,8 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
     def backward(ctx, grad_output: torch.Tensor):
         softmax, target_mask, masked_target = ctx.saved_tensors
         # d(loss)/d(logits) = softmax - one_hot(target), the one-hot only on the rank owning the target.
-        grad_input = softmax.scatter_add(-1, masked_target.unsqueeze(-1), -(~target_mask).unsqueeze(-1).float())
-        return (grad_input * grad_output.unsqueeze(-1)).to(ctx.input_dtype), None, None
+        grad_input = softmax.scatter_add_(-1, masked_target.unsqueeze(-1), -(~target_mask).unsqueeze(-1).float())
+        return grad_input.mul_(grad_output.unsqueeze(-1)).to(ctx.input_dtype), None, None
 
 
 def vocab_parallel_cross_entropy(logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup | None):
