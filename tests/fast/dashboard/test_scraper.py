@@ -142,3 +142,32 @@ def test_dp_rank_label_survives():
     assert scraper.scrape_once(now=1.0) == 2
     assert {(r.labels["dp_rank"], r.value) for r in records} == {("0", 11.0), ("1", 1.0)}
     assert all("tp_rank" not in r.labels and "model_name" not in r.labels for r in records)
+
+
+@pytest.mark.parametrize(
+    "page",
+    ["engine_metrics_dp_attention.txt", "engine_metrics_direct.txt", "engine_metrics_router.txt"],
+    ids=lambda p: p.split(".")[0],
+)
+def test_prefiltered_page_yields_what_the_whole_page_does(page):
+    """Dropping non-whitelisted lines before parsing must not change a single
+    sample, histogram _sum/_count and multi-rank labels included."""
+    from prometheus_client.parser import text_string_to_metric_families
+
+    text = (FIXTURES / page).read_text()
+    whitelist = frozenset(DEFAULT_METRIC_WHITELIST)
+    expected = [
+        (
+            sample.name.replace(":", "_"),
+            {k: v for k, v in sample.labels.items() if k in ("engine_type", "dp_rank")},
+            sample.value,
+        )
+        for family in text_string_to_metric_families(text)
+        for sample in family.samples
+        if sample.name.replace(":", "_") in whitelist
+    ]
+    got = []
+    scraper = SglangScraper(got.append, mode=ScrapeMode.DIRECT, engine_addrs=lambda: [])
+    scraper._ingest("http://e:1", text, now=1.0)
+    assert [(s.metric, s.labels, s.value) for s in got] == expected
+    assert expected, "fixture has no whitelisted samples"

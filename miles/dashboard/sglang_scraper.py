@@ -168,13 +168,9 @@ class SglangScraper:
         from prometheus_client.parser import text_string_to_metric_families
 
         count = 0
-        for family in text_string_to_metric_families(text):
+        for family in text_string_to_metric_families(self._whitelisted_lines(text)):
             for sample in family.samples:
-                # raw engines export "sglang:x", the router aggregation "sglang_x";
-                # histogram _sum/_count are sample names within a base-named family
-                name = sample.name.replace(":", "_")
-                if name not in self.whitelist:
-                    continue
+                name = _normalize_metric_name(sample.name)
                 sample_addr = addr if addr is not None else sample.labels.get("worker_addr")
                 if sample_addr is None:
                     self._warn(f"router sample for {name} lacks worker_addr; dropping")
@@ -186,5 +182,28 @@ class SglangScraper:
                 count += 1
         return count
 
+    def _whitelisted_lines(self, text: str) -> str:
+        """The page's whitelisted samples alone: the parser is pure Python and
+        a dp-attention engine's page is 30x its whitelisted lines. Comment
+        lines go too; untyped, each sample parses under its own full name."""
+        return "".join(
+            line
+            for line in text.splitlines(keepends=True)
+            if not line.startswith("#") and _normalize_metric_name(_parse_sample_name(line)) in self.whitelist
+        )
+
     def _warn(self, message: str) -> None:
         self._warner.warn(message)
+
+
+def _normalize_metric_name(name: str) -> str:
+    # raw engines export "sglang:x", the router aggregation "sglang_x"
+    return name.replace(":", "_")
+
+
+def _parse_sample_name(line: str) -> str:
+    end = len(line)
+    for delimiter in ("{", " "):
+        if (found := line.find(delimiter)) >= 0:
+            end = min(end, found)
+    return line[:end]
