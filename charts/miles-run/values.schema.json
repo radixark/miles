@@ -281,6 +281,7 @@
                 "PYTHONPATH",
                 "MILES_CELL_INDEX",
                 "MILES_POD_INDEX",
+                "MILES_POD_UID",
                 "MILES_BASE_GPU_ID",
                 "MILES_K8S_NAMESPACE",
                 "MILES_K8S_RELEASE"
@@ -538,6 +539,7 @@
                 "PYTHONPATH",
                 "MILES_CELL_INDEX",
                 "MILES_POD_INDEX",
+                "MILES_POD_UID",
                 "MILES_BASE_GPU_ID",
                 "MILES_K8S_NAMESPACE",
                 "MILES_K8S_RELEASE"
@@ -657,6 +659,7 @@
                 "PYTHONPATH",
                 "MILES_CELL_INDEX",
                 "MILES_POD_INDEX",
+                "MILES_POD_UID",
                 "MILES_BASE_GPU_ID",
                 "MILES_K8S_NAMESPACE",
                 "MILES_K8S_RELEASE"

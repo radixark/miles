@@ -1,3 +1,4 @@
+import asyncio
 import ctypes
 import dataclasses
 import importlib
@@ -9,9 +10,11 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 from typing import Any
+
 import pytest
 import torch
 
+from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfNameMapping
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     assign_rollout_engine_ranks_for_data_replica,
@@ -132,6 +135,7 @@ class _FakeTransferEngine:
         self.writes: list[tuple[str, dict[int, list[float]]]] = []
         self.holds: dict[str, _WriteHold] = {}
         self.failing_sessions: set[str] = set()
+        self.errors_by_session: dict[str, Exception] = {}
 
     def hold(self, session_id: str) -> _WriteHold:
         return self.holds.setdefault(session_id, _WriteHold())
@@ -165,6 +169,8 @@ class _FakeTransferEngine:
         }
         self._log.append(("write", session_id))
         self.writes.append((session_id, payload))
+        if session_id in self.errors_by_session:
+            raise self.errors_by_session[session_id]
         return -1 if session_id in self.failing_sessions else 0
 
     def _is_registered(self, address: int, length: int) -> bool:
@@ -189,7 +195,12 @@ class _FakeRolloutApi:
         expert_placement: dict | None = None,
         speculative_args: dict | None = None,
         draft_shares_target_weights: bool = True,
+        unreachable: bool = False,
     ) -> None:
+        self.unreachable = unreachable
+        self.request_failures: dict[str, Exception] = {}
+        self.hanging_requests: set[str] = set()
+        self.corrupted_roles: set[str] = set()
         self.cell_id = cell_id
         self.draft_shares_target_weights = draft_shares_target_weights
         self.gpu_count = gpu_count
@@ -199,6 +210,9 @@ class _FakeRolloutApi:
         self.expert_placement = expert_placement or {}
         self.speculative_args = speculative_args or {}
         self.calls: list[str] = []
+        self.check_weights_calls: list[dict[str, Any]] = []
+        self.corrupted_ranks: set[int] = set()
+        self.transfer_engine: _FakeTransferEngine | None = None
 
     def session_id(self, rank: int, runner_role: str = "target") -> str:
         suffix = "" if runner_role == "target" else f"-{runner_role}"
@@ -213,7 +227,7 @@ class _FakeRolloutApi:
         return hash((self.session_id(rank, address_role), name)) & 0xFFFFFFFF
 
     async def get_remote_instance_transfer_engine_info(self, rank: int, role: str) -> tuple[str, dict]:
-        self.calls.append(f"get_remote_instance_transfer_engine_info {role}")
+        await self._before_request(f"get_remote_instance_transfer_engine_info {role}")
         weights = {
             name: (self.published_address(rank, name, role), self.published_weight_numel, 4)
             for name in _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE[role]
@@ -221,12 +235,43 @@ class _FakeRolloutApi:
         return self.session_id(rank, role), weights
 
     async def get_parallelism_info(self, rank: int, role: str) -> dict:
-        self.calls.append(f"get_parallelism_info {role}")
+        await self._before_request(f"get_parallelism_info {role}")
         return {"tp_rank": rank, "global_rank": 10 * self.generation + rank}
 
     async def get_server_info(self) -> dict:
-        self.calls.append("get_server_info")
+        await self._before_request("get_server_info")
         return {"moe_runner_backend": self.moe_runner_backend, **self.expert_placement, **self.speculative_args}
+
+    async def check_weights(self, *, action: str, names: list[str], selector: str) -> dict[str, Any]:
+        self.check_weights_calls.append(dict(action=action, names=names, selector=selector))
+        await self._before_request(f"check_weights {selector}")
+        assert self.transfer_engine is not None
+        records = []
+        for rank in range(self.gpu_count):
+            landed: dict[int, list[float]] = {}
+            for session_id, payload in self.transfer_engine.writes:
+                if session_id == self.session_id(rank, selector):
+                    landed.update(payload)
+            if not landed:
+                continue
+            offset = 1.0 if rank in self.corrupted_ranks or selector in self.corrupted_roles else 0.0
+            checksums = {
+                (name if selector == "target" else f"{selector}.{name}"): hash_tensor_sha256(
+                    torch.tensor(landed[self.published_address(rank, name, selector)]) + offset
+                )
+                for name in names
+            }
+            records.append({"checksums": checksums, "parallelism_info": [{"role": "tp", "rank": rank}]})
+        return {"success": True, "ranks": records}
+
+    async def _before_request(self, name: str) -> None:
+        self.calls.append(name)
+        if self.unreachable:
+            raise ConnectionError("engine unreachable")
+        if name in self.request_failures:
+            raise self.request_failures[name]
+        if name in self.hanging_requests:
+            await asyncio.Event().wait()
 
 
 class _ProtocolCall:
@@ -258,8 +303,11 @@ class _P2PSenderHarness:
         self.replicas_created: list[_FakeModelReplica] = []
         self._loaded_events: dict[int, threading.Event] = {}
         self._calls: list[_ProtocolCall] = []
+        self._protocols: list[Any] = []
         self.assignment_inputs: list[tuple[Any, list[int]]] = []
         self.first_passes = 0
+        self.data_replica_rank = 0
+        self.data_replica_size = 1
 
         mooncake_transport = sys.modules[p2p_protocol.MooncakeTransport.__module__]
         monkeypatch.setattr(mooncake_transport, "_create_transfer_engine", self._create_transfer_engine)
@@ -281,24 +329,35 @@ class _P2PSenderHarness:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
 
     def make_protocol(
-        self, *, p2p_transfer_timeout: float = _FAILURE_BOUND, update_weight_buffer_size: int = 1024
+        self,
+        *,
+        p2p_transfer_timeout: float = _FAILURE_BOUND,
+        update_weight_buffer_size: int = 1024,
+        check_weight_transfer_checksum: bool = False,
     ) -> Any:
         args = Namespace(
+            ft_components=["weight_update"],
             hf_checkpoint="/model",
             p2p_transfer_timeout=p2p_transfer_timeout,
             update_weight_engine_request_timeout=_FAILURE_BOUND,
             update_weight_buffer_size=update_weight_buffer_size,
+            check_weight_transfer_checksum=check_weight_transfer_checksum,
             sglang_pp_size=1,
         )
-        return self._p2p_protocol.UpdateWeightP2P(args)
+        protocol = self._p2p_protocol.UpdateWeightP2P(args)
+        self._protocols.append(protocol)
+        return protocol
 
     def connect(
         self, protocol: Any, apis: list[_FakeRolloutApi], placement: Any = None, selector: str = "all"
     ) -> None:
+        for api in apis:
+            api.transfer_engine = self.transfer_engine
         protocol.connect(
             rollout_engines=apis,
             engine_gpu_counts=[api.gpu_count for api in apis],
             engine_gpu_offsets=None,
+            engine_cell_ids=[api.cell_id for api in apis],
             parallel_state=None,
             placement=placement,
             selector=selector,
@@ -322,14 +381,18 @@ class _P2PSenderHarness:
         self.transfer_engine.release_all()
         for call in self._calls:
             call.join()
+        for protocol in self._protocols:
+            if protocol._transport is not None:
+                for executor in protocol._transport._write_executors_by_rollout_engine_ind.values():
+                    executor.shutdown(wait=True)
 
     def _assign_rollout_engine_ranks(
         self, parallel_state: Any, placement: Any, engine_gpu_counts: list[int]
     ) -> list[Any]:
         self.assignment_inputs.append((placement, list(engine_gpu_counts)))
         return assign_rollout_engine_ranks_for_data_replica(
-            data_replica_rank=0,
-            data_replica_size=1,
+            data_replica_rank=self.data_replica_rank,
+            data_replica_size=self.data_replica_size,
             engine_gpu_counts=engine_gpu_counts,
         )
 
@@ -451,3 +514,41 @@ def make_bucket() -> Callable[..., list[tuple[str, torch.Tensor]]]:
         return [(name, torch.tensor(_BUCKET_VALUES[name])) for name in names]
 
     return _make
+
+
+@pytest.fixture
+def make_cell_updater(p2p_protocol: ModuleType) -> Callable[..., Any]:
+    def make(cell_id: str = "cell-a", api_client: Any = None) -> Any:
+        return p2p_protocol._P2PRolloutCellUpdater(
+            args=Namespace(ft_components=["weight_update"], update_weight_engine_request_timeout=0.05),
+            cell_id=cell_id,
+            api_client=api_client,
+        )
+
+    return make
+
+
+@pytest.fixture
+def make_remote_shard(mooncake_module: ModuleType) -> Callable[..., Any]:
+    def make(cell_id: str = "cell-a", rank: int = 0, runner_role: str = "target") -> Any:
+        return mooncake_module.RemoteShard(
+            cell_id=cell_id,
+            rollout_engine_ind=0,
+            rollout_engine_rank=rank,
+            runner_role=runner_role,
+            session_id=f"{cell_id}-{runner_role}-r{rank}",
+            weight_locations_by_name={
+                "w": mooncake_module.RemoteWeightLocation(address=0x1000, numel=4, element_size=4)
+            },
+        )
+
+    return make
+
+
+@pytest.fixture
+def transport(p2p_sender: Any, mooncake_module: ModuleType) -> Iterator[Any]:
+    transport = mooncake_module.MooncakeTransport()
+    yield transport
+    p2p_sender.transfer_engine.release_all()
+    for executor in transport._write_executors_by_rollout_engine_ind.values():
+        executor.shutdown(wait=True)

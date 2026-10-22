@@ -10,7 +10,11 @@ from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayCluster
 
 from miles.ray.placement_group import PlacementGroupInfo
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
 from miles.utils.workers import ray_worker_manager
+from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, _BaseActorManager, _CommandActorManager
@@ -1870,49 +1874,79 @@ class TestSuspendedCellInfos:
         assert manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].worker_names == []
 
 
-class TestInjectFault:
+class TestControlFaultHook:
     async def test_the_fault_reaches_the_selected_worker(self, fake_ray_cluster: FakeRayCluster):
         """A multi-node engine is crashed by crashing one of its node ranks."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        target = manager.observe_fault_target("engine-00000", rank=1)
+        command = _fault_command(target)
 
-        manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1)
+        await manager.control_fault_hook(command)
 
-        calls = fake_ray_cluster.calls_of("inject_fault")
-        assert [call.args for call in calls] == [("sigkill",)]
+        calls = fake_ray_cluster.calls_of("control_fault_hook")
+        assert [call.kwargs for call in calls] == [{"command": command}]
         assert calls[0].handle is fake_ray_cluster.handles[1]
 
-    async def test_injection_does_not_wait_for_the_worker_to_answer(self, fake_ray_cluster: FakeRayCluster):
-        """The worker is about to die, so waiting for its reply would hang the caller."""
+    async def test_a_worker_failure_leaves_the_fault_outcome_unknown(self, fake_ray_cluster: FakeRayCluster) -> None:
+        """A missing worker reply must not be reported as a confirmed fault."""
         manager = await _launch([_make_spec("engine")])
-        fake_ray_cluster.handles[0].failing_methods["inject_fault"] = RuntimeError("actor died")
+        fake_ray_cluster.handles[0].failing_methods["control_fault_hook"] = RuntimeError("actor died")
+        command = _fault_command(manager.observe_fault_target("engine-00000", rank=0))
 
-        manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0)
+        with pytest.raises(RuntimeError, match="actor died"):
+            await manager.control_fault_hook(command)
 
     async def test_injecting_into_a_suspended_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """A suspended cell has no worker to crash."""
         manager = await _launch([_make_spec("engine")])
+        command = _fault_command(manager.observe_fault_target("engine-00000", rank=0))
         await manager.stop_cells(["engine-00000"])
 
-        with pytest.raises(RuntimeError, match="not alive"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0)
+        with pytest.raises(StaleFaultTargetError, match="no live worker"):
+            await manager.control_fault_hook(command)
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
 
     async def test_a_worker_index_beyond_the_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """Injecting into a neighbouring cell by accident would corrupt the test's premise."""
         manager = await _launch([_make_spec("engine", num_cells=2, num_workers_per_cell=1)])
 
-        with pytest.raises(IndexError, match="out of range"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1)
+        with pytest.raises(StaleFaultTargetError, match="no live worker at index 1"):
+            manager.observe_fault_target("engine-00000", rank=1)
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
 
     async def test_a_negative_worker_index_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """Negative indexing would silently select the last worker instead of failing."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
 
-        with pytest.raises(IndexError, match="out of range"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=-1)
+        with pytest.raises(StaleFaultTargetError, match="no live worker at index -1"):
+            manager.observe_fault_target("engine-00000", rank=-1)
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
 
     async def test_an_unknown_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """A typo must not silently inject nothing."""
         manager = await _launch([_make_spec("engine")])
+        command = _fault_command(ObservedFaultHookTarget(cell_id="engine-00007", rank=0, workers_hash="missing"))
 
         with pytest.raises(AssertionError):
-            manager.inject_fault("engine-00007", mode="sigkill", worker_in_cell_index=0)
+            await manager.control_fault_hook(command)
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
+
+    async def test_a_replaced_worker_rejects_the_previous_observed_target(
+        self, fake_ray_cluster: FakeRayCluster
+    ) -> None:
+        """A fault observed before a restart must not crash the replacement worker."""
+        manager = await _launch([_make_spec("engine")])
+        command = _fault_command(manager.observe_fault_target("engine-00000", rank=0))
+        await manager.stop_cells(["engine-00000"])
+        await manager.start_cells(["engine-00000"])
+
+        with pytest.raises(StaleFaultTargetError, match="no longer matches"):
+            await manager.control_fault_hook(command)
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
+
+
+def _fault_command(target: ObservedFaultHookTarget) -> FaultHookCommand:
+    return FaultHookCommand(
+        operation=FaultHookOperation.SET,
+        request=FaultHookRequest(request_id="test", action=KillProcessAction(), target=target),
+    )

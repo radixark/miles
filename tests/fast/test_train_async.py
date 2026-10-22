@@ -230,6 +230,54 @@ class TestCriticValuesHandoff:
 
 
 class TestTerminalLifecycle:
+    @pytest.mark.parametrize("audit_fails", [False, True])
+    async def test_final_audit_runs_with_live_api_and_cells(
+        self, monkeypatch: pytest.MonkeyPatch, audit_fails: bool
+    ) -> None:
+        """Final audits retain a working observation endpoint even when the audit raises."""
+        events: list[str] = []
+        args = _make_args()
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        def close_api() -> None:
+            events.append("api_closed")
+
+        async def final_audit() -> None:
+            assert "api_closed" not in events
+            assert "actor_dispose" not in events
+            assert "inference_dispose" not in events
+            events.append("audit")
+            if audit_fails:
+                raise RuntimeError("audit failed")
+
+        monkeypatch.setattr(train_async_driver, "maybe_start_api_server", lambda *args, **kwargs: close_api)
+        monkeypatch.setattr(components.rollout_executor, "_dispose", final_audit)
+
+        if audit_fails:
+            with pytest.raises(RuntimeError, match="audit failed"):
+                await with_disposer(train_async_driver.train, args)
+        else:
+            await with_disposer(train_async_driver.train, args)
+
+        assert events.count("audit") == 1
+        assert events.index("audit") < events.index("api_closed") < events.index("actor_dispose")
+        assert "inference_dispose" in events
+
+    async def test_model_creation_failure_still_disposes_rollout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Startup failure before the API exists still releases the rollout components."""
+        events: list[str] = []
+        args = _make_args()
+        _install_driver_fakes(monkeypatch, args, events)
+
+        async def fail_creation(*args: Any) -> None:
+            raise RuntimeError("model creation failed")
+
+        monkeypatch.setattr(train_async_driver, "create_training_models", fail_creation)
+        with pytest.raises(RuntimeError, match="model creation failed"):
+            await with_disposer(train_async_driver.train, args)
+
+        assert events == ["executor_dispose", "inference_dispose"]
+
     async def test_async_train_drains_eval_and_disposes_all_component_controllers(
         self, monkeypatch: pytest.MonkeyPatch
     ):

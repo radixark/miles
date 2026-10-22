@@ -8,6 +8,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from miles import platforms
 from miles.backends.training_utils.data.context_parallel import (
     all_gather_with_cp,
     slice_log_prob_with_cp,
@@ -135,7 +136,7 @@ def _maybe_dump_top_logprob_backward(name: str, tensor: torch.Tensor) -> None:
     tensor.register_hook(hook)
 
 
-@torch.compile(dynamic=True)
+@platforms.torch_compile(dynamic=True)
 def compute_approx_kl(
     log_probs: torch.Tensor,
     log_probs_base: torch.Tensor,
@@ -250,7 +251,7 @@ def compute_gspo_kl(
     return ppo_kl
 
 
-@torch.compile(dynamic=True)
+@platforms.torch_compile(dynamic=True)
 def compute_policy_loss(
     ppo_kl: torch.Tensor,
     advantages: torch.Tensor,
@@ -425,7 +426,7 @@ class _VocabParallelEntropy(torch.autograd.Function):
     @staticmethod
     def forward(ctx, vocab_parallel_logits: torch.Tensor, process_group: dist.ProcessGroup) -> torch.Tensor:
 
-        @torch.compile(dynamic=True)
+        @platforms.torch_compile(dynamic=True)
         def mul_reduce(a, b):
             return (a * b).sum(dim=-1, keepdim=True)
 

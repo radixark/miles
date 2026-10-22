@@ -374,31 +374,32 @@ _TINY_QWEN3_5_TEXT = dict(
 )
 
 
-def test_gated_deltanet_kernels_receive_packed_boundaries():
+def test_gated_deltanet_kernels_receive_packed_boundaries(monkeypatch):
     # HF's Qwen3.5 forwards the padding-free kwargs to its GatedDeltaNet kernels; no patch in between.
     import torch.nn.functional as F
     from transformers import Qwen3_5TextConfig
+    from transformers.models.qwen3_5 import modeling_qwen3_5
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
 
     cfg = Qwen3_5TextConfig(**_TINY_QWEN3_5_TEXT)
     cfg._attn_implementation = "eager"
     model = Qwen3_5ForCausalLM(cfg).eval()
     _adapter("qwen3_5_text").patch_model(model, None)  # text-only: no vision tower to guard
-    gdn = model.model.layers[0].linear_attn
     seen = {}
 
-    def conv(x, weight, bias, activation, seq_idx=None):
+    def conv(x, weight, bias, activation=None, seq_idx=None, **kwargs):
         seen["seq_idx"] = seq_idx
         return F.silu(F.conv1d(F.pad(x, (weight.shape[-1] - 1, 0)), weight.unsqueeze(1), bias, groups=x.shape[1]))
 
-    chunk = gdn.chunk_gated_delta_rule
+    chunk = modeling_qwen3_5.torch_chunk_gated_delta_rule
 
     def chunk_rule(*args, cu_seqlens=None, **kwargs):
         seen["cu_seqlens"] = cu_seqlens
         return chunk(*args, **kwargs)
 
-    gdn.causal_conv1d_fn = conv
-    gdn.chunk_gated_delta_rule = chunk_rule
+    # The GatedDeltaNet forward calls these module-level kernels, which transformers resolves at import.
+    monkeypatch.setattr(modeling_qwen3_5, "causal_conv1d_fn", conv)
+    monkeypatch.setattr(modeling_qwen3_5, "torch_chunk_gated_delta_rule", chunk_rule)
 
     packing_kwargs = _adapter("qwen3_5_text").packing_kwargs(**_packed_boundaries(3, 2))
     with torch.no_grad():
@@ -409,16 +410,16 @@ def test_gated_deltanet_kernels_receive_packed_boundaries():
 
 
 def test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs(monkeypatch):
-    """HF hands the language model's kwargs to the vision tower, whose flash attention sets its own
-    `cu_seq_lens_q`; without the guard a packed batch with an image raises."""
+    """HF hands the language model's kwargs to the vision tower. Its flash attention overrides the
+    boundary kwargs with its own, but the rest (`seq_idx`) still arrives unless the guard drops it."""
     import torch.nn.functional as F
     from transformers import AttentionInterface, Qwen3_5Config
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
 
-    vision_cu_seqlens = []
+    vision_calls = []
 
     def flash_stand_in(module, query, key, value, attention_mask, scaling=None, cu_seq_lens_q=None, **kwargs):
-        vision_cu_seqlens.append(cu_seq_lens_q.tolist())
+        vision_calls.append({"cu_seq_lens_q": cu_seq_lens_q.tolist(), **kwargs})
         return F.scaled_dot_product_attention(query, key, value, scale=scaling).transpose(1, 2), None
 
     # a "flash" name sends the vision tower down its varlen branch without needing flash-attn on CPU
@@ -456,8 +457,8 @@ def test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs(monkeypat
         **adapter.packing_kwargs(**_packed_boundaries(3, 4)),
     )
     with torch.no_grad():
-        with pytest.raises(TypeError, match="multiple values for keyword argument 'cu_seq_lens_q'"):
-            model(**inputs)
+        model(**inputs)
+        assert "seq_idx" in vision_calls.pop()  # unguarded, the text rows' document ids reach the tower
 
         adapter.patch_model(model, None)
         wrapped = model.model.visual.forward
@@ -465,7 +466,9 @@ def test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs(monkeypat
         assert model.model.visual.forward is wrapped  # idempotent across the actor and ref model
         model(**inputs)
 
-    assert vision_cu_seqlens == [[0, 4]]  # the image's own patch boundaries, not the packed text rows
+    (call,) = vision_calls
+    assert call["cu_seq_lens_q"] == [0, 4]  # the image's own patch boundaries, not the packed text rows
+    assert "seq_idx" not in call
 
 
 import transformers

@@ -5,11 +5,14 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.fast.fixtures.driver_fakes import FakeObjectStore
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
 from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainInput
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.timer import Timer
 from miles.utils.weight_version import (
     assert_weight_version_is_published,
@@ -23,7 +26,8 @@ def _quiet_rollout_pipeline(monkeypatch):
     Timer().start_time.clear()
     monkeypatch.setattr(rollout_executor_module, "save_debug_rollout_data", lambda *a, **kw: None)
     monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", lambda *a, **kw: {})
-    monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *a, **kw: None)
+    monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *a, **kw: [])
+    monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", lambda: FakeObjectStore())
     monkeypatch.setattr(rollout_executor_module, "assert_weight_version_is_published", lambda *a, **kw: None)
     yield
     Timer().timers.clear()
@@ -77,10 +81,10 @@ def _record_generate_inputs(executor: RolloutExecutor, monkeypatch) -> list[Roll
     return received
 
 
-def _record_postprocess_configs(monkeypatch) -> list[dict[str, Any]]:
-    seen: list[dict[str, Any]] = []
+def _record_postprocess_configs(monkeypatch) -> list[TrainParallelConfig | None]:
+    seen: list[TrainParallelConfig | None] = []
 
-    def _postprocess_rollout_data(args, data, *, train_parallel_config: dict[str, Any]):
+    def _postprocess_rollout_data(args, data, *, train_parallel_config: TrainParallelConfig | None):
         seen.append(train_parallel_config)
         return data, None
 
@@ -102,7 +106,7 @@ def _make_ready_executor(*model_ids: str | None) -> RolloutExecutor:
     executor = _make_executor()
     for model_id in model_ids:
         executor.set_weight_version(1, trainer_model_id=model_id)
-        executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id=model_id)
+        executor.set_train_parallel_config(config=make_train_parallel_config(dp_size=4), trainer_model_id=model_id)
 
     async def _get_rollout_data(rollout_id, trainer_model_id=None):
         return [], None, None
@@ -136,10 +140,10 @@ class TestPerPolicyKeying:
         executor = _make_executor()
 
         executor.set_weight_version(3)
-        executor.set_train_parallel_config({"dp_size": 2})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=2))
 
         assert executor._weight_versions_of_model_id == {None: 3}
-        assert executor._train_parallel_configs_of_model_id == {None: {"dp_size": 2}}
+        assert executor._train_parallel_configs_of_model_id == {None: make_train_parallel_config(dp_size=2)}
 
     def test_a_version_going_backwards_for_one_policy_is_still_refused(self):
         """The regression check must compare a policy against itself, not against whoever published last."""
@@ -154,11 +158,11 @@ class TestPerPolicyKeying:
     async def test_each_policy_is_sharded_by_its_own_parallel_config(self, monkeypatch):
         """Splitting a policy's batch by another policy's dp size hands its ranks the wrong shards."""
         executor = _make_executor()
-        executor.set_train_parallel_config({"dp_size": 8}, trainer_model_id="a")
-        executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id="b")
-        seen: list[dict] = []
+        executor.set_train_parallel_config(config=make_train_parallel_config(dp_size=8), trainer_model_id="a")
+        executor.set_train_parallel_config(config=make_train_parallel_config(dp_size=4), trainer_model_id="b")
+        seen: list[TrainParallelConfig | None] = []
         monkeypatch.setattr(
-            rollout_executor_module, "split_train_data_by_dp", lambda args, data, config: seen.append(config)
+            rollout_executor_module, "split_train_data_by_dp", lambda args, data, config: seen.append(config) or []
         )
         _record_logged_model_ids(monkeypatch)
 
@@ -169,14 +173,14 @@ class TestPerPolicyKeying:
 
         await executor.get(0, trainer_model_id="b")
 
-        assert seen == [{"dp_size": 4}]
+        assert seen == [make_train_parallel_config(dp_size=4)]
 
     async def test_a_policy_asks_for_data_against_its_own_weight_version(self, monkeypatch):
         """The rollout function stamps its samples with the version it is told, so the wrong one mislabels a batch."""
         executor = _make_executor()
         executor.set_weight_version(3, trainer_model_id="a")
         executor.set_weight_version(7, trainer_model_id="b")
-        executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id="b")
+        executor.set_train_parallel_config(config=make_train_parallel_config(dp_size=4), trainer_model_id="b")
         received = _record_generate_inputs(executor, monkeypatch)
         _record_postprocess_configs(monkeypatch)
         _record_logged_model_ids(monkeypatch)
@@ -189,24 +193,24 @@ class TestPerPolicyKeying:
     async def test_the_postprocess_step_uses_the_same_parallel_config_as_the_split(self, monkeypatch):
         """Postprocessing and splitting disagreeing on dp size would group samples one way and shard them another."""
         executor = _make_executor()
-        executor.set_train_parallel_config({"dp_size": 8}, trainer_model_id="a")
-        executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id="b")
+        executor.set_train_parallel_config(config=make_train_parallel_config(dp_size=8), trainer_model_id="a")
+        executor.set_train_parallel_config(config=make_train_parallel_config(dp_size=4), trainer_model_id="b")
         _record_generate_inputs(executor, monkeypatch)
         postprocessed = _record_postprocess_configs(monkeypatch)
-        split: list[dict[str, Any]] = []
+        split: list[TrainParallelConfig | None] = []
         monkeypatch.setattr(
-            rollout_executor_module, "split_train_data_by_dp", lambda args, data, config: split.append(config)
+            rollout_executor_module, "split_train_data_by_dp", lambda args, data, config: split.append(config) or []
         )
         _record_logged_model_ids(monkeypatch)
 
         await executor.get(0, trainer_model_id="b")
 
-        assert postprocessed == split == [{"dp_size": 4}]
+        assert postprocessed == split == [make_train_parallel_config(dp_size=4)]
 
     async def test_a_policy_without_a_parallel_config_fails_loudly(self, monkeypatch):
         """A policy whose trainer never published its layout must name itself instead of sharding by another's."""
         executor = _make_executor()
-        executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id="b")
+        executor.set_train_parallel_config(config=make_train_parallel_config(dp_size=4), trainer_model_id="b")
         _record_generate_inputs(executor, monkeypatch)
         _record_postprocess_configs(monkeypatch)
         _record_logged_model_ids(monkeypatch)
@@ -323,8 +327,8 @@ class TestRolloutTimerNaming:
         """The rollout timer is a process singleton that refuses a second start under the same name."""
         logged = _record_logged_model_ids(monkeypatch)
         executor = _make_executor()
-        executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id="a")
-        executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id="b")
+        executor.set_train_parallel_config(config=make_train_parallel_config(dp_size=4), trainer_model_id="a")
+        executor.set_train_parallel_config(config=make_train_parallel_config(dp_size=4), trainer_model_id="b")
         both_arrived = asyncio.Event()
         arrivals = 0
 
@@ -338,7 +342,9 @@ class TestRolloutTimerNaming:
 
         executor._get_rollout_data = _get_rollout_data
         for trainer_model_id in ("a", "b"):
-            executor.set_train_parallel_config({"dp_size": 1}, trainer_model_id=trainer_model_id)
+            executor.set_train_parallel_config(
+                config=make_train_parallel_config(dp_size=1), trainer_model_id=trainer_model_id
+            )
 
         await asyncio.wait_for(
             asyncio.gather(executor.get(0, trainer_model_id="a"), executor.get(0, trainer_model_id="b")), timeout=5
@@ -351,13 +357,13 @@ class TestRolloutTimerNaming:
         """Every existing dashboard query is written against the unprefixed names."""
         logged = _record_logged_model_ids(monkeypatch)
         executor = _make_executor()
-        executor.set_train_parallel_config({"dp_size": 4})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=4))
 
         async def _get_rollout_data(rollout_id, trainer_model_id=None):
             return [], None, None
 
         executor._get_rollout_data = _get_rollout_data
-        executor.set_train_parallel_config({"dp_size": 1})
+        executor.set_train_parallel_config(make_train_parallel_config(dp_size=1))
 
         await executor.get(0)
 

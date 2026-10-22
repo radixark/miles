@@ -125,6 +125,11 @@ def compute_advantages_and_returns(
     rollout_data["returns"] = returns
 
 
+def count_loss_tokens(loss_masks: list[torch.Tensor]) -> torch.Tensor:
+    """The per-token loss normalizer: supervised tokens, with a fully masked sample counting as one."""
+    return sum(torch.clamp_min(loss_mask.sum(), 1) for loss_mask in loss_masks)
+
+
 def loss_function(
     args: Namespace,
     batch: RolloutBatch,
@@ -132,6 +137,7 @@ def loss_function(
     logits: torch.Tensor,
     apply_megatron_loss_scaling: bool = False,
     num_rollouts: int | None = None,
+    num_step_tokens: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, int | torch.Tensor, dict]:
     """Dispatch to the configured loss and rescale for Megatron integration.
 
@@ -150,6 +156,8 @@ def loss_function(
         logits: Model outputs (policy or value head).
         num_rollouts: This step's rollout count (total across DP), used as
             the loss normalizer; None falls back to the legacy batch/args value.
+        num_step_tokens: This step's `count_loss_tokens` (total across DP), the
+            per-token loss normalizer without `apply_megatron_loss_scaling`.
 
     Returns:
         Tuple of `(scaled_loss, normalizer, logging_dict)` where:
@@ -161,7 +169,7 @@ def loss_function(
           Tinker losses may also return "per_datum" outputs.
     """
     parallel_state = get_parallel_state()
-    num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
+    num_tokens = count_loss_tokens(batch["loss_masks"])
     num_samples = len(batch["response_lengths"])
 
     sum_of_sample_mean = get_sum_of_sample_mean(
@@ -213,8 +221,12 @@ def loss_function(
         else:
             loss = loss / loss_normalizer * parallel_state.intra_dp.size
     else:
+        # Megatron's finalize_model_grads divides by the token count; other backends divide here
         if apply_megatron_loss_scaling:
             loss = loss * parallel_state.cp.size
+        else:
+            assert num_step_tokens is not None, "the per-token loss needs this step's DP-total token count"
+            loss = loss / num_step_tokens * parallel_state.intra_dp.size
 
     per_datum = log.pop("per_datum", None) if batch.get("loss_fn") is not None else None
     return (

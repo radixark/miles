@@ -20,7 +20,15 @@ from miles.utils.workers.rpc.common.metadata import (
     canonicalize_method_arguments,
     collect_rpc_method_specs,
 )
-from miles.utils.workers.rpc.common.protocol import HEALTH_PATH, IN_FLIGHT_PATH, HealthResponse, InFlightResponse
+from miles.utils.workers.rpc.common.protocol import (
+    BOOT_UUID_HEADER,
+    HEALTH_PATH,
+    IN_FLIGHT_PATH,
+    POD_UID_HEADER,
+    HealthResponse,
+    InFlightResponse,
+    ServerHealth,
+)
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerStillBusyError, WorkerUnreachableError
 
 DEFAULT_CALL_TIMEOUT_SECONDS = 3600.0
@@ -39,6 +47,7 @@ class RpcWorkerHandle(BaseWorkerHandle):
         *,
         server_url: str,
         require_stable_boot_uuid: bool = False,
+        expected_boot_uuid: str | None = None,
         call_timeout_seconds: float = DEFAULT_CALL_TIMEOUT_SECONDS,
         ready_timeout_seconds: float = DEFAULT_READY_TIMEOUT_SECONDS,
         http_client: httpx.AsyncClient | None = None,
@@ -51,7 +60,11 @@ class RpcWorkerHandle(BaseWorkerHandle):
         self._worker_cls_name = worker_cls.__name__
         self._call_timeout_seconds = call_timeout_seconds
         self._ready_timeout_seconds = ready_timeout_seconds
-        self._boot_uuid_pin = BootUuidPin(required=require_stable_boot_uuid, worker_cls_name=worker_cls.__name__)
+        self._boot_uuid_pin = BootUuidPin(
+            required=require_stable_boot_uuid,
+            worker_cls_name=worker_cls.__name__,
+            expected=expected_boot_uuid,
+        )
         self._transport = RpcTransport(
             server_url=server_url, http_client=http_client, boot_uuid_pin=self._boot_uuid_pin
         )
@@ -134,6 +147,12 @@ class RpcWorkerHandle(BaseWorkerHandle):
             initial_delay=_IDLE_POLL_INTERVAL_SECONDS,
             backoff_factor=1.0,
             log_fields={"tag": "rpc", "op": "wait_idle", "target": self._worker_cls_name},
+        )
+
+    async def read_health(self) -> ServerHealth:
+        response = await self._transport.send("GET", HEALTH_PATH, seconds=_HEALTH_TIMEOUT_SECONDS)
+        return ServerHealth(
+            boot_uuid=response.headers.get(BOOT_UUID_HEADER), pod_uid=response.headers.get(POD_UID_HEADER)
         )
 
     async def probe_is_dead(self) -> bool:

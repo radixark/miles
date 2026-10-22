@@ -14,6 +14,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.audit_utils.event_logger.logger import get_event_logger
 from miles.utils.audit_utils.event_logger.models import WitnessSnapshotParamEvent
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils.audit_utils.witness.utils import compute_id_ranges
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ def witness_dump_and_clear_stale(
 ) -> None:
     """Log nonzero witness param rows, then clear stale ring buffer entries."""
     pp_rank = get_parallel_state().pp.rank
+    stale_id_ranges = compute_id_ranges(witness_info.stale_ids)
 
     for chunk_index, chunk in enumerate(model):
         inner = _unwrap_to_witness_owner(chunk)
@@ -50,7 +52,7 @@ def witness_dump_and_clear_stale(
             _record_and_log_witness_param(
                 witness=witness,
                 instance_id=f"pp{pp_rank}_chunk{chunk_index}." + attr.replace("_witness", ""),
-                stale_ids=witness_info.stale_ids,
+                stale_id_ranges=stale_id_ranges,
             )
 
     _clear_witness_stale_rows(model=model, stale_ids=witness_info.stale_ids, optimizer=optimizer)
@@ -238,7 +240,7 @@ def _record_and_log_witness_param(
     *,
     witness: _DataWitness,
     instance_id: str,
-    stale_ids: list[int],
+    stale_id_ranges: list[tuple[int, int]],
 ) -> None:
     model_weight = witness.witness.weight
     main_param = getattr(model_weight, "main_param", None)
@@ -250,7 +252,7 @@ def _record_and_log_witness_param(
         dict(
             instance_id=instance_id,
             nonzero_witness_ids=nonzero_witness_ids,
-            stale_ids=stale_ids,
+            stale_id_ranges=stale_id_ranges,
         ),
         print_log=False,
     )

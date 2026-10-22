@@ -10,7 +10,15 @@ from typing import Any
 import pytest
 import yaml
 from megatron.training import arguments as megatron_arguments
-from tests.fast.charts.utils import NAMESPACE, RUN_CHART_DIR, RUN_ID, RUN_RELEASE_NAME, requires_helm
+from tests.fast.charts.utils import (
+    NAMESPACE,
+    RUN_CHART_DIR,
+    RUN_ID,
+    RUN_RELEASE_NAME,
+    documents_of,
+    objects_of_kind,
+    requires_helm,
+)
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER, assert_matches_snapshot
 
 from miles.ray.specs.entrypoint import compute_specs
@@ -157,6 +165,7 @@ SCENARIO_ARGV = [
 
 @pytest.fixture(autouse=True)
 def parser_process_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-m", "pytest"])
     for name, value in PARSER_ENV.items():
         monkeypatch.setenv(name, value)
     tuning_env_name = "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"
@@ -253,6 +262,20 @@ def _yaml_scalar(line: str) -> str:
     return line.strip().removeprefix("- ").strip("'\"")
 
 
+def _worker_pod_specs(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stateful = [o["spec"]["template"] for o in objects_of_kind(objects, "StatefulSet")]
+    grouped = [
+        template
+        for o in objects_of_kind(objects, "LeaderWorkerSet")
+        for key in ("leaderTemplate", "workerTemplate")
+        if (template := o["spec"]["leaderWorkerTemplate"].get(key)) is not None
+    ]
+    return [t["spec"] for t in stateful + grouped if _POOL_LABEL in t["metadata"]["labels"]]
+
+
+_POOL_LABEL = "miles.radixark.io/pool"
+
+
 @requires_helm
 class TestGeneratedValuesSnapshot:
     def test_the_launcher_turns_the_specs_into_exactly_the_recorded_values(self, tmp_path):
@@ -301,3 +324,18 @@ class TestSnapshotFiles:
         recorded = {path.stem for path in SNAPSHOT_DIR.glob("*.yaml")}
 
         assert recorded == set(SCENARIOS)
+
+
+@requires_helm
+class TestPodUidEnv:
+    def test_every_worker_container_reads_its_pod_uid_from_the_pod_metadata(self, tmp_path: Path) -> None:
+        """Each worker learns its own pod uid through the downward api, so a replaced pod reports a new one."""
+        values_file = tmp_path / "run-values.yaml"
+        values_file.write_text(_dump_values(synthetic_run_values()))
+        pod_specs = _worker_pod_specs(documents_of(render_from(values_file)))
+
+        assert pod_specs
+        for pod_spec in pod_specs:
+            for container in pod_spec["containers"]:
+                entries = [item for item in container["env"] if item["name"] == "MILES_POD_UID"]
+                assert entries == [{"name": "MILES_POD_UID", "valueFrom": {"fieldRef": {"fieldPath": "metadata.uid"}}}]

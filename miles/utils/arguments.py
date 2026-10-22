@@ -78,6 +78,10 @@ def driver_owns_generation_pause(args) -> bool:
     return args.fully_async and args.colocate
 
 
+def supports_partial_target_weight_update(args) -> bool:
+    return not args.colocate and args.update_weight_transfer_mode == "p2p"
+
+
 def _resolve_rollout_functions(args) -> None:
     if args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH:
         # The selection --fully-async makes, so enable the mode: as a plugin path it would
@@ -170,7 +174,7 @@ def reset_arg(parser, name, **kwargs):
         parser.add_argument(name, **kwargs)
 
 
-_FT_CHOICES = ["rollout", "train"]
+_FT_CHOICES = ["rollout", "train", "weight_update"]
 _DEFAULT_FT_API_SERVER_PORT = 18080
 
 
@@ -643,6 +647,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--delay-split-train-data-by-dp",
                 action="store_true",
                 default=False,
+                help="Split the rollout batch across DP ranks on the training side instead of the rollout side, "
+                "using the training side's own DP size.",
             )
             parser.add_argument(
                 "--allgather-cp",
@@ -681,9 +687,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "The huggingface checkpoint of the trained model. "
                     "This is used to initialize sglang and also provide the tokenizer. "
-                    "Note that, we will always update the parameters in sglang with that of megatron before training, "
-                    "so you only need to provide a huggingface checkpoint that has the same architecture as the model you want to train. "
-                    "It doesn't necessary need to contain the most up-to-date parameters."
+                    "Weight synchronization replaces startup weights with the loaded trainer weights before the first rollout. "
+                    "Disk-delta uses this checkpoint as the common baseline for the initial delta."
                 ),
             )
             parser.add_argument(
@@ -1199,6 +1204,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "then fails the update."
                 ),
             )
+            parser.add_argument(
+                "--update-weight-engine-request-timeout",
+                type=float,
+                default=300.0,
+                help="Seconds allowed for one weight-update request to a rollout engine before its cell is given up.",
+            )
+            parser.add_argument(
+                "--update-weights-timeout",
+                type=float,
+                default=600.0,
+                help="Seconds the trainer controller waits for one trainer cell's update_weights before giving it up.",
+            )
             return parser
 
         def add_fault_tolerance_arguments(parser):
@@ -1214,7 +1231,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 choices=_FT_CHOICES,
                 help="FT components to enable (requires --use-fault-tolerance). "
-                "Choices: rollout, train. Default when omitted: rollout.",
+                "Choices: rollout, train, weight_update. Default when omitted: rollout, weight_update.",
             )
             SimpleHealthCheckerConfig.add_arguments(
                 parser,
@@ -1446,16 +1463,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The maximum number of tokens per GPU for dynamic batch size. "
                     "Note that when enabling context parallel (CP), the max tokens per gpu should be around "
                     "`max_response_len // cp_size` instead of `max_response_len`."
-                ),
-            )
-            parser.add_argument(
-                "--log-probs-max-tokens-per-gpu",
-                type=int,
-                default=None,
-                help=(
-                    "The maximum number of tokens per GPU for calculating log probs. "
-                    "This is used to calculate the log probs of the responses during rollout, "
-                    "and should be set to a larger value than `max_tokens_per_gpu` if you want better performance. "
                 ),
             )
             return parser
@@ -1829,7 +1836,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Skip the standalone Megatron actor forward-only pass. With --use-rollout-logprobs, "
                     "those log-probs remain the old-policy baseline; otherwise detached training log-probs "
                     "are reused and the actor importance log-ratio is exactly 0. This requires a single "
-                    "optimizer step. The skipped pass's rollout/log_probs metric is not emitted."
+                    "optimizer step. The skipped pass's rollout/log_probs metric is not emitted. "
+                    "Custom model providers and the before-train-step hook must not make the training "
+                    "forward differ from the skipped forward."
                 ),
             )
             # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
@@ -2352,6 +2361,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Save per-rank local weight checksum per-step.",
             )
             parser.add_argument(
+                "--check-weight-transfer-checksum",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Hash every P2P weight write on the sending trainer rank and on the receiving engine rank and "
+                "fail the write when they differ. Defaults on under --ci-test.",
+            )
+            parser.add_argument(
                 "--enable-event-analyzer",
                 action="store_true",
                 help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
@@ -2392,25 +2408,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Maximum number of unique witness IDs before recycling.",
             )
             parser.add_argument(
-                "--ci-ft-test-actions",
+                "--ci-fault-hooks",
                 type=str,
                 default=None,
-                help="JSON array of fault injection actions. Each action: "
-                '{"at_rollout": N, "action": "stop_cell_at_end"|"start_cell_at_end"|"crash_before_allreduce", '
-                '"cell_id": "trainer-engine-actor-00002", "rank": 0, "attempt": 0}. '
-                "cell_id is the full cell id (spec name plus zero-padded cell index) of the target cell. "
-                'The action "sleep_forever_at_end" names no cell: it puts the orchestration script itself to sleep '
-                "once the step it names is trained and saved, so the run never starts the step after it.",
+                help="JSON array of fault hook requests set when each process starts. Each request names the hook "
+                "it waits at, the action to run there, the cell_id / rank it applies to, and the rollout_id / "
+                "attempt / weight_version it fires on.",
             )
-            # TODO ad hoc hack: revert after the args refactor
             parser.add_argument(
-                "--ci-ft-test-actions-path",
+                "--ci-fault-hooks-path",
                 type=str,
                 default=None,
-                help="Path of a file holding the same JSON array as --ci-ft-test-actions, read afresh every time "
-                "the actions are consulted. A run relaunched in place keeps the arguments its pods were rendered "
-                "from, so a plan that has to change from one launch to the next is delivered through this file "
-                "instead of through the argument. Mutually exclusive with --ci-ft-test-actions.",
+                help="Path of a file holding the same JSON array as --ci-fault-hooks, read when a process starts. "
+                "A run relaunched in place keeps the arguments its pods were rendered from, so a plan that has to "
+                "change from one launch to the next is delivered through this file. Mutually exclusive with "
+                "--ci-fault-hooks.",
             )
             parser.add_argument(
                 "--ci-inject-rollout-data-path",
@@ -2942,9 +2954,11 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
                 text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
                 args.indexer_rope_interleave = bool(getattr(text_config, "indexer_rope_interleave", False))
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
-                linear_attn_config = getattr(text_config, "linear_attn_config", None)
-                kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
-                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - len(kda_layers)
+                # one indexer top-k stream per DSA layer; GLM-5.3-Flash's KDA layers have none
+                layer_types = getattr(text_config, "layer_types", None) or []
+                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - layer_types.count(
+                    "linear_attention"
+                )
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0
@@ -3226,7 +3240,7 @@ def _validate_single_engine_source(args: argparse.Namespace, *, component: Deplo
 
 def _validate_watched_cells_deployed_locally(args: argparse.Namespace, *, component: DeployComponent) -> None:
     if not component.deploys_orchestration_script():
-        unservable = sorted(set(args.ft_components) - {"train"})
+        unservable = sorted(set(args.ft_components) - {"train", "weight_update"})
         assert not unservable, (
             f"--deploy-component {component.value} installs no inference engines, and {unservable} cells are "
             f"suspended and resumed through the controller of the deployment that owns them, so this launch cannot "
@@ -3260,7 +3274,7 @@ def _validate_shared_object_store(args: argparse.Namespace, *, component: Deploy
     )
 
 
-_FT_DEFAULT_COMPONENTS: list[str] = ["rollout"]
+_FT_DEFAULT_COMPONENTS: list[str] = ["rollout", "weight_update"]
 
 
 def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
@@ -3373,6 +3387,12 @@ def _resolve_event_logging(args: argparse.Namespace) -> None:
 
     if args.log_inference_engine_weight_checksums is None:
         args.log_inference_engine_weight_checksums = event_directory_was_requested or args.enable_event_analyzer
+    if args.enable_event_analyzer and not args.log_inference_engine_weight_checksums:
+        raise ValueError(
+            "--enable-event-analyzer (also implied by train fault tolerance) requires every published weight "
+            "version to carry engine weight checksums, so it cannot run with "
+            "--no-log-inference-engine-weight-checksums"
+        )
 
 
 def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
@@ -3437,6 +3457,13 @@ def miles_validate_args(args):
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
+    assert "rollout" not in args.ft_components or supports_partial_target_weight_update(args), (
+        "rollout fault tolerance needs a partial-target weight update (--update-weight-transfer-mode p2p, no "
+        "--colocate): a rollout cell may be stopped during a weight update"
+    )
+    assert "weight_update" not in args.ft_components or (
+        args.train_backend == "megatron" and supports_partial_target_weight_update(args)
+    ), "weight_update FT requires Megatron, --update-weight-transfer-mode p2p, and no --colocate"
     assert not ("rollout" in args.ft_components and args.eval_num_gpus > 0), (
         "rollout fault tolerance does not support a dedicated eval fleet (--eval-num-gpus > 0): "
         "the eval fleet pins engine addresses once at startup, so a healed eval cell would make "
@@ -3465,6 +3492,14 @@ def miles_validate_args(args):
         assert (
             args.train_backend == "megatron"
         ), f"indep_dp requires train_backend='megatron', got '{args.train_backend}'"
+        assert args.use_dynamic_batch_size, (
+            "--indep-dp requires --use-dynamic-batch-size (with --max-tokens-per-gpu): "
+            "the live cell count after a fault need not divide global_batch_size"
+        )
+        assert not args.use_dynamic_global_batch_size, (
+            "--indep-dp does not support --use-dynamic-global-batch-size: "
+            "independent cells do not expose a DP size to the rollout side"
+        )
         per_replica_size = compute_megatron_world_size_except_dp(args)
         logger.info(f"indep_dp: adjusting args.world_size from {args.world_size} to {per_replica_size} (per-cell)")
         args.world_size = per_replica_size
@@ -3652,7 +3687,7 @@ def miles_validate_args(args):
 
     # TODO: refactor
     args.requested_load = args.load
-    if args.megatron_config is None:
+    if args.train_backend == "megatron" and args.megatron_config is None:
         resolve_args_checkpoint_load(args)
 
     if args.eval_interval is not None:
@@ -3705,8 +3740,6 @@ def miles_validate_args(args):
 
     if args.use_dynamic_batch_size:
         assert args.max_tokens_per_gpu is not None, "max_tokens_per_gpu must be set when use_dynamic_batch_size is set"
-        if args.log_probs_max_tokens_per_gpu is None:
-            args.log_probs_max_tokens_per_gpu = args.max_tokens_per_gpu
 
     # --use-dynamic-global-batch-size has two motivations:
     # 1. compaction/subagent rollouts: static micro-batching cannot guarantee alignment
@@ -3808,12 +3841,20 @@ def miles_validate_args(args):
         and not args.ci_disable_weight_update_checker
     ):
         args.check_weight_update_equal = True
+    if args.check_weight_transfer_checksum is None:
+        args.check_weight_transfer_checksum = args.ci_test
 
     if args.check_weight_update_selector is None:
         # reset_tensors scrambles every tensor it covers, so it must cover only what the sync rewrites
         args.check_weight_update_selector = weight_update_selector(args)
 
     # always true on offload for colocate at the moment.
+    assert (
+        args.update_weight_engine_request_timeout > 0
+    ), f"--update-weight-engine-request-timeout must be positive, got {args.update_weight_engine_request_timeout!r}"
+    assert (
+        args.update_weights_timeout > 0
+    ), f"--update-weights-timeout must be positive, got {args.update_weights_timeout!r}"
     if args.update_weight_transfer_mode == "p2p":
         assert not args.colocate, (
             "P2P weight transfer mode is not compatible with --colocate. "
@@ -3846,11 +3887,13 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
         )
-        if has_megatron_checkpoint(args.requested_load):
+        if has_megatron_checkpoint(
+            args.requested_load,
+            ckpt_step=getattr(args, "ckpt_step", None) if args.load == args.requested_load else None,
+        ):
             raise ValueError(
                 "--update-weight-transfer-mode=disk-delta cannot resume from a training checkpoint: "
-                "the first sync only captures a baseline from --hf-checkpoint and never transfers the "
-                f"weights restored from --load={args.requested_load}."
+                f"Requested --load={args.requested_load}."
             )
 
     if args.colocate:
@@ -4224,16 +4267,10 @@ def validate_skip_actor_forward_only(args) -> None:
             ("--use-rollout-entropy", args.use_rollout_entropy),
             ("--true-on-policy-mode", args.true_on_policy_mode),
             ("--log-correct-samples", args.log_correct_samples),
-            ("--rollout-data-postprocess-path", args.rollout_data_postprocess_path is not None),
             (
                 "--custom-megatron-before-log-prob-hook-path",
                 args.custom_megatron_before_log_prob_hook_path is not None,
             ),
-            (
-                "--custom-megatron-before-train-step-hook-path",
-                args.custom_megatron_before_train_step_hook_path is not None,
-            ),
-            ("--custom-model-provider-path", args.custom_model_provider_path is not None),
             (
                 "--dumper-source-patcher-config-train",
                 args.dumper_source_patcher_config_train is not None,

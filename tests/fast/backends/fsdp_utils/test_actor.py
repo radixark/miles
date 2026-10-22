@@ -1,5 +1,6 @@
 import sys
 from argparse import Namespace
+from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -7,8 +8,11 @@ import torch
 
 from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
+from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.torch_native import actor as base_module
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.utils import distributed_utils
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.heartbeat_utils import SimpleHeartbeat
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.init_once import InitOnce
@@ -101,3 +105,36 @@ class TestFSDPModelInputs:
         assert model_args["cu_seq_lens_q"] is batch["cu_seqlens"]
         assert model_args["max_length_q"] == 3
         assert model_args["seq_idx"].tolist() == [[0, 0, 0, 1, 1, 2, 2, 2]]
+
+
+class TestFSDPTrainParallelConfigWiring:
+    def test_init_derives_a_config_without_schedule_support_and_train_forwards_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fsdp_three_rank_state: ParallelState,
+        fsdp_debug_actor: actor_module.FSDPTrainRayActor,
+    ) -> None:
+        """FSDP init records its live DP layout without precomputed scheduling and train hands it to the loader."""
+        args = Namespace(dumper_enable=False, seed=0, offload_train=False, debug_rollout_only=True)
+        received: list[TrainParallelConfig] = []
+
+        def load_rollout_data(
+            *,
+            args: Namespace,
+            rollout_data_ref: object,
+            witness_info: object,
+            train_parallel_config: TrainParallelConfig,
+        ) -> tuple[dict[str, list], object]:
+            received.append(train_parallel_config)
+            return {"tokens": []}, nullcontext()
+
+        monkeypatch.setattr(base_module, "get_rollout_data", load_rollout_data)
+
+        fsdp_debug_actor.init(args, "actor", indep_dp_info=IndepDPInfo.create_trivial(), indep_dp_store_addr=None)
+        fsdp_debug_actor.train(rollout_id=3, rollout_data_ref=object())
+
+        assert received == [fsdp_debug_actor.train_parallel_config]
+        assert received[0].dp_size == fsdp_three_rank_state.effective_dp.size == 3
+        assert received[0].cp_size == 1
+        assert not received[0].independent_dp
+        assert not received[0].supports_precomputed_schedule

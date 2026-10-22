@@ -50,7 +50,8 @@ from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
-from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import SampleLineage
 
@@ -571,7 +572,6 @@ def train_one_step(
     num_rollouts: int,
     witness_info: WitnessInfo | None,
     attempt: int,
-    ft_test_action_executor: FTTestActionActorExecutor | None = None,
 ) -> tuple[dict[str, float], float, TrainStepOutcome]:
     """Run pipeline forward/backward, then step the optimizer and scheduler when gradients are valid."""
     args = get_args()
@@ -608,8 +608,7 @@ def train_one_step(
     if parallel_state.indep_dp.size > 1:
         assert step_id == 0, "indep-dp does not support multi step per train yet"
 
-        if ft_test_action_executor is not None:
-            ft_test_action_executor.maybe_crash(rollout_id=rollout_id, attempt=attempt)
+        reach_fault_hook(FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, rollout_id=rollout_id, attempt=attempt)
 
         metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
@@ -740,7 +739,6 @@ def train(
     num_rollouts: Sequence[int],
     witness_info: WitnessInfo | None,
     attempt: int,
-    ft_test_action_executor: FTTestActionActorExecutor | None = None,
 ) -> TrainStepOutcome:
     """Run training over a rollout consisting of multiple steps.
 
@@ -819,7 +817,6 @@ def train(
             num_rollouts[step_id],
             witness_info=witness_info,
             attempt=attempt,
-            ft_test_action_executor=ft_test_action_executor,
         )
 
         if step_id == 0:
@@ -1014,7 +1011,10 @@ def load_model_state(
 
     load_dir = getattr(args, "load", None)
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
-    if load_dir is None or _has_loadable_ckpt(load_dir):
+    explicit_selection = getattr(args, "ckpt_step", None) is not None or getattr(
+        args, "exit_on_missing_checkpoint", False
+    )
+    if load_dir is None or explicit_selection or _has_loadable_ckpt(load_dir):
         with load_ctx:
             iteration, restored_trained_iteration = load_checkpoint(
                 model,

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+from megatron.core.packed_seq_params import PackedSeqParams
 
 if TYPE_CHECKING:
     from miles.backends.megatron_utils.model import LoadCheckpointOutput
@@ -106,7 +107,7 @@ def _mock_megatron_environment():
             },
         )
         _stub_module("megatron.core.optimizer_param_scheduler", {"OptimizerParamScheduler": _DummyScheduler})
-        _stub_module("megatron.core.packed_seq_params", {"PackedSeqParams": MagicMock()})
+        _stub_module("megatron.core.packed_seq_params", {"PackedSeqParams": PackedSeqParams})
         _stub_module("megatron.core.pipeline_parallel", {"get_forward_backward_func": MagicMock()})
         _stub_module("megatron.core.transformer", is_package=True)
         _stub_module("megatron.core.transformer.utils", {"sharded_state_dict_default": MagicMock()})
@@ -229,14 +230,18 @@ def _load_model_state_with(
     restored_trained_iteration: bool | None = None,
     adapter_iteration: int | None = None,
     lora_adapter_path: str | None = None,
+    write_tracker: bool = True,
+    ckpt_step: int | None = None,
+    exit_on_missing_checkpoint: bool = False,
 ) -> "LoadCheckpointOutput":
     from miles.backends.megatron_utils.model import load_model_state
 
     load_dir = tmp_path / "ckpt"
     load_dir.mkdir()
-    (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
     if restored_trained_iteration is None:
         restored_trained_iteration = not finetune or iteration > 0
+    if write_tracker:
+        (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
 
     with ExitStack() as stack:
         stack.enter_context(
@@ -258,6 +263,8 @@ def _load_model_state_with(
                 megatron_to_hf_mode="core",
                 lora_adapter_path=lora_adapter_path,
                 load=str(load_dir),
+                ckpt_step=ckpt_step,
+                exit_on_missing_checkpoint=exit_on_missing_checkpoint,
             ),
             model=[_FakeModelChunk()],
             optimizer=None,
@@ -286,6 +293,22 @@ class TestWhereALoadSaysTheRunStarts:
         """Weight initialization cannot claim a nonzero trained iteration."""
         with pytest.raises(AssertionError, match="Weight initialization returned a trained iteration"):
             _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100, restored_trained_iteration=False)
+
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-step", "exit-on-missing"],
+    )
+    def test_an_explicit_selection_enters_the_checkpoint_loader_without_a_tracker(self, tmp_path, selector):
+        output = _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=False,
+            iteration=7,
+            write_tracker=False,
+            **selector,
+        )
+
+        assert (output.loaded_rollout_id, output.start_rollout_id) == (7, 8)
 
 
 class TestALoraAdapterThatCarriesItsOwnIteration:

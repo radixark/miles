@@ -4,7 +4,6 @@
 no DeepEP on either side. Weights reach the engine by broadcast.
 """
 
-import dataclasses
 import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
@@ -54,7 +53,12 @@ CASE = CaseConfig(
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),
     # in_place pause: retract-mode weight updates with R3 have known SGLang issues (miles/utils/arguments.py).
-    extra_args="--pause-generation-mode in_place ",
+    extra_args="--pause-generation-mode in_place "
+    + (
+        "--sglang-disable-shared-experts-fusion --debug-unified-grad-fused-logprob "
+        if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm"
+        else ""
+    ),
 )
 
 
@@ -62,9 +66,4 @@ if __name__ == "__main__":
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     prepare(CASE)
-    if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
-        CASE = dataclasses.replace(
-            CASE,
-            extra_args=CASE.extra_args + "--sglang-disable-shared-experts-fusion --debug-unified-grad-fused-logprob ",
-        )
     execute(CASE, wandb_file=__file__)

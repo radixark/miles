@@ -7,6 +7,7 @@ from typing import NamedTuple
 import pytest
 import yaml
 from tests.fast.charts.utils import REPO_ROOT
+from tests.fast.utils.external_utils.command_utils.fake_launch_guard import GuardRefusedError, RecordingLaunchGuard
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
@@ -248,6 +249,155 @@ class TestDefusingAPendingUninstall:
             _launch(monkeypatch, tmp_path, recorded, installed=False, delete_fails=True)
 
         assert recorded.upgraded == []
+
+
+class TestAGuardedLaunch:
+    def test_a_first_install_passes_every_cluster_side_effect_through_the_guard_in_order(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Reading, defusing and installing must all go through the guard, and the guard sees them in launch order."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+        guard = RecordingLaunchGuard()
+
+        followed = _launch(monkeypatch, tmp_path, recorded, installed=False, guard=guard)
+
+        assert guard.names == ["get_manifest", "before_defuse", "delete_uninstall_job", "upgrade"]
+        assert guard.kwargs_of("get_manifest") == {"release": _RELEASE, "namespace": "rl"}
+        assert guard.kwargs_of("before_defuse") == {
+            "release": _RELEASE,
+            "namespace": "rl",
+            "superseded_state_file": None,
+            "state_file": followed[0]["state_file"],
+        }
+        assert guard.kwargs_of("delete_uninstall_job") == {
+            "name": f"{_RELEASE}-uninstall",
+            "namespace": "rl",
+            "check": True,
+        }
+        upgrade = guard.kwargs_of("upgrade")
+        assert (upgrade["release"], upgrade["namespace"], upgrade["ci_run"]) == (_RELEASE, "rl", False)
+        assert Path(upgrade["values_files"][-1]) == _written_values_path(tmp_path)
+        assert recorded.kubectl == []
+        assert recorded.upgraded == []
+
+    def test_the_manifest_the_guard_reports_is_the_one_the_launch_attaches_to(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A launch reading the release around the guard would judge a cluster the guard never observed."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+        guard = RecordingLaunchGuard()
+
+        followed = _launch(
+            monkeypatch, tmp_path, recorded, installed=True, rendered=_RENDERED_ORCHESTRATOR, guard=guard
+        )
+
+        assert guard.names == ["get_manifest", "upgrade"]
+        assert followed[0]["state_file"] == tmp_path / "attached.state"
+
+    def test_a_hot_restart_tells_the_guard_which_generation_it_supersedes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The guard can only verify the observed generation if it is handed the carried and the new state file."""
+        guard = RecordingLaunchGuard()
+
+        followed = _guarded_hot_restart(monkeypatch, tmp_path, guard=guard)
+
+        assert guard.names == ["get_manifest", "before_defuse", "delete_uninstall_job", "upgrade"]
+        before_defuse = guard.kwargs_of("before_defuse")
+        assert before_defuse["superseded_state_file"] == tmp_path / "attached.state"
+        assert before_defuse["state_file"] == followed[0]["state_file"] != tmp_path / "attached.state"
+
+    def test_a_refusal_before_defusing_leaves_the_running_generation_untouched(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The check must run before the superseded marker, the job delete, the record and the upgrade."""
+        guard = RecordingLaunchGuard(refuse=frozenset({"before_defuse"}))
+
+        with pytest.raises(GuardRefusedError):
+            _guarded_hot_restart(monkeypatch, tmp_path, guard=guard)
+
+        assert guard.names == ["get_manifest", "before_defuse"]
+        assert not RunFiles.superseded_marker(state_file=tmp_path / "attached.state").exists()
+        assert _written_records(tmp_path) == []
+
+    def test_a_refused_uninstall_job_delete_neither_records_nor_installs(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Installing after the guard refused the delete would hand the new release to a job it could not remove."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+        guard = RecordingLaunchGuard(refuse=frozenset({"delete_uninstall_job"}))
+
+        with pytest.raises(GuardRefusedError):
+            _launch(monkeypatch, tmp_path, recorded, installed=False, guard=guard)
+
+        assert guard.names == ["get_manifest", "before_defuse", "delete_uninstall_job"]
+        assert _written_records(tmp_path) == []
+
+    def test_a_refused_upgrade_is_raised_after_this_launch_was_recorded(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The record names what the launch attempted, so it is written before the install the guard may refuse."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+        guard = RecordingLaunchGuard(refuse=frozenset({"upgrade"}))
+
+        with pytest.raises(GuardRefusedError):
+            _launch(monkeypatch, tmp_path, recorded, installed=False, guard=guard)
+
+        assert guard.names == ["get_manifest", "before_defuse", "delete_uninstall_job", "upgrade"]
+        assert len(_written_records(tmp_path)) == 1
+
+    def test_a_refused_manifest_read_writes_nothing_at_all(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Nothing may be decided, written or installed before the guard has observed the release."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+        guard = RecordingLaunchGuard(refuse=frozenset({"get_manifest"}))
+
+        with pytest.raises(GuardRefusedError):
+            _launch(monkeypatch, tmp_path, recorded, installed=False, guard=guard)
+
+        assert guard.names == ["get_manifest"]
+        assert not (tmp_path / "cluster-storage").exists()
+        assert recorded.kubectl == []
+
+    def test_a_relaunch_the_upgrade_gate_refuses_never_reaches_a_guarded_side_effect(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The size-only gate must still refuse before defusing, with the guard seeing only the read."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+        guard = RecordingLaunchGuard()
+
+        with pytest.raises(SystemExit, match="more than its size"):
+            _launch(monkeypatch, tmp_path, recorded, installed=True, proposed_differs=True, guard=guard)
+
+        assert guard.names == ["get_manifest"]
+        assert _written_records(tmp_path) == []
+
+
+def _guarded_hot_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, guard: RecordingLaunchGuard
+) -> list[dict]:
+    return _launch(
+        monkeypatch,
+        tmp_path,
+        _Recorded(kubectl=[], upgraded=[]),
+        installed=True,
+        rendered=_orchestrator_manifest(state_file=str(tmp_path / "attached.state"), restart_at=None),
+        proposals=[],
+        hot_restart="orchestration,rollout_executor",
+        guard=guard,
+    )
+
+
+def _written_records(tmp_path: Path) -> list[Path]:
+    return sorted((tmp_path / "cluster-storage" / "miles_data" / "miles-runs" / _RUN_ID / "launches").glob("*"))
+
+
+def _written_values_path(tmp_path: Path) -> Path:
+    (path,) = sorted(
+        (tmp_path / "cluster-storage" / "miles_data" / "miles-runs" / _RUN_ID / "values").glob("values-*.yaml")
+    )
+    return path
 
 
 _RUN_ID = "260101-000000-000"
@@ -493,6 +643,7 @@ def _launch(
     hot_restart: str = "",
     rendered: str | None = None,
     deploy_component: str = "all",
+    guard: RecordingLaunchGuard | None = None,
 ) -> list[dict]:
     def fake_run_process(command, **kwargs):
         arguments = [str(part) for part in command]
@@ -522,6 +673,10 @@ def _launch(
     else:
         monkeypatch.setattr(Helm, "render_upgrade", staticmethod(_render_from_values(proposals)))
     monkeypatch.setattr(Helm, "upgrade", staticmethod(lambda **kwargs: recorded.upgraded.append(kwargs["release"])))
+    if guard is not None:
+        guard.installed = Manifest.parse(rendered, namespace="rl") if installed else None
+        monkeypatch.setattr(Helm, "get_manifest", staticmethod(_unguarded_call))
+        monkeypatch.setattr(Helm, "upgrade", staticmethod(_unguarded_call))
     monkeypatch.setattr(Manifest, "state_file", lambda self, stateful_set, container: tmp_path / "attached.state")
     monkeypatch.setattr(entrypoint, "repo_base_dir", str(REPO_ROOT))
     monkeypatch.setattr(
@@ -542,8 +697,13 @@ def _launch(
             skip_upgrade_check=skip_upgrade_check,
             hot_restart=hot_restart,
         ),
+        guard=guard,
     )
     return followed
+
+
+def _unguarded_call(*args: object, **kwargs: object) -> None:
+    pytest.fail("a guarded launch reached helm without passing through its guard")
 
 
 def _render_from_values(proposals: list[dict]):

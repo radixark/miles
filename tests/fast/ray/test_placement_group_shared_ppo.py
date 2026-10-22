@@ -1,11 +1,14 @@
 from argparse import Namespace
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _assert_external_trainer_in_run, _get_placement_group_layout
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.workers.types import DeploymentIdentity
 
 _RUN_UUID = "0" * 16
@@ -193,7 +196,9 @@ class _RecordingRolloutExecutor:
         self.train_parallel_config = None
         self.loaded_rollout_id = None
 
-    async def set_train_parallel_config(self, config, trainer_model_id=None):
+    async def set_train_parallel_config(
+        self, config: TrainParallelConfig | None, trainer_model_id: str | None = None
+    ) -> None:
         self.train_parallel_config = config
         self.train_parallel_config_model_id = trainer_model_id
 
@@ -218,9 +223,9 @@ def _patch_train_controller_handles(monkeypatch, *, restored: dict[str, list[int
             self.inited_with = args
             return (restored or {}).get(self.trainer_id, [0])
 
-        async def get_train_parallel_config(self):
+        async def get_train_parallel_config(self) -> TrainParallelConfig | None:
             calls.append((self.trainer_id, "get_train_parallel_config"))
-            return {"dp_size": 2 if self.trainer_id == "actor" else 99}
+            return make_train_parallel_config(dp_size=2 if self.trainer_id == "actor" else 99)
 
         async def is_initialized(self) -> bool:
             return False
@@ -243,6 +248,7 @@ def _patch_train_controller_handles(monkeypatch, *, restored: dict[str, list[int
 
 def _training_models_args(**overrides):
     values = {
+        "train_backend": "megatron",
         "actor_num_nodes": 1,
         "actor_num_gpus_per_node": 2,
         "critic_num_nodes": 1,
@@ -269,7 +275,7 @@ def _training_models_args(**overrides):
         "run_uuid": _RUN_UUID,
     }
     values.update(overrides)
-    return Namespace(**values)
+    return Namespace(**{**parser_defaults(), **values})
 
 
 async def test_an_actor_and_a_critic_that_restored_to_different_rollouts_are_refused(monkeypatch):
@@ -395,7 +401,7 @@ async def test_train_parallel_config_travels_from_trainer_to_rollout_executor(mo
         rollout_executor=rollout_executor,
     )
 
-    assert rollout_executor.train_parallel_config == {"dp_size": 2}
+    assert rollout_executor.train_parallel_config == make_train_parallel_config(dp_size=2)
     assert rollout_executor.loaded_rollout_id is None
 
 
@@ -409,7 +415,7 @@ async def test_train_parallel_config_comes_from_the_actor_not_the_critic(monkeyp
         rollout_executor=rollout_executor,
     )
 
-    assert rollout_executor.train_parallel_config == {"dp_size": 2}
+    assert rollout_executor.train_parallel_config == make_train_parallel_config(dp_size=2)
 
 
 class TestTheRunWaitsForEveryTrainerItReachesByAddress:

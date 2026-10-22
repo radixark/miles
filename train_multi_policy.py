@@ -44,7 +44,7 @@ async def train_multi_policy(args, *, disposer: Disposer) -> None:
         disposer.add(trainer.handle)
     assert_consistent_restore(args, trainers=trainers, leader_model_id=megatron_config.leader_model_id)
 
-    maybe_start_api_server(
+    api_server = maybe_start_api_server(
         args,
         trainer_models={
             trainer_config.trainer_id: trainers[trainer_config.model_id].handle
@@ -52,6 +52,7 @@ async def train_multi_policy(args, *, disposer: Disposer) -> None:
         },
         inference_controller=inference_controller,
     )
+    disposer.add(api_server)
     maybe_start_mini_ft_controller(args)
 
     for model_id, trainer in trainers.items():

@@ -238,6 +238,16 @@ class LoRAUnreducedRowLinear(LoRALinear):
         return F.linear(F.linear(x, getattr(self, f"{self.param_prefix}_A")), getattr(self, f"{self.param_prefix}_B"))
 
 
+class LoRAReplicatedPlainLinear(LoRALinear):
+    """Replicated adapter on a plain local ``nn.Linear`` that every TP rank runs on the same input."""
+
+    host_returns_bias = False
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        assert self.layout == ShardLayout.REPLICATED, f"{type(self).__name__} requires a replicated projection"
+
+
 class LoRASplitAdapter(NativeLoRAAdapter):
     """Independent per-projection adapters whose deltas pack into one fused output.
 

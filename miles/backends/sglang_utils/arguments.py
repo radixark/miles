@@ -145,6 +145,10 @@ def collect_eval_sglang_overrides(args) -> dict:
     }
 
 
+def sglang_attention_dp_enabled(args) -> bool:
+    return args.sglang_attn_dp_size > 1 or (args.sglang_enable_dp_attention and args.sglang_dp_size > 1)
+
+
 def add_sglang_arguments(parser):
     """
     Add arguments to the parser for the SGLang server.
@@ -203,7 +207,7 @@ def validate_args(args):
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
 
-    if args.sglang_enable_dp_attention:
+    if sglang_attention_dp_enabled(args):
         args.router_dp_aware = True
 
     if args.sglang_router_policy is None and args.use_session_server:

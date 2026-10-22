@@ -244,18 +244,14 @@ def _image_inputs(seed):
 @_LINEAR_HEAD_DIMS
 @torch.no_grad()
 def test_packed_image_document_matches_the_image_document_run_alone(linear_head_dim):
-    """The vision tower raising on the LM's packing kwargs, or an image document reading its predecessor's state."""
+    """An image document reading its predecessor's state. Which LM kwargs HF hands the vision tower is pinned by
+    test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs in tests/fast."""
     model = _tiny_vision_language_model(linear_head_dim)
     adapter = resolve_arch_adapter(model.config)
     docs = [_random_tokens(37, seed=0), _image_document(text_length=58, seed=1)]
     batch = _packed_batch(docs, padded_length=128)
     batch["multimodal_train_inputs"] = _image_inputs(seed=2)
     packing_inputs = _actor_for(model)._get_model_inputs_args(batch)
-
-    # Pins the upstream HF bug the guard works around: this turns red once HF stops forwarding the
-    # language model's kwargs into the vision tower's flash attention.
-    with pytest.raises(TypeError, match="multiple values for keyword argument 'cu_seq_lens_q'"):
-        model(**packing_inputs)
 
     adapter.patch_model(model, None)
     # the actor hands HF 1-D text positions, so without them HF would build multimodal RoPE positions instead

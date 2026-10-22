@@ -10,6 +10,7 @@ from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import (
     create_rollout_components,
@@ -18,8 +19,13 @@ from miles.ray.placement_group import (
     take_over_trainers,
 )
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
+from miles.ray.rollout.inference_controller import UpdatableEngines
+from miles.ray.rollout.server_cell import ServerCellMetadata
+from miles.ray.train_actor import WeightUpdateOutput
 from miles.rollout.session.types import SessionServerInstance
+from miles.utils.audit_utils.checksum_utils import ChecksumCollectionFailure
 from miles.utils.init_once import InitState
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -102,16 +108,15 @@ class TestFrozenInferenceChecksums:
         monkeypatch.setattr(placement_group_module, "is_event_logger_initialized", lambda: True)
         event_logger = MagicMock()
         monkeypatch.setattr(placement_group_module, "get_event_logger", lambda: event_logger)
-        controller = SimpleNamespace(check_weights=AsyncMock(return_value=[]))
-
-        await placement_group_module._maybe_log_inference_engine_weight_checksums(
+        placement_group_module._log_inference_engine_weight_checksums(
             _make_args(log_inference_engine_weight_checksums=True),
-            inference_controller=controller,
+            checksum_results=[],
             rollout_id=None,
             trainer_model_id=None,
+            output=WeightUpdateOutput(weight_version=1, failed_cell_ids=()),
+            snapshot_cell_id_to_hashes={},
         )
 
-        controller.check_weights.assert_awaited_once()
         event_logger.log.assert_not_called()
 
 
@@ -345,7 +350,14 @@ class TestCreatePlacementGroups:
 class TestUpdateWeights:
     def _fakes(self, *, weight_version: int | None):
         actor_model = MagicMock()
-        actor_model.update_weights = AsyncMock(return_value=weight_version)
+        actor_model.update_weights = AsyncMock(
+            return_value=WeightUpdateOutput(
+                weight_version=weight_version,
+                failed_cell_ids=(),
+                debug_trainer_load_state_timestamp=1.0,
+                debug_weight_update_id="update-7",
+            )
+        )
         rollout_executor = MagicMock()
         rollout_executor.set_weight_version = AsyncMock()
         return actor_model, rollout_executor
@@ -360,7 +372,9 @@ class TestUpdateWeights:
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
 
-        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(return_value=[])
+        )
 
         await update_weights(self._args(), actor_model, rollout_executor, inference_controller, rollout_id=3)
 
@@ -368,19 +382,28 @@ class TestUpdateWeights:
         assert info is None
         rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id=None)
 
-    async def test_the_startup_sync_validates_fault_actions_before_updating_weights(self, monkeypatch):
-        """A parked-loop action must be rejected even when no in-loop weight sync will run."""
+    async def test_an_in_loop_fault_hook_failure_prevents_the_weight_update(self, monkeypatch):
+        """A failed orchestration fault hook stops the update before its broadcast begins."""
         from miles.ray.placement_group import update_weights
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
-        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
-        factory = MagicMock(side_effect=AssertionError("loop cannot be parked"))
-        monkeypatch.setattr(placement_group_module.FTTestActionOrchestrationExecutor, "from_args", factory)
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(return_value=[])
+        )
+        hook = AsyncMock(side_effect=AssertionError("fault hook failed"))
+        monkeypatch.setattr(placement_group_module, "reach_fault_hook_async", hook)
 
-        with pytest.raises(AssertionError, match="loop cannot be parked"):
-            await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
+        with pytest.raises(AssertionError, match="fault hook failed"):
+            await update_weights(
+                self._args(),
+                actor_model,
+                rollout_executor,
+                inference_controller,
+                rollout_id=3,
+                trainer_model_id="alpha",
+            )
 
-        factory.assert_called_once()
+        hook.assert_awaited_once_with(FaultHookName.ORCHESTRATOR_STEP_END, rollout_id=3, trainer_model_id="alpha")
         actor_model.update_weights.assert_not_awaited()
 
     async def test_the_published_version_names_the_policy_it_belongs_to(self):
@@ -389,7 +412,9 @@ class TestUpdateWeights:
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
 
-        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(return_value=[])
+        )
 
         await update_weights(
             self._args(), actor_model, rollout_executor, inference_controller, rollout_id=3, trainer_model_id="alpha"
@@ -417,22 +442,44 @@ class TestUpdateWeights:
             "get_event_logger",
             lambda: SimpleNamespace(log=lambda _event_class, payload: logged.append(payload)),
         )
-        monkeypatch.setattr(placement_group_module, "flatten_inference_engine_checksums", lambda _result: [])
-        monkeypatch.setattr(
-            placement_group_module,
-            "FTTestActionOrchestrationExecutor",
-            MagicMock(from_args=MagicMock(return_value=MagicMock(run_after_step=AsyncMock()))),
-        )
         return logged
+
+    @staticmethod
+    def _checksum_controller() -> MagicMock:
+        metadata = ServerCellMetadata(
+            model_id="default",
+            worker_type=WorkerType.REGULAR,
+            cell_id="cell-0",
+            num_gpus_per_engine=1,
+            gpu_offset=0,
+            sglang_api_key=None,
+            worker_name="engine-0",
+            needs_offload=False,
+            update_weights=True,
+            workers_hash="incarnation-0",
+        )
+        info = UpdatableEngines(
+            rollout_engines=[MagicMock()],
+            engine_gpu_counts=[1],
+            engine_gpu_offsets=[0],
+            engine_cell_ids=[metadata.cell_id],
+            snapshot_cell_id_to_hashes={metadata.cell_id: metadata.workers_hash},
+        )
+        body = {
+            "success": True,
+            "ranks": [{"checksums": {"w": "checksum-7"}, "parallelism_info": [{"role": "target", "rank": 0}]}],
+        }
+        return MagicMock(
+            start_update_weights=AsyncMock(return_value=info),
+            end_update_weights=AsyncMock(return_value=[(metadata, body)]),
+        )
 
     async def test_a_fresh_run_stamps_the_startup_sync_before_the_first_rollout(self, monkeypatch):
         """A fresh run's startup push precedes rollout 0, so it is stamped -1 instead of being left unattributed."""
         from miles.ray.placement_group import update_weights
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
-        inference_controller = MagicMock(
-            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(), check_weights=AsyncMock()
-        )
+        inference_controller = self._checksum_controller()
         logged = self._record_checksum_events(monkeypatch)
 
         await update_weights(
@@ -441,14 +488,36 @@ class TestUpdateWeights:
 
         assert [payload["rollout_id"] for payload in logged] == [-1]
 
+    async def test_failed_checksum_collection_records_the_published_incarnation(self, monkeypatch) -> None:
+        """A failed observation remains tied to the published version without undoing publication."""
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+        inference_controller = self._checksum_controller()
+        inference_controller.end_update_weights.return_value = ChecksumCollectionFailure(reason="TimeoutError()")
+        logged = self._record_checksum_events(monkeypatch)
+
+        await placement_group_module.update_weights(
+            self._checksum_args(), actor_model, rollout_executor, inference_controller
+        )
+
+        assert logged == [
+            dict(
+                rollout_id=-1,
+                trainer_model_id=None,
+                weight_version=7,
+                debug_trainer_load_state_timestamp=1.0,
+                debug_weight_update_id="update-7",
+                published_cell_id_to_hashes={"cell-0": "incarnation-0"},
+                reason="TimeoutError()",
+            )
+        ]
+        rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id=None)
+
     async def test_a_startup_sync_after_a_restore_stamps_the_restored_rollout_id(self, monkeypatch):
         """The restored rollout never runs again, so only this push can record the checksum of its weights."""
         from miles.ray.placement_group import update_weights
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
-        inference_controller = MagicMock(
-            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(), check_weights=AsyncMock()
-        )
+        inference_controller = self._checksum_controller()
         logged = self._record_checksum_events(monkeypatch)
 
         await update_weights(
@@ -462,9 +531,7 @@ class TestUpdateWeights:
         from miles.ray.placement_group import update_weights
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
-        inference_controller = MagicMock(
-            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(), check_weights=AsyncMock()
-        )
+        inference_controller = self._checksum_controller()
         logged = self._record_checksum_events(monkeypatch)
 
         await update_weights(
@@ -479,7 +546,9 @@ class TestUpdateWeights:
 
         actor_model, rollout_executor = self._fakes(weight_version=None)
 
-        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(return_value=[])
+        )
 
         await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
 
@@ -492,7 +561,9 @@ class TestUpdateWeights:
         actor_model, rollout_executor = self._fakes(weight_version=None)
         actor_model.update_weights = AsyncMock(side_effect=RuntimeError("weight sync failed"))
         inference_controller = MagicMock(
-            start_update_weights=AsyncMock(), abort_update_weights=AsyncMock(), end_update_weights=AsyncMock()
+            start_update_weights=AsyncMock(),
+            abort_update_weights=AsyncMock(),
+            end_update_weights=AsyncMock(return_value=[]),
         )
 
         with pytest.raises(RuntimeError, match="weight sync failed"):
@@ -603,24 +674,7 @@ class TestCreateTrainingModels:
         """Every existing single policy deployment names its two pools 'actor' and 'critic'."""
         requested: list[str] = []
         self._patched(monkeypatch, requested)
-        args = Namespace(
-            megatron_config=None,
-            use_critic=True,
-            start_rollout_id=None,
-            trainer_model_id=None,
-            kl_coef=0,
-            use_opd=False,
-            disable_param_buffers_cpu_backup=False,
-            load=None,
-            save=None,
-            lr=1e-6,
-            lr_warmup_iters=None,
-            critic_load=None,
-            critic_save=None,
-            critic_lr=None,
-            critic_lr_warmup_iters=None,
-            trainer_controller_addrs=None,
-        )
+        args = Namespace(**{**parser_defaults(), "use_critic": True, "lr": 1e-6})
 
         await create_training_models(args, self._rollout_executor())
 

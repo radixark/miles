@@ -146,8 +146,10 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --attention-softmax-in-fp32
   --attention-backend flash
   --no-check-for-nan-in-loss-and-grad
+  --no-gradient-accumulation-fusion
   --colocate
   --update-weight-buffer-size 2147483648
   --actor-num-nodes 1
   --actor-num-gpus-per-node 8
   --num-gpus-per-node 8   
+  --deploy-component all

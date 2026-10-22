@@ -137,7 +137,7 @@ def launch_argv(
     monkeypatch.setattr(
         entrypoint,
         "_defuse_previous_generation",
-        lambda release, *, namespace, superseded_state_file, state_file: None,
+        lambda release, *, namespace, superseded_state_file, state_file, guard: None,
     )
     monkeypatch.setattr(Helm, "build_dependencies", lambda chart: None)
     monkeypatch.setattr(Helm, "upgrade", staticmethod(fake_upgrade))

@@ -1,7 +1,8 @@
 """The dedicated in-job eval engines (``--eval-num-gpus``).
 
-Weight delivery only: ``pin`` loads a snapshot onto every engine and verifies each
-one reports the expected version. The fleet lives beside its engines, in the
+Weight delivery only: ``pin`` loads a snapshot onto every engine; ``current``
+checks an already-synchronized version without reloading. Both verify each engine
+reports the expected version. The fleet lives beside its engines, in the
 inference controller; the executor holds an ``RolloutExecutorEvalFleet`` over the wire and
 builds the state to generate against from the fleet's description. Who generates is
 the eval fn's business, exactly as on the training engines.
@@ -68,6 +69,16 @@ class RolloutExecutorEvalFleet:
             raise EvalSkip(skip_reason)
         return self._state
 
+    async def current(self, weight_version: str) -> GenerateState:
+        """Use the synchronized fleet only after every engine confirms its version."""
+        try:
+            pin = await self._inference_controller.check_eval_fleet_version(weight_version=weight_version)
+        except UNREACHABLE_CONTROLLER_ERRORS as e:
+            raise EvalSkip("controller_unreachable") from e
+        if pin.skip_reason is not None:
+            raise EvalSkip(pin.skip_reason)
+        return self._state
+
 
 class InferenceControllerEvalFleet:
     """The dedicated in-job eval engines (``--eval-num-gpus``)."""
@@ -100,6 +111,18 @@ class InferenceControllerEvalFleet:
 
         return EvalFleetPin(skip_reason=None)
 
+    async def check_version(self, weight_version: str) -> EvalFleetPin:
+        """Read every current engine's version; never reload or retry weights."""
+        try:
+            versions = await self._weight_versions()
+            if not versions or any(str(version) != weight_version for version in versions):
+                return EvalFleetPin(skip_reason="pin_violation")
+            await self._wait_router_ready()
+        except Exception as e:
+            logger.warning(f"Synchronized eval fleet is not ready: {e}")
+            return EvalFleetPin(skip_reason="unhealthy")
+        return EvalFleetPin(skip_reason=None)
+
     async def _pin_fleet(self, checkpoint_dir: str, weight_version: str, *, retries: int = 2) -> bool:
         """Load the snapshot into every fleet engine and confirm all report
         ``weight_version`` — the router load-balances across engines, so a single
@@ -117,10 +140,7 @@ class InferenceControllerEvalFleet:
                     ),
                     timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
                 )
-                versions = await asyncio.wait_for(
-                    asyncio.gather(*[client.get_weight_version() for client in await self._fleet_api_clients()]),
-                    timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
-                )
+                versions = await self._weight_versions()
             except Exception as e:
                 logger.warning(f"Weight pin to {checkpoint_dir} failed (attempt {attempt + 1}/{retries}): {e}")
                 continue
@@ -128,6 +148,12 @@ class InferenceControllerEvalFleet:
                 return True
         logger.warning(f"Failed to pin weight_version={weight_version} to {checkpoint_dir} (got {versions})")
         return False
+
+    async def _weight_versions(self):
+        return await asyncio.wait_for(
+            asyncio.gather(*[client.get_weight_version() for client in await self._fleet_api_clients()]),
+            timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
+        )
 
     async def _fleet_api_clients(self) -> list[SGLangApiClient]:
         async with self._srv.context_lock:

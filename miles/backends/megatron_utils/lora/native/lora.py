@@ -11,7 +11,6 @@ from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_
 from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import resolve_checkpoint_spec
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, LoRAArchSpec
-from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import build_hf_namespace_predicate
 
@@ -63,6 +62,10 @@ def wrap_model_provider_with_lora(provider_func, args):
 
 def _resolve_attach_context(args, transformer_config, arch_spec: LoRAArchSpec) -> AttachContext:
     from megatron.core import parallel_state as ps
+
+    # megatron_to_hf pulls in sglang's quantization kernels, which probe the GPU at import time on ROCm.
+    # Keep it out of module scope so argument parsing can import this package on a GPU-less host.
+    from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
 
     tp_size = ps.get_tensor_model_parallel_world_size()
     naming = arch_spec.declared_naming or ConverterNaming(

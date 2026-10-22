@@ -57,6 +57,7 @@ class TestOuterServeForwarding:
         monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
         own_argv = ["--specs", _SPECS_PATH, "--pool-id", POOL_ID]
         worker_argv = [RPC_PORT_FLAG, "9000", "--flag", "value"]
+        monkeypatch.setattr(sys, "orig_argv", [sys.executable, "serve.py", *own_argv, "--", *worker_argv])
         monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv, "--", *worker_argv])
 
         serve_module.main()

@@ -22,7 +22,6 @@ from sglang.srt.model_loader.loader import DefaultModelLoader
 from sglang.srt.runtime_context import get_server_args
 from sglang.srt.server_args import ServerArgs
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import (
     HfNameMapping,
     HfTensorSpec,
@@ -31,7 +30,7 @@ from miles.backends.training_utils.weight_update.protocols.utils.loader_probe im
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     RolloutEngineRankAssignment,
 )
-from miles.utils import async_utils
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
@@ -101,7 +100,8 @@ def _get_shard_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
 
 
 def query_rollout_engine_rank_configs(
-    rollout_engines: Sequence[SGLangApiClient],
+    cell_updaters_of_cell_id: dict[str, _RolloutCellUpdater],
+    engine_cell_ids: Sequence[str],
     assignments: Sequence[RolloutEngineRankAssignment],
     runner_role: str,
 ) -> dict[int, RolloutEngineRankConfig]:
@@ -111,12 +111,18 @@ def query_rollout_engine_rank_configs(
     """
     configs_by_rollout_engine_rank = {}
     for assignment in assignments:
-        configs = [
-            _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank, runner_role)
-            for rollout_engine_ind in assignment.rollout_engine_indices
-        ]
-        for rollout_engine_ind, config in zip(assignment.rollout_engine_indices, configs, strict=True):
-            _assert_expert_placement_reproducible(config.server_args, rollout_engine_ind)
+        configs = []
+        for rollout_engine_ind in assignment.rollout_engine_indices:
+            config = _query_config(
+                cell_updaters_of_cell_id[engine_cell_ids[rollout_engine_ind]],
+                assignment.rollout_engine_rank,
+                runner_role,
+            )
+            if config is not None:
+                _assert_expert_placement_reproducible(config.server_args, rollout_engine_ind)
+                configs.append(config)
+        if not configs:
+            continue
         differing_fields = {
             name
             for config in configs[1:]
@@ -132,23 +138,29 @@ def query_rollout_engine_rank_configs(
 
 
 def _query_config(
-    rollout_engine: SGLangApiClient, rollout_engine_rank: int, runner_role: str
-) -> RolloutEngineRankConfig:
-    parallelism_info = async_utils.run(rollout_engine.get_parallelism_info(rank=rollout_engine_rank, role=runner_role))
+    cell_updater: _RolloutCellUpdater, rollout_engine_rank: int, runner_role: str
+) -> RolloutEngineRankConfig | None:
+    parallelism_info = cell_updater.submit_client_call(
+        "get_parallelism_info", rank=rollout_engine_rank, role=runner_role
+    ).result()
+    if parallelism_info is None or (server_args := _query_server_args(cell_updater)) is None:
+        return None
     return RolloutEngineRankConfig(
         runner_role=runner_role,
         parallelism=RankParallelismConfig.from_dict(parallelism_info),
-        server_args=_query_server_args(rollout_engine),
+        server_args=server_args,
     )
 
 
-def _query_server_args(rollout_engine: SGLangApiClient) -> ServerArgs:
-    return create_server_args_from_dict(async_utils.run(rollout_engine.get_server_info()))
+def _query_server_args(cell_updater: _RolloutCellUpdater) -> ServerArgs | None:
+    data = cell_updater.submit_client_call("get_server_info").result()
+    return None if data is None else create_server_args_from_dict(data)
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
     valid_fields = set(_record_field_names(ServerArgs))
-    filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
+    # /server_info reports watermark secrets as "<redacted>", even unset ones, and a replica never samples.
+    filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields and not k.startswith("watermark_")}
     return ServerArgs(**filtered_data)
 
 
@@ -176,14 +188,21 @@ def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engin
 
 
 def query_runner_roles(
-    rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment], selector: str
+    cell_updaters_of_cell_id: dict[str, _RolloutCellUpdater],
+    engine_cell_ids: Sequence[str],
+    assignments: Sequence[RolloutEngineRankAssignment],
+    selector: str,
 ) -> tuple[str, ...]:
     """Return target-first update roles, requiring the same roles on every assigned engine."""
     distinct_runner_roles = {
-        _select_runner_roles(_query_server_args(rollout_engines[rollout_engine_ind]), selector)
+        _select_runner_roles(server_args, selector)
         for assignment in assignments
         for rollout_engine_ind in assignment.rollout_engine_indices
+        if (server_args := _query_server_args(cell_updaters_of_cell_id[engine_cell_ids[rollout_engine_ind]]))
+        is not None
     }
+    if not distinct_runner_roles:
+        return ()
     assert len(distinct_runner_roles) == 1, (
         f"the rollout engines run different model runners {sorted(distinct_runner_roles)}, but one update writes the "
         "same runners on each; a draft would go unwritten on some engines or be queried on engines without one"

@@ -25,7 +25,13 @@ _SCENARIOS = (
 
 
 def _worker(rank: int, rendezvous: str, strict: bool) -> None:
-    from tests.fast.backends.test_fsdp_hub_kernels import _all_hub_modules, _build_gdn_model, _make_args, _stub_kernels
+    from tests.fast.backends.test_fsdp_hub_kernels import (
+        _all_hub_modules,
+        _build_gdn_model,
+        _make_args,
+        _modeling,
+        _stub_kernels,
+    )
 
     from miles.backends.fsdp_utils.plugins.hf_kernels import loader
     from miles.backends.fsdp_utils.plugins.hf_kernels.presets import SLOT_CAUSAL_CONV1D, SLOT_GATED_DELTA_RULE
@@ -98,18 +104,16 @@ def _worker(rank: int, rendezvous: str, strict: bool) -> None:
                 if not should_fail:
                     # Repeated binding exercises the policy and reference model path after consensus.
                     for _ in range(2):
-                        model = _build_gdn_model()
+                        model = _build_gdn_model(patch)
                         assert hub.bind(model) == {"gated_deltanet": 2}
                         assert hub.resolve_slot(SLOT_CAUSAL_CONV1D) is not None
                         chosen = hub.resolve_slot(SLOT_GATED_DELTA_RULE)
                         assert (chosen is not None) == (scenario == "success")
+                        chunk = _modeling(model).torch_chunk_gated_delta_rule
                         if scenario == "success":
-                            assert (
-                                model.layers[0].chunk_gated_delta_rule
-                                is modules["kernels-community/fla"].chunk_gated_delta_rule
-                            )
+                            assert chunk.__wrapped__ is modules["kernels-community/fla"].chunk_gated_delta_rule
                         else:
-                            assert model.layers[0].chunk_gated_delta_rule.__name__ == "_torch_chunk_stand_in"
+                            assert chunk.__name__ == "_torch_chunk_stand_in"
                 errors = [None, None]
                 dist.all_gather_object(errors, error)
                 assert errors[0] == errors[1], (scenario, errors)

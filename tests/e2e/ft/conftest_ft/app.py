@@ -1,12 +1,9 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
 import contextlib
-import os
 import shutil
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -21,23 +18,17 @@ from tests.e2e.ft.conftest_ft.cli_options import (
 
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, prepare, run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
+from tests.utils.deploy.hot_restart.release import remove_release_and_wait
+from tests.utils.soak.core.utils import compute_release_of_config, resolve_dump_dir
 
 from miles.utils.external_utils import command_utils
-from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
-from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.pod_facts import selected_pods
-from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.workers.types import ClusterBackend
 
 
 BASELINE_SIDE: str = "baseline"
 TARGET_SIDE: str = "target"
 
-_DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
-_DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
-_RELEASE_POLL_INTERVAL_SECONDS = 1.0
-_RELEASE_TIMEOUT_SECONDS = 300.0
-
-BuildArgsFn = Callable[[FTTestMode, str, bool], str]
+BuildArgsFn = Callable[[FTTestMode, str, bool, command_utils.ExecuteTrainConfig], str]
 ConfigForSideFn = Callable[[str, command_utils.ExecuteTrainConfig], command_utils.ExecuteTrainConfig]
 TargetSideContextFn = Callable[
     [FTTestMode, str, command_utils.ExecuteTrainConfig], contextlib.AbstractContextManager[None]
@@ -63,13 +54,6 @@ def run_one_release(request: RunSideRequest) -> None:
     run_training(train_args=request.train_args, mode=request.mode, dump_dir=request.dump_dir, config=request.config)
 
 
-def resolve_dump_dir(test_name: str, *, run_id: str) -> str:
-    root = os.environ.get(_DUMPS_ROOT_ENV) or _DEFAULT_DUMPS_ROOT
-    dump_dir = Path(root) / run_id / test_name
-    os.makedirs(dump_dir, exist_ok=True)
-    return str(dump_dir)
-
-
 def _dump_subdir(side: str, phase: str) -> str:
     return f"{side}/{phase}" if phase else side
 
@@ -80,33 +64,7 @@ def _release_comparison_side(request: RunSideRequest) -> None:
         return
 
     assert config.namespace, "A kubernetes comparison side needs a namespace before its release can be removed"
-    remove_release_and_wait(
-        release=ReleaseName(
-            run_id=config.run_id,
-            deploy_component=config.deploy_component,
-            deploy_instance_id=config.deploy_instance_id,
-        ).serialize(),
-        namespace=config.namespace,
-    )
-
-
-def remove_release_and_wait(*, release: str, namespace: str) -> None:
-    selector = Kubectl.release_selector(release)
-    deadline = time.monotonic() + _RELEASE_TIMEOUT_SECONDS
-
-    Helm.uninstall_if_present(release=release, namespace=namespace)
-    while True:
-        manifest = Helm.get_manifest(release, namespace)
-        pods = selected_pods(namespace, selector)
-        if manifest is None and not pods:
-            return
-        if time.monotonic() >= deadline:
-            pod_names = sorted(pod.metadata.name for pod in pods)
-            raise TimeoutError(
-                f"Timed out removing release {release!r} from namespace {namespace!r}; "
-                f"release_exists={manifest is not None}, pods={pod_names}"
-            )
-        time.sleep(_RELEASE_POLL_INTERVAL_SECONDS)
+    remove_release_and_wait(release=compute_release_of_config(config), namespace=config.namespace)
 
 
 def run_pipeline(
@@ -130,8 +88,6 @@ def run_pipeline(
     dump_dir: str = resolve_dump_dir(test_name, run_id=command_utils.default_config().run_id)
     print(f"Dump directory: {dump_dir}")
 
-    prepare(ft_mode)
-
     try:
         for phase in effective_phases:
             for side, build_args in (
@@ -140,6 +96,7 @@ def run_pipeline(
             ):
                 side_dump = f"{dump_dir}/{_dump_subdir(side, phase)}"
                 config = _resolve_config_for_side(side, config_for_side=config_for_side)
+                prepare(ft_mode, config=config)
                 context = (
                     target_side_context(ft_mode, side_dump, config)
                     if side == TARGET_SIDE and target_side_context is not None
@@ -148,7 +105,7 @@ def run_pipeline(
                 request = RunSideRequest(
                     side=side,
                     mode=ft_mode,
-                    train_args=build_args(ft_mode, side_dump, enable_dumper),
+                    train_args=build_args(ft_mode, side_dump, enable_dumper, config),
                     dump_dir=side_dump,
                     config=config,
                     enable_dumper=enable_dumper,
@@ -175,6 +132,7 @@ def create_comparison_app_and_run_ci(
     target_side_context: TargetSideContextFn | None = None,
     config_for_side: ConfigForSideFn | None = None,
     run_side: RunSideFn = run_one_release,
+    release_side: ReleaseSideFn = _release_comparison_side,
     resolve_mode_fn: ResolveModeFn = resolve_mode,
 ) -> tuple[typer.Typer, Callable[[str | None], None]]:
     """Build, from one wiring, the manual typer app and a run_ci(mode) one-shot runner.
@@ -203,8 +161,8 @@ def create_comparison_app_and_run_ci(
             dump_dir = resolve_dump_dir(test_name, run_id=config.run_id)
         sub = _dump_subdir(side, phase)
         full_dump_dir = f"{dump_dir}/{sub}"
-        args = build_fn(ft_mode, full_dump_dir, enable_dumper)
-        prepare(ft_mode)
+        prepare(ft_mode, config=config)
+        args = build_fn(ft_mode, full_dump_dir, enable_dumper, config)
 
         context = (
             target_side_context(ft_mode, full_dump_dir, config)
@@ -269,6 +227,7 @@ def create_comparison_app_and_run_ci(
             target_side_context=target_side_context,
             config_for_side=config_for_side,
             run_side=run_side,
+            release_side=release_side,
             resolve_mode_fn=resolve_mode_fn,
         )
 
@@ -276,18 +235,19 @@ def create_comparison_app_and_run_ci(
     def generate_data(
         mode: OptionalModeOption = None,
         num_steps: Annotated[int, typer.Option(help="Number of rollout steps to generate")] = 12,
-        output_dir: Annotated[
-            str, typer.Option(help="Output directory for rollout data")
-        ] = "/tmp/generated_rollout_data",
+        output_dir: Annotated[str | None, typer.Option(help="Output directory for rollout data")] = None,
     ) -> None:
         """Generate debug rollout data using real rollout (no dumper)."""
         ft_mode = resolve_mode_fn(mode)
         assert (
             ft_mode.has_real_rollout
         ), f"recording debug rollout data needs real engines, and the mode runs {ft_mode.rollout_num_engines}"
-        prepare(ft_mode)
+        config = command_utils.default_config()
+        if output_dir is None:
+            output_dir = resolve_dump_dir(f"{test_name}_generated_rollout_data", run_id=config.run_id)
+        prepare(ft_mode, config=config)
         args = get_common_train_args(ft_mode, dump_dir=output_dir, num_steps=num_steps, enable_dumper=False)
-        run_training(train_args=args, mode=ft_mode)
+        run_training(train_args=args, mode=ft_mode, config=config)
 
     def run_ci(mode: str | None = None) -> None:
         """Run one mode's full pipeline (entry point for the per-mode CI files)."""
@@ -301,6 +261,7 @@ def create_comparison_app_and_run_ci(
             target_side_context=target_side_context,
             config_for_side=config_for_side,
             run_side=run_side,
+            release_side=release_side,
             resolve_mode_fn=resolve_mode_fn,
         )
 
@@ -333,7 +294,7 @@ def create_non_comparison_app(
         dump_dir: str = resolve_dump_dir(test_name, run_id=config.run_id)
         print(f"Dump directory: {dump_dir}")
 
-        prepare(ft_mode)
+        prepare(ft_mode, config=config)
         args = build_args(ft_mode, dump_dir)
         run_training(train_args=args, mode=ft_mode, config=config)
 

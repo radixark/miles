@@ -430,7 +430,8 @@ trusted Hub kernel publishers. Local kernel overrides are unsupported because th
 provenance cannot be verified across ranks.
 
 These are **module-level** kernels: `kernels.get_kernel()` returns a module and miles rebinds the
-free functions HF modeling code already looks up per forward. Nothing rebinds an `nn.Module.forward`,
+free functions HF modeling code already looks up per forward (for GatedDeltaNet, the kernel names in
+the model's `transformers` modeling module, process-wide). Nothing rebinds an `nn.Module.forward`,
 so `state_dict`, `_no_split_modules` and the DTensor gather are untouched — which is why the binding
 runs before `apply_fsdp2` and the ref model takes the same call.
 
@@ -442,8 +443,7 @@ packed document, and each one fails differently when its wheel is missing:
 
 - no `flash-linear-attention` — `transformers` binds `torch_chunk_gated_delta_rule`, whose signature
   ends in `**kwargs`, so the injected `cu_seqlens` is *accepted and ignored*;
-- no `causal_conv1d` — the handle is `None` and the forward drops to `F.silu(self.conv1d(...))`,
-  which takes no `seq_idx`;
+- no `causal_conv1d` — `transformers` binds its torch `causal_conv1d_fn`, which takes no `seq_idx`;
 - no `flash_attn` — the NemotronH attention patch returns the unpatched dense forward.
 
 In all three the per-document reset stops happening, nothing raises, and the only symptom is a wider

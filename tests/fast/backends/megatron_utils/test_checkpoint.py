@@ -3,9 +3,11 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import parser_defaults
 
 from miles.backends.megatron_utils import checkpoint
 from miles.backends.training_utils.model_companion import ModelCompanion
@@ -65,7 +67,7 @@ class TestCheckpointTrainingProvenance:
     ) -> None:
         """HF loading preserves the existing non-finetune rollout numbering."""
         (tmp_path / "config.json").write_text("{}")
-        args = Namespace(load=str(tmp_path), finetune=False, ckpt_step=None, lora_rank=0)
+        args = Namespace(**{**parser_defaults(), "load": str(tmp_path), "finetune": False})
         monkeypatch.setattr(checkpoint, "get_args", lambda: args)
         monkeypatch.setattr(checkpoint, "_load_checkpoint_hf", lambda **_kwargs: (0, 0))
 
@@ -78,6 +80,58 @@ class TestCheckpointTrainingProvenance:
         )
 
         assert result == (0, True)
+
+
+@pytest.mark.parametrize(
+    ("ckpt_step", "iteration", "finetune", "fails"),
+    [(0, 0, False, False), (0, 7, False, True), (7, 0, True, False)],
+)
+def test_explicit_checkpoint_selection(tmp_path, monkeypatch, ckpt_step, iteration, finetune, fails):
+    """An explicit step selects Megatron even without a tracker and cannot silently load another step."""
+    (tmp_path / f"iter_{ckpt_step:07d}").mkdir()
+    args = Namespace(load=str(tmp_path), ckpt_step=ckpt_step, finetune=finetune, lora_rank=0)
+    monkeypatch.setattr(checkpoint, "get_args", lambda: args)
+    monkeypatch.setattr(checkpoint, "_load_checkpoint_megatron", lambda **_kwargs: (iteration, 0))
+
+    with pytest.raises(ValueError, match="Requested checkpoint step") if fails else nullcontext():
+        result = checkpoint.load_checkpoint([], None, None, None, False)
+        assert result == (iteration, not finetune)
+
+
+@pytest.mark.parametrize("layout", ["dsv4", "linear_attention"])
+def test_layout_validation_uses_explicit_step(tmp_path, monkeypatch, layout):
+    (tmp_path / "latest_checkpointed_iteration.txt").write_text("100")
+    args = Namespace(load=str(tmp_path), ckpt_step=7, finetune=False, lora_rank=0)
+    monkeypatch.setattr(checkpoint, "get_args", lambda: args)
+    monkeypatch.setattr(checkpoint, "_load_checkpoint_megatron", lambda **_kwargs: (7, 0))
+    monkeypatch.setattr(checkpoint, "is_dsv4_model", lambda _args: layout == "dsv4")
+    monkeypatch.setattr(checkpoint, "_has_linear_attention", lambda _model: layout == "linear_attention")
+    validate = Mock()
+    monkeypatch.setattr(checkpoint, "assert_checkpoint_is_current", validate)
+    monkeypatch.setattr(checkpoint, "assert_linear_attn_checkpoint_is_current", validate)
+
+    checkpoint.load_checkpoint([], None, None, None, False)
+
+    validate.assert_called_once_with(str(tmp_path / "iter_0000007"))
+
+
+@pytest.mark.parametrize("hf_checkpoint", [False, True])
+def test_exit_on_missing_checkpoint_does_not_fall_back_to_hf(tmp_path, monkeypatch, hf_checkpoint):
+    if hf_checkpoint:
+        (tmp_path / "config.json").write_text("{}")
+    else:
+        (tmp_path / "iter_0000007").mkdir()
+    args = Namespace(
+        **{**parser_defaults(), "load": str(tmp_path), "finetune": False, "exit_on_missing_checkpoint": True}
+    )
+    monkeypatch.setattr(checkpoint, "get_args", lambda: args)
+    load_hf = Mock(return_value=(0, 0))
+    monkeypatch.setattr(checkpoint, "_load_checkpoint_hf", load_hf)
+
+    with nullcontext() if hf_checkpoint else pytest.raises(FileNotFoundError, match="checkpoint"):
+        checkpoint.load_checkpoint([], None, None, None, False)
+
+    assert load_hf.call_count == int(hf_checkpoint)
 
 
 class TestRawMbridgeCompanionIsolation:

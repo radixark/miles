@@ -1,10 +1,13 @@
-"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, and Inkling."""
+"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, GLM-5.3-Flash, and Inkling."""
 
 from __future__ import annotations
+
+import dataclasses
 
 import torch.nn as nn
 
 from miles.backends.megatron_utils.lora.native.modules.linear import (
+    LoRAReplicatedPlainLinear,
     LoRASplitAdapter,
     LoRASplitQKV,
     LoRAUnreducedRowLinear,
@@ -148,6 +151,67 @@ class MLAAttentionSpec(AttentionSpecBase):
             "an unfused q_proj alongside kv_a_proj_with_mqa, and SGLang's loader expects the fused "
             "qkv_a layout. Use --megatron-to-hf-mode bridge."
         )
+
+
+class Glm5NextAttentionSpec(MLAAttentionSpec):
+    """GLM-5.3-Flash: DSA layers adapt the MLA projections, KDA layers their HF-named projections.
+
+    The DSA block reads ``linear_kv_up_proj.weight`` to absorb it into the query and output and never
+    calls the module, so a ``kv_b_proj`` adapter would not run. A KDA block gathers the sequence-parallel
+    input and runs plain ``nn.Linear``s that every TP rank holds whole.
+    """
+
+    name = "glm5_next"
+    layout = dataclasses.replace(
+        MLAAttentionSpec.layout,
+        name="glm5_next_dsa_attention",
+        singles=tuple(
+            binding for binding in MLAAttentionSpec.layout.singles if binding.projection.hf_leaf != "kv_b_proj"
+        ),
+    )
+    kda_layout = ModuleLayout(
+        name="glm5_next_kda_attention",
+        full_sequence=True,
+        singles=tuple(
+            ProjectionBinding(
+                projection=ProjectionSpec(hf_leaf, param_prefix, ShardLayout.REPLICATED),
+                module_attr=f"{param_prefix}_proj",
+                in_dim=L.host_in_local(f"{param_prefix}_proj"),
+                out_dim=L.host_out_local(f"{param_prefix}_proj"),
+                adapter_attr=f"lora_{param_prefix}_adapter",
+                adapter_class=LoRAReplicatedPlainLinear,
+            )
+            for param_prefix, hf_leaf in (
+                ("q", "q_proj"),
+                ("k", "k_proj"),
+                ("v", "v_proj"),
+                ("b", "b_proj"),
+                ("f_a", "forget_gate.f_a_proj"),
+                ("f_b", "forget_gate.f_b_proj"),
+                ("g_a", "g_a_proj"),
+                ("g_b", "g_b_proj"),
+                ("o", "o_proj"),
+            )
+        ),
+    )
+
+    @property
+    def supported_targets(self) -> frozenset[str]:
+        return self.layout.targets | self.kda_layout.targets
+
+    @property
+    def canonical_targets_csv(self) -> str:
+        # a dotted selector must match the whole module name, so pass leaves
+        names = [
+            binding.projection.hf_leaf.rpartition(".")[2] for binding in self.kda_layout.singles + self.layout.singles
+        ]
+        return ",".join(dict.fromkeys(names))
+
+    def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
+        # only KDA layers carry the HF-style KDA module
+        if hasattr(block, "kda"):
+            return attach_layout(block.kda, self.kda_layout, layer, context)
+        return attach_layout(block, self.layout, layer, context)
 
 
 class KimiK3AttentionSpec(AttentionSpecBase):

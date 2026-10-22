@@ -36,6 +36,7 @@ from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import RolloutDataPack
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_complete_hf_export
@@ -74,6 +75,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         inference_controller_provider: BaseWorkerProvider,
     ):
         self._init_once = InitOnce(type(self).__name__)
+        self._disposed = False
 
         configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
 
@@ -82,7 +84,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self._weight_versions_of_model_id: dict[str | None, int] = {}
         self.last_get_rollout_id_of_model_id: dict[str | None, int] = {}
         self._rollouts_since_publish_of_model_id: dict[str | None, int] = defaultdict(int)
-        self._train_parallel_configs_of_model_id: dict[str | None, dict[str, Any]] = {}
+        self._train_parallel_configs_of_model_id: dict[str | None, TrainParallelConfig | None] = {}
         self._router_providers = router_providers
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
@@ -147,6 +149,10 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
     # -------------------------- lifecycle -----------------------------
 
     async def dispose(self) -> None:
+        if self._disposed:
+            return
+        self._disposed = True
+
         if not self.use_legacy_rollout_v1 and self.generate_rollout is not None:
             await maybe_await(self.generate_rollout.dispose())
         if (close := getattr(self.data_source, "close", None)) is not None:
@@ -189,9 +195,11 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             if self.args.delay_split_train_data_by_dp:
                 data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
             else:
-                data_ref = split_train_data_by_dp(
+                shards = split_train_data_by_dp(
                     self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
                 )
+                store = object_store.get_instance()
+                data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
             return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
     async def _generate_rollout_data(
@@ -227,12 +235,15 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         hf_dir: str | None = None,
         export_time_seconds: float | None = None,
         require_marker: bool = True,
+        weight_version: str | None = None,
     ) -> None:
-        if self.args.debug_train_only and not self.args.eval_uses_snapshots:
-            return
+        if weight_version is not None or self.args.eval_uses_snapshots:
+            return await self._eval_checkpoint(
+                rollout_id, hf_dir, export_time_seconds, require_marker, weight_version=weight_version
+            )
 
-        if self.args.eval_uses_snapshots:
-            return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
+        if self.args.debug_train_only:
+            return
 
         with timer("eval_rollout"):
             if not self.use_legacy_rollout_v1:
@@ -253,21 +264,35 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             self._metric_checker.on_eval(metrics)
 
     async def _eval_checkpoint(
-        self, rollout_id: int, hf_dir: str | None, export_time_seconds: float | None, require_marker: bool
+        self,
+        rollout_id: int,
+        hf_dir: str | None,
+        export_time_seconds: float | None,
+        require_marker: bool,
+        weight_version: str | None = None,
     ):
-        """Evaluate a snapshot through the checkpoint eval fn (fleet or external
-        backend) and log at ``rollout_id``. Every failure degrades to a skipped
-        point; the lock serializes pins against a single backend."""
-        assert hf_dir is not None, "checkpoint eval requires an HF snapshot dir"
+        """Evaluate a snapshot or an already-synchronized fleet version.
+
+        Log at ``rollout_id``; the lock serializes pins against a single backend.
+        A live version never loads or inspects a checkpoint. The caller must keep
+        that version stable until evaluation finishes.
+        """
+        if weight_version is None:
+            assert hf_dir is not None, "checkpoint eval requires an HF snapshot dir"
+        elif self._eval_fleet is None:
+            raise ValueError("A live eval version requires a dedicated synchronized fleet")
         start_time = time.time()
         async with self._eval_lock:
-            if require_marker and not is_complete_hf_export(hf_dir):
+            if weight_version is None and require_marker and not is_complete_hf_export(hf_dir):
                 logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
                 return self.report_eval_skip(rollout_id, "ckpt_missing")
 
-            version = str(rollout_id)
+            version = str(rollout_id) if weight_version is None else weight_version
             try:
-                state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
+                if weight_version is not None:
+                    state = await self._eval_fleet.current(version)
+                else:
+                    state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
                 eval_input = RolloutFnEvalInput(
                     rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
                 )
@@ -385,7 +410,9 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self._weight_versions_of_model_id[trainer_model_id] = weight_version
         self._rollouts_since_publish_of_model_id[trainer_model_id] = 0
 
-    def set_train_parallel_config(self, config: dict[str, Any], trainer_model_id: str | None = None) -> None:
+    def set_train_parallel_config(
+        self, config: TrainParallelConfig | None, trainer_model_id: str | None = None
+    ) -> None:
         self._train_parallel_configs_of_model_id[trainer_model_id] = config
 
     async def set_eval_fleet_info(self, eval_fleet_info: EvalFleetInfo | None) -> None:

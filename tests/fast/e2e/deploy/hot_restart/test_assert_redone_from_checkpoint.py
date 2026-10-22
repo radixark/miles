@@ -10,8 +10,8 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint 
     assert_only_post_checkpoint_steps_redone,
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import compute_checkpoint_dir
+from tests.utils.deploy.hot_restart.evidence import HotRestartRecord
 
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint

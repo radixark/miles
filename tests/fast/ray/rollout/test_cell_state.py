@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     StateDisposed,
+    StateErrored,
     StateInitializing,
     StatePendingWeights,
     StateServing,
@@ -23,6 +24,7 @@ _STATE_FACTORIES = [
     ("StateInitializing", StateInitializing, {"addr_info": _ADDR_INFO, "start_time": 1000.0}),
     ("StatePendingWeights", StatePendingWeights, {"addr_info": _ADDR_INFO}),
     ("StateServing", StateServing, {"addr_info": _ADDR_INFO}),
+    ("StateErrored", StateErrored, {"addr_info": _ADDR_INFO}),
     ("StateDisposed", StateDisposed, {}),
 ]
 

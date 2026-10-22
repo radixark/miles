@@ -1,16 +1,29 @@
 import asyncio
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction, SegfaultProcessAction
+from miles.utils.test_utils.fault_injector.actions.union import FaultAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import (
+    FaultHookRecord,
+    FaultHookRequest,
+    FaultHookStatus,
+    ObservedFaultHookTarget,
+)
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
+from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.cell_operations.kubernetes import KubernetesCellOperations
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
+from miles.utils.workers.rpc.common.protocol import ServerHealth
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
+from miles.utils.workers.worker_provider.kubernetes.core.cell_view import CellIncarnation, PodIdentity
 
 
 class FakeHandle:
@@ -18,27 +31,25 @@ class FakeHandle:
         self,
         name: str,
         *,
-        calls: list[tuple[str, str]],
-        submissions: list[tuple[str, str, str]],
+        calls: list[tuple[str, FaultHookCommand]],
         effect: str | Exception = "return",
     ) -> None:
         self._name = name
         self._calls = calls
-        self._submissions = submissions
         self._effect = effect
 
-    async def inject_fault(self, *, mode: str) -> None:
-        self._calls.append((self._name, mode))
+    async def read_health(self) -> Any:
+        return SimpleNamespace(boot_uuid=f"boot-{self._name}", pod_uid=f"uid-{self._name}")
+
+    async def control_fault_hook(self, *, command: FaultHookCommand) -> FaultHookRecord:
+        self._calls.append((self._name, command))
         if self._effect == "unreachable":
             raise WorkerUnreachableError(f"{self._name} is gone")
         if self._effect == "never_answers":
             await asyncio.sleep(3600)
         if isinstance(self._effect, Exception):
             raise self._effect
-
-    async def submit_without_result(self, method_name: str, /, **kwargs: Any) -> None:
-        self._submissions.append((self._name, method_name, kwargs["mode"]))
-        await self.inject_fault(mode=kwargs["mode"])
+        return FaultHookRecord(request=command.request, status=FaultHookStatus.FIRED, set_at=1.0, changed_at=2.0)
 
 
 class FakeProvider:
@@ -55,8 +66,8 @@ class FakeProvider:
         self._handle_effect = handle_effect
         self._unserved_workers = unserved_workers
         self.watches = 0
-        self.injections: list[tuple[str, str]] = []
-        self.submissions: list[tuple[str, str, str]] = []
+        self.commands: list[tuple[str, FaultHookCommand]] = []
+        self.boot_pins: list[str | None] = []
 
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         return [self._worker_infos_of_cell(cell_id) for cell_id in cell_ids]
@@ -65,8 +76,7 @@ class FakeProvider:
         return {
             info.name: FakeHandle(
                 info.name,
-                calls=self.injections,
-                submissions=self.submissions,
+                calls=self.commands,
                 effect=self._handle_effect,
             )
             for info in infos
@@ -88,10 +98,23 @@ class FakeProvider:
         info = self._infos.get(cell_id)
         return list(info.worker_names) if info is not None else []
 
+    def debug_cell_incarnation(self, cell_id: str) -> Any:
+        if (info := self._infos.get(cell_id)) is None:
+            return None
+        return SimpleNamespace(
+            workers_hash=info.workers_hash, pods=[SimpleNamespace(uid=f"uid-{name}") for name in info.worker_names]
+        )
+
     def _worker_infos_of_cell(self, cell_id: str) -> list[WorkerInfo]:
         info = self._infos.get(cell_id)
         return [
-            WorkerInfo(name=name, generation=0, self_addrs={}, gpu_ids=[], worker_class="fake.Worker")
+            WorkerInfo(
+                name=name,
+                generation=0,
+                self_addrs={},
+                gpu_ids=[],
+                worker_class=None if name in self._unserved_workers else "fake.Worker",
+            )
             for name in (info.worker_names if info is not None else [])
         ]
 
@@ -294,85 +317,430 @@ class TestResume:
             asyncio.run(_operations({"trainer-engine-actor-0": _info()}).resume(cell_id="trainer-engine-actor-0"))
 
 
-class TestInjectFault:
-    def test_submits_the_crash_without_waiting_for_a_result(self) -> None:
-        """A self-crashing RPC is sent through the acknowledgement-only worker-handle operation."""
+class TestControlFaultHook:
+    def test_returns_the_workers_fault_record(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A completed control call returns the worker's recorded outcome."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
+        command = _fault_command(monkeypatch=monkeypatch, operations=operations)
 
-        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+        result = asyncio.run(operations.control_fault_hook(command))
 
-        assert operations._provider.submissions == [("engine-0-0", "inject_fault", "sigkill")]
+        assert result == FaultHookRecord(
+            request=command.request, status=FaultHookStatus.FIRED, set_at=1.0, changed_at=2.0
+        )
+        assert operations._provider.commands == [("engine-0-0", command)]
+        assert operations._provider.boot_pins == [None, "boot-engine-0-0"]
 
-    def test_calls_the_worker_the_sub_index_picks(self):
+    def test_calls_the_worker_the_rank_picks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A multi-pod cell is crashed by crashing one named rank, not whichever rank came first."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0", "engine-0-1"))})
+        command = _fault_command(monkeypatch=monkeypatch, operations=operations, rank=1)
 
-        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=1))
+        asyncio.run(operations.control_fault_hook(command))
 
-        assert operations._provider.injections == [("engine-0-1", "sigkill")]
+        assert operations._provider.commands == [("engine-0-1", command)]
+        assert operations._provider.boot_pins == [None, "boot-engine-0-1"]
 
-    def test_passes_the_requested_mode_to_the_worker(self):
+    def test_passes_the_requested_action_to_the_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The caller chose the failure mode, so the worker must not be crashed some other way."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
+        command = _fault_command(monkeypatch=monkeypatch, operations=operations, action=SegfaultProcessAction())
 
-        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SEGFAULT, sub_index=0))
+        asyncio.run(operations.control_fault_hook(command))
 
-        assert operations._provider.injections == [("engine-0-0", "segfault")]
+        assert operations._provider.commands == [("engine-0-0", command)]
 
-    def test_a_worker_that_dies_before_answering_is_a_success(self):
-        """The call kills its own callee, so an unreachable worker is the outcome that was asked for."""
+    def test_a_worker_that_dies_before_answering_leaves_the_outcome_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing response cannot confirm the fault request was applied."""
         operations = _operations(
             {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, handle_effect="unreachable"
         )
+        command = _fault_command(monkeypatch=monkeypatch, operations=operations)
 
-        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+        with pytest.raises(WorkerUnreachableError, match="engine-0-0 is gone"):
+            asyncio.run(operations.control_fault_hook(command))
 
-        assert operations._provider.injections == [("engine-0-0", "sigkill")]
+        assert operations._provider.commands == [("engine-0-0", command)]
 
-    def test_a_worker_that_never_answers_does_not_hang_the_caller(self, monkeypatch: pytest.MonkeyPatch):
+    def test_a_worker_that_never_answers_does_not_hang_the_caller(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A killed process leaves the rpc poll retrying for an hour, which would block the api server request."""
-        monkeypatch.setattr(cell_operations_kubernetes, "INJECT_FAULT_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(cell_operations_kubernetes, "CONTROL_FAULT_HOOK_TIMEOUT_SECONDS", 0.05)
         operations = _operations(
             {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, handle_effect="never_answers"
         )
+        command = _fault_command(monkeypatch=monkeypatch, operations=operations)
 
-        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+        with pytest.raises(TimeoutError):
+            asyncio.run(operations.control_fault_hook(command))
 
-        assert operations._provider.injections == [("engine-0-0", "sigkill")]
+        assert operations._provider.commands == [("engine-0-0", command)]
 
-    def test_an_unexpected_rpc_failure_is_propagated(self):
+    def test_an_unexpected_rpc_failure_is_propagated(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An unrelated RPC failure must not be mistaken for confirmation that the worker crashed."""
         operations = _operations(
             {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))},
             handle_effect=RuntimeError("rpc protocol failed"),
         )
+        command = _fault_command(monkeypatch=monkeypatch, operations=operations)
 
         with pytest.raises(RuntimeError, match="rpc protocol failed"):
-            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+            asyncio.run(operations.control_fault_hook(command))
 
-    def test_a_sub_index_beyond_the_cell_is_rejected(self):
+    def test_a_rank_beyond_the_cell_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Injecting into a neighbouring cell by accident would corrupt the test's premise."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
+        command = _fault_command(monkeypatch=monkeypatch, operations=operations, rank=1)
 
-        with pytest.raises(AssertionError, match="out of range"):
-            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=1))
+        with pytest.raises(StaleFaultTargetError, match="no worker at index 1"):
+            asyncio.run(operations.control_fault_hook(command))
+        assert operations._provider.commands == []
 
-    def test_a_negative_sub_index_is_rejected(self):
+    def test_a_negative_rank_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Negative indexing would silently select the last worker instead of failing."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0", "engine-0-1"))})
 
-        with pytest.raises(AssertionError, match="out of range"):
-            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=-1))
+        with pytest.raises(ValidationError, match="greater than or equal to 0"):
+            _fault_command(monkeypatch=monkeypatch, operations=operations, rank=-1)
+        assert operations._provider.commands == []
 
-    def test_a_worker_that_is_not_served_over_rpc_is_rejected(self):
+    def test_a_worker_that_is_not_served_over_rpc_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """There is no call to make, and succeeding here would report a crash that never happened."""
         operations = _operations(
             {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, unserved_workers=("engine-0-0",)
         )
+        command = _fault_command(monkeypatch=monkeypatch, operations=operations)
 
-        with pytest.raises(AssertionError, match="not served over rpc"):
-            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+        with pytest.raises(NotImplementedError, match="not served over RPC"):
+            asyncio.run(operations.control_fault_hook(command))
+        assert operations._provider.commands == []
+
+
+def _fault_command(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    operations: KubernetesCellOperations,
+    rank: int = 0,
+    action: FaultAction | None = None,
+) -> FaultHookCommand:
+    provider = operations._provider
+
+    def build_handle(info: WorkerInfo, *, expected_boot_uuid: str | None = None) -> FakeHandle:
+        provider.boot_pins.append(expected_boot_uuid)
+        return provider.get_handles_of_worker_infos([info])[info.name]
+
+    monkeypatch.setattr(cell_operations_kubernetes, "build_rpc_handle_of_worker_info", build_handle)
+    return FaultHookCommand(
+        operation=FaultHookOperation.SET,
+        request=FaultHookRequest(
+            request_id="test",
+            action=KillProcessAction() if action is None else action,
+            target=ObservedFaultHookTarget(
+                cell_id="engine-0",
+                rank=rank,
+                workers_hash="h",
+                boot_uuid=f"boot-engine-0-{rank}",
+                pod_uid=f"uid-engine-0-{rank}",
+            ),
+        ),
+    )
 
 
 async def _stop_watching() -> None:
     return None
+
+
+# ======================== fault target identity ========================
+
+
+class _IdentityProvider:
+    def __init__(self, infos: dict[str, CellInfo], *, handle_effect: Exception | None = None) -> None:
+        self._infos = infos
+        self.handle_effect = handle_effect
+        self.healths: dict[str, ServerHealth] = {}
+        self.listed_pod_uids: dict[str, list[str]] = {}
+        self.vanished_cells: set[str] = set()
+        self.dispatched: list[tuple[str, object]] = []
+        self.boot_pins: list[str | None] = []
+
+    async def watch_cells(self, reconcile: object) -> object:
+        return _stop_watching_identity
+
+    def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
+        return [
+            [
+                WorkerInfo(name=name, generation=0, self_addrs={}, gpu_ids=[], worker_class="fake.Worker")
+                for name in (self._infos[cell_id].worker_names if cell_id in self._infos else [])
+            ]
+            for cell_id in cell_ids
+        ]
+
+    def debug_cell_incarnation(self, cell_id: str) -> CellIncarnation | None:
+        if cell_id in self.vanished_cells or (info := self._infos.get(cell_id)) is None:
+            return None
+        uids = self.listed_pod_uids.get(cell_id, [f"uid-{name}" for name in info.worker_names])
+        return CellIncarnation(
+            cell_id=cell_id,
+            workers_hash=info.workers_hash,
+            pods=[PodIdentity(name=name, uid=uid) for name, uid in zip(info.worker_names, uids, strict=True)],
+        )
+
+    def handle_of(self, info: WorkerInfo, *, expected_boot_uuid: str | None = None) -> "_IdentityHandle":
+        self.boot_pins.append(expected_boot_uuid)
+        return _IdentityHandle(info.name, provider=self)
+
+
+class _IdentityHandle:
+    def __init__(self, name: str, *, provider: _IdentityProvider) -> None:
+        self._name = name
+        self._provider = provider
+
+    async def read_health(self) -> ServerHealth:
+        default = ServerHealth(boot_uuid=f"boot-{self._name}", pod_uid=f"uid-{self._name}")
+        return self._provider.healths.get(self._name, default)
+
+    async def control_fault_hook(self, *, command: FaultHookCommand) -> None:
+        self._provider.dispatched.append((self._name, command))
+        if self._provider.handle_effect is not None:
+            raise self._provider.handle_effect
+
+
+def _identity_info(cell_id: str, workers: tuple[str, ...], workers_hash: str = "h") -> CellInfo:
+    return CellInfo(
+        cell_id=cell_id, pool_id="engine", alive=True, worker_names=list(workers), workers_hash=workers_hash, meta={}
+    )
+
+
+def _identity_operations(
+    monkeypatch: pytest.MonkeyPatch, infos: dict[str, CellInfo], *, handle_effect: Exception | None = None
+) -> KubernetesCellOperations:
+    provider = _IdentityProvider(infos, handle_effect=handle_effect)
+    monkeypatch.setattr(cell_operations_kubernetes, "build_rpc_handle_of_worker_info", provider.handle_of)
+    return KubernetesCellOperations(provider=provider, namespace="rl")
+
+
+async def _stop_watching_identity() -> None:
+    return None
+
+
+class TestObserveFaultTarget:
+    async def test_names_the_rank_the_caller_picked_with_its_live_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The observation binds the chosen rank to the cell hash, boot uuid and pod uid it answered with."""
+        operations = _identity_operations(
+            monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0", "engine-0-1"))}
+        )
+
+        target = await operations.observe_fault_target(cell_id="engine-0", rank=1)
+
+        assert target == ObservedFaultHookTarget(
+            cell_id="engine-0", rank=1, workers_hash="h", boot_uuid="boot-engine-0-1", pod_uid="uid-engine-0-1"
+        )
+        assert operations._provider.boot_pins == [None]
+
+    @pytest.mark.parametrize(
+        "health",
+        [ServerHealth(boot_uuid=None, pod_uid="uid-engine-0-0"), ServerHealth(boot_uuid="boot", pod_uid=None)],
+    )
+    async def test_a_worker_that_cannot_prove_its_identity_is_not_a_target(
+        self, monkeypatch: pytest.MonkeyPatch, health: ServerHealth
+    ) -> None:
+        """A missing boot uuid or pod uid would leave the later write unable to tell a replacement apart."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider.healths["engine-0-0"] = health
+
+        with pytest.raises(StaleFaultTargetError, match="no boot or pod identity"):
+            await operations.observe_fault_target(cell_id="engine-0", rank=0)
+
+    async def test_a_worker_answering_from_a_pod_the_cell_no_longer_lists_is_not_a_target(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An old pod still answering at the address must not be taken for the cell's current member."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider.listed_pod_uids["engine-0"] = ["uid-replacement"]
+
+        with pytest.raises(StaleFaultTargetError, match="no longer lists"):
+            await operations.observe_fault_target(cell_id="engine-0", rank=0)
+
+    async def test_a_cell_that_disappears_while_being_observed_is_not_a_target(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cell gone between the worker listing and the incarnation read reports stale, not a half target."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider.vanished_cells.add("engine-0")
+
+        with pytest.raises(StaleFaultTargetError, match="has disappeared"):
+            await operations.observe_fault_target(cell_id="engine-0", rank=0)
+
+    async def test_a_cell_that_no_longer_exists_has_no_target(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Observing an unknown cell is stale rather than an index error."""
+        operations = _identity_operations(monkeypatch, {})
+
+        with pytest.raises(StaleFaultTargetError, match="no worker at index 0"):
+            await operations.observe_fault_target(cell_id="engine-0", rank=0)
+
+
+class TestControlFaultHookRejectsAChangedTarget:
+    async def test_a_new_cell_hash_is_refused_without_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cell whose membership moved on since the observation must not receive the fault."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider._infos["engine-0"] = _identity_info("engine-0", ("engine-0-0",), workers_hash="h2")
+
+        with pytest.raises(StaleFaultTargetError, match="no longer matches"):
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=0,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-0",
+                            pod_uid="uid-engine-0-0",
+                        ),
+                    ),
+                )
+            )
+
+        assert operations._provider.dispatched == []
+
+    async def test_a_restarted_process_is_refused_without_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A new boot uuid in the same pod means the observed process is gone."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider.healths["engine-0-0"] = ServerHealth(boot_uuid="boot-new", pod_uid="uid-engine-0-0")
+
+        with pytest.raises(StaleFaultTargetError, match="no longer matches"):
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=0,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-0",
+                            pod_uid="uid-engine-0-0",
+                        ),
+                    ),
+                )
+            )
+
+        assert operations._provider.dispatched == []
+
+    async def test_a_same_named_replacement_pod_is_refused_without_dispatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pod recreated under the old name answers with a new uid and must not take the old target."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider.healths["engine-0-0"] = ServerHealth(boot_uuid="boot-engine-0-0", pod_uid="uid-new")
+        operations._provider.listed_pod_uids["engine-0"] = ["uid-new"]
+
+        with pytest.raises(StaleFaultTargetError, match="no longer matches"):
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=0,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-0",
+                            pod_uid="uid-engine-0-0",
+                        ),
+                    ),
+                )
+            )
+
+        assert operations._provider.dispatched == []
+
+    async def test_a_worker_moved_to_another_rank_is_refused_without_dispatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The observed process now sitting at another rank is not what the target names."""
+        operations = _identity_operations(
+            monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0", "engine-0-1"))}
+        )
+        operations._provider._infos["engine-0"] = _identity_info("engine-0", ("engine-0-1", "engine-0-0"))
+
+        with pytest.raises(StaleFaultTargetError, match="no longer matches"):
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=1,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-1",
+                            pod_uid="uid-engine-0-1",
+                        ),
+                    ),
+                )
+            )
+
+        assert operations._provider.dispatched == []
+
+    async def test_a_vanished_cell_is_refused_without_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cell deleted after the observation has no worker to send the fault to."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        del operations._provider._infos["engine-0"]
+
+        with pytest.raises(StaleFaultTargetError):
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=0,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-0",
+                            pod_uid="uid-engine-0-0",
+                        ),
+                    ),
+                )
+            )
+
+        assert operations._provider.dispatched == []
+
+    async def test_a_restart_caught_by_the_pinned_call_is_reported_stale(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A replacement racing the final check is refused by the boot pin and surfaces as a stale target."""
+        operations = _identity_operations(
+            monkeypatch,
+            {"engine-0": _identity_info("engine-0", ("engine-0-0",))},
+            handle_effect=ServerRestartedError("boot uuid mismatch"),
+        )
+
+        with pytest.raises(StaleFaultTargetError, match="changed its boot identity"):
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=0,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-0",
+                            pod_uid="uid-engine-0-0",
+                        ),
+                    ),
+                )
+            )
+
+        assert operations._provider.boot_pins == [None, "boot-engine-0-0"]

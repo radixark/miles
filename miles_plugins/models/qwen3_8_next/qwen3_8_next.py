@@ -14,7 +14,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
-from miles.utils.hf_utils.config import load_hf_config, register_hf_config_aliases
+from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.qwen3_5 import _get_text_config
 from miles_plugins.models.qwen3_8_next.gdn import ReplicatedGDNAttention as Qwen35LinearAttention
 from miles_plugins.models.qwen3_8_next.hyper_connection import (
@@ -23,15 +23,6 @@ from miles_plugins.models.qwen3_8_next.hyper_connection import (
     Qwen38NextPLEHyperConnection,
 )
 from miles_plugins.models.qwen3_8_next.ops.attention import Qwen38NextAttention
-
-
-def _layer_types(text_config):
-    """Per-layer ``linear_attention`` / ``full_attention`` labels, with Qwen3.5's fallback."""
-    if hasattr(text_config, "layer_types") and text_config.layer_types:
-        return list(text_config.layer_types)
-    interval = getattr(text_config, "full_attention_interval", 4)
-    n = text_config.num_hidden_layers
-    return ["full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)]
 
 
 def _hc_spec(*, with_ple: bool = False):
@@ -71,28 +62,28 @@ def _apply_qwen3_8_next_config(config, text_config) -> None:
     Megatron has no CLI flags for them; mirrors ``Qwen38NextBridge._build_config``.
     """
     config.enable_hyper_connections = True
-    config.num_residual_streams = getattr(text_config, "hc_count", 4)
-    config.qwen3_8_next_hc_lowrank = getattr(text_config, "hc_lowrank", 320)
+    config.num_residual_streams = text_config.hc_count
+    config.qwen3_8_next_hc_lowrank = text_config.hc_lowrank
 
-    config.qwen3_8_next_ple_layer_ids = sorted({int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []})
-    config.qwen3_8_next_ple_embed_dim = getattr(text_config, "ple_embed_dim", 2560)
-    config.qwen3_8_next_ngram_size = getattr(text_config, "ngram_size", 3)
-    config.qwen3_8_next_heads_per_ngram = getattr(text_config, "heads_per_ngram", 8)
-    config.qwen3_8_next_ngram_vocab_size_base = getattr(text_config, "ngram_vocab_size_base", 20000000)
-    config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
-    config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
-    config.qwen3_8_next_eos_token_id = getattr(text_config, "eos_token_id", 0)
+    # the native config keeps ple_layer_ids sorted, unique and 1-based
+    config.qwen3_8_next_ple_layer_ids = [i - 1 for i in text_config.ple_layer_ids]
+    config.qwen3_8_next_ple_embed_dim = text_config.ple_embed_dim
+    config.qwen3_8_next_ngram_size = text_config.ngram_size
+    config.qwen3_8_next_heads_per_ngram = text_config.heads_per_ngram
+    config.qwen3_8_next_ngram_vocab_size_base = text_config.ngram_vocab_size_base
+    config.qwen3_8_next_split_ngram_parts = text_config.split_ngram_parts
+    config.qwen3_8_next_ple_conv_kernel_size = text_config.ple_conv_kernel_size
+    config.qwen3_8_next_eos_token_id = text_config.eos_token_id
 
-    config.qwen3_8_next_indexer_budget = getattr(text_config, "indexer_budget", 2048)
-    config.qwen3_8_next_indexer_compress_ratio = getattr(text_config, "indexer_compress_ratio", 4)
-    config.qwen3_8_next_indexer_n_heads = getattr(text_config, "indexer_n_heads", 4)
-    config.qwen3_8_next_indexer_head_dim = getattr(text_config, "indexer_head_dim", 128)
-    config.qwen3_8_next_indexer_kv_heads = getattr(text_config, "indexer_kv_heads", 1)
+    config.qwen3_8_next_indexer_budget = text_config.indexer_budget
+    config.qwen3_8_next_indexer_compress_ratio = text_config.indexer_compress_ratio
+    config.qwen3_8_next_indexer_n_heads = text_config.indexer_n_heads
+    config.qwen3_8_next_indexer_head_dim = text_config.indexer_head_dim
+    config.qwen3_8_next_indexer_kv_heads = text_config.indexer_kv_heads
 
 
 def get_qwen3_8_next_spec(args, config, vp_stage=None):
     """Transformer block spec for Qwen3.8-Next."""
-    register_hf_config_aliases()
     hf_config = load_hf_config(args.hf_checkpoint)
     text_config = _get_text_config(hf_config)
 
@@ -120,7 +111,8 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
     offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
 
-    layer_types = _layer_types(text_config)
+    # the native config labels every layer linear_attention or indexed_attention (QSA)
+    layer_types = text_config.layer_types
 
     ple_here = [i for i in config.qwen3_8_next_ple_layer_ids if offset <= i < offset + num_layers_to_build]
     if ple_here and offset > 0:

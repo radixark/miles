@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Awaitable
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.k8s_client import core_v1_api
 from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi
 from miles.utils.workers.reconcile.k8s_reflector import KubernetesReflector
@@ -76,6 +77,9 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
     def cell_info(self, cell_id: str) -> CellInfo | None:
         return cell_view.compute_cell_info(cell_id, pods=self._pods_of_cell(cell_id), run=self._run)
 
+    def debug_cell_incarnation(self, cell_id: str) -> cell_view.CellIncarnation | None:
+        return cell_view.compute_debug_cell_incarnation(cell_id, pods=self._pods_of_cell(cell_id))
+
     def pod_names_of_cell(self, cell_id: str) -> list[str]:
         return [pod.name for pod in self._pods_of_cell(cell_id)]
 
@@ -98,12 +102,8 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
 
 @asynccontextmanager
 async def _kubernetes_pod_api() -> AsyncIterator[KubernetesAsyncioPodApi]:
-    from kubernetes_asyncio import client as kubernetes_client
-    from kubernetes_asyncio import config as kubernetes_config
-
-    kubernetes_config.load_incluster_config()
-    async with kubernetes_client.ApiClient() as api_client:
-        yield KubernetesAsyncioPodApi(core_v1_api=kubernetes_client.CoreV1Api(api_client))
+    async with core_v1_api() as api:
+        yield KubernetesAsyncioPodApi(core_v1_api=api)
 
 
 def _watched_pods_selector(*, base_selector: str, pool_label_key: str, pool_ids: list[str]) -> str:

@@ -415,6 +415,31 @@ class TestCellInfo:
         assert asyncio.run(scenario()) is None
 
 
+class TestDebugCellIncarnation:
+    async def test_describes_only_the_pods_of_the_requested_cell_from_the_watched_view(self) -> None:
+        """The incarnation of a cell lists its own pods by uid and agrees with the cell info hash."""
+        api = FakePodApi(
+            pods=[
+                make_pod(name="engine-0-1", pod_in_cell_index="1", uid="uid-b"),
+                make_pod(name="engine-1-0", cell_id_suffix="1", uid="uid-other"),
+                make_pod(name="engine-0-0", uid="uid-a"),
+            ]
+        )
+        provider = _provider(api)
+
+        stop = await _watch(provider, [])
+        try:
+            incarnation = provider.debug_cell_incarnation("engine-00000")
+            info = provider.cell_info("engine-00000")
+            absent = provider.debug_cell_incarnation("engine-00007")
+        finally:
+            await stop()
+
+        assert [(pod.name, pod.uid) for pod in incarnation.pods] == [("engine-0-0", "uid-a"), ("engine-0-1", "uid-b")]
+        assert incarnation.workers_hash == info.workers_hash
+        assert absent is None
+
+
 def _spec_meta(context) -> dict:
     return {"role": "actor", "cell_index": context.cell_index, "needs_offload": False, "model_id": "glm"}
 

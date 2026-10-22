@@ -10,7 +10,7 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64.
 
-ARG SGLANG_IMAGE_TAG=v0.5.21
+ARG SGLANG_IMAGE_TAG=v0.5.22
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -29,8 +29,8 @@ ARG WHEELS_REPO=radixark/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
-ARG WHEELS_TAG_X86=cu130-torch213-x86_64
-ARG WHEELS_TAG_ARM64=cu130-torch213-aarch64
+ARG WHEELS_TAG_X86=cu130-torch214-x86_64
+ARG WHEELS_TAG_ARM64=cu130-torch214-aarch64
 
 # ======================================== Setup =============================================
 
@@ -134,9 +134,10 @@ RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; the
 # cudnn-frontend >= 1.28 ships the compact indexer forward + Top-K wrapper
 # (cudnn.DSA.indexer_forward_top_k_wrapper with `deterministic`) that upstream
 # Megatron #5992 requires on SM100; 1.26.0 has no compact wrapper and fails
-# TransformerConfig validation once that change is in miles-main.
+# TransformerConfig validation once that change is in miles-main. A floor, not a
+# pin: the base image may already ship a newer one.
 RUN pip install /tmp/wheels/flash_mla-*.whl && \
-    pip install --no-deps "nvidia-cudnn-frontend==1.28.0"
+    pip install --no-deps "nvidia-cudnn-frontend>=1.28"
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
 RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
@@ -146,41 +147,25 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
       pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation; \
     fi
 
-# transformer_engine
+# transformer_engine: the +miles triplet built from radixark/TransformerEngine
+# miles-main, NVIDIA's release commit plus the fixes Miles carries
+# (.github/workflows/build-wheels.yml).
 # --no-deps pins the three TE dists to exactly the wheels above, so pip cannot
 # pull a conflicting core dist. That also drops transformer_engine_torch's own
 # runtime deps, which still have to be installed: transformer_engine.pytorch
 # imports onnxscript unconditionally (module/_common -> export -> onnx_extensions).
 RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
     set -- \
-      /tmp/wheels/transformer_engine-2.17.0-py3-none-any.whl \
-      /tmp/wheels/transformer_engine_cu13-2.17.0-py3-none-manylinux_2_28_*.whl \
-      /tmp/wheels/transformer_engine_torch-2.17.0-cp312-cp312-linux_*.whl; \
+      /tmp/wheels/transformer_engine-2.17.0+miles-py3-none-any.whl \
+      /tmp/wheels/transformer_engine_cu13-2.17.0+miles-py3-none-manylinux_2_28_*.whl \
+      /tmp/wheels/transformer_engine_torch-2.17.0+miles-cp312-cp312-linux_*.whl; \
     if [ "$#" -ne 3 ] || [ ! -f "$1" ] || [ ! -f "$2" ] || [ ! -f "$3" ]; then \
-      echo "expected exactly one TransformerEngine 2.17 wheel for each component (transformer_engine_cu13)" >&2; exit 1; \
+      echo "expected exactly one TransformerEngine 2.17.0+miles wheel for each component (transformer_engine_cu13)" >&2; exit 1; \
     fi && \
     pip uninstall -y transformer-engine transformer-engine-cu13 transformer-engine-torch && \
     pip install --force-reinstall --no-deps "$@" && \
     pip install einops onnx onnxscript pydantic nvdlfw-inspect && \
     python3 /tmp/verify_transformer_engine.py "transformer_engine_cu13"
-
-# TE patches (cu13): B300/GB300 FA2 and backward override fixes
-# te_dequantized_backward_override.patch is a hot fix from
-# https://github.com/NVIDIA/TransformerEngine/pull/3141; drop it after TE v2.18.
-COPY docker/patch/ /tmp/patches/
-# A `for` loop exits with the status of its LAST iteration, so a patch that fails
-# to apply here used to be swallowed whenever a later one succeeded -- the image
-# shipped with TE silently unpatched. Fail the build instead.
-RUN if [ -d /tmp/patches/cu13 ]; then \
-      TE_DIR=$(python -c 'import importlib.util; print(importlib.util.find_spec("transformer_engine").submodule_search_locations[0])') && \
-      for p in /tmp/patches/cu13/*.patch; do \
-        echo "Applying $(basename $p) to $TE_DIR"; \
-        patch -d "$TE_DIR" -p1 < "$p" || { \
-          echo "TE patch $(basename $p) did not apply cleanly against the installed transformer_engine" >&2; \
-          exit 1; \
-        }; \
-      done; \
-    fi && rm -rf /tmp/patches
 
 # apex
 RUN pip install /tmp/wheels/apex-*.whl
@@ -197,7 +182,7 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3
 
 # torch_memory_saver's source build needs TMS_CUDA_MAJOR; take it from torch.
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
-    pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@b5588e83de86412a48689a6583a4b567e75f7acc --no-cache-dir --force-reinstall
+    pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@118b09b3bc7b0cf386745db1eac2601d4aa7e681 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@8cd3466d14d2337c8492827b3712482c2b3e4866 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
@@ -221,8 +206,6 @@ RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJ
 RUN apt-get remove -y --purge --allow-change-held-packages \
     libcudnn9-cuda-13 libcudnn9-dev-cuda-13 libcudnn9-headers-cuda-13 \
   && rm -rf /var/lib/apt/lists/*
-
-RUN pip install nvidia-cudnn-cu13==9.22.0.52
 
 
 RUN rm -rf /root/.cache/pip /root/flash-attention

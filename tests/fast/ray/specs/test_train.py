@@ -325,9 +325,9 @@ class TestConcurrencyGroups:
         """Dropping an @rpc concurrency group would silently queue that call behind a train step."""
         declared = declared_concurrency_groups(TrainRayActor)
 
-        assert {name: declared.get(name) for name in ("get_heartbeat_status", "inject_fault", "kill_self")} == {
+        assert {name: declared.get(name) for name in ("get_heartbeat_status", "control_fault_hook", "kill_self")} == {
             "get_heartbeat_status": "heartbeat_status",
-            "inject_fault": "fault_injector",
+            "control_fault_hook": "fault_injector",
             "kill_self": "kill_self",
         }
 
@@ -342,12 +342,12 @@ class TestConcurrencyGroups:
         """The rpc server has its own group per method, and an unannotated one queues behind a train step."""
         groups = {
             name: _find_rpc_config(getattr(TrainRayActor, name)).concurrency_group
-            for name in ("get_heartbeat_status", "inject_fault", "kill_self")
+            for name in ("get_heartbeat_status", "control_fault_hook", "kill_self")
         }
 
         assert groups == {
             "get_heartbeat_status": "heartbeat_status",
-            "inject_fault": "fault_injector",
+            "control_fault_hook": "fault_injector",
             "kill_self": "kill_self",
         }
 

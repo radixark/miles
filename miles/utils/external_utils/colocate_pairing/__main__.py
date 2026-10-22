@@ -4,11 +4,9 @@ import argparse
 import asyncio
 import logging
 
-from kubernetes_asyncio import client
-from kubernetes_asyncio import config as kube_config
-
 from miles.utils.external_utils.colocate_pairing.config import PairingConfig
 from miles.utils.external_utils.colocate_pairing.controller import PairingController
+from miles.utils.workers.k8s_client import core_v1_api
 from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi
 from miles.utils.workers.reconcile.k8s_reflector import KubernetesReflector
 from miles.utils.workers.reconcile.loop import ReconcileLoop
@@ -31,13 +29,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 async def _run_forever(config: PairingConfig) -> None:
-    try:
-        kube_config.load_incluster_config()
-    except kube_config.ConfigException:
-        await kube_config.load_kube_config()
-
-    async with client.ApiClient() as api_client:
-        core_v1 = client.CoreV1Api(api_client)
+    async with core_v1_api() as core_v1:
         controller = PairingController(config=config, core_v1=core_v1)
         reflector = KubernetesReflector(
             kube_client=KubernetesAsyncioPodApi(core_v1_api=core_v1),

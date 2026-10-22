@@ -50,6 +50,7 @@ UPPER_LAYER_NAMES = (
 )
 
 UPPER_LAYER_EXEMPTIONS = {
+    "miles/utils/workers/k8s_client.py": "the shared Kubernetes client boundary used by worker infrastructure",
     "miles/ray/wiring.py": "the glue layer holding the driver process's single fork between the backends",
     "miles/utils/orchestration_utils.py": (
         "the shared driver composition root that launches the selected worker manager"

@@ -69,34 +69,24 @@ class Glm5NextBridge(GlmMoeDsaBridge):
         text_config = getattr(hf_config, "text_config", None) or hf_config
         super().__init__(text_config, *args, **kwargs)
 
+    # GLM-5.3-Flash is NoPE (qk_rope_head_dim 0), so its config carries no rope fields;
+    # Megatron still takes a rotary_base, unused at qk_pos_emb_head_dim 0.
     def _get_rope_theta(self):
-        rope_theta = getattr(self.hf_config, "rope_theta", None)
-        if rope_theta is None:
-            rope_parameters = getattr(self.hf_config, "rope_parameters", None)
-            if isinstance(rope_parameters, dict):
-                rope_theta = rope_parameters.get("rope_theta")
-        if rope_theta is None:
-            if int(getattr(self.hf_config, "qk_rope_head_dim", 0) or 0) == 0:
-                return 10000.0
-            raise ValueError("GLM-5.3 config must provide rope_theta (directly or via rope_parameters)")
-        return float(rope_theta)
+        return 10000.0
 
     def _get_rope_scaling(self):
-        rope_scaling = getattr(self.hf_config, "rope_parameters", None)
-        if not isinstance(rope_scaling, dict):
-            rope_scaling = getattr(self.hf_config, "rope_scaling", None)
-        return self._normalize_rope_scaling(rope_scaling)
+        return None
 
     def _build_base_config(self, **kwargs):
         assert self.hf_config.vocab_size == _GLM5_NEXT_VOCAB_SIZE
-        hc_eps = getattr(self.hf_config, "hc_eps", 1e-6)
+        hc_eps = self.hf_config.hc_eps
         assert hc_eps == 1e-6, f"Megatron mHC eps constants are 1e-6, config says {hc_eps}"
         kwargs.pop("mtp_num_layers", None)
         kwargs.pop("mtp_loss_scaling_factor", None)
         kwargs.update(
             enable_hyper_connections=True,
-            num_residual_streams=getattr(self.hf_config, "hc_mult", 4),
-            mhc_sinkhorn_iterations=getattr(self.hf_config, "hc_sinkhorn_iters", 20),
+            num_residual_streams=self.hf_config.hc_mult,
+            mhc_sinkhorn_iterations=self.hf_config.hc_sinkhorn_iters,
             use_fused_mhc=False,
         )
         return super()._build_base_config(**kwargs)
