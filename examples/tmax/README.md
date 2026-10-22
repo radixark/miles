@@ -106,6 +106,57 @@ the port uses PPO clip (0.2 / 0.28) around the rollout log-probs.
 
 ## Results
 
+### Gateway backend with open-instruct parity, 4 nodes
+
+`configs/prod_4node_gateway.yaml` on 4x 8 B300 (`ai2/holmes`), run `tmax_prod4node_gateway_qwen35_9b_20261020_092350`
+(Beaker `01M5C9ZQAM9J6P7D5FE9ZY4E43`, commit `7422022127`): the 4-node recipe below with sandboxes on the
+`podman-terminal-jupiter-head` LiteRegistry fleet, DPPO, Adam beta2 0.999 and seed 42. Training compared with
+open-instruct's `9b_dppo_repro_jupiter` (W&B `ut64ii7s`, `gyw0z542`) at the same steps:
+
+| Steps | Reward (pre-filter), open-instruct / ours | Response length, open-instruct / ours | Entropy | KL to base | Train/rollout gap | Lost sandboxes |
+|---|---|---|---|---|---|---|
+| 0-19 | 0.521 / 0.507 | 13.6k / 16.4k | 0.31 | 0.002 | 0.0072 | 0.7% |
+| 20-39 | 0.557 / 0.563 | 18.3k / 19.9k | 0.32 | 0.003 | 0.0080 | 1.4% |
+| 40-59 | 0.563 / 0.544 | 17.3k / 20.9k | 0.31 | 0.006 | 0.0076 | 0.5% |
+| 60-79 | 0.606 / 0.666 | 16.5k / 18.9k | 0.29 | 0.009 | 0.0071 | 0.5% |
+| 80-99 | 0.620 / 0.619 | 15.2k / 20.4k | 0.28 | 0.011 | 0.0072 | 0.4% |
+| 100-119 | 0.631 / 0.643 | 14.2k / 20.5k | 0.27 | 0.018 | 0.0081 | 0.3% |
+| 120-139 | 0.587 / 0.627 | 17.9k / 22.3k | 0.31 | 0.020 | 0.0089 | 1.1% |
+| 140-159 | 0.630 / 0.662 | 24.8k / 22.2k | 0.32 | 0.022 | 0.0084 | 0.4% |
+| 160-179 | 0.631 / 0.627 | 23.6k / 27.9k | 0.32 | 0.023 | 0.0082 | 0.9% |
+| 180-199 | 0.623 / 0.680 | 25.8k / 25.9k | 0.34 | 0.028 | 0.0086 | 0.4% |
+| 200-219 | 0.625 / 0.669 | 26.0k / 24.7k | 0.36 | 0.050 | 0.0093 | 0.3% |
+| 220-239 | 0.656 / 0.644 | 30.9k / 29.6k | 0.37 | 0.040 | 0.0095 | 0.3% |
+| 240-259 | 0.567 / 0.670 | 23.5k / 26.0k | 0.39 | 0.044 | 0.0099 | 2.5% |
+| 260-279 | 0.624 / 0.650 | 35.9k / 24.6k | 0.40 | 0.045 | 0.0099 | 0.2% |
+| 280-299 | 0.634 / 0.668 | 35.1k / 23.9k | 0.44 | 0.071 | 0.0114 | 0.7% |
+| 300-311 | 0.665 / 0.653 | 31.2k / 26.7k | 0.49 | 0.047 | 0.0116 | 0.4% |
+
+- **Sandboxes.** No episode failed to start in 312 steps. Lost sandboxes are mostly the policy's own memory and
+  process-limit kills (scored 0); fleet losses drop their group.
+- **Preemptions.** Six in two days: five by workspace-group fair share just after the 8 h minimum runtime, one by a
+  node drained for reimaging. The head closed the 263-432 containers it held on the fleet each time, and the next
+  attempt resumed from the latest checkpoint (`save_interval: 5`).
+- **Speed.** About 7 minutes per step.
+- **Rising entropy.** Entropy climbs from step 260, with the train/rollout gap.
+
+Greedy evaluations of the kept HF snapshots (k=5, 2 GPUs, `max-model-len` 67584, tmax repo `c98902cc`).
+Open-instruct's and the base model's numbers are sampled (T=0.7), so the comparison is approximate:
+
+| Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
+|---|---|---|
+| Ours, step 120 | 0.496 / 0.700 | 0.229 / 0.360 |
+| Ours, step 160 | 0.484 / 0.710 | 0.222 / 0.382 |
+| Ours, step 200 | 0.472 / 0.720 | pending |
+| Ours, step 240 | 0.506 / 0.770 | pending |
+| Ours, step 280 | 0.490 / 0.690 | pending |
+| Ours, step 300 | 0.478 / 0.680 | pending |
+| Open-instruct, step 120 / 240 (sampled) | 0.524 / 0.760, 0.574 / 0.790 | 0.229 / 0.360, 0.249 / 0.393 |
+| Base `hamishivi/Qwen3.5-9B` (sampled) | 0.418 / 0.660 | 0.191 / 0.337 |
+
+The TBlite evals of steps 200-300 lost 10 trials each (the same 8 tasks) to Docker Hub's anonymous pull limit;
+without those tasks step 240 scores 0.522 / 0.793 and the others 0.487-0.496 pass@1.
+
 ### Production recipe, 4 nodes
 
 `configs/prod_4node.yaml` on 4x 8 B300 (`ai2/holmes`), run `tmax_prod4node_qwen35_9b_20261016_001037` (commit

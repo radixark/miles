@@ -1,6 +1,6 @@
 # TMax port roadmap
 
-Open work on the port, by priority, as of 2026-10-16. The differences from open-instruct that motivate most items
+Open work on the port, by priority, as of 2026-10-22. The differences from open-instruct that motivate most items
 are described in [the comparison](../../docs/deep-dive/open-instruct-comparison.md); this file only tracks the
 work. When an item is done, move it to [Done](#done) with its commit.
 
@@ -12,7 +12,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Item | Why | How |
 |---|---|---|
 | **Rotate the Docker Hub token and the W&B API key; scrub old W&B configs** | The Docker token was printed in Beaker job logs from 2026-09-25 until `de58153970`. The W&B key was on the logged train command until `07bf7f9d74`, and Miles uploads its arguments as the W&B config, so earlier runs' configs still hold it | Rotate both and update the Beaker secrets (`<user>_DOCKER_PAT`, `<user>_WANDB_API_KEY`); relaunch the mirrors; delete `wandb_key` from earlier runs' configs. Upstream: have Miles redact the key before uploading its config. Not confirmed done |
-| **Rollout-node CPU starvation** | Evidence in [INVESTIGATIONS.md](INVESTIGATIONS.md). The engines on one rollout node slowed to a crawl twice: a 47-minute step after step 15, and a 320 s weight sync. Then Ray declared that node dead for missed heartbeats, failing retry 1. The old run's weight-sync `ReadError` fits the same pattern. The leading suspect is the up to 128 sandboxes per node, which run without CPU limits next to the engines | Option L, the gateway backend (sandboxes on a LiteRegistry podman fleet), is implemented on branch `shashank/tmax-gateway` and in validation. Otherwise options A–C in [INVESTIGATIONS.md](INVESTIGATIONS.md#open-decisions): a per-node host sampler, `nice -n 19` sandbox commands, sandboxes off the rollout nodes. Only if the `ReadError` recurs: make a dropped sync reply non-fatal (option K) |
+| **Rollout-node CPU starvation** | Evidence in [INVESTIGATIONS.md](INVESTIGATIONS.md). The engines on one rollout node slowed to a crawl twice: a 47-minute step after step 15, and a 320 s weight sync. Then Ray declared that node dead for missed heartbeats, failing retry 1. The old run's weight-sync `ReadError` fits the same pattern. The leading suspect is the up to 128 sandboxes per node, which run without CPU limits next to the engines | Option L, the gateway backend (sandboxes on a LiteRegistry podman fleet), has run production since 2026-10-20 (merged `e961a935aa`) with no starvation in 312 steps; the podman backend still has the problem. For podman, options A–C in [INVESTIGATIONS.md](INVESTIGATIONS.md#open-decisions): a per-node host sampler, `nice -n 19` sandbox commands, sandboxes off the rollout nodes. Only if the `ReadError` recurs: make a dropped sync reply non-fatal (option K) |
 
 ## P1
 
@@ -49,7 +49,6 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
   - make a missing dataset state fatal on resume;
   - snapshot the repository so a `git gc` on the weka checkout cannot break a later retry (bundle or full clone).
 - **Training:**
-  - `--seed 42`;
   - optionally flush the KV cache after in-place updates;
   - check which FlashAttention Megatron uses on B300;
   - decide whether `max_weight_staleness` should be 3 to match `--async_steps 4` exactly (see the comparison).
@@ -68,12 +67,14 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Each step's trained batch dumped (`dump_training_data`), about 200 MB per step | `e1e06ce53d` |
 | W&B key off the logged command line | `07bf7f9d74` |
 | Head-node lookup through the GCS (Miles core) | `ef3dcd4861` |
-| Adam beta2 0.999 and `--seed 42` as in open-instruct | branch `shashank/tmax-oi-parity` |
-| Training entropy logged (`--observe-training-entropy`) | branch `shashank/tmax-oi-parity` |
-| W&B entity pinned (`wandb_entity: ai2-llm`); the W&B run's URL in the Beaker description | branch `shashank/tmax-oi-parity` |
-| DPPO loss (`--policy-loss-type dppo_tv`, Miles core), the default `policy_loss` | branch `shashank/tmax-oi-parity` |
-| HF snapshots kept every 20 steps (`hf_snapshot_every`: `--save-hf` at every save, pruned by the entry script) | branch `shashank/tmax-oi-parity` |
-| Per-rollout metrics in both modes (`tmax_metrics`): episodes and tools, solve rates before the filter, solved/unsolved lengths, advantages, samples so far | branch `shashank/tmax-oi-parity` |
+| Adam beta2 0.999 and `--seed 42` as in open-instruct | `95bb23689a` |
+| Training entropy logged (`--observe-training-entropy`) | `f882fdc500` |
+| W&B entity pinned (`wandb_entity: ai2-llm`); the W&B run's URL in the Beaker description | `715206319f` |
+| DPPO loss (`--policy-loss-type dppo_tv`, Miles core), the default `policy_loss` | `aecf2f49db`, `ea42bb5d4e` |
+| KL to the base model logged (k3, open-instruct's `kl2`, coefficient 0) | `237a1f80d9` |
+| HF snapshots kept every 20 steps (`hf_snapshot_every`: `--save-hf` at every save, pruned by the entry script) | `fecaa97c0a` |
+| Per-rollout metrics in both modes (`tmax_metrics`): episodes and tools, solve rates before the filter, solved/unsolved lengths, advantages, samples so far | `735c39d953`, `a57d6f855f`, `a8fdd2bd0d` |
+| Gateway backend: sandboxes on a LiteRegistry podman fleet; fleet losses and start failures drop the group; the head closes its containers when the job stops | `255d93f374` .. `1e9265bd13`, merged with the parity work in `e961a935aa` |
 | Registry mirrors, `mirror_url: auto`, authenticated pulls | `0b910d7822`, `bfd6826c2b`, `dafe101cff` |
 | Docker Hub token out of the job log | `de58153970` |
 | Env-step exceptions become failed-step observations | `212c6ad522` |
@@ -89,7 +90,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 - **Mirrors** are neither rotated nor warmed.
 - **Context.** Production trains at 64k (`max_seq_len: 67584`); smoke tests use 16k.
 - **Runs.** Every submission is a new run with a UTC date-time suffix; `--exp-name` continues one.
-- **Loss.** PPO clip until DPPO lands.
+- **Loss.** DPPO binary-TV, open-instruct's (`policy_loss: dppo_tv`), since `e961a935aa`.
 - **Kept on purpose:**
   - containers are removed at episode end;
   - exact global token-mean loss;
