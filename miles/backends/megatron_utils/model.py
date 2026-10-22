@@ -31,6 +31,7 @@ from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_l
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.loss.hub.kl_control import update_adaptive_kl
 from miles.backends.training_utils.loss.objective import loss_function
 from miles.backends.training_utils.metrics.checks import check_grad_norm, check_kl
 from miles.backends.training_utils.metrics.log_utils import (
@@ -694,6 +695,8 @@ def train_one_step(
                 if parallel_state.indep_dp.size > 1
                 else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
+            if not disable_optimizer and valid_step:
+                update_adaptive_kl(args, loss_reduced)
             return loss_reduced, grad_norm, outcome
 
     return {}, grad_norm, outcome
