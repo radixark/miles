@@ -43,7 +43,9 @@ function versionSpan(row) {
 const TABLE_PAGE_ROWS = 200;
 
 function sortableTable(rows, columns, { onRowClick, flagRow, sortState }) {
-  const wrap = el("div", { class: "tablewrap" });
+  // the pager sits outside the scroll box, so it shows without scrolling
+  const pager = el("div");
+  const scrollBox = el("div", { class: "tablewrap" });
   let page = 0;
   const render = () => {
     const { column, desc } = sortState;
@@ -63,6 +65,7 @@ function sortableTable(rows, columns, { onRowClick, flagRow, sortState }) {
           sortState.column = c;
           page = 0;
           render();
+          scrollBox.scrollTop = 0;
         },
       }, [c === column ? `${c} ${desc ? "▾" : "▴"}` : c]),
     ));
@@ -75,6 +78,7 @@ function sortableTable(rows, columns, { onRowClick, flagRow, sortState }) {
     const goToPage = (to) => () => {
       page = to;
       render();
+      scrollBox.scrollTop = 0;
     };
     const pagerControls = pageCount === 1 ? [] : [
       el("div", { class: "controls" }, [
@@ -85,10 +89,11 @@ function sortableTable(rows, columns, { onRowClick, flagRow, sortState }) {
         el("button", { onclick: goToPage(page + 1), disabled: page === pageCount - 1 ? "" : null }, ["▶"]),
       ]),
     ];
-    wrap.replaceChildren(el("table", { class: "data" }, [el("thead", {}, [head]), el("tbody", {}, body)]), ...pagerControls);
+    pager.replaceChildren(...pagerControls);
+    scrollBox.replaceChildren(el("table", { class: "data" }, [el("thead", {}, [head]), el("tbody", {}, body)]));
   };
   render();
-  return wrap;
+  return el("div", {}, [pager, scrollBox]);
 }
 
 // How far back the "latest" landing will look for a step it can actually show.
