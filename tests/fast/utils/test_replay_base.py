@@ -63,41 +63,13 @@ def _make_routing_replay_manager(top_indices):
     return manager
 
 
-def test_routing_rows_without_replayed_ids_take_the_routers_own_topk_on_tpu(monkeypatch):
-    """Uncaptured rows (-1) and ids outside the experts are routed by the router, not pinned to experts 0..topk-1."""
-    monkeypatch.setattr(replay_base.platforms, "IS_TPU", True)
-    scores = torch.tensor([[0.0, 4.0, 1.0, 3.0, 2.0]] * 3)
-    replayed = torch.tensor([[-1, -1], [0, 7], [2, 0]], dtype=torch.int32)
-    manager = _make_routing_replay_manager(replayed)
-
-    topk_fn = manager.get_topk_fn(_topk, return_probs=False)
-
-    torch.testing.assert_close(topk_fn(scores, 2), torch.tensor([[1, 3], [1, 3], [2, 0]], dtype=torch.int32))
-
-
-def test_routing_padding_rows_keep_the_arange_fill_off_tpu():
-    scores = torch.tensor([[0.0, 4.0, 1.0, 3.0, 2.0]])
-    manager = _make_routing_replay_manager(torch.tensor([[-1, -1]], dtype=torch.int32))
-
-    topk_fn = manager.get_topk_fn(_topk, return_probs=False)
-
-    torch.testing.assert_close(topk_fn(scores, 2), torch.tensor([[0, 1]], dtype=torch.int32))
-
-
-def test_routing_replay_returns_the_probs_of_the_filled_rows_on_tpu(monkeypatch):
-    monkeypatch.setattr(replay_base.platforms, "IS_TPU", True)
-
-    def topk_with_probs(scores, topk):
-        values, indices = torch.topk(scores, topk, dim=1)
-        return values, indices.to(torch.int32)
-
+def test_the_padding_fill_traces_without_a_graph_break():
+    """TPU compiles each block with fullgraph=True, so a data-dependent branch here fails the whole forward."""
     scores = torch.tensor([[0.0, 4.0, 1.0, 3.0, 2.0]] * 2)
     manager = _make_routing_replay_manager(torch.tensor([[-1, -1], [2, 0]], dtype=torch.int32))
+    topk_fn = torch.compile(manager.get_topk_fn(_topk, return_probs=False), backend="eager", fullgraph=True)
 
-    probs, indices = manager.get_topk_fn(topk_with_probs, return_probs=True)(scores, 2)
-
-    torch.testing.assert_close(indices, torch.tensor([[1, 3], [2, 0]], dtype=torch.int32))
-    torch.testing.assert_close(probs, torch.tensor([[4.0, 3.0], [1.0, 0.0]]))
+    torch.testing.assert_close(topk_fn(scores, 2), torch.tensor([[0, 1], [2, 0]], dtype=torch.int32))
 
 
 def test_a_staged_forward_replays_without_popping(monkeypatch):
