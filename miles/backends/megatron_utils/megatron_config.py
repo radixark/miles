@@ -331,8 +331,17 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
         ans.load = compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
         ans.save_hf = compute_trainer_checkpoint_dir(base_dir=ans.save_hf, trainer_id=trainer.trainer_id)
 
+    if (
+        trainer.role == CRITIC_ROLE
+        and ans.ckpt_step is not None
+        and has_hf_checkpoint(ans.load)
+        and not has_megatron_checkpoint(ans.load, ckpt_step=ans.ckpt_step)
+    ):
+        # The actor's step selector does not apply to HF initialization of the critic.
+        ans.ckpt_step = None
+
     # TODO: a --use-critic critic keeps the actor's requested_load, so a hot restart reads the actor's checkpoint.
-    if args.megatron_config is not None:
+    if args.train_backend == "megatron" and args.megatron_config is not None:
         resolve_args_checkpoint_load(ans)
 
     return ans
@@ -373,31 +382,45 @@ def resolve_args_checkpoint_load(args: Namespace) -> None:
     # TODO: refactor
     args.requested_load = args.load
 
+    explicit_selection = args.ckpt_step is not None or args.exit_on_missing_checkpoint
+    if explicit_selection:
+        if args.load is None:
+            raise ValueError("an explicit checkpoint selection requires --load")
+        return
+
+    if has_megatron_checkpoint(args.load):
+        return
+
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
         # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
         # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
         # Mirrors the non-bridge branch below.
-        if not has_megatron_checkpoint(args.load):
-            args.load = args.ref_load or args.hf_checkpoint
-            args.start_rollout_id = 0
+        args.load = args.ref_load or args.hf_checkpoint
+        args.start_rollout_id = 0
     else:
-        if not has_megatron_checkpoint(args.load):
-            args.no_load_optim = True
-            args.no_load_rng = True
-            args.finetune = True
-            args.load = args.ref_load
-            if args.ref_ckpt_step is not None:
-                args.ckpt_step = args.ref_ckpt_step
-            args.start_rollout_id = 0
+        args.no_load_optim = True
+        args.no_load_rng = True
+        args.finetune = True
+        args.load = args.ref_load
+        if args.ref_ckpt_step is not None:
+            args.ckpt_step = args.ref_ckpt_step
+        args.start_rollout_id = 0
 
 
-def has_megatron_checkpoint(load_dir: str | None) -> bool:
+def has_megatron_checkpoint(load_dir: str | None, ckpt_step: int | None = None) -> bool:
     return (
         load_dir is not None
         and os.path.exists(load_dir)
-        and os.path.exists(os.path.join(load_dir, "latest_checkpointed_iteration.txt"))
+        and (
+            os.path.exists(os.path.join(load_dir, "latest_checkpointed_iteration.txt"))
+            or (ckpt_step is not None and os.path.isdir(os.path.join(load_dir, f"iter_{ckpt_step:07d}")))
+        )
     )
+
+
+def has_hf_checkpoint(load_dir: str | None) -> bool:
+    return load_dir is not None and os.path.isfile(os.path.join(load_dir, "config.json"))
 
 
 # ---------------------------- validation -----------------------------

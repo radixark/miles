@@ -1172,8 +1172,9 @@ def test_samples_route_registered_before_catch_all_proxy(app_client):
 
 
 @pytest.mark.asyncio
-async def test_hooks_cannot_mutate_committed_turn_args():
+async def test_hooks_cannot_mutate_committed_state():
     def mutate_metadata(samples, metadata):
+        metadata["accumulated_token_ids"].append(-1)
         metadata["turn_args"]["chat_template_kwargs"]["nested"].append("session-hook")
         for node in metadata["tree"]["nodes"]:
             node["turn_args"]["chat_template_kwargs"]["nested"].append("tree-hook")
@@ -1188,9 +1189,11 @@ async def test_hooks_cannot_mutate_committed_turn_args():
         for node in nodes:
             node.turn_args = {"temperature": 0.7, "chat_template_kwargs": {"nested": [node.seq]}}
         before = [deepcopy(node.turn_args) for node in nodes]
+        tokens_before = [list(node.token_ids) for node in nodes]
         response = await hooked.collect_samples(sid, max_seq_len=None)
         assert response.status_code == 200, response.body
         assert [node.turn_args for node in nodes] == before
+        assert [node.token_ids for node in nodes] == tokens_before
 
 
 @pytest.mark.asyncio

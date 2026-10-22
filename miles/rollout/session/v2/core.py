@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import time
 from copy import deepcopy
+from functools import partial
 
 import orjson
 from starlette.responses import Response
@@ -57,7 +59,7 @@ class SessionCoreV2(SessionCore):
         if mismatch is not None:
             metadata["tito_session_mismatch"] = mismatch
         latest = session.latest()
-        metadata["accumulated_token_ids"] = latest.token_ids if latest is not None else []
+        metadata["accumulated_token_ids"] = list(latest.token_ids) if latest is not None else []
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["tree"] = tree_metadata(session)
         metadata["turn_args"] = filter_turn_args(latest.turn_args) if latest is not None else {}
@@ -81,11 +83,33 @@ class SessionCoreV2(SessionCore):
         """Samples op: assemble one raw sample per leaf, then run the
         pick/post-process hook pipeline and encode the result.
 
-        Synchronous on the server loop (no await), so the session read cannot
-        interleave with chat commits. Deterministic assembly/hook failures map
-        to 422; unknown exceptions propagate.
+        The worker reads a snapshot, never the live tree. Deterministic
+        assembly/hook failures map to 422; unknown exceptions propagate.
         """
         session = self.registry.get_session(session_id)
+        async with session.lock:
+            if session.closing:
+                raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            snapshot = session.snapshot()
+        return await asyncio.get_running_loop().run_in_executor(
+            self._sample_executor,
+            partial(
+                self._collect_samples,
+                session_id,
+                snapshot,
+                max_seq_len=max_seq_len,
+                agent_metadata=agent_metadata,
+            ),
+        )
+
+    def _collect_samples(
+        self,
+        session_id: str,
+        session: SessionStateV2,
+        *,
+        max_seq_len: int | None,
+        agent_metadata: dict | None = None,
+    ) -> Response:
         metadata = self._session_metadata(session_id, session)
         fields = COMPUTED_FIELDS_V2
         if session.sampling_support_replay:

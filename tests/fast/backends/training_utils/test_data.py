@@ -165,7 +165,7 @@ class TestGetRolloutDataParallelWiring:
 
         monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
         monkeypatch.setattr(data_utils, "process_rollout_data", process)
-        monkeypatch.setattr(data_utils.torch.cuda, "current_device", lambda: "cpu")
+        monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: data_utils.torch.device("cpu"))
         args = Namespace(enable_witness=False, qkv_format="thd")
 
         rollout, result = data_utils.get_rollout_data(

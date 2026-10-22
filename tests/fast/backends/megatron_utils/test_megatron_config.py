@@ -450,6 +450,36 @@ class TestResolveArgsCheckpointLoad:
         assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
         assert (args.ckpt_step, args.start_rollout_id) == (None, None)
 
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 0}, {"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-zero", "checkpoint-step", "exit-on-missing"],
+    )
+    @pytest.mark.parametrize("mode", ["core", "bridge"])
+    def test_an_explicit_checkpoint_selection_does_not_fall_back(self, tmp_path, selector, mode):
+        load = str(tmp_path / "missing")
+        args = _make_checkpoint_args(tmp_path, load=load, megatron_to_hf_mode=mode, **selector)
+
+        resolve_args_checkpoint_load(args)
+
+        assert args.load == load
+        assert args.requested_load == load
+        for name, value in selector.items():
+            assert getattr(args, name) == value
+        assert args.start_rollout_id is None
+        assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
+
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-step", "exit-on-missing"],
+    )
+    def test_an_explicit_checkpoint_selection_requires_a_load_path(self, tmp_path, selector):
+        args = _make_checkpoint_args(tmp_path, load=None, **selector)
+
+        with pytest.raises(ValueError, match="requires --load"):
+            resolve_args_checkpoint_load(args)
+
 
 class TestHasMegatronCheckpoint:
     def test_a_directory_holding_the_tracker_file_is_a_checkpoint(self, tmp_path):
@@ -535,6 +565,17 @@ class TestComputeTrainerArgs:
 
 
 class TestTrainerCheckpointDirs:
+    @pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
+    def test_other_backends_keep_their_scoped_load_path(self, backend):
+        args = _make_args(encode_megatron_config("a"), train_backend=backend, load="/checkpoints")
+        del args.ckpt_step, args.exit_on_missing_checkpoint
+
+        model = _model_args(args, model_id="a")
+
+        assert model.load == "/checkpoints/trainers/a-actor"
+        assert model.start_rollout_id is None
+        assert not model.no_load_optim and not model.no_load_rng
+
     def test_a_multi_policy_run_gives_every_trainer_its_own_checkpoint_dir(self, tmp_path):
         """A shared --save makes two policies write the same iter_* directory and overwrite each other."""
         old = tmp_path / "old"
@@ -818,6 +859,27 @@ class TestSynthesizedCriticTrainer:
             1e-6,
             0.1,
         )
+
+    @pytest.mark.parametrize("native", [False, True])
+    def test_critic_initialization_uses_the_step_only_for_native_checkpoints(self, tmp_path, native):
+        critic_load = tmp_path / "critic"
+        critic_load.mkdir()
+        (critic_load / "config.json").write_text("{}")
+        if native:
+            (critic_load / "iter_0000007").mkdir()
+        args = _make_args(
+            use_critic=True,
+            load="/ckpt/actor",
+            critic_load=str(critic_load),
+            ckpt_step=7,
+            finetune=True,
+        )
+
+        actor, critic = [compute_trainer_args(args, trainer) for trainer in resolve_megatron_config(args).trainers]
+
+        assert actor.ckpt_step == args.ckpt_step == 7
+        assert critic.load == str(critic_load)
+        assert critic.ckpt_step == (7 if native else None)
 
     def test_an_internally_synthesized_override_bypasses_the_user_whitelist(self):
         """kl_coef and load are not per-policy yaml arguments, yet the critic must still be able to set them."""

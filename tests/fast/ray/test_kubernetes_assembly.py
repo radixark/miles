@@ -240,6 +240,7 @@ def cell_pods(count: int) -> list[Pod]:
 
 def rollout_executor_args() -> SimpleNamespace:
     return SimpleNamespace(
+        train_backend="megatron",
         cluster_backend="kubernetes",
         pin_rollout_manager_to_head=False,
         debug_train_only=True,

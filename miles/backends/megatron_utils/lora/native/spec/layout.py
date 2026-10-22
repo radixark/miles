@@ -42,6 +42,15 @@ def host_in_local(host_attr: str) -> DimFn:
     return resolve
 
 
+def host_out_local(host_attr: str) -> DimFn:
+    """This rank's output width of the host linear ``host_attr``, read from its weight."""
+
+    def resolve(module: nn.Module, _context: AttachContext) -> int:
+        return getattr(module, host_attr).weight.shape[0]
+
+    return resolve
+
+
 def gqa_o_in_local(module: nn.Module, _context: AttachContext) -> int:
     """Row-parallel o_proj input: this rank's query heads times head dim."""
     return module.num_attention_heads_per_partition * module.hidden_size_per_attention_head

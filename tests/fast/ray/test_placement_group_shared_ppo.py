@@ -1,6 +1,7 @@
 from argparse import Namespace
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
@@ -247,6 +248,7 @@ def _patch_train_controller_handles(monkeypatch, *, restored: dict[str, list[int
 
 def _training_models_args(**overrides):
     values = {
+        "train_backend": "megatron",
         "actor_num_nodes": 1,
         "actor_num_gpus_per_node": 2,
         "critic_num_nodes": 1,
@@ -273,7 +275,7 @@ def _training_models_args(**overrides):
         "run_uuid": _RUN_UUID,
     }
     values.update(overrides)
-    return Namespace(**values)
+    return Namespace(**{**parser_defaults(), **values})
 
 
 async def test_an_actor_and_a_critic_that_restored_to_different_rollouts_are_refused(monkeypatch):

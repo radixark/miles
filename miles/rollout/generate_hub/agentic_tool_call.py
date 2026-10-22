@@ -38,6 +38,7 @@ from typing import Any
 import httpx
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
+from miles.dashboard.hooks import push_sandbox_reports
 from miles.rollout.agentic.agent_function import AGENT_FUNCTION_MODES, call_agent_function
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
@@ -89,6 +90,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         agent_metadata = await call_agent_function(
             custom_agent_function,
             mode=input.args.custom_agent_function_mode,
+            on_child_reports=push_sandbox_reports,
             base_url=tracer.agent_base_url,
             prompt=input.sample.prompt,
             request_kwargs=build_chat_request_kwargs(input.sampling_params),

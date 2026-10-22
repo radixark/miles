@@ -3,7 +3,7 @@ import logging
 import sys
 from argparse import Namespace
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -66,6 +66,7 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
         save=str(tmp_path / "run"),
         ckpt_step=None,
         ref_ckpt_step=None,
+        opd_teacher_ckpt_step=None,
         no_load_optim=False,
         no_load_rng=False,
         finetune=False,
@@ -134,6 +135,7 @@ def _watch_load(actor_module, monkeypatch, *, args: Namespace, iteration: int) -
 
     def fake_load_checkpoint(*_args: Any, **_kwargs: Any) -> _CheckpointLoadResult:
         seen["args_during_load"] = vars(args).copy()
+        seen["checkpointing_context"] = _kwargs["checkpointing_context"]
         return _CheckpointLoadResult(
             iteration=iteration,
             restored_trained_iteration=not args.finetune or iteration > 0,
@@ -145,6 +147,114 @@ def _watch_load(actor_module, monkeypatch, *, args: Namespace, iteration: int) -
     monkeypatch.setattr(model_module, "check_model_hashes", lambda *a, **k: None)
     monkeypatch.setattr(actor_module, "clear_memory", lambda *a, **k: None)
     return seen
+
+
+@pytest.mark.parametrize(
+    ("model_tag", "path", "expected_step"),
+    [("ref", "/ref", None), ("teacher", "/teacher", 7), ("old_actor", "/actor", 39)],
+)
+def test_auxiliary_load_uses_its_own_checkpoint_step(
+    actor_module, monkeypatch, tmp_path, model_tag, path, expected_step
+):
+    args = _args(tmp_path, ckpt_step=39, opd_teacher_ckpt_step=7)
+    original_args = vars(args).copy()
+    worker = _actor(actor_module, role="actor", args=args)
+    worker.weights_backuper = Mock()
+    observed_args = {}
+
+    def load_checkpoint(*_args, **_kwargs):
+        observed_args.update(vars(args))
+        return 0, False
+
+    monkeypatch.setattr(actor_module, "load_checkpoint", load_checkpoint)
+
+    worker.load_other_checkpoint(model_tag, path)
+
+    assert observed_args["load"] == path
+    assert observed_args["no_load_optim"] is True
+    assert observed_args["no_load_rng"] is True
+    assert observed_args["finetune"] is True
+    assert observed_args["ckpt_step"] == expected_step
+    assert vars(args) == original_args
+    worker.weights_backuper.backup.assert_called_once_with(model_tag)
+    assert worker._active_model_tag == model_tag
+
+
+def test_auxiliary_load_restores_arguments_after_failure(actor_module, monkeypatch, tmp_path):
+    args = _args(tmp_path, ckpt_step=39)
+    original_args = vars(args).copy()
+    worker = _actor(actor_module, role="actor", args=args)
+    worker.weights_backuper = Mock()
+    monkeypatch.setattr(actor_module, "load_checkpoint", Mock(side_effect=RuntimeError("load failed")))
+
+    with pytest.raises(RuntimeError, match="load failed"):
+        worker.load_other_checkpoint("ref", "/ref")
+
+    assert vars(args) == original_args
+    worker.weights_backuper.backup.assert_not_called()
+
+
+@pytest.mark.parametrize("recovering", [False, True])
+def test_peer_recovery_does_not_inherit_startup_checkpoint_selection(actor_module, monkeypatch, tmp_path, recovering):
+    args = _args(
+        tmp_path,
+        ckpt_step=7,
+        pretrained_checkpoint="/pretrained",
+        finetune=recovering,
+        no_load_optim=recovering,
+        no_load_rng=recovering,
+        trainer_id="actor",
+        dumper_enable=False,
+        profile_target=[],
+        indep_dp=True,
+        vocab_size=32,
+        rollout_data_postprocess_path=None,
+    )
+    actor = _actor(actor_module, role="actor", args=args)
+    actor._rank = 0
+    original_args = vars(args).copy()
+    manager = Mock()
+    parallel_state = SimpleNamespace(indep_dp=object(), cp=SimpleNamespace(size=1))
+    for name in (
+        "monkey_patch_torch_dist",
+        "init",
+        "verify_megatron_parallel_state",
+        "get_gloo_group",
+        "Timer",
+        "TrainProfiler",
+    ):
+        monkeypatch.setattr(actor_module, name, Mock())
+    monkeypatch.setattr(actor_module.TrainRayActor, "_init_common", Mock())
+    monkeypatch.setattr(actor_module, "all_replay_managers", [])
+    monkeypatch.setattr(actor_module, "routing_replay_manager", Mock())
+    monkeypatch.setattr(actor_module.dist, "barrier", Mock())
+    monkeypatch.setattr(actor_module.fault_hook_controller, "configure", Mock())
+    monkeypatch.setattr(actor_module.dashboard_hooks, "register_train_actor", Mock())
+    monkeypatch.setattr(actor_module, "is_first_replica_megatron_main_rank", lambda: False)
+    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(actor_module, "recv_ckpt", Mock(return_value=manager))
+    monkeypatch.setattr(actor_module, "build_model_and_optimizer", Mock(return_value=([], None, None)))
+    monkeypatch.setattr(actor_module.RandomState, "capture", Mock())
+    monkeypatch.setattr(actor, "load_hf_assets", Mock())
+    monkeypatch.setattr(actor, "_init_training_state", Mock())
+    seen = _watch_load(actor_module, monkeypatch, args=args, iteration=11 if recovering else 7)
+
+    next_rollout = actor.init(
+        args,
+        "actor",
+        recv_ckpt_src_rank=0 if recovering else None,
+        indep_dp_info=SimpleNamespace(cell_index=1),
+        indep_dp_store_addr=None,
+    )
+
+    during = seen["args_during_load"]
+    assert next_rollout == (12 if recovering else 8)
+    assert seen["checkpointing_context"] == ({"local_checkpoint_manager": manager} if recovering else None)
+    assert during["load"] == (None if recovering else original_args["load"])
+    assert during["ckpt_step"] == (None if recovering else 7)
+    assert during["pretrained_checkpoint"] == (None if recovering else "/pretrained")
+    assert (during["finetune"], during["no_load_optim"], during["no_load_rng"]) == (False, False, False)
+    assert vars(args) == original_args
 
 
 class _Scheduler:
@@ -294,6 +404,29 @@ def _stub_reset(actor_module, monkeypatch) -> None:
 
 
 class TestAReloadThatFindsNothingItSaved:
+    @pytest.mark.parametrize(
+        ("finetune", "no_load_optim", "no_load_rng"),
+        [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
+    )
+    def test_an_explicit_starting_checkpoint_is_restored_without_a_tracker(
+        self, actor_module, tmp_path, monkeypatch, finetune, no_load_optim, no_load_rng
+    ):
+        args = _args(tmp_path, ckpt_step=7, finetune=finetune, no_load_optim=no_load_optim, no_load_rng=no_load_rng)
+        (Path(args.load) / "iter_0000007").mkdir(parents=True)
+        original_args = vars(args).copy()
+        seen = _watch_load(actor_module, monkeypatch, args=args, iteration=0 if finetune else 7)
+        actor = _actor(actor_module, role="actor", args=args)
+        actor.optimizer = Mock()
+        reset = Mock()
+        monkeypatch.setattr(actor_module, "reset_optimizer_state", reset)
+
+        actor.load_state()
+
+        assert seen["args_during_load"] == original_args
+        assert vars(args) == original_args
+        assert actor._post_init_random_state.restores == int(finetune or no_load_rng)
+        assert reset.call_count == int(finetune or no_load_optim)
+
     def test_it_puts_the_trainer_back_where_the_run_began(self, actor_module, tmp_path, monkeypatch, caplog):
         """A run that has not saved yet still has a state to go back to: the one it was started from."""
         args = _cold_started_args(tmp_path)
@@ -305,7 +438,7 @@ class TestAReloadThatFindsNothingItSaved:
             assert actor.load_state() == 0
 
         assert seen["args_during_load"]["load"] == _reference_weights(tmp_path)
-        assert "found no checkpoint" in caplog.text
+        assert "found no recovery tracker" in caplog.text
 
     def test_it_loads_under_the_arguments_the_run_was_started_with(self, actor_module, tmp_path, monkeypatch):
         """Anything else would answer a different question than the one the trainer's own init answered."""

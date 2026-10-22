@@ -288,9 +288,14 @@ class _RecordingInferenceControllerEvalFleet:
     def __init__(self, info: EvalFleetInfo):
         self.info = info
         self.pins: list[dict] = []
+        self.checked_versions: list[str] = []
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
         self.pins.append(dict(checkpoint_dir=checkpoint_dir, weight_version=weight_version))
+        return EvalFleetPin(skip_reason=None)
+
+    async def check_version(self, weight_version: str) -> EvalFleetPin:
+        self.checked_versions.append(weight_version)
         return EvalFleetPin(skip_reason=None)
 
 
@@ -861,6 +866,66 @@ class TestUpdatableModelSelection:
         return _make_controller({srv.model_name: srv for srv in servers})
 
     @pytest.mark.asyncio
+    async def test_explicit_eval_selection_preserves_lock_metadata_and_rollout_default(self, monkeypatch):
+        monkeypatch.setattr(inference_controller_module, "CELLS_READY_TIMEOUT_SECONDS", 0)
+        rollout_cell = _FakeUpdatableCell("rollout-incarnation", cell_id="rollout-cell", api_client="rollout")
+        rollout_cell.is_pending_weights_or_serving = False
+        eval_cell = _FakeUpdatableCell(
+            "eval-incarnation", cell_id="eval-cell", api_client="eval", num_gpus_per_engine=2, gpu_offset=8
+        )
+        rollout = _RecordingServer({"rollout-cell": rollout_cell}, model_name="default", update_weights=True)
+        eval_server = _RecordingServer({"eval-cell": eval_cell}, model_name="eval", update_weights=False)
+        controller = self._controller(rollout, eval_server)
+        controller._eval_fleet = object()
+
+        info = await controller.start_update_weights(receiver_pool="eval")
+
+        assert info == UpdatableEngines(
+            rollout_engines=["eval"],
+            engine_gpu_counts=[2],
+            engine_gpu_offsets=[8],
+            engine_cell_ids=["eval-cell"],
+            snapshot_cell_id_to_hashes={"eval-cell": "eval-incarnation"},
+            receiver_pool="eval",
+        )
+        assert controller.context_lock.locked
+        await controller.end_update_weights(info.snapshot_cell_id_to_hashes, failed_cell_ids=[])
+        assert eval_cell.marked_ready == 1
+        assert rollout_cell.marked_ready == 0
+        assert not controller.context_lock.locked
+
+        with pytest.raises(AssertionError, match="Server for model_id 'eval' is frozen"):
+            await controller.start_update_weights(model_id="eval")
+        assert not controller.context_lock.locked
+
+        rollout_cell.is_pending_weights_or_serving = True
+        info = await controller.start_update_weights()
+        assert info.receiver_pool == "rollout"
+        assert info.rollout_engines == ["rollout"]
+        await controller.abort_update_weights()
+        assert not controller.context_lock.locked
+        assert eval_server.update_weights is False
+
+    @pytest.mark.parametrize(
+        "receiver_pool,model_id,has_eval_pool,message",
+        [
+            ("unknown", None, True, "Unknown receiver pool"),
+            ("eval", None, False, "no dedicated eval pool"),
+            ("eval", "actor", True, "does not select a training model"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_invalid_receiver_pool_selection_releases_lock(
+        self, receiver_pool, model_id, has_eval_pool, message
+    ):
+        controller = self._controller()
+        controller._eval_fleet = object() if has_eval_pool else None
+
+        with pytest.raises(ValueError, match=message):
+            await controller.start_update_weights(model_id=model_id, receiver_pool=receiver_pool)
+        assert not controller.context_lock.locked
+
+    @pytest.mark.asyncio
     async def test_only_the_updatable_models_engines_receive_weights(self):
         """A frozen reference model handed the trainer's weights stops being the baseline the
         KL term is measured against."""
@@ -1050,6 +1115,26 @@ class TestMemoryLifecycleFanOut:
 
 
 class TestUpdatableEnginesPayload:
+    @pytest.mark.parametrize("receiver_pool", ["rollout", "eval"])
+    def test_slice_preserves_receiver_pool_and_selected_engine_snapshot(self, receiver_pool):
+        updatable = UpdatableEngines(
+            rollout_engines=["client-0", "client-1"],
+            engine_gpu_counts=[2, 4],
+            engine_gpu_offsets=[0, 2],
+            engine_cell_ids=["engine-0", "engine-1"],
+            snapshot_cell_id_to_hashes={"engine-0": "hash-a", "engine-1": "hash-b"},
+            receiver_pool=receiver_pool,
+        )
+
+        assert updatable[1:] == UpdatableEngines(
+            rollout_engines=["client-1"],
+            engine_gpu_counts=[4],
+            engine_gpu_offsets=[2],
+            engine_cell_ids=["engine-1"],
+            snapshot_cell_id_to_hashes={"engine-1": "hash-b"},
+            receiver_pool=receiver_pool,
+        )
+
     @pytest.mark.asyncio
     async def test_start_update_weights_returns_clients_gpu_layout_and_generation_snapshot(self):
         """The trainer indexes these lists in parallel, so swapping or dropping one misplaces every shard."""
@@ -1443,6 +1528,7 @@ class TestEvalFleetSurface:
 
         assert callable(handle.get_eval_fleet_info)
         assert callable(handle.pin_eval_fleet)
+        assert callable(handle.check_eval_fleet_version)
         with pytest.raises(AttributeError, match="no rpc method 'eval_fleet'"):
             handle.eval_fleet()
 
@@ -1454,10 +1540,16 @@ class TestEvalFleetSurface:
         assert serializer.decode_result(serializer.encode_result(info)) == info
         assert serializer.decode_result(serializer.encode_result(None)) is None
 
-    def test_a_pin_and_its_skip_reason_survive_the_wire(self):
+    @pytest.mark.parametrize(
+        "method,query",
+        [
+            ("pin_eval_fleet", dict(checkpoint_dir="/snap/step_5", weight_version="5")),
+            ("check_eval_fleet_version", dict(weight_version="5")),
+        ],
+    )
+    def test_a_pin_and_its_skip_reason_survive_the_wire(self, method, query):
         """A skipped point must arrive as a skip with its reason, not as a remote crash."""
-        spec = collect_rpc_method_specs(InferenceController)["pin_eval_fleet"]
-        query = dict(checkpoint_dir="/snap/step_5", weight_version="5")
+        spec = collect_rpc_method_specs(InferenceController)[method]
 
         assert spec.serializer.decode_query(spec.serializer.encode_query(query)) == query
         for pin in (EvalFleetPin(skip_reason=None), EvalFleetPin(skip_reason="unhealthy")):
@@ -1479,6 +1571,8 @@ class TestEvalFleetSurface:
 
         with pytest.raises(AssertionError, match="no eval fleet"):
             await controller.pin_eval_fleet(checkpoint_dir="/snap/step_5", weight_version="5")
+        with pytest.raises(ValueError, match="no dedicated eval fleet"):
+            await controller.check_eval_fleet_version(weight_version="5")
 
     @pytest.mark.asyncio
     async def test_the_fleet_answers_and_pins_through_the_controller(self):
@@ -1492,6 +1586,8 @@ class TestEvalFleetSurface:
             skip_reason=None
         )
         assert controller._eval_fleet.pins == [dict(checkpoint_dir="/snap/step_5", weight_version="5")]
+        assert await controller.check_eval_fleet_version(weight_version="5") == EvalFleetPin(skip_reason=None)
+        assert controller._eval_fleet.checked_versions == ["5"]
 
 
 class TestCellsReadyIsScopedToTheTargetedModel:

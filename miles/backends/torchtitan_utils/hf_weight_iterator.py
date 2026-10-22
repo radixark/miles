@@ -15,6 +15,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_group
 from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import (
     iter_checkpoint_tower_units,
 )
+from miles.platforms import current_platform
 from miles.utils.hf_utils.config import load_hf_config
 
 
@@ -49,14 +50,14 @@ def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[st
     offloaded = next(trainer.model_parts[0].parameters()).device.type == "cpu"
     if offloaded:
         for part in trainer.model_parts:
-            part.cuda()
+            part.to(current_platform.current_device())
     try:
         yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp)
     finally:
         if offloaded:
             for part in trainer.model_parts:
                 part.cpu()
-            torch.cuda.empty_cache()
+            torch.accelerator.empty_cache()
 
 
 @functools.cache

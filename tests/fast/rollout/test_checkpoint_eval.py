@@ -135,7 +135,8 @@ async def test_debug_train_only_runs_snapshot_eval(controller_env, tmp_path):
     assert fn.inputs[0].weight_version == "5"
 
 
-async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, monkeypatch, tmp_path):
+@pytest.mark.parametrize("weight_version", [None, "3"])
+async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, monkeypatch, tmp_path, weight_version):
     """The fleet only delivers weights — the configured eval fn still generates, and it
     is the same object the shared posture would call."""
     snapshot = tmp_path / "step_5"
@@ -151,21 +152,50 @@ async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, mon
     class FakeFleet:
         def __init__(self):
             self.pins = []
+            self.current_versions = []
 
         async def pin(self, checkpoint_dir, weight_version):
             self.pins.append((checkpoint_dir, weight_version))
+            return "fleet-state"
+
+        async def current(self, weight_version):
+            self.current_versions.append(weight_version)
             return "fleet-state"
 
     fleet = FakeFleet()
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path))
     mgr = make_manager(args, eval_fn=eval_generate_rollout, fleet=fleet)
 
-    await mgr.eval(5, hf_dir=str(snapshot))
+    if weight_version is not None:
+        monkeypatch.setattr(
+            rollout_executor_mod,
+            "is_complete_hf_export",
+            lambda _path: pytest.fail("live evaluation must not inspect a checkpoint"),
+        )
+    hf_dir = str(snapshot) if weight_version is None else None
+    await mgr.eval(5, hf_dir=hf_dir, weight_version=weight_version)
 
-    assert fleet.pins == [(str(snapshot), "5")]
+    assert fleet.pins == ([(str(snapshot), "5")] if weight_version is None else [])
+    assert fleet.current_versions == ([] if weight_version is None else [weight_version])
     assert seen_inputs[0].generate_state == "fleet-state"
-    assert seen_inputs[0].hf_dir == str(snapshot)
-    assert seen_inputs[0].weight_version == "5"
+    assert seen_inputs[0].hf_dir == hf_dir
+    assert seen_inputs[0].weight_version == ("5" if weight_version is None else weight_version)
+
+
+async def test_unconfirmed_current_version_never_generates(controller_env):
+    class UnconfirmedFleet:
+        async def current(self, weight_version):
+            assert weight_version == "3"
+            raise EvalSkip("pin_violation")
+
+    def eval_generate_rollout(_input):
+        pytest.fail("unconfirmed weights must not generate")
+
+    mgr = make_manager(make_args(), eval_fn=eval_generate_rollout, fleet=UnconfirmedFleet())
+    await mgr.eval(5, weight_version="3")
+
+    assert controller_env.logged["skip"] == (5, "pin_violation")
+    assert "eval" not in controller_env.logged
 
 
 async def test_eval_checkpoint_missing_marker_skips(controller_env, tmp_path):
@@ -232,6 +262,15 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
 
 
 class TestSnapshotEvalGuards:
+    @pytest.mark.parametrize("debug_train_only", [False, True])
+    async def test_explicit_version_requires_a_dedicated_pool(self, controller_env, debug_train_only):
+        mgr = make_manager(make_args(eval_num_gpus=0, debug_train_only=debug_train_only))
+
+        with pytest.raises(ValueError, match="requires a dedicated synchronized fleet"):
+            await mgr.eval(5, weight_version="3")
+
+        assert controller_env.logged == {}
+
     async def test_snapshot_eval_without_an_hf_dir_is_rejected(self, controller_env):
         """Snapshot eval has no checkpoint to evaluate without a dir, so it must fail loudly."""
         fn = CheckpointFnStub()

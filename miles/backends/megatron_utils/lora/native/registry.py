@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from miles.backends.megatron_utils.lora.native.naming import DeclaredNaming
 from miles.backends.megatron_utils.lora.native.spec.attention import (
+    Glm5NextAttentionSpec,
     GQAAttentionSpec,
     HybridGQAGDNAttentionSpec,
     InklingAttentionSpec,
@@ -75,6 +76,20 @@ def _kimi_k3_arch_spec() -> LoRAArchSpec:
     )
 
 
+def _glm5_next_arch_spec() -> LoRAArchSpec:
+    attention = Glm5NextAttentionSpec()
+    return LoRAArchSpec(
+        name=attention.name,
+        attention=attention,
+        mlp=SplitGateUpMLPSpec(),
+        # the checkpoint nests the text stack under model.language_model., which the raw converter drops
+        declared_naming=DeclaredNaming(
+            "model.language_model.layers.",
+            {"self_attention.": "self_attn.", "mlp.": "mlp.", "mlp.shared_experts.": "mlp.shared_experts."},
+        ),
+    )
+
+
 def _shared_outer_serving_targets(targets: list[str]) -> list[str]:
     """Shared-outer export stores the expert dimension in each tensor, not in its name."""
     return [target.replace(".experts.*.", ".experts.") for target in targets]
@@ -104,6 +119,7 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "deepseek_v32": mla,
         "glm4_moe_lite": mla,
         "glm_moe_dsa": mla,
+        "glm5_next": _glm5_next_arch_spec(),
         "kimi_k2": mla,
         "kimi_k25": mla,
         "joyai_llm_flash": mla,

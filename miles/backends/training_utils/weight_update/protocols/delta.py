@@ -120,11 +120,10 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self.is_sender = replica_rank == 0
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
-        # The first call only captures the baseline snapshot the next sync diffs against.
+        # Capture the HF baseline before the first publication.
         if not self._baseline_captured:
             self._capture_baseline(iter_buckets)
             self._baseline_captured = True
-            return False
         self._snapshot_file_version += 1
         self._begin_encode()
         return True
@@ -165,8 +164,8 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         base from — so the invariant ``snapshot == engine base`` holds even where the megatron->HF
         round-trip trims vocab-padding rows (embed/lm_head). Every emitted tensor must have the same
         layout as that canonical checkpoint because deltas operate on raw bytes. pull_weights(0)
-        makes each host materialize its local base now, overlapped with the snapshot gather, so the
-        first real sync only pays the delta apply."""
+        makes each host materialize its local base now, overlapped with the snapshot gather.
+        The same sync then publishes the loaded trainer weights and reloads the engines."""
         # a prior run's versions would apply against the wrong base; start the dir clean
         pulls = []
         if dist.get_rank() == 0:
@@ -237,26 +236,6 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
         if dist.get_rank() == 0:
             check_weight_sync_results(async_utils.wait_futures(pulls), is_lora=False)
-            if self.args.check_weight_update_equal:
-                # The weights checker resets engine tensors at startup and compares after the
-                # first sync, expecting it to rewrite every tensor. The baseline publishes
-                # nothing, so reload the just-pulled base checkpoint to restore engine state
-                # (and set the engine weight version the CI equality check expects).
-                results = async_utils.wait_futures(
-                    [
-                        async_utils.submit(
-                            client.update_weights_from_disk(
-                                model_path=self.args.update_weight_local_checkpoint_dir,
-                                weight_version="0",
-                            )
-                        )
-                        for client in self.rollout_engines
-                    ]
-                )
-                check_weight_sync_results(results, is_lora=False)
-            else:
-                # TODO: temporarily weaken checkers; should enhance and fix related logics
-                _update_weight_version_if_unset(self.rollout_engines, "0")
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
                 len(self._snapshot),
@@ -453,23 +432,3 @@ def _atomic_write(path: str, data: bytes) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
-
-
-_UNSET_WEIGHT_VERSION = "default"
-
-
-def _update_weight_version_if_unset(rollout_engines: Sequence[SGLangApiClient], weight_version: str) -> None:
-    reported = async_utils.wait_futures(
-        [async_utils.submit(client.get_weight_version()) for client in rollout_engines]
-    )
-    unset = [
-        client
-        for client, version in zip(rollout_engines, reported, strict=True)
-        if version in (None, _UNSET_WEIGHT_VERSION)
-    ]
-    async_utils.wait_futures(
-        [
-            async_utils.submit(client.update_weight_version(weight_version=weight_version, abort_all_requests=False))
-            for client in unset
-        ]
-    )

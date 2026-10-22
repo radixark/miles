@@ -11,6 +11,7 @@ test topology, because almost everything meaningful needs GPUs.
 ```text
 miles_diffusion/
 ├── train_diffusion.py             # the entry point — the whole train loop, ~90 lines
+├── train_sft.py                   # train-only entry point: generates rollout i+1 while i trains
 ├── miles/
 │   ├── backends/
 │   │   ├── fsdp_utils/            # the training half
@@ -64,7 +65,7 @@ Four tiers, by what they need:
 | Directory | Needs | What it is |
 |---|---|---|
 | `tests/fast/` | CPU only | Argument validation, config registry, dtype-map compilation, loss math, data splitting. The bulk of the suite. |
-| `tests/fast-gpu/` | 1-2 GPUs | FSDP behaviour that only exists on device: param-dtype maps, hybrid shard, SP attention parity, LoRA weight sync. Includes ported upstream PyTorch FSDP tests. |
+| `tests/fast-gpu/` | 1-4 GPUs | FSDP behaviour that only exists on device: param-dtype maps, hybrid shard, SP attention parity, LoRA weight sync. Includes ported upstream PyTorch FSDP tests. |
 | `tests/e2e/short/` | 2-5 GPUs | Runs an actual launch script for a few rollouts and compares its **metric series** against a recorded standard. |
 | `tests/ci/` | — | The harness itself: registry, label filter, suite runner, e2e standards. |
 
@@ -84,8 +85,9 @@ Stage A (CPU) gates every GPU stage: a broken import should not burn GPU runner 
 
 ### Registering a test with CI
 
-CI discovers tests by **AST-parsing** a `register_*_ci(...)` call at the top of the file — the
-call is a runtime no-op and never executes.
+CI discovers tests by **AST-parsing** a module-level `register_*_ci(...)` call — scheduling never
+imports the file, and `register_cpu_ci` / `register_cuda_ci` are runtime no-ops (`register_e2e_ci`,
+below, also runs the recipe when the file executes).
 
 ```python
 from tests.ci.ci_register import register_cpu_ci
@@ -107,7 +109,7 @@ register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=["fsdp"])
 |---|---|
 | `stage-a-cpu`, `stage-b-cpu` | CPU |
 | `stage-b-3-gpu-h200`, `stage-b-5-gpu-h200` | H200, split into 3-GPU and 5-GPU runners via per-runner `CUDA_VISIBLE_DEVICES` |
-| `stage-c-3-gpu-h200`, `stage-c-5-gpu-h200` | Same hardware; stage C holds the long e2e runs |
+| `stage-c-3-gpu-h200`, `stage-c-5-gpu-h200` | Same hardware; stage C holds the long e2e runs, plus the 4-GPU sequence-parallel attention parity test |
 
 ### Labels
 
@@ -123,8 +125,11 @@ them. The canonical registry is `tests/ci/labels.py`:
 | `ray` | Actors and placement groups |
 | `router` | Routing decisions |
 | `arguments` | Top-level argparse / `validate_args` |
+| `e2e` | Opt-in full-recipe GPU e2e runs (heavy) |
+| `model-scripts` | `train_diffusion.py` + `scripts/*.py` smoke tests |
 
-Two meta-labels bypass the filter and run everything: `run-ci-all` and `run-ci-image`.
+Two meta-labels bypass the filter and run everything: `run-ci-all` and `run-ci-image`. The filter is also bypassed for
+docs-only PRs (which stop after the CPU stages), manual dispatches, and the nightly schedule.
 
 Adding a label means adding an entry to `tests/ci/labels.py` **and** creating the matching
 `run-ci-<key>` label in GitHub repo settings. The workflow needs no edit — the stage job filters
@@ -170,7 +175,7 @@ pre-commit run --all-files --show-diff-on-failure --color=always
 ```
 
 Hooks: `ruff` (with `--fix`), `autoflake`, `isort` (black profile), `black`, plus the standard
-YAML / large-file / private-key checks.
+YAML / case-conflict / large-file / private-key checks and `requirements-txt-fixer`.
 
 - **Line length 119** (`black` and `isort` in `pyproject.toml`).
 - **Python ≥ 3.12** — modern syntax is fine (`X | None`, `match`, PEP 695 where it reads well).
@@ -184,7 +189,7 @@ YAML / large-file / private-key checks.
 A PR touching `docker/Dockerfile` or `requirements.txt` triggers an image build; every GPU suite
 then runs inside `radixark/miles_diffusion:pr-<num>` instead of `latest`, and a failed build stops
 the matrix. The fresh build outranks a `ci-image-tag:` directive in the PR body. Fork PRs skip
-the build and stay on `latest`. The tag is deleted when the PR closes.
+the build and run on the `ci-image-tag:` image if their body names one, else on `latest`. The tag is deleted when the PR closes.
 
 ## PR conventions
 

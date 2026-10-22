@@ -2,6 +2,7 @@ import importlib
 import sys
 from argparse import Namespace
 from collections.abc import Iterator
+from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -212,6 +213,10 @@ class _FakeWeightUpdater:
         self.conn_status = SimpleNamespace(needs_reconnect=lambda snapshot: False)
         self.protocol = SimpleNamespace(cell_updaters_of_cell_id={})
 
+    def receiver_pool(self, pool: str):
+        assert pool == "rollout"
+        return nullcontext()
+
     def update_weights(self, *, weight_version: int) -> None:
         self.weight_versions.append(weight_version)
         reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
@@ -243,6 +248,7 @@ def _make_updating_actor(
 def _update(train_actor: object, *, rollout_id: int | None) -> object:
     info = SimpleNamespace(
         rollout_engines=[],
+        receiver_pool="rollout",
         snapshot_cell_id_to_hashes={"rollout-0": "hash-a"},
         engine_gpu_counts=[],
         engine_gpu_offsets=[],

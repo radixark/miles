@@ -127,19 +127,20 @@ class TorchNativeTrainRayActor(TrainRayActor):
     @timer
     def sleep(self) -> None:
         if self.args.offload_train:
-            self._move_to("cpu")
+            self._move_train_state(to_host=True)
 
     @timer
     def wake_up(self) -> None:
         if self.args.offload_train:
-            self._move_to("cuda")
+            self._move_train_state(to_host=False)
 
-    def _move_to(self, device: str) -> None:
-        print_memory(f"before moving the model to {device}")
-        move_train_state(self.model_parts, self.optimizers, device)
+    def _move_train_state(self, *, to_host: bool) -> None:
+        where = "host" if to_host else "device"
+        print_memory(f"before moving the model to {where}")
+        move_train_state(self.model_parts, self.optimizers, to_host=to_host)
         clear_memory()
         dist.barrier(group=get_gloo_group())
-        print_memory(f"after moving the model to {device}")
+        print_memory(f"after moving the model to {where}")
 
     def train(
         self,

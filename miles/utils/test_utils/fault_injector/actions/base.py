@@ -1,7 +1,9 @@
 import abc
 import asyncio
 import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field
@@ -34,3 +36,21 @@ class FaultHookResources:
 class BaseFaultAction(FrozenStrictBaseModel, abc.ABC):
     @abc.abstractmethod
     async def __call__(self, *, context: FaultHookContext, resources: FaultHookResources) -> None: ...
+
+
+PARKABLE_TRAIN_SCRIPT: str = "train.py"
+
+
+def _assert_synchronous_orchestrator(args: object, trainer_model_id: str | None, action: str) -> None:
+    assert (script := Path(sys.argv[0]).name) == PARKABLE_TRAIN_SCRIPT, (
+        f"{action} runs between synchronous steps, and only {PARKABLE_TRAIN_SCRIPT} stands still there; "
+        f"{script} has already started the next rollout by the time it reaches here"
+    )
+    assert (interval := args.update_weights_interval) == 1, (
+        f"{action} runs where weights update, and --update-weights-interval {interval} means the run does not "
+        "pass through that point after every step"
+    )
+    assert trainer_model_id is None, (
+        f"{action} pauses one coroutine, and a run training several policies drives one per policy "
+        f"({trainer_model_id!r} reached it here), so every other policy would keep training past this step"
+    )

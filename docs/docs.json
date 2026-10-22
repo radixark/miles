@@ -318,6 +318,7 @@
     "tab": "Diffusion",
     "pages": [
      "diffusion/index",
+     "diffusion/fsdp_model_roles",
      {
       "group": "Getting Started",
       "pages": [
@@ -340,9 +341,25 @@
       "group": "Models",
       "pages": [
        "diffusion/models/cosmos/cosmos3",
-       "diffusion/models/h3/h3",
+       "diffusion/models/flux3/flux3-image",
+       {
+        "group": "h3",
+        "pages": [
+         "diffusion/models/h3/h3",
+         "diffusion/models/h3/lora_sft_guide"
+        ],
+        "expanded": false
+       },
+       "diffusion/models/krea/krea2",
        "diffusion/models/ltx/ltx2",
-       "diffusion/models/qwen-image/qwen-image",
+       {
+        "group": "qwen-image",
+        "pages": [
+         "diffusion/models/qwen-image/qwen-image-21",
+         "diffusion/models/qwen-image/qwen-image"
+        ],
+        "expanded": false
+       },
        "diffusion/models/sd3/sd3",
        "diffusion/models/wan/wan2-2"
       ]
