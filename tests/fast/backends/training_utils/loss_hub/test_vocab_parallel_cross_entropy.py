@@ -99,7 +99,8 @@ def _check_compute_log_probs_without_megatron(rank: int, world_size: int, port: 
         group = dist.new_group([0])
         logits = _full_logits(torch.float32)[:, 0]
         tokens = _target()[:, 0]
-        expected = torch.log_softmax(logits, dim=-1).gather(-1, tokens.unsqueeze(-1)).squeeze(-1)
+        # [seq, 1], the shape compute_log_probs has always returned
+        expected = torch.log_softmax(logits, dim=-1).gather(-1, tokens.unsqueeze(-1))
 
         torch.testing.assert_close(compute_log_probs(logits, tokens, group), expected, atol=1e-6, rtol=1e-6)
     finally:
