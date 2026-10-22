@@ -2366,7 +2366,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Ask every inference engine for a full weight checksum after each weight update and record it "
                 "in the event log. The engines materialize all weights to answer, which costs a large transient "
-                "allocation, so this defaults on only when an event directory was explicitly requested.",
+                "allocation, so this defaults on only when an event directory was explicitly requested "
+                "(--save-debug-event-data or --dump-details); the directory --save implies does not count.",
             )
             parser.add_argument(
                 "--enable-sample-ownership-checker",
@@ -3369,7 +3370,9 @@ def validate_log_probs_backend_args(args) -> None:
 def _resolve_event_logging(args: argparse.Namespace) -> None:
     event_directory_was_requested = args.save_debug_event_data is not None
 
-    if not event_directory_was_requested and args.ci_test:
+    if args.save_debug_event_data is None and args.save is not None:
+        args.save_debug_event_data = f"{args.save}/{EVENTS_DIRNAME}"
+    if args.save_debug_event_data is None and args.ci_test:
         root = Path(args.ci_event_root) if args.ci_event_root is not None else Path(tempfile.gettempdir())
         args.save_debug_event_data = str(root / "miles-ci" / args.run_uuid / EVENTS_DIRNAME)
 
@@ -3757,9 +3760,6 @@ def miles_validate_args(args):
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
         args.save_debug_trajectory_data = f"{args.dump_details}/trajectory/{{rollout_id}}.jsonl"
         args.save_debug_event_data = f"{args.dump_details}/{EVENTS_DIRNAME}"
-
-    if args.save_debug_event_data is None and args.save is not None:
-        args.save_debug_event_data = f"{args.save}/{EVENTS_DIRNAME}"
 
     if args.load_debug_rollout_data is not None:
         logger.info(
