@@ -16,7 +16,7 @@ from tests.utils.dirs import get_test_data_dir, get_test_model_dir
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=900, suite="stage-c-2-gpu-h200", labels=["mooncake"], hardware=["hopper"], num_gpus=2)
+register_cuda_ci(est_time=800, suite="stage-c-2-gpu-h200", labels=["mooncake"], hardware=["hopper"], num_gpus=2)
 
 MODEL_DIR = get_test_model_dir()
 DATA_DIR = get_test_data_dir()
