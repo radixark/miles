@@ -157,6 +157,27 @@ class TestSglangOverridePrecedence:
         assert server_args["mem_fraction_static"] == 0.7
 
 
+class TestOutputStore:
+    def test_every_engine_writes_to_the_run_store_with_its_own_host(self, monkeypatch):
+        """The engine's address goes into its store config, without the IPv6 brackets."""
+        hosts = []
+
+        def server_args(args, *, local_hostname):
+            hosts.append(local_hostname)
+            return {"output_store_backend": "mooncake"}
+
+        monkeypatch.setattr(sglang_engine, "sglang_output_store_server_args", server_args)
+        monkeypatch.setattr(sglang_engine, "_record_field_names", lambda record: ("output_store_backend",))
+
+        kwargs = compute(make_args(use_output_store=True), host="[::1]")
+
+        assert hosts == ["::1"]
+        assert kwargs["output_store_backend"] == "mooncake"
+
+    def test_without_the_switch_no_store_is_set(self):
+        assert "output_store_backend" not in compute(make_args())
+
+
 class TestAdapterOwnership:
     def test_a_trainer_run_leaves_the_adapter_to_the_first_weight_sync(self):
         """An engine that also loaded the adapter from disk would serve stale weights if the sync were skipped."""
@@ -194,24 +215,3 @@ class TestAttentionDpLoRA:
         pinned = {"lora_name": "miles_lora", "lora_path": "/fake/adapter", "pinned": True}
         assert server_args["lora_paths"] == [pinned if attention_dp else "miles_lora=/fake/adapter"]
         assert server_args["max_loras_per_batch"] == (2 if attention_dp else 1)
-
-
-class TestOutputStore:
-    def test_every_engine_writes_to_the_run_store_with_its_own_host(self, monkeypatch):
-        """The engine's address goes into its store config, without the IPv6 brackets."""
-        hosts = []
-
-        def server_args(args, *, local_hostname):
-            hosts.append(local_hostname)
-            return {"output_store_backend": "mooncake"}
-
-        monkeypatch.setattr(sglang_engine, "sglang_output_store_server_args", server_args)
-        monkeypatch.setattr(sglang_engine, "_record_field_names", lambda record: ("output_store_backend",))
-
-        kwargs = compute(make_args(use_output_store=True), host="[::1]")
-
-        assert hosts == ["::1"]
-        assert kwargs["output_store_backend"] == "mooncake"
-
-    def test_without_the_switch_no_store_is_set(self):
-        assert "output_store_backend" not in compute(make_args())
