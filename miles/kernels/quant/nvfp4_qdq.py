@@ -7,8 +7,8 @@ load, FP4 conversion, and Four Over Six structure are adapted from FlashInfer's
 CuTe DSL NVFP4 quantizer.
 
 For the W4A16 RL recipe and fused weight QDQ design, see
-"Faster-than-light NVFP4 decode—with precision" by Ziang Li and friends at
-humans&: https://humansand.ai/blog/faster-than-light-nvfp4-decode
+"Faster-than-light NVFP4 decode—with precision" by Ziang Li at humans& ai:
+https://humansand.ai/blog/faster-than-light-nvfp4-decode
 
 Supported contract:
 
