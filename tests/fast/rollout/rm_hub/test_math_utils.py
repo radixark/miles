@@ -36,7 +36,9 @@ class TestRemoveBoxed:
             (r"\boxed{42}", "42"),
             (r"\boxed{x^2 + 1}", "x^2 + 1"),
             (r"\boxed{\frac{1}{2}}", r"\frac{1}{2}"),
+            (r"\fbox{7}", "7"),
             ("not boxed", None),
+            (None, None),
         ],
     )
     def test_remove_boxed(self, input_str, expected):
@@ -50,6 +52,8 @@ class TestExtractAnswer:
             (r"The answer is \boxed{42}", "42"),
             (r"So \boxed{\frac{1}{2}}", r"\frac{1}{2}"),
             (r"Multiple \boxed{1} then \boxed{final}", "final"),
+            (r"so the answer is $\fbox{7}$.", "7"),
+            (r"\fbox{1} then \boxed{2}", "2"),
             (r"No boxed here", None),
             ("", None),
         ],
@@ -118,6 +122,7 @@ class TestGradeAnswerVerl:
             (r"The answer is \boxed{42}", "42", True),
             (r"\boxed{1/2}", r"\frac{1}{2}", True),
             (r"\boxed{wrong}", "42", False),
+            (r"so the answer is $\fbox{42}$.", "42", True),
             ("no boxed", "42", False),
             (r"\boxed{42}", r"\boxed{42}", True),
             ("", "42", False),
