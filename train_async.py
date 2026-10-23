@@ -18,6 +18,8 @@ from miles.utils.orchestration_utils import init_orchestration_script
 
 logger = logging.getLogger(__name__)
 
+_SAVE_TRIGGER_POLL_INTERVAL_S = 5
+
 
 # The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
 async def train(args, *, disposer: Disposer):
@@ -68,6 +70,40 @@ async def train(args, *, disposer: Disposer):
         if args.use_critic and args.offload_train:
             await model.offload()
 
+    async def save(rollout_id, force_sync):
+        await save_training_model(actor_model, rollout_id, force_sync)
+        if args.use_critic:
+            await save_training_model(critic_model, rollout_id, force_sync)
+        await rollout_executor.save(rollout_id)
+
+    last_saved_rollout_id = None
+
+    async def wait_for_rollout(future, *, trained_rollout_id):
+        nonlocal last_saved_rollout_id
+        # Left to the end-of-step save: without --fully-async (a rollout in flight is not checkpointed), colocated
+        # (the trainer is offloaded while the engines generate) and before this process has trained a step.
+        if (
+            args.save_trigger_sentinel is None
+            or not args.fully_async
+            or args.colocate
+            or trained_rollout_id < args.start_rollout_id
+        ):
+            return await future
+        try:
+            while True:
+                done, _ = await asyncio.wait([future], timeout=_SAVE_TRIGGER_POLL_INTERVAL_S)
+                if done:
+                    return future.result()
+                if not os.path.exists(args.save_trigger_sentinel):
+                    continue
+                if last_saved_rollout_id != trained_rollout_id:
+                    logger.info("Save triggered while waiting for a rollout: saving rollout_id=%d", trained_rollout_id)
+                    await save(trained_rollout_id, force_sync=True)
+                    last_saved_rollout_id = trained_rollout_id
+                os.remove(args.save_trigger_sentinel)
+        finally:
+            future.cancel()
+
     async def offload_train():
         if args.use_critic:
             return
@@ -85,7 +121,7 @@ async def train(args, *, disposer: Disposer):
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:
-            rollout_data_curr_ref = await rollout_data_next_future
+            rollout_data_curr_ref = await wait_for_rollout(rollout_data_next_future, trained_rollout_id=rollout_id - 1)
 
         has_next_rollout = rollout_id + 1 < args.num_rollout
         weight_update_due = (rollout_id + 1) % args.update_weights_interval == 0
@@ -122,10 +158,9 @@ async def train(args, *, disposer: Disposer):
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
         ):
             force_sync = external_save or rollout_id == args.num_rollout - 1
-            await save_training_model(actor_model, rollout_id, force_sync)
-            if args.use_critic:
-                await save_training_model(critic_model, rollout_id, force_sync)
-            await rollout_executor.save(rollout_id)
+            await save(rollout_id, force_sync)
+            if force_sync or not args.async_save:
+                last_saved_rollout_id = rollout_id
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
