@@ -60,7 +60,10 @@ class TestResolveRequestArgsByConfig:
         assert wire["return_routed_experts"] is True
         assert wire["return_indexer_topk"] is True
 
-    @pytest.mark.parametrize("field", ["input_ids", "routed_experts_start_len", "logprob_start_len", "lora_path"])
+    @pytest.mark.parametrize(
+        "field",
+        ["input_ids", "routed_experts_start_len", "routed_experts_session_key", "logprob_start_len", "lora_path"],
+    )
     def test_client_tito_control_fields_are_rejected(self, field):
         with pytest.raises(MessageValidationError, match=f"{field}="):
             resolve_request_args_by_config({field: 1}, make_session_server_config())
@@ -94,9 +97,18 @@ class TestResolveRequestArgsByConfig:
                 {"input_ids": [1], "chat_template_kwargs": "oops"}, make_session_server_config()
             )
 
-    @pytest.mark.parametrize("field", ["input_ids", "routed_experts_start_len", "logprob_start_len", "lora_path"])
+    @pytest.mark.parametrize(
+        "field",
+        ["input_ids", "routed_experts_start_len", "routed_experts_session_key", "logprob_start_len", "lora_path"],
+    )
     def test_null_control_fields_are_removed(self, field):
         wire, _ = resolve_request_args_by_config({field: None}, make_session_server_config())
+        assert field not in wire
+
+    @pytest.mark.parametrize("field", ["routed_experts_start_len", "routed_experts_session_key"])
+    def test_evaluation_drops_client_replay_fields(self, field):
+        """Evaluation never replays, so a client's replay field is dropped instead of refused."""
+        wire, _ = resolve_request_args_by_config({field: 1}, make_session_server_config(), evaluation=True)
         assert field not in wire
 
     def test_selected_lora_path_is_accepted(self):

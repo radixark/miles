@@ -243,6 +243,12 @@ class ModelConfig(FrozenStrictBaseModel):
                 update_weights = False
             else:
                 update_weights = True
+        if not update_weights:
+            # Only the trained model's sessions are forced, and a frozen model need not be MoE.
+            server_groups = [
+                group.model_copy(update=dict(overrides={"enable_routed_experts_forcing": False} | group.overrides))
+                for group in server_groups
+            ]
 
         return cls(
             name=raw.name,
@@ -352,6 +358,7 @@ def _eval_sglang_overrides(args) -> dict:
         # Eval samples never feed training, so the replay side-channels are pure overhead.
         "enable_return_routed_experts": False,
         "enable_return_indexer_topk": False,
+        "enable_routed_experts_forcing": False,
     }
     if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
         # Inheriting these across a different tp gives an engine SGLang refuses to boot.

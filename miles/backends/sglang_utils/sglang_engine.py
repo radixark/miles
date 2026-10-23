@@ -140,6 +140,8 @@ def _compute_server_args(
 
     if args.use_rollout_routing_replay:
         kwargs["enable_return_routed_experts"] = True
+    if args.use_rollout_routing_replay_forcing:
+        kwargs["enable_routed_experts_forcing"] = True
     if args.use_rollout_indexer_replay:
         kwargs["enable_return_indexer_topk"] = True
     if args.fp16:

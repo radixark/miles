@@ -190,7 +190,9 @@ The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, on
 for each selected tree leaf. Both versions reject `--partial-rollout`. With R3
 replay, every pause mode except `retract` requests only additional R3 rows.
 `retract` returns full R3 data on every turn and emits a warning because the
-payloads can become very large.
+payloads can become very large, unless v1 runs with
+[routing replay forcing](/advanced/miles-router#routing-replay-forcing-for-multi-turn-sessions),
+which keeps first-computed routes across retract and requests only new rows.
 
 Set `--max-seq-len` to cap the context length. Miles also includes this value in the
 metadata passed to your agent so an external environment can stop early.

@@ -250,6 +250,7 @@ Sections mirror the launch-script argument groups.
 | `--use-tis` | flag | off | Truncated Importance Sampling. |
 | `--use-routing-replay` | flag | off | Forward/backward routing consistency. |
 | `--use-rollout-routing-replay` | flag | off | R3 — capture inference-side expert routing and replay it during training. |
+| `--use-rollout-routing-replay-forcing` | flag | off | Session R3 (v1): engines reuse first-computed routes on re-prefill; see [routing replay forcing](/advanced/miles-router#routing-replay-forcing-for-multi-turn-sessions). |
 | `--calculate-per-token-loss` | flag | off | Per-token loss reduction. |
 | `--no-check-for-nan-in-loss-and-grad` | flag | off | Skip NaN/Inf guard (Megatron flag, debug only). |
 | `--true-on-policy-mode` | flag | off | Strict on-policy: reject samples from a prior policy. |

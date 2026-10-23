@@ -48,6 +48,7 @@ def _serve_router(extra_args: dict | None = None):
             "apply_chat_template_kwargs": {"enable_thinking": False},
             "tito_model": "default",
             "use_rollout_routing_replay": False,
+            "use_rollout_routing_replay_forcing": False,
             "use_rollout_indexer_replay": False,
             "use_sampling_support_replay": False,
             "rollout_top_logprobs_num": 0,

@@ -23,6 +23,7 @@ def make_args(**overrides: object) -> SimpleNamespace:
         sglang_ep_size=1,
         sglang_mem_fraction_static=0.7,
         use_rollout_routing_replay=False,
+        use_rollout_routing_replay_forcing=False,
         use_rollout_indexer_replay=False,
         fp16=False,
         lora_adapter_path=None,
@@ -150,6 +151,13 @@ class TestSglangOverridePrecedence:
         assert server_args["dtype"] == "float16"
         assert server_args["enable_lora"] is True
         assert server_args["mem_fraction_static"] == 0.7
+
+
+def test_routing_replay_forcing_turns_forcing_on_in_the_engine(monkeypatch):
+    fields = [("gated_launch_port", int), ("enable_routed_experts_forcing", bool)]
+    monkeypatch.setattr(sglang_engine, "ServerArgs", dataclasses.make_dataclass("ServerArgs", fields))
+
+    assert compute(make_args(use_rollout_routing_replay_forcing=True))["enable_routed_experts_forcing"] is True
 
 
 class TestAdapterOwnership:

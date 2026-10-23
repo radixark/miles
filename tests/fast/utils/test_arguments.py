@@ -2218,6 +2218,16 @@ class TestSessionServerPauseGenerationMode:
                 ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "in_place"],
                 False,
             ),
+            (
+                [
+                    "--use-session-server",
+                    "--use-rollout-routing-replay",
+                    "--use-rollout-routing-replay-forcing",
+                    "--pause-generation-mode",
+                    "retract",
+                ],
+                False,
+            ),
         ],
     )
     def test_retract_r3_warning(self, caplog, extra, expect_warning):
@@ -2228,6 +2238,32 @@ class TestSessionServerPauseGenerationMode:
 
         warned = any("R3 payloads can become very large" in record.message for record in caplog.records)
         assert warned is expect_warning
+
+
+class TestRoutingReplayForcingValidation:
+    _R3_V1 = ["--use-rollout-routing-replay", "--use-session-server"]
+
+    def _validate(self, extra):
+        argv = ["--use-rollout-routing-replay-forcing", *extra, "--num-rollout", "1", *REQUIRED_ARGS]
+        miles_validate_args(get_megatron_arg_parser().parse_args(argv))
+
+    @pytest.mark.parametrize("policy", [[], ["--sglang-router-policy", "consistent_hashing"]])
+    def test_a_v1_session_layout_that_pins_sessions_passes(self, policy):
+        self._validate([*self._R3_V1, *policy])
+
+    @pytest.mark.parametrize(
+        ("extra", "reason"),
+        [
+            (["--use-session-server"], "and --use-session-server v1"),
+            (["--use-rollout-routing-replay"], "and --use-session-server v1"),
+            ([*_R3_V1, "v2"], "and --use-session-server v1"),
+            ([*_R3_V1, "--use-miles-router"], "pins a session to one engine"),
+            ([*_R3_V1, "--sglang-router-policy", "round_robin"], "pins a session to one engine"),
+        ],
+    )
+    def test_a_layout_forcing_cannot_serve_is_refused(self, extra, reason):
+        with pytest.raises(ValueError, match=reason):
+            self._validate(extra)
 
 
 class TestSnapshotEvalValidation:

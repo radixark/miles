@@ -6,6 +6,7 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
 - ``collect_samples`` captures committed session state, then assembles and encodes it off the event loop; deterministic assembly failures return 422 with the assertion text.
+- Routing replay forcing fails closed: a turn the engine refused or did not confirm as forced returns 503 and marks the session; its later turns get 503 without reaching the engine and its collect returns no samples.
 """
 
 import asyncio
@@ -22,6 +23,8 @@ from starlette.responses import Response
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
+    FORCING_REFUSED_TURNS_KEY,
+    RoutingReplayForcingRefusedError,
     SessionNotFoundError,
     TokenizationError,
     UpstreamGenerationAbortedError,
@@ -159,6 +162,14 @@ def proxy_result_to_response(result: dict) -> Response:
     return Response(content=_render_json(data), status_code=status_code, headers=headers, media_type=JSON_MEDIA_TYPE)
 
 
+# SGLang's routed-experts forcing refusals: the finish_reason message of each is "<code>: <detail>".
+_ROUTED_EXPERTS_FORCING_REFUSALS = (
+    "routed_experts_forcing_disabled",
+    "routed_experts_forcing_requires_return_routed_experts",
+    "routed_experts_missing",
+)
+
+
 def extract_completion(result: dict) -> tuple:
     """Decode and validate the backend chat response — shared verbatim by the
     v1 and v2 cores. Returns ``(response, choice, assistant_message,
@@ -169,6 +180,9 @@ def extract_completion(result: dict) -> tuple:
     response = orjson.loads(result["response_body"])
     choice = response.get("choices", [{}])[0]
     if choice.get("finish_reason") == "abort":
+        message = ((choice.get("meta_info") or {}).get("finish_reason") or {}).get("message") or ""
+        if message.split(":", 1)[0] in _ROUTED_EXPERTS_FORCING_REFUSALS:
+            raise RoutingReplayForcingRefusedError(f"routed-experts forcing refused the turn: {message}")
         raise UpstreamGenerationAbortedError("upstream generation aborted before completion")
 
     meta_info = choice.get("meta_info")
@@ -195,6 +209,20 @@ def extract_completion(result: dict) -> tuple:
 
     completion_token_ids = [t[1] for t in output_token_logprobs]
     return response, choice, assistant_message, completion_token_ids
+
+
+def _check_routed_experts_forcing_honored(meta_info: dict) -> None:
+    """Fail closed unless the engine confirms it forced every held token it recomputed for this turn."""
+    forcing = meta_info.get("routed_experts_forcing")
+    unforced = forcing.get("unforced_tokens") if isinstance(forcing, dict) else None
+    if unforced is None:
+        raise RoutingReplayForcingRefusedError(
+            f"the engine reported no unforced_tokens for a routed_experts_session_key turn (got {forcing!r})"
+        )
+    if unforced:
+        raise RoutingReplayForcingRefusedError(
+            f"the engine recomputed {unforced} held tokens without forcing their routes"
+        )
 
 
 class SessionCore:
@@ -303,6 +331,11 @@ class SessionCore:
         fields = COMPUTED_FIELDS
         if session.sampling_support_replay:
             fields += ROLLOUT_SAMPLING_MASK_FIELDS
+        if session.forcing_refused_turns:
+            metadata[FORCING_REFUSED_TURNS_KEY] = session.forcing_refused_turns
+            return _samples_response(
+                encode_samples([], metadata, empty_reason="routing_replay_forcing_refused", fields=fields)
+            )
         if not session.records:
             return _samples_response(encode_samples([], metadata, empty_reason="no_records", fields=fields))
         try:
@@ -359,6 +392,11 @@ class SessionCore:
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            if session.forcing_refused_turns:
+                # A refused session cannot yield a sample, so later turns fail fast without reaching the engine.
+                raise RoutingReplayForcingRefusedError(
+                    f"session {session_id} already had a turn refused by routing replay forcing"
+                )
 
             client_args = parse_chat_request(body)
             prepared = session.prepare_token_ids_and_request_args(
@@ -376,6 +414,8 @@ class SessionCore:
             # prepare_token_ids_and_request_args applied any retry rollback, so token_ids is
             # the checkpoint this request builds on.
             self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
+            if self.config.use_rollout_routing_replay_forcing and "routed_experts_start_len" in request_body:
+                request_body["routed_experts_session_key"] = session_id
 
             # orjson: the body carries the whole prompt's input_ids on every turn.
             proxy_body = orjson.dumps(request_body)
@@ -393,7 +433,15 @@ class SessionCore:
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        try:
+            response, choice, assistant_message, completion_token_ids = extract_completion(result)
+            if "routed_experts_session_key" in request_body:
+                _check_routed_experts_forcing_honored(choice["meta_info"])
+        except RoutingReplayForcingRefusedError as exc:
+            logger.error(f"Session {session_id}: {exc}; its sample will be aborted")
+            async with session.lock:
+                session.forcing_refused_turns += 1
+            raise
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,

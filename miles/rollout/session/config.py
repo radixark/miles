@@ -14,6 +14,7 @@ class SessionServerConfig(FrozenStrictBaseModel):
     tito_model: str
     apply_chat_template_kwargs: dict[str, Any] | None
     use_rollout_routing_replay: bool
+    use_rollout_routing_replay_forcing: bool
     use_rollout_indexer_replay: bool
     use_sampling_support_replay: bool
     sglang_speculative_algorithm: str | None
@@ -47,6 +48,7 @@ def compute_session_server_config(
         tito_model=args.tito_model,
         apply_chat_template_kwargs=args.apply_chat_template_kwargs,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
+        use_rollout_routing_replay_forcing=args.use_rollout_routing_replay_forcing,
         use_rollout_indexer_replay=args.use_rollout_indexer_replay,
         use_sampling_support_replay=args.use_sampling_support_replay,
         sglang_speculative_algorithm=args.sglang_speculative_algorithm,

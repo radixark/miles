@@ -1876,6 +1876,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "explicitly.",
             )
             parser.add_argument(
+                "--use-rollout-routing-replay-forcing",
+                action="store_true",
+                default=False,
+                help="Requires --use-rollout-routing-replay and --use-session-server v1. SGLang reuses the MoE "
+                "routes it first computed for a session's tokens whenever it re-prefills them, and refuses a turn "
+                "whose routes it no longer holds, which aborts that sample. See docs/advanced/miles-router.md.",
+            )
+            parser.add_argument(
                 "--use-indexer-replay",
                 action="store_true",
                 default=False,
@@ -3275,6 +3283,21 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
     return list(args.ft_components)
 
 
+def _validate_rollout_routing_replay_forcing(args) -> None:
+    """The Miles side of routing replay forcing; SGLang refuses at startup the engine settings it cannot honor."""
+    if not args.use_rollout_routing_replay_forcing:
+        return
+    if not args.use_rollout_routing_replay or args.use_session_server not in (True, "v1"):
+        raise ValueError(
+            "--use-rollout-routing-replay-forcing requires --use-rollout-routing-replay and --use-session-server v1"
+        )
+    if args.use_miles_router or args.sglang_router_policy not in (None, "manual", "consistent_hashing"):
+        raise ValueError(
+            "--use-rollout-routing-replay-forcing needs a router policy that pins a session to one engine "
+            "(manual or consistent_hashing, without --use-miles-router)"
+        )
+
+
 def _validate_rematerialize_param_from_master_weight(args):
     if not args.rematerialize_param_from_master_weight:
         return
@@ -3520,7 +3543,13 @@ def miles_validate_args(args):
                 f"--use-session-server v2 does not support {', '.join(unsupported)}; v2 returns list[Sample]"
             )
 
-    if args.use_session_server and args.use_rollout_routing_replay and args.pause_generation_mode == "retract":
+    _validate_rollout_routing_replay_forcing(args)
+    if (
+        args.use_session_server
+        and args.use_rollout_routing_replay
+        and args.pause_generation_mode == "retract"
+        and not args.use_rollout_routing_replay_forcing
+    ):
         logger.warning(
             "--use-session-server with --use-rollout-routing-replay and "
             "--pause-generation-mode=retract returns full R3 data on every turn; "

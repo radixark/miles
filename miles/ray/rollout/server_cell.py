@@ -230,8 +230,20 @@ class ServerCell:
 
     async def mark_weights_ready(self) -> None:
         assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
+        if self.args.use_rollout_routing_replay_forcing:
+            await self._check_routed_experts_forcing_capability()
         await self._register_with_router(addr_info=self._state.addr_info)
         self._mark_serving()
+
+    async def _check_routed_experts_forcing_capability(self) -> None:
+        """Refuse to publish an engine without forcing: Miles drops launch args an older SGLang does not know."""
+        capability = (await self.api_client.get_server_info()).get("routed_experts_forcing")
+        if (capability or {}).get("version", 0) < 1:
+            raise RuntimeError(
+                f"--use-rollout-routing-replay-forcing: engine {self.server_url} (cell {self.meta.cell_id}) reports "
+                f"no routed_experts_forcing capability in /server_info (got {capability!r}); it needs an SGLang "
+                "with routed-experts forcing, launched with --enable-routed-experts-forcing"
+            )
 
     async def _register_with_router(self, addr_info: CellAddrInfo) -> None:
         await self.router_api_client.add_worker(

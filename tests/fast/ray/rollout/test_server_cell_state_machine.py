@@ -115,6 +115,9 @@ class _ResultApiClient:
             dict(action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list),
         )
 
+    async def get_server_info(self):
+        return await self._record("get_server_info", {})
+
     async def _record(self, name: str, kwargs: dict):
         _ResultApiClient.calls.append((name, kwargs))
         if (error := _ResultApiClient.errors.get(name)) is not None:
@@ -628,6 +631,47 @@ class TestTick:
         await cell.tick()
 
         assert isinstance(cell._state, StatePendingWeights)
+
+
+class TestRoutedExpertsForcingCapability:
+    _FORCING = dict(use_rollout_routing_replay_forcing=True)
+
+    async def test_a_trained_engine_reporting_the_capability_joins_the_router(self, result_api_client):
+        result_api_client.results["get_server_info"] = {"routed_experts_forcing": {"version": 1, "max_tokens": 4096}}
+        router = _RecordingRouterApiClient()
+        cell = _make_cell(router=router, args_overrides=self._FORCING)
+        await cell.init()
+        await cell.tick()
+
+        await cell.mark_weights_ready()
+
+        assert cell.is_serving
+        assert [name for name, _kwargs in router.calls] == ["add_worker"]
+
+    async def test_a_trained_engine_without_the_capability_fails_the_weight_sync(self, result_api_client):
+        """Miles drops the launch arg for an SGLang without forcing, so the weight sync fails instead of
+        publishing the engine."""
+        result_api_client.results["get_server_info"] = {}
+        router = _RecordingRouterApiClient()
+        cell = _make_cell(router=router, args_overrides=self._FORCING)
+        await cell.init()
+        await cell.tick()
+        assert cell.is_pending_weights
+
+        with pytest.raises(RuntimeError, match="reports no routed_experts_forcing capability"):
+            await cell.mark_weights_ready()
+
+        assert router.calls == []
+
+    async def test_a_frozen_engine_serves_without_the_capability(self, result_api_client):
+        """Sessions reach only the trained model; a frozen model's engines run without forcing."""
+        result_api_client.results["get_server_info"] = {}
+        cell = _make_cell(update_weights=False, args_overrides=self._FORCING)
+        await cell.init()
+
+        await cell.tick()
+
+        assert cell.is_serving
 
 
 def _pretend_started_long_ago(cell: ServerCell) -> None:
