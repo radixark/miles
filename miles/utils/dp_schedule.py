@@ -37,6 +37,17 @@ def _calculate_workloads(step_lengths, args):
     return [calculate_fwd_flops([sl], args) for sl in step_lengths]
 
 
+def _pack(step_lengths, workloads, max_per_bin, balance_by_flops):
+    """Pack under the token budget: first-fit, or FLOPs-balanced partitions under
+    --balance-by-flops (which does not enforce the token cap per micro-batch)."""
+    if balance_by_flops:
+        micro_batch_count = max(1, (sum(step_lengths) + max_per_bin - 1) // max_per_bin)
+        if micro_batch_count >= len(step_lengths):
+            return [[i] for i in range(len(step_lengths))]
+        return get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
+    return first_fit_decreasing_pack(step_lengths, max_per_bin)
+
+
 def build_dp_schedule(
     args: Any,
     train_parallel_config: TrainParallelConfig,
@@ -103,19 +114,24 @@ def build_dp_schedule(
         # Shared by FLOPs-balanced packing and FLOPs-balanced distribution below.
         workloads = _calculate_workloads(step_lengths, args) if balance_by_flops else None
         if args.use_dynamic_batch_size:
-            # Pack under the token budget: first-fit, or FLOPs-balanced partitions under
-            # --balance-by-flops (which does not enforce the token cap per micro-batch).
-            if balance_by_flops:
-                total_tokens = sum(step_lengths)
-                micro_batch_count = max(1, (total_tokens + max_per_bin - 1) // max_per_bin)
-                if micro_batch_count >= len(step_lengths):
-                    step_micro_batches = [[i] for i in range(len(step_lengths))]
-                else:
-                    step_micro_batches = get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
-            else:
-                step_micro_batches = first_fit_decreasing_pack(step_lengths, max_per_bin)
+            step_micro_batches = _pack(step_lengths, workloads, max_per_bin, balance_by_flops)
             # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
             target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
+            # Splitting stops at one sample per micro-batch. When the aligned count needs more micro-batches
+            # than the step has samples (long samples of a compact batch), drop the step's last whole rollout.
+            while target > len(step_lengths) and len(picked_rollouts) > 1:
+                picked_rollouts = picked_rollouts[:-1]
+                sample_indices = [pos for rid in picked_rollouts for pos in rollout_id_to_sample_index[rid]]
+                step_lengths = [total_lengths[i] for i in sample_indices]
+                workloads = _calculate_workloads(step_lengths, args) if balance_by_flops else None
+                step_micro_batches = _pack(step_lengths, workloads, max_per_bin, balance_by_flops)
+                target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
+            if len(picked_rollouts) < step_num_rollouts:
+                logger.info(
+                    f"step {step_i}: dropped {step_num_rollouts - len(picked_rollouts)} trailing rollouts so its "
+                    f"micro-batch count can align to {align_to}"
+                )
+                num_rollouts[step_i] = len(picked_rollouts)
             if target != len(step_micro_batches):
                 expand_bins_by_splitting(step_micro_batches, target, step_lengths)
                 assert len(step_micro_batches) == target, (

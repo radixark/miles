@@ -443,3 +443,24 @@ def test_train_parallel_config_declares_schedule_support() -> None:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+def test_compact_step_drops_trailing_rollouts_when_long_samples_cannot_align():
+    # 4 rollouts, 5 samples; each sample fills a micro-batch alone, so 5 cannot split into the 6 dp_size=2 needs.
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=100)
+    schedule = build_dp_schedule(
+        args, make_tp(dp_size=2), [60] * 5, global_batch_size=4, rollout_indices=[0, 0, 1, 2, 3]
+    )
+    assert schedule.num_rollouts == [3]
+    assert schedule.num_microbatches == [2]
+    assert sorted(i for rank in schedule.partitions for i in rank) == [0, 1, 2, 3]
+
+
+def test_compact_step_keeps_every_rollout_when_splitting_can_align():
+    # Short samples pack two per micro-batch; splitting reaches an aligned count, so nothing is dropped.
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=100)
+    schedule = build_dp_schedule(
+        args, make_tp(dp_size=2), [40] * 5, global_batch_size=4, rollout_indices=[0, 0, 1, 2, 3]
+    )
+    assert schedule.num_rollouts == [4]
+    assert sorted(i for rank in schedule.partitions for i in rank) == [0, 1, 2, 3, 4]
