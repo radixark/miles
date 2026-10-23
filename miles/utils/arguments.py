@@ -2579,7 +2579,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--loss-mask-type",
                 type=str,
                 default="qwen",
-                choices=["qwen", "qwen3", "distill_qwen"],
+                choices=["qwen", "qwen3", "distill_qwen", "glm5"],
                 help="Loss mask type",
             )
             parser.add_argument(
@@ -2631,9 +2631,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             """
             from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
             from miles_plugins.models.glm5.arguments import add_dsa_arguments
+            from miles_plugins.models.glm5_next.arguments import add_glm5_next_vision_arguments
 
             add_dsv4_arguments(parser)
             add_dsa_arguments(parser)
+            add_glm5_next_vision_arguments(parser)
             parser.add_argument(
                 "--custom-megatron-init-path",
                 type=str,

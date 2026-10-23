@@ -1,7 +1,13 @@
 import logging
 
+from miles.utils import chat_template_utils
 from miles.utils.mask_utils import MultiTurnLossMaskGenerator
-from miles.utils.processing_utils import load_processor, load_tokenizer
+from miles.utils.processing_utils import (
+    call_processor,
+    extract_multimodal_train_inputs,
+    load_processor,
+    load_tokenizer,
+)
 
 __all__ = ["generate_rollout"]
 
@@ -14,8 +20,25 @@ MASK_GENERATOR = None
 SAMPLE_PRINTED = False
 
 
+def _as_token_list(input_ids) -> list[int]:
+    if hasattr(input_ids, "tolist"):
+        input_ids = input_ids.tolist()
+    if len(input_ids) == 1 and isinstance(input_ids[0], list):
+        input_ids = input_ids[0]
+    return list(input_ids)
+
+
+def _multimodal_token_ids(processor) -> set[int]:
+    result = set()
+    for name in ("image_token_id", "video_token_id", "audio_token_id"):
+        token_id = getattr(processor, name, None)
+        if token_id is not None:
+            result.add(token_id)
+    return result
+
+
 def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
-    """An example to implement the generate_rollout function for an rule based rm rollout generation.
+    """Tokenize raw SFT conversations and supervise only assistant turns.
 
     Args:
         args: the whole args
@@ -39,7 +62,11 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
         PROCESSOR = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
     if MASK_GENERATOR is None:
-        MASK_GENERATOR = MultiTurnLossMaskGenerator(TOKENIZER, tokenizer_type=args.loss_mask_type)
+        MASK_GENERATOR = MultiTurnLossMaskGenerator(
+            TOKENIZER,
+            tokenizer_type=args.loss_mask_type,
+            chat_template_kwargs=args.apply_chat_template_kwargs,
+        )
 
     samples = data_buffer.get_samples(args.rollout_batch_size)
 
@@ -48,14 +75,51 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
         messages = sample.prompt
         tools = sample.metadata.get("tools", None)
 
-        token_ids, loss_mask = MASK_GENERATOR.get_loss_mask(messages, tools=tools)
+        if not isinstance(messages, list):
+            raise ValueError(
+                "SFT rollout requires raw conversation messages; remove --apply-chat-template so role loss masks "
+                "and multimodal placeholders are processed together."
+            )
+
+        has_multimodal_input = sample.multimodal_inputs and any(
+            value is not None and (not isinstance(value, (list, tuple)) or len(value) > 0)
+            for value in sample.multimodal_inputs.values()
+        )
+        if has_multimodal_input:
+            if PROCESSOR is None:
+                raise ValueError("Multimodal SFT data requires a checkpoint with a supported processor")
+            prompt = chat_template_utils.apply_chat_template(
+                messages,
+                tokenizer=TOKENIZER,
+                tools=tools,
+                tokenize=False,
+                add_generation_prompt=False,
+                **(args.apply_chat_template_kwargs or {}),
+            )
+            processor_inputs = dict(sample.multimodal_inputs)
+            processor_inputs["text_kwargs"] = {
+                **processor_inputs.get("text_kwargs", {}),
+                "add_special_tokens": False,
+            }
+            processor_output = call_processor(PROCESSOR, prompt, processor_inputs)
+            input_ids = _as_token_list(processor_output["input_ids"])
+            token_ids, loss_mask = MASK_GENERATOR.get_loss_mask_with_multimodal_alignment(
+                messages,
+                input_ids,
+                tools=tools,
+                multimodal_token_ids=_multimodal_token_ids(PROCESSOR),
+            )
+            sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
+        else:
+            token_ids, loss_mask = MASK_GENERATOR.get_loss_mask(messages, tools=tools)
+            sample.multimodal_train_inputs = None
 
         response_length = MASK_GENERATOR.get_response_lengths([loss_mask])[0]
 
         sample.tokens = token_ids
         sample.response_length = response_length
         sample.reward = 0
-        sample.loss_mask = loss_mask[-response_length:]
+        sample.loss_mask = loss_mask[-response_length:] if response_length else []
 
         if i == 0 and not SAMPLE_PRINTED:
             logger.info(
