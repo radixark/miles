@@ -217,8 +217,8 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 # re-installing must not rebuild them, which needs the torch link path only the upstream
 # build stage has.
 # radix_transfer_plugins, the output store package SGLang imports, sits beside python/ in the
-# same checkout; editable installs keep both at that checkout's commit. Importing its Mooncake
-# backend also checks the base image's Mooncake.
+# same checkout; editable installs keep both at that checkout's commit. The build host has no
+# libcuda.so.1, which mooncake.store loads, so the check imports all of it but the Mooncake backend.
 RUN cd /sgl-workspace/sglang && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
@@ -228,7 +228,7 @@ RUN cd /sgl-workspace/sglang && \
     fi && \
     SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps && \
     pip install -e radix_transfer_plugins --no-deps && \
-    python3 -c "import radix_transfer_plugins.backends.mooncake"
+    python3 -c "import radix_transfer_plugins.stashes.token_output"
 
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
