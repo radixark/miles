@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from unittest.mock import MagicMock
 
 import pytest
@@ -428,6 +429,102 @@ class TestPostProcessRewards:
 
         expected_std = float(np.std([-1.5, -0.5, 0.5, 1.5]))
         assert abs(np.std(processed) - expected_std) < 1e-5
+
+    @pytest.mark.parametrize(
+        "advantage_estimator, grpo_std_normalization",
+        [("grpo", True), ("grpo", False), ("gspo", True), ("reinforce_plus_plus_baseline", False)],
+    )
+    @pytest.mark.parametrize("reward", [0.0, -0.0, 1.0, 0.1, 0.3, 0.6, 0.7, 0.8, 0.9, -0.3])
+    @pytest.mark.parametrize("group_size", [1, 2, 3, 16, 64])
+    def test_uniform_group_yields_exact_zero_advantage(
+        self, advantage_estimator, grpo_std_normalization, reward, group_size
+    ):
+        """Float32 centering of e.g. 16 x 0.3 leaves a ~3e-8 residual that the std
+        division amplifies to ~0.029; equal rewards must give exact zeros."""
+        args = make_args(
+            advantage_estimator=advantage_estimator,
+            rewards_normalization=True,
+            grpo_std_normalization=grpo_std_normalization,
+            n_samples_per_prompt=group_size,
+            rollout_batch_size=1,
+        )
+        samples = make_samples_grouped(1, group_size, rewards=[reward] * group_size)
+        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        assert raw == [reward] * group_size
+        assert processed == [0.0] * group_size
+
+    def test_uniform_group_detected_per_prompt(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=True,
+            n_samples_per_prompt=16,
+            rollout_batch_size=2,
+        )
+        samples = make_samples_grouped(2, 16, rewards=[0.3] * 16 + [0.0] * 8 + [1.0] * 8)
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        assert processed[:16] == [0.0] * 16
+        # Centered +/-0.5 over sample std sqrt(4/15) gives +/-sqrt(15)/4.
+        assert processed[16:] == pytest.approx([-(15**0.5) / 4] * 8 + [15**0.5 / 4] * 8, abs=1e-5)
+
+    def test_near_uniform_group_keeps_signal(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=False,
+            n_samples_per_prompt=16,
+            rollout_batch_size=1,
+        )
+        samples = make_samples_grouped(1, 16, rewards=[0.3] * 15 + [0.3000001])
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        assert processed[-1] > 0.0
+
+    @pytest.mark.parametrize(
+        "rewards", [[0.1 + 0.2] * 8 + [0.3] * 8, [0.3] * 15 + [0.30000000000000004], [0.7] * 15 + [0.7 + 1e-12]]
+    )
+    def test_group_uniform_in_float32_yields_exact_zero_advantage(self, rewards):
+        """Distinct floats that round to one float32 value still carry no preference."""
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=True,
+            n_samples_per_prompt=len(rewards),
+            rollout_batch_size=1,
+        )
+        samples = make_samples_grouped(1, len(rewards), rewards=rewards)
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        assert processed == [0.0] * len(rewards)
+
+    def test_uniform_group_with_unequal_fanout_broadcasts_zeros(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=True,
+            n_samples_per_prompt=3,
+            rollout_batch_size=1,
+        )
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, reward=0.3),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=0.3),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=0.3),
+            make_sample(group_index=0, index=2, rollout_id=12, reward=0.3),
+        ]
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        assert processed == [0.0] * 4
+
+    @pytest.mark.parametrize("reward", [float("inf"), float("nan"), 1e39])
+    def test_uniform_nonfinite_group_is_not_zeroed(self, reward):
+        """Invalid rewards must stay visible instead of becoming valid zero advantages."""
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=True,
+            n_samples_per_prompt=4,
+            rollout_batch_size=1,
+        )
+        samples = make_samples_grouped(1, 4, rewards=[reward] * 4)
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        assert all(math.isnan(value) for value in processed)
 
     def test_irregular_group_size_uses_explicit_group_index(self):
         """Explicit group identity keeps an irregularly sized group together."""

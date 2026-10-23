@@ -290,6 +290,24 @@ def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes:
     return [list(range(len(samples)))]
 
 
+def _normalize_shared_rewards(args: Any, shared_rewards: list[float]) -> torch.Tensor:
+    """Center one prompt group's per-rollout rewards, optionally scaling by their std."""
+    rollout_rewards = torch.tensor(shared_rewards, dtype=torch.float)
+    # Equal rewards carry no preference, but the float32 mean can leave a ~1e-8
+    # centering residual that the std division amplifies ~1e6x. Compare the
+    # float32 rewards the centering uses, since distinct floats such as 0.1 + 0.2
+    # and 0.3 collapse there; non-finite groups fall through so they stay visible.
+    if (rollout_rewards == rollout_rewards[0]).all() and torch.isfinite(rollout_rewards).all():
+        return torch.zeros_like(rollout_rewards)
+
+    normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
+    if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(rollout_rewards) > 1:
+        rollout_std = rollout_rewards.std()
+        if rollout_std > 0:
+            normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
+    return normalized_rollout_rewards
+
+
 def _normalize_rewards_by_rollout(
     args: Any,
     samples: list[Sample],
@@ -324,13 +342,7 @@ def _normalize_rewards_by_rollout(
                 )
             shared_rewards.append(sibling_rewards[0])
 
-        rollout_rewards = torch.tensor(shared_rewards, dtype=torch.float)
-        normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
-        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(rollout_rewards) > 1:
-            rollout_std = rollout_rewards.std()
-            if rollout_std > 0:
-                normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
-
+        normalized_rollout_rewards = _normalize_shared_rewards(args, shared_rewards)
         for (_, rollout_segments), normalized_reward in zip(
             rollout_segment_groups, normalized_rollout_rewards.tolist(), strict=True
         ):
