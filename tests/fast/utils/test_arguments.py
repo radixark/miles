@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 import logging
 import os
@@ -3550,7 +3551,8 @@ class TestCheckWeightUpdateSelectorDefault:
 class TestMilesValidateArgsDiskDeltaResume:
     @staticmethod
     def _parse(load_dir, tmp_path):
-        parser = get_megatron_arg_parser()
+        # the parser is shared across callers
+        parser = copy.deepcopy(get_megatron_arg_parser())
         parser.set_defaults(finetune=False)
         return parser.parse_args(
             [

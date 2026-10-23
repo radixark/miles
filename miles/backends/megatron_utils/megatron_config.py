@@ -1,8 +1,10 @@
 import argparse
 import copy
+import functools
 import logging
 import os
 import re
+import sys
 from argparse import Namespace
 from pathlib import Path
 from typing import Any, Literal
@@ -471,6 +473,13 @@ def _resolve_overrides(overrides: dict[str, Any], *, model_id: str) -> dict[str,
 
 
 def get_megatron_arg_parser() -> argparse.ArgumentParser:
+    """Shared by every caller with the same command line, so treat it as read-only."""
+    return _build_megatron_arg_parser(tuple(sys.argv))
+
+
+@functools.cache
+def _build_megatron_arg_parser(argv: tuple[str, ...]) -> argparse.ArgumentParser:
+    # argv only keys the cache: plugin add_arguments come from paths in sys.argv
     # TODO: revisit once the args refactor lands; this throwaway construction may then be optimized
     from miles.backends.megatron_utils.arguments import parse_args
     from miles.utils.arguments import get_miles_extra_args_provider
