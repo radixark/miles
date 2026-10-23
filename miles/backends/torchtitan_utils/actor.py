@@ -72,7 +72,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         if platforms.IS_TPU:
             tpu_doc_attention.install()
 
-        self.trainer = TitanTrainer(config)
+        self.trainer = TitanTrainer(config, fsdp_gather_once=args.titan_fsdp_gather_once)
         self.model_parts = self.trainer.model_parts
         self.optimizers = self.trainer.optimizers.optimizers
         self.align_token_side_channel = self.trainer.align_token_side_channel
@@ -110,7 +110,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         if not args.ref_load:
             raise ValueError("--ref-load is required to build a torchtitan reference model")
         ref_config = build_trainer_config(args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref")
-        ref_trainer = TitanTrainer(ref_config)
+        ref_trainer = TitanTrainer(ref_config, fsdp_gather_once=args.titan_fsdp_gather_once)
         ref_trainer.configure_loss_reduction()
         ref_trainer.checkpointer.load()
         for part in ref_trainer.model_parts:

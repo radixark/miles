@@ -20,6 +20,8 @@ class TorchtitanArgs(FSDPArgs):
 
     # torch.compile each TransformerBlock; always on where shapes are static (TPU), opt-in elsewhere
     titan_compile: bool = False
+    # all-gather FSDP params once per pass and reduce-scatter once per step; holds full params and grads
+    titan_fsdp_gather_once: bool = False
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -73,6 +75,8 @@ def validate_torchtitan_args(args) -> None:
             f"on TPU the trainer syncs weights with --update-weight-transfer-mode disk or shm to disaggregated "
             f"engines; got {args.update_weight_transfer_mode!r}{' with --colocate' if args.colocate else ''}"
         )
+    if args.titan_fsdp_gather_once and args.pipeline_model_parallel_size > 1:
+        raise ValueError("--titan-fsdp-gather-once does not apply to the pipeline schedule; drop it under PP")
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
     if args.fp16:

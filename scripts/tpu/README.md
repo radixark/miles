@@ -55,6 +55,18 @@ Model and data default to `/root/models` and `/root/datasets` (`--model-dir`, `-
 wandb is on when `WANDB_API_KEY` is set or `~/.netrc` holds the key; `--wandb-project ""`
 turns it off.
 
+## Performance
+
+Qwen3-4B, 128 samples × up to 7168 response tokens per step, `--recipe bench`:
+
+| ref log-probs | log-probs | actor train | train step |
+|---|---|---|---|
+| 10-12 s | 13 s | 32-34 s | 62-67 s |
+
+The trainer compiles each block with `torch.compile` on the `tpu` backend (always on TPU), gathers
+FSDP parameters once per pass (`--titan-fsdp-gather-once`), and runs packed-document attention on
+native SDPA (`miles/backends/torchtitan_utils/tpu_doc_attention.py`, installed automatically on TPU).
+
 ## Notes
 
 - **Stop a training run gracefully while sglang is running.** The host's TPU network session is
