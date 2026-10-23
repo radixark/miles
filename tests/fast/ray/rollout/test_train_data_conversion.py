@@ -996,11 +996,22 @@ class TestCanPrecomputeDpSchedule:
             args=args, data=_make_split_data(8), train_parallel_config=FULL_SCHEDULE_CONFIG
         )
 
-    def test_rejects_multimodal(self):
+    def test_accepts_images_expanded_at_rollout_and_rejects_training_side_expansion(self):
+        """Images whose placeholders are already expanded in the tokens
+        (pixel_values + image_grid_thw, or image_png) keep their lengths and
+        are scheduled; Kimi-VL (grid_thws) and Inkling (mm_vision_num_patches,
+        mm_audio_num_tokens) grow on the training side, after packing."""
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
         data = _make_split_data(8)
         data["multimodal_train_inputs"] = [None] * 8
-        assert not can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        assert can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        data["multimodal_train_inputs"] = [{"pixel_values": torch.zeros(4, 3), "image_grid_thw": torch.tensor([[1, 2, 2]])}] * 8
+        assert can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        data["multimodal_train_inputs"] = [{"image_png": torch.zeros(10, dtype=torch.uint8), "image_grid_thw": torch.tensor([[1, 2, 2]])}] * 8
+        assert can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        for key in ("grid_thws", "mm_vision_num_patches", "mm_audio_num_tokens"):
+            data["multimodal_train_inputs"] = [None] * 7 + [{key: torch.tensor([[1, 2, 2]])}]
+            assert not can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG), key
 
     def test_rejects_fewer_rollouts_than_gbs(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
@@ -1139,3 +1150,190 @@ def test_delayed_dp_split_preserves_the_tinker_loss_vectors():
     for shard in shards:
         assert shard["loss_weights"] and shard["advantages"] and shard["rollout_log_probs"]
     assert shards[0]["advantages"] == [[0.5], [0.5]]
+
+
+class TestRolloutsPerStepOnTheLegacySplit:
+    """A batch whose rollouts hold several samples divides its loss and
+    metrics by the rollout count, not the sample count: the legacy split now
+    stamps ``num_rollouts`` like the rollout-side schedule does."""
+
+    @staticmethod
+    def _data(rollout_ids, gbs=None):
+        data = {"tokens": [[0]] * len(rollout_ids), "rollout_ids": list(rollout_ids)}
+        if gbs is not None:
+            data["dynamic_global_batch_size"] = gbs
+        return data
+
+    def test_segments_of_the_same_rollout_count_once(self):
+        from types import SimpleNamespace
+
+        from miles.ray.rollout.train_data_conversion import _rollouts_per_step
+
+        args = SimpleNamespace(global_batch_size=4)
+        # 2 rollouts split into 5 samples, one step (dynamic batch of 5 -> 6 at dp 2 would pad; use 5 here).
+        assert _rollouts_per_step(args, self._data([7, 7, 7, 9, 9], gbs=5)) == [2]
+        # one sample per rollout: the fallback already divides by the right number
+        assert _rollouts_per_step(args, self._data([1, 2, 3, 4])) is None
+        # several steps per round with multi-sample rollouts: refused, never divided by samples
+        with pytest.raises(ValueError, match="several optimizer steps"):
+            _rollouts_per_step(args, self._data([1, 1, 2, 2, 3, 3, 4, 4]))
+        assert _rollouts_per_step(args, {"tokens": [[0]]}) is None
+
+    def test_several_steps_with_multi_sample_rollouts_are_refused_at_the_split(self):
+        from types import SimpleNamespace
+
+        from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
+
+        args = SimpleNamespace(global_batch_size=4, balance_data=False)
+        data = {
+            "tokens": [[1]] * 8,
+            "rollout_ids": [1, 1, 2, 2, 3, 3, 4, 4],
+            "response_lengths": [1] * 8,
+        }
+        with pytest.raises(ValueError, match="one step per rollout round"):
+            split_train_data_by_dp_raw(args, data, dp_size=2)
+        # one sample per rollout trains in two steps as before
+        data["rollout_ids"] = list(range(8))
+        shards = split_train_data_by_dp_raw(args, data, dp_size=2)
+        assert all("num_rollouts" not in shard for shard in shards)
+
+    def test_multi_lora_neither_stamps_nor_refuses(self):
+        """Under multi-LoRA the loss carries the client's normalization
+        (objective.py sets loss_normalizer = 1), so multi-sample rollouts over
+        several steps are left alone: no rollout count, no ValueError."""
+        from types import SimpleNamespace
+
+        from miles.ray.rollout.train_data_conversion import _rollouts_per_step, split_train_data_by_dp_raw
+
+        args = SimpleNamespace(global_batch_size=4, balance_data=False, multi_lora=True)
+        data = {
+            "tokens": [[1]] * 8,
+            "rollout_ids": [1, 1, 2, 2, 3, 3, 4, 4],
+            "response_lengths": [1] * 8,
+        }
+        assert _rollouts_per_step(args, data) is None
+        shards = split_train_data_by_dp_raw(args, data, dp_size=2)
+        assert all("num_rollouts" not in shard for shard in shards)
+        one_step = SimpleNamespace(global_batch_size=8, balance_data=False, multi_lora=True)
+        assert _rollouts_per_step(one_step, data) is None
+
+    def test_the_raw_split_stamps_every_shard(self):
+        from types import SimpleNamespace
+
+        from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
+
+        args = SimpleNamespace(global_batch_size=2, balance_data=False)
+        data = {
+            "tokens": [[1, 2], [3], [4, 5], [6]],
+            "rollout_ids": [7, 7, 9, 9],
+            "dynamic_global_batch_size": 4,
+            "response_lengths": [1, 1, 1, 1],
+        }
+        shards = split_train_data_by_dp_raw(args, data, dp_size=2)
+        assert [shard["num_rollouts"] for shard in shards] == [[2], [2]]
+
+
+class TestVisionRolloutsOnTheScheduledPath:
+    """Folded vision samples on the rollout-side schedule: several steps per
+    round, each step whole rollouts with its own rollout count, and every
+    sample's images staying with it through the shard, the iterator and the
+    micro-batch concat."""
+
+    @staticmethod
+    def _vision_data(samples_per_rollout: list[int]) -> dict:
+        tokens, rollout_ids, mm = [], [], []
+        sample_id = 0
+        for rollout_id, count in enumerate(samples_per_rollout):
+            for _ in range(count):
+                tokens.append([sample_id, sample_id + 1000])
+                rollout_ids.append(rollout_id)
+                mm.append({"image_grid_thw": torch.tensor([[1, 2, 2]]), "tag": torch.tensor([[sample_id]])})
+                sample_id += 1
+        n = len(tokens)
+        return {
+            "tokens": tokens,
+            "response_lengths": [1] * n,
+            "rewards": [0.0] * n,
+            "truncated": [0] * n,
+            "loss_masks": [[1, 1]] * n,
+            "sample_indices": list(range(n)),
+            "rollout_ids": rollout_ids,
+            "multimodal_train_inputs": mm,
+        }
+
+    def test_two_steps_of_whole_rollouts_with_their_counts(self):
+        args = make_args(
+            balance_data=False, micro_batch_size=1, use_dynamic_batch_size=False, multi_lora=False, global_batch_size=2
+        )
+        # 4 rollouts of 3, 3, 2, 2 samples: 2 rollouts per step, so steps of 6 and 4 samples (the static
+        # micro-batch path needs each step's count to be a multiple of dp_size)
+        data = self._vision_data([3, 3, 2, 2])
+        assert can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        shards = split_train_data_by_dp_scheduled_raw(args, dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG)
+        assert len(shards) == FULL_SCHEDULE_CONFIG.dp_size
+        rollouts_per_step: dict[int, set[int]] = {}
+        for shard in shards:
+            assert shard["num_rollouts"] == [2, 2]
+            # the shard's rows keep each sample's own images
+            for row, (tok, mm) in enumerate(zip(shard["tokens"], shard["multimodal_train_inputs"], strict=True)):
+                assert mm["tag"].item() == tok[0], f"row {row}: images of another sample"
+            # the flat micro-batch list is consumed step by step (num_microbatches per step)
+            cursor = 0
+            for step, count in enumerate(shard["num_microbatches"]):
+                for micro_batch in shard["micro_batch_indices"][cursor : cursor + count]:
+                    rollouts_per_step.setdefault(step, set()).update(shard["rollout_ids"][i] for i in micro_batch)
+                cursor += count
+            assert cursor == len(shard["micro_batch_indices"])
+        assert rollouts_per_step[0].isdisjoint(rollouts_per_step[1])
+        assert len(rollouts_per_step[0]) == 2 and len(rollouts_per_step[1]) == 2
+        # every sample of a rollout lands in that rollout's step
+        for shard in shards:
+            cursor = 0
+            for step, count in enumerate(shard["num_microbatches"]):
+                for micro_batch in shard["micro_batch_indices"][cursor : cursor + count]:
+                    for i in micro_batch:
+                        assert shard["rollout_ids"][i] in rollouts_per_step[step]
+                cursor += count
+
+    def test_the_iterator_hands_each_micro_batch_its_own_images(self):
+        from miles.backends.training_utils.data.rollout import DataIterator
+
+        args = make_args(
+            balance_data=False, micro_batch_size=1, use_dynamic_batch_size=False, multi_lora=False, global_batch_size=2
+        )
+        shards = split_train_data_by_dp_scheduled_raw(
+            args, self._vision_data([3, 3, 2, 2]), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
+        for shard in shards:
+            iterator = DataIterator(shard, micro_batch_indices=shard["micro_batch_indices"])
+            for _ in shard["micro_batch_indices"]:
+                batch = iterator.get_next(["tokens", "multimodal_train_inputs"])
+                assert [mm["tag"].item() for mm in batch["multimodal_train_inputs"]] == [tok[0] for tok in batch["tokens"]]
+
+    def test_get_batch_concatenates_images_in_the_micro_batch_order(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from miles.backends.training_utils.data import context_parallel
+        from miles.backends.training_utils.data import rollout as data_utils
+
+        monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
+        state = SimpleNamespace(cp=SimpleNamespace(rank=0, size=1), tp=SimpleNamespace(rank=0, size=1))
+        monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
+        monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: state)
+        lengths = [3, 2, 4]
+        rollout = {
+            "tokens": [torch.full((n,), i) for i, n in enumerate(lengths)],
+            "loss_masks": [torch.ones(1, dtype=torch.int) for _ in lengths],
+            "total_lengths": lengths,
+            "response_lengths": [1] * 3,
+            "multimodal_train_inputs": [
+                {"image_grid_thw": torch.tensor([[1, 2, 2]]), "tag": torch.tensor([[i], [i]])} for i in range(3)
+            ],
+        }
+        iterator = data_utils.DataIterator(rollout, micro_batch_indices=[[2, 0], [1]])
+        batch = data_utils.get_batch(iterator, ["tokens", "loss_masks", "total_lengths", "response_lengths", "multimodal_train_inputs"])
+        assert batch["multimodal_train_inputs"]["tag"].flatten().tolist() == [2, 2, 0, 0]
+        assert batch["multimodal_num_items"]["tag"] == [2, 2]
+        assert [t[0].item() for t in batch["unconcat_tokens"]] == [2, 0]
+        batch = data_utils.get_batch(iterator, ["tokens", "loss_masks", "total_lengths", "response_lengths", "multimodal_train_inputs"])
+        assert batch["multimodal_train_inputs"]["tag"].flatten().tolist() == [1, 1]

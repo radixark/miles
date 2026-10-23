@@ -208,7 +208,8 @@ def _singleton_batch() -> dict[str, Any]:
 
 
 def _multimodal_batch() -> dict[str, Any]:
-    return _raw_batch(multimodal_train_inputs=[None] * _NUM_SAMPLES)
+    # Kimi-VL's grid_thws expand on the training side, so the batch cannot be scheduled at rollout
+    return _raw_batch(multimodal_train_inputs=[{"grid_thws": [[1, 2, 2]]}] * _NUM_SAMPLES)
 
 
 def _batch_without_rollout_ids() -> dict[str, Any]:
@@ -330,7 +331,7 @@ class TestProcessRolloutData:
 
     @pytest.mark.parametrize("raw", [_multimodal_batch(), _batch_without_rollout_ids()])
     def test_unschedulable_batches_fall_back_to_the_strided_split(self, raw: dict[str, Any]):
-        """Multimodal batches and batches without rollout_ids keep the legacy training-side split."""
+        """Batches whose images expand on the training side and batches without rollout_ids keep the legacy training-side split."""
         shards = _shards_of_every_rank(raw=raw)
 
         for dp_rank, shard in enumerate(shards):

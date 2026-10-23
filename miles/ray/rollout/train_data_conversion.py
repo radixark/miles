@@ -372,6 +372,25 @@ def split_train_data_by_dp(
     return shards
 
 
+#: Multimodal input keys of the formats whose media become more tokens on the
+#: training side (``backends.training_utils.data.multimodal``): Kimi-VL expands
+#: one placeholder per image from ``grid_thws``; Inkling replaces sentinel ids
+#: by ``mm_vision_num_patches`` / ``mm_audio_num_tokens`` placeholders.
+TRAINING_SIDE_EXPANSION_KEYS = ("grid_thws", "mm_vision_num_patches", "mm_audio_num_tokens")
+
+
+def expands_on_training_side(multimodal_train_inputs: list[dict[str, Any] | None] | None) -> bool:
+    """Whether the batch's token lengths grow on the training side. The
+    rollout-side schedule packs micro-batches under the token budget from the
+    lengths it sees, so a batch that grows later could exceed it. Formats whose
+    placeholders are already expanded in the tokens (``pixel_values`` +
+    ``image_grid_thw``, or ``image_png``) keep their lengths."""
+    return any(
+        mm is not None and any(key in mm for key in TRAINING_SIDE_EXPANSION_KEYS)
+        for mm in multimodal_train_inputs or []
+    )
+
+
 def can_precompute_dp_schedule(
     args: Any, data: dict[str, Any], train_parallel_config: TrainParallelConfig | None
 ) -> bool:
@@ -380,7 +399,9 @@ def can_precompute_dp_schedule(
         return False
     if is_multi_lora_enabled(args):
         return False
-    if "multimodal_train_inputs" in data:
+    if expands_on_training_side(data.get("multimodal_train_inputs")):
+        # A follow-up could compute these formats' expanded lengths here and
+        # schedule them too.
         return False
     if "rollout_ids" not in data:
         return False
@@ -451,7 +472,51 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     if adapter_slots is not None:
         partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
 
-    return _package_shards(args, data, partitions)
+    shards = _package_shards(args, data, partitions)
+    num_rollouts = _rollouts_per_step(args, data)
+    if num_rollouts is not None:
+        for shard in shards:
+            shard["num_rollouts"] = num_rollouts
+    return shards
+
+
+def _rollouts_per_step(args, data: dict[str, Any]) -> list[int] | None:
+    """The rollout count the loss and the metrics divide by, for a batch whose
+    rollouts hold several samples (compaction, subagents, folded episodes).
+
+    The rollout-side schedule stamps ``num_rollouts`` itself; this split did
+    not, so the trainer fell back to the global batch size, the sample count
+    under ``--use-dynamic-global-batch-size``. The per-sample means already
+    sum to one mean per rollout (``rollout_mask_sums``), so dividing by
+    samples scaled the loss and every per-token metric by rollouts / samples.
+    A batch of one sample per rollout keeps the fallback (equal numbers).
+    Several steps per round with multi-sample rollouts is refused: this split
+    cannot divide each step by its own rollout count, and dividing by samples
+    silently scales the loss (the rollout-side schedule handles that shape)."""
+    if is_multi_lora_enabled(args):
+        # Tinker losses carry the client's normalization: loss_function sets
+        # loss_normalizer = 1 under multi-LoRA (objective.py), so no rollout
+        # count is needed there and several steps per round stay allowed.
+        return None
+    rollout_ids = data.get("rollout_ids")
+    if rollout_ids is None:
+        return None
+    num_samples = len(data["tokens"])
+    num_rollouts = len(set(rollout_ids))
+    if num_rollouts == num_samples:
+        return None
+    global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+    if global_batch_size != num_samples:
+        raise ValueError(
+            f"{num_samples} samples from {num_rollouts} rollouts would train in several optimizer steps "
+            f"(global batch size {global_batch_size} samples) on the training-side split, which cannot "
+            "divide each step's loss by its rollout count: the loss and the per-token metrics would be "
+            "divided by samples. Either train one step per rollout round (a global batch size equal to "
+            "the sample count, or --use-dynamic-global-batch-size), or let the rollout side schedule the "
+            "steps (a backend that advertises the full schedule config, no multi-LoRA, and images expanded "
+            "at rollout; see can_precompute_dp_schedule)."
+        )
+    return [num_rollouts]
 
 
 def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, Any]]:
