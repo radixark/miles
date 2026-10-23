@@ -19,6 +19,8 @@ def make_args(**overrides: object) -> SimpleNamespace:
         rollout_num_gpus_per_engine=1,
         offload_rollout=False,
         sglang_dp_size=1,
+        sglang_enable_dp_attention=False,
+        sglang_attn_dp_size=1,
         sglang_pp_size=1,
         sglang_ep_size=1,
         sglang_mem_fraction_static=0.7,
@@ -167,3 +169,24 @@ class TestAdapterOwnership:
         server_args = compute(make_args(lora_rank=8, lora_adapter_path="/fake/adapter", **{flag: True}))
 
         assert server_args["lora_paths"] == ["miles_lora=/fake/adapter"]
+
+
+_ATTENTION_DP_SPELLINGS = [
+    pytest.param(dict(sglang_attn_dp_size=8), True, id="attn-dp-size"),
+    pytest.param(dict(sglang_enable_dp_attention=True, sglang_dp_size=8), True, id="deprecated-enable-dp-attention"),
+    pytest.param(dict(sglang_enable_dp_attention=True, sglang_dp_size=1), False, id="enable-dp-attention-at-dp-1"),
+    pytest.param({}, False, id="no-attention-dp"),
+]
+
+
+class TestAttentionDpLoRA:
+    @pytest.mark.parametrize(("parallel", "attention_dp"), _ATTENTION_DP_SPELLINGS)
+    def test_attention_dp_pins_the_adapter_beside_a_base_model_slot(self, parallel, attention_dp):
+        """SGLang's attention-DP LoRA admits only pinned adapters, and never pins the slot it keeps for the base model."""
+        server_args = compute(
+            make_args(lora_rank=8, lora_adapter_path="/fake/adapter", debug_rollout_only=True, **parallel)
+        )
+
+        pinned = {"lora_name": "miles_lora", "lora_path": "/fake/adapter", "pinned": True}
+        assert server_args["lora_paths"] == [pinned if attention_dp else "miles_lora=/fake/adapter"]
+        assert server_args["max_loras_per_batch"] == (2 if attention_dp else 1)

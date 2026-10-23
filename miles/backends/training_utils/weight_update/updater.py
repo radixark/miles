@@ -16,6 +16,7 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
@@ -203,7 +204,12 @@ class WeightUpdater:
             config = self._lora_sync_config
             if adapter is not None:
                 config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
-            register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
+            register_lora_adapter(
+                rollout_engines,
+                lora_name=lora_name,
+                lora_config=config,
+                pinned=sglang_attention_dp_enabled(self.args),
+            )
             self._registered_adapters.add(lora_name)
 
 

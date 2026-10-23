@@ -2696,6 +2696,18 @@ class TestMultiLoRAValidation:
 
         assert args.multi_lora is True
 
+    @pytest.mark.parametrize(
+        "attention_dp",
+        [["--sglang-attn-dp-size", "2"], ["--sglang-enable-dp-attention", "--sglang-dp-size", "2"]],
+        ids=["attn-dp-size", "deprecated-enable-dp-attention"],
+    )
+    def test_rejects_sglang_attention_dp(self, attention_dp):
+        """Attention DP serves only pinned adapters, which multi-LoRA could never swap out of its slots."""
+        args = self._parse(attention_dp)
+
+        with pytest.raises(AssertionError, match="Multi-LoRA cannot run on SGLang attention DP"):
+            miles_validate_args(args)
+
     def test_rejects_non_adam_optimizer(self):
         # Per-slot optimizer isolation (state init, retirement cleanup, step
         # clocks) only implements Adam semantics. Muon has its own dedicated
