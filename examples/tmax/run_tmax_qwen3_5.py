@@ -15,10 +15,12 @@ Requires:
     the sandbox containers must be able to pull the hamishi740/swerl-tmax-v3 images;
   * `pip install docker` in the training image (the SDK is not shipped).
 
-With --opd-teacher, adds Megatron-mode on-policy distillation: the teacher (same architecture as the
-student) scores every rollout token in the training forward pass, and
+With --opd-teacher, adds on-policy distillation: the teacher scores every response token, and
 opd_kl_coef * (log p_student - log p_teacher) is subtracted from each token's GRPO advantage. With --opd-pure
 that term is the whole advantage (open-instruct's --opd_pure): the task reward is still computed and logged.
+The teacher scores in the training forward pass (--opd-teacher-mode megatron, a teacher of the student's
+architecture) or on an SGLang server this launcher starts on the node's last GPU (sglang, any teacher with the
+student's tokenizer, e.g. allenai/tmax-9b into a 4B student).
 
 `prepare` downloads the dataset, extracts the task directories, writes the prompt
 JSONL, and converts the student (and teacher) HF checkpoints to Megatron torch_dist. `execute` submits
@@ -28,7 +30,9 @@ the training job.
 
 Args:
   --model-name: student, a key of _RECIPES (default: Qwen3.5-9B).
-  --opd-teacher: teacher, a key of _RECIPES with the student's architecture (default: none, no OPD).
+  --opd-teacher: teacher, a key of _RECIPES (default: none, no OPD).
+  --opd-teacher-mode: megatron (in the trainer; same architecture only), sglang (an SGLang server on the node's last
+      --opd-teacher-gpus GPUs, which Ray does not get), or auto: megatron when the architectures match (default).
   --opd-kl-coef: weight of the per-token reverse-KL penalty (default: 1.0).
   --opd-pure: train on the OPD term alone, the task reward logged but not trained on (default: off, additive).
   --num-gpus-per-node: GPUs per node (default: 8).
@@ -120,6 +124,7 @@ from miles.utils.external_utils import command_utils
 from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
+_OPD_TEACHER_PORT = 30100  # the SGLang teacher of --opd-teacher-mode sglang, on 127.0.0.1
 _DATASET = "allenai/tmax-15k-open-instruct"
 
 _MODEL_NAMES = Literal[
@@ -166,6 +171,14 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     opd_kl_coef: float = 1.0
     # open-instruct's --opd_pure: the advantage is the OPD term alone; the task reward is logged, not trained on.
     opd_pure: bool = False
+    # Where the teacher scores the rollouts. megatron: in the trainer, its weights a CPU copy swapped into the student's
+    # model for one forward pass per step, so it must share the student's architecture. sglang: an SGLang server this
+    # launcher starts on the node's last opd_teacher_gpus GPUs, called by generate.reward_func_with_teacher at rollout
+    # time; any teacher with the student's tokenizer. auto: megatron when the architectures match, else sglang.
+    opd_teacher_mode: Literal["auto", "megatron", "sglang"] = "auto"
+    opd_teacher_gpus: int = 1
+    # A teacher request is retried after this long without an answer, and fails the rollout on the third try.
+    opd_teacher_timeout_s: int = 1800
     num_gpus_per_node: int = 8
     rollout_batch_size: int = 32
     n_samples_per_prompt: int = 8
@@ -238,7 +251,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         )
         if self.opd_teacher is not None:
             student, teacher = _RECIPES[self.model_name], _RECIPES[self.opd_teacher]
-            assert student.megatron_model_type == teacher.megatron_model_type, (
+            assert self.opd_mode == "sglang" or student.megatron_model_type == teacher.megatron_model_type, (
                 f"Megatron-mode OPD needs one architecture: {self.model_name} is {student.megatron_model_type}, "
                 f"{self.opd_teacher} is {teacher.megatron_model_type}"
             )
@@ -248,6 +261,14 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
                 f"{teacher.enable_thinking}: the teacher would score prompts off its own distribution"
             )
         assert not self.opd_pure or self.opd_teacher is not None, "opd_pure needs opd_teacher"
+        assert self.opd_teacher_mode == "auto" or self.opd_teacher is not None, "opd_teacher_mode needs opd_teacher"
+        if self.opd_mode == "sglang":
+            # The rollout manager, and so the reward function calling the teacher, runs on the head node.
+            assert (
+                self.num_nodes == 1
+            ), "the SGLang teacher serves on one node; multi-node OPD needs opd_teacher_mode megatron"
+            assert self.opd_teacher_gpus == 1, "SGLang TP>1 produces garbage for Qwen3.5 (sgl-project/sglang#21039)"
+            assert self.ray_gpus_per_node > 0, "opd_teacher_gpus leaves no GPU for training and rollout"
         # open-instruct warns here: the filter drops uniform groups, which carry no reward signal but full OPD signal.
         assert not (
             self.opd_pure and self.filter_zero_std
@@ -256,6 +277,22 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     @property
     def recipe(self) -> _Recipe:
         return _RECIPES[self.model_name]
+
+    @property
+    def opd_mode(self) -> Literal["megatron", "sglang"] | None:
+        if self.opd_teacher is None:
+            return None
+        if self.opd_teacher_mode != "auto":
+            return self.opd_teacher_mode
+        same_architecture = (
+            _RECIPES[self.model_name].megatron_model_type == _RECIPES[self.opd_teacher].megatron_model_type
+        )
+        return "megatron" if same_architecture else "sglang"
+
+    @property
+    def ray_gpus_per_node(self) -> int:
+        """The GPUs Ray schedules training and rollout on: all of them, less the SGLang teacher's (the node's last)."""
+        return self.num_gpus_per_node - (self.opd_teacher_gpus if self.opd_mode == "sglang" else 0)
 
     @property
     def sandbox_docker_host(self) -> str:
@@ -277,16 +314,16 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     def train_layout(self) -> tuple[int, int]:
         """(actor nodes, actor GPUs per node). Fully async splits one node, or gives each side whole nodes."""
         if not self.fully_async:
-            return self.num_nodes, self.num_gpus_per_node
-        train_gpus = self.num_nodes * self.num_gpus_per_node - self.async_rollout_gpus
+            return self.num_nodes, self.ray_gpus_per_node
+        train_gpus = self.num_nodes * self.ray_gpus_per_node - self.async_rollout_gpus
         assert train_gpus > 0, f"async_rollout_gpus={self.async_rollout_gpus} leaves no GPU for training"
         if self.num_nodes == 1:
             return 1, train_gpus
         # Like open-instruct's learner and vLLM nodes: training first, then rollout, each on whole nodes.
         assert (
-            train_gpus % self.num_gpus_per_node == 0
-        ), f"on {self.num_nodes} nodes, async_rollout_gpus must be whole nodes of {self.num_gpus_per_node} GPUs"
-        return train_gpus // self.num_gpus_per_node, self.num_gpus_per_node
+            train_gpus % self.ray_gpus_per_node == 0
+        ), f"on {self.num_nodes} nodes, async_rollout_gpus must be whole nodes of {self.ray_gpus_per_node} GPUs"
+        return train_gpus // self.ray_gpus_per_node, self.ray_gpus_per_node
 
     @property
     def trace_run_dir(self) -> str:
@@ -321,6 +358,8 @@ def prepare(args: ScriptArgs):
     for name in filter(None, [args.model_name, args.opd_teacher]):
         recipe = _RECIPES[name]
         U.exec_command_cpu(f"hf download {recipe.hf_repo} --local-dir {args.model_dir}/{name}")
+        if name == args.opd_teacher and args.opd_mode == "sglang":
+            continue  # SGLang serves the HF checkpoint
         U.convert_checkpoint(
             model_name=name,
             megatron_model_type=recipe.megatron_model_type,
@@ -381,7 +420,7 @@ def execute(args: ScriptArgs):
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path tmax_agent_function.run "
-        "--custom-rm-path generate.reward_func "
+        f"--custom-rm-path generate.{'reward_func_with_teacher' if args.opd_mode == 'sglang' else 'reward_func'} "
         f"--use-session-server {args.session_server} "
         "--tito-model qwen35 "
     )
@@ -433,12 +472,12 @@ def execute(args: ScriptArgs):
         grpo_args += "--eps-clip 0.2 --eps-clip-high 0.28 "
 
     if args.opd_teacher is not None:
-        grpo_args += (
-            "--use-opd "
-            "--opd-type megatron "
-            f"--opd-kl-coef {args.opd_kl_coef} "
-            f"--opd-teacher-load {args.model_dir}/{args.opd_teacher}_torch_dist "
-        )
+        grpo_args += f"--use-opd --opd-type {args.opd_mode} --opd-kl-coef {args.opd_kl_coef} "
+        if args.opd_mode == "megatron":
+            grpo_args += f"--opd-teacher-load {args.model_dir}/{args.opd_teacher}_torch_dist "
+        else:
+            # Miles' teacher request goes to --rm-url; generate.reward_func_with_teacher sends it (see _start_opd_teacher).
+            grpo_args += f"--rm-url http://127.0.0.1:{_OPD_TEACHER_PORT}/generate "
         if args.opd_pure:
             # The trained reward is 0 for every sample, so GRPO's advantage is 0 and the OPD term is all that is left;
             # raw_reward (what rollout/raw_reward logs) stays the task reward.
@@ -476,7 +515,7 @@ def execute(args: ScriptArgs):
         "--attention-backend flash "
         f"--actor-num-nodes {args.train_layout[0]} "
         f"--actor-num-gpus-per-node {args.train_layout[1]} "
-        f"--num-gpus-per-node {args.num_gpus_per_node} "
+        f"--num-gpus-per-node {args.ray_gpus_per_node} "
     )
     if args.fully_async:
         # open-instruct --async_steps 4 --inflight_updates true: generation never stops, in-flight requests
@@ -521,7 +560,7 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=args.num_gpus_per_node,
+        num_gpus_per_node=args.ray_gpus_per_node,
         megatron_model_type=args.recipe.megatron_model_type,
         megatron_path=args.megatron_path,
         train_script="train_async.py" if args.fully_async else "train.py",
@@ -539,7 +578,33 @@ def execute(args: ScriptArgs):
             "TMAX_EPISODE_TIMEOUT_S": str(args.episode_timeout_s),
             "TMAX_TOOL_CALL_TIMEOUT_S": str(args.tool_call_timeout_s),
             "TMAX_TRACE_DIR": args.trace_run_dir,
+            # read by generate.reward_func_with_teacher, in the rollout process
+            **({"TMAX_OPD_TEACHER_TIMEOUT_S": str(args.opd_teacher_timeout_s)} if args.opd_mode == "sglang" else {}),
         },
+        before_ray_job_submit=(lambda: _start_opd_teacher(U, args)) if args.opd_mode == "sglang" else None,
+    )
+
+
+def _start_opd_teacher(U, args: ScriptArgs) -> None:
+    """Serve the OPD teacher with SGLang on the node's last opd_teacher_gpus GPUs, which Ray was started without
+    (ray start --num-gpus ray_gpus_per_node schedules on the first ones), and wait until it answers: up to 30 min,
+    after which the launch fails with the server log's tail. Runs after ray start, before the job is submitted."""
+    gpus = ",".join(str(gpu) for gpu in range(args.ray_gpus_per_node, args.num_gpus_per_node))
+    log = f"{args.output_dir}/{args.exp_name or args.run_id}/opd-teacher.log"
+    health = f"http://127.0.0.1:{_OPD_TEACHER_PORT}/health_generate"
+    U.exec_command_cpu(
+        f"mkdir -p {os.path.dirname(log)} && "
+        f"(CUDA_VISIBLE_DEVICES={gpus} setsid python3 -m sglang.launch_server "
+        f"--model-path {args.model_dir}/{args.opd_teacher} "
+        # --language-only: the tmax checkpoints ship no vision tower. SGLang still loads an image processor for
+        # Qwen3.5, from the tokenizer path; the tmax checkpoints ship none, so the student's stands in (the processor
+        # configs are identical across Qwen3.5 sizes, and the vocabulary is shared: requests carry token ids).
+        f"--tokenizer-path {args.model_dir}/{args.model_name} --language-only "
+        f"--host 127.0.0.1 --port {_OPD_TEACHER_PORT} --tp-size 1 --mem-fraction-static 0.8 "
+        f"--context-length {args.max_seq_len + 2048} > {log} 2>&1 &) && "
+        f"for _ in $(seq 360); do "
+        f"python3 -c \"import urllib.request; urllib.request.urlopen('{health}', timeout=30)\" 2>/dev/null && exit 0; "
+        f"sleep 5; done; tail -n 100 {log}; exit 1"
     )
 
 

@@ -36,7 +36,7 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | `tmax_agent_function.py` | Agent loop for `agentic_tool_call.generate`, plus the over-sampling `abort` hook |
 | `tmax_sandbox.py` | Per-episode container: the episode logic shared by both backends, and the podman backend (a Docker-API socket), ported from open-instruct |
 | `tmax_gateway.py` | The gateway backend: containers on a LiteRegistry podman fleet through literegistry's own client, after open-instruct's `GatewayBackend` |
-| `generate.py` | Reward function (`None` drops the group), and pure OPD's reward post-process |
+| `generate.py` | Reward functions (`None` drops the group; with an SGLang OPD teacher, also the teacher's log-probs), and pure OPD's reward post-process |
 | `tmax_metrics.py` | Per-rollout W&B metrics open-instruct logs: episodes and tools, solve rates before the filter, trained-sample lengths and advantages |
 | `tmax_prompts.py` | open-instruct's system prompt |
 | `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes, `smoke_gateway.yaml` uses the podman fleet, `smoke_opd*.yaml` distill) |
@@ -313,6 +313,23 @@ For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi
   every sample, so its advantage is 0, and keeps the task reward as `raw_reward` (`rollout/raw_reward`).
   `rollout/advantages` is then the mean OPD term, and `tmax_metrics` leaves out `rollout/trained/advantage_*`.
   The launcher requires `filter_zero_std: false` with it, since every group carries signal.
+- **Teacher on an SGLang server** (`opd_teacher_mode: sglang`; `auto`, the default, picks it when the teacher's
+  architecture differs from the student's, as for `allenai/tmax-9b` into a 4B). Before submitting the job the launcher
+  starts `sglang.launch_server` on the node's last GPU, which Ray is started without, and waits up to 30 minutes for
+  it to answer, or the launch fails. `generate.reward_func_with_teacher` then sends every finished sample with a task
+  reward to it (Miles' own teacher request, `--rm-url`) and stores the response tokens' log-probs in
+  `sample.teacher_log_probs`, which Miles trains on as the Megatron teacher's. The task reward stays the reward, so
+  `opd_pure`, additive OPD, the filters and the metrics work as in Megatron mode; Miles' documented SGLang-mode reward
+  function and post-process replace it with 0. A teacher request is retried after `opd_teacher_timeout_s` (1800) or an
+  error, and the third failure fails the rollout. One node and one teacher GPU only (SGLang TP > 1 produces garbage for
+  Qwen3.5).
+- SGLang serves the tmax checkpoints, which have no vision tower or image-processor config, with `--language-only`
+  and the student's directory as `--tokenizer-path`: SGLang loads Qwen3.5's image processor from there, the processor
+  configs are identical across Qwen3.5 sizes, and the vocabulary is shared (the tmax tokenizers add seven unused audio
+  tokens; requests carry token ids). Its `--language-model-only` rejects Qwen3.5.
+- On the 16 trajectories of the first step of `01M5K694GXJ85TX6RZ9A014QTH` (Megatron teacher), `allenai/tmax-4b` served
+  by SGLang 0.5.21 on an L40S matched the Megatron teacher's log-probs to 0.0106 per trained token (median 0, p99
+  0.13), and both give a reverse KL of 0.1788 per token. `allenai/tmax-9b` gives 0.162 on the same trajectories.
 - The OPD term is dense: at `--opd-kl-coef 1.0` grad_norm is about 20x a GRPO-only step (4-6 vs 0.2-0.4)
   and is clipped to 1.0, so the update is mostly distillation. Use 0.1-0.3 to keep the task reward in play.
 
