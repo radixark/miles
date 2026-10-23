@@ -68,9 +68,7 @@ self-hosted, Linux, X64, gpu-runner, <name>, <hwtype>, <Ngpu>gpu
 * `<Ngpu>gpu` — `2gpu`, `4gpu`, `8gpu` (meta-label required by jobs that
   pin GPU count, e.g. `pr-test.yml`'s `stage-c-4-gpu-h200`).
 
-CPU-only runners, including "fake CPU runners" hosted on GPU machines, MUST NOT carry GPU-model labels such as `h100`, `h200`, or `b200`, or advertise `gpu-runner` / GPU-count labels. Labels describe the logical runner's workload, not its host's hardware; GPU labels on CPU runners distort utilization reports. Docker builders retain `cpu`, `docker-build`, and applicable default or identity labels.
-
-When creating or repairing a CPU runner, remove GPU labels from both its live GitHub registration and any maintained registration configuration so recreation cannot restore them. Verify the remaining labels and workflow requirements without restarting a healthy runner solely to change its labels.
+CPU-only runners, even on GPU hosts, MUST NOT carry GPU-model, GPU-count, or `gpu-runner` labels; Docker builders retain `cpu` and `docker-build`. Remove GPU labels from live registration and registration configuration, verify workflow compatibility, and avoid restarting healthy runners for label-only changes.
 
 `--ngpu` must equal the number of devices in `--cvd`; the script enforces
 this so a 4-GPU runner can't accidentally claim the `2gpu` label.
