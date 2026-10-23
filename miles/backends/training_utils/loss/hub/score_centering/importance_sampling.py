@@ -1,7 +1,7 @@
-"""Importance sampling for score centering (arXiv:2609.20807, Appendix A.2/A.3).
+"""Importance sampling for Score Centering / Bellman Policy Optimization (arXiv:2609.20807; https://arxiv.org/pdf/2609.15987v1).
 
 Each scheme applies an importance-sampling weight function f to the ratio
-r = p / q. It supplies the terms of Eq. 12, whose head coefficient is
+r = p / q. It supplies the terms of SC Eq. 12, whose head coefficient is
 q * f(p / q) - alpha * p with tail scale alpha = rho * f(1 / rho), and the
 sampled-token weight of the loss:
 

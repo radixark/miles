@@ -91,7 +91,7 @@ backends are also supported. See
   for per-GPU status and [AMD ROCm](https://miles.radixark.com/docs/hardware-platforms/amd-gpus) for
   the ROCm images.
 - **Wide recipe support.** GRPO, GSPO, PPO, and REINFORCE++ for RL, plus
-  [score centering](https://miles.radixark.com/docs/examples/infra-features/score-centering), SFT, and
+  [Score Centering / Bellman Policy Optimization](https://miles.radixark.com/docs/examples/infra-features/sc-bpo), SFT, and
   [on-policy distillation](https://miles.radixark.com/docs/advanced/on-policy-distillation).
 - **Ray or Kubernetes.** The same launch script runs on Ray, or installs as a Helm release so
   Kubernetes schedules every worker of the run. See

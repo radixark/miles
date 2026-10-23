@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -631,7 +632,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "through Triton kernels and writes the gradient in place; --log-probs-chunk-size does "
                     "not apply to it. Not only an implementation choice: 'fused' normalizes over the true "
                     "vocabulary (--vocab-size), as the rollout engine does, while 'torch' normalizes over "
-                    "Megatron's padded vocabulary (except for --loss-type score_centering), so with vocab "
+                    "Megatron's padded vocabulary (except for --loss-type sc_bpo), so with vocab "
                     "padding (TP > 1) the two give slightly different log-probs, ratios and KL. "
                     "'fused' does not support --true-on-policy-mode or sampling-support replay "
                     "(--rollout-top-p below 1 or a positive --rollout-top-k)."
@@ -1674,7 +1675,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
 
             parser.add_argument("--eps-clip", type=float, default=0.2, help="PPO clip range")
-            parser.add_argument("--eps-clip-high", type=float, default=None, help="PPO clip upper range")
+            parser.add_argument(
+                "--eps-clip-high",
+                type=float,
+                default=None,
+                help="PPO/BPO clip upper range (defaults to 0.28 for BPO, otherwise --eps-clip)",
+            )
             parser.add_argument(
                 "--eps-clip-c",
                 type=float,
@@ -1691,10 +1697,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--loss-type",
                 type=str,
-                choices=["policy_loss", "sft_loss", "custom_loss", "score_centering"],
+                choices=["policy_loss", "sft_loss", "custom_loss", "sc_bpo", "bpo"],
                 default="policy_loss",
                 help=(
-                    "Choose PPO policy_loss, REINFORCE score_centering, or sft_loss; "
+                    "Choose PPO policy_loss, Score Centering / Bellman Policy Optimization sc_bpo, bpo, or sft_loss; "
                     "if custom_loss is set, we will use the function path from `--custom-loss-function-path`."
                 ),
             )
@@ -1712,6 +1718,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["none", "tis", "mis"],
                 default="none",
                 help="Importance weights to center together with the policy score.",
+            )
+            parser.add_argument(
+                "--bpo-smoothing",
+                type=float,
+                default=0.1,
+                help="Additive smoothing for BPO complementary probabilities.",
+            )
+            parser.add_argument(
+                "--bpo-weight-cap", type=float, default=3.0, help="Upper bound on the detached BPO correction weight."
             )
             parser.add_argument("--score-centering-tis-clip", type=float, default=2.0)
             parser.add_argument("--score-centering-mis-low", type=float, default=0.5)
@@ -3764,7 +3779,7 @@ def miles_validate_args(args):
         assert args.use_dynamic_batch_size, "--balance-by-flops requires --use-dynamic-batch-size"
 
     if args.eps_clip_high is None:
-        args.eps_clip_high = args.eps_clip
+        args.eps_clip_high = 0.28 if args.loss_type == "bpo" else args.eps_clip
 
     if args.eval_reward_key is None:
         args.eval_reward_key = args.reward_key
@@ -4231,6 +4246,7 @@ def miles_validate_args(args):
         validate_skip_actor_forward_only(args)
 
     validate_score_centering_args(args)
+    _validate_bpo_args(args)
 
     _maybe_apply_dumper_overrides(args)
 
@@ -4241,6 +4257,23 @@ def miles_validate_args(args):
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
 
     _validate_deploy_component(args)
+
+
+def _validate_bpo_args(args) -> None:
+    if args.loss_type != "bpo":
+        return
+    if args.advantage_estimator != "grpo":
+        raise ValueError("BPO requires --advantage-estimator grpo")
+    for name in ("bpo_smoothing", "bpo_weight_cap"):
+        value = getattr(args, name)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"--{name.replace('_', '-')} must be finite and positive")
+    if not math.isfinite(args.eps_clip) or not 0 <= args.eps_clip < 1:
+        raise ValueError("BPO requires finite --eps-clip in [0, 1)")
+    if not math.isfinite(args.eps_clip_high) or args.eps_clip_high < 0:
+        raise ValueError("BPO requires finite, nonnegative --eps-clip-high")
+    if getattr(args, "multi_lora", False):
+        raise ValueError("BPO is incompatible with --multi-lora")
 
 
 def validate_skip_actor_forward_only(args) -> None:

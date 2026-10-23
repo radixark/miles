@@ -68,7 +68,7 @@ class TestAllocatorOwnedServerArgs:
         assert "gated_launch_port" in set(_record_field_names(ServerArgs))
 
 
-@pytest.mark.parametrize("loss_type", ["score_centering", "policy_loss", "sft_loss", None])
+@pytest.mark.parametrize("loss_type", ["sc_bpo", "policy_loss", "sft_loss", None])
 @pytest.mark.parametrize("explicit_fp32", [False, True])
 def test_score_centering_enables_fp32_lm_head(loss_type: str | None, explicit_fp32: bool) -> None:
     args = _parse_sglang_args(["--sglang-enable-fp32-lm-head"] if explicit_fp32 else [])
@@ -79,4 +79,4 @@ def test_score_centering_enables_fp32_lm_head(loss_type: str | None, explicit_fp
 
     validate_args(args)
 
-    assert args.sglang_enable_fp32_lm_head is (explicit_fp32 or loss_type == "score_centering")
+    assert args.sglang_enable_fp32_lm_head is (explicit_fp32 or loss_type == "sc_bpo")

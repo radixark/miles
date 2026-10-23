@@ -216,7 +216,7 @@ def test_compaction_requires_ordered_equivalence(layout):
 
 @pytest.mark.parametrize(
     "loss_type,mode,k",
-    [("policy_loss", "support", 3), ("score_centering", "selected", 3), ("policy_loss", "support", 0)],
+    [("policy_loss", "support", 3), ("sc_bpo", "selected", 3), ("policy_loss", "support", 0)],
 )
 def test_unrelated_conversion_keeps_existing_representation(loss_type, mode, k):
     data = convert_samples_to_train_data(

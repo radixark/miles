@@ -189,7 +189,7 @@ def add_sglang_arguments(parser):
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
 
-    if getattr(args, "loss_type", None) == "score_centering":
+    if getattr(args, "loss_type", None) == "sc_bpo":
         # Score centering forces the base LM-head setting on, overriding the parsed
         # value to avoid lower-precision logits rounding before rollout probabilities.
         # This trades serving compute/memory for precision; per-engine overrides still win.

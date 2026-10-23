@@ -282,7 +282,7 @@
        "examples/infra-features/low-precision",
        "examples/infra-features/p2p-weight-transfer",
        "examples/infra-features/random-async",
-       "examples/infra-features/score-centering",
+       "examples/infra-features/sc-bpo",
        "examples/infra-features/split-deployment",
        "examples/infra-features/train-infer-mismatch-helper",
        "examples/infra-features/true-on-policy"
@@ -454,6 +454,11 @@
   {
    "source": "/developer/ci/contributor-guide",
    "destination": "/developer/contributor-guide#registering-a-test",
+   "permanent": true
+  },
+  {
+   "source": "/examples/infra-features/score-centering",
+   "destination": "/examples/infra-features/sc-bpo",
    "permanent": true
   }
  ],

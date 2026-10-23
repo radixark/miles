@@ -1,15 +1,30 @@
-# Score Centering
+# Score Centering / Bellman Policy Optimization
 
-Correct off-policy score drift using the sampler's top-k probabilities, with optional truncated or masked importance weights.
+Correct off-policy score drift with `sc_bpo` or `bpo`, which use different approximations to the same full-distribution gradient.
 
-This implements [Score Centering Stabilizes Off-policy Reinforcement Learning](https://arxiv.org/abs/2609.20807), including the efficient top-k approximation in Appendix A.
+[Bellman Policy Optimization](https://arxiv.org/pdf/2609.15987v1), Eq. (26), and
+[Score Centering Stabilizes Off-policy Reinforcement Learning](https://arxiv.org/abs/2609.20807), Eq. (4),
+share the equivalent core gradient:
 
-## Enable it
+$$
+\nabla_\theta \left[
+\log \frac{\pi_\theta(y_t \mid s_t)}{\mu(y_t \mid s_t)}
++ D_{\mathrm{KL}}\!\left(
+\mu(\cdot \mid s_t) \,\|\, \pi_\theta(\cdot \mid s_t)
+\right)
+\right].
+$$
+
+Here, $\pi_\theta$ is the current policy and $\mu$ is the old policy, held fixed when differentiating.
+
+The practical approximations differ: `sc_bpo` uses the SC top-k estimator and optional importance weights, while `bpo` implements BPO Eqs. (14)–(15) with complementary token probabilities.
+
+## Enable sc_bpo
 
 Add these arguments to an existing text-only GRPO training recipe:
 
 ```bash
---loss-type score_centering \
+--loss-type sc_bpo \
 --advantage-estimator grpo \
 --rollout-top-logprobs-num 128 \
 --score-centering-is none \
@@ -21,7 +36,7 @@ Add these arguments to an existing text-only GRPO training recipe:
 --calculate-per-token-loss
 ```
 
-Selecting `--loss-type score_centering` automatically enables `--sglang-enable-fp32-lm-head` for rollouts. This avoids rounding LM-head logits to lower precision before computing sampling probabilities. It can increase serving compute and memory costs, depending on the SGLang version.
+Selecting `--loss-type sc_bpo` automatically enables `--sglang-enable-fp32-lm-head` for rollouts. This avoids rounding LM-head logits to lower precision before computing sampling probabilities. It can increase serving compute and memory costs, depending on the SGLang version.
 
 Keep reward mean subtraction enabled. Disabling standard-deviation normalization gives the paper's group-centered rewards. This is a separate REINFORCE-style loss: PPO clipping parameters do not apply. Existing batch size and update scheduling still control how many updates consume a rollout batch; choose them explicitly when reproducing an experiment.
 
@@ -34,7 +49,35 @@ Reference-KL tokens with non-finite probabilities or absolute log-probability ra
 
 Training logs include `train/train_rollout_logprob_abs_diff` and `train/train_rollout_kl`. The latter uses the same masked, sampled-token k3 estimator of KL(rollout || train) as the policy loss. It is a detached diagnostic and is emitted even when reference-KL regularization is disabled.
 
-## How it works
+## BPO loss
+
+BPO replaces GRPO's importance-sampling weight `p / q` with a smoothed ratio of complementary token probabilities:
+
+```text
+w = (1 + smoothing - q) / (1 + smoothing - p)
+```
+
+Use BPO with GRPO advantages:
+
+```bash
+--loss-type bpo \
+--advantage-estimator grpo
+```
+
+The old-policy probability `q` comes from the same source selected for GRPO. With `--use-rollout-logprobs`, it is the sampled-token probability recorded by the rollout engine. Without that flag, it is the old-policy probability computed by the training engine and supplied in the training batch's `log_probs`. Old-policy probabilities and advantages are detached.
+
+For current sampled-token probability `p` and advantage `A`, the per-token objective is:
+
+```text
+mask = not ((A > 0 and w > 1 + eps_high) or (A < 0 and w < 1 - eps_low))
+loss = -A * mask * stop_gradient(min(w, weight_cap)) * log(p)
+```
+
+The mask uses the weight before truncation. `--eps-clip` and `--eps-clip-high` set the advantage-dependent mask thresholds, `--bpo-smoothing` sets additive smoothing, and `--bpo-weight-cap` sets the weight cap.
+
+`--calculate-per-token-loss` and custom policy-loss reducers control aggregation. `pg_clipfrac` reports the mask fraction.
+
+## How sc_bpo works
 
 When the rollout distribution differs from the current trainer, even a constant reward can produce an unwanted average policy update. Score centering subtracts the expected weighted score under the rollout distribution.
 
