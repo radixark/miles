@@ -38,6 +38,12 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     parallelism, memory, and numerics settings that really come from args. Put
     new training flags here, not spread across the code.
     """
+    # Bridge providers may default to frozen parts (Qwen3-VL MoE freezes the language model and ViT);
+    # start from fully trainable and let miles args freeze parts below.
+    for freeze_field in ("freeze_language_model", "freeze_vision_model", "freeze_vision_projection"):
+        if hasattr(provider, freeze_field):
+            setattr(provider, freeze_field, False)
+
     # parallelism / sharding
     provider.tensor_model_parallel_size = args.tensor_model_parallel_size
     provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
