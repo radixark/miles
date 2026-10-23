@@ -26,6 +26,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Fully-async throughput metrics | `perf/rollout_time` measures the buffer drain, so `perf/tokens_per_gpu_per_sec` is meaningless and some `perf/longest_*` go negative; `rollout/zero_std/*` is computed after the filter and is always 0. Fix upstream or hide |
 | open-instruct metrics worth porting | Max and std of the train/rollout log-prob gap (`debug/vllm_vs_local_logprob_diff_{max,std}`): a change in Miles's loss, where only the mean is reduced; cumulative token counter |
 | Podman 5.6.2 and crun 1.14.3 in the image | apt's podman 4.9 breaks exec framing under load (44 of 70 step failures in one 4-node run). Plan: a thin image derived from the official Miles image with podman, crun and docker-py baked in, launched with beaker-gantry |
+| OPD at production scale | open-instruct's terminal OPD runs are pure OPD on 4 nodes at 64k: 8 prompts x 32 samples, `--async_steps 4`, DPPO, lr 1e-6 (`scripts/general_agent/terminal/rl/opd/` on branch `opd`). Write the config, and run the 2B smoke (`smoke_opd_2b.yaml`), the only Beaker check of `scripts/models/qwen3.5-2B.py` |
 | Agents near their sandboxes | Every agent process runs on the head node, which also trains; open-instruct spreads its environment actors over the nodes. Run agents on the node of their sandbox |
 
 ## P2
@@ -80,6 +81,8 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Env-step exceptions become failed-step observations | `212c6ad522` |
 | Multi-node layout and sandboxes spread over every node | `1eb8f5e307`, `984e017222`, `7ae3853e16`, `505ea34897` |
 | Session-collect failures (2.5-3% of episodes on the old base, each dropping its group) | Gone after rebasing onto upstream's session-server and transport fixes |
+| Pure on-policy distillation (`opd_pure`, open-instruct's `--opd_pure`), and recipes for `allenai/tmax-2b` and `hamishivi/Qwen3.5-2B` | `107a60581c`, `eb48263f8d`, `b7fdc6b939` |
+| CUDA 13 images on Jupiter's and Ceres' 570 drivers (forward compatibility) | `f5cd9bd69e` |
 
 ## Decisions taken
 

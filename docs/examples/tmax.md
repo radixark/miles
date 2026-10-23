@@ -16,6 +16,7 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | Synchronous GRPO, colocated, 4 GPUs | (default) | Qwen3.5-9B, 3 steps |
 | Fully-async GRPO, 4 GPUs | `--async-rollout-gpus 2` | Qwen3.5-9B, 4 steps |
 | On-policy distillation (sync and async), 4 GPUs | `--opd-teacher tmax-4b` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 + 4 steps |
+| Pure on-policy distillation, fully async, 4 H100s (Jupiter) | `configs/smoke_opd_4b_async_jupiter_fused.yaml` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 steps, 2026-10-23 |
 | open-instruct's production recipe, fully async on 4 nodes (32x B300), 64k context | `configs/prod_4node.yaml` | Qwen3.5-9B, training on Beaker since 2026-10-16 |
 
 | Read | For |
@@ -211,6 +212,30 @@ with `enable_thinking=false`, off the models' training distribution, so they val
 The step-0 reverse KL agrees with an independent measurement: scoring the student's own trajectories with
 both models through vLLM `prompt_logprobs` gave 0.175 nats per assistant token (p90 0.61, 6.6% of tokens
 above 1 nat).
+
+Pure on-policy distillation on today's code (2026-10-23, `smoke_opd_4b_async_jupiter_fused.yaml`, Beaker
+`01M5K694GXJ85TX6RZ9A014QTH`): `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B` with thinking on, `opd_pure`, DPPO, session
+server v2, sandboxes on the podman fleet, fully async on 2 + 2 of Jupiter's H100s through the CUDA
+forward-compatibility driver:
+
+| | Step 0 | Step 1 | Step 2 |
+|---|---|---|---|
+| Teacher reverse KL per token (`train/opd_reverse_kl`) | 0.179 | 0.265 | 0.153 |
+| Advantage (`rollout/advantages`) | -0.183 | -0.272 | -0.178 |
+| Task reward, logged only (`rollout/raw_reward`) | 0.81 | 0.375 | 0.375 |
+| grad_norm | 4.8 | 6.2 | 3.9 |
+| train/rollout log-prob gap | 0.0075 | 0.0099 | 0.0087 |
+| KL to the base model (k3) | 0 | 0.0004 | 0.0005 |
+| Max staleness (versions) | 0 | 1 | 2 |
+
+The trained reward is 0 at every step and the advantage is minus the batch's reverse KL, so the OPD term is all
+that trains. 59 episodes, 0 sandbox failures; 28 of them filled the 16k context. The teacher forward took 1.5-2 s
+of each step, weight syncs 0.2-0.3 s. The first submission of this smoke, on the default log-prob backend, trained
+step 0 and ran out of memory at step 1 (`01M5K4WN5P1HCVA1N2AY8C8MTS`; see Findings).
+
+For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi/Qwen3.5-2B`'s own trajectories
+(8 tasks x 2 at 16k, thinking off) with `allenai/tmax-2b` through vLLM gave 0.48 nats per assistant token (p90 1.75,
+15% of tokens above 1 nat). Each 2B model solved 1 of the 16 episodes.
 
 ## Findings
 
