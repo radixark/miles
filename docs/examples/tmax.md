@@ -154,7 +154,10 @@ Open-instruct's and the base model's numbers are sampled (T=0.7), so the compari
 | Ours, step 240 | 0.528 / 0.780 | 0.258 / 0.371 |
 | Ours, step 280 | 0.490 / 0.690 | 0.236 / 0.382 |
 | Ours, step 300 | 0.478 / 0.680 | 0.238 / 0.360 |
-| Open-instruct, step 120 / 240 (sampled) | 0.524 / 0.760, 0.574 / 0.790 | 0.229 / 0.360, 0.249 / 0.393 |
+| Ours, step 320 | 0.470 / 0.660 | 0.240 / 0.360 |
+| Ours, step 340 | 0.516 / 0.720 | 0.207 / 0.315 |
+| Ours, step 360 | 0.514 / 0.750 | 0.238 / 0.326 |
+| Open-instruct, step 120 / 240 / 360 (sampled) | 0.524 / 0.760, 0.574 / 0.790, 0.582 / 0.790 | 0.229 / 0.360, 0.249 / 0.393, 0.301 / 0.416 |
 | Base `hamishivi/Qwen3.5-9B` (sampled) | 0.418 / 0.660 | 0.191 / 0.337 |
 
 The TBlite evals of steps 200, 280 and 300 lost 10 trials each (the same 8 tasks) to Docker Hub's anonymous pull
