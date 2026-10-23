@@ -58,7 +58,7 @@ def checksum(algorithm: str, buf) -> str:
     return hasher.hexdigest()
 
 
-def _tensor_locations(ckpt_dir: str) -> dict[str, tuple[str, int, int, str, tuple[int, ...]]]:
+def get_tensor_locations(ckpt_dir: str) -> dict[str, tuple[str, int, int, str, tuple[int, ...]]]:
     """Index each tensor's byte range and declared safetensors layout."""
     locations: dict[str, tuple[str, int, int, str, tuple[int, ...]]] = {}
     for path in glob.glob(os.path.join(ckpt_dir, "*.safetensors")):
@@ -79,9 +79,8 @@ def _tensor_locations(ckpt_dir: str) -> dict[str, tuple[str, int, int, str, tupl
     return locations
 
 
-def make_tensor_reader(ckpt_dir: str):
-    """Index headers once and return a layout-aware raw tensor reader."""
-    locations = _tensor_locations(ckpt_dir)
+def make_tensor_reader(locations: dict[str, tuple[str, int, int, str, tuple[int, ...]]]):
+    """Read raw tensors from an indexed checkpoint, optionally checking their layout."""
 
     def read(
         name: str,
@@ -99,6 +98,9 @@ def make_tensor_reader(ckpt_dir: str):
             )
         with open(path, "rb") as f:
             f.seek(offset)
-            return np.frombuffer(f.read(nbytes), dtype=np.uint8)
+            data = f.read(nbytes)
+        if len(data) != nbytes:
+            raise ValueError(f"Checkpoint tensor {name!r} requires {nbytes} bytes; read {len(data)}")
+        return np.frombuffer(data, dtype=np.uint8)
 
     return read
