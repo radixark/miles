@@ -1,4 +1,3 @@
-import functools
 import inspect
 import logging
 
@@ -8,41 +7,7 @@ logger = logging.getLogger(__name__)
 def install() -> None:
     _patch_fsdp2_grad_accumulation_attr_error()
     _patch_pipeline_schedule_microbatch_api()
-    _patch_pipeline_eval_output_cache()
     _shim_dist_set_timeout()
-
-
-def _patch_pipeline_eval_output_cache() -> None:
-    import torch
-    from torch.distributed.pipelining.stage import _PipelineStageBase
-
-    if torch.__version__.split("+")[0] != "2.14.1":
-        return
-    original_forward = _PipelineStageBase.forward_one_chunk
-    if getattr(original_forward, "_miles_releases_eval_outputs", False):
-        return
-    original_send = _PipelineStageBase.get_fwd_send_ops
-
-    # Torch 2.14.1 retains every eval logit tensor for a backward that never runs.
-    # Remove with the upstream lifecycle fix: https://github.com/pytorch/pytorch/pull/200643.
-    @functools.wraps(original_forward)
-    def forward_one_chunk(self, fwd_chunk_id, *args, **kwargs):
-        output = original_forward(self, fwd_chunk_id, *args, **kwargs)
-        if self.is_last and not self.has_backward:
-            self.fwd_cache.pop(fwd_chunk_id)
-        return output
-
-    @functools.wraps(original_send)
-    def get_fwd_send_ops(self, fwd_chunk_id):
-        # The last stage has no downstream send, but upstream still indexes its cache.
-        if self.is_last and not self.has_backward:
-            return []
-        return original_send(self, fwd_chunk_id)
-
-    forward_one_chunk._miles_releases_eval_outputs = True
-    _PipelineStageBase.forward_one_chunk = forward_one_chunk
-    _PipelineStageBase.get_fwd_send_ops = get_fwd_send_ops
-    logger.info("Patched torch 2.14.1 pipeline eval to release final-stage output caches")
 
 
 def _shim_dist_set_timeout() -> None:

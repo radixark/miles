@@ -531,8 +531,11 @@ class TestWorkflowScopeSeam:
         workflow = self._workflow()
         job = workflow.split(f"\n  {suite}:", 1)[1].split("\n  stage-", 1)[0]
         if suite == "stage-c-8-gpu-h100":
-            assert "partition_id: [0, 1, 2]" in job
-            shard_count = 3
+            assert (
+                "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' "
+                "&& '[0,1]' || '[0,1,2]') }}"
+            ) in job
+            shard_count = 2 if cadence == REGULAR_CADENCE else 3
         else:
             assert (
                 "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' "
