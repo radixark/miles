@@ -42,6 +42,18 @@ PODMAN_TCP_PORT=23750  # worker replicas forward <port + shard> to their podman 
 cd "$REPO"
 git log -1 --format='running miles @ %H (%s)' || true
 nvidia-smi
+# CUDA forward compatibility: the Miles image is CUDA 13, and the H100 clusters' drivers are older (Ceres: 570.124.06,
+# CUDA 12.8), where torch stops at "The NVIDIA driver on your system is too old". The image ships NVIDIA's
+# cuda-compat-13-0 user-mode driver, supported on data-center GPUs over driver branches 535, 550, 565, 570 and 575 (its
+# NVIDIA_REQUIRE_CUDA), but nothing loads it: Beaker's command replaces the image's entrypoint. Put it first on the
+# library path when the host driver is older than the image's CUDA; every process started below inherits it. Holmes'
+# drivers are new enough and keep their own libcuda.
+DRIVER_CUDA_MAJOR=$(nvidia-smi | sed -n 's/.*CUDA Version: *\([0-9]*\)\..*/\1/p')
+IMAGE_CUDA_VERSION=${CUDA_VERSION:-0}  # the CUDA base image's own ENV
+if [ -d /usr/local/cuda/compat ] && [ "${DRIVER_CUDA_MAJOR:-0}" -lt "${IMAGE_CUDA_VERSION%%.*}" ]; then
+    export LD_LIBRARY_PATH=/usr/local/cuda/compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+    echo "CUDA forward compatibility: the driver supports CUDA $DRIVER_CUDA_MAJOR, the image is CUDA $IMAGE_CUDA_VERSION"
+fi
 # A node whose raylet is starved of CPU misses Ray's health checks and is declared dead, which fails the job (three
 # times on 2026-10-16/17, INVESTIGATIONS.md). Ray's default gives up after 5 missed checks (3 s apart, 10 s timeout);
 # allow about 20 minutes instead, so a stall the node recovers from does not kill the run. ray start reads these.
