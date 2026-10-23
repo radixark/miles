@@ -197,10 +197,13 @@ def loss_function(
     else:
         loss, log = func(args, batch, logits, sum_of_sample_mean)
 
-    # Forces autograd to traverse the full graph on every rank to avoid hang.
-    # fp32 sum: an fp16 logits sum can overflow to inf, and 0 * inf is nan.
-    if parallel_state.cp.size > 1 and args.allgather_cp:
-        loss = loss + 0 * logits.sum(dtype=torch.float32)
+    # a CP rank must backprop through the model even with no response rows, or the others hang in its backward
+    if parallel_state.cp.size > 1 and logits.requires_grad and not (torch.is_tensor(loss) and loss.requires_grad):
+        raise ValueError(
+            "Under context parallelism the loss must stay connected to the logits on every rank, even one "
+            "holding no response rows; a custom loss, TIS function or loss reducer returned one that is not. "
+            "Build it from the hub's log-probs, which are."
+        )
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
     if num_rollouts is not None:

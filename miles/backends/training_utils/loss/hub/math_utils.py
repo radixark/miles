@@ -1041,11 +1041,22 @@ def calculate_log_probs_and_entropy(
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
-        log_prob = logits.new_zeros((0,), dtype=torch.float32)
-        if with_entropy:
-            entropy = logits.new_zeros((0,), dtype=torch.float32)
+        log_prob, entropy = _empty_log_probs_and_entropy(
+            logits, with_entropy=with_entropy, entropy_requires_grad=entropy_requires_grad, dtype=torch.float32
+        )
 
     return log_prob, entropy
+
+
+def _empty_log_probs_and_entropy(
+    logits: torch.Tensor, *, with_entropy: bool, entropy_requires_grad: bool, dtype: torch.dtype | None = None
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """``[0]`` outputs for a rank with no rows, still in the graph: that rank must backprop into its
+    logits, or the CP collectives in the model's backward hang."""
+    empty = logits.sum(-1, dtype=dtype)
+    if not with_entropy:
+        return empty, None
+    return empty, (empty if entropy_requires_grad else empty.detach())
 
 
 def _calculate_log_probs_and_entropy_true_on_policy(
@@ -1080,9 +1091,9 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         and *entropy* has shape ``[R]`` or is ``None``.
     """
     if logits.size(0) == 0:
-        log_prob = logits.new_zeros((0,))
-        entropy = logits.new_zeros((0,)) if with_entropy else None
-        return log_prob, entropy
+        return _empty_log_probs_and_entropy(
+            logits, with_entropy=with_entropy, entropy_requires_grad=entropy_requires_grad
+        )
 
     log_prob_logits = _apply_sampling_mask(logits, sampling_mask)
     full_logits = _gather_true_on_policy_full_logits(log_prob_logits, tp_group, vocab_size=vocab_size)
