@@ -1,7 +1,6 @@
 # Adapt from https://github.com/OpenRLHF/OpenRLHF/blob/10c733694ed9fbb78a0a2ff6a05efc7401584d46/openrlhf/models/utils.py
 # and https://github.com/OpenRLHF/OpenRLHF/blob/10c733694ed9fbb78a0a2ff6a05efc7401584d46/openrlhf/trainer/ppo_utils/experience_maker.py
 
-import importlib.util
 from argparse import Namespace
 from pathlib import Path
 
@@ -18,17 +17,6 @@ from miles.backends.training_utils.data.context_parallel import (
 from miles.backends.training_utils.parallel import get_parallel_state
 
 _LOG_RATIO_EXP_CLAMP = 20.0
-
-
-def _megatron_core_installed() -> bool:
-    """``megatron.core`` holds the fused kernel; megatron-energon alone installs a bare ``megatron``."""
-    try:
-        return importlib.util.find_spec("megatron.core") is not None
-    except ModuleNotFoundError:  # no megatron package at all
-        return False
-
-
-_MEGATRON_INSTALLED = _megatron_core_installed()
 
 
 def _safe_clamp_log_ratio(log_ratio: torch.Tensor) -> torch.Tensor:
@@ -306,35 +294,30 @@ def compute_log_probs(
         log_probs = torch.log_softmax(full_logits, dim=-1)
         return log_probs.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
 
-    if _MEGATRON_INSTALLED:
-        from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy as cross_entropy
-    else:
-        cross_entropy = vocab_parallel_cross_entropy
-
-    # convert to [seq_len, batch_size, vocab_size] as cross_entropy expects
+    # [seq, 1]: the shape callers have always received
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
 
     if debug_unified_grad_fused_logprob and not torch.is_grad_enabled():
         with torch.enable_grad():
-            log_probs = -cross_entropy(logits.detach().requires_grad_(True), tokens, process_group)
+            log_probs = -vocab_parallel_cross_entropy(logits.detach().requires_grad_(True), tokens, process_group)
         return log_probs.detach()
 
-    return -cross_entropy(logits, tokens, process_group)
+    return -vocab_parallel_cross_entropy(logits, tokens, process_group)
 
 
 class _VocabParallelCrossEntropy(torch.autograd.Function):
-    """Megatron's ``fused_vocab_parallel_cross_entropy`` in plain torch, for installs without Megatron.
+    """Cross entropy over logits split along the vocabulary over ``group``, in plain torch.
 
-    Logits are ``[seq, batch, vocab / tp]``, split over ``group`` along the vocabulary. Unlike Megatron's,
-    it leaves its input untouched and returns the gradient in the input's dtype.
+    Megatron's vocab-parallel cross entropy, bit for bit, so every backend and install runs one
+    implementation. Like it, the forward works in place on fp32 ``logits`` (callers pass a copy).
+    The gradient comes back in the input's dtype.
     """
 
     @staticmethod
     def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup | None) -> torch.Tensor:
         ctx.input_dtype = logits.dtype
-        # the one full-size copy; the rest is in place, as in Megatron
-        logits = logits.to(torch.float32, copy=True)
+        logits = logits.float()
         logits_max = logits.max(dim=-1)[0]
         dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=group)
         logits.sub_(logits_max.unsqueeze(-1))
