@@ -261,6 +261,10 @@ def _score_rows(
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Log-prob of `targets` (and entropy) for every row of `[1, T, V]` logits; `[T]` each."""
     assert logits.dim() == 3 and logits.size(0) == 1, f"thd logits are [1, T, V], got {logits.shape}"
+    if args.log_probs_backend == "fused":
+        assert not entropy_requires_grad, "the fused log-prob op keeps entropy out of the graph"
+        log_probs, entropy = _FusedLogProb.apply(logits.squeeze(0), targets, float(args.rollout_temperature))
+        return log_probs, (entropy if with_entropy else None)
     # -1 means "a whole response at once" on the per-sample path. A padded microbatch is always a full
     # bucket, so it is always chunked: the fp32 copy of a chunk stays [chunk, V].
     chunk_size = args.log_probs_chunk_size if args.log_probs_chunk_size > 0 else _CHUNK_ROWS
@@ -327,3 +331,50 @@ def _ess_ratio_contribution(
     sum_w2 = torch.zeros_like(is_weights).index_add_(0, sample_ids, is_weights * is_weights)
     ess_ratio = (sum_w * sum_w) / (num_valid * torch.clamp_min(sum_w2, 1e-8))
     return (ess_ratio * num_valid).sum() if per_token else ess_ratio.sum()
+
+
+# --log-probs-backend fused on the padded [T, V] logits: one compiled program per bucket for the forward and one
+# for the backward. XLA fuses the fp32 upcast into the reductions, so no fp32 [T, V] copy, softmax or log-softmax
+# is materialised or saved: the backward keeps only the bf16 logits and the [T] logsumexp.
+
+
+def _tpu_compile(fn):
+    return torch.compile(fn, backend="tpu", fullgraph=True, dynamic=False) if platforms.IS_TPU else fn
+
+
+@_tpu_compile
+def _fused_logprob_fwd(logits: torch.Tensor, targets: torch.Tensor, inv_temperature: torch.Tensor):
+    x = logits.float() * inv_temperature
+    lse = torch.logsumexp(x, dim=-1)
+    log_probs = x.gather(-1, targets.unsqueeze(-1)).squeeze(-1) - lse
+    entropy = lse - (torch.exp(x - lse.unsqueeze(-1)) * x).sum(-1)
+    return log_probs, entropy, lse
+
+
+@_tpu_compile
+def _fused_logprob_bwd(
+    grad: torch.Tensor, logits: torch.Tensor, targets: torch.Tensor, lse: torch.Tensor, inv_temperature: torch.Tensor
+):
+    x = logits.float() * inv_temperature
+    one_hot = torch.nn.functional.one_hot(targets, logits.size(-1)).to(torch.float32)
+    return ((one_hot - torch.exp(x - lse.unsqueeze(-1))) * (grad * inv_temperature).unsqueeze(-1)).to(logits.dtype)
+
+
+class _FusedLogProb(torch.autograd.Function):
+    """Log-probs of `targets` and entropy for `[T, V]` logits; entropy carries no gradient."""
+
+    @staticmethod
+    def forward(ctx, logits, targets, temperature):
+        inv_t = torch.full(
+            (), 1.0 / temperature if temperature > 0 else 1.0, dtype=torch.float32, device=logits.device
+        )
+        log_probs, entropy, lse = _fused_logprob_fwd(logits, targets, inv_t)
+        ctx.save_for_backward(logits, targets, lse, inv_t)
+        ctx.mark_non_differentiable(entropy)
+        return log_probs, entropy
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_log_probs, grad_entropy):
+        logits, targets, lse, inv_t = ctx.saved_tensors
+        return _fused_logprob_bwd(grad_log_probs.contiguous(), logits, targets, lse, inv_t), None, None
