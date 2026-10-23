@@ -19,9 +19,17 @@ class _CompositeWork(Work):
         self._works = works
 
     def wait(self, timeout: timedelta | None = None) -> bool:
+        import time as _time
+
+        deadline = _time.monotonic() + timeout.total_seconds() if timeout is not None else None
         for work in self._works:
-            if not (work.wait() if timeout is None else work.wait(timeout)):
-                return False
+            if deadline is None:
+                if not work.wait():
+                    return False
+            else:
+                remaining = max(deadline - _time.monotonic(), 0.0)
+                if not work.wait(timedelta(seconds=remaining)):
+                    return False
         return True
 
 
