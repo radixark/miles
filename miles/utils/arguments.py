@@ -2017,6 +2017,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_router_arguments(parser):
             parser.add_argument(
+                "--dynamo-config", type=str, default=None, help="Dynamo router/sidecar JSON configuration."
+            )
+            parser.add_argument(
                 "--use-miles-router",
                 action="store_true",
                 default=False,
@@ -3022,6 +3025,10 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
         validate_kernel_backend_args(args)
 
     sglang_validate_args(args)
+
+    from miles.backends.dynamo_utils.arguments import configure_dynamo
+
+    configure_dynamo(args)
 
     return args
 
