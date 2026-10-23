@@ -340,5 +340,3 @@ whose contraction axis does not match a one-dimensional scaling layout.
 * [Towards Blackwell-Native 8-bit and 4-bit RL: End-to-End MXFP8 and NVFP4 RL in Miles](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl)
 * [The 4-bitter Lesson](https://humansand.ai/blog/nvfp4-rl)
 * [Faster-than-light NVFP4 decode—with precision](https://humansand.ai/blog/faster-than-light-nvfp4-decode)
-  by Ziang Li at humans& ai: NVFP4 W4A16 rollout kernels and the fused
-  weight QDQ training recipe.
