@@ -33,15 +33,22 @@ class _RolloutCellUpdater:
         logger.error(f"rollout cell {self.cell_id} can no longer be updated", exc_info=error)
 
     def submit_client_call(self, name: str, **kwargs: Any) -> Future[Any]:
+        return self._submit(name, kwargs, timeout=self._args.update_weight_engine_request_timeout)
+
+    def submit_unbounded_client_call(self, name: str, **kwargs: Any) -> Future[Any]:
+        """`submit_client_call` without the per-request timeout, which is sized for one bucket, not a whole model."""
+        return self._submit(name, kwargs, timeout=None)
+
+    def _submit(self, name: str, kwargs: dict[str, Any], *, timeout: float | None) -> Future[Any]:
         if self.is_errored:
             done: Future[Any] = Future()
             done.set_result(None)
             return done
-        return async_utils.submit(self._run_guarded(getattr(self._api_client, name)(**kwargs)))
+        return async_utils.submit(self._run_guarded(getattr(self._api_client, name)(**kwargs), timeout=timeout))
 
-    async def _run_guarded(self, request: Coroutine[Any, Any, Any]) -> object | None:
+    async def _run_guarded(self, request: Coroutine[Any, Any, Any], *, timeout: float | None) -> object | None:
         try:
-            return await asyncio.wait_for(request, timeout=self._args.update_weight_engine_request_timeout)
+            return await asyncio.wait_for(request, timeout=timeout)
         except Exception as error:
             self.mark_errored(error)
             return None

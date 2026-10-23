@@ -1125,7 +1125,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
+                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "disk", "shm"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
@@ -1136,7 +1136,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "exceed --update-weight-buffer-size. "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                    "them into a host-local checkpoint that the engine reloads from."
+                    "them into a host-local checkpoint that the engine reloads from. "
+                    "'disk' writes the full HF checkpoint to --update-weight-disk-dir on every sync and has "
+                    "the engines reload it via /update_weights_from_disk; it needs no NCCL, CUDA IPC or "
+                    "/pull_weights, so it works with engines on another accelerator stack (e.g. TPU). "
+                    "'shm' hands engines on the trainer's host shared-memory tensors through "
+                    "/update_weights_from_tensor, skipping the files 'disk' writes and parses."
                 ),
             )
             parser.add_argument(
@@ -1144,9 +1149,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Filesystem directory disk-delta weight sync publishes to: one delta directory "
-                    "(changed tensors only) per sync, written by the trainer and read by every "
-                    "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                    "Filesystem directory disk and disk-delta weight sync publish to, written by the "
+                    "trainer and read by every rollout host: one full checkpoint (disk) or one delta "
+                    "directory with the changed tensors only (disk-delta) per sync. Required for both modes."
                 ),
             )
             parser.add_argument(
@@ -3455,7 +3460,7 @@ def miles_validate_args(args):
             setattr(args, k, v)
 
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "disk", "shm"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -3896,6 +3901,35 @@ def miles_validate_args(args):
                 "--update-weight-transfer-mode=disk-delta cannot resume from a training checkpoint: "
                 f"Requested --load={args.requested_load}."
             )
+
+    if args.update_weight_transfer_mode in ("disk", "shm"):
+        mode = args.update_weight_transfer_mode
+        # colocate always syncs through CUDA IPC (get_weight_transfer_protocol)
+        assert not args.colocate, f"--update-weight-transfer-mode {mode} needs disaggregated engines; drop --colocate"
+        assert args.lora_rank <= 0, f"LoRA weight sync is not supported for --update-weight-transfer-mode {mode}"
+        assert (
+            args.prefill_num_servers is None
+        ), f"--update-weight-transfer-mode {mode} has not been tested when PD is enabled"
+    if args.update_weight_transfer_mode == "shm":
+        # the engines open the shared-memory tensors by /dev/shm file name, so they must share the trainer's host
+        assert args.actor_num_nodes == 1, "--update-weight-transfer-mode shm needs the trainer on one node"
+        # each engine rank opens the payload at its TP rank; PP stages share TP ranks, so one payload would be
+        # opened by several processes and its /dev/shm file unlinked while another stage still needs it
+        assert args.sglang_pp_size == 1, "--update-weight-transfer-mode shm does not support --sglang-pp-size > 1"
+    if args.update_weight_transfer_mode == "disk":
+        # /update_weights_from_disk reloads the draft model from the same directory, which has no draft weights
+        assert args.sglang_speculative_algorithm is None or args.enable_mtp_training, (
+            "--update-weight-transfer-mode disk reloads the speculative draft model from the trainer's "
+            "checkpoint; set --enable-mtp-training or drop --sglang-speculative-algorithm"
+        )
+        assert args.update_weight_disk_dir, (
+            "--update-weight-transfer-mode disk needs --update-weight-disk-dir on a filesystem "
+            "both the trainer and the rollout engines can read"
+        )
+        assert os.path.isdir(args.hf_checkpoint), (
+            "--update-weight-transfer-mode disk needs --hf-checkpoint to be a local directory: "
+            "each published version copies its config and tokenizer files"
+        )
 
     if args.colocate:
         if args.offload_train is None:

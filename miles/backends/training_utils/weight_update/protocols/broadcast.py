@@ -13,6 +13,7 @@ from miles.backends.training_utils.parallel import ParallelState, get_parallel_s
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
+from miles.backends.training_utils.weight_update.protocols.utils.flattened_bucket import flatten_weight_bucket
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.utils import async_utils
 from miles.utils.distributed_lock import create_world_ticket_lock
@@ -162,7 +163,7 @@ def update_weights_from_distributed(
     # Pack before asking receivers to enter their collective, so allocation or
     # format validation failures cannot leave them waiting for a broadcast.
     if transfer_mode == "broadcast_packed":
-        tensors = [_flatten_weight_bucket(converted_named_tensors)]
+        tensors = [flatten_weight_bucket(converted_named_tensors).get_flattened_tensor()]
         format_kwargs = {"load_format": "flattened_bucket"}
     else:
         tensors = [param.data.contiguous() for _, param in converted_named_tensors]
@@ -189,23 +190,3 @@ def update_weights_from_distributed(
         handle.wait()
 
     return futures
-
-
-def _flatten_weight_bucket(named_tensors: Sequence[tuple[str, torch.Tensor]]) -> torch.Tensor:
-    # Keep SGLang optional for callers using the existing per-tensor protocol.
-    from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket
-
-    if not getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
-        raise RuntimeError("Flattened broadcasts require SGLang's mixed-dtype FlattenedTensorBucket")
-
-    # SGLang concatenates raw bytes without padding. Each reconstructed dtype
-    # view requires an aligned offset; preserve names/order and reject unsafe
-    # layouts before allocating or sending metadata instead of casting values.
-    offset = 0
-    for name, tensor in named_tensors:
-        if offset % tensor.element_size():
-            raise ValueError(f"Unaligned flattened weight {name}: byte offset {offset}, dtype {tensor.dtype}")
-        offset += tensor.numel() * tensor.element_size()
-    return FlattenedTensorBucket(
-        named_tensors=[(name, tensor.contiguous()) for name, tensor in named_tensors]
-    ).get_flattened_tensor()
