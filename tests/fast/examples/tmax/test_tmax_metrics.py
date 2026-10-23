@@ -13,7 +13,11 @@ import tmax_metrics  # noqa: E402
 from miles.utils.types import Sample  # noqa: E402
 
 ARGS = SimpleNamespace(
-    reward_key=None, rollout_batch_size=2, n_samples_per_prompt=4, wandb_always_use_train_step=False
+    reward_key=None,
+    rollout_batch_size=2,
+    n_samples_per_prompt=4,
+    wandb_always_use_train_step=False,
+    custom_reward_post_process_path=None,
 )
 
 
@@ -122,3 +126,11 @@ def test_missing_rewards_are_left_out():
     samples = _group(0, [None, 1.0, 0.0, None])
     metrics = tmax_metrics._trained_metrics(ARGS, 0, samples)
     assert metrics["rollout/trained/advantage_max"] == pytest.approx(0.5)
+
+
+def test_pure_opd_logs_no_reward_advantage():
+    """Pure OPD trains on reward 0 (generate.opd_pure_rewards): the centered task reward is not the advantage."""
+    args = SimpleNamespace(**{**vars(ARGS), "custom_reward_post_process_path": "generate.opd_pure_rewards"})
+    metrics = tmax_metrics._trained_metrics(args, 0, _group(0, [1.0, 0.0]))
+    assert metrics["rollout/trained/response_len_solved_mean"] == 100
+    assert not any(k.startswith("rollout/trained/advantage") for k in metrics)

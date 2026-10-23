@@ -17,7 +17,8 @@ Requires:
 
 With --opd-teacher, adds Megatron-mode on-policy distillation: the teacher (same architecture as the
 student) scores every rollout token in the training forward pass, and
-opd_kl_coef * (log p_student - log p_teacher) is subtracted from each token's GRPO advantage.
+opd_kl_coef * (log p_student - log p_teacher) is subtracted from each token's GRPO advantage. With --opd-pure
+that term is the whole advantage (open-instruct's --opd_pure): the task reward is still computed and logged.
 
 `prepare` downloads the dataset, extracts the task directories, writes the prompt
 JSONL, and converts the student (and teacher) HF checkpoints to Megatron torch_dist. `execute` submits
@@ -29,6 +30,7 @@ Args:
   --model-name: student, a key of _RECIPES (default: Qwen3.5-9B).
   --opd-teacher: teacher, a key of _RECIPES with the student's architecture (default: none, no OPD).
   --opd-kl-coef: weight of the per-token reverse-KL penalty (default: 1.0).
+  --opd-pure: train on the OPD term alone, the task reward logged but not trained on (default: off, additive).
   --num-gpus-per-node: GPUs per node (default: 8).
   --rollout-batch-size / --n-samples-per-prompt: prompts x samples per step (default: 32 x 8).
   --max-seq-len: per-episode token budget including the prompt (default: 34816).
@@ -158,6 +160,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     model_name: _MODEL_NAMES = "Qwen3.5-9B"
     opd_teacher: _MODEL_NAMES | None = None
     opd_kl_coef: float = 1.0
+    # open-instruct's --opd_pure: the advantage is the OPD term alone; the task reward is logged, not trained on.
+    opd_pure: bool = False
     num_gpus_per_node: int = 8
     rollout_batch_size: int = 32
     n_samples_per_prompt: int = 8
@@ -239,6 +243,11 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
                 f"{self.model_name} renders with enable_thinking={student.enable_thinking} and {self.opd_teacher} with "
                 f"{teacher.enable_thinking}: the teacher would score prompts off its own distribution"
             )
+        assert not self.opd_pure or self.opd_teacher is not None, "opd_pure needs opd_teacher"
+        # open-instruct warns here: the filter drops uniform groups, which carry no reward signal but full OPD signal.
+        assert not (
+            self.opd_pure and self.filter_zero_std
+        ), "opd_pure trains on every group: set filter_zero_std false"
 
     @property
     def recipe(self) -> _Recipe:
@@ -426,6 +435,10 @@ def execute(args: ScriptArgs):
             f"--opd-kl-coef {args.opd_kl_coef} "
             f"--opd-teacher-load {args.model_dir}/{args.opd_teacher}_torch_dist "
         )
+        if args.opd_pure:
+            # The trained reward is 0 for every sample, so GRPO's advantage is 0 and the OPD term is all that is left;
+            # raw_reward (what rollout/raw_reward logs) stays the task reward.
+            grpo_args += "--custom-reward-post-process-path generate.opd_pure_rewards "
 
     optimizer_args = (
         "--optimizer adam "

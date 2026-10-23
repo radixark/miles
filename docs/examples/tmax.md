@@ -35,7 +35,7 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | `tmax_agent_function.py` | Agent loop for `agentic_tool_call.generate`, plus the over-sampling `abort` hook |
 | `tmax_sandbox.py` | Per-episode container: the episode logic shared by both backends, and the podman backend (a Docker-API socket), ported from open-instruct |
 | `tmax_gateway.py` | The gateway backend: containers on a LiteRegistry podman fleet through literegistry's own client, after open-instruct's `GatewayBackend` |
-| `generate.py` | Reward function (`None` drops the group) |
+| `generate.py` | Reward function (`None` drops the group), and pure OPD's reward post-process |
 | `tmax_metrics.py` | Per-rollout W&B metrics open-instruct logs: episodes and tools, solve rates before the filter, trained-sample lengths and advantages |
 | `tmax_prompts.py` | open-instruct's system prompt |
 | `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes, `smoke_gateway.yaml` uses the podman fleet) |
@@ -283,6 +283,11 @@ above 1 nat).
   `tmax-4b` only adds seven unused audio/TTS special tokens (ids 248070-248076). The same holds for
   `allenai/tmax-2b` and `hamishivi/Qwen3.5-2B` (both tokenizers have 248,077 entries; tied embeddings). Like
   `tmax-4b`, `tmax-2b` has no vision tower or MTP weights; neither matters to Megatron-mode OPD.
+- **Pure OPD** (`opd_pure`, open-instruct's `--opd_pure`, which all of its terminal OPD runs use) trains on the
+  OPD term alone. `generate.opd_pure_rewards`, a `--custom-reward-post-process-path`, hands GRPO a reward of 0 for
+  every sample, so its advantage is 0, and keeps the task reward as `raw_reward` (`rollout/raw_reward`).
+  `rollout/advantages` is then the mean OPD term, and `tmax_metrics` leaves out `rollout/trained/advantage_*`.
+  The launcher requires `filter_zero_std: false` with it, since every group carries signal.
 - The OPD term is dense: at `--opd-kl-coef 1.0` grad_norm is about 20x a GRPO-only step (4-6 vs 0.2-0.4)
   and is clipped to 1.0, so the update is mostly distillation. Use 0.1-0.3 to keep the task reward in play.
 

@@ -147,7 +147,8 @@ def _trained_metrics(args, rollout_id: int, samples: list[Sample]) -> dict[str, 
             lengths = [s.effective_response_length for s in chosen]
             metrics[f"rollout/trained/response_len_{name}_mean"] = mean(lengths)
             metrics[f"rollout/trained/response_len_{name}_max"] = max(lengths)
-    advantages = list(_centered_advantages(scored))
+    # A reward post-process (pure OPD's) replaces the trained reward, so the centered task reward is not the advantage.
+    advantages = list(_centered_advantages(scored)) if args.custom_reward_post_process_path is None else []
     if advantages:
         metrics["rollout/trained/advantage_min"] = min(advantages)
         metrics["rollout/trained/advantage_max"] = max(advantages)
