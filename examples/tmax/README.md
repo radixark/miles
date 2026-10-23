@@ -147,15 +147,17 @@ Open-instruct's and the base model's numbers are sampled (T=0.7), so the compari
 |---|---|---|
 | Ours, step 120 | 0.496 / 0.700 | 0.229 / 0.360 |
 | Ours, step 160 | 0.484 / 0.710 | 0.222 / 0.382 |
-| Ours, step 200 | 0.472 / 0.720 | pending |
-| Ours, step 240 | 0.506 / 0.770 | pending |
-| Ours, step 280 | 0.490 / 0.690 | pending |
-| Ours, step 300 | 0.478 / 0.680 | pending |
+| Ours, step 200 | 0.472 / 0.720 | 0.258 / 0.404 |
+| Ours, step 240 | 0.528 / 0.780 | 0.258 / 0.371 |
+| Ours, step 280 | 0.490 / 0.690 | 0.236 / 0.382 |
+| Ours, step 300 | 0.478 / 0.680 | 0.238 / 0.360 |
 | Open-instruct, step 120 / 240 (sampled) | 0.524 / 0.760, 0.574 / 0.790 | 0.229 / 0.360, 0.249 / 0.393 |
 | Base `hamishivi/Qwen3.5-9B` (sampled) | 0.418 / 0.660 | 0.191 / 0.337 |
 
-The TBlite evals of steps 200-300 lost 10 trials each (the same 8 tasks) to Docker Hub's anonymous pull limit;
-without those tasks step 240 scores 0.522 / 0.793 and the others 0.487-0.496 pass@1.
+The TBlite evals of steps 200, 280 and 300 lost 10 trials each (the same 8 tasks) to Docker Hub's anonymous pull
+limit, because their `--mirror-url` named mirrors that no longer existed; without those tasks they score 0.487-0.496
+pass@1. Step 240 is a rerun through live mirrors (the first run: 0.506 / 0.770), as are all the TB2.1 evals of
+steps 200-300. Most remaining errors are 120 s environment-setup timeouts, counted as failures.
 
 ### Production recipe, 4 nodes
 
