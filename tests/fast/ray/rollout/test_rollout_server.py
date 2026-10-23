@@ -634,7 +634,7 @@ async def _make_serving_server(monkeypatch, *, num_cells: int) -> RolloutServer:
 
     srv = RolloutServer(
         all_server_cells={},
-        args=make_args(colocate=True, ft_components=[], use_miles_router=False),
+        args=make_args(colocate=True, ft_components=[], router="sglang"),
         context_lock=_make_lock(),
         engine_provider=_StubProvider(),
     )

@@ -82,11 +82,9 @@ def test_score_centering_enables_fp32_lm_head(loss_type: str | None, explicit_fp
     assert args.sglang_enable_fp32_lm_head is (explicit_fp32 or loss_type == "score_centering")
 
 
-@pytest.mark.parametrize(
-    ("use_miles_router", "warns"), [(False, False), (True, True)], ids=["sgl-router", "miles-router"]
-)
+@pytest.mark.parametrize(("router", "warns"), [("sglang", False), ("miles", True)])
 def test_a_session_server_without_key_routing_warns(
-    use_miles_router: bool, warns: bool, caplog: pytest.LogCaptureFixture
+    router: str, warns: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Session affinity only saves prefix-cache work, so its absence is reported, not rejected."""
     args = _parse_sglang_args([])
@@ -95,7 +93,7 @@ def test_a_session_server_without_key_routing_warns(
     args.true_on_policy_mode = False
     args.use_session_server = "v1"
     args.router_assignment_mode = "random"
-    vars(args).update(sglang_router_args(args.sglang_router_policy), use_miles_router=use_miles_router)
+    vars(args).update(sglang_router_args(args.sglang_router_policy), router=router)
 
     with caplog.at_level("WARNING"):
         validate_args(args)

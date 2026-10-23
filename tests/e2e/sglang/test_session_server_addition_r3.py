@@ -87,7 +87,7 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         num_layers=_NUM_LAYERS,
         lora_rank=0,
         lora_adapter_path=None,
-        use_miles_router=False,
+        router="sglang",
         sglang_router_policy="manual",
         router_policy=None,
         router_prefill_policy=None,

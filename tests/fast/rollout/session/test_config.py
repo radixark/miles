@@ -124,16 +124,16 @@ class TestComputeSessionServerConfig:
         assert [getattr(config, name) for name in _OPTIONAL_ARGS_ATTRS] == [None] * len(_OPTIONAL_ARGS_ATTRS)
 
     @pytest.mark.parametrize(
-        "use_miles_router, policy, expected",
-        [(False, "manual", "X-SMG-Routing-Key"), (False, "round_robin", None), (True, "manual", None)],
+        "router, policy, expected",
+        [("sglang", "manual", "X-SMG-Routing-Key"), ("sglang", "round_robin", None), ("miles", "manual", None)],
         ids=["sgl-router-manual", "sgl-router-round-robin", "miles-router"],
     )
     def test_the_routing_key_header_is_set_only_when_the_router_routes_by_key(
-        self, use_miles_router: bool, policy: str, expected: str | None
+        self, router: str, policy: str, expected: str | None
     ):
         """A header the router ignores would pin nothing, so the session server sends one only when it is read."""
         config = compute_session_server_config(
-            _make_args(use_miles_router=use_miles_router, sglang_router_policy=policy),
+            _make_args(router=router, sglang_router_policy=policy),
             host="10.0.0.1",
             port=5001,
             instance_id="abc",

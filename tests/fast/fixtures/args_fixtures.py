@@ -59,7 +59,7 @@ def parser_defaults() -> dict[str, Any]:
 def sglang_router_args(policy: str | None = None) -> dict[str, Any]:
     """Every arg the sgl-router backend reads, for an args fake built by hand."""
     return dict(
-        use_miles_router=False,
+        router="sglang",
         sglang_router_policy=policy,
         router_policy=None,
         router_prefill_policy=None,

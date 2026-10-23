@@ -24,6 +24,7 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.router.backend import RouterKind
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
@@ -2005,10 +2006,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_router_arguments(parser):
             parser.add_argument(
+                "--router",
+                choices=[kind.value for kind in RouterKind],
+                default=RouterKind.SGLANG.value,
+                help="The router in front of each model's inference engines: sgl-router or the Miles router.",
+            )
+            parser.add_argument(
                 "--use-miles-router",
-                action="store_true",
-                default=False,
-                help="Whether to use MilesRouter for text-based routing instead of SGLang token-based routing",
+                dest="router",
+                action="store_const",
+                const=RouterKind.MILES.value,
+                help="Alias for --router miles.",
             )
             parser.add_argument(
                 "--miles-router-timeout",
@@ -3427,15 +3435,23 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         )
 
 
+def _apply_custom_config(args, data: dict) -> None:
+    # configs written before --router
+    if data.pop("use_miles_router", False):
+        data["router"] = RouterKind.MILES.value
+    for k, v in data.items():
+        if hasattr(args, k):
+            logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
+        setattr(args, k, v)
+    # a config file bypasses the --router choices
+    RouterKind(args.router)
+
+
 def miles_validate_args(args):
     from miles.backends.training_utils.weight_update.session import weight_update_selector
 
     if args.custom_config_path:
-        data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
-        for k, v in data.items():
-            if hasattr(args, k):
-                logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
-            setattr(args, k, v)
+        _apply_custom_config(args, yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
 
     mode = args.update_weight_transfer_mode
     if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
