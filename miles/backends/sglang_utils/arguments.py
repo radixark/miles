@@ -198,6 +198,13 @@ def validate_args(args):
     if args.true_on_policy_mode:
         # True on-policy mode overrides the parsed setting to keep inference deterministic.
         args.sglang_enable_deterministic_inference = True
+        if args.sglang_speculative_algorithm is not None:
+            # Speculative verify samples from an fp32 softmax with tree rejection sampling,
+            # not the bf16 log-softmax the trainer reproduces, so bitwise parity cannot hold.
+            raise ValueError(
+                "--true-on-policy-mode does not support speculative decoding "
+                f"(--sglang-speculative-algorithm {args.sglang_speculative_algorithm})"
+            )
 
     if getattr(args, "recompute_logprobs_via_prefill", False):
         # Prefill logprob recomputation overrides both parsed settings for deterministic scoring.

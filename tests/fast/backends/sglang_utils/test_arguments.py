@@ -80,3 +80,18 @@ def test_score_centering_enables_fp32_lm_head(loss_type: str | None, explicit_fp
     validate_args(args)
 
     assert args.sglang_enable_fp32_lm_head is (explicit_fp32 or loss_type == "score_centering")
+
+
+@pytest.mark.parametrize("true_on_policy_mode", [False, True])
+def test_true_on_policy_rejects_speculative_decoding(true_on_policy_mode: bool) -> None:
+    args = _parse_sglang_args(["--sglang-speculative-algorithm", "EAGLE"])
+    args.loss_type = None
+    args.rollout_num_gpus_per_engine = 1
+    args.true_on_policy_mode = true_on_policy_mode
+    args.use_session_server = False
+
+    if true_on_policy_mode:
+        with pytest.raises(ValueError, match="does not support speculative decoding"):
+            validate_args(args)
+    else:
+        validate_args(args)
