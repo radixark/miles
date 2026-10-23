@@ -169,6 +169,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             evaluation=False,
             sample_done_callback=self._scheduler.sample_done_callback,
         )
+        assert len(result) == self.args.n_samples_per_prompt
         return DataBufferInput(prompt_group=prompt_group, group=result)
 
     async def _worker_loop(self) -> None:
@@ -222,7 +223,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         do_print = True
 
         for entry in entries:
-            assert len(entry.group) == args.n_samples_per_prompt
+            assert entry.group, "The data buffer must return nonempty training groups"
 
             if do_print:
                 sample = first_sample(entry.group)

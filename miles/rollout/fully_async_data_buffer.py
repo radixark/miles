@@ -13,7 +13,7 @@ import time
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -21,10 +21,10 @@ from miles.backends.megatron_utils.megatron_config import resolve_megatron_confi
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter, iter_samples
 from miles.rollout.filter_hub.common_filters import (
     GroupWeightVersionStats,
-    apply_aborted_filter,
     apply_missing_reward_filter,
     group_staleness,
     group_weight_version_stats,
+    select_group_members,
 )
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
@@ -85,6 +85,7 @@ class DataBufferConstructorInput:
 class DataBufferInput:
     prompt_group: list[Sample]  # resubmittable, for recycling
     group: Group  # finished samples
+    excluded_sample_indices: list[int] | None = None
 
 
 MULTI_POLICY_CHECKPOINT_UNSUPPORTED = "multi-policy rollout state is not checkpointed"
@@ -178,39 +179,50 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_versioned_samples = 0
 
     async def put(self, input: DataBufferInput) -> None:
-        if not self._preput_filter(input):
+        if (selected := self._select(input)) is None:
             return
 
         async with self._cond:
             while len(self._buffer) >= self._capacity:
                 await self._cond.wait()
-            self._buffer.append(input)
+            self._buffer.append(selected)
             self._cond.notify_all()
 
-    def _preput_filter(self, input: DataBufferInput) -> bool:
-        output = apply_aborted_filter(self._args, input.group)
+    def _select(self, input: DataBufferInput) -> DataBufferInput | None:
+        group, output = select_group_members(self._args, input.group)
         if not output.keep:
             self._metric_aborted_groups += 1
             self._unused_handler_fn(input.prompt_group, UnusedReason.ABORTED)
-            return False
+            return None
 
-        output = apply_missing_reward_filter(self._args, input.group)
+        output = apply_missing_reward_filter(self._args, group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
             SampleOwnershipRecorder.log_dropped_samples(
                 args=self._args, samples=input.prompt_group, reason="missing_reward"
             )
-            return False
+            return None
 
-        self._metric_gatherer.on_group_before_dynamic_filter(self._args, input.group)
-        output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
+        self._metric_gatherer.on_group_before_dynamic_filter(self._args, group)
+        output = call_dynamic_filter(self._dynamic_filter, self._args, group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
             SampleOwnershipRecorder.log_dropped_samples(
                 args=self._args, samples=input.prompt_group, reason="dynamic_filter"
             )
-            return False
-        return True
+            return None
+
+        if group is input.group:
+            return input
+        excluded_sample_indices = None
+        if self._args.enable_sample_ownership_checker:
+            retained_ids = {id(sample) for sample in group}
+            excluded_sample_indices = [
+                sample.lineage.source_sample_index if sample.lineage is not None else sample.index
+                for sample in input.group
+                if id(sample) not in retained_ids
+            ]
+        return replace(input, group=group, excluded_sample_indices=excluded_sample_indices)
 
     async def get(self, *, num_groups: int, current_version: int | None = None, **_) -> list[DataBufferInput]:
         if current_version is not None:
@@ -235,6 +247,11 @@ class DefaultDataBuffer(DataBuffer):
             del self._buffer[:num_groups]
             self._cond.notify_all()  # wake producers blocked on a full buffer
             for entry in entries:
+                if entry.excluded_sample_indices:
+                    # Until consumption, a stale group may still retry all its original prompts.
+                    SampleOwnershipRecorder.log_dropped_source_sample_indices(
+                        args=self._args, source_sample_indices=entry.excluded_sample_indices, reason="aborted"
+                    )
                 version_stats = group_weight_version_stats(entry.group)
                 if (staleness := version_stats.oldest_lag(current_version)) is not None:
                     self._metric_consumed_staleness.append(staleness)

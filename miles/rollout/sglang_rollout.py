@@ -15,7 +15,11 @@ from tqdm import tqdm
 
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
-from miles.rollout.filter_hub.common_filters import apply_preput_filters
+from miles.rollout.filter_hub.common_filters import (
+    apply_reward_filters,
+    non_aborted_trajectories,
+    select_group_members,
+)
 from miles.rollout.generate_utils.rollout_topk_logprobs import (
     append_rollout_topk_logprobs,
     configure_rollout_topk_logprobs_request,
@@ -412,9 +416,11 @@ async def generate_and_rm_group(
 
     # for the rm that need the whole group, we will do the rm here
     if not state.aborted and args.group_rm:
-        rewards = await batched_async_rm(args, group)
-        for sample, reward in zip(group, rewards, strict=False):
-            sample.reward = reward
+        reward_group = non_aborted_trajectories(group) if args.keep_partial_groups_on_abort else group
+        if reward_group:
+            rewards = await batched_async_rm(args, reward_group)
+            for sample, reward in zip(reward_group, rewards, strict=False):
+                sample.reward = reward
 
     return group
 
@@ -529,21 +535,32 @@ async def generate_rollout_async(
 
             assert len(group) == args.n_samples_per_prompt
             all_data.append(group)
+            original_group = group
+            group, filter_output = select_group_members(args, group)
             metric_gatherer.on_group_before_dynamic_filter(args, group)
-            filter_output = apply_preput_filters(args, dynamic_filter, group)
+            if filter_output.keep:
+                filter_output = apply_reward_filters(args, dynamic_filter, group)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
-                SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="dynamic_filter")
+                SampleOwnershipRecorder.log_dropped_groups(
+                    args=args, before=original_group, after=[], reason="dynamic_filter"
+                )
                 state.remaining_batch_size -= 1
                 continue
 
             # add the samples to the data
             # NOTE: here we have not stored all the unused samples back to the data buffer.
             if len(data) < target_data_size:
+                if group is not original_group:
+                    SampleOwnershipRecorder.log_dropped_groups(
+                        args=args, before=original_group, after=group, reason="aborted"
+                    )
                 data.append(group)
                 pbar.update(args.n_samples_per_prompt)
             else:
-                SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="oversampling")
+                SampleOwnershipRecorder.log_dropped_groups(
+                    args=args, before=original_group, after=[], reason="oversampling"
+                )
 
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]

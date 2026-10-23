@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from tests.fast.rollout.inference_rollout.conftest import (
     StampRecordingGenerate,
     make_eval_args,
@@ -17,6 +18,35 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
 )
 from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
+from miles.utils.function_registry import function_registry
+from miles.utils.types import Sample
+
+
+@pytest.mark.parametrize(("survivors", "retain"), [(0, True), (1, True), (2, True), (1, False)])
+async def test_group_reward_sees_only_retained_trajectories(survivors, retain):
+    async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+        sample = input.sample
+        sample.status = Sample.Status.COMPLETED if sample.index < survivors else Sample.Status.ABORTED
+        sample.response = "answer" if sample.index < survivors else ""
+        return GenerateFnOutput(samples=sample)
+
+    state = make_state(generate)
+    state.args.keep_partial_groups_on_abort = retain
+    state.args.custom_rm_path = "test:partial_group_reward"
+    sources = [Sample(index=i, prompt="prompt") for i in range(3)]
+    scored = []
+
+    async def score(args, samples):
+        scored.append(list(samples))
+        return [float(sample.index) for sample in samples]
+
+    with function_registry.temporary(state.args.custom_rm_path, score):
+        result = await inference_rollout_common.generate_and_rm_group(state, sources, {})
+
+    expected = sources[:survivors] if retain else sources
+    assert scored == ([expected] if expected else [])
+    assert result == sources
+    assert all(sample.reward is None for sample in result if sample not in expected)
 
 
 def test_inference_rollout_fn_exposes_the_constructor_input(monkeypatch) -> None:

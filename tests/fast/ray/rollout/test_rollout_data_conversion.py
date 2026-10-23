@@ -75,10 +75,15 @@ class TestPostprocessRolloutData:
                 args=args, data=[make_sample()] * 5, train_parallel_config=make_train_parallel_config(dp_size=1)
             )
 
-    def test_dynamic_batch_size_computed_and_recorded_in_metadata(self):
+    @pytest.mark.parametrize("disable_rollout_trim_samples", [False, True])
+    def test_dynamic_batch_size_computed_and_recorded_in_metadata(self, disable_rollout_trim_samples):
         """When use_dynamic_global_batch_size=True, the function recomputes gbs
         from the actual sample count and records it in metadata."""
-        args = make_args(global_batch_size=64, disable_rollout_trim_samples=False, use_dynamic_global_batch_size=True)
+        args = make_args(
+            global_batch_size=64,
+            disable_rollout_trim_samples=disable_rollout_trim_samples,
+            use_dynamic_global_batch_size=True,
+        )
         data = [make_sample(index=i) for i in range(10)]
         out, meta = postprocess_rollout_data(
             args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=2)

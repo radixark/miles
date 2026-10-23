@@ -1810,6 +1810,24 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
         miles_validate_args(args)
 
 
+def test_partial_group_retention_is_opt_in_and_requires_dynamic_global_batch_size():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    assert not parser.parse_args(REQUIRED_ARGS).keep_partial_groups_on_abort
+    args = parser.parse_args(["--keep-partial-groups-on-abort", "--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with pytest.raises(AssertionError, match="requires --use-dynamic-global-batch-size"):
+        miles_validate_args(args)
+
+
+def test_partial_group_retention_accepts_dynamic_batching():
+    args = _parse_megatron_args(
+        ["--keep-partial-groups-on-abort", "--use-dynamic-global-batch-size"] + DYNAMIC_BATCH_ARGS
+    )
+    miles_validate_args(args)
+    assert args.keep_partial_groups_on_abort
+
+
 def test_shared_actor_critic_ppo_rejects_indep_dp():
     """Multi-cell PPO used to pass validation and fail only at the first training step's external-data assert."""
     args = _parse_megatron_args(["--advantage-estimator", "ppo", "--indep-dp"] + DYNAMIC_BATCH_ARGS)

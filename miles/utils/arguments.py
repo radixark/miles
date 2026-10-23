@@ -898,6 +898,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--keep-partial-groups-on-abort",
+                action="store_true",
+                help=(
+                    "Retain non-aborted trajectories from partially aborted prompt groups in synchronous and "
+                    "fully async rollout. Requires --use-dynamic-global-batch-size. "
+                    "Only non-compact outputs (one Sample per trajectory) are supported."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-submission-granularity",
                 type=str,
                 choices=["group", "sample"],
@@ -3745,6 +3754,11 @@ def miles_validate_args(args):
 
     if args.use_dynamic_batch_size:
         assert args.max_tokens_per_gpu is not None, "max_tokens_per_gpu must be set when use_dynamic_batch_size is set"
+
+    if args.keep_partial_groups_on_abort:
+        assert (
+            args.use_dynamic_global_batch_size
+        ), "--keep-partial-groups-on-abort requires --use-dynamic-global-batch-size"
 
     # --use-dynamic-global-batch-size has two motivations:
     # 1. compaction/subagent rollouts: static micro-batching cannot guarantee alignment

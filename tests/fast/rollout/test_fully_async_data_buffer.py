@@ -11,6 +11,7 @@ from miles.rollout.fully_async_data_buffer import (
     DataBufferInput,
     DefaultMultiDataBuffer,
 )
+from miles.utils.function_registry import function_registry
 
 
 class _RecordingBuffer(DataBuffer):
@@ -90,6 +91,7 @@ def _make_args() -> Namespace:
         async_data_buffer_capacity_factor=1.0,
         custom_async_data_buffer_path_per_model=None,
         dynamic_sampling_filter_path=None,
+        keep_partial_groups_on_abort=False,
         max_weight_staleness=None,
         megatron_config=encode_megatron_config("solver", "verifier"),
         reward_key=None,
@@ -145,6 +147,7 @@ def _make_single_policy_args(**overrides) -> Namespace:
     defaults = dict(
         async_data_buffer_capacity_factor=1000.0,
         dynamic_sampling_filter_path=None,
+        keep_partial_groups_on_abort=False,
         enable_sample_ownership_checker=False,
         max_weight_staleness=None,
         reward_key=None,
@@ -194,6 +197,31 @@ def _make_buffer(**overrides) -> _BufferUnderTest:
         )
     )
     return _BufferUnderTest(buffer=buffer, unused=unused)
+
+
+async def test_partial_retention_precedes_missing_reward_and_dynamic_filters():
+    seen = []
+
+    def keep(args, group, **kwargs):
+        seen.append(list(group))
+        return DynamicFilterOutput(keep=True)
+
+    with function_registry.temporary("test:retain_survivors", keep):
+        under_test = _make_buffer(
+            keep_partial_groups_on_abort=True, dynamic_sampling_filter_path="test:retain_survivors"
+        )
+    group = _make_finished_group(1)
+    group[-1].status = Sample.Status.ABORTED
+    group[-1].reward = None
+
+    input = DataBufferInput(prompt_group=group, group=group)
+    await under_test.buffer.put(input)
+
+    assert seen == [group[:1]]
+    assert (await _get_one(under_test.buffer)).group == group[:1]
+    assert input.group is group
+    assert len(input.group) == GROUP_SIZE
+    assert under_test.unused == []
 
 
 async def _put(buffer: DataBuffer, group: Group) -> None:
@@ -501,9 +529,12 @@ class TestMetricWindows:
 
 
 class TestPutTimeFilters:
-    async def test_an_aborted_group_reports_the_aborted_reason_to_the_unused_handler(self) -> None:
+    @pytest.mark.parametrize("keep_partial_groups", [False, True])
+    async def test_an_aborted_group_reports_the_aborted_reason_to_the_unused_handler(
+        self, keep_partial_groups
+    ) -> None:
         """The configured policy can tell a failed generation from output that merely went stale."""
-        under_test = _make_buffer()
+        under_test = _make_buffer(keep_partial_groups_on_abort=keep_partial_groups)
         group = _make_finished_group(1, status=Sample.Status.ABORTED)
 
         await _put(under_test.buffer, group)

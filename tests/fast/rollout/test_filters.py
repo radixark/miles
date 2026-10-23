@@ -16,6 +16,7 @@ from miles.rollout.filter_hub.common_filters import (
     apply_reward_nonzero_std_filter,
     group_staleness,
     group_weight_version_stats,
+    select_group_members,
 )
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -39,6 +40,37 @@ def make_sample(
 
 def test_dynamic_filter_output_is_a_compatibility_alias():
     assert DynamicFilterOutput is FilterOutput
+
+
+@pytest.mark.parametrize("retain", [False, True])
+def test_group_selection_preserves_outcomes_and_excludes_only_aborts(retain):
+    group = [
+        make_sample(reward=0.0),
+        make_sample(status=Sample.Status.ABORTED),
+        make_sample(status=Sample.Status.FAILED),
+    ]
+    for sample in group:
+        sample.group_index = 1
+    group[1].group_index = None
+
+    selected, output = select_group_members(Namespace(keep_partial_groups_on_abort=retain), group)
+
+    assert selected == ([group[0], group[2]] if retain else group)
+    assert output.keep is retain
+    assert len(group) == 3
+
+
+@pytest.mark.parametrize(
+    ("sample", "error"),
+    [
+        ([make_sample()], "does not support compact"),
+        (Sample(rollout_id=1), "does not support compact"),
+        (make_sample(), "preserve group_index"),
+    ],
+)
+def test_group_selection_requires_supported_trajectory_identity(sample, error):
+    with pytest.raises(ValueError, match=error):
+        select_group_members(Namespace(keep_partial_groups_on_abort=True), [sample])
 
 
 @pytest.mark.parametrize(

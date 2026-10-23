@@ -155,6 +155,26 @@ Hook to normalize rewards differently from the default GRPO normalization.
 
 ## Filtering
 
+### Retaining partially aborted groups
+
+By default, one aborted trajectory rejects its entire prompt group. Opt in with
+`--keep-partial-groups-on-abort --use-dynamic-global-batch-size` to retain the other
+trajectories. This applies to synchronous and fully asynchronous rollout. The
+existing dynamic-batching prerequisites still apply.
+
+Any nonempty survivor group, including a singleton, proceeds through the remaining
+filters. Group reward evaluation (`--group-rm`) receives only survivors; custom
+group reward functions must accept variable-sized groups. Reward normalization uses
+the retained trajectories and their `group_index`, which generated samples must preserve.
+The generate function must currently return a `Sample`, not a list, and leave
+`rollout_id` unset. Compact-output retention is not supported.
+
+The collector still requests `rollout_batch_size` accepted prompt groups, not extra
+trajectories to refill the original global batch size. Training uses the resulting
+dynamic batch size, subject to the backend's existing alignment requirements.
+Synchronous collection replaces entirely rejected groups. For fully async drop and
+retry behavior, see [retaining partially aborted groups](/user-guide/fully-async#retaining-partially-aborted-groups).
+
 ### `--dynamic-sampling-filter-path`
 
 Per-group filter; runs after scoring, before queueing for training.
@@ -186,9 +206,8 @@ def buffer_filter(
 Per-sample, in-place. Set `s.remove_sample = True` to exclude a sample from the loss
 (advantage normalization still uses it).
 
-The framework passes `data: list[list[Sample]]` — a list of
-`n_samples_per_prompt`-size groups — so iterate the outer list once to reach `Sample`
-objects:
+The framework passes `data: list[list[Sample]]` — prompt groups containing
+`n_samples_per_prompt` samples, or fewer when partial-group retention is enabled:
 
 ```python
 def filter_function(args, data: list[list[Sample]]) -> None:

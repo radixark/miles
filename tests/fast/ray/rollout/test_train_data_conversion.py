@@ -28,6 +28,28 @@ from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 class TestConvertSamplesToTrainData:
+    @pytest.mark.parametrize("grpo_std_normalization", [False, True])
+    def test_variable_groups_normalize_by_identity_and_keep_singletons(self, grpo_std_normalization):
+        args = make_args(grpo_std_normalization=grpo_std_normalization)
+        samples = [
+            make_sample(group_index=0, index=0, reward=0.0),
+            make_sample(group_index=0, index=1, reward=2.0),
+            make_sample(group_index=1, index=2, reward=10.0),
+        ]
+
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        scale = 2**0.5 + 1e-6 if grpo_std_normalization else 1.0
+        assert out["raw_reward"] == [0.0, 2.0, 10.0]
+        assert out["rewards"] == pytest.approx([-1.0 / scale, 1.0 / scale, 0.0])
+        assert all(any(mask) for mask in out["loss_masks"])
+
     def test_disabled_checker_leaves_custom_converter_output_untouched(self) -> None:
         """An unaudited converter does not need to supply witness identity columns."""
         converted = {"custom_payload": [1, 2]}

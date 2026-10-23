@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from miles.rollout import sglang_rollout
+from miles.utils.function_registry import function_registry
 from miles.utils.lora.utils import LORA_ADAPTER_NAME
 from miles.utils.types import Sample
 
@@ -73,6 +74,39 @@ class TestGenerateExtraKey:
 
         assert [payload["extra_key"] for payload in payloads] == ["train:-:7"]
         assert [payload["lora_path"] for payload in payloads] == [LORA_ADAPTER_NAME]
+
+
+class TestGenerateAndRmGroup:
+    @pytest.mark.parametrize(("survivors", "retain"), [(0, True), (1, True), (1, False)])
+    async def test_group_reward_sees_only_retained_trajectories(
+        self, monkeypatch: pytest.MonkeyPatch, survivors: int, retain: bool
+    ) -> None:
+        args = _make_generate_args()
+        args.group_rm = True
+        args.keep_partial_groups_on_abort = retain
+        args.custom_rm_path = "test:partial_group_reward"
+        state = SimpleNamespace(aborted=False)
+        sources = [Sample(index=i, prompt="prompt") for i in range(2)]
+        scored: list[list[Sample]] = []
+
+        async def generate(args: Namespace, sample: Sample, sampling_params: dict, evaluation: bool = False) -> Sample:
+            sample.status = Sample.Status.COMPLETED if sample.index < survivors else Sample.Status.ABORTED
+            sample.response = "answer" if sample.index < survivors else ""
+            return sample
+
+        async def score(args: Namespace, samples: list[Sample]) -> list[float]:
+            scored.append(list(samples))
+            return [float(sample.index) for sample in samples]
+
+        monkeypatch.setattr(sglang_rollout, "GenerateState", lambda args: state)
+        monkeypatch.setattr(sglang_rollout, "generate_and_rm", generate)
+        with function_registry.temporary(args.custom_rm_path, score):
+            result = await sglang_rollout.generate_and_rm_group(args, sources, {})
+
+        expected = sources[:survivors] if retain else sources
+        assert scored == ([expected] if expected else [])
+        assert result == sources
+        assert all(sample.reward is None for sample in result if sample not in expected)
 
 
 class TestAbort:

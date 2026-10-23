@@ -72,6 +72,28 @@ def apply_preput_filters(args: Namespace, dynamic_filter, samples: Group, **kwar
     if not output.keep:
         return output
 
+    return apply_reward_filters(args, dynamic_filter, samples, **kwargs)
+
+
+def select_group_members(args: Namespace, samples: Group) -> tuple[Group, FilterOutput]:
+    """Select training members without changing the generated outcomes."""
+    if not args.keep_partial_groups_on_abort:
+        return samples, apply_aborted_filter(args, samples)
+
+    selected = non_aborted_trajectories(samples)
+    if any(sample.group_index is None for sample in selected):
+        raise ValueError("Partial-group retention requires generated samples to preserve group_index")
+
+    return selected, FilterOutput(keep=bool(selected), reason=None if selected else "group_has_aborted")
+
+
+def non_aborted_trajectories(samples: Group) -> list[Sample]:
+    if any(isinstance(sample, list) or sample.rollout_id is not None for sample in samples):
+        raise ValueError("--keep-partial-groups-on-abort does not support compact or rollout_id-annotated outputs")
+    return [sample for sample in samples if sample.status != Sample.Status.ABORTED]
+
+
+def apply_reward_filters(args: Namespace, dynamic_filter, samples: Group, **kwargs) -> FilterOutput:
     output = apply_missing_reward_filter(args, samples, **kwargs)
     if not output.keep:
         return output

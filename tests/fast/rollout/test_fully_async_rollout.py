@@ -30,7 +30,7 @@ from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events
 from miles.utils.audit_utils.event_logger.models import ExplicitlyDroppedSamplesEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
-from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.types import Sample, SampleLineage, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
 
@@ -105,6 +105,7 @@ def make_args(**overrides) -> Namespace:
         async_max_concurrent_samples=None,
         async_data_buffer_capacity_factor=1000.0,
         async_unused_samples_handler="drop",
+        keep_partial_groups_on_abort=False,
         custom_async_data_buffer_path=None,
         enable_sample_ownership_checker=False,
         custom_async_data_buffer_path_per_model=None,
@@ -156,6 +157,73 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     # The worker persists across calls; a second drain works on the same instance.
     output2 = await fn(train_input(rollout_id=1))
     assert len(output2.samples) == 3
+
+
+async def test_partial_group_can_retry_after_staleness_without_terminal_drops(monkeypatch, sample_flow_event_dir):
+    args = make_args(
+        rollout_batch_size=1,
+        keep_partial_groups_on_abort=True,
+        enable_sample_ownership_checker=True,
+        async_unused_samples_handler="retry",
+        max_weight_staleness=1,
+    )
+    fn = make_fn(monkeypatch, args, FakeDataSource())
+    group = make_group(1, weight_versions=["0"])
+    group[1].status = Sample.Status.ABORTED
+    await fn._output.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
+    fresh = make_group(2, weight_versions=["2"])
+    await fn._output.put(data_buffer.DataBufferInput(prompt_group=fresh, group=fresh))
+
+    [entry] = await fn._output.get(num_groups=1, current_version=2)
+
+    assert entry.group == fresh
+    assert list(fn._retry_buffer) == [group]
+    assert len(group) == N_SAMPLES_PER_PROMPT
+    assert all(sample.reward is None and not sample.response for sample in group)
+    assert not [
+        event for event in read_events(sample_flow_event_dir) if isinstance(event, ExplicitlyDroppedSamplesEvent)
+    ]
+
+
+@pytest.mark.parametrize("has_abort", [False, True])
+async def test_partial_retention_accounts_only_actual_removals_per_policy(sample_flow_event_dir, has_abort):
+    args = make_args(
+        keep_partial_groups_on_abort=True,
+        enable_sample_ownership_checker=True,
+        megatron_config=encode_megatron_config("solver", "verifier"),
+    )
+    prompts = make_group(1, status=Sample.Status.PENDING) + make_group(2, status=Sample.Status.PENDING)
+    outputs = [
+        replace(
+            sample,
+            index=sample.index + 100,
+            lineage=SampleLineage(source_sample_index=sample.index, output_index=0, output_count=1),
+            trainer_model_id="solver" if i < 2 else "verifier",
+            status=Sample.Status.ABORTED if has_abort and i == 1 else Sample.Status.COMPLETED,
+        )
+        for i, sample in enumerate(prompts)
+    ]
+    unused = []
+    buffer = data_buffer.DefaultMultiDataBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda *args: unused.append(args))
+    )
+
+    await buffer.put(data_buffer.DataBufferInput(prompt_group=prompts, group=outputs))
+    assert not read_events(sample_flow_event_dir)
+    for policy in ("solver", "verifier"):
+        [entry] = await buffer.get(trainer_model_id=policy, num_groups=1)
+        assert entry.prompt_group is prompts
+        assert entry.group == [
+            sample
+            for sample in outputs
+            if sample.trainer_model_id == policy and sample.status != Sample.Status.ABORTED
+        ]
+
+    drops = [event for event in read_events(sample_flow_event_dir) if isinstance(event, ExplicitlyDroppedSamplesEvent)]
+    assert [(event.source_sample_indices, event.reason) for event in drops] == (
+        [([11], "aborted")] if has_abort else []
+    )
+    assert not unused
 
 
 async def test_eval_without_fleet_pauses_producer(monkeypatch):
@@ -1933,19 +2001,26 @@ class TestDrain:
 
         assert [data_buffer.first_sample(group).index for group in output.samples] == [10, 30, 50]
 
-    async def test_a_group_that_does_not_hold_n_samples_per_prompt_is_refused(self, monkeypatch) -> None:
-        """A short group would silently train on fewer trajectories than the advantage baseline assumes."""
-        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+    async def test_drain_accepts_the_members_selected_by_the_buffer(self, monkeypatch) -> None:
+        fn = make_fn(
+            monkeypatch, make_args(rollout_batch_size=1, use_dynamic_global_batch_size=True), FakeDataSource()
+        )
         buffer, _ = make_buffer()
         fn._output = buffer
         short = make_group(1)[:1]
         await buffer.put(data_buffer.DataBufferInput(prompt_group=short, group=short))
         fn._worker = _parked_task()
 
-        with pytest.raises(AssertionError):
-            await fn(train_input(rollout_id=0))
+        output = await fn(train_input(rollout_id=0))
+
+        assert output.samples == [short]
 
         fn._worker.cancel()
+
+    async def test_raw_generation_still_requires_the_requested_fanout(self, monkeypatch) -> None:
+        fn = make_fn(monkeypatch, make_args(), FakeDataSource())
+        with pytest.raises(AssertionError):
+            await fn._generate_group(make_group(1)[:1])
 
     async def test_a_run_without_the_global_rollout_dataset_is_refused(self, monkeypatch) -> None:
         """This driver drains one shared buffer, which a per-rank dataset would fill with disjoint prompts."""
