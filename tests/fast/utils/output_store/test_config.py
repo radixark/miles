@@ -66,7 +66,6 @@ class TestLaunchChecks:
         [
             ({"use_rollout_routing_replay": False}, "no request would use it"),
             ({"object_store_backend": "ray"}, "--object-store-backend must be mooncake"),
-            ({"cluster_backend": "kubernetes"}, "--cluster-backend kubernetes"),
             ({"rollout_external": True}, "external rollout engines"),
             ({"rollout_external_router_pd": True}, "PD disaggregation"),
             ({"custom_convert_samples_to_train_data_path": "my.convert"}, "custom convert function"),

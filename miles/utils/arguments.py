@@ -1600,6 +1600,10 @@ def miles_validate_args(args):
         assert (
             args.multi_lora_n_adapters == 0
         ), "--multi-lora-n-adapters drives RayWorkerManager, which --cluster-backend kubernetes does not use"
+        assert not args.use_output_store, (
+            "--use-output-store puts the store config in engine and session server commands, which --cluster-backend "
+            "kubernetes renders before it points Mooncake at the in-cluster master, with a 0.0.0.0 engine host"
+        )
         if ObjectStoreBackend(args.object_store_backend) != ObjectStoreBackend.MOONCAKE:
             logger.info(
                 f"Overriding --object-store-backend {args.object_store_backend} with "

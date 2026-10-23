@@ -22,7 +22,7 @@ from sglang.srt.server_args import ServerArgs
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.object_store_config import compute_mooncake_store_config
 from miles.utils.workers.argv_utils import _record_field_names
-from miles.utils.workers.types import ClusterBackend, DeployComponent
+from miles.utils.workers.types import DeployComponent
 
 if TYPE_CHECKING:
     from radix_transfer_plugins import OutputStore
@@ -95,12 +95,6 @@ def check_output_store_args(args: argparse.Namespace) -> None:
             (
                 DeployComponent(args.deploy_component) is not DeployComponent.ALL,
                 f"only --deploy-component {DeployComponent.ALL.value} is supported (got {args.deploy_component})",
-            ),
-            (
-                ClusterBackend(args.cluster_backend) is ClusterBackend.KUBERNETES,
-                f"--cluster-backend {ClusterBackend.KUBERNETES.value} is not supported: its launcher renders the "
-                "engine and session server commands before it points the Mooncake address at the in-cluster master, "
-                "and gives engines a 0.0.0.0 host",
             ),
             (args.debug_rollout_only, "--debug-rollout-only has no train worker to hold the stored objects"),
             *(
