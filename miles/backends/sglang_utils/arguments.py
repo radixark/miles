@@ -1,5 +1,6 @@
 import argparse
 
+from sglang.srt.plugins import load_plugins
 from sglang.srt.server_args import ServerArgs
 from miles.utils.http_utils import wrap_ipv6
 
@@ -134,6 +135,7 @@ def _add_prefixed_server_args(parser, *, flag_prefix: str, dest_prefix: str, ski
         old_add_argument(*new_name_or_flags_list, **final_kwargs)
 
     parser.add_argument = new_add_argument_wrapper
+    load_plugins()
     ServerArgs.add_cli_args(parser)
     parser.add_argument = old_add_argument
 
