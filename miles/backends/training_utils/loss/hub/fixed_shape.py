@@ -53,7 +53,6 @@ def fixed_shape_loss_enabled(args: Namespace) -> bool:
             args.true_on_policy_mode
             or args.allgather_cp
             or args.use_sampling_support_replay
-            or args.use_rollout_routing_replay
             or args.use_opsm
             or args.use_tis
             or args.get_mismatch_metrics

@@ -35,11 +35,117 @@ index b36dac537..587a8c6f2 100644
              module.set_gradient_divide_factor(1.0)
  
  
+diff --git a/torchtitan/models/common/moe.py b/torchtitan/models/common/moe.py
+index d61720380..edc6b7fc9 100644
+--- a/torchtitan/models/common/moe.py
++++ b/torchtitan/models/common/moe.py
+@@ -19,6 +19,7 @@ from torchtitan.distributed.utils import get_spmd_backend
+ from torchtitan.models.common.feed_forward import FeedForward
+ from torchtitan.models.common.linear import Linear
+ from torchtitan.protocols.module import Module
++from torchtitan.tools.utils import integer_cumsum
+ 
+ from .token_dispatcher import LocalTokenDispatcher
+ 
+@@ -78,7 +79,7 @@ class GroupedExperts(Module):
+             w2_EDF = self.w2_EDF
+             w3_EFD = self.w3_EFD
+ 
+-        offsets_E = torch.cumsum(num_tokens_per_expert_E, dim=0, dtype=torch.int32)
++        offsets_E = integer_cumsum(num_tokens_per_expert_E, dim=0, dtype=torch.int32)
+         if (
+             get_spmd_backend() == "spmd_types"
+             and spmd.is_type_checking()
+@@ -117,9 +118,53 @@ class GroupedExperts(Module):
+         op here -- rather than behind a tensor-subclass ``__torch_function__`` --
+         means it is captured by FX tracers such as graph_trainer's make_fx path.
+         """
++        if A.device.type == "tpu":
++            return _TpuGroupedMM.apply(A, B_t, offs)
+         return torch._grouped_mm(A, B_t, offs=offs)
+ 
+ 
++# Group size from which torch_tpu's grouped weight-gradient kernels are right.
++_TPU_GROUP_ROWS = 256
++
++
++class _TpuGroupedMM(torch.autograd.Function):
++    """``torch._grouped_mm`` with a weight gradient that is right for small groups on TPU.
++
++    torch_tpu's grouped weight-gradient kernels (``_grouped_mm`` 2D x 2D and ``ragged_dot_weight_grad``)
++    return wrong values for groups of fewer than ~256 rows and leave empty groups unwritten. The
++    backward places every group at a 256-row boundary, padded with zero rows, which changes no
++    gradient, and zeroes the empty groups.
++    """
++
++    @staticmethod
++    def forward(ctx, a: torch.Tensor, b_t: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
++        ctx.save_for_backward(a, b_t, offs)
++        return torch._grouped_mm(a, b_t, offs=offs)
++
++    @staticmethod
++    def backward(ctx, grad_out: torch.Tensor):
++        a, b_t, offs = ctx.saved_tensors
++        grad_out = grad_out.contiguous()
++        grad_a = torch._grouped_mm(grad_out, b_t.transpose(-2, -1), offs=offs)
++
++        num_groups, num_rows = offs.shape[0], a.shape[0]
++        sizes = torch.diff(offs, prepend=offs.new_zeros(1)).long()
++        padded = (sizes + _TPU_GROUP_ROWS - 1) // _TPU_GROUP_ROWS * _TPU_GROUP_ROWS
++        capacity = -(-(num_rows + num_groups * (_TPU_GROUP_ROWS - 1)) // _TPU_GROUP_ROWS) * _TPU_GROUP_ROWS
++        # Row r is in group g iff offs[g-1] <= r < offs[g]: g is the number of offsets at or below r. A
++        # repeat_interleave would lower through an integer cumsum, which torch_tpu cannot lower under
++        # the trainer's --xla_tpu_use_associative_scan_emitter=false (see integer_cumsum).
++        group = (torch.arange(num_rows, device=a.device)[:, None] >= offs[None, :]).sum(1)
++        dest = (integer_cumsum(padded) - padded)[group] + torch.arange(num_rows, device=a.device) - (offs.long() - sizes)[group]
++        a_padded = a.new_zeros(capacity, a.shape[1]).index_copy(0, dest, a)
++        grad_padded = grad_out.new_zeros(capacity, grad_out.shape[1]).index_copy(0, dest, grad_out)
++        # Rows past the padded groups form a last group whose result is dropped.
++        group_sizes = torch.cat([padded, (capacity - padded.sum()).reshape(1)]).to(torch.int32)
++        grad_b = torch.tpu.ops.ragged_dot_weight_grad(a_padded, grad_padded, group_sizes)[:num_groups]
++        grad_b = torch.where((sizes > 0)[:, None, None], grad_b, 0).to(b_t.dtype)
++        return grad_a, grad_b, None
++
++
+ class RoutedExperts(Module):
+     """Routed-expert ``local_map`` region: composes token_dispatcher + inner_experts
+     as sibling nodes so each can be overridden independently."""
+diff --git a/torchtitan/models/common/token_dispatcher.py b/torchtitan/models/common/token_dispatcher.py
+index 031f6423c..08f656413 100644
+--- a/torchtitan/models/common/token_dispatcher.py
++++ b/torchtitan/models/common/token_dispatcher.py
+@@ -23,7 +23,7 @@ from torchtitan.distributed.minimal_async_ep import (
+ from torchtitan.distributed.spmd_types import current_spmd_mesh, maybe_set_sparse_mesh
+ from torchtitan.distributed.utils import get_spmd_backend
+ from torchtitan.ops.scatter_add import deterministic_scatter_add
+-from torchtitan.tools.utils import device_module, device_type
++from torchtitan.tools.utils import device_module, device_type, integer_cumsum
+ 
+ 
+ @dataclass(frozen=True, kw_only=True)
+@@ -522,7 +522,7 @@ class AllToAllTokenDispatcher(BaseEPTokenDispatcher):
+ 
+         # Where each (r, e) segment starts in the input (rank-major order)
+         input_starts = (
+-            num_global_tokens_per_local_expert_E.cumsum(0)
++            integer_cumsum(num_global_tokens_per_local_expert_E)
+             - num_global_tokens_per_local_expert_E
+         ).view(ep_size, e)
+ 
+@@ -535,7 +535,7 @@ class AllToAllTokenDispatcher(BaseEPTokenDispatcher):
+         seg_ids = torch.arange(segment_lens.shape[0], device=device).repeat_interleave(
+             segment_lens, output_size=total
+         )
+-        output_starts = segment_lens.cumsum(0) - segment_lens
++        output_starts = integer_cumsum(segment_lens) - segment_lens
+         # seg_ids.shape[0] == segment_lens.sum(), but reuses the unbacked symint
+         # already created by repeat_interleave above.
+         permuted_indices = (
 diff --git a/torchtitan/tools/utils.py b/torchtitan/tools/utils.py
-index b5303b020..14c8f1092 100644
+index b5303b020..c9e11953b 100644
 --- a/torchtitan/tools/utils.py
 +++ b/torchtitan/tools/utils.py
-@@ -51,9 +51,126 @@ def has_rocm_capability(major: int, minor: int) -> bool:
+@@ -51,9 +51,140 @@ def has_rocm_capability(major: int, minor: int) -> bool:
      )
  
  
@@ -156,6 +262,20 @@ index b5303b020..14c8f1092 100644
 +    if _use_accelerator_device_apis():
 +        return _TpuDeviceModule(device_module)
 +    return device_module
++
++
++def integer_cumsum(x: torch.Tensor, dim: int = 0, *, dtype: torch.dtype | None = None) -> torch.Tensor:
++    """``torch.cumsum`` for integer tensors that also lowers on TPU under
++    ``--xla_tpu_use_associative_scan_emitter=false``.
++
++    The TPU trainer sets that libtpu flag because the associative-scan emitter (libtpu >= 0.0.44)
++    miscompiles scans whose length is not a multiple of 1024; with it off, torch_tpu's integer cumsum
++    fails to lower while the float32 cumsum is fine, so on TPU the prefix sum runs in float32 and is
++    cast back. Exact while the sums stay below 2**24.
++    """
++    if x.device.type != "tpu" or x.is_floating_point():
++        return torch.cumsum(x, dim, dtype=dtype)
++    return torch.cumsum(x, dim, dtype=torch.float32).to(dtype or x.dtype)
 +
 +
  def get_device_info() -> tuple[str, ModuleType]:

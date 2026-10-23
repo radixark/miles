@@ -4,6 +4,7 @@ import os
 import torch
 import torch.distributed as dist
 
+from miles import platforms
 from miles.platforms import current_platform
 
 logger = logging.getLogger(__name__)
@@ -19,8 +20,16 @@ class Replay:
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list: list[torch.Tensor] = []
+        # ids popped eagerly before a compiled forward (torchtitan_utils/routing_replay.py): a compiled block
+        # that pops them itself specializes on forward_index and recompiles for every microbatch
+        self.staged_forward: torch.Tensor | None = None
 
     def record(self, top_indices: torch.Tensor):
+        if platforms.IS_TPU:
+            # rollout ids stay on the host, so the per-microbatch pad runs there and pop_forward copies one
+            # bucket shape; ids recorded inside a compiled forward stay on the device, which cannot copy out
+            self.top_indices_list.append(top_indices.clone() if top_indices.device.type == "cpu" else top_indices)
+            return
         buf = torch.empty_like(top_indices, device="cpu", pin_memory=True)
         buf.copy_(top_indices)
         self.top_indices_list.append(buf)
@@ -47,6 +56,7 @@ class Replay:
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list = []
+        self.staged_forward = None
 
     def clear_forward(self):
         self.forward_index = 0
@@ -101,14 +111,13 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
-            # fill padding tokens with arange to avoid invalid reading
+            # fill padding rows with arange to avoid invalid reads; branchless, so a fullgraph compile traces it
             all_invalid = (top_indices == -1).all(dim=-1)
-            if all_invalid.any():
-                ar = (
-                    torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
-                    % scores.shape[1]
-                )
-                top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
+            ar = (
+                torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
+                % scores.shape[1]
+            )
+            top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
 
             if return_probs:
                 return scores.gather(1, top_indices), top_indices
@@ -135,6 +144,8 @@ class BaseReplayManager:
                 return result
 
             elif stage == "replay_forward":
+                if replay.staged_forward is not None:
+                    return _get_replay_result(replay.staged_forward, scores, topk, *args, **kwargs)
                 return _get_replay_result(replay.pop_forward(), scores, topk, *args, **kwargs)
 
             elif stage == "replay_backward":

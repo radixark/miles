@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed.tensor import DTensor
 
+from miles import platforms
 from miles.backends.training_utils.replay.routing_replay import FALLTHROUGH, REPLAY_BACKWARD, REPLAY_FORWARD, stage
 from miles.utils.replay_base import routing_replay_manager
 
@@ -161,6 +162,22 @@ def consumption_guard(model_parts: list[nn.Module], expected: int):
             )
 
 
+@contextlib.contextmanager
+def _staged_forward_ids():
+    """On TPU, pop every layer's ids for this microbatch outside the compiled blocks (one pop per stream)."""
+    if not platforms.IS_TPU:
+        yield
+        return
+    for replay in routing_replay_manager.replays:
+        replay.staged_forward = replay.pop_forward()
+    try:
+        yield
+    finally:
+        # a later forward that skips staging must pop its own ids, not replay these
+        for replay in routing_replay_manager.replays:
+            replay.staged_forward = None
+
+
 def _bracket_real_forward(part: nn.Module) -> None:
     inner = part.forward
 
@@ -172,7 +189,10 @@ def _bracket_real_forward(part: nn.Module) -> None:
                 return inner(*args, **kwargs)
             _end_initialization()
         if routing_replay_manager.stage == REPLAY_BACKWARD:
-            with stage(REPLAY_FORWARD):
+            with stage(REPLAY_FORWARD), _staged_forward_ids():
+                return inner(*args, **kwargs)
+        if routing_replay_manager.stage == REPLAY_FORWARD:
+            with _staged_forward_ids():
                 return inner(*args, **kwargs)
         return inner(*args, **kwargs)
 
