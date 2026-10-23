@@ -301,7 +301,7 @@ def test_expert_gather_multi_path_on_gpu_nccl(scenario):
 
 
 # --------------------------------------------------------------------------- #
-# GPU performance: broadcast-per-source vs naive all_gather
+# GPU performance: current broadcast-per-source path latency
 # --------------------------------------------------------------------------- #
 
 
@@ -315,14 +315,13 @@ def _perf_worker(rank: int, world_size: int, port: int, *, mode: str, sizes: dic
     from miles.backends.megatron_utils.update_weight.expert_gather import ExpertGather
 
     device = torch.device("cuda", rank)
-    # Build units and initialize ExpertGather (layout exchange included in warmup).
     gen = torch.Generator().manual_seed(_SEED + rank)
     size = sizes.get(rank, 0)
     units = [[("w", torch.randn(size, generator=gen, dtype=torch.float32))]] if size > 0 else []
 
     eg = ExpertGather(group=dist.group.WORLD)
 
-    # Warmup: 3 iters
+    # Warmup: 3 iters (includes layout exchange + NCCL channel setup)
     for _ in range(3):
         eg(units, device=device)
     torch.cuda.synchronize()
@@ -336,7 +335,6 @@ def _perf_worker(rank: int, world_size: int, port: int, *, mode: str, sizes: dic
     torch.cuda.synchronize()
     dt = time.perf_counter() - t0
 
-    # Report from rank 0
     if rank == 0:
         payload_bytes = sum(sizes.values()) * 4  # float32
         src_count = sum(1 for s in sizes.values() if s > 0)
@@ -346,8 +344,10 @@ def _perf_worker(rank: int, world_size: int, port: int, *, mode: str, sizes: dic
     dist.destroy_process_group()
 
 
-def test_perf_uneven_broadcast_vs_baseline_4gpu():
-    """(Informational) 4 ranks, 2 sources, different sizes: broadcast-per-source path latency."""
+def test_perf_broadcast_per_source_uneven_4gpu():
+    """(Informational only, NOT a regression gate) Latency of the fix's broadcast-
+    per-source path on the uneven 2-source scenario. The old dist.all_gather
+    uneven path is excluded because it segfaults on NCCL 2.29.x/2.30.x (issue #4003)."""
     if not torch.cuda.is_available() or torch.cuda.device_count() < 4:
         pytest.skip("requires 4 GPUs")
     world = 4
@@ -359,11 +359,14 @@ def test_perf_uneven_broadcast_vs_baseline_4gpu():
 
 
 # --------------------------------------------------------------------------- #
-# torchrun self-bootstrap (convenience for GPU runners)
+# Self-bootstrap (convenience for manual GPU runners)
 # --------------------------------------------------------------------------- #
 
 
-if __name__ == "__main__" and "RANK" not in os.environ and torch.cuda.is_available() and torch.cuda.device_count() >= 4:
-    # Standalone execution under `python3 file.py` → re-exec under torchrun.
+if __name__ == "__main__":
+    # Under torchrun (RANK set) we just want to run pytest normally on every proc.
+    # Under plain `python3 file.py` with 4+ GPUs, re-exec via torchrun.
     import sys
-    os.execvp("torchrun", ["torchrun", "--nproc_per_node=4", sys.argv[0]])
+    if "RANK" not in os.environ and torch.cuda.is_available() and torch.cuda.device_count() >= 4:
+        os.execvp("torchrun", ["torchrun", "--nproc_per_node=4", sys.argv[0]])
+    sys.exit(pytest.main([__file__, "-v"]))
