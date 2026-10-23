@@ -116,15 +116,24 @@ from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _DATASET = "allenai/tmax-15k-open-instruct"
 
-_MODEL_NAMES = Literal["Qwen3.5-9B", "Qwen3.5-9B-tmax-template", "Qwen3.5-4B-tmax-template", "tmax-4b", "tmax-9b"]
+_MODEL_NAMES = Literal[
+    "Qwen3.5-9B",
+    "Qwen3.5-9B-tmax-template",
+    "Qwen3.5-4B-tmax-template",
+    "Qwen3.5-2B-tmax-template",
+    "tmax-2b",
+    "tmax-4b",
+    "tmax-9b",
+]
 
 
 @dataclass(frozen=True)
 class _Recipe:
     hf_repo: str
     megatron_model_type: str
-    # Rendered through Miles' qwen35 template, which (like these checkpoints' own templates and open-instruct's
-    # rlvr_tokenize_v1) opens <think> unless enable_thinking=false. Only allenai/tmax-2b defaults to off.
+    # Rendered through Miles' qwen35 template, which (like open-instruct's rlvr_tokenize_v1) opens <think> unless
+    # enable_thinking=false. Set to each checkpoint's own template default: on from 4B up, off for the 2B checkpoints
+    # (allenai/tmax-2b and hamishivi/Qwen3.5-2B ship stock Qwen3.5-2B's template, which closes an empty think block).
     enable_thinking: bool
 
 
@@ -133,6 +142,9 @@ _RECIPES: dict[str, _Recipe] = {
     # open-instruct's production TMax student
     "Qwen3.5-9B-tmax-template": _Recipe("hamishivi/Qwen3.5-9B", "qwen3.5-9B", enable_thinking=True),
     "Qwen3.5-4B-tmax-template": _Recipe("hamishivi/Qwen3.5-4B", "qwen3.5-4B", enable_thinking=True),
+    # allenai/tmax-2b's base
+    "Qwen3.5-2B-tmax-template": _Recipe("hamishivi/Qwen3.5-2B", "qwen3.5-2B", enable_thinking=False),
+    "tmax-2b": _Recipe("allenai/tmax-2b", "qwen3.5-2B", enable_thinking=False),
     "tmax-4b": _Recipe("allenai/tmax-4b", "qwen3.5-4B", enable_thinking=True),
     "tmax-9b": _Recipe("allenai/tmax-9b", "qwen3.5-9B", enable_thinking=True),
 }
@@ -221,6 +233,11 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
             assert student.megatron_model_type == teacher.megatron_model_type, (
                 f"Megatron-mode OPD needs one architecture: {self.model_name} is {student.megatron_model_type}, "
                 f"{self.opd_teacher} is {teacher.megatron_model_type}"
+            )
+            # The teacher scores the student's tokens, rendered with the student's template settings.
+            assert student.enable_thinking == teacher.enable_thinking, (
+                f"{self.model_name} renders with enable_thinking={student.enable_thinking} and {self.opd_teacher} with "
+                f"{teacher.enable_thinking}: the teacher would score prompts off its own distribution"
             )
 
     @property

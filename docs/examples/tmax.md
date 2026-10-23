@@ -225,10 +225,12 @@ above 1 nat).
   drops it, and a synchronous step never fills (the progress bar sits at 0/16 while the loop cycles through
   the prompt pool without any error). Use 8 samples per prompt and a large prompt pool for real runs,
   `--no-filter-zero-std` for smoke tests, and always with OPD, where uniform groups still carry signal.
-- **Thinking.** `allenai/tmax-4b`, `allenai/tmax-9b`, `hamishivi/Qwen3.5-4B`/`-9B` and stock Qwen3.5 all
-  open `<think>` by default, as does Miles' `qwen35` template, and open-instruct trained with that default;
-  only `allenai/tmax-2b` defaults to thinking off. The `_RECIPES` table keeps thinking on. (The OPD runs in
-  the results below predate this and rendered with `enable_thinking=false`.) SGLang's Qwen3.5 reasoning
+- **Thinking.** `allenai/tmax-4b`, `allenai/tmax-9b`, `hamishivi/Qwen3.5-4B`/`-9B` and stock Qwen3.5-4B and up
+  all open `<think>` by default, as does Miles' `qwen35` template, and open-instruct trained with that default.
+  The 2B checkpoints default to thinking off: `allenai/tmax-2b` and `hamishivi/Qwen3.5-2B` ship stock
+  Qwen3.5-2B's template byte for byte, whose generation prompt closes an empty think block. Each `_RECIPES` entry
+  follows its checkpoint's default. (The 4B OPD runs in the results below predate this and rendered with
+  `enable_thinking=false`.) SGLang's Qwen3.5 reasoning
   detector treats `<tool_call>` as an implicit end of reasoning, so turns parse either way. vLLM's `qwen3`
   reasoning parser does not: for a model that emits no `</think>` it files the whole turn as reasoning and
   drops every tool call. Serve these checkpoints in vLLM with `--language-model-only` (they ship no
@@ -278,7 +280,9 @@ above 1 nat).
   reward function with OPD's own. With `--use-rollout-logprobs` the student term of the reverse-KL estimate
   is the rollout log-prob, the behavior policy's.
 - `allenai/tmax-4b` and `hamishivi/Qwen3.5-4B` have identical architecture, vocabulary and merges;
-  `tmax-4b` only adds seven unused audio/TTS special tokens (ids 248070-248076).
+  `tmax-4b` only adds seven unused audio/TTS special tokens (ids 248070-248076). The same holds for
+  `allenai/tmax-2b` and `hamishivi/Qwen3.5-2B` (both tokenizers have 248,077 entries; tied embeddings). Like
+  `tmax-4b`, `tmax-2b` has no vision tower or MTP weights; neither matters to Megatron-mode OPD.
 - The OPD term is dense: at `--opd-kl-coef 1.0` grad_norm is about 20x a GRPO-only step (4-6 vs 0.2-0.4)
   and is clipped to 1.0, so the update is mostly distillation. Use 0.1-0.3 to keep the task reward in play.
 
