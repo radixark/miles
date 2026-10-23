@@ -405,13 +405,15 @@ def last_boxed_only_string(string):
 
 
 def remove_boxed(s):
-    left = "\\boxed{"
-    try:
-        assert s[: len(left)] == left
-        assert s[-1] == "}"
-        return s[len(left) : -1]
-    except Exception:
-        return None
+    # Strip either wrapper last_boxed_only_string can return, including its \fbox fallback.
+    for left in ("\\boxed{", "\\fbox{"):
+        try:
+            assert s[: len(left)] == left
+            assert s[-1] == "}"
+            return s[len(left) : -1]
+        except Exception:
+            continue
+    return None
 
 
 def extract_boxed_answer(solution: str) -> str:
@@ -471,7 +473,7 @@ def grade_answer_mathd(given_answer: str, ground_truth: str) -> bool:
 
 
 def extract_answer(passage: str) -> str:
-    if "\\boxed" in passage:
+    if "\\boxed" in passage or "\\fbox" in passage:
         return extract_boxed_answer(passage)
     return None
 
