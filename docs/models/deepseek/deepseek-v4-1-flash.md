@@ -50,7 +50,15 @@ The trainer loads a **BF16 HF checkpoint** directly (no `torch_dist` conversion)
 - MTP, DSpark and vision tensors dropped;
 - a flattened `config.json` with `model_type: deepseek_v41`.
 
-`tools/fp8_cast_bf16.py` covers the fp8 dense format only; the cast tool that also handles the fp4 experts and the engram layout (`dsv41_cut_cast.py --src <fp8 ckpt> --dst <bf16 ckpt> --config <flattened config.json> --layers 0,...,39`) is kept with the bring-up scripts. The result is about 1.2 TB and must be present on **every training node's local NVMe** at the same path, for example `/scratch/models/DeepSeek-V4.1-bf16`. Reserve a further ~1 TB per node for the streamed optimizer state.
+`tools/convert_deepseek_v4_1_to_bf16.py` does all of the above:
+
+```bash
+cd /root/miles
+python tools/convert_deepseek_v4_1_to_bf16.py \
+   --model-dir /scratch/models/DeepSeek-V4.1-Flash --save-dir /scratch/models/DeepSeek-V4.1-bf16 --device cuda
+```
+
+It writes one output file per source file, so it can be split across processes with `--shard-rank i --num-shards N` (one process per GPU, `CUDA_VISIBLE_DEVICES=i`), followed by one `--finalize-only` run that writes `config.json` and the index. The result is about 1.3 TB and must be present on **every training node's local NVMe** at the same path, for example `/scratch/models/DeepSeek-V4.1-bf16`. Reserve a further ~1 TB per node for the streamed optimizer state.
 
 ### 3.3 Prepare the data
 
