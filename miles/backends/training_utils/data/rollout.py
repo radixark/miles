@@ -38,7 +38,15 @@ def get_rollout_data(
     witness_info: WitnessInfo | None = None,
     *,
     train_parallel_config: TrainParallelConfig,
+    sample_device: torch.device | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
+    """Fetch this rank's rollout shard; per-sample tokens, masks and log-probs go to ``sample_device``.
+
+    ``sample_device`` defaults to the accelerator; the fixed-shape loss keeps them on the host and moves
+    each microbatch in one copy (loss/hub/fixed_shape.py).
+    """
+    if sample_device is None:
+        sample_device = platforms.current_platform.current_device()
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
@@ -49,16 +57,14 @@ def get_rollout_data(
         train_parallel_config=train_parallel_config,
         witness_info=witness_info,
     )
-    # move tokens to the device in advance
-    rollout_data["tokens"] = [
-        torch.tensor(t, dtype=torch.long, device=current_platform.current_device()) for t in rollout_data["tokens"]
-    ]
+    # move per-sample tensors to sample_device in advance
+    rollout_data["tokens"] = [torch.tensor(t, dtype=torch.long, device=sample_device) for t in rollout_data["tokens"]]
     rollout_data["loss_masks"] = [
-        torch.tensor(t, dtype=torch.int, device=current_platform.current_device()) for t in rollout_data["loss_masks"]
+        torch.tensor(t, dtype=torch.int, device=sample_device) for t in rollout_data["loss_masks"]
     ]
     if "rollout_mask_sums" in rollout_data:
         rollout_data["rollout_mask_sums"] = torch.tensor(
-            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=current_platform.current_device()
+            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=sample_device
         )
     if args.enable_witness:
         seq_witness_ids = rollout_data.pop("seq_witness_ids")
@@ -105,7 +111,7 @@ def get_rollout_data(
                         args.qkv_format,
                         rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
                     ),
-                    device=current_platform.current_device(),
+                    device=sample_device,
                     dtype=dtype,
                 )
                 for i, (value, total_length, response_length) in enumerate(

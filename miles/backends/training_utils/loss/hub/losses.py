@@ -11,6 +11,10 @@ from miles.backends.training_utils.data.context_parallel import (
 )
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.loss.hub.corrections import vanilla_tis_function
+from miles.backends.training_utils.loss.hub.fixed_shape import (
+    fixed_shape_loss_enabled,
+    fixed_shape_policy_loss_function,
+)
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss.hub.math_utils import (
     compute_approx_kl,
@@ -90,6 +94,9 @@ def policy_loss_function(
         "entropy_loss", "pg_clipfrac", "ppo_kl". Additional keys "kl_loss",
         "tis", "ois", "tis_clipfrac" are included when the respective features
         are enabled.
+
+    loss/hub/fixed_shape.py mirrors this function on padded microbatches for TPU; keep the two in step
+    (tests/fast/backends/training_utils/loss/test_fixed_shape_loss.py checks they agree).
     """
     parallel_state = get_parallel_state()
     advantages_list = [advantage.detach() for advantage in batch["advantages"]]
@@ -522,7 +529,7 @@ def get_loss_function(args: Namespace, loss_fn: str | None = None) -> LossFuncti
         case "score_centering":
             return score_centering_loss_function
         case "policy_loss":
-            return policy_loss_function
+            return fixed_shape_policy_loss_function if fixed_shape_loss_enabled(args) else policy_loss_function
         case "value_loss":
             return value_loss_function
         case "sft_loss":

@@ -13,6 +13,10 @@ from transformers import PretrainedConfig, PreTrainedTokenizerBase
 from miles import platforms
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch, get_data_iterator, get_rollout_data
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.loss.hub.fixed_shape import (
+    fixed_shape_loss_enabled,
+    get_fixed_shape_log_probs_and_entropy,
+)
 from miles.backends.training_utils.loss.objective import (
     compute_advantages_and_returns,
     count_loss_tokens,
@@ -108,6 +112,13 @@ class TorchNativeTrainRayActor(TrainRayActor):
         )
 
     @functools.cached_property
+    def _fixed_shape_loss(self) -> bool:
+        enabled = fixed_shape_loss_enabled(self.args)
+        if platforms.IS_TPU and not enabled:
+            logger.warning("this loss configuration takes the per-sample path, which recompiles per response length")
+        return enabled
+
+    @functools.cached_property
     def _fwd_tflops(self) -> Callable[[list[int]], float] | None:
         try:
             flops_args = flops_args_from_hf_config(self.hf_config)
@@ -165,6 +176,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 rollout_data_ref=rollout_data_ref,
                 witness_info=None,
                 train_parallel_config=self.train_parallel_config,
+                sample_device=torch.device("cpu") if self._fixed_shape_loss else None,
             )
             with store_get_result:
                 if self.args.debug_rollout_only:
@@ -221,17 +233,29 @@ class TorchNativeTrainRayActor(TrainRayActor):
         use_rollout_sampling_mask = store_prefix == "" and args.use_sampling_support_replay
         keys = FORWARD_ONLY_KEYS + SAMPLING_MASK_KEYS if use_rollout_sampling_mask else FORWARD_ONLY_KEYS
 
+        fixed_shape = self._fixed_shape_loss
+
         def compute(logits: torch.Tensor, batch: dict) -> dict:
-            result = get_log_probs_and_entropy(
-                logits=logits,
-                args=args,
-                unconcat_tokens=batch["unconcat_tokens"],
-                total_lengths=batch["total_lengths"],
-                response_lengths=batch["response_lengths"],
-                with_entropy=(store_prefix == ""),
-                max_seq_lens=batch.get("max_seq_lens"),
-                rollout_sampling_mask=get_rollout_sampling_masks(batch) if use_rollout_sampling_mask else None,
-            )
+            if fixed_shape:
+                result = get_fixed_shape_log_probs_and_entropy(
+                    logits,
+                    args=args,
+                    unconcat_tokens=batch["unconcat_tokens"],
+                    total_lengths=batch["total_lengths"],
+                    response_lengths=batch["response_lengths"],
+                    with_entropy=(store_prefix == ""),
+                )
+            else:
+                result = get_log_probs_and_entropy(
+                    logits=logits,
+                    args=args,
+                    unconcat_tokens=batch["unconcat_tokens"],
+                    total_lengths=batch["total_lengths"],
+                    response_lengths=batch["response_lengths"],
+                    with_entropy=(store_prefix == ""),
+                    max_seq_lens=batch.get("max_seq_lens"),
+                    rollout_sampling_mask=get_rollout_sampling_masks(batch) if use_rollout_sampling_mask else None,
+                )
             entry = {f"{store_prefix}log_probs": result["log_probs"]}
             if "entropy" in result:
                 entry["entropy"] = result["entropy"]
@@ -328,6 +352,9 @@ def _count_step_loss_tokens(data_iterator: DataIterator, num_microbatches: list[
             step_loss_masks.extend(data_iterator.get_next(["loss_masks"])["loss_masks"])
         local_counts.append(count_loss_tokens(step_loss_masks))
     counts = torch.stack(local_counts)
+    if platforms.IS_TPU:
+        # the fixed-shape loss keeps loss masks on the host; tpu_dist reduces device tensors only
+        counts = counts.to(platforms.current_platform.current_device())
     dist.all_reduce(counts, group=get_parallel_state().intra_dp.group)
     return counts
 
