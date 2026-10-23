@@ -54,3 +54,14 @@ def parser_defaults() -> dict[str, Any]:
     with _with_relaxed_parser_required_args(parser), patch.object(sys, "argv", ["test"]):
         parsed, _ = parser.parse_known_args([])
     return {**_TRAIN_BACKEND_DEFAULTS, **vars(parsed), **_RESOLVED_AFTER_PARSING}
+
+
+def sglang_router_args(policy: str | None = None) -> dict[str, Any]:
+    """Every arg the sgl-router backend reads, for an args fake built by hand."""
+    return dict(
+        use_miles_router=False,
+        sglang_router_policy=policy,
+        router_policy=None,
+        router_prefill_policy=None,
+        router_decode_policy=None,
+    )

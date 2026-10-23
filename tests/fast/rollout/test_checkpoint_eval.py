@@ -1,4 +1,5 @@
 from tests.ci.ci_register import register_cpu_ci
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["eval"])
 
@@ -17,7 +18,7 @@ def make_args(**overrides) -> Namespace:
     defaults = dict(
         sglang_router_ip="10.0.0.1",
         sglang_router_port=30000,
-        sglang_router_policy=None,
+        **sglang_router_args(),
         rollout_num_gpus=4,
         rollout_num_gpus_per_engine=2,
         eval_num_gpus=1,

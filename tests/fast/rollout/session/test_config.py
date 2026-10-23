@@ -4,6 +4,7 @@ from argparse import Namespace
 
 import pytest
 from pydantic import ValidationError
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 
 from miles.rollout.session.config import SessionServerConfig, compute_session_server_config
 
@@ -34,6 +35,7 @@ _ARGS_TO_CONFIG_FIELD = {
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
+_ROUTER_DERIVED_FIELDS = ("routing_key_header",)
 _OPTIONAL_ARGS_ATTRS = (
     "num_layers",
     "pause_generation_mode",
@@ -67,6 +69,7 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    **sglang_router_args("manual"),
 )
 
 
@@ -79,7 +82,7 @@ def _make_args(**overrides) -> Namespace:
 class TestComputeSessionServerConfig:
     def test_every_config_field_has_a_known_source(self):
         """Adding a config field without extending this test's mapping must fail here."""
-        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values())
+        covered = set(_CALL_SITE_FIELDS) | set(_ROUTER_DERIVED_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values())
         assert covered == set(SessionServerConfig.model_fields)
 
     def test_call_site_fields_are_copied(self):
@@ -120,6 +123,24 @@ class TestComputeSessionServerConfig:
         )
         assert [getattr(config, name) for name in _OPTIONAL_ARGS_ATTRS] == [None] * len(_OPTIONAL_ARGS_ATTRS)
 
+    @pytest.mark.parametrize(
+        "use_miles_router, policy, expected",
+        [(False, "manual", "X-SMG-Routing-Key"), (False, "round_robin", None), (True, "manual", None)],
+        ids=["sgl-router-manual", "sgl-router-round-robin", "miles-router"],
+    )
+    def test_the_routing_key_header_is_set_only_when_the_router_routes_by_key(
+        self, use_miles_router: bool, policy: str, expected: str | None
+    ):
+        """A header the router ignores would pin nothing, so the session server sends one only when it is read."""
+        config = compute_session_server_config(
+            _make_args(use_miles_router=use_miles_router, sglang_router_policy=policy),
+            host="10.0.0.1",
+            port=5001,
+            instance_id="abc",
+            backend_url="http://10.0.0.2:3000",
+        )
+        assert config.routing_key_header == expected
+
     def test_older_args_default_rollout_temperature(self):
         args = Namespace(
             **{key: value for key, value in _DISTINCT_ARGS_VALUES.items() if key != "rollout_temperature"}
@@ -135,6 +156,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     port=5001,
     instance_id=None,
     backend_url="http://127.0.0.1:3000",
+    routing_key_header=None,
     timeout=None,
     hf_checkpoint=None,
     chat_template_path=None,

@@ -40,6 +40,7 @@ from miles.rollout.base_types import (
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
+from miles.router.backend import make_router_backend
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.types import Sample
 
@@ -349,9 +350,7 @@ class MilesSGLangTransport:
         if body.get("cache_salt") is not None:
             payload["extra_key"] = body["cache_salt"]
 
-        request_headers = None
-        if getattr(self.args, "sglang_router_policy", None) in ("consistent_hashing", "manual") and session_id:
-            request_headers = {"X-SMG-Routing-Key": session_id}
+        request_headers = (make_router_backend(self.args).routing_headers(session_id) or None) if session_id else None
 
         from miles.utils.http_utils import post
 

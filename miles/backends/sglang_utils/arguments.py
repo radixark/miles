@@ -1,7 +1,11 @@
 import argparse
+import logging
 
 from sglang.srt.server_args import ServerArgs
+from miles.router.backend import make_router_backend
 from miles.utils.http_utils import wrap_ipv6
+
+logger = logging.getLogger(__name__)
 
 
 # TODO: use all sglang router arguments with `--sglang-router` prefix
@@ -214,6 +218,13 @@ def validate_args(args):
         args.sglang_router_policy = "manual"
         if args.router_assignment_mode == "random":
             args.router_assignment_mode = "min_load"
+
+    if args.use_session_server and not make_router_backend(args).routes_by_key():
+        # affinity only saves prefix-cache work, so a router without it is allowed
+        logger.warning(
+            "--use-session-server with a router that does not route by session: "
+            "a session's turns may land on different engines and lose prefix-cache reuse"
+        )
 
     if getattr(args, "sglang_router_ip", None):
         args.sglang_router_ip = wrap_ipv6(args.sglang_router_ip)

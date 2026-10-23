@@ -1,5 +1,6 @@
 from typing import Any
 
+from miles.router.backend import make_router_backend
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
@@ -8,6 +9,8 @@ class SessionServerConfig(FrozenStrictBaseModel):
     port: int
     instance_id: str | None
     backend_url: str
+    # header the router places a session by; None = turns are not pinned to one engine
+    routing_key_header: str | None
     timeout: float | None
     hf_checkpoint: str | None
     chat_template_path: str | None
@@ -41,6 +44,7 @@ def compute_session_server_config(
         port=port,
         instance_id=instance_id,
         backend_url=backend_url,
+        routing_key_header=_routing_key_header(args),
         timeout=args.miles_router_timeout,
         hf_checkpoint=args.hf_checkpoint,
         chat_template_path=args.chat_template_path,
@@ -65,3 +69,8 @@ def compute_session_server_config(
         rollout_sampling_logprobs_mode=args.rollout_sampling_logprobs_mode,
         rollout_temperature=getattr(args, "rollout_temperature", 1.0),
     )
+
+
+def _routing_key_header(args) -> str | None:
+    backend = make_router_backend(args)
+    return backend.features.routing_key_header if backend.routes_by_key() else None

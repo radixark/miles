@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from examples.multi_policy import solver_verifier
 from examples.multi_policy.solver_verifier import _Verdict
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
@@ -42,7 +43,7 @@ def _make_input(*, prompt: str | list[dict[str, str]], label: str) -> GenerateFn
         megatron_config=encode_megatron_config("solver", "verifier"),
         use_critic=False,
         sglang_model_routers={"solver": ("solver-host", 1111), "verifier": ("verifier-host", 2222)},
-        sglang_router_policy="round_robin",
+        **sglang_router_args("round_robin"),
         sglang_speculative_algorithm=None,
         rollout_max_response_len=16,
         rollout_max_context_len=None,
