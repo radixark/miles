@@ -11,6 +11,7 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 | ------------------------ | ------------------------ | -------------------------------------- |
 | `docker/Dockerfile`      | `radixark/miles` (CUDA)  | `docker-build.yml`, `release-docker.yml` |
 | `docker/Dockerfile.rubin` | Vera Rubin (aarch64/SM107) | `docker-build.yml` (`rubin` manual variant) |
+| `docker/Dockerfile.tpu` | TPU v7x through torch_tpu (x86_64) | `docker-build.yml` (`tpu` manual variant) |
 | `docker/Dockerfile.rocm` | AMD ROCm (MI35x, MI30x) | `docker-build.yml` (`rocm*-mi35x`, `rocm10-mi30x` variants) |
 | `docker/Dockerfile.cu12` | Deprecated CUDA 12.9 (x86_64), unmaintained | Manual builds only |
 
@@ -54,6 +55,7 @@ The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang
 | `cu13-x86`     | `radixark/miles:dev`               | `linux/amd64`                 | x86-only build of the same image               |
 | `cu13-aarch64` | `radixark/miles:dev`               | `linux/arm64`                 | arm64-only build of the same image             |
 | `rubin` | `radixark/miles:dev-rubin` | `linux/arm64` | Vera Rubin — `docker/Dockerfile.rubin` |
+| `tpu` | `radixark/miles:dev-tpu` | `linux/amd64` | TPU v7x (torch_tpu) — `docker/Dockerfile.tpu` |
 | `rocm724-mi35x` | `rocm/sgl-dev:miles-rocm724-mi35x` | native                       | AMD MI35x (`gfx950`, ROCm 7.2.4) — `docker/Dockerfile.rocm` |
 | `rocm10-mi35x`  | `rocm/sgl-dev:miles-rocm10-mi35x`  | native                       | AMD MI35x (`gfx950`, ROCm 10, ROCm SDK as pip wheels) — `docker/Dockerfile.rocm` |
 | `rocm10-mi30x`  | `rocm/sgl-dev:miles-rocm10-mi30x`  | native                       | AMD MI300X / MI325X (`gfx942`, ROCm 10) — `docker/Dockerfile.rocm` |
@@ -66,6 +68,8 @@ The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `de
 A multi-arch build (`cu13`) needs Buildx's `docker-container` driver. Use `--push` to publish directly, or `--output type=oci,dest=/tmp/image,tar=false` to export a local OCI layout for later publication; it cannot load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, and repeatable `--build-arg KEY=VALUE`. `--context <repository>` selects a separate build context while keeping the driver and hash reader in their original checkout.
 
 The `rubin` variant uses the existing `docker-build` runner and targets `linux/arm64`, like `cu13-aarch64`. It is not included in scheduled builds, automatic tag promotion/pruning, regular CUDA PR images or versioned releases.
+
+The `tpu` variant builds from `lmsysorg/sglang:v0.1.0-tpu`, sglang-torchtpu's release image: it swaps in sglang-torchtpu at `SGLANG_TPU_COMMIT` (the release's torch_tpu, libtpu and jax), moves the one Python environment to `TORCH_VERSION` (that of `docker/Dockerfile`; the torchtitan backend needs >= 2.13), and adds torchtitan at `TORCHTITAN_COMMIT` and miles. Like `rubin`, it is manual only.
 
 ## PR build check (in `pr-test.yml`)
 
