@@ -52,6 +52,10 @@ class TestExtractLetterFromResponse:
             ("", None),
             (None, None),
             ("The answer is Z", None),
+            # Letters inside words are not option letters.
+            ("the answer is about 5 eV", None),
+            ("The answer is Benzene", None),
+            ("I think this is correct", None),
         ],
     )
     def test_extract_letter(self, response, expected):
@@ -80,6 +84,14 @@ class TestComputeGpqaReward:
             ("Answer: A", "", {"choices": {"A": "Paris", "B": "London"}, "correct_letter": "A"}, 1.0),
             ("The answer is Paris", "Paris", {"choices": ["Paris", "London", "Berlin", "Rome"]}, 1.0),
             ("Let me think step by step...</think>The answer is A", "A", None, 1.0),
+            # No extractable letter: a stray character matching the label letter must not score.
+            ("probably the second one", "B", None, 0.0),
+            ("i am not sure", "A", None, 0.0),
+            ("dunno", "D", None, 0.0),
+            ("the answer is about 5 eV", "A", None, 0.0),
+            # Choice text must match whole words.
+            ("The result is 15", "", {"choices": ["5", "10", "15", "20"], "correct_letter": "A"}, 0.0),
+            ("The result is 5", "", {"choices": ["5", "10", "15", "20"], "correct_letter": "A"}, 1.0),
         ],
     )
     def test_compute_gpqa_reward(self, response, label, metadata, expected):

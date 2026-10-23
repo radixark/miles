@@ -27,15 +27,17 @@ def _extract_letter_from_response(response: str, valid_letters: Iterable[str]) -
         return None
 
     text = _strip_chain_of_thought(response)
+    # Keywords are case-insensitive; the option letter must be a standalone capital,
+    # so "the answer is about" does not yield "A".
     patterns = [
-        r"(?:answer|option|choice)\s*(?:is|:)?\s*([A-Z])",
-        r"([A-Z])\s*(?:is\s*(?:the)?\s*correct)",
-        r"final\s*(?:answer|option)\s*(?:is|:)?\s*([A-Z])",
+        r"(?i:answer|option|choice)\s*(?i:is|:)?\s*\b([A-Z])\b",
+        r"\b([A-Z])\s*(?i:is\s*(?:the)?\s*correct)",
+        r"(?i:final\s*(?:answer|option))\s*(?i:is|:)?\s*\b([A-Z])\b",
     ]
 
     valid_letters = {letter.upper() for letter in valid_letters}
     for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
+        match = re.search(pattern, text)
         if match:
             letter = match.group(1).upper()
             if letter in valid_letters:
@@ -79,9 +81,11 @@ def compute_gpqa_reward(response: str, label, metadata: dict | None = None) -> f
         correct_letter = None
 
     label_text = None
+    label_is_letter = False
     if isinstance(label, str):
         label_text = label.strip()
-        if len(label_text) == 1 and label_text.upper() in valid_letters and not correct_letter:
+        label_is_letter = len(label_text) == 1 and label_text.upper() in valid_letters
+        if label_is_letter and not correct_letter:
             correct_letter = label_text.upper()
     elif isinstance(label, (int, float)):
         idx = int(label)
@@ -114,13 +118,15 @@ def compute_gpqa_reward(response: str, label, metadata: dict | None = None) -> f
         if value:
             candidate_answers.append(str(value))
 
-    if label_text:
+    # A bare option letter is not answer text; matching it would let any stray "b" score.
+    if label_text and not label_is_letter:
         candidate_answers.append(label_text)
 
     normalized_targets = {_normalize_text(text) for text in candidate_answers if text}
-    normalized_response = _normalize_text(_strip_chain_of_thought(response))
+    # Normalized text is space-separated tokens, so padding enforces whole-word matches.
+    padded_response = f" {_normalize_text(_strip_chain_of_thought(response))} "
     for target in normalized_targets:
-        if target and target in normalized_response:
+        if target and f" {target} " in padded_response:
             return 1.0
 
     if extracted_letter and not correct_letter and label_text:
