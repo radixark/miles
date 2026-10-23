@@ -2,13 +2,16 @@
 
 The FSDP backend packs several documents into one ``[1, T]`` forward row; stateful layers (Mamba2,
 GatedDeltaNet) and attention must reset per document. ``get_batch`` records the boundaries
-(``cu_seqlens``, ``max_seqlen``) and ``hf_packing_kwargs`` hands them to HF modeling. NemotronH's patch
-only sees ``position_ids`` inside the model forward, so ``packed_seq_context`` re-derives them there.
+(``cu_seqlens``, ``max_seqlen``) and ``hf_attention_packing_kwargs`` / ``hf_packing_kwargs`` hand them
+to HF modeling. NemotronH's patch only sees ``position_ids`` inside the model forward, so
+``packed_seq_context`` re-derives them there.
 """
 
+import functools
 from dataclasses import dataclass
 
 import torch
+import torch.nn as nn
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,16 @@ def packed_seq_context(position_ids: torch.Tensor | None) -> PackedSeqContext | 
 HF_PACKING_KWARG_NAMES = frozenset({"cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k", "seq_idx"})
 
 
+def hf_attention_packing_kwargs(*, cu_seqlens: torch.Tensor, max_seqlen: int) -> dict[str, object]:
+    """The varlen boundaries HF attention reads; ``max_length`` stays an int, which FlashAttention-4 needs."""
+    return {
+        "cu_seq_lens_q": cu_seqlens,
+        "cu_seq_lens_k": cu_seqlens,
+        "max_length_q": max_seqlen,
+        "max_length_k": max_seqlen,
+    }
+
+
 def hf_packing_kwargs(
     *, cu_seqlens: torch.Tensor, cu_seqlens_host: tuple[int, ...], max_seqlen: int
 ) -> dict[str, object]:
@@ -52,9 +65,22 @@ def hf_packing_kwargs(
         output_size=cu_seqlens_host[-1],
     )
     return {
-        "cu_seq_lens_q": cu_seqlens,
-        "cu_seq_lens_k": cu_seqlens,
-        "max_length_q": max_seqlen,
-        "max_length_k": max_seqlen,
+        **hf_attention_packing_kwargs(cu_seqlens=cu_seqlens, max_seqlen=max_seqlen),
         "seq_idx": seq_idx.unsqueeze(0),
     }
+
+
+def keep_packing_kwargs_out_of_vision(model: nn.Module) -> None:
+    """Drop the language model's packing kwargs at the vision tower's forward; idempotent, and a no-op
+    without a tower. HF hands the tower its ``**kwargs`` too, so ``seq_idx`` would otherwise reach it."""
+    visual = getattr(getattr(model, "model", None), "visual", None)
+    if visual is None or getattr(visual.forward, "_drops_lm_packing_kwargs", False):
+        return
+    vision_forward = visual.forward
+
+    @functools.wraps(vision_forward)
+    def forward(*args, **kwargs):
+        return vision_forward(*args, **{k: v for k, v in kwargs.items() if k not in HF_PACKING_KWARG_NAMES})
+
+    forward._drops_lm_packing_kwargs = True
+    visual.forward = forward
