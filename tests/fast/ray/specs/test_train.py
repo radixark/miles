@@ -446,6 +446,15 @@ class TestEnvironmentVariables:
 
         assert [spec.env_var(_make_context())["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] for spec in specs] == ["0", "0"]
 
+    @pytest.mark.parametrize("fp8_recipe, expected", [("mxfp8", "1"), ("blockwise", None)])
+    def test_rocm_mxfp8_is_enabled_only_for_the_mxfp8_recipe(self, monkeypatch, fp8_recipe, expected):
+        """ROCm TransformerEngine refuses the MXFP8 recipe at the first forward unless the trainer opts in."""
+        monkeypatch.delenv("NVTE_ROCM_ENABLE_MXFP8", raising=False)
+
+        (spec,) = specs_trainer(_make_args(fp8_recipe=fp8_recipe))
+
+        assert spec.env_var(_make_context()).get("NVTE_ROCM_ENABLE_MXFP8") == expected
+
     def test_disk_offload_forwards_backend_flags_and_nondefault_chunk_size(self, monkeypatch):
         """The disk backend must be switched on in place of the cpu one and use the requested chunk size."""
         _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
