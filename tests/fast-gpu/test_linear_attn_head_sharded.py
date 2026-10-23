@@ -13,7 +13,7 @@ import torch.distributed as dist
 from megatron.core import parallel_state
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.transformer_config import TransformerConfig
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads
 
@@ -32,6 +32,7 @@ from linear_attn_reference import (  # noqa: E402
 register_cuda_ci(
     est_time=300, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2
 )
+register_rocm_ci(est_time=190, suite="nightly-stage-c-2-gpu-mi350", labels=["precision"])
 
 HIDDEN = 256
 CASES = {
