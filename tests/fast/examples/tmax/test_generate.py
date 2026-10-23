@@ -105,3 +105,9 @@ def test_a_failing_teacher_is_retried_then_fails_the_rollout(monkeypatch):
     assert sample.teacher_log_probs == [-1.0] and len(calls) == 2
     with pytest.raises(RuntimeError, match="failed 3 times"):
         _generate()
+
+
+def test_the_wrapper_registers_the_agentic_generate_flags():
+    """Miles adds a generate function's own flags through its add_arguments; without them train.py rejects
+    --custom-agent-function-path (2026-10-23, smoke 01M5MY8EV6WAHDYCSSZYGNF4YN)."""
+    assert generate.generate_with_teacher.add_arguments is generate.agentic_tool_call.generate.add_arguments

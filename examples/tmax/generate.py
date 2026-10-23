@@ -53,6 +53,11 @@ async def generate_with_teacher(input: GenerateFnInput) -> GenerateFnOutput:
     return output
 
 
+# Miles registers a generate function's own flags through its add_arguments (--custom-agent-function-path,
+# --max-seq-len, ...): the wrapped function's.
+generate_with_teacher.add_arguments = agentic_tool_call.generate.add_arguments
+
+
 async def _score_with_teacher(args, sample: Sample) -> None:
     timeout_s = float(os.environ.get("TMAX_OPD_TEACHER_TIMEOUT_S", "1800"))
     for attempt in range(1, _TEACHER_ATTEMPTS + 1):
