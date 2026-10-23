@@ -1,7 +1,8 @@
 # smoke_opd_4b_async.yaml on Jupiter's H100s (80GB) instead of holmes' B300s: pure OPD, fully async (2 training + 2
 # rollout GPUs), allenai/tmax-4b into hamishivi/Qwen3.5-4B, 3 steps of 4 prompts x 4 samples, 16k per episode, sandboxes
 # on the podman fleet. Jupiter's driver predates CUDA 13, so the image runs through its cuda-compat user-mode driver
-# (beaker/tmax_beaker_entry.sh). Differs from the holmes config in the beaker: section and in optimizer_cpu_offload.
+# (beaker/tmax_beaker_entry.sh). Differs from the holmes config in the beaker: section (1 h min_runtime, not
+# preemptible) and in optimizer_cpu_offload.
 exp_name: tmax_smoke_opd_4b_async_jupiter
 model_name: Qwen3.5-4B-tmax-template
 opd_teacher: tmax-4b
@@ -31,7 +32,8 @@ beaker:
   workspace: ai2/oe-agents
   budget: ai2/oe-omai
   priority: urgent
-  preemptible: true                           # no min_runtime: runs on unallocated capacity
+  min_runtime: 1h                             # on ai2/oe-agents' Jupiter allocation; preemptible jobs only backfill
+                                              # unallocated slots, which are about all taken
   retries: 0
   gpus: 4
   shared_memory: 256GiB
