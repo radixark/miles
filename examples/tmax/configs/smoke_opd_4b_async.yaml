@@ -1,11 +1,13 @@
-# 4-GPU smoke test (pure OPD, sync): distill allenai/tmax-4b into its base, hamishivi/Qwen3.5-4B, the way open-instruct's
-# terminal OPD runs do (--opd_pure, --opd_kl_coef 1.0; scripts/general_agent/terminal/rl/opd/ on branch opd), with
-# sandboxes on the podman fleet: 3 steps of 4 prompts x 4 samples on a 64-prompt subset, 16k per episode.
+# 4-GPU smoke test (pure OPD, fully async: 2 training + 2 rollout GPUs): distill allenai/tmax-4b into its base,
+# hamishivi/Qwen3.5-4B, the way open-instruct's terminal OPD runs do (--opd_pure, --opd_kl_coef 1.0;
+# scripts/general_agent/terminal/rl/opd/ on branch opd), with sandboxes on the podman fleet: 3 steps of 4 prompts x 4
+# samples on a 64-prompt subset, 16k per episode.
 # Pure OPD learns from every group, so the zero-variance filter is off (open-instruct: --filter_zero_std_samples false).
-exp_name: tmax_smoke_opd_4b
+exp_name: tmax_smoke_opd_4b_async
 model_name: Qwen3.5-4B-tmax-template
 opd_teacher: tmax-4b
 opd_pure: true
+async_rollout_gpus: 2
 sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
 num_gpus_per_node: 4
 num_prompts: 64
