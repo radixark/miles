@@ -14,6 +14,7 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | Fully-async GRPO, 4 GPUs | `--async-rollout-gpus 2` | Qwen3.5-9B, 4 steps |
 | On-policy distillation (sync and async), 4 GPUs | `--opd-teacher tmax-4b` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 + 4 steps |
 | Pure on-policy distillation, fully async, 4 H100s (Jupiter) | `configs/smoke_opd_4b_async_jupiter_fused.yaml` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 steps, 2026-10-23 |
+| Pure on-policy distillation with the teacher on an SGLang server, same and cross size | `configs/smoke_opd_{4b,9b_to_4b}_sglang_jupiter.yaml` | `allenai/tmax-4b` and `allenai/tmax-9b` into `hamishivi/Qwen3.5-4B`, 3 steps each, 2026-10-23 |
 | open-instruct's production recipe, fully async on 4 nodes (32x B300), 64k context | `configs/prod_4node.yaml` | Qwen3.5-9B, training on Beaker since 2026-10-16 |
 
 | Read | For |
@@ -229,6 +230,24 @@ The trained reward is 0 at every step and the advantage is minus the batch's rev
 that trains. 59 episodes, 0 sandbox failures; 28 of them filled the 16k context. The teacher forward took 1.5-2 s
 of each step, weight syncs 0.2-0.3 s. The first submission of this smoke, on the default log-prob backend, trained
 step 0 and ran out of memory at step 1 (`01M5K4WN5P1HCVA1N2AY8C8MTS`; see Findings).
+
+The same smoke with the teacher on an SGLang server (`opd_teacher_mode: sglang`, 2 training + 1 rollout + 1 teacher
+GPU), same size (`smoke_opd_4b_sglang_jupiter.yaml`, `01M5MYGFRPDS69ENBPCRKEJ626`) and cross size, `allenai/tmax-9b`
+into the 4B (`smoke_opd_9b_to_4b_sglang_jupiter.yaml`, `01M5MZFMZ2F5E85KXKXG5HA61E`):
+
+| | Step 0 | Step 1 | Step 2 |
+|---|---|---|---|
+| tmax-4b teacher: reverse KL per token | 0.220 | 0.210 | 0.200 |
+| tmax-4b teacher: grad_norm | 5.5 | 4.9 | 4.9 |
+| tmax-9b teacher: reverse KL per token | 0.159 | 0.169 | 0.135 |
+| tmax-9b teacher: grad_norm | 4.2 | 9.2 | 3.4 |
+| Both: max staleness (versions) | 0 | 1 | 2 |
+
+Trained reward 0 and advantage = minus the reverse KL in both, as with the Megatron teacher; train/rollout gap
+0.007-0.011; every teacher request answered (74 for tmax-9b, none retried). Step times 380 / 23 / 113 s (tmax-4b) and
+455 / 69 / 264 s (tmax-9b), the first including compilation. The first two submissions of the same-size smoke failed
+on bugs since fixed: the teacher was never called (`01M5MX4X615AD5ZGR0KF36DJPY`, see Findings) and the wrapper lacked
+the agentic generate's flags (`01M5MY8EV6WAHDYCSSZYGNF4YN`).
 
 For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi/Qwen3.5-2B`'s own trajectories
 (8 tasks x 2 at 16k, thinking off) with `allenai/tmax-2b` through vLLM gave 0.48 nats per assistant token (p90 1.75,
