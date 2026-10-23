@@ -294,6 +294,12 @@ def compute_log_probs(
         log_probs = torch.log_softmax(full_logits, dim=-1)
         return log_probs.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
 
+    if platforms.IS_TPU:
+        # the TPU image has no Megatron, whose fused kernel is CUDA-only anyway
+        full_logits = _gather_true_on_policy_full_logits(logits, process_group, vocab_size=vocab_size)
+        log_probs = torch.log_softmax(full_logits.float(), dim=-1)
+        return log_probs.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
+
     # TODO: when megatron is not installed, fall back to naive implementation
     from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
 
@@ -399,12 +405,10 @@ class _ReplicatedLossAllGatherLastDim(torch.autograd.Function):
         if world_size == 1:
             return input_.contiguous()
 
-        from megatron.core.tensor_parallel.mappings import dist_all_gather_func
-
         gather_shape = list(input_.shape)
         gather_shape[0] *= world_size
         gathered = torch.empty(gather_shape, dtype=input_.dtype, device=input_.device)
-        dist_all_gather_func(gathered, input_.contiguous(), group=group)
+        dist.all_gather_into_tensor(gathered, input_.contiguous(), group=group)
         return torch.cat(gathered.chunk(world_size, dim=0), dim=-1).contiguous()
 
     @staticmethod

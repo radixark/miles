@@ -69,7 +69,7 @@ A multi-arch build (`cu13`) needs Buildx's `docker-container` driver. Use `--pus
 
 The `rubin` variant uses the existing `docker-build` runner and targets `linux/arm64`, like `cu13-aarch64`. It is not included in scheduled builds, automatic tag promotion/pruning, regular CUDA PR images or versioned releases.
 
-The `tpu` variant builds from `lmsysorg/sglang:v0.1.0-tpu`, sglang-torchtpu's release image: it swaps in sglang-torchtpu at `SGLANG_TPU_COMMIT` (the release's torch_tpu, libtpu and jax), moves the one Python environment to `TORCH_VERSION` (that of `docker/Dockerfile`; the torchtitan backend needs >= 2.13), and adds torchtitan at `TORCHTITAN_COMMIT` and miles. Like `rubin`, it is manual only.
+The `tpu` variant builds from `lmsysorg/sglang:v0.1.0-tpu`, sglang-torchtpu's release image: it swaps in sglang-torchtpu at `SGLANG_TPU_COMMIT` (the release's torch_tpu, libtpu and jax), moves the one Python environment to `TORCH_VERSION` (that of `docker/Dockerfile`; the torchtitan backend needs >= 2.13), and adds torchtitan at `TORCHTITAN_COMMIT` with `docker/tpu_patch/torchtitan_torch_tpu.patch` and miles. Like `rubin`, it is manual only. `scripts/tpu/README.md` runs it.
 
 ## PR build check (in `pr-test.yml`)
 

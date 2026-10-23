@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import torch
 
+from miles import platforms
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
 
 
@@ -16,6 +17,9 @@ class TorchtitanArgs(FSDPArgs):
     tensor_model_parallel_size: int = 1
     pipeline_model_parallel_size: int = 1
     expert_model_parallel_size: int = 1
+
+    # torch.compile each TransformerBlock; always on where shapes are static (TPU), opt-in elsewhere
+    titan_compile: bool = False
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -48,6 +52,27 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
+    if platforms.IS_TPU and args.log_probs_backend == "fused":
+        raise ValueError("--log-probs-backend fused is a Triton kernel; on TPU use --log-probs-backend torch")
+    # without dynamic shapes, packed microbatches are padded to a power-of-two bucket capped at --seq-length
+    if not platforms.current_platform.dynamic_shapes:
+        if args.use_dynamic_batch_size and args.max_tokens_per_gpu > args.seq_length:
+            raise ValueError(
+                f"--max-tokens-per-gpu {args.max_tokens_per_gpu} exceeds --seq-length {args.seq_length}, "
+                "the largest length bucket"
+            )
+        if not args.use_dynamic_batch_size and args.micro_batch_size > 1:
+            raise ValueError(
+                f"--micro-batch-size {args.micro_batch_size} can pack more than --seq-length {args.seq_length} "
+                "tokens, the largest length bucket; use --use-dynamic-batch-size with --max-tokens-per-gpu"
+            )
+
+    # colocate syncs through CUDA IPC and broadcast/p2p/disk-delta through NCCL, none of which a TPU engine has
+    if platforms.IS_TPU and (args.colocate or args.update_weight_transfer_mode not in ("disk", "shm")):
+        raise ValueError(
+            f"on TPU the trainer syncs weights with --update-weight-transfer-mode disk or shm to disaggregated "
+            f"engines; got {args.update_weight_transfer_mode!r}{' with --colocate' if args.colocate else ''}"
+        )
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
     if args.fp16:

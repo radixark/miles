@@ -10,12 +10,36 @@ from torchtitan.distributed import utils as titan_dist_utils
 from torchtitan.distributed.context_parallel import cp_shard
 from torchtitan.trainer import Trainer
 
+from miles import platforms
 from miles.backends.torchtitan_utils import routing_replay
 from miles.backends.training_utils.torch_native.step_runner import StepMetrics
 from miles.utils.hf_utils.config import load_hf_config
 
 _FLEX_BLOCK = 128
 _CP_LENGTH_BUCKET = 1024
+_MIN_FIXED_SHAPE_BUCKET = 1024
+
+
+def fixed_shape_length_bucket(n_tokens: int, seq_len: int) -> int:
+    return min(max(_MIN_FIXED_SHAPE_BUCKET, 1 << (n_tokens - 1).bit_length()), seq_len)
+
+
+def fixed_shape_length_buckets(seq_len: int) -> set[int]:
+    return {fixed_shape_length_bucket(1 << k, seq_len) for k in range(seq_len.bit_length() + 1)}
+
+
+def configure_fixed_shape_compile(*, seq_len: int, num_passes: int) -> None:
+    """Without dynamic shapes, every graph is static and each pass with its own guards compiles once per bucket.
+
+    Fullgraph blocks fail past dynamo's recompile limit instead of falling back to eager, so the limit must cover
+    every pass and bucket.
+    """
+    if platforms.current_platform.dynamic_shapes:
+        return
+    # a second length would otherwise make dynamo mark the dimension dynamic, which the backend rejects
+    torch._dynamo.config.automatic_dynamic_shapes = False
+    num_graphs = num_passes * len(fixed_shape_length_buckets(seq_len))
+    torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, num_graphs)
 
 
 class TitanTrainer(Trainer):
@@ -39,6 +63,14 @@ class TitanTrainer(Trainer):
                     f"{target}, which is the fixed shape PP stages exchange"
                 )
             return target
+        if not platforms.current_platform.dynamic_shapes:
+            # one compiled program per shape, so microbatches pad to a few power-of-two buckets
+            target = self.config.training.seq_len
+            if n_tokens > target:
+                raise ValueError(
+                    f"packed microbatch of {n_tokens} tokens exceeds --seq-length {target}, the largest length bucket"
+                )
+            return fixed_shape_length_bucket(n_tokens, target)
         if self.parallel_dims.cp_enabled:
             align = max(self.parallel_dims.cp * _FLEX_BLOCK, _CP_LENGTH_BUCKET)
             return n_tokens + (align - n_tokens % align) % align

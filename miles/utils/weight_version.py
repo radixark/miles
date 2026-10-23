@@ -39,7 +39,8 @@ def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"])
             _assert_span_weight_version_sane(sample=sample, span=span, what="were generated under")
         for span in sample.all_prefill_weight_version_spans:
             _assert_span_weight_version_sane(sample=sample, span=span, what="had their prompt KV computed under")
-        if args.sglang_enable_prefill_weight_versions:
+        # only sglang-miles registers --sglang-enable-prefill-weight-versions (sglang-torchtpu has no such server arg)
+        if getattr(args, "sglang_enable_prefill_weight_versions", False):
             _assert_sample_reports_prefill_weight_versions(sample)
 
 

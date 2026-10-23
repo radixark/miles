@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from miles import platforms
 from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -530,11 +531,15 @@ def get_data_iterator(
         samples = rollout_data["total_lengths"]
         assert len(samples) == num_local_samples
         num_microbatches = []
+        # a fixed-shape trainer cannot run a microbatch above the cap, which the balanced partition ignores
+        num_microbatches_for = (
+            get_minimum_num_micro_batch_size
+            if platforms.current_platform.dynamic_shapes
+            else _num_microbatches_within_cap
+        )
         for i in range(num_steps_per_rollout):
             start, end = i * num_local_gbs, (i + 1) * num_local_gbs
-            num_microbatches.append(
-                get_minimum_num_micro_batch_size(samples[start:end], args.max_tokens_per_gpu * cp_size)
-            )
+            num_microbatches.append(num_microbatches_for(samples[start:end], args.max_tokens_per_gpu * cp_size))
 
         num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=current_platform.current_device())
         GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
@@ -573,3 +578,21 @@ def get_data_iterator(
         data_iterator,
         num_microbatches,
     )
+
+
+def _num_microbatches_within_cap(lengths: list[int], max_tokens: int) -> int:
+    """The fewest microbatches whose seqlen-balanced partition keeps each one within `max_tokens`.
+
+    First-fit only bounds the count from below: the balanced partition that forms the microbatches ignores the
+    cap and can exceed it. A sample longer than the cap still gets a microbatch of its own.
+    """
+    cap = max(max_tokens, max(lengths))
+    num = get_minimum_num_micro_batch_size(lengths, max_tokens)
+    while num < len(lengths) and _largest_partition(lengths, num) > cap:
+        num += 1
+    return num
+
+
+def _largest_partition(lengths: list[int], num_partitions: int) -> int:
+    partitions = get_seqlen_balanced_partitions(lengths, num_partitions, equal_size=False)
+    return max(sum(lengths[i] for i in partition) for partition in partitions)
