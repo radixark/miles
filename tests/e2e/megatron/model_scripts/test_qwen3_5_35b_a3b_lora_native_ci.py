@@ -1,7 +1,7 @@
 import os
 
 from examples.lora.run_lora_native import ScriptArgs, _prepare, _train
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 # Native (raw-mode) LoRA on Qwen3.5-35B-A3B: the hybrid GQA+GDN registry —
 # gated fused-QKV adapters on the full-attention layers, mixer-only layers
@@ -13,6 +13,7 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(
     est_time=900, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts", "lora"], hardware=["hopper"]
 )
+register_rocm_ci(est_time=1100, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
 
 def _args() -> ScriptArgs:
