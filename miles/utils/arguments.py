@@ -947,6 +947,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--async-staleness-admission",
+                action="store_true",
+                default=False,
+                help=(
+                    "Also apply --max-weight-staleness N when the fully async producer submits a group: it only "
+                    "submits while the buffered and in-flight groups number fewer than N * rollout_batch_size, "
+                    "plus one rollout_batch_size while a training step waits for its batch. N = 0 makes "
+                    "generation synchronous. Requires one weight version per training step."
+                ),
+            )
+            parser.add_argument(
                 "--async-max-concurrent-samples",
                 type=int,
                 default=None,
@@ -4103,6 +4114,18 @@ def miles_validate_args(args):
                 f"// num_steps_per_rollout {args.num_steps_per_rollout}"
             )
         args.global_batch_size = global_batch_size
+
+    if args.async_staleness_admission:
+        assert (
+            args.fully_async and args.max_weight_staleness is not None and args.max_weight_staleness >= 0
+        ), "--async-staleness-admission requires --fully-async and --max-weight-staleness >= 0"
+        assert args.update_weights_interval == 1 and (
+            args.use_dynamic_global_batch_size
+            or args.global_batch_size == args.rollout_batch_size * args.n_samples_per_prompt
+        ), (
+            "--async-staleness-admission requires one weight version per step: --update-weights-interval 1 and "
+            "one optimizer step per rollout"
+        )
 
     # Multi-LoRA adapters carry their own n_samples_per_prompt; the per-group
     # normalization path already skips std for singleton groups.

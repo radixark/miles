@@ -7,7 +7,14 @@ from typing import Any
 import pytest
 import torch
 from tests.fast.fixtures.args_fixtures import parser_defaults
-from tests.fast.rollout.test_fully_async_rollout import FakeDataSource, make_args, make_fn, make_group, train_input
+from tests.fast.rollout.test_fully_async_rollout import (
+    FakeDataSource,
+    _settle,
+    make_args,
+    make_fn,
+    make_group,
+    train_input,
+)
 
 from miles.backends.training_utils.model_companion import ModelCompanion, ModelCompanionSampleConsumptionUtils
 from miles.backends.training_utils.types import TrainStepOutcome
@@ -270,3 +277,28 @@ async def test_a_group_blocked_in_put_is_restored_as_a_clean_retry(monkeypatch, 
     trained = [[sample.index for sample in group] for output in outputs for group in output.samples]
     assert trained == [[10, 11], [20, 21]]
     assert not restored._retry_buffer
+
+
+async def test_restored_groups_count_against_the_staleness_admission_window(monkeypatch, tmp_path: Path) -> None:
+    """Groups restored into the buffer are already ahead of training, so they hold back new submissions."""
+    args = _checkpoint_args(tmp_path, max_weight_staleness=0, async_staleness_admission=True)
+    fn = make_fn(monkeypatch, args, FakeDataSource())
+    for group in (make_group(1), make_group(2)):
+        await fn._output.put(DataBufferInput(prompt_group=group, group=group))
+    fn.save(tmp_path)
+
+    source = FakeDataSource()
+    restored = make_fn(monkeypatch, args, source, generate=_generate_and_reward)
+    restored.load(tmp_path)
+    trained, submitted = [], []
+    try:
+        for rollout_id in range(3):
+            output = await asyncio.wait_for(restored(train_input(rollout_id=rollout_id)), timeout=5)
+            await _settle()
+            trained.append(output.samples[0][0].group_index)
+            submitted.append(source.num_get_calls)
+    finally:
+        await restored.dispose()
+
+    assert trained == [1, 2, 1001]
+    assert submitted == [0, 0, 1]

@@ -1,10 +1,11 @@
 """Data buffer between fully-async rollout production and training consumption.
 
-``DataBuffer`` is the contract (put / get / metrics / checkpoint state); ``DefaultDataBuffer``
+``DataBuffer`` is the contract (put / get / metrics / checkpoint state / queue size); ``DefaultDataBuffer``
 is the built-in implementation, replaceable via ``--custom-async-data-buffer-path``.
 Every group-level decision lives here — what to keep, what to hand to
-``--async-unused-samples-handler`` — so a custom buffer owns all of it. Only
-``--rollout-sample-filter-path`` stays outside: it runs on the assembled batch.
+``--async-unused-samples-handler`` — so a custom buffer owns all of it. Two stay
+outside: ``--rollout-sample-filter-path`` runs on the assembled batch, and
+``--async-staleness-admission`` runs in the worker before it submits a group.
 """
 
 import asyncio
@@ -120,6 +121,9 @@ class DataBuffer(ABC):
 
     def load_state_dict(self, state: Any) -> None:
         raise NotImplementedError(f"{type(self).__name__} must implement load_state_dict() for checkpointing")
+
+    def queue_size(self) -> int:
+        raise NotImplementedError(f"{type(self).__name__} must implement queue_size() for --async-staleness-admission")
 
 
 # ============================= one policy buffer ==============================
@@ -283,6 +287,9 @@ class DefaultDataBuffer(DataBuffer):
     def load_state_dict(self, state: list[DataBufferInput]) -> None:
         assert not self._buffer
         self._buffer = list(state)
+
+    def queue_size(self) -> int:
+        return len(self._buffer)
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         prefix = "rollout/fully_async/"

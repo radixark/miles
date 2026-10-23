@@ -91,6 +91,8 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._curr_kv_cache_namespace: str | None = None
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
+        self._drain_pending = False
+        self._admission_changed = asyncio.Event()
         default_buffer_cls = (
             DefaultMultiDataBuffer if resolve_megatron_config(self.args).is_multi_policy else DefaultDataBuffer
         )
@@ -152,6 +154,14 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             return max(1, x // self.args.n_samples_per_prompt)
         return self.args.rollout_batch_size
 
+    def _admits_group(self, *, in_flight: int) -> bool:
+        if not self.args.async_staleness_admission:
+            return True
+        # Each drain is one weight version later than the previous one and takes rollout_batch_size groups, so a
+        # group that enters the buffer is trained at most max_weight_staleness versions later.
+        ahead = self._output.queue_size() + in_flight
+        return ahead < (self.args.max_weight_staleness + int(self._drain_pending)) * self.args.rollout_batch_size
+
     def _submit_one_group(self) -> asyncio.Task:
         samples = [self._retry_buffer.popleft()] if self._retry_buffer else self.data_source.get_samples(1)
         stamp_kv_cache_namespace(samples, namespace=self._curr_kv_cache_namespace)
@@ -175,14 +185,29 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         active: set[asyncio.Task] = set()
         while True:
             await self._producer_resumed.wait()
-            while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
+            self._admission_changed.clear()
+            while (admits := self._admits_group(in_flight=len(active))) and self._scheduler.has_capacity(
+                pending_groups=len(active), group_budget=self._max_in_flight_groups()
+            ):
                 active.add(self._submit_one_group())
-            done, active = await self._scheduler.wait_for_progress(active)
+            if admits:
+                done, active = await self._scheduler.wait_for_progress(active)
+            else:
+                done, active = await self._wait_for_admission(active)
             for task in done:
                 prompt_group = next(x.prompt_group for x in self._running_tasks if x.task is task)
                 entry = self._collect_group_result(task, prompt_group)
                 await self._output.put(entry)
                 self._running_tasks = [x for x in self._running_tasks if x.task is not task]
+
+    async def _wait_for_admission(self, pendings: set[asyncio.Task]) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
+        """Wait for a drain to start, an unused group to leave, or a group to finish (its put may reject it)."""
+        waiter = asyncio.create_task(self._admission_changed.wait())
+        try:
+            done, pending = await asyncio.wait(pendings | {waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+        return done - {waiter}, pending - {waiter}
 
     def _collect_group_result(self, task: asyncio.Task, prompt_group: list[Sample]) -> DataBufferInput:
         if not task.cancelled():
@@ -211,11 +236,16 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
         assert not self._worker.done(), "the fully-async rollout worker has ended"
         self._worker_error_cancel_targets.add(asyncio.current_task())
-        entries = await self._output.get(
-            current_version=input.weight_version,
-            num_groups=args.rollout_batch_size,
-            trainer_model_id=input.trainer_model_id,
-        )
+        self._drain_pending = True
+        self._admission_changed.set()
+        try:
+            entries = await self._output.get(
+                current_version=input.weight_version,
+                num_groups=args.rollout_batch_size,
+                trainer_model_id=input.trainer_model_id,
+            )
+        finally:
+            self._drain_pending = False
         self._worker_error_cancel_targets.discard(asyncio.current_task())
 
         data: list[Group] = []
@@ -259,9 +289,11 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         for sample in prompt_group:
             sample.reset_for_retry()
         self._retry_buffer.append(prompt_group)
+        self._admission_changed.set()
 
     def _drop_unused(self, prompt_group: list[Sample], reason: UnusedReason) -> None:
         SampleOwnershipRecorder.log_dropped_samples(args=self.args, samples=prompt_group, reason=reason.value)
+        self._admission_changed.set()
 
     def save(self, directory: Path) -> None:
         state = _FullyAsyncRolloutState(
