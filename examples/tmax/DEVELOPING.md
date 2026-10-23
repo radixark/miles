@@ -91,9 +91,10 @@ The default `--custom-agent-function-mode subproc` gives every episode a process
 
 ### What runs where
 
-- **The local dev box cannot run Miles.** It is a Beaker session with 4× L40S and driver 570 (CUDA 12.8). Current
-  Miles needs CUDA 13, and GPU containers cannot be nested inside a Beaker task. Training, SGLang and the session
-  server only run in Beaker jobs.
+- **The local dev box cannot run Miles.** It is a Beaker session with 4× L40S and driver 570 (CUDA 12.8), and GPU
+  containers cannot be nested inside a Beaker task. CUDA 13 itself is not the obstacle: CUDA 13 torch runs here (and
+  on Jupiter) through NVIDIA's forward-compatibility driver, the image's `/usr/local/cuda/compat` on
+  `LD_LIBRARY_PATH`. Training, SGLang and the session server only run in Beaker jobs.
 - **Locally you can:**
   - lint;
   - run CPU unit tests;

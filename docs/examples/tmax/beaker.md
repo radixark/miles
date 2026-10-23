@@ -126,8 +126,14 @@ Ethernet).
 - **Session server v2 needs SGLang's prefill weight versions** (`--enable-prefill-weight-versions`). Images from
   2026-10-14 on have them; with an older one (e.g. `dev-202610131159`) the job dies at start with an
   `AttributeError` on `enable_prefill_weight_versions`.
-- **CUDA 13 only.** Current images need a CUDA 13 driver: `ai2/holmes` (B300) has one, `ai2/jupiter` (H100) does
-  not, and upstream retired the CUDA 12 images.
+- **CUDA 13 images, older drivers.** Current images are CUDA 13, and upstream retired the CUDA 12 ones
+  (`docker/Dockerfile.cu12` is archived at SGLang 0.5.19). `ai2/holmes` (B300) has a CUDA 13 driver. `ai2/jupiter`
+  and `ai2/ceres` (H100) run 570.124.06 (CUDA 12.8), where torch fails with "The NVIDIA driver on your system is too
+  old". The image ships NVIDIA's forward-compatibility driver (`cuda-compat-13-0`, supported on data-center driver
+  branches 535-575), but Beaker's command bypasses the image entrypoint, so nothing would load it. The entry script
+  puts `/usr/local/cuda/compat` first on `LD_LIBRARY_PATH` whenever `nvidia-smi`'s CUDA version is older than the
+  image's, and logs `CUDA forward compatibility: ...`. The 4-GPU OPD smoke `01M5K694GXJ85TX6RZ9A014QTH` trained on
+  Jupiter this way on 2026-10-23: Megatron, SGLang, NCCL weight syncs and the fused log-prob kernels.
 - **Check an image before a long run.** Submit a short one-GPU job on it that prints the versions and the flags you
   rely on (`python -c "import sglang, torch; print(sglang.__version__, torch.__version__)"`, `python -m
   sglang.launch_server --help | grep <flag>`).
@@ -332,6 +338,11 @@ What to do when a symptom shows up. Every failure mode seen so far, with its sta
 
 - **`ai2/holmes`.** 8× B300 (288 GB) per node, CUDA 13, about 878 GB of local disk with little free. Weka buckets
   `nora-default` and `oe-adapt-default` are mounted at `/weka/<bucket>`.
+- **`ai2/jupiter`.** 8× H100 (80 GB) per node, driver 570.124.06, so CUDA 13 runs through the compatibility driver
+  ([Images](#images)). Use workspace `ai2/oe-agents` with a `min_runtime` (1 h for a smoke): a preemptible job only
+  backfills unallocated slots, which are usually all taken, while a min-runtime job runs on the workspace's
+  allocation (scheduled within 20 s on 2026-10-23). On 80 GB, 16k-token episodes need `--log-probs-backend fused`
+  and Adam in host RAM (`optimizer_cpu_offload: true`); see `configs/smoke_opd_4b_async_jupiter_fused.yaml`.
 - **Paths the configs use.**
   - Models and datasets (shared by runs, converted once):
     `/weka/nora-default/shashankg/miles_tmax_v2/{models,datasets}`.

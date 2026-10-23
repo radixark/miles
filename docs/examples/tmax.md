@@ -300,8 +300,11 @@ above 1 nat).
 - GPU containers cannot be nested inside a Beaker task: Podman there can neither mount a fresh procfs nor
   create cgroups, and the `/proc` bind it falls back to belongs to another PID namespace, which makes
   `cuInit` fail with CUDA error 304. Run the Miles image as the Beaker task itself and nest only the CPU
-  sandboxes. Current Miles images are CUDA 13 only (upstream retired the CUDA 12 images), so 570-series drivers
-  cannot run them.
+  sandboxes. Current Miles images are CUDA 13 only (upstream retired the CUDA 12 images). On 570-series drivers
+  (Jupiter's and Ceres' H100s) they run through the image's CUDA forward-compatibility driver, which the entry script
+  loads ([Images](/examples/tmax/beaker#images)).
+- On 80 GB GPUs pass `--log-probs-backend fused`, as the prod configs do. The default backend upcasts the logits to
+  fp32: 13.85 GiB for one ~15k-token episode, which ran an H100 out of memory in the training step.
 - `openai_session_url` already appends `/v1`; agent functions pass its result to the OpenAI client as is.
 - Qwen3.5 `torch_dist` checkpoints converted before the head-sharded linear-attention layout (upstream #3610)
   are rejected at load; re-convert them from HF into a new `--model-dir`.
