@@ -6,6 +6,10 @@ Transformer Engine's 1D, 1x16, per-tensor NVFP4 implementation. The vectorized
 load, FP4 conversion, and Four Over Six structure are adapted from FlashInfer's
 CuTe DSL NVFP4 quantizer.
 
+For the W4A16 RL recipe and fused weight QDQ design, see
+"Faster-than-light NVFP4 decode—with precision" by Ziang Li and friends at
+humans&: https://humansand.ai/blog/faster-than-light-nvfp4-decode
+
 Supported contract:
 
 * contiguous rank-2 BF16 or FP16 input on SM10x;
