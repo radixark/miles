@@ -154,6 +154,44 @@ Paths come from `--model-dir` (default `/root/models`), `--data-dir` (default
 checkpoints under `<--save-dir>/<--run-id>/checkpoints` every 10 rollouts, without optimizer
 or RNG state.
 
+### 4.1 On the torchtitan backend
+
+```bash
+# 4-layer slice, one node
+python scripts/run_qwen3_8_next_torchtitan.py
+# full model, four 8-GPU nodes on an already-joined ray cluster
+python scripts/run_qwen3_8_next_torchtitan.py --model-name Qwen3.8-Flash-Next --num-nodes 4
+```
+
+The torchtitan trainer loads the HF directory directly (no `torch_dist` conversion) through
+the miles-side model package `miles/backends/torchtitan_utils/models/qwen3_8_next/`. It
+reuses the same hyper-connection, QSA and PLE kernels as the Megatron path, and the
+n-gram hashing and QSA selection math live in Megatron-free modules
+(`miles_plugins/models/qwen3_8_next/ops/ngram.py`, `qsa_selection.py`) that both backends
+import, so the two cannot drift. Rollout, algorithm and SGLang settings are the Megatron
+recipe's.
+
+What differs from the Megatron path:
+
+- **Parallelism is FSDP + expert parallelism only**, experts split over every trainer GPU.
+  Tensor, context and pipeline parallelism are rejected: the PLE conv, the QSA indexer and
+  the hyper-connection streams all need whole sequences on a rank.
+- **No CPU optimizer.** fp32 master weights and Adam state for the 126 B trained parameters
+  are ~2 TB, so the full model needs 32 or more 141 GB GPUs.
+- **The PLE table is held once per node in `/dev/shm`**, written by the first rank that
+  needs it and mapped and CUDA-registered by the rest. Under FSDP every rank sees different
+  tokens, so Megatron's TP row-sharding has nothing to shard across. The full model needs a
+  `/dev/shm` of at least ~102 GB; the 4-layer slice ~1 GB.
+- **No expert bias.** torchtitan's MoE learns one by default; the model config turns it
+  off, as Megatron and SGLang route without one.
+
+On the 4-layer slice, scoring one 3000-token sequence (long enough that QSA is truly
+sparse past position 2052) with all three implementations gives a mean |Δlogp| of 0.015
+between torchtitan and Megatron, and 0.041 between either trainer and SGLang, the same in
+the dense and sparse regions. torchtitan is as close to the rollout engine as the
+production Megatron path is; the slice's flat logits (mean log p ≈ −14) are what make
+that gap larger than a full model's.
+
 ## 5. Recipe Configuration
 
 ### 5.1 Parallelism

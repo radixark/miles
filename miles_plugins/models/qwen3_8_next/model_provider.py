@@ -6,9 +6,9 @@ import logging
 
 from megatron.core.models.gpt import GPTModel
 
+from miles_plugins.models.qwen3_8_next.ops.ngram import build_ngram_contexts_packed
 from miles_plugins.models.qwen3_8_next.ops.ple import (
     Qwen38NextFrozenNGramEmbedding,
-    build_ngram_contexts_packed,
     clear_ple_batch,
     publish_ple_batch,
 )

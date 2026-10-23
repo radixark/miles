@@ -4,7 +4,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import (  # noqa: E402
+from miles_plugins.models.qwen3_8_next.ops.qsa_selection import (  # noqa: E402
     PackedBlockLayout,
     block_causal_mask,
     compress_keys_by_mean,

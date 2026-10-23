@@ -81,8 +81,19 @@ def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tupl
     mine = sorted(k for k in state if _GROUPED_EXPERTS in k)
     everyone: list = [None] * layout.world
     dist.all_gather_object(everyone, mine)
-    for key in sorted(set().union(*everyone)):
-        yield from layout.stream(sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {})
+    # Each tensor on its own, except a layer's w1 and w3: a checkpoint that fuses them into one
+    # gate_up_proj needs both in the same to_hf call. Keeping w2 apart bounds the gathered peak.
+    for unit in sorted({_expert_stream_unit(key) for key in set().union(*everyone)}):
+        group = {k: gather_full_param(state[k]) for k in mine if _expert_stream_unit(k) == unit}
+        yield from layout.stream(sd_adapter.to_hf(group))
+
+
+_FUSABLE_EXPERT_WEIGHTS = ("w1_EFD", "w3_EFD")
+
+
+def _expert_stream_unit(key: str) -> str:
+    module, name = key.rsplit(".", 1)
+    return f"{module}.w1_w3" if name in _FUSABLE_EXPERT_WEIGHTS else key
 
 
 @dataclass(frozen=True)

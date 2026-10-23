@@ -101,6 +101,10 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
     def _step_runner(self):
         return self.trainer.step_runner()
 
+    def _move_to(self, device: str) -> None:
+        compat.drop_model_state_cache(self.trainer)
+        super()._move_to(device)
+
     def _build_ref_runner(self, args: Namespace):
         if not args.ref_load:
             raise ValueError("--ref-load is required to build a torchtitan reference model")
@@ -108,6 +112,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         ref_trainer = TitanTrainer(ref_config)
         ref_trainer.configure_loss_reduction()
         ref_trainer.checkpointer.load()
+        compat.drop_model_state_cache(ref_trainer)
         for part in ref_trainer.model_parts:
             part.eval()
             part.requires_grad_(False)
