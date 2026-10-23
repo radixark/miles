@@ -360,6 +360,39 @@ class TestConvertSamplesToTrainData:
 
 
 class TestPostProcessRewards:
+    @pytest.mark.parametrize("estimator", ["grpo", "gspo", "reinforce_plus_plus_baseline"])
+    @pytest.mark.parametrize("std_normalization", [False, True])
+    @pytest.mark.parametrize("first_reward", [0.3, 0.1 + 0.2])
+    def test_float32_uniform_rewards_are_exactly_zero(self, estimator, std_normalization, first_reward):
+        args = make_args(advantage_estimator=estimator, grpo_std_normalization=std_normalization)
+        rewards = [first_reward] + [0.3] * 15
+        samples = make_samples_grouped(1, 16, rewards=rewards)
+
+        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert raw == rewards
+        assert processed == [0.0] * 16
+
+    def test_uniform_rewards_with_fanout_respect_prompt_boundaries(self):
+        samples = [make_sample(rollout_id=index, reward=0.3) for index in [*range(16), 15, 15]] + [
+            make_sample(rollout_id=index, reward=0.7) for index in [0, 1, 1]
+        ]
+
+        raw, processed = _post_process_rewards(
+            make_args(), samples, custom_reward_post_process_func=None, prompt_group_sizes=[18, 3]
+        )
+
+        assert raw == [0.3] * 18 + [0.7] * 3
+        assert processed == [0.0] * 21
+
+    @pytest.mark.parametrize("reward", [float("inf"), float("nan"), 1e100])
+    def test_uniform_nonfinite_float32_rewards_stay_nan(self, reward):
+        samples = make_samples_grouped(1, 16, rewards=[reward] * 16)
+
+        _, processed = _post_process_rewards(make_args(), samples, custom_reward_post_process_func=None)
+
+        assert torch.isnan(torch.tensor(processed)).all()
+
     def test_ppo_path_returns_raw_rewards_unchanged(self):
         args = make_args(advantage_estimator="ppo", rewards_normalization=True)
         samples = make_samples_grouped(2, 4, rewards=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])

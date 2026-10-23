@@ -325,7 +325,11 @@ def _normalize_rewards_by_rollout(
             shared_rewards.append(sibling_rewards[0])
 
         rollout_rewards = torch.tensor(shared_rewards, dtype=torch.float)
-        normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
+        # Uniform float32 rewards carry no preference, even when their original values differ.
+        if torch.isfinite(rollout_rewards).all() and (rollout_rewards == rollout_rewards[0]).all():
+            normalized_rollout_rewards = torch.zeros_like(rollout_rewards)
+        else:
+            normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
         if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(rollout_rewards) > 1:
             rollout_std = rollout_rewards.std()
             if rollout_std > 0:
