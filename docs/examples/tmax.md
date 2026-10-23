@@ -36,7 +36,7 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | `tmax_agent_function.py` | Agent loop for `agentic_tool_call.generate`, plus the over-sampling `abort` hook |
 | `tmax_sandbox.py` | Per-episode container: the episode logic shared by both backends, and the podman backend (a Docker-API socket), ported from open-instruct |
 | `tmax_gateway.py` | The gateway backend: containers on a LiteRegistry podman fleet through literegistry's own client, after open-instruct's `GatewayBackend` |
-| `generate.py` | Reward functions (`None` drops the group; with an SGLang OPD teacher, also the teacher's log-probs), and pure OPD's reward post-process |
+| `generate.py` | Reward function (`None` drops the group), the generate function that adds an SGLang OPD teacher's log-probs, and pure OPD's reward post-process |
 | `tmax_metrics.py` | Per-rollout W&B metrics open-instruct logs: episodes and tools, solve rates before the filter, trained-sample lengths and advantages |
 | `tmax_prompts.py` | open-instruct's system prompt |
 | `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes, `smoke_gateway.yaml` uses the podman fleet, `smoke_opd*.yaml` distill) |
@@ -316,9 +316,11 @@ For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi
 - **Teacher on an SGLang server** (`opd_teacher_mode: sglang`; `auto`, the default, picks it when the teacher's
   architecture differs from the student's, as for `allenai/tmax-9b` into a 4B). Before submitting the job the launcher
   starts `sglang.launch_server` on the node's last GPU, which Ray is started without, and waits up to 30 minutes for
-  it to answer, or the launch fails. `generate.reward_func_with_teacher` then sends every finished sample with a task
-  reward to it (Miles' own teacher request, `--rm-url`) and stores the response tokens' log-probs in
-  `sample.teacher_log_probs`, which Miles trains on as the Megatron teacher's. The task reward stays the reward, so
+  it to answer, or the launch fails. `generate.generate_with_teacher` wraps Miles' agentic generate function: it sends
+  every collected sample with a task reward to the teacher (Miles' own teacher request, `--rm-url`) and stores the
+  response tokens' log-probs in `sample.teacher_log_probs`, which Miles trains on as the Megatron teacher's. (Not a
+  reward function: session server v2 returns samples with the agent's reward set, and Miles calls `--custom-rm-path`
+  only for samples without one, so Miles' SGLang-mode reward function never runs here.) The task reward stays the reward, so
   `opd_pure`, additive OPD, the filters and the metrics work as in Megatron mode; Miles' documented SGLang-mode reward
   function and post-process replace it with 0. A teacher request is retried after `opd_teacher_timeout_s` (1800) or an
   error, and the third failure fails the rollout. One node and one teacher GPU only (SGLang TP > 1 produces garbage for

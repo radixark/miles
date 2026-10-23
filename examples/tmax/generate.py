@@ -1,4 +1,4 @@
-"""TMax reward functions, and the reward post-process of pure on-policy distillation.
+"""TMax reward function, the generate function of OPD with an SGLang teacher, and pure OPD's reward post-process.
 
 The reward is computed in the sandbox by the task's tests (tmax_agent_function.run)
 and rides back in ``sample.metadata["reward"]``. ``None`` there means the sandbox
@@ -11,6 +11,8 @@ import logging
 import os
 
 from miles.rollout import on_policy_distillation
+from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.generate_hub import agentic_tool_call
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -26,22 +28,29 @@ async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float |
     return samples.metadata.get("reward")
 
 
-async def reward_func_with_teacher(
-    args, samples: Sample | list[Sample], **kwargs
-) -> float | None | list[float | None]:
-    """``--custom-rm-path`` for OPD with an SGLang teacher (``--opd-type sglang``): ``reward_func``'s task reward, and
-    the teacher's log-prob of every response token in ``sample.teacher_log_probs``, which Miles trains on as the
-    Megatron teacher's.
+async def generate_with_teacher(input: GenerateFnInput) -> GenerateFnOutput:
+    """``--custom-generate-function-path`` for OPD with an SGLang teacher (``--opd-type sglang``): Miles' agentic
+    generate, then the teacher's log-prob of every response token of each collected sample in
+    ``sample.teacher_log_probs``, which Miles trains on as the Megatron teacher's.
 
-    Miles' own SGLang-mode reward function returns the teacher's response as the reward and its post-process sets
-    every reward to 0; this keeps the task reward, so the missing-reward filter, the metrics, additive OPD and
-    ``opd_pure_rewards`` work as with the Megatron teacher. The teacher request is Miles' (``--rm-url``, or
-    ``--opd-teacher-urls`` routed by sample metadata). A sample without a task reward is not scored: its group is
-    dropped.
+    Scoring happens here, not in a reward function: session server v2 returns the samples with the agent's reward set,
+    so Miles never calls ``--custom-rm-path`` for them. The task reward stays the reward, so the missing-reward filter,
+    the metrics, additive OPD and ``opd_pure_rewards`` work as with the Megatron teacher (Miles' own SGLang-mode reward
+    function and post-process replace it with 0). The teacher request is Miles' (``--rm-url``, or
+    ``--opd-teacher-urls`` routed by sample metadata). Aborted samples, samples without a task reward (their group is
+    dropped) and evaluation samples are not scored.
     """
-    batch = samples if isinstance(samples, list) else [samples]
-    await asyncio.gather(*(_score_with_teacher(args, s) for s in batch if s.metadata.get("reward") is not None))
-    return await reward_func(args, samples)
+    output = await agentic_tool_call.generate(input)
+    if not input.evaluation:
+        samples = output.samples if isinstance(output.samples, list) else [output.samples]
+        await asyncio.gather(
+            *(
+                _score_with_teacher(input.args, s)
+                for s in samples
+                if s.status != Sample.Status.ABORTED and s.metadata.get("reward") is not None
+            )
+        )
+    return output
 
 
 async def _score_with_teacher(args, sample: Sample) -> None:

@@ -173,7 +173,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     opd_pure: bool = False
     # Where the teacher scores the rollouts. megatron: in the trainer, its weights a CPU copy swapped into the student's
     # model for one forward pass per step, so it must share the student's architecture. sglang: an SGLang server this
-    # launcher starts on the node's last opd_teacher_gpus GPUs, called by generate.reward_func_with_teacher at rollout
+    # launcher starts on the node's last opd_teacher_gpus GPUs, called by generate.generate_with_teacher at rollout
     # time; any teacher with the student's tokenizer. auto: megatron when the architectures match, else sglang.
     opd_teacher_mode: Literal["auto", "megatron", "sglang"] = "auto"
     opd_teacher_gpus: int = 1
@@ -417,10 +417,14 @@ def execute(args: ScriptArgs):
         "--balance-data "
     )
 
+    # With an SGLang OPD teacher, generate.generate_with_teacher wraps Miles' agentic generate to score each sample.
+    generate_function = "miles.rollout.generate_hub.agentic_tool_call.generate"
+    if args.opd_mode == "sglang":
+        generate_function = "generate.generate_with_teacher"
     agent_args = (
-        "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
+        f"--custom-generate-function-path {generate_function} "
         "--custom-agent-function-path tmax_agent_function.run "
-        f"--custom-rm-path generate.{'reward_func_with_teacher' if args.opd_mode == 'sglang' else 'reward_func'} "
+        "--custom-rm-path generate.reward_func "
         f"--use-session-server {args.session_server} "
         "--tito-model qwen35 "
     )
@@ -476,7 +480,7 @@ def execute(args: ScriptArgs):
         if args.opd_mode == "megatron":
             grpo_args += f"--opd-teacher-load {args.model_dir}/{args.opd_teacher}_torch_dist "
         else:
-            # Miles' teacher request goes to --rm-url; generate.reward_func_with_teacher sends it (see _start_opd_teacher).
+            # Miles' teacher request goes to --rm-url; generate.generate_with_teacher sends it (see _start_opd_teacher).
             grpo_args += f"--rm-url http://127.0.0.1:{_OPD_TEACHER_PORT}/generate "
         if args.opd_pure:
             # The trained reward is 0 for every sample, so GRPO's advantage is 0 and the OPD term is all that is left;
@@ -578,7 +582,7 @@ def execute(args: ScriptArgs):
             "TMAX_EPISODE_TIMEOUT_S": str(args.episode_timeout_s),
             "TMAX_TOOL_CALL_TIMEOUT_S": str(args.tool_call_timeout_s),
             "TMAX_TRACE_DIR": args.trace_run_dir,
-            # read by generate.reward_func_with_teacher, in the rollout process
+            # read by generate.generate_with_teacher, in the rollout process
             **({"TMAX_OPD_TEACHER_TIMEOUT_S": str(args.opd_teacher_timeout_s)} if args.opd_mode == "sglang" else {}),
         },
         before_ray_job_submit=(lambda: _start_opd_teacher(U, args)) if args.opd_mode == "sglang" else None,
