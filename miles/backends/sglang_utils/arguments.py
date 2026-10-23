@@ -1,5 +1,6 @@
 import argparse
 
+from sglang.srt.plugins import load_plugins
 from sglang.srt.server_args import ServerArgs
 from miles.utils.http_utils import wrap_ipv6
 
@@ -69,6 +70,8 @@ def _add_prefixed_server_args(parser, *, flag_prefix: str, dest_prefix: str, ski
 
     ``inherit=True`` defaults to SUPPRESS, so an unset flag leaves no attribute to inherit over.
     """
+    # SGLang snapshots plugin-provided parser names when registering CLI choices.
+    load_plugins()
     old_add_argument = parser.add_argument
 
     def new_add_argument_wrapper(*name_or_flags, **kwargs):
