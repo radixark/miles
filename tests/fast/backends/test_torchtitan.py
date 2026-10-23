@@ -373,3 +373,41 @@ def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
 
     adapter = spec.state_dict_adapter(model, None)
     assert set(_GLM47_FLASH_CHECKPOINT_KEYS) <= set(adapter.from_hf_map)
+
+
+@pytest.mark.parametrize("with_hf_config", [False, True])
+def test_model_registry_accepts_optional_hf_configuration(monkeypatch, with_hf_config):
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import config
+
+    hf = object()
+
+    def registry(flavor, attn_backend, *, hf_config):
+        assert (flavor, attn_backend, hf_config) == ("hf", "flex", hf)
+        return "hf-spec"
+
+    def legacy_registry(flavor, attn_backend):
+        assert (flavor, attn_backend) == ("hf", "flex")
+        return "legacy-spec"
+
+    monkeypatch.setattr(
+        config,
+        "_model_package",
+        lambda name: SimpleNamespace(model_registry=registry if with_hf_config else legacy_registry),
+    )
+    with patch.object(config, "load_hf_config", return_value=hf) as loader:
+        result = config.resolve_model_spec(_args(titan_model_flavor="hf", hf_checkpoint="checkpoint"))
+    assert result == ("hf-spec" if with_hf_config else "legacy-spec")
+    assert loader.call_count == int(with_hf_config)
+
+
+@pytest.mark.parametrize("native_tokenizer", [False, True])
+def test_custom_tokenizer_fallback_preserves_native_checkpoints(tmp_path, single_gpu_dims, native_tokenizer):
+    from miles.backends.torchtitan_utils.components import TransformersTokenizer
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    hf = _checkpoint_dir(tmp_path, tie_word_embeddings=False)
+    if native_tokenizer:
+        (tmp_path / "tokenizer.json").write_text("{}")
+    config = build_trainer_config(_config_args(), hf_assets_path=hf, lr_total_steps=1, dump_subdir="x")
+    assert isinstance(config.tokenizer, TransformersTokenizer.Config) == (not native_tokenizer)
