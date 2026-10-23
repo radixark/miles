@@ -2,14 +2,12 @@
 
 from argparse import Namespace
 from collections.abc import Sequence
+from contextlib import nullcontext
 
+from megatron.bridge.peft.utils import allreduce_expert_parallel_replicated_grads
 from megatron.core.distributed import DistributedDataParallel as DDP
 
-from miles.backends.megatron_utils.lora.optimizer import (
-    SlotOptimizer,
-    reset_grad_metadata_keep_grads,
-    step_slot_optimizers,
-)
+from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, accumulate_gradients, step_slot_optimizers
 from miles.backends.megatron_utils.model import run_forward_backward_pass, setup_train_iteration_config
 from miles.backends.training_utils.data.rollout import get_data_iterator
 from miles.backends.training_utils.metrics.log_utils import aggregate_train_losses
@@ -35,19 +33,20 @@ def run_forward_backward(
         model_chunk.train()
     # disable_optimizer: bf16 loss scaling is the identity, so the pass needs no optimizer
     setup_train_iteration_config(args, model, None, disable_optimizer=True)
-    if not forward_only:
-        reset_grad_metadata_keep_grads(model)
 
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=batch_id)
-    losses_reduced = run_forward_backward_pass(
-        args,
-        dumper_phase_util,
-        data_iterator,
-        model,
-        num_microbatches[0],
-        num_rollouts=None,
-        forward_only=forward_only,
-    )
+    with nullcontext() if forward_only else accumulate_gradients(model):
+        losses_reduced = run_forward_backward_pass(
+            args,
+            dumper_phase_util,
+            data_iterator,
+            model,
+            num_microbatches[0],
+            num_rollouts=None,
+            forward_only=forward_only,
+        )
+        if not forward_only:
+            allreduce_expert_parallel_replicated_grads(list(model))
     per_datum_outputs = [output for microbatch in losses_reduced for output in microbatch["per_datum"]]
     dumper_phase_util.finalize(model)
 
