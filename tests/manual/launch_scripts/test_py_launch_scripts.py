@@ -86,7 +86,6 @@ _HARDWARE_A_RECORDING_REPRESENTS = {
 }
 
 _ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS = {
-    ("scripts/run_deepseek_v4.py", "prepare_mxfp8"),
     ("scripts/run_deepseek_v4.py", "prepare_fp8"),
 }
 

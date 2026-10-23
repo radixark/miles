@@ -19,10 +19,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     assert fmt == "e4m3", f"Unsupported FP8 format: {fmt}"
     assert quantization_config["activation_scheme"] == "dynamic"
     weight_block_size = quantization_config.get("weight_block_size", None)
-    ignored_layers = []
-    for name in quantization_config.get("ignored_layers", quantization_config.get("modules_to_not_convert", [])) or []:
-        name = name.removeprefix("model.")
-        ignored_layers.extend((name, f"model.{name}"))
+    ignored_layers = _ignored_layers(quantization_config)
     packed_modules_mapping = quantization_config.get("packed_modules_mapping") or {}
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
@@ -124,15 +121,34 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     return converted_named_params
 
 
-def _quantize_param(args, name, weight, weight_block_size, ignored_layers, packed_modules_mapping):
-    assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
+def is_kept_in_high_precision(name: str, quantization_config: dict) -> bool:
+    """Whether the rollout checkpoint's exclusions keep this HF weight unquantized."""
+    ignored_layers = _ignored_layers(quantization_config)
+    packed_modules_mapping = quantization_config.get("packed_modules_mapping") or {}
+    return bool(ignored_layers) and _is_ignored(name, ignored_layers, packed_modules_mapping)
+
+
+def _ignored_layers(quantization_config: dict) -> list[str]:
+    ignored_layers = []
+    for name in quantization_config.get("ignored_layers", quantization_config.get("modules_to_not_convert", [])) or []:
+        name = name.removeprefix("model.")
+        ignored_layers.extend((name, f"model.{name}"))
+    return ignored_layers
+
+
+def _is_ignored(name, ignored_layers, packed_modules_mapping) -> bool:
     prefix = name.removesuffix(".weight")
     if ".experts." in prefix:
         # SGLang chooses one precision for the entire FusedMoE module.
         prefix = prefix.split(".experts.", 1)[0] + ".experts"
+    return is_layer_skipped(prefix, ignored_layers, fused_mapping=packed_modules_mapping)
+
+
+def _quantize_param(args, name, weight, weight_block_size, ignored_layers, packed_modules_mapping):
+    assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
     # Honor the checkpoint's exclusions: rollout layers kept at their original
     # precision must receive unquantized weights, without FP8 scales.
-    if ignored_layers and is_layer_skipped(prefix, ignored_layers, fused_mapping=packed_modules_mapping):
+    if ignored_layers and _is_ignored(name, ignored_layers, packed_modules_mapping):
         return [(name, weight)]
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max

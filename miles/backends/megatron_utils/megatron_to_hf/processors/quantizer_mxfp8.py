@@ -44,15 +44,7 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
             "linear_fc1",
             "linear_fc2",
         ]:
-            quantize_named_params = []
-            for converted_name, param in converted_named_params:
-                # skip bf16 weight_scale and input_scale
-                # TODO: find a clearer way.
-                if converted_name.endswith("_scale"):
-                    continue
-                quantize_named_params.extend(_quantize_param(converted_name, param))
-
-            return quantize_named_params
+            return quantize_routed_expert_params_mxfp8(converted_named_params)
 
     # shared expert
     shared_expert_pattern = r"mlp.shared_experts\.(.+)"
@@ -105,6 +97,16 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
 
     # for other parameters, we just return the original converted_named_params
     return converted_named_params
+
+
+def quantize_routed_expert_params_mxfp8(converted_named_params):
+    """Quantize routed-expert weights to MXFP8, dropping the BF16 weight and input scales."""
+    quantize_named_params = []
+    for converted_name, param in converted_named_params:
+        if converted_name.endswith("_scale"):
+            continue
+        quantize_named_params.extend(_quantize_param(converted_name, param))
+    return quantize_named_params
 
 
 def _quantize_param(name, weight):
