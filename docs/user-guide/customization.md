@@ -107,6 +107,77 @@ class CustomDataSource(DataSource):
 
 **Default:** `miles.rollout.data_source.RolloutDataSource`.
 
+### Training dataset mixing
+
+Use `--rollout-data-config mix.yaml --num-rollout 100` to train from several
+datasets without merging their files. This selects
+`miles.rollout.mixed_data_source.MixedRolloutDataSource` automatically:
+
+```yaml
+datasets:
+  math:
+    path: /data/math.jsonl
+    samples_per_step: 3
+    max_prompt_len: 4096
+  science:
+    path: /data/science.parquet
+    samples_per_step: 5
+    input_key: question
+    label_key: answer
+```
+
+`datasets` accepts a mapping keyed by name or a list whose entries include `name`.
+Names must be unique. Each entry needs `path` and a positive integer
+`samples_per_step`. The latter is a **weight**, not an exact count: a request for
+eight prompts with the weights above draws three math and five science prompts.
+Smaller or non-divisible requests carry their allocation remainder into later
+requests, without floating-point rounding drift. The selected prompts are shuffled
+together before each is copied `--n-samples-per-prompt` times, so each GRPO group
+still contains responses to one prompt.
+
+Ratios apply to **prompts drawn**, including additional oversampling requests.
+Dynamic filtering, retries and asynchronous completion can change the proportions
+in the final accepted training batch. The mixer does not refill a filtered group
+from its original dataset to enforce accepted-batch quotas.
+
+Each dataset has an independent cursor and epoch. `--rollout-shuffle` controls
+per-dataset epoch shuffling; the mixed prompt order is always shuffled with the
+rollout seed. Requests can wrap a small dataset multiple times. A dataset with no
+prompts after filtering fails at startup. Every sample carries its source name in
+`metadata.dataset_name`; the configured name overrides a conflicting row value.
+
+Dataset loading uses the existing `--input-key`, `--label-key`, `--tool-key` and
+`--metadata-key` defaults. Override those fields with `input_key`, `label_key`,
+`tool_key` and `metadata_key` in an entry, or in an optional top-level `defaults`
+mapping. `max_prompt_len` also supports a default; it can only shorten the global
+`--rollout-max-prompt-len` bound. An omitted or null limit uses the global bound.
+Chat templating and multimodal options remain global. Structured conversation
+prompts require `--apply-chat-template` when a prompt limit is set; the mixer
+rejects a limit that the loader cannot enforce. Relative paths are resolved from
+the working directory, like `--prompt-data`, and existing row-slice paths are supported.
+
+An optional `sha256` field pins the bytes of each dataset file. A mismatch stops
+startup and reports both hashes. Without a pin, startup logs a warning containing
+the computed digest to paste into the config. For a sliced path, the digest covers
+the entire underlying file. Directory datasets are not supported.
+
+Rollout checkpoints save every dataset's cursor and epoch, allocation remainder,
+mixing RNG state, data hashes and global sample/group counters. Resume restores the
+exact next prompt draws and rejects changed data or sampling/preprocessing
+configuration, even when the original config had no checksum pins. Adding a pin
+that matches the same file does not invalidate a checkpoint. This guarantees
+source continuation, not deterministic inference or async completion order.
+
+This mode cannot be combined with `--prompt-data`,
+`--disable-rollout-global-dataset`, `--partial-rollout`, or a different custom
+`--data-source-path`. Set `--num-rollout` explicitly: independently advancing
+datasets do not define a single epoch from which to infer the run length.
+
+The initial schema covers dataset loading and mixing. Per-dataset response limits,
+generation functions and agent settings are not yet accepted; unknown settings
+fail instead of being silently ignored. Rows continue to select existing graders
+through `metadata.rm_type`.
+
 ### `--eval-function-path`
 
 Same signature as `--rollout-function-path`. Defaults to whatever rollout function is

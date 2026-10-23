@@ -49,17 +49,7 @@ class RolloutDataSource(DataSource):
         self.metadata = {}
 
         if args.rollout_global_dataset:
-            tokenizer = load_tokenizer(
-                args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
-            )
-            processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
-
-            # TODO move (during the refactor)
-            if (d := args.dump_details) is not None:
-                tokenizer.save_pretrained(Path(d) / "tokenizer")
-                # Bespoke processors (e.g. Inkling's) are not ProcessorMixin and cannot serialise.
-                if hasattr(processor, "save_pretrained"):
-                    processor.save_pretrained(Path(d) / "processor")
+            tokenizer, processor = load_rollout_processing(args)
 
             self.dataset = Dataset(
                 args.prompt_data,
@@ -97,17 +87,14 @@ class RolloutDataSource(DataSource):
         else:
             prompt_samples = [Sample() for _ in range(num_samples)]
 
-        samples = []
-        for prompt_sample in prompt_samples:
-            group = []
-            for _ in range(self.args.n_samples_per_prompt):
-                sample = copy.deepcopy(prompt_sample)
-                sample.group_index = self.sample_group_index
-                sample.index = self.sample_index
-                self.sample_index += 1
-                group.append(sample)
-            self.sample_group_index += 1
-            samples.append(group)
+        samples = create_sample_groups(
+            prompt_samples,
+            n_samples_per_prompt=self.args.n_samples_per_prompt,
+            start_group_index=self.sample_group_index,
+            start_sample_index=self.sample_index,
+        )
+        self.sample_group_index += len(samples)
+        self.sample_index += len(samples) * self.args.n_samples_per_prompt
         return samples
 
     def save(self, directory: Path) -> None:
@@ -197,6 +184,33 @@ class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):
 
     def load(self, directory: Path) -> None:
         raise NotImplementedError("LegacyRolloutDataSourceWithBuffer does not support checkpoint loading")
+
+
+def load_rollout_processing(args):
+    tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True)
+    processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+    if (directory := args.dump_details) is not None:
+        tokenizer.save_pretrained(Path(directory) / "tokenizer")
+        # Bespoke processors (e.g. Inkling's) are not ProcessorMixin and cannot serialise.
+        if hasattr(processor, "save_pretrained"):
+            processor.save_pretrained(Path(directory) / "processor")
+    return tokenizer, processor
+
+
+def create_sample_groups(
+    prompt_samples: list[Sample], *, n_samples_per_prompt: int, start_group_index: int, start_sample_index: int
+) -> list[list[Sample]]:
+    """Copy prompts into isolated GRPO groups, with identities owned by the calling source."""
+    groups = []
+    for group_offset, prompt_sample in enumerate(prompt_samples):
+        group = []
+        for sample_offset in range(n_samples_per_prompt):
+            sample = copy.deepcopy(prompt_sample)
+            sample.group_index = start_group_index + group_offset
+            sample.index = start_sample_index + group_offset * n_samples_per_prompt + sample_offset
+            group.append(sample)
+        groups.append(group)
+    return groups
 
 
 def pop_first(args, rollout_id, buffer: list[list[Sample]], num_samples: int) -> list[list[Sample]]:

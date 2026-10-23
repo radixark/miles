@@ -43,6 +43,11 @@ from miles.utils.object_store_config import (
     compute_mooncake_init_kwargs_from_env,
     compute_mooncake_init_kwargs_vanilla,
 )
+from miles.utils.rollout_data_config import (
+    DEFAULT_DATA_SOURCE_PATH,
+    MIXED_DATA_SOURCE_PATH,
+    build_rollout_dataset_configs,
+)
 from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_args
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.score_centering import validate_score_centering_args
@@ -1320,8 +1325,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--data-source-path",
                 type=str,
-                default="miles.rollout.data_source.RolloutDataSource",
+                default=DEFAULT_DATA_SOURCE_PATH,
                 help="The data source class for rollout data.",
+            )
+            parser.add_argument(
+                "--rollout-data-config",
+                type=str,
+                default=None,
+                help="Training dataset mixing YAML file, or inline base64 payload. Mutually exclusive with --prompt-data; requires --num-rollout.",
             )
             parser.add_argument(
                 "--prompt-data",
@@ -3720,7 +3731,6 @@ def miles_validate_args(args):
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     validate_lora_args(args)
-    _resolve_data_source_path(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
@@ -4205,6 +4215,9 @@ def miles_validate_args(args):
             args.rollout_max_prompt_len <= args.rollout_max_context_len - 1
         ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.rollout_max_context_len ({args.rollout_max_context_len}) so that there is at least one generated token to compute loss."
 
+    # Dataset limits resolve against the final launch-wide prompt bound.
+    _resolve_data_source_path(args)
+
     assert not (
         args.prefill_num_servers is not None and args.rollout_external
     ), "prefill_num_servers cannot be set with external rollout engines; use --rollout-external-router-pd."
@@ -4425,6 +4438,23 @@ def hf_validate_args(args, hf_config):
 
 
 def _resolve_data_source_path(args: argparse.Namespace) -> None:
-    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
+    if getattr(args, "rollout_data_config", None) is not None:
+        if args.prompt_data is not None:
+            raise ValueError("--rollout-data-config cannot be combined with --prompt-data")
+        if not args.rollout_global_dataset:
+            raise ValueError("--rollout-data-config requires the global rollout dataset")
+        if args.num_rollout is None:
+            raise ValueError(
+                "--rollout-data-config requires explicit --num-rollout; mixed datasets have independent epochs"
+            )
+        if args.partial_rollout:
+            raise ValueError("--rollout-data-config does not support --partial-rollout")
+        if args.data_source_path not in (DEFAULT_DATA_SOURCE_PATH, MIXED_DATA_SOURCE_PATH):
+            raise ValueError("--rollout-data-config cannot be combined with a custom --data-source-path")
+        args.rollout_datasets = build_rollout_dataset_configs(args)
+        args.data_source_path = MIXED_DATA_SOURCE_PATH
+    elif args.data_source_path == MIXED_DATA_SOURCE_PATH:
+        raise ValueError("MixedRolloutDataSource requires --rollout-data-config")
+    if args.partial_rollout and args.data_source_path == DEFAULT_DATA_SOURCE_PATH:
         args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
         logger.info("Partial rollout uses the legacy buffered data source by default")
