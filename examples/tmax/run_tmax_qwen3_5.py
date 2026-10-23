@@ -90,6 +90,10 @@ Distill allenai/tmax-4b into Qwen3.5-4B (pass the same --model-name / --opd-teac
   python examples/tmax/run_tmax_qwen3_5.py execute --num-gpus-per-node 4 \\
       --model-name Qwen3.5-4B-tmax-template --opd-teacher tmax-4b
 
+Pure-distill allenai/tmax-2b into its base, as open-instruct's terminal OPD runs do:
+
+  python examples/tmax/run_tmax_qwen3_5.py execute examples/tmax/configs/smoke_opd_2b.yaml
+
 Smoke test on four 80GB+ GPUs:
 
   python examples/tmax/run_tmax_qwen3_5.py execute --num-gpus-per-node 4 \\

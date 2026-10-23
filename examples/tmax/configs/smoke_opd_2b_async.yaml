@@ -1,0 +1,43 @@
+# 4-GPU smoke test (pure OPD, fully async: 2 training + 2 rollout GPUs): distill allenai/tmax-2b into its base,
+# hamishivi/Qwen3.5-2B, the way open-instruct's terminal OPD runs do (--opd_pure, --opd_kl_coef 1.0;
+# scripts/general_agent/terminal/rl/opd/ on branch opd), with sandboxes on the podman fleet: 3 steps of 4 prompts x 4
+# samples on a 64-prompt subset, 16k per episode.
+# Pure OPD learns from every group, so the zero-variance filter is off (open-instruct: --filter_zero_std_samples false).
+exp_name: tmax_smoke_opd_2b_async
+model_name: Qwen3.5-2B-tmax-template
+opd_teacher: tmax-2b
+opd_pure: true
+async_rollout_gpus: 2
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_gpus_per_node: 4
+num_prompts: 64
+rollout_batch_size: 4
+n_samples_per_prompt: 4
+num_rollout: 3
+max_seq_len: 16384
+tensor_model_parallel_size: 1
+optimizer_cpu_offload: false
+sglang_mem_fraction_static: 0.6
+filter_zero_std: false
+save_interval: 1000
+episode_timeout_s: 3600
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/nora-default/shashankg/miles_tmax_v2/output
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+
+beaker:
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  preemptible: true                           # no min_runtime: runs on unallocated capacity
+  retries: 0
+  gpus: 4
+  shared_memory: 256GiB
+  image: docker.io/radixark/miles:dev-202610151741
+  # The fleet's head registry: the head starts a gateway from it (weka bucket oe-adapt-default is mounted). The fleet
+  # literegistry's owners started for us on 2026-10-21, not the one the gateway prod run uses.
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-private-reasoning-20261017.sqlite3
+  dockerhub_username: shashankg209
