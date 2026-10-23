@@ -1,7 +1,7 @@
 import os
 
 from examples.lora.run_lora_native import ScriptArgs, _prepare, _train
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 # Native (raw-mode) LoRA on GLM-4.7-Flash: the MLA registry's reference model —
 # replicated q_a/kv_a down-projections plus column-parallel up-projections
@@ -12,6 +12,7 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(
     est_time=700, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts", "lora"], hardware=["hopper"]
 )
+register_rocm_ci(est_time=1000, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
 
 def _args() -> ScriptArgs:
