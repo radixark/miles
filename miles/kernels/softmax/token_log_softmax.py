@@ -40,6 +40,10 @@ _MEASURED_CONFIGS = {
 # an unmeasured family (e.g. ROCm) runs the B200 shape; every shape gives the same results
 _FALLBACK_CONFIGS = _MEASURED_CONFIGS["sm100"]
 
+# a masked (-inf) logit is read as this: exp of it is exactly 0 in fp32, and 0 times it is 0, never NaN;
+# the clamps propagate NaN, so a diverged forward still yields NaN log-probs, as log_softmax does
+_MASKED_LOGIT = tl.constexpr(-1.0e30)
+
 
 def gpu_family(device: torch.device) -> str:
     """``sm<major><minor>`` on NVIDIA (sm90, sm100, sm103), the gfx architecture on ROCm."""
@@ -60,6 +64,11 @@ class VocabRange:
 
     start: int
     n_unpadded: int
+    size: int  # the whole true vocabulary, over every shard
+
+    def holds(self, ids: torch.Tensor) -> torch.Tensor:
+        """Which token ids are real columns of this shard."""
+        return (ids >= self.start) & (ids < self.start + self.n_unpadded)
 
 
 class ShardStats(NamedTuple):
@@ -122,7 +131,11 @@ def _row_stats_kernel(
     for start in range(0, n_unpadded_cols, BLOCK_V):
         cols = start + lanes
         in_vocab = cols < n_unpadded_cols
-        x = tl.load(row_ptr + cols, mask=in_vocab, other=float("-inf")).to(tl.float32)
+        x = tl.maximum(
+            tl.load(row_ptr + cols, mask=in_vocab, other=_MASKED_LOGIT).to(tl.float32),
+            _MASKED_LOGIT,
+            propagate_nan=tl.PropagateNan.ALL,
+        )
         new_max = tl.maximum(run_max, tl.max(x, axis=0))
         e = tl.exp2((x - new_max) * log2_scale)
         rescale = tl.exp2((run_max - new_max) * log2_scale)
@@ -148,7 +161,11 @@ def _row_stats_kernel(
 
     target = tl.load(targets_ptr + pid) - vocab_start
     in_shard = (target >= 0) & (target < n_unpadded_cols)
-    target_x = tl.load(row_ptr + target, mask=in_shard, other=0.0).to(tl.float32)
+    target_x = tl.maximum(
+        tl.load(row_ptr + target, mask=in_shard, other=0.0).to(tl.float32),
+        _MASKED_LOGIT,
+        propagate_nan=tl.PropagateNan.ALL,
+    )
     tl.store(target_logit_ptr + pid, tl.where(in_shard, (target_x - run_max) * inv_temperature, 0.0))
 
 
@@ -180,7 +197,11 @@ def _logits_grad_kernel(
     cols = pid_block * BLOCK_V + tl.arange(0, BLOCK_V)
     in_vocab = cols < n_vocab
 
-    x = tl.load(logits_ptr + row * stride_row + cols, mask=in_vocab, other=0.0).to(tl.float32)
+    x = tl.maximum(
+        tl.load(logits_ptr + row * stride_row + cols, mask=in_vocab, other=0.0).to(tl.float32),
+        _MASKED_LOGIT,
+        propagate_nan=tl.PropagateNan.ALL,
+    )
     d = (x - tl.load(logit_max_ptr + pid_row)) * inv_temperature
     p = tl.exp2((d - tl.load(log_sum_exp_ptr + pid_row)) * 1.4426950408889634)
     p = tl.where(cols < n_unpadded_cols, p, 0.0)  # padding columns: zero probability, so a zero gradient
@@ -298,7 +319,7 @@ def zero_unscored_rows(grad: torch.Tensor, rows: torch.Tensor, *, launch: Launch
     launch = launch or kernel_configs(grad.device).zero
     n_rows = grad.size(0)
     scored = torch.zeros(n_rows, dtype=torch.uint8, device=grad.device)
-    scored[rows] = 1
+    scored.index_fill_(0, rows, 1)  # a scalar fill: indexed assignment would copy the 1 from the host
     _zero_unscored_rows_kernel[(n_rows,)](
         grad, scored, grad.stride(0), grad.size(1), BLOCK_V=launch.block_v, num_warps=launch.num_warps
     )

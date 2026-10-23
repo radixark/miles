@@ -49,7 +49,7 @@ def test_every_launch_shape_matches_log_softmax(launch, n_unpadded_cols):
     gradient over the true vocabulary, write every element of the gradient, and zero the padding."""
     logits, rows, targets = _inputs(64, _VOCAB, n_unpadded_cols, seed=15)
     ref_log_probs, ref_entropy = _reference(logits, rows, targets, n_unpadded_cols)
-    vocab = VocabRange(start=0, n_unpadded=n_unpadded_cols)
+    vocab = VocabRange(start=0, n_unpadded=n_unpadded_cols, size=n_unpadded_cols)
     stats = row_statistics(
         logits, rows, targets, vocab=vocab, temperature=_TEMPERATURE, with_entropy=True, launch=launch
     ).as_softmax_stats()
@@ -85,7 +85,12 @@ def test_an_all_padding_shard_reports_no_mass():
     -inf, and no target, so that combining it with the other shards adds nothing."""
     logits, rows, targets = _inputs(16, 1024, 1024, seed=19)
     shard = row_statistics(
-        logits, rows, targets, vocab=VocabRange(start=0, n_unpadded=0), temperature=_TEMPERATURE, with_entropy=True
+        logits,
+        rows,
+        targets,
+        vocab=VocabRange(start=0, n_unpadded=0, size=0),
+        temperature=_TEMPERATURE,
+        with_entropy=True,
     )
     assert (shard.logit_max == float("-inf")).all()
     assert (shard.sum_exp == 0).all() and (shard.sum_exp_logit == 0).all() and (shard.target_logit == 0).all()

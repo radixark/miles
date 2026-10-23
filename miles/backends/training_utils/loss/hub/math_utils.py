@@ -959,11 +959,21 @@ def chunked_gae(
     return advantages, returns
 
 
+def true_vocab_size(vocab_size: int | None, shard_width: int, tp_size: int) -> int:
+    """Megatron's ``--vocab-size``, or, unset, every column of the TP-sharded logits."""
+    return vocab_size if vocab_size is not None else shard_width * tp_size
+
+
+def scaling_temperature(sampling_temperature: float) -> float:
+    """The temperature the logits are divided by: the sampling one, or 1 for greedy sampling (0)."""
+    return float(sampling_temperature) if sampling_temperature > 0 else 1.0
+
+
 def _upcast_chunk_to_fp32(logits_chunk: torch.Tensor, temperature: float) -> torch.Tensor:
     # copy=True: the TP cross-entropy mutates its input. Scaling after the upcast
     # keeps the division in fp32 when the caller hands model-precision logits.
     chunk = logits_chunk.to(torch.float32, copy=True)
-    if temperature > 0 and temperature != 1.0:
+    if temperature != 1.0:
         chunk.div_(temperature)
     return chunk
 

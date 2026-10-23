@@ -3371,6 +3371,11 @@ def validate_log_probs_backend_args(args) -> None:
             f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
             "use --log-probs-backend torch."
         )
+    if args.debug_unified_grad_fused_logprob:
+        raise ValueError(
+            "--debug-unified-grad-fused-logprob applies to --log-probs-backend torch only; the fused backend's "
+            "no-grad log-probs already equal its training forward's bit for bit, so drop the flag."
+        )
     # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
     if args.train_backend == "megatron" and args.vocab_size is None:
         raise ValueError(

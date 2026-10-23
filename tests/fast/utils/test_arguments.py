@@ -1168,8 +1168,9 @@ def test_sampling_support_arguments_fail_closed(extra, message):
         (["--true-on-policy-mode"], 151_936, "does not support --true-on-policy-mode"),
         (["--rollout-top-k", "32"], 151_936, "does not support sampling-support replay"),
         ([], None, "needs --vocab-size"),
+        (["--debug-unified-grad-fused-logprob"], 151_936, "applies to --log-probs-backend torch only"),
     ],
-    ids=["true_on_policy", "sampling_support_replay", "no_vocab_size"],
+    ids=["true_on_policy", "sampling_support_replay", "no_vocab_size", "debug_unified_grad"],
 )
 def test_fused_log_probs_backend_rejects_what_it_does_not_cover(extra, vocab_size, message):
     parser = argparse.ArgumentParser()
