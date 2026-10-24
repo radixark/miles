@@ -8,6 +8,7 @@ import torch.distributed as dist
 
 from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.training_utils.metrics import train_dump
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
@@ -48,6 +49,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
+        assert isinstance(args.backend, FsdpArgsNamespace)
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
