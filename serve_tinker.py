@@ -35,10 +35,10 @@ async def serve(args, *, disposer: Disposer):
         # The trainer pads each packed microbatch to this multiple.
         pad_size = args.tensor_model_parallel_size * args.data_pad_size_multiplier
         local_token_limit = args.max_tokens_per_gpu // pad_size * pad_size
-        if args.context_parallel_size > 1:
+        if args.raw_megatron.base_args["context_parallel_size"] > 1:
             # each rank holds two equal zigzag chunks per datum
             local_token_limit -= local_token_limit % 2
-        trainer_token_limit = local_token_limit * args.context_parallel_size
+        trainer_token_limit = local_token_limit * args.raw_megatron.base_args["context_parallel_size"]
         max_tokens_per_datum = min(max_tokens_per_datum, trainer_token_limit)
     assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
     _worker_manager = init_orchestration_script(args, disposer=disposer)
