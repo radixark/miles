@@ -369,6 +369,54 @@ class TestTick:
 
         assert cell_env["memory_calls"] == [("release", dict(tags=None)), ("resume", dict(tags=["weights"]))]
 
+    async def test_a_tick_cut_off_mid_release_does_not_probe_the_half_released_engine(self, cell_env, monkeypatch):
+        """A probe generates on the engine, and a generate on unmapped KV pools kills its schedulers."""
+        released = asyncio.Event()
+        probes = {"count": 0}
+
+        async def _slow_release(self, tags=None):
+            _RecordingApiClient.calls.append(("release", dict(tags=tags)))
+            await released.wait()
+
+        async def _counting_probe(server_url: str, api_key, timeout: float = 5.0) -> bool:
+            probes["count"] += 1
+            return True
+
+        monkeypatch.setattr(_RecordingApiClient, "release_memory_occupation", _slow_release)
+        monkeypatch.setattr(server_cell_module, "probe_server_healthy", _counting_probe)
+        cell = _make_cell(needs_offload=True)
+        await cell.init()
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(cell.tick(), timeout=0.05)
+        released.set()
+        await cell.tick()
+
+        assert probes["count"] == 1
+        assert cell_env["memory_calls"] == [("release", dict(tags=None)), ("resume", dict(tags=["weights"]))]
+        assert isinstance(cell._state, StatePendingWeights)
+
+    async def test_a_cell_disposed_mid_release_sends_its_engine_nothing_more(self, cell_env, monkeypatch):
+        """Fault handling disposes a cell whose engine may already be gone or replaced."""
+        released = asyncio.Event()
+
+        async def _slow_release(self, tags=None):
+            _RecordingApiClient.calls.append(("release", dict(tags=tags)))
+            await released.wait()
+
+        monkeypatch.setattr(_RecordingApiClient, "release_memory_occupation", _slow_release)
+        cell = _make_cell(needs_offload=True)
+        await cell.init()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(cell.tick(), timeout=0.05)
+        release = cell._post_launch_release
+
+        await cell.dispose()
+        released.set()
+        await asyncio.gather(release, return_exceptions=True)
+
+        assert cell_env["memory_calls"] == [("release", dict(tags=None))]
+
     async def test_the_weight_checker_snapshots_before_the_memory_is_handed_back(self, cell_env):
         """Releasing the occupation discards the loaded weights, so a later snapshot records garbage."""
         cell = _make_cell(needs_offload=True, args_overrides=dict(check_weight_update_equal=True))
