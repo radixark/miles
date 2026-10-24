@@ -13,7 +13,7 @@ Miles gateway or the hosted Tinker service.
 
 - A Tinker endpoint: the Miles gateway from [Multi-LoRA Tinker Gateway](../README.md) (port
   `10613`), or the hosted Tinker service.
-- Python 3.11 or newer, with the client package installed. The package pins `tinker==0.26.2` and
+- Python 3.12 or newer, with the client package installed. The package pins `tinker==0.26.2` and
   `tinker-cookbook`:
 
   ```bash
@@ -99,6 +99,9 @@ Run it against the gateway:
 ```bash
 python agent_rl.py --base-url http://<gateway-host>:10613 --base-model /root/models/Qwen3-30B-A3B
 ```
+
+The [Harbor recipe](../harbor_tinker/README.md) applies this workflow to Harbor tasks in sandboxes,
+trained with the cookbook's RL loop.
 
 ## Workflow
 
