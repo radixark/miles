@@ -264,3 +264,26 @@ jobs:
         env:
           MILES_SNAPSHOT_RECORD_DIR: ${{ github.workspace }}/snapshot-records
         run: ${{ inputs.execute_command }}
+
+      - name: Name the snapshot record artifact
+        if: always()
+        id: snapshot-record-name
+        shell: bash
+        env:
+          EXECUTE_COMMAND: ${{ inputs.execute_command }}
+        run: |
+          suite=$(echo "$EXECUTE_COMMAND" | grep -oP -- '--suite\s+\K\S+' || true)
+          partition=$(echo "$EXECUTE_COMMAND" | grep -oP -- '--auto-partition-id\s+\K\S+' || true)
+          digest=$(echo -n "$EXECUTE_COMMAND" | sha1sum | cut -c1-8)
+          echo "name=snapshot-records-${suite:-command}${partition:+-p$partition}-$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Upload snapshot records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.snapshot-record-name.outputs.name }}
+          path: ${{ github.workspace }}/snapshot-records
+          if-no-files-found: ignore
+          compression-level: 9
+          overwrite: true
+          retention-days: 14
