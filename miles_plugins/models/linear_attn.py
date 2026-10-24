@@ -37,6 +37,8 @@ from megatron.core.transformer.utils import ensure_metadata_has_dp_cp_group, mak
 
 from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads
+from miles.kernels.conv.causal_conv1d_bwd import TILE_ROWS, WIDTH, causal_conv1d_bwd
+from miles.kernels.conv.causal_conv1d_bwd import is_available as conv_bwd_kernel_available
 from miles_plugins.models.cp_utils import build_fla_cp_context, packed_shard_to_zigzag, zigzag_to_packed_shard
 
 try:
@@ -51,6 +53,9 @@ WEIGHT_LAYOUT_VERSION = 1
 INT32_ELEMENTS = 2**31 - 1
 _CHUNK_ELEMENTS = 2**30
 _CHANNEL_ALIGN = 128
+# The sequence-aligned backward beats causal-conv1d's at every size measured on H200 and B200, 1M to 192M tokens x
+# channels (fwd+bwd 4 us to 0.35 ms faster). Smaller inputs are unmeasured, so they keep fla's path.
+_SEQTILE_MIN_ELEMENTS = 2**20
 _ROW_STRIDE_ALIGN = 8
 
 
@@ -138,18 +143,85 @@ def kda_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bo
 
 @functools.cache
 def short_conv_backend() -> str:
-    """fla's "mix" (Triton forward, causal-conv1d CUDA backward) when causal-conv1d's backward imports,
-    Triton otherwise; ``FLA_CONV_BACKEND`` overrides, as it does for fla's own ShortConvolution."""
+    """Backend "miles" (fla's Triton forward, the sequence-aligned CUDA backward of ``miles.kernels.conv``) when
+    its extension imports, else :func:`_fla_short_conv_backend`; ``FLA_CONV_BACKEND`` overrides with an fla
+    backend, as it does for fla's own ShortConvolution."""
     backend = os.environ.get("FLA_CONV_BACKEND")
     if backend is None:
-        try:
-            from causal_conv1d.cpp_functions import causal_conv1d_bwd_function  # noqa: F401
-
-            backend = "mix"
-        except ImportError:
-            backend = "triton"
+        backend = "miles" if conv_bwd_kernel_available() else _fla_short_conv_backend()
     logger.info(f"Linear-attention short conv backend: {backend}")
     return backend
+
+
+@functools.cache
+def _fla_short_conv_backend() -> str:
+    """fla's "mix" (Triton forward, causal-conv1d CUDA backward) when causal-conv1d's backward imports,
+    Triton otherwise. Also where "miles" falls back (:func:`_seqtile_applies`)."""
+    try:
+        from causal_conv1d.cpp_functions import causal_conv1d_bwd_function  # noqa: F401
+
+        return "mix"
+    except ImportError:
+        return "triton"
+
+
+def _vector_aligned(t: torch.Tensor) -> bool:
+    """Channel-contiguous rows that start on 16 bytes (bf16), as the CUDA kernel loads them."""
+    return t.stride(-1) == 1 and t.stride(1) % 8 == 0 and t.storage_offset() % 8 == 0
+
+
+def _seqtile_applies(x, weight, activation, cu_seqlens, cp_context) -> bool:
+    """Whether "miles" runs its sequence-aligned backward: inside the kernel's contract (one packed bf16 row,
+    SiLU, width 4, int32 boundaries, aligned rows) and where it beats causal-conv1d's: sequences averaging at
+    least half a tile (shorter ones leave most rows of their tiles empty) and at least ``_SEQTILE_MIN_ELEMENTS``.
+    Shapes and strides only, so no device sync."""
+    return (
+        cp_context is None
+        and cu_seqlens is not None
+        and cu_seqlens.dtype == torch.int32
+        and activation == "silu"
+        and x.dim() == 3
+        and x.shape[0] == 1
+        and x.dtype == torch.bfloat16
+        and x.shape[-1] % 8 == 0
+        and _vector_aligned(x)
+        and weight.shape[-1] == WIDTH
+        and weight.dtype in (torch.float32, torch.bfloat16)
+        and 2 * x.shape[1] >= TILE_ROWS * (cu_seqlens.numel() - 1)
+        and x.shape[1] * x.shape[-1] >= _SEQTILE_MIN_ELEMENTS
+    )
+
+
+class _SeqTileShortConv(torch.autograd.Function):
+    """``silu(causal_conv1d(x, weight))`` per packed sequence: fla's Triton forward, the sequence-aligned CUDA
+    backward of ``miles.kernels.conv``. Both tile by fla's 64-row ``chunk_indices``, cached per ``cu_seqlens``.
+    ``cu_seqlens`` must end at the last row of ``x``: rows past it are in no tile, so their ``dx`` is left
+    unwritten (fla's "mix" path rejects such input instead)."""
+
+    @staticmethod
+    def forward(ctx, x, weight, cu_seqlens):
+        from fla.modules.conv.triton.ops import causal_conv1d_fwd
+        from fla.ops.utils import prepare_chunk_indices
+
+        chunk_indices = prepare_chunk_indices(cu_seqlens, TILE_ROWS)
+        y, _ = causal_conv1d_fwd(
+            x=x,
+            weight=weight,
+            bias=None,
+            residual=None,
+            activation="silu",
+            cu_seqlens=cu_seqlens,
+            chunk_indices=chunk_indices,
+        )
+        ctx.save_for_backward(x, weight, cu_seqlens, chunk_indices)
+        return y
+
+    @staticmethod
+    def backward(ctx, dy):
+        x, weight, cu_seqlens, chunk_indices = ctx.saved_tensors
+        dy = dy if _vector_aligned(dy) else dy.contiguous()
+        dx, dweight = causal_conv1d_bwd(x, weight, dy, cu_seqlens, chunk_indices)
+        return dx, dweight, None
 
 
 class _ContiguousGrad(torch.autograd.Function):
@@ -167,24 +239,33 @@ class _ContiguousGrad(torch.autograd.Function):
 
 
 def causal_short_conv(x, weight, activation, backend, cu_seqlens=None, cp_context=None):
-    """Depthwise causal conv of ``x`` ``[b, s, C]`` with ``weight`` ``[C, K]`` through fla. fla indexes with
-    int32, so inputs past 2**31 elements (long sequences at low TP) run as channel chunks of at most
-    2**30; the conv is per channel, so this is exact."""
+    """Depthwise causal conv of ``x`` ``[b, s, C]`` with ``weight`` ``[C, K]`` through fla, or for backend
+    "miles" through :class:`_SeqTileShortConv` where :func:`_seqtile_applies`. fla indexes with int32, so
+    inputs past 2**31 elements (long sequences at low TP) run as channel chunks of at most 2**30; the conv is
+    per channel, so this is exact."""
     from fla.modules.conv.causal_conv1d import causal_conv1d
 
+    def conv(x, weight):
+        if backend == "miles" and _seqtile_applies(
+            x=x, weight=weight, activation=activation, cu_seqlens=cu_seqlens, cp_context=cp_context
+        ):
+            return _SeqTileShortConv.apply(x, weight, cu_seqlens)
+        return causal_conv1d(
+            x=x,
+            weight=weight,
+            bias=None,
+            activation=activation,
+            backend=_fla_short_conv_backend() if backend == "miles" else backend,
+            cu_seqlens=cu_seqlens,
+            cp_context=cp_context,
+        )[0]
+
     tokens = x.shape[0] * x.shape[1]
-    kwargs = {
-        "bias": None,
-        "activation": activation,
-        "backend": backend,
-        "cu_seqlens": cu_seqlens,
-        "cp_context": cp_context,
-    }
     if tokens * x.shape[-1] <= INT32_ELEMENTS:
-        return causal_conv1d(x=x, weight=weight, **kwargs)[0]
+        return conv(x, weight)
     width = max(_CHANNEL_ALIGN, _CHUNK_ELEMENTS // tokens // _CHANNEL_ALIGN * _CHANNEL_ALIGN)
     chunks = [
-        _ContiguousGrad.apply(causal_conv1d(x=chunk.contiguous(), weight=chunk_weight, **kwargs)[0])
+        _ContiguousGrad.apply(conv(chunk.contiguous(), chunk_weight))
         for chunk, chunk_weight in zip(x.split(width, dim=-1), weight.split(width), strict=True)
     ]
     return torch.cat(chunks, dim=-1)
