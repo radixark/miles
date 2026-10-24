@@ -32,3 +32,22 @@ class TestTrainerOwnership:
         payload['backend']['backend_name'] = 'typo'
         with pytest.raises(ValueError, match='union_tag_invalid'):
             TrainerConfig.model_validate(payload)
+
+    def test_same_name_delegates_follow_backend_values_without_duplicating_storage(self) -> None:
+        """Shared consumers read their trainer's backend values rather than stale flat copies."""
+        backend = MegatronArgsNamespace(
+            global_batch_size=16,
+            micro_batch_size=3,
+            wandb_project="project",
+            tensor_model_parallel_size=2,
+            pipeline_model_parallel_size=4,
+            context_parallel_size=8,
+        )
+        trainer = TrainerConfig.model_construct(backend=backend)
+        assert trainer.global_batch_size == 16
+        assert trainer.micro_batch_size == 3
+        assert trainer.wandb_project == "project"
+        assert trainer.tensor_model_parallel_size == 2
+        assert trainer.pipeline_model_parallel_size == 4
+        assert trainer.context_parallel_size == 8
+        assert not set(vars(backend)).intersection(TrainerConfig.model_fields)
