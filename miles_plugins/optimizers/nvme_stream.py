@@ -47,6 +47,8 @@ from typing import TYPE_CHECKING, NamedTuple
 import torch
 from megatron.core.fp8_utils import is_float8tensor
 
+from miles.utils.mxfp4 import project_mxfp4
+
 if TYPE_CHECKING:
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
 
@@ -61,6 +63,7 @@ DTYPES = {
     "fp8e5m2": torch.float8_e5m2,
 }
 BUCKET_NUMEL_LIMIT = 200_000_000
+MXFP4_GROUP_SIZE = 32
 FP32_RESIDENT_WARN_MB = 256
 IO_ALIGN = 4096
 
@@ -69,6 +72,11 @@ class _Entry(NamedTuple):
     model_param: torch.nn.Parameter
     main_param: torch.Tensor
     group_index: int
+
+
+def _is_mxfp4_routed_expert(param: torch.nn.Parameter, group_size: int) -> bool:
+    """A routed-expert weight (expert-parallel, so not all-reduced) whose rows split into MXFP4 blocks."""
+    return getattr(param, "allreduce", True) is False and param.dim() == 2 and param.shape[-1] % group_size == 0
 
 
 def _align(nbytes: int) -> int:
@@ -272,9 +280,11 @@ class NVMeOptimizerStateStore:
         chunk_mb: int,
         moment_dtype: str = "fp32",
         allow_fresh_state: bool = False,
+        mxfp4_qat_group_size: int | None = None,
     ):
         self.dist_opt = distrib_optimizer
         self._allow_fresh_state = allow_fresh_state
+        self._mxfp4_qat_group_size = mxfp4_qat_group_size
         self.uid = NVMeOptimizerStateStore._next_uid
         NVMeOptimizerStateStore._next_uid += 1
         config = distrib_optimizer.config
@@ -323,6 +333,7 @@ class NVMeOptimizerStateStore:
         self.buckets = self._build_buckets()
         self._fp32_group_indices, self._fp32_adam = self._build_fp32_optimizer()
         self._assert_no_separate_grad_norm_group()
+        self._mxfp4_projected = self._select_mxfp4_projected()
 
         total_gb = sum(b.nbytes for b in self.buckets) / 1024**3
         logger.info(
@@ -391,6 +402,27 @@ class NVMeOptimizerStateStore:
             group["lr"] = master_groups[group_index]["lr"]
             group["weight_decay"] = master_groups[group_index]["weight_decay"]
 
+    def _select_mxfp4_projected(self) -> set[int]:
+        """ids of the model params whose updates are projected onto the MXFP4 grid (none without MXFP4 QAT)."""
+        if self._mxfp4_qat_group_size is None:
+            return set()
+        entries = [
+            e
+            for b in self.buckets
+            for e in b.entries
+            if _is_mxfp4_routed_expert(e.model_param, self._mxfp4_qat_group_size)
+        ]
+        # Blocks run along the last dim, so each projected param must sit whole in this rank's shard.
+        assert all(
+            e.main_param.nelement() == e.model_param.numel() for e in entries
+        ), "MXFP4 QAT needs each routed-expert param whole in one shard (expert data parallel size 1)"
+        logger.info(
+            f"MXFP4 QAT: {len(entries)} routed-expert params "
+            f"({sum(e.model_param.numel() for e in entries) / 1e9:.2f}B elements) are projected onto the MXFP4 "
+            "grid after every step"
+        )
+        return {id(e.model_param) for e in entries}
+
     # Adapted from DistributedOptimizer._copy_main_params_to_model_params, which walks every
     # group at once, at
     # https://github.com/radixark/Megatron-LM/blob/4716f75475c78e2fc2c6f0d3af095f1681b770b4/megatron/core/optimizer/distrib_optimizer.py#L2469-L2519
@@ -405,7 +437,14 @@ class NVMeOptimizerStateStore:
             assert world_range.size == entry.main_param.nelement()
             gbuf_index, _, bucket_id = dist_opt.model_param_gbuf_map[entry.model_param]
             param_data = dist_opt.buffers[gbuf_index].buckets[bucket_id].param_data
-            param_data.view(-1)[world_range.start : world_range.end].copy_(entry.main_param)
+            source = entry.main_param
+            if id(entry.model_param) in self._mxfp4_projected:
+                # QAT for an MXFP4 rollout engine: the trainer computes with the values the engine decodes,
+                # so a weight sync delivers them exactly, while the fp32 main keeps accumulating the updates
+                # that stay below one grid step. _select_mxfp4_projected checked that the whole param is here.
+                weight = entry.main_param.view(entry.model_param.shape).to(torch.bfloat16)
+                source = project_mxfp4(weight, self._mxfp4_qat_group_size).view(-1)
+            param_data.view(-1)[world_range.start : world_range.end].copy_(source)
 
     def _assert_no_separate_grad_norm_group(self) -> None:
         from megatron.core.optimizer.optimizer import _get_param_grad_norm_group, _is_separate_grad_norm_group
@@ -615,6 +654,7 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
             args.offload_train_disk_chunk_mb,
             args.stream_optimizer_state_moment_dtype,
             allow_fresh_state=args.no_load_optim,
+            mxfp4_qat_group_size=MXFP4_GROUP_SIZE if getattr(args, "mxfp4_qat_routed_experts", False) else None,
         )
         written = store.initialize_main_from_model_params()
         logger.info(
