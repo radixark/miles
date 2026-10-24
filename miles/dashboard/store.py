@@ -1205,7 +1205,7 @@ class MetricStore:
                     if not covered:
                         # External engines register without GPU identity; fall
                         # back to every known lane on the engines' nodes.
-                        engine_nodes = {engine["addr"].split("//")[-1].split(":")[0] for engine in window["engines"]}
+                        engine_nodes = {_engine_host(engine["addr"]) for engine in window["engines"]}
                         covered = {
                             (lane["node"], lane["gpu"]) for lane in self.lanes() if lane["node"] in engine_nodes
                         }
@@ -1358,8 +1358,10 @@ class MetricStore:
         t1: float | None = None,
         max_points: int = 2000,
         per_dp_rank: bool = False,
+        addrs: set[str] | None = None,
     ) -> list[dict]:
-        """One series per (engine addr, label set) for the given metric.
+        """One series per (engine addr, label set) for the given metric,
+        restricted to ``addrs`` when given (None = every engine).
 
         By default per-dp-rank samples (dp-attention engines export one per
         rank) are folded into one engine-level series — summed, or averaged
@@ -1369,30 +1371,32 @@ class MetricStore:
         Derived names (``ENGINE_RATE_METRICS`` / ``ENGINE_MEAN_METRICS``) are
         computed from adjacent raw cumulative samples; a counter reset or an
         interval without completions leaves a gap, never a fabricated value."""
+
+        def parts(raw_metric: str) -> dict[tuple[str, str], pl.DataFrame]:
+            return self._engine_parts(raw_metric, t0, t1, per_dp_rank=per_dp_rank, addrs=addrs)
+
         if metric in self.ENGINE_RATE_METRICS:
-            parts = self._engine_parts(self.ENGINE_RATE_METRICS[metric], t0, t1, per_dp_rank=per_dp_rank)
-            return self._derived_series(parts, None, max_points)
+            return self._derived_series(parts(self.ENGINE_RATE_METRICS[metric]), None, max_points)
         if metric in self.ENGINE_MEAN_METRICS:
             base = self.ENGINE_MEAN_METRICS[metric]
-            return self._derived_series(
-                self._engine_parts(base + "_sum", t0, t1, per_dp_rank=per_dp_rank),
-                self._engine_parts(base + "_count", t0, t1, per_dp_rank=per_dp_rank),
-                max_points,
-            )
+            return self._derived_series(parts(base + "_sum"), parts(base + "_count"), max_points)
         out = []
-        for (addr, labels_json), part in self._engine_parts(metric, t0, t1, per_dp_rank=per_dp_rank).items():
+        for (addr, labels_json), part in parts(metric).items():
             ts, values = stride_downsample(part["ts"].to_numpy(), part["value"].to_numpy(), max_points)
             out.append(dict(addr=addr, labels=_engine_labels(labels_json), ts=ts.tolist(), value=values.tolist()))
         return out
 
     def _engine_parts(
-        self, metric: str, t0: float | None, t1: float | None, *, per_dp_rank: bool = False
+        self, metric: str, t0: float | None, t1: float | None, *, per_dp_rank: bool, addrs: set[str] | None
     ) -> dict[tuple[str, str], pl.DataFrame]:
         if t0 is None and t1 is None:
-            return self._engine_parts_cached(metric, per_dp_rank)
+            parts = self._engine_parts_cached(metric, per_dp_rank)
+            return parts if addrs is None else {key: part for key, part in parts.items() if key[0] in addrs}
         frames_by_metric = self._readers[Stream.ENGINE_SERIES].window(t0, t1)
         empty = pl.DataFrame(schema=self.FRAME_SCHEMAS[Stream.ENGINE_SERIES])
         frame = self._window(frames_by_metric.get(metric, empty), t0, t1)
+        if addrs is not None:
+            frame = frame.filter(pl.col("addr").is_in(sorted(addrs)))
         if not per_dp_rank:
             frame = self._fold_dp_ranks(frame, metric)
         return {
@@ -1470,6 +1474,19 @@ class MetricStore:
                 dict(addr=addr, labels=_engine_labels(labels_json), ts=point_ts.tolist(), value=point_values.tolist())
             )
         return out
+
+    def engine_addrs_on_lanes(self, lanes: set[tuple[str, int]]) -> set[str]:
+        """Engines that ever ran on one of ``lanes``. External engines register
+        without GPU identity and match by their addr's host, as in ``phases_by_lane``."""
+        addrs = set()
+        for window in self.topology_windows():
+            for engine in window["engines"]:
+                if engine["gpus"]:
+                    if any((node, gpu) in lanes for node, gpu in engine["gpus"]):
+                        addrs.add(engine["addr"])
+                elif any(node == _engine_host(engine["addr"]) for node, _ in lanes):
+                    addrs.add(engine["addr"])
+        return addrs
 
     def lane_index(self) -> list[dict]:
         """Per-lane metadata for selection resolution: train ranks observed on
@@ -1817,6 +1834,11 @@ def _metric_by_suffix(metrics: dict[str, float], base_key: str) -> float | None:
 
 def _engine_labels(labels_json: str) -> dict:
     return {k: v for k, v in json.loads(labels_json).items() if v is not None}
+
+
+def _engine_host(addr: str) -> str:
+    """An engine addr's host: an external engine (no GPU identity) runs on the node it names."""
+    return addr.split("//")[-1].split(":")[0]
 
 
 def stride_downsample(xs, ys, max_points: int) -> tuple[np.ndarray, np.ndarray]:

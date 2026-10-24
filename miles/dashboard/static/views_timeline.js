@@ -163,7 +163,15 @@ export async function renderTimeline(view, meta, route) {
       api("/api/timeline/gpu_processes", { t0: f0, t1: f1, lanes: selection }),
     ]);
     engineSeries = overlayMetric
-      ? (await api("/api/timeline/engine_series", { metric: overlayMetric, t0: f0, t1: f1, max_points: 4000 }))
+      ? (
+          await api("/api/timeline/engine_series", {
+            metric: overlayMetric,
+            t0: f0,
+            t1: f1,
+            max_points: 4000,
+            lanes: selection,
+          })
+        )
           .series
       : [];
     fetched = { t0: f0, t1: f1 };
