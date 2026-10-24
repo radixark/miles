@@ -130,7 +130,7 @@ def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
 
-    if getattr(args, "loss_type", None) == "score_centering":
+    if args.loss_type == "score_centering":
         # Score centering forces the base LM-head setting on, overriding the parsed
         # value to avoid lower-precision logits rounding before rollout probabilities.
         # This trades serving compute/memory for precision; per-engine overrides still win.
@@ -140,7 +140,7 @@ def validate_args(args):
         # True on-policy mode overrides the parsed setting to keep inference deterministic.
         args.sglang_enable_deterministic_inference = True
 
-    if getattr(args, "recompute_logprobs_via_prefill", False):
+    if args.recompute_logprobs_via_prefill:
         # Prefill logprob recomputation overrides both parsed settings for deterministic scoring.
         args.sglang_enable_prefill_only_deterministic_inference = True
         args.sglang_enable_deterministic_inference = True
@@ -156,5 +156,5 @@ def validate_args(args):
         if args.router_assignment_mode == "random":
             args.router_assignment_mode = "min_load"
 
-    if getattr(args, "sglang_router_ip", None):
+    if args.sglang_router_ip:
         args.sglang_router_ip = wrap_ipv6(args.sglang_router_ip)

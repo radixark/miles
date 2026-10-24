@@ -161,10 +161,10 @@ def check_mtp_only_grad(model: Sequence[DDP], step_id: int) -> None:
 
 def check_peak_gpu_memory_after_load(args) -> None:
     """Assert that peak GPU memory stays below threshold when --low-memory-resume is active."""
-    if not args.ci_test or not getattr(args, "low_memory_resume", False):
+    if not args.ci_test or not args.low_memory_resume:
         return
 
-    hf_ckpt = getattr(args, "hf_checkpoint", "") or ""
+    hf_ckpt = args.hf_checkpoint or ""
     if "Qwen3-4B" not in hf_ckpt:
         return
 

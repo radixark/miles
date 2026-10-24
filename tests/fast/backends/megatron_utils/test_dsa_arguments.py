@@ -29,6 +29,11 @@ def _args(**overrides):
         dsa_indexer_loss_coeff=None,
         miles_dsa_topk_backend="canonical",
         cp_comm_type=None,
+        true_on_policy_mode=False,
+        debug_disable_optimizer=False,
+        multi_lora_n_adapters=0,
+        rope_type=None,
+        multi_latent_attention=True,
     )
     return Namespace(**(values | overrides))
 

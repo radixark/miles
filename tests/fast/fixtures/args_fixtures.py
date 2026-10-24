@@ -78,3 +78,28 @@ def _parse_test_config(argv: list[str]) -> Any:
 
 def parse_fsdp_test_config(*argv: str) -> Any:
     return _parse_test_config([*['--train-backend', 'fsdp', '--rollout-batch-size', '2', '--num-rollout', '1', '--actor-num-gpus-per-node', '1', '--micro-batch-size', '1'], *argv])
+
+
+_TRAIN_BACKEND_DEFAULTS.update(fp16=False)
+
+
+def make_trainer_config(**values: Any) -> Any:
+    from miles.utils.args.runtime import TrainerConfig
+
+    args = make_trainer_args(**values)
+    return TrainerConfig.model_construct(**vars(args))
+
+
+def parse_megatron_test_config(*argv: str) -> Any:
+    return _parse_test_config([*['--train-backend', 'megatron', '--rollout-batch-size', '2', '--num-rollout', '1', '--actor-num-gpus-per-node', '1', '--micro-batch-size', '1', '--num-layers', '1', '--hidden-size', '128', '--num-attention-heads', '2'], *argv])
+
+
+def resolve_parse_boundary_configs(args: argparse.Namespace) -> argparse.Namespace:
+    from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
+    from miles.backends.sglang_utils.sglang_config import SglangConfig
+    from miles.utils.args.configs.router import RouterConfig
+
+    args.raw_megatron = resolve_megatron_config(args, base_args={})
+    args.sglang = SglangConfig.parse_args(args)
+    vars(args).update(RouterConfig.from_args(args))
+    return args

@@ -150,7 +150,7 @@ def _compute_server_args(
     if is_multi_lora_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
-        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["max_lora_rank"] = max(args.lora_rank, 1)
         kwargs["lora_target_modules"] = (
             ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
         )
@@ -158,7 +158,7 @@ def _compute_server_args(
         kwargs["enable_lora"] = True
         # attention DP serves only pinned adapters (sgl-project/sglang#36389), and SGLang never pins the last slot
         kwargs["max_loras_per_batch"] = 2 if sglang_attention_dp_enabled(args) else 1
-        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["max_lora_rank"] = max(args.lora_rank, 1)
         kwargs["lora_target_modules"] = (
             ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
         )

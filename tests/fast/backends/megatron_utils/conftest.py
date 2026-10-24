@@ -75,3 +75,12 @@ def runtime_args() -> argparse.Namespace:
         mtp_detach_heads=True,
         moe_token_dispatcher_type="alltoall",
     )
+
+@pytest.fixture
+def bridge_sdk(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    sdk = Mock()
+    module = ModuleType("megatron.bridge")
+    module.AutoBridge = sdk
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    return sdk
+

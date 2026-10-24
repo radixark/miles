@@ -80,7 +80,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
                 self.rollout_engines,
                 bucket,
                 selector=self._selector,
-                transfer_mode=getattr(self.args, "update_weight_transfer_mode", "broadcast"),
+                transfer_mode=self.args.update_weight_transfer_mode,
             )
             async_utils.wait_futures(futures)
             bucket.clear()

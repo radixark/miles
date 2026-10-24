@@ -28,7 +28,7 @@ class ReplicatedGatedDeltaNet(nn.Module):
 
     def __init__(self, config, layer_idx: int, args=None):
         super().__init__()
-        self.gdn_backend = getattr(args, "linear_attention_backend", "fla")
+        self.gdn_backend = args.linear_attention_backend if args is not None else "fla"
         self.chunk_gated_delta_rule = gdn_kernel(self.gdn_backend)
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.linear_num_value_heads

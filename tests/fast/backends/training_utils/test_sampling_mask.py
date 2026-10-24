@@ -153,6 +153,7 @@ def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeyp
     monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     args = SimpleNamespace(
         log_probs_backend="torch",
+        loss_type="policy_loss",
         qkv_format="thd",
         rollout_temperature=1.0,
         true_on_policy_mode=True,

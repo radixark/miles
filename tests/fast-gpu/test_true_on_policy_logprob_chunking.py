@@ -247,6 +247,7 @@ def _low_precision_worker(rank: int, world_size: int, port: int) -> None:
 
 def _memory_args(chunk_size: int, vocab_size: int) -> Namespace:
     return Namespace(
+        loss_type="policy_loss",
         qkv_format="thd",
         log_probs_backend="torch",
         rollout_temperature=1.0,

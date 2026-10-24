@@ -13,6 +13,7 @@ def _args(argv):
     args = parser.parse_args(argv)
     args.rollout_num_gpus_per_engine = 4
     args.true_on_policy_mode = False
+    args.loss_type = "policy_loss"
     args.use_session_server = False
     # Registered by RouterArgs.add_cli_args, not by add_sglang_arguments.
     args.router_assignment_mode = "random"

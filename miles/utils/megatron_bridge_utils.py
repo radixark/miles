@@ -38,7 +38,7 @@ def apply_dsa_backend_args(provider, args) -> None:
         provider.dsa_kernel_backend = getattr(args, "dsa_kernel_backend", None) or "cudnn"
         return
 
-    backend = getattr(args, "dsa_attention_backend", "megatron")
+    backend = args.dsa_attention_backend
     if hasattr(provider, "dsa_attention_backend"):
         provider.dsa_attention_backend = backend
     elif hasattr(provider, "dsa_kernel_backend"):

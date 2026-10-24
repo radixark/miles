@@ -28,7 +28,7 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
     if args.use_kl_loss:
         result["kl_log_probs"] = []
     with_entropy = args.entropy_coef != 0 or args.observe_training_entropy
-    replay = getattr(args, "use_sampling_support_replay", False)
+    replay = args.use_sampling_support_replay
     support_only = replay and not args.use_kl_loss
     if with_entropy:
         result["entropy"] = []

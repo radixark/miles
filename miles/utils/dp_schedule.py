@@ -77,7 +77,7 @@ def build_dp_schedule(
     )
     num_rollouts = [global_batch_size] * num_full_steps
     leftover = len(rollout_ids) - num_full_steps * global_batch_size
-    if leftover and getattr(args, "allow_partial_train_step", False) and args.use_dynamic_batch_size:
+    if leftover and args.allow_partial_train_step and args.use_dynamic_batch_size:
         leftover_samples = sum(len(rollout_id_to_sample_index[rid]) for rid in rollout_ids[-leftover:])
         if leftover_samples >= dp_size:
             num_rollouts.append(leftover)
@@ -99,7 +99,7 @@ def build_dp_schedule(
             f"each step needs at least one sample per rank."
         )
 
-        balance_by_flops = getattr(args, "balance_by_flops", False)
+        balance_by_flops = args.balance_by_flops
         # Shared by FLOPs-balanced packing and FLOPs-balanced distribution below.
         workloads = _calculate_workloads(step_lengths, args) if balance_by_flops else None
         if args.use_dynamic_batch_size:

@@ -375,7 +375,7 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
     eval_num_gpus = args.eval_num_gpus
     rollout_num_gpus = args.rollout_num_gpus or 0
 
-    if getattr(args, "sglang_config", None) is not None:
+    if args.sglang_config is not None:
         config = _RawSglangConfig.from_file_arg(args.sglang_config)
         expected = rollout_num_gpus + eval_num_gpus
         actual = config.total_num_gpus
@@ -476,7 +476,7 @@ def _compute_megatron_num_gpus(args) -> int:
     assert not hasattr(  # config-access-exempt: reject the removed critic_train_only field
         args, "critic_train_only"
     ), "critic_train_only is not supported"
-    if getattr(args, "debug_rollout_only", False):
+    if args.debug_rollout_only:
         return 0
     num = args.actor_num_nodes * args.actor_num_gpus_per_node
     return num

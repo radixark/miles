@@ -6,8 +6,8 @@ from miles.utils.mxfp8 import mxfp8_quantize
 def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config["quant_method"] == "mxfp8"
 
-    if getattr(args, "extra_high_precision_layers_megatron", False):
-        for layer_name in getattr(args, "extra_high_precision_layers_megatron", ()):
+    if args is not None and args.extra_high_precision_layers_megatron:
+        for layer_name in args.extra_high_precision_layers_megatron:
             if layer_name in megatron_name:
                 return converted_named_params
 

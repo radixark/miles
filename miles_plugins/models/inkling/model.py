@@ -258,8 +258,8 @@ def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *
     from megatron.training import get_args
 
     args = get_args()
-    if getattr(args, "context_parallel_size", 1) > 1:
-        assert getattr(args, "allgather_cp", False), "Inkling CP requires --allgather-cp (zigzag CP not supported)"
+    if args.context_parallel_size > 1:
+        assert args.allgather_cp, "Inkling CP requires --allgather-cp (zigzag CP not supported)"
     text_cfg = json.load(open(f"{args.hf_checkpoint}/config.json"))["text_config"]
     config = build_inkling_config(
         text_cfg,
@@ -268,13 +268,13 @@ def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *
         pp=args.pipeline_model_parallel_size,
         bf16=args.bf16,
         sp=args.sequence_parallel,
-        etp=getattr(args, "expert_tensor_parallel_size", 1) or 1,
-        cp=getattr(args, "context_parallel_size", 1) or 1,
-        varlen=getattr(args, "variable_seq_lengths", True),
-        permute_fusion=getattr(args, "moe_permute_fusion", False),
-        fp32_residual=getattr(args, "fp32_residual_connection", False),
-        pp_first_stage_layers=getattr(args, "decoder_first_pipeline_num_layers", None),
-        pp_last_stage_layers=getattr(args, "decoder_last_pipeline_num_layers", None),
+        etp=args.expert_tensor_parallel_size or 1,
+        cp=args.context_parallel_size or 1,
+        varlen=args.variable_seq_lengths,
+        permute_fusion=args.moe_permute_fusion,
+        fp32_residual=args.fp32_residual_connection,
+        pp_first_stage_layers=args.decoder_first_pipeline_num_layers,
+        pp_last_stage_layers=args.decoder_last_pipeline_num_layers,
     )
     model = InklingGPTModel(
         config=config,

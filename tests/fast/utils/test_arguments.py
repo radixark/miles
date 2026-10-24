@@ -1222,6 +1222,7 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
     args.rollout_num_gpus_per_engine = 8
     args.true_on_policy_mode = False
     args.sglang_enable_dp_attention = True
+    args.loss_type = "policy_loss"
     args.use_session_server = False
 
     validate_sglang_args(args)
@@ -2899,6 +2900,7 @@ def test_sglang_parallel_sizes_use_short_namespace_fields(parallel_args, expecte
     args.true_on_policy_mode = False
     args.recompute_logprobs_via_prefill = False
     args.sglang_router_policy = None
+    args.loss_type = "policy_loss"
     args.use_session_server = False
 
     validate_sglang_args(args)

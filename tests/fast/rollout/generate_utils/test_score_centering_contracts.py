@@ -263,3 +263,26 @@ def test_candidate_validation_preserves_order_and_allows_repeated_padding(candid
     validate_rollout_topk_logprobs_sample(sample, 3)
     np.testing.assert_array_equal(sample.rollout_topk_token_ids, original_ids)
     np.testing.assert_array_equal(sample.rollout_topk_log_probs, original_logps)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "use_tis",
+        "custom_tis_function_path",
+        "use_opsm",
+        "true_on_policy_mode",
+        "recompute_logprobs_via_prefill",
+        "sglang_speculative_algorithm",
+        "custom_pg_loss_reducer_function_path",
+        "multi_lora",
+        "use_opd",
+        "custom_convert_samples_to_train_data_path",
+    ],
+)
+def test_missing_declared_compatibility_field_is_rejected(field: str) -> None:
+    """Missing known compatibility fields cannot silently disable validation."""
+    args = _args()
+    delattr(args, field)
+    with pytest.raises(AttributeError, match=field):
+        validate_score_centering_args(args)

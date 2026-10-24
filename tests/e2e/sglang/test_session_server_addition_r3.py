@@ -77,6 +77,7 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         use_session_server="v1",
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=False,
+        rollout_indexer_topk_num_streams=None,
         use_sampling_support_replay=False,
         rollout_temperature=1.0,
         rollout_top_p=1.0,
@@ -88,6 +89,10 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         num_layers=_NUM_LAYERS,
         lora_rank=0,
         lora_adapter_path=None,
+        lora_train_only=False,
+        session_message_matcher="strict",
+        session_sample_picker_path=None,
+        session_sample_postprocessor_path=None,
     )
     config = compute_session_server_config(
         args,
