@@ -8,8 +8,11 @@ from miles.utils.object_store import ObjectStoreBackend
 
 # rollout
 class RolloutRelatedConfig(BaseConfig):
+    custom_agent_function_path: str | None
+    use_sampling_support_replay: bool
     rollout_sampling_logprobs_mode: Literal["selected", "support"]
     rollout_top_logprobs_num: A[int, Arg()] = 0
+
     hf_checkpoint: A[
         str | None,
         Arg(
