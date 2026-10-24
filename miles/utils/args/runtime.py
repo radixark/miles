@@ -1,6 +1,8 @@
 from pydantic import ConfigDict
 
+from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import MegatronConfig
+from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.utils.args.component_multi_lora import MultiLoraOnlyConfig
 from miles.utils.args.component_orchestrator import OrchestratorOnlyConfig
 from miles.utils.args.component_rollout import InferenceControllerOnlyConfig, RolloutOnlyConfig
@@ -241,4 +243,7 @@ class AllConfig(
     # TODO: Remove extra="allow" after backend, custom, and derived fields have explicit config owners.
     model_config = ConfigDict(extra="allow")
 
+    # TODO: Unify trainer descriptions after zhichen's training backend refactor; FSDP also uses these descriptions.
     raw_megatron: MegatronConfig
+    raw_fsdp: FsdpArgsNamespace | None
+    raw_torchtitan: TorchtitanArgsNamespace | None

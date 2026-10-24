@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
     CRITIC_ROLE,
@@ -21,6 +22,7 @@ from miles.backends.megatron_utils.megatron_config import (
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.backends.sglang_utils.sglang_config import SglangConfig
+from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
@@ -503,12 +505,12 @@ def parse_args_and_get_parser(
     vars(args).setdefault("custom_agent_function_path", None)
 
     assert parser is not None
+    backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     backend_only_fields = training_backend_arg_names - AllConfig.model_fields.keys()
     values = {name: value for name, value in vars(args).items() if name not in backend_only_fields} | {
-        "raw_megatron": resolve_megatron_config(
-            args,
-            base_args={name: value for name, value in vars(args).items() if name in training_backend_arg_names},
-        ),
+        "raw_megatron": resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {}),
+        "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
+        "raw_torchtitan": TorchtitanArgsNamespace(**backend_values) if backend == "torchtitan" else None,
         "sglang": SglangConfig.parse_args(args),
         "sglang_model_routers": None,
     }
@@ -1824,7 +1826,7 @@ def validate_async_off_policy_correction(args) -> None:
     )
 
 
-def _maybe_apply_dumper_overrides(args) -> None:
+def _maybe_apply_dumper_overrides(args: argparse.Namespace) -> None:
     if not args.dumper_enable:
         return
 
@@ -1848,7 +1850,8 @@ def _maybe_apply_dumper_overrides(args) -> None:
     args.eval_interval = None
     args.save = None
     args.save_interval = None
-    args.save_retain_interval = None
+    if args.train_backend == "megatron":
+        args.save_retain_interval = None
 
 
 def resolve_fsdp_num_layers(hf_config) -> int | None:

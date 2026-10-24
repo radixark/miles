@@ -12,4 +12,4 @@ class TestFsdpOffloadNormalization:
         source = parse_fsdp_test_config(*flags)
 
         assert source.offload_train is not cpu_offload
-        assert source.raw_megatron.base_args["fsdp_cpu_offload"] is cpu_offload
+        assert source.raw_fsdp.fsdp_cpu_offload is cpu_offload
