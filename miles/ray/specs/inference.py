@@ -1,23 +1,20 @@
-import logging
 import os
 import shlex
 from typing import Any, ClassVar
 
 from typing_extensions import Self
 
-from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
-from miles.router.config import compute_miles_router_config
+from miles.router.backend import make_router_backend
 from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.args.runtime import InferenceControllerConfig
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import resolve_ip
 from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
@@ -38,8 +35,6 @@ from miles.utils.workers.worker_spec import (
     WorkerCtorContext,
     WorkerLaunchContext,
 )
-
-logger = logging.getLogger(__name__)
 
 POOL_CATEGORY_INFERENCE_ENGINE = "inference_engine"
 
@@ -194,34 +189,10 @@ class RouterSpec(BaseCommandSpec):
         )
 
     def launch_command(self, ctx: LaunchCommandContext) -> str:
-        args = ctx.args
-        model_cfg = self.model_cfg
-        interpreter_prefix = self.interpreter_prefix
-        primary = ctx.self_addrs["primary"]
-
-        has_pd_disaggregation = model_cfg.has_pd_disaggregation or args.rollout_external_router_pd
-
-        if args.use_miles_router:
-            assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
-            router_config = compute_miles_router_config(args, host=primary.host, port=primary.port)
-            launch_argv = [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
-        else:
-            router_args = compute_sglang_router_args(
-                args,
-                host=resolve_ip(primary.host),
-                port=primary.port,
-                prometheus_port=ctx.self_addrs["prometheus"].port,
-                has_pd_disaggregation=has_pd_disaggregation,
-            )
-            logger.info(f"Launch router with args: {router_args}")
-            launch_argv = [
-                *interpreter_prefix,
-                "-m",
-                "sglang_router.launch_router",
-                *router_args_to_argv(router_args),
-            ]
-
-        return shlex.join(launch_argv)
+        backend = make_router_backend(ctx.args)
+        return shlex.join(
+            backend.launch_argv(ctx, model_cfg=self.model_cfg, interpreter_prefix=self.interpreter_prefix)
+        )
 
 
 def compute_router_pool_id(model_idx: int) -> str:
