@@ -501,6 +501,53 @@ class TestOtherBackendGeneratedPaths:
         assert record.config["args"][backend] == fields
 
 
+class TestStandaloneLocalRankNormalization:
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_single_node_ranks_merge_without_changing_raw_or_custom_fields(
+        self, make_record: Callable, nested: bool
+    ) -> None:
+        """Standalone ranks merge only after validating their local device identity."""
+        records = []
+        for rank in [0, 7]:
+            fields = {"rank": rank, "local_rank": rank, "custom": {"local_rank": 9}}
+            record = make_record(rank=rank, config={"backend": fields} if nested else fields)
+            record = record.model_copy(
+                update={"context": record.context.model_copy(update={"deploy_component": "standalone"})}
+            )
+            records.append(record)
+
+        case = ConfigSnapshotConverter.convert(records)
+
+        process = next(iter(case.processes.values()))
+        assert process.ranks == [0, 7]
+        expected = {"rank": "$RANK", "local_rank": "$RANK", "custom": {"local_rank": 9}}
+        assert process.base == {"args": {"backend": expected} if nested else expected}
+        raw = [record.config["args"] for record in records]
+        assert [(fields["backend"] if nested else fields)["local_rank"] for fields in raw] == [0, 7]
+
+    @pytest.mark.parametrize("nested", [False, True])
+    @pytest.mark.parametrize("local_rank", [None, -1, True, 1.5, "1", 0, 2])
+    def test_invalid_or_mismatched_local_rank_is_rejected(
+        self, make_record: Callable, local_rank: object, nested: bool
+    ) -> None:
+        """Malformed or incorrect device placement cannot disappear during rank deduplication."""
+        fields = {"rank": 1, "local_rank": local_rank}
+        record = make_record(rank=1, config={"backend": fields} if nested else fields)
+        record = record.model_copy(
+            update={"context": record.context.model_copy(update={"deploy_component": "standalone"})}
+        )
+
+        with pytest.raises(AssertionError, match="Unexpected standalone local rank"):
+            normalize_record(record)
+
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_other_deployments_keep_local_rank_literal(self, make_record: Callable, nested: bool) -> None:
+        """The single-node standalone rule does not change other deployment layouts."""
+        fields = {"local_rank": 1}
+        record = make_record(rank=7, config={"backend": fields} if nested else fields)
+        assert normalize_record(record) == record.config
+
+
 class TestObservedRunIds:
     def test_unused_registration_does_not_shift_the_used_run_id(self, make_record: Callable) -> None:
         """Unused CLI defaults cannot change the snapshot of the selected run ID."""

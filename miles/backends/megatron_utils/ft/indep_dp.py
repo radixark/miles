@@ -118,7 +118,7 @@ def allreduce_grads_and_losses_across_replicas(
     num_rollouts: int | None = None,
     collect_training_metadata: Callable[[], None] | None = None,
 ) -> tuple[bool, dict[str, float]]:
-    assert not args.calculate_per_token_loss, "calculate_per_token_loss is not supported with indep_dp yet"
+    assert not args.backend.calculate_per_token_loss, "calculate_per_token_loss is not supported with indep_dp yet"
     assert parallel_state.intra_dp.size == 1, (
         f"indep_dp requires intra_dp.size == 1, got {parallel_state.intra_dp.size}. "
         "Simultaneous intra and indep DP is not supported."

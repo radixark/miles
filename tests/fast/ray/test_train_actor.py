@@ -1,13 +1,17 @@
 import os
 import socket
 import sys
+from datetime import timedelta
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+from tests.fast.fixtures.args_fixtures import make_trainer_config
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray import placement_group, train_actor
 from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
+from miles.utils import distributed_utils, logging_utils
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.init_once import InitOnce
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
@@ -404,3 +408,84 @@ class TestWeightUpdateOutputMerge:
         ]
 
         assert WeightUpdateOutput.merge(outputs) == WeightUpdateOutput(weight_version=None, failed_cell_ids=())
+
+
+class TestBackendProcessGroupSdk:
+    @pytest.mark.parametrize(
+        ("backend", "offload", "cpu_backend", "expected"),
+        [
+            ("megatron", False, None, "nccl"),
+            ("fsdp", True, "gloo", "cpu:gloo,cuda:nccl"),
+            ("fsdp", False, "gloo", "nccl"),
+            ("fsdp", True, None, "nccl"),
+        ],
+    )
+    def test_backend_and_timeout_reach_real_common_initialization_sdk(
+        self, monkeypatch: pytest.MonkeyPatch, backend: str, offload: bool, cpu_backend: str | None, expected: str
+    ) -> None:
+        """Common worker initialization selects hybrid CPU offload only when configured and preserves the backend timeout."""
+        args = make_trainer_config(
+            train_backend=backend,
+            distributed_backend="nccl",
+            distributed_timeout_minutes=17,
+            fsdp_cpu_offload=offload,
+            fsdp_cpu_backend=cpu_backend,
+            debug_deterministic_collective=False,
+        )
+        actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)
+        actor._init_once = InitOnce("TrainRayActor")
+        actor._heartbeat = SimpleNamespace(bump=lambda: None)
+        initialize_group, gloo_group = Mock(), Mock()
+        monkeypatch.setattr(train_actor.torch.cuda, "set_device", lambda _device: None)
+        monkeypatch.setattr(train_actor.dist, "init_process_group", initialize_group)
+        monkeypatch.setattr(train_actor.dist, "new_group", gloo_group)
+        monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 3)
+        monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 8)
+        monkeypatch.setattr(train_actor.torch.version, "hip", "test")
+        monkeypatch.setattr(distributed_utils, "GLOO_GROUP", None)
+        monkeypatch.setattr(logging_utils, "_ENV_REPORTER", None)
+
+        actor._init_common(args=args, role="actor")
+
+        initialize_group.assert_called_once_with(backend=expected, timeout=timedelta(minutes=17))
+        gloo_group.assert_called_once_with(backend="gloo")
+        assert (args.backend.rank, args.backend.world_size) == (3, 8)
+
+    @pytest.mark.parametrize("valid", [False, True])
+    def test_deterministic_collective_backend_is_checked_before_world_initialization(
+        self, monkeypatch: pytest.MonkeyPatch, valid: bool
+    ) -> None:
+        """Deterministic training requires the registered backend before creating the world process group."""
+        from miles.utils.test_utils import det_process_group
+
+        backend = train_actor.DET_NCCL_BACKEND_NAME if valid else "nccl"
+        args = make_trainer_config(
+            distributed_backend=backend,
+            distributed_timeout_minutes=19,
+            debug_deterministic_collective=True,
+        )
+        actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)
+        actor._init_once = InitOnce("TrainRayActor")
+        actor._heartbeat = SimpleNamespace(bump=lambda: None)
+        initialize_group, register_backend = Mock(), Mock()
+        monkeypatch.setattr(train_actor.torch.cuda, "set_device", lambda _device: None)
+        monkeypatch.setattr(train_actor.dist, "init_process_group", initialize_group)
+        monkeypatch.setattr(train_actor.dist, "new_group", Mock())
+        monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 0)
+        monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 1)
+        monkeypatch.setattr(train_actor.dist.Backend, "register_backend", register_backend)
+        monkeypatch.setattr(train_actor.torch.version, "hip", "test")
+        monkeypatch.setattr(distributed_utils, "GLOO_GROUP", None)
+        monkeypatch.setattr(logging_utils, "_ENV_REPORTER", None)
+        monkeypatch.setattr(det_process_group, "_backend_registered", False)
+
+        if valid:
+            actor._init_common(args=args, role="actor")
+            initialize_group.assert_called_once_with(backend=backend, timeout=timedelta(minutes=19))
+        else:
+            with pytest.raises(AssertionError):
+                actor._init_common(args=args, role="actor")
+            initialize_group.assert_not_called()
+
+        assert register_backend.call_count == 1
+        assert register_backend.call_args.args[0] == train_actor.DET_NCCL_BACKEND_NAME

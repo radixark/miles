@@ -70,7 +70,7 @@ def bridge_args(tmp_path: Path) -> Namespace:
         num_key_value_heads=2,
         vocab_size=8,
     ).save_pretrained(tmp_path)
-    return Namespace(
+    backend = Namespace(
         tensor_model_parallel_size=2,
         pipeline_model_parallel_size=3,
         expert_model_parallel_size=4,
@@ -94,6 +94,9 @@ def bridge_args(tmp_path: Path) -> Namespace:
         optimizer="adam",
         accumulate_allreduce_grads_in_fp32=True,
         dsa_kernel_backend="flash_mla",
+    )
+    return Namespace(
+        backend=backend,
         hf_checkpoint=tmp_path,
         enable_mtp_training=False,
         multi_lora=False,

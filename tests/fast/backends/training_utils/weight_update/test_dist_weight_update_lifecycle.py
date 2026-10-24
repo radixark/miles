@@ -12,6 +12,7 @@ from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupCo
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import async_utils
+from miles.utils.args.runtime import TrainerConfig
 
 _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
 _SESSION_MODULE = "miles.backends.training_utils.weight_update.session"
@@ -111,7 +112,7 @@ def _make_updater(
     )
     iterator = MagicMock()
     iterator.iter_hf_weights.return_value = iter([])
-    args = Namespace(
+    args = TrainerConfig.model_construct(
         pause_generation_mode=pause_generation_mode,
         check_lora_weight_equal=False,
         sglang=SglangConfig(models=[], base_args={"speculative_algorithm": None}),
@@ -240,8 +241,7 @@ class TestWeightUpdateSessionFrame:
             weight_update_ft=True,
         )
 
-        updater.args.colocate = False
-        updater.args.update_weight_transfer_mode = "p2p"
+        updater.args = updater.args.model_copy(update={"colocate": False, "update_weight_transfer_mode": "p2p"})
         _run(updater)
 
         phases = _PREPARE_PHASES + _FINALIZE_PHASES
@@ -325,7 +325,7 @@ class TestPreparationFailure:
     def test_non_partial_transfers_stop_before_sending(self, failed_method: str, colocate: bool) -> None:
         """A failed preparation must prevent writes to an engine that is not ready."""
         updater = _make_updater(_make_engines([], failing_method=failed_method))
-        updater.args.colocate = colocate
+        updater.args = updater.args.model_copy(update={"colocate": colocate})
         updater._hf_weight_iterator.iter_hf_weights.return_value = iter([{"weight": object()}])
 
         with pytest.raises(RuntimeError, match=f"{failed_method} failed"):
@@ -374,7 +374,7 @@ def test_weight_sync_keeps_the_global_selector_with_group_overrides(
             )
         ],
     )
-    updater.args.sglang = sglang
+    updater.args = updater.args.model_copy(update={"sglang": sglang})
     updater.protocol.connect = MagicMock()
     updater.connect_rollout_engines([], None, None, [])
     assert updater.protocol.connect.call_args.kwargs["selector"] == selector

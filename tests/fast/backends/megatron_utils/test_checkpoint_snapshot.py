@@ -42,4 +42,4 @@ class TestMegatronCheckpointSnapshot:
         assert record.point.stage == "checkpoint_load"
         assert record.config["load"] == str(weights)
         assert record.config["local_checkpoint_manager"] is local_manager
-        assert record.config["args"]["load"] == str(weights)
+        assert record.config["args"]["backend"]["load"] == str(weights)

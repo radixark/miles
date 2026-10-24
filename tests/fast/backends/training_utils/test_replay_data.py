@@ -62,7 +62,12 @@ def test_fill_replay_bshd_token_alignment(
     # Each token has unique expert IDs in both streams and top-k slots.
     expert_offsets = torch.arange(4).reshape(2, 2)
     routes = [token_ids[:-1, None, None] * 10 + expert_offsets for token_ids in tokens]
-    args = SimpleNamespace(qkv_format="bshd", allgather_cp=allgather_cp, sequence_parallel=sequence_parallel)
+    args = SimpleNamespace(
+        qkv_format="bshd",
+        allgather_cp=allgather_cp,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=sequence_parallel),
+    )
 
     for cp_rank in range(cp_size):
         positions = list(range(max_seqlen))
@@ -128,7 +133,11 @@ def test_fill_replay_bshd_token_alignment(
 @pytest.mark.parametrize("tp_size,sequence_parallel", [(1, False), (2, True)])
 def test_fill_replay_thd_preserves_packed_order(monkeypatch, sequence_first, tp_size, sequence_parallel):
     args = SimpleNamespace(
-        qkv_format="thd", allgather_cp=False, sequence_parallel=sequence_parallel, data_pad_size_multiplier=2
+        qkv_format="thd",
+        allgather_cp=False,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=sequence_parallel),
+        data_pad_size_multiplier=2,
     )
     expected = torch.tensor([0, 1, -1, 2, 3, -1])
     if tp_size == 2:

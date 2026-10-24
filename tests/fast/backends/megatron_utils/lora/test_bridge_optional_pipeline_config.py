@@ -13,8 +13,8 @@ class TestBridgeOptionalPipelineConfig:
         self, bridge_args: Namespace, bridge_provider: Any
     ) -> None:
         """Absent layer-count overrides preserve the SDK provider's existing stage partition."""
-        bridge_args.decoder_first_pipeline_num_layers = None
-        bridge_args.decoder_last_pipeline_num_layers = None
+        bridge_args.backend.decoder_first_pipeline_num_layers = None
+        bridge_args.backend.decoder_last_pipeline_num_layers = None
         bridge_provider.num_layers_in_first_pipeline_stage = 7
         bridge_provider.num_layers_in_last_pipeline_stage = 8
 

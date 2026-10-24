@@ -219,3 +219,11 @@ class TestAllreduceGradsAndLossesAcrossReplicas:
         assert async_messages[0].startswith("ft ")
         assert "kind=grad_allreduce" in async_messages[0]
         assert "peer 2 left the quorum" in async_messages[0]
+
+
+def test_backend_per_token_loss_is_rejected_before_any_replica_collective() -> None:
+    """Unsupported backend per-token loss fails before inspecting replica resources."""
+    args = SimpleNamespace(backend=SimpleNamespace(calculate_per_token_loss=True))
+
+    with pytest.raises(AssertionError, match="calculate_per_token_loss is not supported"):
+        indep_dp.allreduce_grads_and_losses_across_replicas(args, [], None, losses_reduced=[])

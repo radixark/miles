@@ -49,7 +49,7 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
             chunk,
             ids,
             group=parallel.tp.group if parallel.tp.size > 1 else None,
-            vocab_size=getattr(args, "vocab_size", None),
+            vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
             temperature=args.rollout_temperature,
             chunk_size=args.log_probs_chunk_size,
             with_entropy=with_entropy and (not replay or support_only),

@@ -38,10 +38,13 @@ def patch_megatron_model(model):
 
 def apply_dsa_backend_args(provider, args) -> None:
     """Resolve DSV4 kernel selection separately from the GLM DSA backend option."""
+    explicit = getattr(
+        args.backend, "dsa_kernel_backend", None
+    )  # config-access-exempt: older Megatron parsers omit the DSA kernel backend switch
     if (
         getattr(provider, "experimental_attention_variant", None) == "dsv4_hybrid"
     ):  # config-access-exempt: Megatron providers without experimental attention omit this field
-        provider.dsa_kernel_backend = getattr(args, "dsa_kernel_backend", None) or "cudnn"
+        provider.dsa_kernel_backend = explicit or "cudnn"
         return
 
     backend = args.dsa_attention_backend
@@ -52,7 +55,4 @@ def apply_dsa_backend_args(provider, args) -> None:
     elif hasattr(
         provider, "dsa_kernel_backend"
     ):  # config-access-exempt: third-party providers differ in dsa_kernel_backend support
-        explicit = getattr(
-            args, "dsa_kernel_backend", None
-        )  # config-access-exempt: older Megatron parsers omit the DSA kernel backend switch
         provider.dsa_kernel_backend = explicit or {"tilelang": "tilelang", "megatron": "none"}[backend]

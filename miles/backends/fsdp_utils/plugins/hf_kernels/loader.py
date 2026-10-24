@@ -54,8 +54,8 @@ def load_mapping(args) -> dict[str, HubKernelSpec]:
     # import presets at the top.
     from miles.backends.fsdp_utils.plugins.hf_kernels.presets import REQUIRED_SLOT_FUNCTIONS, default_module_kernels
 
-    if args.kernel_mapping_path:
-        provider = load_function(args.kernel_mapping_path, sync_required=True)
+    if args.backend.kernel_mapping_path:
+        provider = load_function(args.backend.kernel_mapping_path, sync_required=True)
     else:
         provider = default_module_kernels
 
@@ -99,10 +99,10 @@ class HubKernels:
         identity on every rank, or every rank keeps its native kernel for that slot (non-strict) /
         raises (strict).
         """
-        if args.kernel_backend != "hub":
+        if args.backend.kernel_backend != "hub":
             return cls()
 
-        hub = cls(strict=args.kernel_strict)
+        hub = cls(strict=args.backend.kernel_strict)
         hub._mapping = _agree_on_configuration(args)
         if not hub._mapping:
             return hub
@@ -205,7 +205,7 @@ def _agree_on_configuration(args) -> dict[str, HubKernelSpec]:
         mapping = load_mapping(args)
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
-    configs = _all_gather_object((mapping, args.kernel_strict, error))
+    configs = _all_gather_object((mapping, args.backend.kernel_strict, error))
     errors = [f"rank {rank}: {config[2]}" for rank, config in enumerate(configs) if config[2]]
     if errors:
         raise ValueError("invalid hub kernel mapping: " + "; ".join(errors))

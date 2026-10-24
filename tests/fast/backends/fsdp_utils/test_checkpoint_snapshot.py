@@ -35,7 +35,7 @@ class TestFsdpCheckpointSnapshot:
         assert record.point.stage == "checkpoint_load"
         assert record.config["load"] == "/selected/hf-model"
         assert record.config["format"] == "hf"
-        assert record.config["args"]["attn_implementation"] == "eager"
+        assert record.config["args"]["backend"]["attn_implementation"] == "eager"
 
     def test_native_checkpoint_load_captures_the_resolved_iteration_directory(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -59,4 +59,4 @@ class TestFsdpCheckpointSnapshot:
         assert record.point.stage == "checkpoint_load"
         assert record.config["load"] == str(resolved)
         assert record.config["format"] == "fsdp"
-        assert record.config["args"]["load"] == str(root)
+        assert record.config["args"]["backend"]["load"] == str(root)

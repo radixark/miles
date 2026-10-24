@@ -128,8 +128,8 @@ def load_checkpoint(
     # ref: how megatron `load_checkpoint` gets directory
     args = get_args()
 
-    load_path = args.load
-    ckpt_step = args.ckpt_step
+    load_path = args.backend.load
+    ckpt_step = args.backend.ckpt_step
 
     has_local_checkpoint_manager = "local_checkpoint_manager" in (checkpointing_context or {})
     if has_local_checkpoint_manager:
@@ -137,7 +137,7 @@ def load_checkpoint(
     else:
         assert Path(load_path).exists() and _is_dir_nonempty(
             load_path
-        ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
+        ), f"{args.backend.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
     ConfigSnapshotDumper.dump(
         stage="checkpoint_load",
@@ -148,7 +148,7 @@ def load_checkpoint(
         checkpoint_path = (
             get_checkpoint_name(load_path, ckpt_step, return_base_dir=True) if ckpt_step is not None else load_path
         )
-        if not has_local_checkpoint_manager and is_dsv4_model(args):
+        if not has_local_checkpoint_manager and is_dsv4_model(args.backend):
             assert_checkpoint_is_current(checkpoint_path)
         if not has_local_checkpoint_manager and _has_linear_attention(ddp_model):
             assert_linear_attn_checkpoint_is_current(checkpoint_path)
@@ -159,10 +159,10 @@ def load_checkpoint(
             checkpointing_context=checkpointing_context,
             skip_load_to_model_and_opt=skip_load_to_model_and_opt,
         )
-        if ckpt_step is not None and not args.finetune and result_iteration != ckpt_step:
+        if ckpt_step is not None and not args.backend.finetune and result_iteration != ckpt_step:
             raise ValueError(f"Requested checkpoint step {ckpt_step}, but Megatron loaded step {result_iteration}")
     else:
-        if args.exit_on_missing_checkpoint and not has_hf_checkpoint(load_path):
+        if args.backend.exit_on_missing_checkpoint and not has_hf_checkpoint(load_path):
             raise FileNotFoundError(f"No checkpoint found under --load={load_path!r}")
         result_iteration, _ = _load_checkpoint_hf(
             ddp_model=ddp_model,
@@ -170,9 +170,9 @@ def load_checkpoint(
             args=args,
             load_path=load_path,
         )
-    restored_trained_iteration = not args.finetune
+    restored_trained_iteration = not args.backend.finetune
 
-    ModelCompanionSampleConsumptionUtils.clear_for_finetune(ddp_model, args=args)
+    ModelCompanionSampleConsumptionUtils.clear_for_finetune(ddp_model, args=args.backend)
 
     return _CheckpointLoadResult(iteration=result_iteration, restored_trained_iteration=restored_trained_iteration)
 
@@ -187,7 +187,7 @@ def save_checkpoint_with_lora(
         assert (
             publisher is not None or args.megatron_to_hf_mode == "raw"
         ), "Bridge LoRA checkpoint requires a snapshot publisher"
-        save_dir = Path(args.save) / f"iter_{iteration:07d}" / "adapter"
+        save_dir = Path(args.backend.save) / f"iter_{iteration:07d}" / "adapter"
         logger.info(f"Saving LoRA checkpoint to {save_dir}")
         save_lora_checkpoint(
             model,
@@ -305,8 +305,8 @@ def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
             bridge.load_hf_weights(ddp_model)
 
     # Copied from Megatron-core :: load_checkpoint (with simplifications)
-    if (args.fp16 or args.bf16) and optimizer is not None:
-        assert not args.load_main_params_from_ckpt
+    if (args.backend.fp16 or args.backend.bf16) and optimizer is not None:
+        assert not args.backend.load_main_params_from_ckpt
         optimizer.reload_model_params()
 
     # We can see `successfully loaded checkpoint from ... [ t 1/2, p 1/1 ] at iteration 0`

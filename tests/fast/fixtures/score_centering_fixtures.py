@@ -5,6 +5,7 @@ from argparse import Namespace
 import numpy as np
 import pybase64
 
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.rollout.generate_utils.rollout_topk_logprobs import append_rollout_topk_logprobs
 from miles.utils.types import Sample
@@ -56,13 +57,18 @@ def _args(**overrides: object) -> Namespace:
         allgather_cp=False,
         log_probs_chunk_size=2,
         vocab_size=8,
+        calculate_per_token_loss=False,
+        global_batch_size=1,
         entropy_coef=0,
         observe_training_entropy=False,
         use_kl_loss=False,
     )
     values.update(overrides)
+    backend = MegatronArgsNamespace(
+        **{name: values.pop(name) for name in ("vocab_size", "calculate_per_token_loss", "global_batch_size")}
+    )
     sglang = SglangConfig(models=[], base_args={"speculative_algorithm": values["sglang_speculative_algorithm"]})
-    return Namespace(**values, sglang=sglang)
+    return Namespace(**values, train_backend="megatron", backend=backend, sglang=sglang)
 
 
 def _turn(prompt: list[int], output: list[int], probabilities: list[float]) -> Sample:
