@@ -159,6 +159,29 @@ async def test_sync_driver_defaults_to_group_granularity(monkeypatch):
     assert [group[0].group_index for group in output.samples] == [1, 2]
 
 
+@pytest.mark.parametrize("num_non_aborted", [1, 2])
+async def test_sync_partial_groups_count_prompt_groups_not_requested_trajectories(monkeypatch, num_non_aborted):
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=1, use_partial_groups_on_abort=True))
+    task = harness.run()
+    await asyncio.sleep(0)
+    original = harness.submitted_groups[0]
+    for sample in original[num_non_aborted:]:
+        sample.status = Sample.Status.ABORTED
+        sample.reward = None
+    harness.finish_group(0)
+    if num_non_aborted < 2:
+        await asyncio.sleep(0.01)
+        assert harness.submitted_group_indices == [1, 2]
+        harness.finish_group(1)
+
+    output, _ = await task
+
+    assert output.samples == ([original[:num_non_aborted]] if num_non_aborted >= 2 else [harness.submitted_groups[1]])
+    if num_non_aborted >= 2:
+        assert harness.submitted_group_indices == [1]
+    assert len(original) == GROUP_SIZE
+
+
 @pytest.mark.parametrize(
     ("reward_key", "missing_reward"),
     [(None, None), ("score", None), ("score", {"score": None})],

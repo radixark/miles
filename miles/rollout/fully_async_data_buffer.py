@@ -25,6 +25,7 @@ from miles.rollout.filter_hub.common_filters import (
     apply_missing_reward_filter,
     group_staleness,
     group_weight_version_stats,
+    retain_non_aborted_trajectories,
 )
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
@@ -85,6 +86,7 @@ class DataBufferConstructorInput:
 class DataBufferInput:
     prompt_group: list[Sample]  # resubmittable, for recycling
     group: Group  # finished samples
+    aborted_sample_indices: list[int] | None = None
 
 
 MULTI_POLICY_CHECKPOINT_UNSUPPORTED = "multi-policy rollout state is not checkpointed"
@@ -188,6 +190,16 @@ class DefaultDataBuffer(DataBuffer):
             self._cond.notify_all()
 
     def _preput_filter(self, input: DataBufferInput) -> bool:
+        if self._args.use_partial_groups_on_abort:
+            retained = retain_non_aborted_trajectories(input.group, self._args.partial_groups_on_abort_min_ratio)
+            if self._args.enable_sample_ownership_checker:
+                retained_ids = {id(sample) for sample in retained}
+                input.aborted_sample_indices = [
+                    sample.lineage.source_sample_index if sample.lineage is not None else sample.index
+                    for sample in input.group
+                    if id(sample) not in retained_ids
+                ]
+            input.group = retained
         output = apply_aborted_filter(self._args, input.group)
         if not output.keep:
             self._metric_aborted_groups += 1
@@ -235,6 +247,11 @@ class DefaultDataBuffer(DataBuffer):
             del self._buffer[:num_groups]
             self._cond.notify_all()  # wake producers blocked on a full buffer
             for entry in entries:
+                if entry.aborted_sample_indices:
+                    # A buffered group may still be retried; removals become final only on consumption.
+                    SampleOwnershipRecorder.log_dropped_source_sample_indices(
+                        args=self._args, source_sample_indices=entry.aborted_sample_indices, reason="aborted"
+                    )
                 version_stats = group_weight_version_stats(entry.group)
                 if (staleness := version_stats.oldest_lag(current_version)) is not None:
                     self._metric_consumed_staleness.append(staleness)

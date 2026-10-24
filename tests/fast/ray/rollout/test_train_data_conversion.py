@@ -589,6 +589,27 @@ class TestPostProcessRewards:
 
         assert processed == pytest.approx([-1.0, -2.0, 1.0, 2.0])
 
+    def test_partial_groups_normalize_retained_trajectories_and_keep_singletons(self):
+        args = make_args(use_partial_groups_on_abort=True, grpo_std_normalization=True)
+        samples = [
+            make_sample(group_index=0, index=0, reward=0.0),
+            make_sample(group_index=0, index=1, reward=2.0),
+            make_sample(group_index=1, index=2, reward=10.0),
+        ]
+
+        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        scale = 2**0.5 + 1e-6
+        assert raw == [0.0, 2.0, 10.0]
+        assert processed == pytest.approx([-1.0 / scale, 1.0 / scale, 0.0])
+
+    def test_partial_groups_require_prompt_boundaries(self):
+        args = make_args(use_partial_groups_on_abort=True)
+        samples = [make_sample(group_index=None, index=i, reward=float(i)) for i in range(3)]
+
+        with pytest.raises(ValueError, match="requires group_index or explicit prompt_group_sizes"):
+            _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
     @pytest.mark.parametrize(
         ("rewards", "expected"),
         [
@@ -1020,6 +1041,22 @@ class TestCanPrecomputeDpSchedule:
         data = _make_split_data(6)
         data["dynamic_global_batch_size"] = 6
         assert can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+
+
+@pytest.mark.parametrize("precompute", [False, True])
+def test_dynamic_batch_alignment_depends_on_schedule(precompute):
+    args = make_args(use_dynamic_global_batch_size=True, use_dynamic_batch_size=True, max_tokens_per_gpu=64)
+    config = make_train_parallel_config(dp_size=4, supports_precomputed_schedule=precompute)
+    data = {**_make_split_data(13), "dynamic_global_batch_size": 12}
+
+    if not precompute:
+        with pytest.raises(ValueError, match="Training-side DP scheduling requires complete batches"):
+            split_train_data_by_dp(args, data, config)
+        return
+
+    shards = split_train_data_by_dp(args, data, config)
+    assert sum(len(shard["tokens"]) for shard in shards) == 12
+    assert all(shard["dynamic_global_batch_size"] == 12 for shard in shards)
 
 
 class TestSplitTrainDataByDpScheduled:

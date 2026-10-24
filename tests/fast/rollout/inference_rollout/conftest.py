@@ -19,6 +19,8 @@ class FakeGenerateState(GenerateState):
             partial_rollout=False,
             mask_offpolicy_in_partial_rollout=False,
             group_rm=True,
+            use_partial_groups_on_abort=False,
+            partial_groups_on_abort_min_ratio=0.5,
             sglang_router_policy="round_robin",
         )
         self.generate_fn_semaphore = asyncio.Semaphore(2)

@@ -899,6 +899,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--use-partial-groups-on-abort",
+                action="store_true",
+                help=(
+                    "Retain non-aborted trajectories from partially aborted prompt groups in synchronous and "
+                    "fully async rollout. Requires --use-dynamic-global-batch-size. "
+                    "Only non-compact outputs (one Sample per trajectory) are supported."
+                ),
+            )
+            parser.add_argument(
+                "--partial-groups-on-abort-min-ratio",
+                type=float,
+                default=0.5,
+                help=(
+                    "Minimum fraction of non-aborted trajectories in a prompt group when "
+                    "--use-partial-groups-on-abort is enabled. Groups below this threshold are rejected. "
+                    "Must be in (0, 1]."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-submission-granularity",
                 type=str,
                 choices=["group", "sample"],
@@ -3768,6 +3787,12 @@ def miles_validate_args(args):
 
     if args.use_dynamic_batch_size:
         assert args.max_tokens_per_gpu is not None, "max_tokens_per_gpu must be set when use_dynamic_batch_size is set"
+
+    if args.use_partial_groups_on_abort:
+        assert 0 < args.partial_groups_on_abort_min_ratio <= 1, "--partial-groups-on-abort-min-ratio must be in (0, 1]"
+        assert (
+            args.use_dynamic_global_batch_size
+        ), "--use-partial-groups-on-abort requires --use-dynamic-global-batch-size"
 
     # --use-dynamic-global-batch-size has two motivations:
     # 1. compaction/subagent rollouts: static micro-batching cannot guarantee alignment
