@@ -17,6 +17,7 @@ from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_
 from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
     convert_samples_to_train_data,
+    mask_truncated_completions,
     split_train_data_by_dp,
 )
 from miles.rollout.base_types import (
@@ -216,6 +217,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             data, metadata, metrics = await self._get_rollout_data(
                 rollout_id=rollout_id, trainer_model_id=trainer_model_id
             )
+        mask_truncated_completions(self.args, data)
         save_debug_rollout_data(
             self.args,
             data,
