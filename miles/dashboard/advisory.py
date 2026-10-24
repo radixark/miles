@@ -86,9 +86,13 @@ def _fmt_duration(seconds: float) -> str:
 def _stall_advisories(store: MetricStore) -> list[Advisory]:
     """Open phases far beyond their own median closed duration.
 
-    Judged at the newest data timestamp over the whole run (not the query
-    window): a stall is a statement about the current state, and the open
-    marker may be arbitrarily older than any window the viewer looks at."""
+    Judged at the newest data timestamp, not over the query window: a stall
+    is a statement about the current state. Every open phase counts however
+    old its marker. The median comes from the phase's most recent closes in
+    this attempt however long ago: when every rank is stuck in one phase it
+    stops closing, and a baseline from a trailing window would empty out and
+    drop the alarm. Closes longer than ``MAX_WINDOW_S`` are earlier stalls,
+    left out so they cannot raise the baseline past the next one."""
     time_range = store.time_range()
     if time_range is None:
         return []
@@ -100,16 +104,11 @@ def _stall_advisories(store: MetricStore) -> list[Advisory]:
     # phases_by_lane anchors the synthesized initialize band to). It also keeps
     # the previous attempt's closed durations out of the median baseline.
     attempt_start = store.meta.start_ts if store.meta else float("-inf")
-    events = [event for event in store.phase_events() if event.t0 >= attempt_start]
-    closed_keys = {(e.node, e.rank, e.name, e.t0) for e in events if not e.open}
-    durations: dict[str, list[float]] = {}
+    durations = store.recent_closed_phase_durations(since_t0=attempt_start)
     open_ages: dict[str, list[float]] = {}
-    for event in events:
-        if event.open:
-            if (event.node, event.rank, event.name, event.t0) not in closed_keys:
-                open_ages.setdefault(event.name, []).append(edge - event.t0)
-        else:
-            durations.setdefault(event.name, []).append(event.t1 - event.t0)
+    for event in store.open_phase_events():
+        if event.t0 >= attempt_start:
+            open_ages.setdefault(event.name, []).append(edge - event.t0)
 
     out = []
     for name, ages in sorted(open_ages.items()):

@@ -30,8 +30,8 @@ import json
 import os
 import threading
 import time
-from collections import OrderedDict
-from collections.abc import Callable
+from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, ClassVar
@@ -265,12 +265,13 @@ def _hour_bounds(key: str) -> tuple[float, float]:
     return float(start), float(start + 3600)
 
 
-def _read_complete_lines(path: Path, offset: int) -> bytes:
-    """The newline-terminated lines appended to ``path`` past ``offset``. A
-    line still being written is left for a later read once its writer ends it."""
+def _read_complete_lines(path: Path, offset: int, end: int | None = None) -> bytes:
+    """The newline-terminated lines of ``path`` in [offset, end) (to EOF
+    without ``end``). A line still being written is left for a later read once
+    its writer ends it."""
     with open(path, "rb") as f:
         f.seek(offset)
-        appended = f.read()
+        appended = f.read() if end is None else f.read(end - offset)
     return appended[: appended.rfind(b"\n") + 1]
 
 
@@ -387,6 +388,115 @@ class _PartitionReader:
         return stamps
 
 
+class _AppendCursor:
+    """One consumer's read offsets over a partitioned stream, for consumers
+    that fold every byte of the stream once rather than cache windows of it."""
+
+    def __init__(self, reader: _PartitionReader):
+        self._reader = reader
+        self._offsets: dict[str, int] = {}
+
+    def appended(self) -> Iterator[tuple[Path, int, bytes]]:
+        """(path, offset, complete lines) per partition that grew since the last
+        call, oldest partition first. A partition's offset advances only once the
+        consumer's loop body returns, so a fold that raises re-reads the same
+        bytes next time.
+
+        Sizes are taken newest partition first, then read up to: flush writes
+        partitions oldest first, so a row in a newer partition is never read
+        before the older-partition rows written ahead of it (a phase's open
+        marker ahead of its close across an hour boundary)."""
+        sizes = [(key, path, path.stat().st_size) for key, path in reversed(self._reader.files())]
+        for key, path, size in reversed(sizes):
+            offset = self._offsets.get(key, 0)
+            if size <= offset:
+                continue
+            complete_lines = _read_complete_lines(path, offset, size)
+            if complete_lines:
+                yield path, offset, complete_lines
+            self._offsets[key] = offset + len(complete_lines)
+
+
+class _PhaseIndex:
+    """What a windowed read of the phases stream cannot answer, across every
+    partition: intervals still open (a stall can be older than any window),
+    intervals closed after more than ``longer_than_s`` (the close lands past
+    any window's upper slack), and each phase's most recent closed durations
+    up to ``longer_than_s`` (the stall baseline: a phase every rank is stuck in
+    stops closing, so a trailing window of closes would empty out; a longer
+    close is a stall that ended, not a sample of the phase's usual length).
+
+    Each partition's bytes are folded in once and later calls read only what
+    was appended. An open marker always lands before its close: the sink
+    pushes it at ``Timer.start`` while the close waits for a batch."""
+
+    # a few steps' worth of closes at 1024 ranks
+    RECENT_CLOSES_PER_PHASE: ClassVar[int] = 4096
+    _INTERVAL_KEY_FIELD_PREFIXES: ClassVar[tuple[bytes, ...]] = (b'"name":', b'"t0":', b'"node":', b'"rank":')
+    _OPEN_T1_BYTES: ClassVar[bytes] = json.dumps(PhaseEvent.OPEN_T1).encode()
+
+    def __init__(self, reader: _PartitionReader, *, longer_than_s: float):
+        self._cursor = _AppendCursor(reader)
+        self._longer_than_s = longer_than_s
+        # only the few still-open or long lines are ever json-parsed: one writer
+        # serializes equal values identically, so the key is matched as bytes
+        self._open_line_by_interval_key: dict[tuple[bytes, ...], bytes] = {}
+        self._open_event_by_line: dict[bytes, PhaseEvent] = {}
+        # keyed like the open lines, so re-reading a chunk after a failed one stays idempotent
+        self._long_closed_event_by_interval_key: dict[tuple[bytes, ...], PhaseEvent] = {}
+        self._recent_closes_by_raw_name: dict[bytes, deque[tuple[float, float]]] = defaultdict(
+            lambda: deque(maxlen=self.RECENT_CLOSES_PER_PHASE)
+        )
+        self._lock = threading.Lock()
+
+    def events(self) -> list[PhaseEvent]:
+        """Every interval still open, and every closed one longer than ``longer_than_s``."""
+        with self._lock:
+            self._fold_appended()
+            open_lines = set(self._open_line_by_interval_key.values())
+            self._open_event_by_line = {
+                line: self._open_event_by_line.get(line) or PhaseEvent.from_dict(json.loads(line))
+                for line in open_lines
+            }
+            return [*self._open_event_by_line.values(), *self._long_closed_event_by_interval_key.values()]
+
+    def recent_closed_durations(self, *, since_t0: float) -> dict[str, list[float]]:
+        """Each phase's last ``RECENT_CLOSES_PER_PHASE`` closed durations up to
+        ``longer_than_s``, of intervals that began at or after ``since_t0``."""
+        with self._lock:
+            self._fold_appended()
+            return {
+                json.loads(raw_name): [duration for t0, duration in closes if t0 >= since_t0]
+                for raw_name, closes in self._recent_closes_by_raw_name.items()
+            }
+
+    def _fold_appended(self) -> None:
+        for _, _, complete_lines in self._cursor.appended():
+            # appended once the chunk folds whole: a re-read after a failure must not count a close twice
+            closes = []
+            for line in complete_lines.splitlines():
+                interval_key = tuple(_raw_field_value(line, field) for field in self._INTERVAL_KEY_FIELD_PREFIXES)
+                t1_bytes = _raw_field_value(line, b'"t1":')
+                if t1_bytes == self._OPEN_T1_BYTES:
+                    self._open_line_by_interval_key[interval_key] = line
+                    continue
+                self._open_line_by_interval_key.pop(interval_key, None)
+                t0, duration = float(interval_key[1]), float(t1_bytes) - float(interval_key[1])
+                if duration > self._longer_than_s:
+                    self._long_closed_event_by_interval_key[interval_key] = PhaseEvent.from_dict(json.loads(line))
+                else:
+                    closes.append((interval_key[0], t0, duration))
+            for raw_name, t0, duration in closes:
+                self._recent_closes_by_raw_name[raw_name].append((t0, duration))
+
+
+def _raw_field_value(line: bytes, prefix: bytes) -> bytes:
+    """The raw value after ``prefix`` in one compact JSON line."""
+    start = line.index(prefix) + len(prefix)
+    end = line.find(b",", start)
+    return line[start : end if end >= 0 else line.rindex(b"}")].strip()
+
+
 class MetricStore:
     COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES)
     PARTITIONED_STREAMS: ClassVar[tuple[Stream, ...]] = (
@@ -417,6 +527,7 @@ class MetricStore:
         self._offsets: dict[Stream, int] = {s: 0 for s in Stream if s not in self.PARTITIONED_STREAMS}
         self._readers: dict[Stream, _PartitionReader] = {s: self._make_reader(s) for s in self.PARTITIONED_STREAMS}
         self.unserializable_dropped = 0
+        self._phase_index = _PhaseIndex(self._readers[Stream.PHASES], longer_than_s=self.MAX_WINDOW_S)
         self._catalog: dict[str, dict] | None = None  # write-side lane catalog accumulator
         # full-window engine query cache, versioned by partition file sizes so
         # appended scrapes invalidate it; the lock is load-bearing because sync
@@ -745,13 +856,34 @@ class MetricStore:
         return lanes
 
     def phase_events(self, t0: float | None = None, t1: float | None = None) -> list[PhaseEvent]:
-        """Raw phase events, open markers included — advisory heuristics need
-        the unexpanded events rather than the lane-resolved view."""
+        """Unexpanded phase events for [t0, t1] (not the lane-resolved view):
+        closed intervals that can overlap the window, every interval still open,
+        and every closed interval longer than ``MAX_WINDOW_S``. An open marker
+        whose close has landed is not returned; ``iter_records`` has the raw rows."""
         return self._phase_events(t0, t1)
 
     def _phase_events(self, t0: float | None, t1: float | None) -> list[PhaseEvent]:
+        """Closed intervals that can overlap [t0, t1], every interval still open,
+        and every closed interval longer than ``MAX_WINDOW_S``. Closes key by end
+        hour, so none ending at or after t0 sits in an earlier partition, and the
+        upper slack reaches every interval up to ``MAX_WINDOW_S`` long; longer
+        ones come from the index alone, so none is returned twice."""
         upper = None if t1 is None else t1 + self.MAX_WINDOW_S
-        return self._readers[Stream.PHASES].window(None, upper)
+        closed = [
+            event
+            for event in self._readers[Stream.PHASES].window(t0, upper)
+            if not event.open and event.t1 - event.t0 <= self.MAX_WINDOW_S
+        ]
+        return closed + self._phase_index.events()
+
+    def open_phase_events(self) -> list[PhaseEvent]:
+        """Every phase interval opened and not yet closed, however old."""
+        return [event for event in self._phase_index.events() if event.open]
+
+    def recent_closed_phase_durations(self, *, since_t0: float) -> dict[str, list[float]]:
+        """Each phase's most recent closed durations, of intervals that began at
+        or after ``since_t0``, however long ago they closed."""
+        return self._phase_index.recent_closed_durations(since_t0=since_t0)
 
     def has_stream(self, stream: Stream) -> bool:
         if stream in self.PARTITIONED_STREAMS:
@@ -775,7 +907,7 @@ class MetricStore:
                 for row in self._readers[stream].window(None, None).iter_rows(named=True)
             ]
         if stream is Stream.PHASES:
-            return list(self._phase_events(None, None))
+            return list(self._readers[stream].window(None, None))
         if stream is Stream.TRAJECTORIES:
             return self.trajectory_events()
         if stream is Stream.GPU_PROCESSES:

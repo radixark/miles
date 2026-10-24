@@ -250,3 +250,110 @@ def test_concurrent_refresh_does_not_duplicate_records(tmp_path):
     for thread in threads:
         thread.join()
     assert reader.window(None, None) == list(range(150))
+
+
+def _hourly_phases_with_old_stall(tmp_path, *, hours: int) -> MetricStore:
+    """One closed train_wait per hour for ``hours`` hours, plus a train_wait
+    opened in hour 0 that never closes: a stall older than any query window."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="day", start_ts=BASE, args={}))
+    writer.append(
+        PhaseEvent(name="train_wait", t0=BASE + 10, t1=PhaseEvent.OPEN_T1, node="n", gpus=[1], rank=1, role=Role.TRAIN)
+    )
+    for hour in range(hours):
+        t0 = BASE + hour * HOUR + 100
+        writer.append(PhaseEvent(name="train_wait", t0=t0, t1=t0 + 10, node="n", gpus=[0], rank=0, role=Role.TRAIN))
+        writer.append(GpuSample(ts=t0, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
+    writer.flush()
+    return MetricStore.load(tmp_path)
+
+
+def test_windowed_phase_query_stays_within_its_partitions_past_the_cache_size(tmp_path, monkeypatch):
+    """More hours than the partition cache holds must not turn every request
+    into a re-parse of the whole history."""
+    hours = MetricStore.PARTITION_CACHE_BLOCKS + 6
+    store = _hourly_phases_with_old_stall(tmp_path, hours=hours)
+    parsed_partitions = []
+    parse = store._parse_object_lines
+    monkeypatch.setattr(store, "_parse_object_lines", lambda *a: parsed_partitions.append(a[2].stem) or parse(*a))
+
+    last_hour = (BASE + (hours - 1) * HOUR, BASE + hours * HOUR)
+    store.phases_by_lane(t0=last_hour[0], t1=last_hour[1])
+    first = len(parsed_partitions)
+    store.phases_by_lane(t0=last_hour[0], t1=last_hour[1])
+    assert first <= 6, f"a 1 h window parsed {first} partitions"
+    assert len(parsed_partitions) == first, "a repeated window re-parsed partitions it had cached"
+
+
+def test_phase_opened_before_the_window_is_still_open_in_it(tmp_path):
+    hours = MetricStore.PARTITION_CACHE_BLOCKS + 6
+    store = _hourly_phases_with_old_stall(tmp_path, hours=hours)
+    phases = store.phases_by_lane(t0=BASE + (hours - 1) * HOUR, t1=BASE + hours * HOUR)
+    stalled = [p for p in phases if p["gpu"] == 1]
+    assert [p["name"] for p in stalled] == ["train_wait"]
+    assert stalled[0]["t0"] == BASE + 10
+
+
+def test_phase_longer_than_the_window_slack_shows_once_in_every_window_it_spans(tmp_path):
+    """A 10 h stall closes past any window's upper slack: the hours it spanned
+    must still show it after it closes, and the window holding its close once."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="long", start_ts=BASE, args={}))
+    stall = dict(name="train_wait", t0=BASE + 10, node="n", gpus=[1], rank=1, role=Role.TRAIN)
+    writer.append(PhaseEvent(**stall, t1=PhaseEvent.OPEN_T1))
+    for hour in range(12):
+        t0 = BASE + hour * HOUR + 100
+        writer.append(PhaseEvent(name="train_wait", t0=t0, t1=t0 + 10, node="n", gpus=[0], rank=0, role=Role.TRAIN))
+    writer.append(PhaseEvent(**stall, t1=BASE + 10 * HOUR + 10))
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+
+    for t0, t1 in [(BASE + HOUR, BASE + 2 * HOUR), (BASE + 9.5 * HOUR, BASE + 10.5 * HOUR)]:
+        stalled = [p for p in store.phases_by_lane(t0=t0, t1=t1) if p["gpu"] == 1]
+        assert [p["t0"] for p in stalled] == [BASE + 10], (t0, stalled)
+
+
+def test_iter_records_returns_every_phase_row_as_written(tmp_path):
+    """Tools replay the stream through the sinks: an open marker whose close
+    landed is still a row, unlike in the phase_events() query view."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="raw", start_ts=BASE, args={}))
+    interval = dict(name="train_wait", t0=BASE + 10, node="n", gpus=[0], rank=0, role=Role.TRAIN)
+    writer.append(PhaseEvent(**interval, t1=PhaseEvent.OPEN_T1))
+    writer.append(PhaseEvent(**interval, t1=BASE + 20))
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+    assert [event.t1 for event in store.iter_records(Stream.PHASES)] == [PhaseEvent.OPEN_T1, BASE + 20]
+    assert [event.t1 for event in store.phase_events()] == [BASE + 20]
+
+
+def test_close_landing_mid_read_in_a_newer_partition_still_pairs_its_open(tmp_path, monkeypatch):
+    """A flush between reading hour 0 and hour 1 writes an open marker into
+    hour 0 and its close into hour 1: the close must not be read before its
+    open, or the open stays in the index forever."""
+    import miles.dashboard.store as store_module
+
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="race", start_ts=BASE, args={}))
+    for t0 in (BASE + 10, BASE + HOUR + 10):
+        writer.append(PhaseEvent(name="actor_train", t0=t0, t1=t0 + 5, node="n", gpus=[0], rank=0, role=Role.TRAIN))
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+
+    crossing = dict(name="train_wait", t0=BASE + HOUR - 1, node="n", gpus=[1], rank=1, role=Role.TRAIN)
+    read = store_module._read_complete_lines
+    flushed = []
+
+    def flush_after_reading_hour_0(path, *args):
+        lines = read(path, *args)
+        if path.stem == _hour_key(BASE) and not flushed:
+            flushed.append(True)
+            writer.append(PhaseEvent(**crossing, t1=PhaseEvent.OPEN_T1))
+            writer.append(PhaseEvent(**crossing, t1=BASE + HOUR + 1))
+            writer.flush()
+        return lines
+
+    monkeypatch.setattr(store_module, "_read_complete_lines", flush_after_reading_hour_0)
+    store.open_phase_events()
+    assert flushed
+    assert store.open_phase_events() == []
