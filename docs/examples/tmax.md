@@ -165,6 +165,10 @@ limit, because their `--mirror-url` named mirrors that no longer existed; withou
 pass@1. Step 240 is a rerun through live mirrors (the first run: 0.506 / 0.770), as are all the TB2.1 evals of
 steps 200-300. Most remaining errors are 120 s environment-setup timeouts, counted as failures.
 
+Sampled in open-instruct's exact setup (T=0.7, top_p 0.95, 65536 tokens, 8 concurrent), steps 240 and 360 score
+TBlite 0.512 / 0.780 and 0.506 / 0.740, TB2.1 0.258 / 0.382 and 0.258 / 0.360: within about 0.02 of greedy, so
+decoding does not explain the gap to open-instruct. The run was stopped at step 440 (2026-10-24).
+
 ### Production recipe, 4 nodes
 
 `configs/prod_4node.yaml` on 4x 8 B300 (`ai2/holmes`), run `tmax_prod4node_qwen35_9b_20261016_001037` (commit
