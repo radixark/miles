@@ -1991,6 +1991,29 @@ def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
         miles_validate_args(args)
 
 
+def test_debug_rollout_only_drops_the_disk_offload_target_of_the_trainer_it_skips():
+    """A colocated disk-offload recipe reused for a rollout-only run failed on the trainer's offload target."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--debug-rollout-only",
+            "--colocate",
+            "--offload-train-target",
+            "disk",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    _set_megatron_parallel_sizes(args)
+
+    miles_validate_args(args)
+
+    assert args.offload_train is False
+    assert args.offload_train_target == "cpu"
+
+
 @pytest.mark.parametrize(
     ("megatron_args", "match"),
     [
@@ -2963,6 +2986,7 @@ class TestValidateRematerializeParamFromMasterWeight:
             compute_advantages_and_returns=True,
             num_critic_only_steps=0,
             debug_train_only=False,
+            debug_rollout_only=False,
             ci_test=False,
             check_rematerialize_param_from_master_weight=False,
             disable_param_buffers_cpu_backup=False,
@@ -3001,6 +3025,13 @@ class TestValidateRematerializeParamFromMasterWeight:
         assert args.rematerialize_param_from_master_weight is False
         assert args.disable_param_buffers_cpu_backup is False
 
+    def test_debug_rollout_only_silently_disables(self):
+        # --debug-rollout-only has already turned colocate and offload_train off, which tripped the asserts.
+        args = self._make_args(debug_rollout_only=True, colocate=False, offload_train=False)
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.rematerialize_param_from_master_weight is False
+        assert args.disable_param_buffers_cpu_backup is False
+
     def test_noop_when_disabled(self):
         args = self._make_args(rematerialize_param_from_master_weight=False, colocate=False)
         _validate_rematerialize_param_from_master_weight(args)
@@ -3035,6 +3066,7 @@ class TestValidateRematerializeParamFromMasterWeight:
             rematerialize_param_from_master_weight=True,
             train_backend="fsdp",
             debug_train_only=False,
+            debug_rollout_only=False,
         )
         with pytest.raises(AssertionError, match="Megatron"):
             _validate_rematerialize_param_from_master_weight(args)

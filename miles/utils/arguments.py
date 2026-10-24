@@ -3314,8 +3314,9 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
 def _validate_rematerialize_param_from_master_weight(args):
     if not args.rematerialize_param_from_master_weight:
         return
-    if args.debug_train_only:
-        # update_weights never runs, so the param buffer would never be paused.
+    if args.debug_train_only or args.debug_rollout_only:
+        # update_weights never runs (rollout-only builds no trainer model at all), so the param buffer would
+        # never be paused.
         args.rematerialize_param_from_master_weight = False
         return
     assert (
@@ -3850,6 +3851,9 @@ def miles_validate_args(args):
             args.actor_num_nodes = args.rollout_num_gpus // args.actor_num_gpus_per_node
         args.colocate = False
         args.offload_train = args.offload_rollout = False
+        # The forced value wins over the user's: no trainer runs, so a disk target would only trip
+        # its --offload-train requirement on a recipe reused for a rollout-only run.
+        args.offload_train_target = "cpu"
         if args.train_memory_margin_bytes > 0:
             logger.warning("Force train_memory_margin_bytes=0 since debug_rollout_only does not support it")
             args.train_memory_margin_bytes = 0
