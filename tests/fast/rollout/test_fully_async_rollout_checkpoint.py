@@ -1,5 +1,6 @@
 import asyncio
 from argparse import Namespace
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +13,7 @@ from tests.fast.rollout.test_fully_async_rollout import FakeDataSource, make_arg
 from miles.backends.training_utils.model_companion import ModelCompanion, ModelCompanionSampleConsumptionUtils
 from miles.backends.training_utils.types import TrainStepOutcome
 from miles.rollout.base_types import RolloutFnTrainInput
+from miles.rollout.filter_hub.base_types import iter_samples
 from miles.rollout.fully_async_data_buffer import DataBufferInput
 from miles.rollout.fully_async_rollout import _RunningTask
 from miles.utils.arguments import _resolve_sample_ownership_check
@@ -25,14 +27,27 @@ from miles.utils.types import Sample, SampleLineage
 
 
 class TestCheckpointSampleOwnership:
-    @pytest.mark.parametrize("lose_prefetched_batch", [False, True], ids=["healthy", "missing-training-step"])
+    @pytest.mark.parametrize(
+        ("keep_partial_groups", "lose_prefetched_batch", "compact"),
+        [(False, False, False), (False, True, False), (True, False, False), (True, False, True)],
+    )
     async def test_ci_checker_detects_a_prefetched_batch_lost_after_restore(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, lose_prefetched_batch: bool
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        lose_prefetched_batch: bool,
+        keep_partial_groups: bool,
+        compact: bool,
     ) -> None:
         """The CI checker rejects a restored batch that the driver never sends to training."""
         event_logger = EventLogger(log_dir=tmp_path / "events", source=SimpleProcessIdentity(component="main"))
         set_event_logger(event_logger)
-        args = _checkpoint_args(tmp_path)
+        args = _checkpoint_args(
+            tmp_path,
+            use_partial_groups_on_abort=keep_partial_groups,
+            enable_sample_ownership_checker=True,
+            async_unused_samples_handler="retry",
+        )
         source = FakeDataSource(scripted=[make_group(9)])
         SampleOwnershipRecorder.install(
             args=SimpleNamespace(enable_sample_ownership_checker=True),
@@ -41,11 +56,32 @@ class TestCheckpointSampleOwnership:
         )
         fn = make_fn(monkeypatch, args, source)
         [group] = source.get_samples(1)
-        await fn._output.put(DataBufferInput(prompt_group=group, group=group))
+        if keep_partial_groups:
+            group[1].status = Sample.Status.ABORTED
+        outputs = (
+            [
+                [
+                    replace(
+                        sample,
+                        rollout_id=sample.index,
+                        lineage=SampleLineage(source_sample_index=sample.index, output_index=i, output_count=2),
+                    )
+                    for i in range(2)
+                ]
+                for sample in group
+            ]
+            if compact
+            else group
+        )
+        await fn._output.put(DataBufferInput(prompt_group=group, group=outputs))
         fn.save(tmp_path)
 
         restored = make_fn(monkeypatch, args, source)
         restored.load(tmp_path)
+        [entry] = restored._output.state_dict()
+        assert [sample.index for sample in entry.prompt_group] == [90, 91]
+        expected = [90, 90] if compact else [90] if keep_partial_groups else [90, 91]
+        assert [sample.index for sample in iter_samples(entry.group)] == expected
         restored._worker = asyncio.create_task(asyncio.Event().wait())
         checker_args = SimpleNamespace(
             **parser_defaults()
@@ -70,7 +106,8 @@ class TestCheckpointSampleOwnership:
         trainer = _CheckpointTrainer()
         try:
             output = await restored._drain(RolloutFnTrainInput(rollout_id=7, weight_version=1))
-            assert [[sample.index for sample in batch] for batch in output.samples] == [[90, 91]]
+            assert [[sample.index for sample in iter_samples(batch)] for batch in output.samples] == [expected]
+            assert not restored._retry_buffer
             if not lose_prefetched_batch:
                 await trainer.train(rollout_id=7, rollout_data_pack=output.samples)
             for rollout_id in (8, 9):
@@ -102,9 +139,8 @@ class _CheckpointTrainer:
         ModelCompanionSampleConsumptionUtils.record(
             self.model,
             [
-                SampleLineage(source_sample_index=sample.index, output_index=0, output_count=1)
-                for group in rollout_data_pack
-                for sample in group
+                sample.lineage or SampleLineage(source_sample_index=sample.index, output_index=0, output_count=1)
+                for sample in SampleOwnershipRecorder.flatten_samples(rollout_data_pack)
             ],
         )
         SampleOwnershipRecorder.publish_model_companion_info(

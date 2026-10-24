@@ -1,7 +1,7 @@
-import itertools
 import logging
 from typing import Any
 
+from miles.rollout.filter_hub.base_types import iter_samples
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.types import Sample
@@ -17,24 +17,26 @@ def postprocess_rollout_data(
     validate_compact_rollout_ids(data)
 
     # flatten the data if it is a list of lists
-    while isinstance(data[0], list):
-        data = list(itertools.chain.from_iterable(data))
+    while any(isinstance(item, list) for item in data):
+        data = list(iter_samples(data))
 
     # Compact rollouts must not be trimmed by sample count; the schedule drops
     # whole trailing rollouts instead.
     is_compact = any(s.rollout_id is not None for s in data)
 
-    if not args.disable_rollout_trim_samples and not is_compact:
-        global_batch_size = args.global_batch_size
-        if args.use_dynamic_global_batch_size:
+    global_batch_size = args.global_batch_size
+    if args.use_dynamic_global_batch_size:
+        if is_compact:
+            global_batch_size = len({s.rollout_id if s.rollout_id is not None else s.index for s in data})
+        else:
             logger.info(f"Collected {len(data)} samples from rollout to train with dynamic global batch size")
-            dynamic_global_batch_size = _compute_dynamic_global_batch_size(
+            global_batch_size = _compute_dynamic_global_batch_size(
                 args, train_parallel_config=train_parallel_config, num_samples=len(data)
             )
-            metadata["dynamic_global_batch_size"] = dynamic_global_batch_size
-            global_batch_size = dynamic_global_batch_size
+        metadata["dynamic_global_batch_size"] = global_batch_size
 
-        if len(data) % global_batch_size != 0:
+    if not is_compact:
+        if not args.disable_rollout_trim_samples and len(data) % global_batch_size != 0:
             trim_len = (len(data) // global_batch_size) * global_batch_size
             if trim_len == 0:
                 raise ValueError(f"Not enough samples {len(data)} for global_batch_size {global_batch_size}")
@@ -53,7 +55,7 @@ def validate_compact_rollout_ids(node, depth=0):
     if isinstance(node, Sample):
         return
     assert isinstance(node, list), f"unexpected rollout output node type: {type(node).__name__}"
-    if node and isinstance(node[0], Sample):
+    if node and all(isinstance(item, Sample) for item in node):
         if depth >= 2 and len(node) > 1:
             rids = [s.rollout_id for s in node]
             missing = [i for i, r in enumerate(rids) if r is None]

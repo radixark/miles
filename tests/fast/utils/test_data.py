@@ -5,6 +5,7 @@ from argparse import Namespace
 from typing import Any
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.driver_fakes import FakeObjectStore
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
@@ -183,7 +184,7 @@ def _delay_split_args(**overrides: Any) -> Namespace:
         multi_lora=False,
     )
     fields.update(overrides)
-    return Namespace(**fields)
+    return Namespace(**{**parser_defaults(), **fields})
 
 
 def _raw_batch(*, num_samples: int = _NUM_SAMPLES, **extra: Any) -> dict[str, Any]:

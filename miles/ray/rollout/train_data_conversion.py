@@ -279,6 +279,9 @@ def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes:
             segments_by_group_index.setdefault(int(group_index), []).append(segment_index)
         return list(segments_by_group_index.values())
 
+    if args.use_partial_groups_on_abort:
+        raise ValueError("Partial-group reward normalization requires group_index or explicit prompt_group_sizes")
+
     # Legacy fixed-fanout batches store each prompt's segments contiguously.
     expected_samples = args.n_samples_per_prompt * args.rollout_batch_size
     if len(samples) == expected_samples:
@@ -368,6 +371,16 @@ def split_train_data_by_dp(
     if can_precompute_dp_schedule(args, data, train_parallel_config):
         shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     else:
+        rollout_ids = data.get("rollout_ids", [])
+        if args.use_dynamic_global_batch_size and len(set(rollout_ids)) != len(rollout_ids):
+            raise ValueError("Dynamic batches with multiple samples per trajectory require rollout-side DP scheduling")
+        global_batch_size = data.get("dynamic_global_batch_size")
+        if global_batch_size is not None and len(data["tokens"]) % global_batch_size != 0:
+            raise ValueError(
+                f"Training-side DP scheduling requires complete batches: got {len(data['tokens'])} samples "
+                f"with global_batch_size={global_batch_size}. Remove --disable-rollout-trim-samples "
+                "to trim incomplete batches before training."
+            )
         shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config.dp_size)
     return shards
 

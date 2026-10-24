@@ -283,6 +283,8 @@ Sections mirror the launch-script argument groups.
 | `--rollout-submission-granularity` | enum | driver | `group` or `sample`: what frees rollout submission capacity. Unset means `sample` under `--fully-async`, `group` otherwise. |
 | `--buffer-filter-path` | str | – | Buffer dequeue filter. |
 | `--rollout-sample-filter-path` | str | – | Per-sample filter. |
+| `--use-partial-groups-on-abort` | flag | off | Keep non-aborted trajectories in sync or fully async rollout. Requires `--use-dynamic-global-batch-size`. |
+| `--partial-groups-on-abort-min-ratio` | float | `0.5` | Minimum non-aborted fraction of a prompt group when the option above is enabled. Range `(0, 1]`; equality passes, groups below it are rejected. |
 
 ### SGLang and router
 

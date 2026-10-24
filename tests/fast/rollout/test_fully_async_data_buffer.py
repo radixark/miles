@@ -11,6 +11,7 @@ from miles.rollout.fully_async_data_buffer import (
     DataBufferInput,
     DefaultMultiDataBuffer,
 )
+from miles.utils.function_registry import function_registry
 
 
 class _RecordingBuffer(DataBuffer):
@@ -90,6 +91,7 @@ def _make_args() -> Namespace:
         async_data_buffer_capacity_factor=1.0,
         custom_async_data_buffer_path_per_model=None,
         dynamic_sampling_filter_path=None,
+        use_partial_groups_on_abort=False,
         max_weight_staleness=None,
         megatron_config=encode_megatron_config("solver", "verifier"),
         reward_key=None,
@@ -145,7 +147,9 @@ def _make_single_policy_args(**overrides) -> Namespace:
     defaults = dict(
         async_data_buffer_capacity_factor=1000.0,
         dynamic_sampling_filter_path=None,
+        use_partial_groups_on_abort=False,
         enable_sample_ownership_checker=False,
+        partial_groups_on_abort_min_ratio=0.5,
         max_weight_staleness=None,
         reward_key=None,
         rollout_batch_size=1,
@@ -194,6 +198,37 @@ def _make_buffer(**overrides) -> _BufferUnderTest:
         )
     )
     return _BufferUnderTest(buffer=buffer, unused=unused)
+
+
+@pytest.mark.parametrize("min_ratio", [0.5, 0.75])
+async def test_partial_groups_on_abort_precede_reward_and_dynamic_filters(min_ratio):
+    seen = []
+
+    def keep(args, group, **kwargs):
+        seen.append(list(group))
+        return DynamicFilterOutput(keep=True)
+
+    with function_registry.temporary("test:keep_group", keep):
+        under_test = _make_buffer(
+            use_partial_groups_on_abort=True,
+            partial_groups_on_abort_min_ratio=min_ratio,
+            dynamic_sampling_filter_path="test:keep_group",
+        )
+    group = _make_finished_group(1)
+    group[-1].status = Sample.Status.ABORTED
+    group[-1].reward = None
+
+    await _put(under_test.buffer, group)
+
+    if min_ratio == 0.5:
+        assert seen == [group[:1]]
+        assert (await _get_one(under_test.buffer)).group == group[:1]
+        assert under_test.unused == []
+    else:
+        assert seen == []
+        assert under_test.buffer.state_dict() == []
+        assert under_test.unused == [(group, UnusedReason.ABORTED)]
+        assert under_test.buffer.get_metrics()["rollout/fully_async/aborted_groups_filtered"] == 1
 
 
 async def _put(buffer: DataBuffer, group: Group) -> None:
