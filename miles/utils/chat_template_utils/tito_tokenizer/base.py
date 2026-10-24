@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from typing import Any
 
 from miles.utils.chat_template_utils import template
 from miles.utils.chat_template_utils.message_matcher_hub import assert_messages_append_only_with_allowed_role
+from miles.utils.chat_template_utils.tito_tokenizer.truncation import TruncationGrammar
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 # Bundled fixed-template files live under this directory; ``FixedTemplate.template``
@@ -86,6 +88,10 @@ class TITOTokenizer:
     # this family.
     reasoning_parser: str | None = None
     tool_call_parser: str | None = None
+
+    # Structures to close when a turn stops at ``finish_reason='length'``;
+    # ``None`` means this family cannot continue a truncated turn.
+    TRUNCATION_GRAMMAR: TruncationGrammar | None = None
 
     def __init__(
         self,
@@ -255,6 +261,62 @@ class TITOTokenizer:
     ) -> list[dict[str, Any]]:
         """Restore model-specific server-owned sidecars after client replay."""
         return list(request_messages)
+
+    def close_truncated_turn(self, token_ids: list[int], completion_start: int) -> list[int]:
+        """Return the tokens that close a turn cut by ``finish_reason='length'``.
+
+        *token_ids* is the prompt followed by the turn's sampled tokens, which
+        start at *completion_start*.  The closer closes each open reasoning or
+        tool-call structure, innermost first, then ends the turn.  Callers append
+        it before ``merge_tokens``; earlier tokens never change.  Partial tool-call
+        arguments are left as sampled.
+        """
+        grammar = self._require_truncation_grammar()
+        prompt_text, completion_text = self._decode_turn(token_ids, completion_start)
+        stack, _ = grammar.scan(completion_text, grammar.opened_by(prompt_text))
+        return self._encode_text(grammar.closing_text(prompt_text + completion_text, stack))
+
+    def check_turn_structure(self, token_ids: list[int], span: tuple[int, int]) -> list[str]:
+        """Report unbalanced reasoning and tool-call structures in one assistant turn.
+
+        *span* is ``(completion_start, turn_end)``.  A well-formed turn closes
+        every structure it opens, innermost first, and ends with the family's
+        end-of-turn token at ``turn_end - 1``; a family without one ends the turn
+        at ``turn_end``.  Returns the problems found, empty for a well-formed turn.
+        """
+        grammar = self._require_truncation_grammar()
+        start, end = span
+        prompt_text, turn_text = self._decode_turn(token_ids[:end], start)
+        stack, problems = grammar.scan(turn_text, grammar.opened_by(prompt_text))
+        if stack:
+            problems.append("unclosed: " + ", ".join(repr(pair.close_marker) for pair in reversed(stack)))
+        if grammar.end_of_turn is not None and token_ids[start:end][-1:] != self._encode_text(grammar.end_of_turn):
+            problems.append(f"turn does not end with {grammar.end_of_turn!r}")
+        return problems
+
+    def _require_truncation_grammar(self) -> TruncationGrammar:
+        if self.TRUNCATION_GRAMMAR is None:
+            raise ValueError(f"{type(self).__name__} cannot close a truncated turn")
+        return self.TRUNCATION_GRAMMAR
+
+    @functools.cached_property
+    def _message_boundary_ids(self) -> set[int]:
+        """Token IDs that delimit messages: the comparator's segment boundaries."""
+        return TokenSeqComparator.resolve_special_ids(self.tokenizer, self.special_token_ids)
+
+    def _decode_turn(self, token_ids: list[int], completion_start: int) -> tuple[str, str]:
+        """Decode the turn's prompt text after its last message boundary, and its sampled text.
+
+        The prompt text holds the generation prompt, which may open reasoning.
+        """
+        boundary = next(
+            (i for i in range(completion_start - 1, -1, -1) if token_ids[i] in self._message_boundary_ids),
+            0,
+        )
+        return (
+            self.tokenizer.decode(token_ids[boundary:completion_start]),
+            self.tokenizer.decode(token_ids[completion_start:]),
+        )
 
     def _encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)

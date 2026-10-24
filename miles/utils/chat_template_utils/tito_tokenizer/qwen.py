@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.truncation import MarkerPair, TruncationGrammar
 
 
 class Qwen3TITOTokenizer(TITOTokenizer):
@@ -22,6 +23,12 @@ class Qwen3TITOTokenizer(TITOTokenizer):
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3_fixed.jinja",
         extra_kwargs={"clear_thinking": False},
+    )
+
+    TRUNCATION_GRAMMAR = TruncationGrammar(
+        think=MarkerPair("<think>", "\n</think>\n\n"),
+        tool_blocks=(MarkerPair("<tool_call>", "\n</tool_call>"),),
+        end_of_turn="<|im_end|>",
     )
 
     _default_assistant_start_str: str = "<|im_start|>assistant"

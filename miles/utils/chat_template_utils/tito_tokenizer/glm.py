@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.truncation import MarkerPair, TruncationGrammar
 
 
 class GLM47TITOTokenizer(TITOTokenizer):
@@ -27,6 +28,17 @@ class GLM47TITOTokenizer(TITOTokenizer):
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
         extra_kwargs={"clear_thinking": False},
+    )
+
+    # No end-of-turn token: the next message's role token ends the turn.
+    TRUNCATION_GRAMMAR = TruncationGrammar(
+        think=MarkerPair("<think>", "</think>"),
+        tool_blocks=(
+            MarkerPair("<tool_call>", "</tool_call>"),
+            MarkerPair("<arg_key>", "</arg_key>"),
+            MarkerPair("<arg_value>", "</arg_value>"),
+        ),
+        end_of_turn=None,
     )
 
     max_trim_tokens: int = 1
