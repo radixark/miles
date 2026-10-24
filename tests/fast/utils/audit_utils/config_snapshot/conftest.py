@@ -62,7 +62,6 @@ def capture_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Namespace:
         session_server_external_host=None,
         session_server_instances=None,
     )
-    monkeypatch.setattr("miles.ray.rollout.router_manager.resolve_sglang_config", lambda _: args.sglang)
     ConfigSnapshotDumper.configure(args=args, source=SimpleProcessIdentity(component="main"))
     ConfigSnapshotDumper.dump(stage="process_config", config={"args": args})
     return args
