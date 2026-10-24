@@ -379,3 +379,34 @@ def test_time_range_edge_ignores_a_newest_partition_still_being_written(tmp_path
     writer.flush()
     (tmp_path / Stream.GPU_UTIL.value / f"{_hour_key(BASE + 2 * HOUR)}.jsonl").write_bytes(b'{"ts":')
     assert MetricStore.load(tmp_path).time_range()[1] == BASE + 2 * HOUR - 10
+
+
+def test_gpu_processes_window_and_lane_filter_match_the_written_rows(tmp_path):
+    from miles.dashboard.store import GpuProcessSample
+
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="procs", start_ts=BASE, args={}))
+    written = [
+        GpuProcessSample(
+            ts=BASE + h * HOUR + s, node=node, gpu=gpu, pid=100 + gpu, name=f"proc-{gpu}", mem_mb=1000 * gpu
+        )
+        for h in range(3)
+        for s in (5.0, 3000.0)
+        for node in ("a", "b")
+        for gpu in (0, 1)
+    ]
+    for sample in written:
+        writer.append(sample)
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+
+    t0, t1 = BASE + 2000, BASE + HOUR + 3500
+    expected = [
+        dict(ts=p.ts, node=p.node, gpu=p.gpu, pid=p.pid, name=p.name, mem_mb=p.mem_mb)
+        for p in written
+        if t0 <= p.ts <= t1 and (p.node, p.gpu) in {("a", 1), ("b", 0)}
+    ]
+    got = store.gpu_processes(t0=t0, t1=t1, lanes={("a", 1), ("b", 0)})
+    assert sorted(got, key=lambda r: (r["ts"], r["node"], r["gpu"])) == sorted(
+        expected, key=lambda r: (r["ts"], r["node"], r["gpu"])
+    )

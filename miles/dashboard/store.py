@@ -621,7 +621,7 @@ def _concat_blocks_by_metric(blocks: list[dict[str, pl.DataFrame]]) -> dict[str,
 
 
 class MetricStore:
-    COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES)
+    COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES, Stream.GPU_PROCESSES)
     PARTITIONED_STREAMS: ClassVar[tuple[Stream, ...]] = (
         Stream.GPU_UTIL,
         Stream.ENGINE_SERIES,
@@ -636,6 +636,9 @@ class MetricStore:
     FRAME_SCHEMAS: ClassVar[dict[Stream, dict[str, Any]]] = {
         Stream.GPU_UTIL: dict(
             ts=pl.Float64, node=pl.String, gpu=pl.Int64, util=pl.Int64, mem_mb=pl.Int64, power_w=pl.Int64
+        ),
+        Stream.GPU_PROCESSES: dict(
+            ts=pl.Float64, node=pl.String, gpu=pl.Int64, pid=pl.Int64, name=pl.String, mem_mb=pl.Int64
         ),
         # labels dicts are canonicalized to a JSON string column at parse time
         Stream.ENGINE_SERIES: dict(
@@ -692,7 +695,7 @@ class MetricStore:
                 line_stamps=lambda data: (data["ts"],),
                 max_blocks=self.PARTITION_CACHE_BLOCKS,
             )
-        assert stream in (Stream.PHASES, Stream.TRAJECTORIES, Stream.GPU_PROCESSES), stream
+        assert stream in (Stream.PHASES, Stream.TRAJECTORIES), stream
         record_type = _RECORD_TYPE_OF_STREAM[stream]
         return _PartitionReader(
             self.dir / stream.value,
@@ -1075,7 +1078,7 @@ class MetricStore:
         if stream is Stream.TRAJECTORIES:
             return self.trajectory_events()
         if stream is Stream.GPU_PROCESSES:
-            return self._readers[stream].window(None, None)
+            return [GpuProcessSample(**row) for row in self._readers[stream].window(None, None).iter_rows(named=True)]
         return list(self.records[stream])
 
     @staticmethod
@@ -1298,12 +1301,11 @@ class MetricStore:
         """Per-process memory snapshots in [t0, t1] (coarser cadence than
         ``gpu_series``): the timeline hover resolves the nearest snapshot per
         lane client-side, same as it already does for the util/mem series."""
-        events = self._window_records(self._readers[Stream.GPU_PROCESSES].window(t0, t1), t0, t1)
-        return [
-            dict(ts=e.ts, node=e.node, gpu=e.gpu, pid=e.pid, name=e.name, mem_mb=e.mem_mb)
-            for e in events
-            if lanes is None or (e.node, e.gpu) in lanes
-        ]
+        frame = self._window(self._readers[Stream.GPU_PROCESSES].window(t0, t1), t0, t1)
+        if lanes is not None:
+            selected_lanes = pl.DataFrame(sorted(lanes), schema=dict(node=pl.String, gpu=pl.Int64), orient="row")
+            frame = frame.join(selected_lanes, on=["node", "gpu"], how="semi")
+        return frame.to_dicts()
 
     # cumulative engine families are stored raw; the catalog exposes them as
     # per-interval derived series instead
