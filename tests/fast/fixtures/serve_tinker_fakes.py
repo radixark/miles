@@ -57,6 +57,7 @@ async def tinker_startup(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Simpl
                 "context_parallel_size": 1,
             }
         ),
+        sglang=SimpleNamespace(common_value={"context_length": None}.__getitem__),
         tinker_server_host="127.0.0.1",
         tinker_server_port=10613,
     )
