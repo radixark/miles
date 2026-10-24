@@ -14,7 +14,7 @@ class TestFsdpOffloadNormalization:
             flags.append("--fsdp-cpu-offload")
         source = parse_fsdp_test_config(*flags)
 
-        trainer = compute_trainer_config(source, trainer=source.raw_megatron.trainers[0])
+        trainer = compute_trainer_config(source, source.raw_megatron.trainers[0])
         restored = TrainerConfig.model_validate_json(trainer.model_dump_json())
 
         assert source.offload_train is not cpu_offload

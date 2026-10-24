@@ -94,7 +94,7 @@ class TestGeneratedPathNormalization:
         args = parse_megatron_test_config(
             "--advantage-estimator", "ppo", "--save", "/checkpoints/generated/", "--save-interval", "1", *flags
         )
-        trainer = compute_trainer_config(args, trainer=args.raw_megatron.trainers[1])
+        trainer = compute_trainer_config(args, args.raw_megatron.trainers[1])
         record = make_record(config={"backend": {"save": trainer.backend.save}}).model_copy(
             update={"generated_values": generated_value_registry.read()}
         )

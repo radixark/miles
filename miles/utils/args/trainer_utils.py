@@ -12,7 +12,7 @@ from miles.utils.args.runtime import AllConfig, TrainerConfig
 
 
 # TODO: After zhichen's training backend refactor, make per-trainer argument computation consume structured configs without flattening Miles and backend fields.
-def compute_trainer_config(all_config: AllConfig, *, trainer: MegatronTrainerConfig) -> TrainerConfig:
+def compute_trainer_config(all_config: AllConfig, trainer: MegatronTrainerConfig) -> TrainerConfig:
     if all_config.train_backend == "megatron":
         base_backend_values = all_config.raw_megatron.base_args
         backend_cls = MegatronArgsNamespace
