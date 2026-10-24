@@ -6,7 +6,6 @@ from pydantic import Field, JsonValue, NonNegativeInt
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
-
 # =============================== Raw snapshots ================================
 
 
@@ -19,6 +18,7 @@ class ConfigSnapshotContext(FrozenStrictBaseModel):
     source: ProcessIdentity
     run_uuid: str = Field(min_length=1)
     capture_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+
 
 
 class ConfigSnapshotPoint(FrozenStrictBaseModel):
@@ -42,12 +42,17 @@ class ConfigSnapshotRecord(FrozenStrictBaseModel):
 # ============================ Converted snapshots =============================
 
 
+class ConfigSnapshotDelta(FrozenStrictBaseModel):
+    set: dict[str, JsonValue]
+    remove: list[str]
+
+
 class ConfigSnapshotProcess(FrozenStrictBaseModel):
     """Represent equivalent ranks using one base sample and per-stage diffs."""
 
     ranks: list[int]
     base: JsonValue
-    diffs: dict[str, str]
+    diffs: dict[str, ConfigSnapshotDelta]
 
 
 class ConfigSnapshotCase(FrozenStrictBaseModel):

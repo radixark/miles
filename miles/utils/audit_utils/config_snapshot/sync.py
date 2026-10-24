@@ -17,13 +17,16 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+import yaml
 
+from miles.utils.audit_utils.config_snapshot.compact_codec import ConfigSnapshotBases
 from miles.utils.audit_utils.config_snapshot.converter import ConfigSnapshotConverter
 from miles.utils.audit_utils.config_snapshot.models import ConfigSnapshotTestAttempt, ConfigSnapshotVariant
 from miles.utils.audit_utils.config_snapshot.runner import ConfigSnapshotTestRunner, assert_empty_snapshot_allowed
+from miles.utils.audit_utils.config_snapshot.serialization import dump_config_snapshot
 from miles.utils.audit_utils.config_snapshot.storage import ConfigSnapshotStorage
 from miles.utils.file_utils import atomic_write_text
-from miles.utils.test_utils.snapshot import dump_snapshot
+from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +72,8 @@ def sync(
 
 
 def _collect_snapshots(*, directory: Path, repo_root: Path) -> dict[Path, str]:
+    base_path = repo_root / SNAPSHOT_DIRECTORY / "runtime_config/base.yaml"
+    bases = ConfigSnapshotBases.model_validate(yaml.safe_load(base_path.read_text())) if base_path.exists() else None
     completed: dict[tuple[str, ConfigSnapshotVariant], list[Path]] = {}
     incomplete: set[tuple[str, ConfigSnapshotVariant]] = set()
     for path in sorted(directory.rglob("attempt.json")):
@@ -85,7 +90,7 @@ def _collect_snapshots(*, directory: Path, repo_root: Path) -> dict[Path, str]:
     for (test, variant), directories in completed.items():
         target = ConfigSnapshotTestRunner.golden_path(test=test, repo_root=repo_root, variant=variant)
         cases = [ConfigSnapshotConverter.convert(ConfigSnapshotStorage(directory=path).read()) for path in directories]
-        contents = [dump_snapshot(case) for case in cases]
+        contents = [dump_config_snapshot(case, bases=bases) for case in cases]
         if any(content != contents[0] for content in contents[1:]):
             raise ValueError(f"Completed attempts disagree for {test} ({variant.to_key()}): {directories}")
         if not cases[0].processes:

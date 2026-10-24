@@ -1,15 +1,19 @@
-import difflib
 from collections import defaultdict
 
 from pydantic import JsonValue
 
+from miles.utils.audit_utils.config_snapshot.compact_codec import DeltaCodec
 from miles.utils.audit_utils.config_snapshot.models import (
     ConfigSnapshotCase,
+    ConfigSnapshotDelta,
     ConfigSnapshotPoint,
     ConfigSnapshotProcess,
     ConfigSnapshotRecord,
 )
-from miles.utils.audit_utils.config_snapshot.normalizer import normalize_record, normalized_source_name
+from miles.utils.audit_utils.config_snapshot.normalizer import (
+    normalize_record,
+    normalized_source_name,
+)
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.test_utils.snapshot import dump_snapshot
 
@@ -58,18 +62,12 @@ def _convert_process(records: list[ConfigSnapshotRecord]) -> ConfigSnapshotProce
 def _merge_ranks(
     *, existing: ConfigSnapshotProcess, process: ConfigSnapshotProcess, name: str
 ) -> ConfigSnapshotProcess:
-    if dump_snapshot(existing.base) != dump_snapshot(process.base) or existing.diffs != process.diffs:
+    if dump_snapshot(existing.base) != dump_snapshot(process.base) or dump_snapshot(existing.diffs) != dump_snapshot(
+        process.diffs
+    ):
         raise ValueError(f"Processes disagree on snapshot contents or stages: {name}")
     return process.model_copy(update={"ranks": sorted(set(existing.ranks + process.ranks))})
 
 
-def _diff_from_base(*, base: JsonValue, samples: dict[str, JsonValue]) -> dict[str, str]:
-    base_lines = dump_snapshot(base).splitlines(keepends=True)
-    return {
-        name: "".join(
-            difflib.unified_diff(
-                base_lines, dump_snapshot(sample).splitlines(keepends=True), fromfile=_BASE, tofile=name, n=0
-            )
-        )
-        for name, sample in samples.items()
-    }
+def _diff_from_base(*, base: JsonValue, samples: dict[str, JsonValue]) -> dict[str, ConfigSnapshotDelta]:
+    return {name: DeltaCodec.encode(base=base, actual=sample) for name, sample in samples.items()}
