@@ -45,6 +45,8 @@ def _make_args(*, num_cells: int) -> SimpleNamespace:
         enable_witness=False,
         witness_buffer_size=100,
         save_debug_event_data=None,
+        ci_disable_config_snapshot=False,
+        ci_test=False,
         trainer_heartbeat_checker_interval=10.0,
         trainer_heartbeat_checker_timeout=10.0,
         trainer_heartbeat_checker_first_wait=300.0,

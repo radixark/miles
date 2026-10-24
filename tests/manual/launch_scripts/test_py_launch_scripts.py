@@ -58,6 +58,7 @@ def _nemotron_checkpoint(sandbox: Path) -> dict[str, object]:
 _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, object]]] = {
     "scripts/amd/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2_5layer", 5),
     "scripts/run_deepseek_v4.py": lambda sandbox: {"model_name": "DeepSeek-V4-Flash-FP8-4layer"},
+    "scripts/run_deepseek_v4_1.py": lambda sandbox: {"hf_checkpoint": str(sandbox / "models" / "DeepSeek-V4.1")},
     "scripts/run_glm5_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5", 78),
     "scripts/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2", 78),
     "scripts/run_inkling.py": lambda sandbox: {"model_name": "Inkling-4layer"},
@@ -102,13 +103,15 @@ def recorded(request, monkeypatch, tmp_path):
     rel, entrypoint = request.param
     freeze_environment(monkeypatch, hardware=_HARDWARE_A_RECORDING_REPRESENTS.get(rel, FROZEN_HARDWARE))
     recording = install_command_recorder(monkeypatch)
-    module = import_launch_script(REPO_ROOT / rel)
-    call_entrypoint(
-        module,
-        entrypoint,
-        _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED.get(rel, lambda sandbox: {})(tmp_path),
-        sandbox=tmp_path,
-    )
+    with monkeypatch.context() as environment:
+        environment.delenv("MILES_UPDATE_SNAPSHOTS", raising=False)
+        module = import_launch_script(REPO_ROOT / rel)
+        call_entrypoint(
+            module,
+            entrypoint,
+            _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED.get(rel, lambda sandbox: {})(tmp_path),
+            sandbox=tmp_path,
+        )
     return rel, entrypoint, recording, tmp_path
 
 

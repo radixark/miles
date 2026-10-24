@@ -22,3 +22,18 @@ class TestArgumentResults:
             bases={} if name == scenario.backend else {name: scenario.backend},
             directory=REPO_ROOT / SNAPSHOT_DIRECTORY / "parsed_config",
         )
+
+
+class TestRemovedArguments:
+    @pytest.mark.parametrize("backend", ["megatron", "fsdp"])
+    def test_unused_logprobs_batch_override_is_rejected(
+        self, backend: str, result_files: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The retired log-probability batch option must not silently accept an ineffective setting."""
+        scenario = ResultScenario(backend=backend, arguments=("--log-probs-max-tokens-per-gpu", "2048"))
+
+        with pytest.raises(SystemExit) as error:
+            capture_result(scenario=scenario, directory=result_files)
+
+        assert error.value.code == 2
+        assert "unrecognized arguments: --log-probs-max-tokens-per-gpu 2048" in capsys.readouterr().err

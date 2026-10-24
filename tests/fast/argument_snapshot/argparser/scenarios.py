@@ -51,11 +51,17 @@ def capture_scenarios(selected: list[str] | None = None) -> dict[str, Any]:
     )
     scenarios["hook_function"] = _Scenario(
         backend="megatron",
-        arguments=("--custom-generate-function-path", "tests.fast.argument_snapshot.argparser.scenarios._hook_function"),
+        arguments=(
+            "--custom-generate-function-path",
+            "tests.fast.argument_snapshot.argparser.scenarios._hook_function",
+        ),
     )
     scenarios["hook_fsdp"] = _Scenario(
         backend="fsdp",
-        arguments=("--custom-inference-engine-provider-path", "tests.fast.argument_snapshot.argparser.scenarios._Hook"),
+        arguments=(
+            "--custom-inference-engine-provider-path",
+            "tests.fast.argument_snapshot.argparser.scenarios._Hook",
+        ),
     )
     scenarios["megatron_repeat"] = _Scenario(backend="megatron")
     names = list(scenarios) if selected is None else selected

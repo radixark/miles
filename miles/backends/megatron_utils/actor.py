@@ -836,9 +836,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def _log_first_train_config(self) -> None:
         if not self._config_snapshot_train_recorded:
-            ConfigSnapshotDumper.dump(
-                stage="train_first_step", config={"args": self.args, "role": self.role}
-            )
+            ConfigSnapshotDumper.dump(stage="train_first_step", config={"args": self.args, "role": self.role})
             self._config_snapshot_train_recorded = True
 
     def _publish_model_companion_info(self, *, rollout_id: int, attempt: int, result: TrainStepOutput) -> None:

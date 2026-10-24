@@ -824,15 +824,26 @@ class TestBuildTrainEnvVars:
         )
         return ExecuteTrainRequest(**{**defaults, **overrides})
 
-    def test_keeps_the_backend_vars_where_the_serialized_order_expects_them(self):
+    def test_keeps_the_backend_vars_where_the_serialized_order_expects_them(self, monkeypatch):
         """The ray backend serializes this dict verbatim, so the launch snapshots pin its key order."""
+        monkeypatch.delenv("MILES_UPDATE_SNAPSHOTS", raising=False)
+        monkeypatch.delenv("MILES_SNAPSHOT_RECORD_DIR", raising=False)
         env = common.train_env_vars(
             self._request(),
             {"NCCL_NVLS_ENABLE": "0", "MASTER_ADDR": "10.0.0.1"},
             config=command_utils.ExecuteTrainConfig(),
         )
 
-        assert list(env) == ["PYTHONUNBUFFERED", "CUDA_DEVICE_MAX_CONNECTIONS", "NCCL_NVLS_ENABLE", "MASTER_ADDR"]
+        assert list(env) == [
+            "PYTHONUNBUFFERED",
+            "MILES_UPDATE_SNAPSHOTS",
+            "MILES_SNAPSHOT_RECORD_DIR",
+            "CUDA_DEVICE_MAX_CONNECTIONS",
+            "NCCL_NVLS_ENABLE",
+            "MASTER_ADDR",
+        ]
+        assert env["MILES_UPDATE_SNAPSHOTS"] == ""
+        assert env["MILES_SNAPSHOT_RECORD_DIR"] == ""
 
     def test_omits_the_connection_limit_for_fsdp(self):
         """Capping the connections breaks FSDP's computation and communication overlap."""

@@ -64,7 +64,7 @@ class TestConfigureLogger:
 
     def _configure(self, **overrides) -> None:
         configure_logger(
-            argparse.Namespace(save_debug_event_data=None),
+            argparse.Namespace(save_debug_event_data=None, ci_disable_config_snapshot=False, ci_test=False),
             source=SimpleProcessIdentity(component="main"),
             **overrides,
         )

@@ -12,6 +12,27 @@ from miles.utils.test_utils.snapshot import snapshot_values
 
 
 class TestSnapshotValues:
+    def test_parser_bound_method_preserves_function_and_self_reference(self) -> None:
+        """Restored parser methods retain their identity without recursive serialization."""
+        parser = argparse.ArgumentParser()
+        parser.add_argument = parser.add_argument
+
+        result = snapshot_values(parser)
+
+        assert result["state"]["add_argument"] == {
+            "$bound_method": "argparse._ActionsContainer.add_argument",
+            "self": "$container",
+        }
+
+    def test_method_bound_to_another_parser_is_not_mistaken_for_self(self) -> None:
+        """A foreign method binding must not be normalized to the containing parser."""
+        parser = argparse.ArgumentParser()
+        other = argparse.ArgumentParser()
+        parser.add_argument = other.add_argument
+
+        with pytest.raises(TypeError, match="builtins.method"):
+            snapshot_values(parser)
+
     @pytest.mark.parametrize(
         ("value", "expected"),
         [

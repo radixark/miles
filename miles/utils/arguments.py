@@ -2994,7 +2994,7 @@ def parse_args_and_get_parser(
         if backend == "torchtitan":
             from miles.backends.torchtitan_utils.arguments import load_torchtitan_args
 
-            args = load_torchtitan_args(extra_args_provider=add_miles_arguments)
+            args = load_torchtitan_args(extra_args_provider=add_miles_arguments_and_capture_parser)
         else:
             from miles.backends.fsdp_utils.arguments import load_fsdp_args
 

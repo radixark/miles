@@ -21,4 +21,12 @@ def fake_ray_cluster(monkeypatch) -> FakeRayCluster:
 
 def worker_manager_args(**overrides) -> SimpleNamespace:
     """The slice of a training run's args the worker manager reads when it configures its logger."""
-    return SimpleNamespace(**{"save_debug_event_data": None, "env_report": "", **overrides})
+    return SimpleNamespace(
+        **{
+            "save_debug_event_data": None,
+            "env_report": "",
+            "ci_test": False,
+            "ci_disable_config_snapshot": False,
+            **overrides,
+        }
+    )

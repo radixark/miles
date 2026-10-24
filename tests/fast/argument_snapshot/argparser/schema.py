@@ -1,8 +1,6 @@
 import argparse
 from typing import Any
 
-from miles.utils.test_utils.snapshot import dump_snapshot
-
 
 def snapshot_parser(parser: argparse.ArgumentParser) -> dict[str, Any]:
     destinations = dict.fromkeys([action.dest for action in parser._actions] + list(parser._defaults))

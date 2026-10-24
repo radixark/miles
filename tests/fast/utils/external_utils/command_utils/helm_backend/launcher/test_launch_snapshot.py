@@ -17,7 +17,12 @@ from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo
-from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY, assert_matches_snapshot
+from miles.utils.test_utils.snapshot import (
+    SNAPSHOT_DIRECTORY,
+    SNAPSHOT_RECORD_DIR_ENV_VAR,
+    SNAPSHOT_UPDATE_ENV_VAR,
+    assert_matches_snapshot,
+)
 from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
 
 SNAPSHOT_DIR = REPO_ROOT / SNAPSHOT_DIRECTORY / "helm_backend"
@@ -149,12 +154,15 @@ def record_launch(monkeypatch, sandbox: Path, on_compute_specs=None, **request_o
 
     _stub_launch_inputs(monkeypatch, specs=[_router(), _engine(), _trainer()], on_compute_specs=on_compute_specs)
 
-    entrypoint.execute_train(
-        request=_request(**request_overrides),
-        config=ExecuteTrainConfig(
-            namespace=NAMESPACE, run_id=FROZEN_RUN_ID, helm_values=(str(helm_values_file(sandbox)),)
-        ),
-    )
+    with monkeypatch.context() as launch_env:
+        launch_env.setenv(SNAPSHOT_UPDATE_ENV_VAR, "")
+        launch_env.setenv(SNAPSHOT_RECORD_DIR_ENV_VAR, "")
+        entrypoint.execute_train(
+            request=_request(**request_overrides),
+            config=ExecuteTrainConfig(
+                namespace=NAMESPACE, run_id=FROZEN_RUN_ID, helm_values=(str(helm_values_file(sandbox)),)
+            ),
+        )
     return recorded
 
 

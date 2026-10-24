@@ -215,7 +215,9 @@ class TestSummarySuffixOrder:
 
 
 class TestIntegrationStatusMatrix:
-    def test_three_statuses_emit_complete_marker_quartet(self, tmp_path: Path, monkeypatch, capfd):
+    def test_three_statuses_emit_complete_marker_quartet(
+        self, tmp_path: Path, monkeypatch, capfd, ci_snapshot_environment
+    ):
         monkeypatch.setenv("GITHUB_ACTIONS", "true")
         monkeypatch.chdir(tmp_path)
 
@@ -338,7 +340,7 @@ class TestIntegrationStatusMatrix:
 
 
 class TestIntegrationTimeoutClosesGroup:
-    def test_timeout_summary_includes_timeout_after(self, tmp_path: Path, monkeypatch, capfd):
+    def test_timeout_summary_includes_timeout_after(self, tmp_path: Path, monkeypatch, capfd, ci_snapshot_environment):
         monkeypatch.setenv("GITHUB_ACTIONS", "true")
         monkeypatch.chdir(tmp_path)
 
@@ -385,7 +387,9 @@ class TestIntegrationTimeoutClosesGroup:
 
 
 class TestIntegrationRetryFailThenPass:
-    def test_retry_emits_two_complete_marker_triples(self, tmp_path: Path, monkeypatch, capfd):
+    def test_retry_emits_two_complete_marker_triples(
+        self, tmp_path: Path, monkeypatch, capfd, ci_snapshot_environment
+    ):
         monkeypatch.setenv("GITHUB_ACTIONS", "true")
         monkeypatch.chdir(tmp_path)
 
@@ -454,7 +458,9 @@ class TestIntegrationRetryFailThenPass:
 
 
 class TestIntegrationBaselineLocalMode:
-    def test_no_marker_lines_in_stdout_when_actions_unset(self, tmp_path: Path, monkeypatch, capfd):
+    def test_no_marker_lines_in_stdout_when_actions_unset(
+        self, tmp_path: Path, monkeypatch, capfd, ci_snapshot_environment
+    ):
         # Whatever non-`true` value GITHUB_ACTIONS holds, none of the
         # marker emit helpers should produce output, and parent-side
         # stdout must therefore contain only what was already there
@@ -502,7 +508,7 @@ class TestIntegrationBaselineLocalMode:
         assert "BASELINE_A" in out
         assert "BASELINE_B" in out
 
-    def test_explicit_false_also_suppresses_markers(self, tmp_path: Path, monkeypatch, capfd):
+    def test_explicit_false_also_suppresses_markers(self, tmp_path: Path, monkeypatch, capfd, ci_snapshot_environment):
         monkeypatch.setenv("GITHUB_ACTIONS", "false")
         monkeypatch.chdir(tmp_path)
 

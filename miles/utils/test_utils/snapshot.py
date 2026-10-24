@@ -163,7 +163,15 @@ def _actions_container_state(container: argparse._ActionsContainer) -> dict[str,
         id(action): group.title for group in container._action_groups for action in group._group_actions
     }
     return {
-        **{name: item for name, item in vars(container).items() if name not in _DERIVED_PARSER_STATE},
+        **{
+            name: (
+                {"$bound_method": _qualified_name(item), "self": "$container"}
+                if inspect.ismethod(item) and item.__self__ is container
+                else item
+            )
+            for name, item in vars(container).items()
+            if name not in _DERIVED_PARSER_STATE
+        },
         "_actions": [
             {**_action_state(action), "group": action_group_titles[id(action)]} for action in container._actions
         ],

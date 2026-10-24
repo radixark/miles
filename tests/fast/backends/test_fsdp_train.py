@@ -23,6 +23,7 @@ def test_fsdp_train_debug_rollout_only_returns_a_normal_output(monkeypatch):
     """A debug-rollout-only FSDP step trains nothing yet answers the driver with a NORMAL output."""
     actor = object.__new__(actor_module.FSDPTrainRayActor)
     actor.args = Namespace(offload_train=False, debug_rollout_only=True)
+    actor._config_snapshot_train_recorded = True
     monkeypatch.setattr(
         base_module,
         "get_parallel_state",
