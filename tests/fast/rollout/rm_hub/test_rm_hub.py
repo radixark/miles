@@ -28,6 +28,7 @@ class TestAsyncRm:
                 1,
             ),
             ("math", r"\boxed{wrong}", "42", 0),
+            ("math", r"so the answer is $\fbox{42}$.", "42", 1),
             ("f1", "hello world", "hello world", 1.0),
             ("dapo", "Answer: 42", "42", {"score": 1.0}),
             ("deepscaler", r"</think>\boxed{42}", "42", 1),
