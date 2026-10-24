@@ -120,6 +120,30 @@ dump .pt + dashboard_columns/*.parquet + trajectory/*.jsonl   [written by traini
     -> serve.py: MetricStore + DumpReader -> FastAPI -> static SPA
 ```
 
+## Read bounds
+
+Live streams are hourly JSONL partitions; the server keeps the newest
+`MetricStore.PARTITION_CACHE_BLOCKS` (24) parsed per stream and tails the open
+one. Every request is sized by its window, never by the run's length:
+
+- Timeline windows are at most `MAX_WINDOW_S` (4 h). Phases read the window's
+  partitions plus `MAX_WINDOW_S` past its end (a phase lands in its end hour);
+  intervals still open come from an index built once and advanced on new bytes.
+- Run-long engine series (the Metrics `sglang` category) come from a view
+  thinned to at most `2 * SCRAPES_PER_ENGINE` scrapes per engine, built from
+  appended bytes only. Metric names come from `engine_catalog.json`, written by
+  the collector as it sees new names.
+- The engine overlay fetches only the engines on the selected lanes.
+- Advisories judge the trailing `MAX_WINDOW_S` before the newest engine scrape;
+  the abort alarm reads run totals only once it fires. The timeline renders
+  without waiting for them and, in follow mode, refreshes them every 30 s.
+- The Rollouts table builds 200 rows at a time.
+
+What still scales with history or step size: the first Metrics `sglang` query
+(it folds the whole run once), step summaries (one `torch.load` of the step's
+train dumps), and the lifecycle heatmap and trajectory reads, which parse
+trajectory rows as objects.
+
 ## Simulating a large run
 
 `tests/manual/dashboard_simulator/` replays a real `--dump-details` run widened to N
