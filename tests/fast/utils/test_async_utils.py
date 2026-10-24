@@ -875,8 +875,65 @@ class TestKeepingASecondaryFailureWhereNotesDoNotExist:
         assert "RuntimeError: cleanup exploded" in caplog.text
 
 
-class TestDynamicLimitSemaphore:
+class TestCancellableTasks:
+    async def test_results_follow_input_order_and_completed_calls_survive_later_cancellation(self) -> None:
+        """Completed RPC batches retain their results when later batches are cancelled."""
+        calls = async_utils.CancellableTasks()
+        first = asyncio.get_running_loop().create_future()
+        second = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(calls.gather([first, second], timeout=None))
+        second.set_result("second")
+        first.set_result("first")
 
+        assert await task == ["first", "second"]
+        calls.cancel()
+        assert first.result() == "first"
+        assert second.result() == "second"
+        assert await calls.gather([], timeout=None) == []
+
+    async def test_worker_failure_cancels_siblings_and_preserves_the_original_error(self) -> None:
+        """One failed RPC cannot leave sibling futures pending after its batch exits."""
+        calls = async_utils.CancellableTasks()
+        failed = asyncio.get_running_loop().create_future()
+        pending = asyncio.get_running_loop().create_future()
+        error = RuntimeError("worker failed")
+        failed.set_exception(error)
+
+        with pytest.raises(RuntimeError) as caught:
+            await calls.gather([failed, pending], timeout=None)
+
+        assert caught.value is error
+        assert pending.cancelled()
+
+    async def test_repeated_cancellation_reaches_every_concurrent_batch_and_allows_later_calls(self) -> None:
+        """Cancelling a cell drains all current batches without poisoning subsequent task registration."""
+        calls = async_utils.CancellableTasks()
+        pending = [asyncio.get_running_loop().create_future() for _ in range(2)]
+        batches = [asyncio.create_task(calls.gather([future], timeout=None)) for future in pending]
+        await asyncio.sleep(0)
+
+        calls.cancel()
+        calls.cancel()
+        outcomes = await asyncio.wait_for(asyncio.gather(*batches, return_exceptions=True), timeout=1)
+
+        assert all(isinstance(outcome, asyncio.CancelledError) for outcome in outcomes)
+        assert all(future.cancelled() for future in pending)
+        later = asyncio.get_running_loop().create_future()
+        later.set_result("new batch")
+        assert await calls.gather([later], timeout=None) == ["new batch"]
+
+    async def test_timeout_cancels_every_submitted_future(self) -> None:
+        """A timed-out RPC batch releases all submitted work before reporting its timeout."""
+        calls = async_utils.CancellableTasks()
+        pending = [asyncio.get_running_loop().create_future() for _ in range(2)]
+
+        with pytest.raises(TimeoutError):
+            await calls.gather(pending, timeout=0)
+
+        assert all(future.cancelled() for future in pending)
+
+
+class TestDynamicLimitSemaphore:
     async def test_shrinking_the_limit_waits_for_existing_holders_before_admitting_more(self) -> None:
         """Scale-down preserves in-flight work and blocks new work until the observed limit permits it."""
         limit = [2]
@@ -887,10 +944,12 @@ class TestDynamicLimitSemaphore:
         waiter = asyncio.create_task(semaphore.__aenter__())
         await asyncio.sleep(0)
         assert not waiter.done()
+
         await semaphore.__aexit__(None, None, None)
         await asyncio.sleep(0)
         assert not waiter.done()
         await semaphore.__aexit__(None, None, None)
+
         assert await asyncio.wait_for(waiter, timeout=1) is semaphore
         await semaphore.__aexit__(None, None, None)
 
@@ -903,6 +962,7 @@ class TestDynamicLimitSemaphore:
             waiter.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await waiter
+
         assert await asyncio.wait_for(semaphore.__aenter__(), timeout=1) is semaphore
         await semaphore.__aexit__(None, None, None)
 

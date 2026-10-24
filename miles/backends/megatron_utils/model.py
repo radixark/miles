@@ -165,7 +165,6 @@ def setup_model_and_optimizer(
     """
     assert isinstance(args, TrainerConfig)
     assert not args.backend.moe_use_upcycling
-    assert args.backend.load is not None or args.backend.pretrained_checkpoint is not None
 
     lora_attached = is_multi_lora_enabled(args) or (is_lora_enabled(args) and role == "actor")
     # Multi-LoRA and single-LoRA (actor, bridge) both build via the bridge helper,
@@ -975,6 +974,8 @@ def initialize_model_and_optimizer(
     args: TrainerConfig,
     role: str = "actor",
     checkpointing_context=None,
+    *,
+    resume_from_ckpt: bool,
 ) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None, LoadCheckpointOutput]:
     """Initialize model(s), optimizer, scheduler, and load from checkpoint.
 
@@ -997,6 +998,7 @@ def initialize_model_and_optimizer(
         opt_param_scheduler=opt_param_scheduler,
         role=role,
         checkpointing_context=checkpointing_context,
+        resume_from_ckpt=resume_from_ckpt,
     )
     return model, optimizer, opt_param_scheduler, load_output
 
@@ -1024,6 +1026,7 @@ def load_model_state(
     opt_param_scheduler: OptimizerParamScheduler | None,
     role: str,
     checkpointing_context: dict | None,
+    resume_from_ckpt: bool,
 ) -> LoadCheckpointOutput:
     if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
@@ -1035,7 +1038,12 @@ def load_model_state(
         load_ctx = nullcontext()
 
     load_dir = args.backend.load
-    # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
+    # --load may be unset when pretrained weights or an in-memory checkpoint supplies the state.
+    assert (
+        load_dir is not None
+        or args.backend.pretrained_checkpoint is not None
+        or "local_checkpoint_manager" in (checkpointing_context or {})
+    )
     explicit_selection = args.backend.ckpt_step is not None or args.backend.exit_on_missing_checkpoint
     if load_dir is None or explicit_selection or _has_loadable_ckpt(load_dir):
         with load_ctx:
@@ -1053,6 +1061,7 @@ def load_model_state(
         iteration = 0
         restored_trained_iteration = not args.backend.finetune
 
+    adapter_iteration = None
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
         adapter_iteration = restore_lora_adapter(
             model, args, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
@@ -1074,7 +1083,9 @@ def load_model_state(
     if not restored_trained_iteration:
         assert iteration == 0, f"Weight initialization returned a trained iteration: {iteration}"
         start_rollout_id = 0
-    else:
+    elif resume_from_ckpt or explicit_selection or adapter_iteration is not None:
         start_rollout_id = iteration + 1
+    else:
+        start_rollout_id = 0
 
     return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)

@@ -316,7 +316,7 @@ class InferenceEngineSpec(BaseCommandSpec):
     deploy_component: DeployComponent = DeployComponent.INFERENCE
     model_cfg: ModelConfig
     server_group_config: ServerGroupConfig
-    group_scaling: ServerGroupScalingConfig
+    group_index: int
     interpreter_prefix: list[str]
 
     @classmethod
@@ -339,7 +339,18 @@ class InferenceEngineSpec(BaseCommandSpec):
 
     def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
         return _compute_inference_engine_scheduling(
-            self.args, server_group_config=self.server_group_config, group_scaling=self.group_scaling
+            self.args,
+            server_group_config=self.server_group_config,
+            group_scaling=scaling.sglang_scaling.group(model_name=self.model_cfg.name, group_index=self.group_index),
+        )
+
+    def compute_static_meta(self, scaling: ScalingConfig) -> StaticMeta:
+        scheduling = self.scheduling(scaling)
+        return self.partial_static_meta.model_copy(
+            update=dict(
+                gpu_offset_base=scheduling.pg_slot_offset,
+                gpu_offset_stride_per_cell=scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker,
+            )
         )
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
@@ -348,15 +359,13 @@ class InferenceEngineSpec(BaseCommandSpec):
     def launch_command(self, ctx: LaunchCommandContext) -> str:
         args = ctx.args
         server_group_config = self.server_group_config
-        num_workers_per_cell = self.scheduling(args).num_workers_per_cell
+        num_workers_per_cell = ctx.num_workers_per_cell
+        group_scaling = ctx.scaling.sglang_scaling.group(model_name=self.model_cfg.name, group_index=self.group_index)
         interpreter_prefix = self.interpreter_prefix
         dist_init = ctx.self_addrs["dist_init"]
         # TODO: only node 0's seed is used by sglang; node != 0 should get node 0's number
         random_seed = (
-            args.seed
-            + self.group_scaling.engine_offset
-            + ctx.cell_index * num_workers_per_cell
-            + ctx.worker_in_cell_index
+            args.seed + group_scaling.engine_offset + ctx.cell_index * num_workers_per_cell + ctx.worker_in_cell_index
         )
         return compute_engine_launch_cmd(
             args=args,
@@ -422,7 +431,7 @@ def _compute_spec_inference_engine(
         args=args,
         model_cfg=model_cfg,
         server_group_config=server_group_config,
-        group_scaling=group_scaling,
+        group_index=group_index,
         interpreter_prefix=python_argv_prefix(),
         name=compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index),
         category=POOL_CATEGORY_INFERENCE_ENGINE,
@@ -446,7 +455,7 @@ def _compute_spec_inference_engine(
             PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
         ],
         # TODO: reduce complexity around passing around configs later during arguments refactor
-        static_meta=StaticMeta(
+        partial_static_meta=StaticMeta(
             values=dict(
                 model_id=model_cfg.name,
                 worker_type=server_group_config.worker_type.value,
@@ -455,8 +464,6 @@ def _compute_spec_inference_engine(
                 needs_offload=server_group_config.needs_offload,
                 update_weights=model_cfg.update_weights,
             ),
-            gpu_offset_base=group_scaling.gpu_offset,
-            gpu_offset_stride_per_cell=scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker,
         ),
     )
 

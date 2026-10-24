@@ -120,7 +120,7 @@ class BaseSpec(FrozenStrictBaseModel, ABC):
     name: str
     category: str | None = None
     port_infos: list[PortInfo]
-    static_meta: StaticMeta = StaticMeta()
+    partial_static_meta: StaticMeta = StaticMeta()
     deploy_component: DeployComponent = DeployComponent.PRIMARY
     platform_access: PlatformAccess = PlatformAccess.NONE
 
@@ -141,6 +141,9 @@ class BaseSpec(FrozenStrictBaseModel, ABC):
 
     @abstractmethod
     def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec: ...
+
+    def compute_static_meta(self, scaling: ScalingConfig) -> StaticMeta:
+        return self.partial_static_meta
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
         return {}
@@ -171,6 +174,7 @@ NamedHostAndPorts = dict[str, HostAndPort]
 
 
 class LaunchCommandContext(WorkerLaunchContext):
+    scaling: ScalingConfig
     self_addrs: NamedHostAndPorts
     pool_addrs: dict[str, list[NamedHostAndPorts]]
     local_gpu_ids: list[int]

@@ -9,8 +9,9 @@ class TestCheckKl:
     def test_namespaced_policy_metrics_still_trigger_the_kl_checker(self) -> None:
         """A policy namespace must not hide an out-of-tolerance PPO KL value."""
         args = Namespace(
-            multi_latent_attention=False,
+            backend=Namespace(multi_latent_attention=False),
             trainer_model_id="alpha",
+            lora_rank=0,
             use_rollout_routing_replay=False,
         )
 

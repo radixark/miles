@@ -1,4 +1,5 @@
 from argparse import Namespace
+from functools import partial
 
 import pytest
 
@@ -11,7 +12,7 @@ class TestTrainerConfigurationBoundary:
 
         functions = {
             "setup_model_and_optimizer": setup_model_and_optimizer,
-            "initialize_model_and_optimizer": initialize_model_and_optimizer,
+            "initialize_model_and_optimizer": partial(initialize_model_and_optimizer, resume_from_ckpt=False),
         }
 
         with pytest.raises(AssertionError):

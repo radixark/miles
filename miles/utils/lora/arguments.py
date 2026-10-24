@@ -52,7 +52,7 @@ def validate_lora_args_after_megatron(args):
 def _resolve_lora_targets(args, hf_config):
     """Return final HF and adapter targets without changing the CLI selectors in `args`."""
     hf_mapping = HfWeightMapping.from_config(hf_config)
-    hf_modules = [name.removesuffix(".weight") for name in hf_mapping.parameter_names]
+    hf_modules = sorted(name.removesuffix(".weight") for name in hf_mapping.parameter_names)
     targets = parse_lora_targets(args.target_modules)
     exclusions = parse_lora_targets(args.exclude_modules) or []
     explicit_targets = []

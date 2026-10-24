@@ -9,6 +9,8 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from miles.utils.args.runtime import TrainerConfig
+
 
 @pytest.fixture
 def raw_mbridge_loader(monkeypatch: pytest.MonkeyPatch) -> Callable[[bool], list[set[str]]]:
@@ -41,14 +43,14 @@ def apply_bridge_runtime_config() -> Callable:
     function = next(
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_apply_bridge_runtime_config"
     )
-    namespace = {"argparse": argparse}
+    namespace = {"argparse": argparse, "TrainerConfig": TrainerConfig}
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
     return namespace["_apply_bridge_runtime_config"]
 
 
 @pytest.fixture
 def runtime_args() -> argparse.Namespace:
-    return argparse.Namespace(
+    backend = argparse.Namespace(
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         expert_model_parallel_size=1,
@@ -74,7 +76,12 @@ def runtime_args() -> argparse.Namespace:
         mtp_num_layers=1,
         mtp_detach_heads=True,
         moe_token_dispatcher_type="alltoall",
+        decoder_first_pipeline_num_layers=None,
+        decoder_last_pipeline_num_layers=None,
+        moe_router_bias_update_rate=None,
+        moe_aux_loss_coeff=None,
     )
+    return argparse.Namespace(backend=backend, dsa_attention_backend=None, enable_mtp_training=False)
 
 
 @pytest.fixture

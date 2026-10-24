@@ -1,2 +1,0 @@
-{error: {message: args.rollout_max_prompt_len (16) must be smaller than args.rollout_max_context_len (16) so that there is
-      at least one generated token to compute loss., type: AssertionError}}

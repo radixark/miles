@@ -10,7 +10,7 @@ import torch
 from examples.geo3k_vlm.multi_turn.base_env import BaseInteractionEnv
 
 # When executed as a module: python -m examples.geo3k_vlm.multi_turn.rollout
-from miles.rollout.sglang_rollout import GenerateState
+from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.http_utils import post
 from miles.utils.processing_utils import encode_image_for_rollout_engine
@@ -150,12 +150,11 @@ def _initialize_resources(args: Any, sample: Sample):
     max_turns = args.max_turns
     if max_turns is None:
         raise ValueError("max_turns must be set with --max-turns.")
-    state = GenerateState(args)
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
     sample.metadata = sample.metadata or {}
     env = _build_env(env_module, sample, args)
     config = {"max_turns": max_turns}
-    return env, env_module, config, state, url
+    return env, env_module, config, url
 
 
 def _prepare_initial_inputs(sample: Sample, processor, tokenizer):
@@ -313,11 +312,13 @@ def _finalize_sample(sample: Sample, tokenizer, response_tokens, multimodal_trai
     return sample
 
 
-async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
+async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom multi-turn rollout that interacts with a pluggable environment."""
+    args, sample, sampling_params = input.args, input.sample, input.sampling_params
     assert not args.partial_rollout, "Partial rollout is not supported for interaction rollouts."
 
-    env, env_module, config, state, url = _initialize_resources(args, sample)
+    state = input.state
+    env, env_module, config, url = _initialize_resources(args, sample)
     sampling_params = sampling_params.copy()
     current_image_data, response_tokens, budget, multimodal_train_inputs_buffer = _prepare_start_state(
         sample, state, args, sampling_params
@@ -326,7 +327,7 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
         env.reset()
         if budget is not None and budget <= 0:
             sample.status = Sample.Status.TRUNCATED
-            return sample
+            return GenerateFnOutput(samples=sample)
 
         cur_sampling_params = sampling_params
         for turn_idx in range(config["max_turns"]):
@@ -372,7 +373,9 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
                 sample.status = Sample.Status.COMPLETED
                 break
 
-        return _finalize_sample(sample, state.tokenizer, response_tokens, multimodal_train_inputs_buffer)
+        return GenerateFnOutput(
+            samples=_finalize_sample(sample, state.tokenizer, response_tokens, multimodal_train_inputs_buffer)
+        )
     finally:
         try:
             env.close()

@@ -62,11 +62,22 @@ def orchestrator_config_values(argv: list[str]) -> list[str]:
 
 
 def config_to_argv(config: FrozenStrictBaseModel) -> list[str]:
-    argv = [CONFIG_JSON_FLAG, config.model_dump_json()]
+    argv = [CONFIG_JSON_FLAG, config_json_for_argv(config)]
 
     parsed = parse_config_argv(type(config), argv)
     assert parsed == config, f"config argv roundtrip mismatch: {parsed!r} != {config!r}"
     return argv
+
+
+def config_json_for_argv(config: FrozenStrictBaseModel) -> str:
+    value = config.model_dump_json()
+    size = len(value.encode("utf-8")) + 1
+    assert size <= 131072, (
+        f"{type(config).__name__} requires {size} bytes in one command argument; "
+        "config payloads larger than 131072 bytes are unsupported. "
+        "Reduce the inline configuration before launching workers."
+    )
+    return value
 
 
 def parse_config_argv(config_cls: type[_ConfigT], argv: list[str] | None) -> _ConfigT:

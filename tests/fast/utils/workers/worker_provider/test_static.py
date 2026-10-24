@@ -4,7 +4,11 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
+from tests.fast.utils.workers.fake_specs import FakeCommandSpec, FakeServeSpec
 
+from miles.backends.sglang_utils.sglang_config import SglangScalingConfig
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.workers.connection_config import StaticPoolConnInfo, build_static_conn_config
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_provider import static
 from miles.utils.workers.worker_provider.kubernetes.helm import naming
@@ -21,28 +25,30 @@ class FakeController:
 
 
 def _served_spec(*, num_cells: int = 2) -> BaseServeSpec:
-    return BaseServeSpec(
+    return FakeServeSpec(
         name="trainer-controller",
         port_infos=[PortInfo(name="primary", static_port=7000), PortInfo(name="rpc", static_port=8000)],
-        env_var=lambda context: {},
-        scheduling=SchedulingSpec(num_cells=num_cells, num_workers_per_cell=1, num_gpus_per_worker=0),
+        fixed_scheduling=SchedulingSpec(num_cells=num_cells, num_workers_per_cell=1, num_gpus_per_worker=0),
         worker_class=f"{__name__}.FakeController",
-        ctor_kwargs=lambda context: {},
     )
 
 
 def _command_spec() -> BaseCommandSpec:
-    return BaseCommandSpec(
+    return FakeCommandSpec(
         name="inference-router-0",
         port_infos=[PortInfo(name="primary", static_port=8000)],
-        env_var=lambda context: {},
-        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
-        launch_command=lambda context: "python -m router",
+        fixed_scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
+        command=lambda context: "python -m router",
     )
 
 
+def _conn_info(spec) -> StaticPoolConnInfo:
+    scaling = ScalingConfig(sglang_scaling=SglangScalingConfig(groups={}))
+    return build_static_conn_config(specs=[spec], scaling=scaling).static_conn_infos[spec.name]
+
+
 def _provider(spec=None) -> StaticWorkerProvider:
-    return StaticWorkerProvider.of_release(release=_RELEASE, spec=spec or _served_spec())
+    return StaticWorkerProvider.of_release(release=_RELEASE, config=_conn_info(spec or _served_spec()))
 
 
 def _addr_provider(*addrs: str) -> StaticWorkerProvider:
@@ -56,20 +62,10 @@ def _addr_provider(*addrs: str) -> StaticWorkerProvider:
 class TestConstruction:
     def test_of_release_refuses_a_cell_spread_over_multiple_pods(self):
         """Static cell addresses require every worker in the cell to share one host."""
-        spec = _served_spec().model_copy(
-            update={
-                "scheduling": SchedulingSpec(
-                    num_cells=1,
-                    num_workers_per_cell=16,
-                    num_gpus_per_worker=1,
-                    num_gpu_slots_per_worker=1,
-                    num_gpus_per_node=8,
-                )
-            }
-        )
+        config = _conn_info(_served_spec()).model_copy(update={"num_workers_per_cell": 16, "pods_per_cell": 2})
 
         with pytest.raises(AssertionError, match="workers do not share one host"):
-            StaticWorkerProvider.of_release(release=_RELEASE, spec=spec)
+            StaticWorkerProvider.of_release(release=_RELEASE, config=config)
 
     def test_of_rpc_addrs_refuses_an_empty_address_list(self):
         """An explicitly addressed pool must contain at least one reachable cell."""

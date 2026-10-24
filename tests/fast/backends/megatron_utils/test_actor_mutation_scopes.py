@@ -13,6 +13,7 @@ from tests.fast.backends.megatron_utils.actor_scope_fixtures import (
 )
 from tests.fast.backends.megatron_utils.test_shared_ppo_lifecycle import actor_module
 
+from miles.backends.megatron_utils.checkpoint_request import CHECKPOINT_LOAD_FIELDS, MegatronCkptLoadConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
 __all__ = ["actor_module"]
@@ -30,13 +31,13 @@ class TestAuxiliaryCheckpointMutationScope:
             actor_module, "load_checkpoint", _record_auxiliary_load(worker=worker, calls=calls, fails=False)
         )
 
-        with worker.args.backend.mutable():
-            worker.args.backend.load = "/actor"
-            worker.args.backend.ckpt_step = 7
-        original = vars(worker.args.backend).copy()
-        worker.load_other_checkpoint(model_tag, "/auxiliary")
-        assert vars(worker.args.backend) == original
+        request = MegatronCkptLoadConfig.for_peer_recovery().model_copy(update={"load": "/actor", "ckpt_step": 7})
+        with request.apply(worker.args.backend):
+            original = vars(worker.args.backend).copy()
+            worker.load_other_checkpoint(model_tag, "/auxiliary")
+            assert vars(worker.args.backend) == original
 
+        assert CHECKPOINT_LOAD_FIELDS.isdisjoint(vars(worker.args.backend))
         assert len(calls) == 1
         assert calls[0]["load"] == "/auxiliary"
         assert calls[0]["no_load_optim"] is calls[0]["no_load_rng"] is calls[0]["finetune"] is True
@@ -55,11 +56,12 @@ class TestAuxiliaryCheckpointMutationScope:
             actor_module, "load_checkpoint", _record_auxiliary_load(worker=worker, calls=calls, fails=True)
         )
 
-        with worker.args.backend.mutable():
-            worker.args.backend.load = "/actor"
-            worker.args.backend.ckpt_step = 7
-        with pytest.raises(RuntimeError, match="auxiliary SDK failed"):
-            worker.load_other_checkpoint("ref", "/auxiliary")
+        request = MegatronCkptLoadConfig.for_peer_recovery().model_copy(update={"load": "/actor", "ckpt_step": 7})
+        with request.apply(worker.args.backend):
+            with pytest.raises(RuntimeError, match="auxiliary SDK failed"):
+                worker.load_other_checkpoint("ref", "/auxiliary")
+
+        assert CHECKPOINT_LOAD_FIELDS.isdisjoint(vars(worker.args.backend))
 
         assert len(calls) == 1
         worker.weights_backuper.backup.assert_not_called()
@@ -78,20 +80,25 @@ class TestCoreCheckpointMutationScope:
             model = importlib.import_module("miles.backends.megatron_utils.model")
             monkeypatch.setattr(model, "load_checkpoint", Mock(side_effect=RuntimeError("core SDK failed")))
 
-        if fails:
-            with pytest.raises(RuntimeError, match="core SDK failed"):
-                worker._load_state_core(
+        request = MegatronCkptLoadConfig.for_peer_recovery().model_copy(update={"load": str(tmp_path / "pretrain")})
+        with request.apply(worker.args.backend):
+            if fails:
+                with pytest.raises(RuntimeError, match="core SDK failed"):
+                    worker._load_state_core(
+                        checkpointing_context=None,
+                        overrider_for_loading={"ckpt_format": "torch_dist"},
+                        resume_from_ckpt=True,
+                    )
+            else:
+                result = worker._load_state_core(
                     checkpointing_context=None,
                     overrider_for_loading={"ckpt_format": "torch_dist"},
+                    resume_from_ckpt=True,
                 )
-        else:
-            result = worker._load_state_core(
-                checkpointing_context=None,
-                overrider_for_loading={"ckpt_format": "torch_dist"},
-            )
-            assert (result.loaded_rollout_id, result.start_rollout_id) == (7, 8)
-            assert seen["args_during_load"]["ckpt_format"] == "torch_dist"
+                assert (result.loaded_rollout_id, result.start_rollout_id) == (7, 8)
+                assert seen["args_during_load"]["ckpt_format"] == "torch_dist"
 
+        assert CHECKPOINT_LOAD_FIELDS.isdisjoint(vars(worker.args.backend))
         assert worker.args.backend.ckpt_format == "torch"
         with pytest.raises(AttributeError, match="immutable"):
             worker.args.backend.ckpt_format = "leaked"
@@ -111,10 +118,12 @@ class TestActorVocabularyMutationScope:
                 worker,
                 args=worker.args,
                 role="actor",
+                ckpt_load_config=MegatronCkptLoadConfig.for_peer_recovery(),
                 indep_dp_info=IndepDPInfo.create_trivial(),
                 indep_dp_store_addr=None,
             )
 
         assert worker.args.backend.vocab_size == expected
+        assert CHECKPOINT_LOAD_FIELDS.isdisjoint(vars(worker.args.backend))
         with pytest.raises(AttributeError, match="immutable"):
             worker.args.backend.vocab_size = 99

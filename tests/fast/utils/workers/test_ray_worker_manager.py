@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayCluster
+from tests.fast.utils.workers.fake_specs import FakeCommandSpec
 
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
@@ -19,7 +20,7 @@ from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, _BaseActorManager, _CommandActorManager
 from miles.utils.workers.types import WorkerCommBackend
-from miles.utils.workers.worker_spec import BaseCommandSpec, LaunchCommandContext, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec, LaunchCommandContext, PortInfo, SchedulingSpec, StaticMeta
 
 
 @dataclass
@@ -54,13 +55,13 @@ def _make_spec(
     pg_slot_offset: int = 0,
     pin_to_head: bool = False,
 ) -> BaseCommandSpec:
-    return BaseCommandSpec(
+    return FakeCommandSpec(
         name=name,
         port_infos=(
             port_infos if port_infos is not None else [PortInfo(name="primary", static_port=8000, allow_dynamic=True)]
         ),
-        env_var=lambda _ctx: dict(env_var or {}),
-        scheduling=SchedulingSpec(
+        env_vars=lambda _ctx: dict(env_var or {}),
+        fixed_scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=num_workers_per_cell,
             num_gpus_per_worker=num_gpus_per_worker,
@@ -69,7 +70,7 @@ def _make_spec(
             pg_slot_offset=pg_slot_offset,
             pin_to_head=pin_to_head,
         ),
-        launch_command=launch_command if launch_command is not None else (lambda ctx: "sleep 600"),
+        command=launch_command if launch_command is not None else (lambda ctx: "sleep 600"),
     )
 
 
@@ -531,12 +532,12 @@ class TestSpecEnvVars:
             calls.append(len(calls))
             return {"CALL_INDEX": str(len(calls))}
 
-        spec = BaseCommandSpec(
+        spec = FakeCommandSpec(
             name="engine",
             port_infos=[PortInfo(name="primary", static_port=8000, allow_dynamic=True)],
-            env_var=_env,
-            scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=1, num_gpus_per_worker=0),
-            launch_command=lambda ctx: "sleep 600",
+            env_vars=_env,
+            fixed_scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=1, num_gpus_per_worker=0),
+            command=lambda ctx: "sleep 600",
         )
         await _launch([spec])
 
@@ -1511,7 +1512,7 @@ class TestGetCellInfos:
     async def test_each_cell_meta_is_computed_from_its_own_cell_index(self, fake_ray_cluster: FakeRayCluster):
         """Meta carries per-cell placement facts, so a shared index would mislabel every cell but one."""
         spec = _make_spec("engine", num_cells=3).model_copy(
-            update={"meta": lambda ctx: {"gpu_offset": ctx.cell_index * 2}}
+            update={"partial_static_meta": StaticMeta(gpu_offset_base=0, gpu_offset_stride_per_cell=2)}
         )
         manager = await _launch([spec])
 
@@ -1858,7 +1859,9 @@ class TestSuspendedCellInfos:
 
     async def test_the_meta_of_a_suspended_cell_is_still_known(self, fake_ray_cluster: FakeRayCluster):
         """Meta comes from the spec, so suspending a cell must not make it unidentifiable."""
-        spec = _make_spec("engine").model_copy(update={"meta": lambda ctx: {"model_id": "default"}})
+        spec = _make_spec("engine").model_copy(
+            update={"partial_static_meta": StaticMeta(values={"model_id": "default"})}
+        )
         manager = await _launch([spec])
         await manager.stop_cells(["engine-00000"])
 

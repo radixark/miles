@@ -1,8 +1,14 @@
+import pytest
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
+if not SNAPSHOT_TESTING_ENABLED:
+    pytest.skip("Snapshot testing is disabled by op48-277", allow_module_level=True)
+
 from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
-import pytest
 
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.utils.audit_utils.config_snapshot.storage import ConfigSnapshotStorage

@@ -3,26 +3,18 @@ from __future__ import annotations
 import inspect
 
 import pytest
-from tests.fast.utils.workers.worker_provider.kubernetes.run_specs import make_pool_spec
+from tests.fast.utils.workers.worker_provider.kubernetes.run_specs import make_router_spec
 
+from miles.backends.sglang_utils.sglang_config import SglangScalingConfig
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.kubernetes import KubernetesBackendCapability
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
+from miles.utils.workers.connection_config import build_static_conn_config
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo, KubernetesWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider
-from miles.utils.workers.worker_spec import BaseCommandSpec, PortInfo, SchedulingSpec
-
-
-def _router_spec() -> BaseCommandSpec:
-    return BaseCommandSpec(
-        name="inference-router-0",
-        port_infos=[PortInfo(name="primary", static_port=8000)],
-        env_var=lambda context: {},
-        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
-        launch_command=lambda context: "python -m router",
-    )
 
 
 def _kubernetes_capability() -> KubernetesBackendCapability:
@@ -30,11 +22,12 @@ def _kubernetes_capability() -> KubernetesBackendCapability:
         run=KubernetesRunInfo(
             namespace="rl",
             label_selector="app.kubernetes.io/instance=r",
-            specs={"engine": make_pool_spec("engine", ports={"rpc": 8000})},
             label_keys=DEFAULT_LABEL_KEYS,
         ),
         release="r",
-        static_specs={"inference-router-0": _router_spec()},
+        config=build_static_conn_config(
+            specs=[make_router_spec()], scaling=ScalingConfig(sglang_scaling=SglangScalingConfig(groups={}))
+        ),
         cell_operations=object(),
     )
 
@@ -49,12 +42,14 @@ class TestKubernetesBackendCapability:
         assert isinstance(provider, KubernetesWorkerProvider)
         assert provider._pool_ids == ["engine"]
 
-    def test_refuses_a_pool_nobody_watches(self) -> None:
-        """Cells of an unwatched pool_id are never reported, so the caller would wait for them forever."""
+    def test_a_category_request_watches_every_pool_of_that_category(self) -> None:
+        """Engine pools appear as the run scales, so a category observer must not be pinned to a pool list."""
         capability = _kubernetes_capability()
 
-        with pytest.raises(AssertionError, match="not pool_ids of this run"):
-            capability.dynamic_worker_provider(pool_ids=["engine", "trainer-engine-actor"])
+        provider = capability.dynamic_worker_provider(pool_ids=None, category="inference-engine")
+
+        assert isinstance(provider, KubernetesWorkerProvider)
+        assert (provider._pool_ids, provider._category) == (None, "inference-engine")
 
     def test_a_static_worker_is_answered_from_the_address_book(self) -> None:
         """A statically addressed worker has no cell to observe, only a predicted address."""

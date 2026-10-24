@@ -110,6 +110,11 @@ class ContextLock:
         self._detached = False
         _held_lock.set(_LockGrant(lock=self, generation=self._issue_generation()))
 
+    def release_if_detached(self) -> None:
+        if self._detached:
+            self.reattach()
+            self.release()
+
     def _issue_generation(self) -> int:
         self._generation_counter += 1
         self._active_generation = self._generation_counter

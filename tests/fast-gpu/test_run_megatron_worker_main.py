@@ -29,6 +29,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import ConfigNamespace
 
 from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 
@@ -110,6 +111,36 @@ from miles.utils.debug_utils.run_megatron.worker.main import (  # noqa: E402
 _MODULE = "miles.utils.debug_utils.run_megatron.worker.main"
 
 
+def _parsed_standalone_args(*, trainers: list[SimpleNamespace], **overrides: Any) -> ConfigNamespace:
+    defaults = {
+        "train_backend": "megatron",
+        "megatron_to_hf_mode": "bridge",
+        "load": None,
+        "ref_load": None,
+        "no_load_optim": None,
+        "no_load_rng": None,
+        "finetune": None,
+        "ckpt_step": None,
+        "exit_on_missing_checkpoint": False,
+        "debug_train_only": True,
+        "debug_rollout_only": False,
+        "offload_train": False,
+        "colocate": False,
+        "starts_inference_engines": False,
+        "hf_checkpoint": "/model",
+        "actor_num_nodes": 1,
+        "actor_num_gpus_per_node": 1,
+    }
+    for trainer in trainers:
+        trainer.overrides = {}
+        trainer.model_id = None
+    return ConfigNamespace(**(defaults | overrides), raw_megatron=SimpleNamespace(base_args={}, trainers=trainers))
+
+
+def _trainer_config(*, world_size: int) -> SimpleNamespace:
+    return SimpleNamespace(backend=SimpleNamespace(world_size=world_size), offload_train=False)
+
+
 class TestParseArgs:
     def test_script_options_are_translated_for_the_shared_parser(self) -> None:
         """Use the shared parser with standalone topology and checkpoint options."""
@@ -129,19 +160,34 @@ class TestParseArgs:
             "miles",
         ]
         captured: list[str] = []
-        parsed = object()
+        actor, critic = SimpleNamespace(role="actor"), SimpleNamespace(role="critic")
+        parsed = _parsed_standalone_args(
+            actor_num_nodes=2,
+            actor_num_gpus_per_node=4,
+            advantage_estimator="ppo",
+            load="/checkpoint",
+            ref_load="/checkpoint",
+            trainers=[actor, critic],
+        )
+        trainer_config = _trainer_config(world_size=8)
 
-        def parse_shared() -> object:
+        def parse_shared() -> SimpleNamespace:
             captured.extend(sys.argv[1:])
             return parsed
 
         with patch.object(sys, "argv", argv), patch.dict(
             os.environ, {"WORLD_SIZE": "8", "LOCAL_WORLD_SIZE": "4"}
-        ), patch(f"{_MODULE}.parse_args", side_effect=parse_shared):
-            args, script_args = _parse_args()
+        ), patch(f"{_MODULE}.parse_args", side_effect=parse_shared), patch(
+            f"{_MODULE}.compute_trainer_config", return_value=trainer_config
+        ) as compute:
+            inputs = _parse_args()
+            args, script_args = inputs.trainer, inputs.script
             assert sys.argv is argv
 
-        assert args is parsed
+        assert inputs.ckpt_load_config.load == "/checkpoint"
+        assert not inputs.ckpt_load_config.resume_from_ckpt
+        assert args is trainer_config
+        compute.assert_called_once_with(parsed, critic)
         assert script_args.ref_load == Path("/checkpoint")
         for flag, value in [
             ("--hf-checkpoint", "/model"),
@@ -170,11 +216,15 @@ class TestParseArgs:
         ]
         captured: list[str] = []
 
-        def parse_shared() -> object:
+        def parse_shared() -> SimpleNamespace:
             captured.extend(sys.argv[1:])
-            return object()
+            return _parsed_standalone_args(trainers=[SimpleNamespace(role="actor")])
 
-        with patch.object(sys, "argv", argv), patch(f"{_MODULE}.parse_args", side_effect=parse_shared):
+        with patch.object(sys, "argv", argv), patch.dict(
+            os.environ, {"WORLD_SIZE": "1", "LOCAL_WORLD_SIZE": "1"}
+        ), patch(f"{_MODULE}.parse_args", side_effect=parse_shared), patch(
+            f"{_MODULE}.compute_trainer_config", return_value=_trainer_config(world_size=1)
+        ):
             _parse_args()
 
         assert captured.count("--load") == 1

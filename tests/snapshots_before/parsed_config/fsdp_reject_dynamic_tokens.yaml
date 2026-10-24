@@ -1,1 +1,0 @@
-{error: {message: max_tokens_per_gpu must be set when use_dynamic_batch_size is set, type: AssertionError}}

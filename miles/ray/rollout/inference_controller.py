@@ -248,9 +248,9 @@ class InferenceController:
             receiver_pool=receiver_pool,
         )
 
-    @releases_lock
+    @lock_exempt
     async def abort_update_weights(self) -> None:
-        pass
+        self.context_lock.release_if_detached()
 
     @releases_lock
     async def end_update_weights(
@@ -354,7 +354,7 @@ class InferenceController:
 
     @lock_exempt
     async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
-        return self._eval_fleet.info if self._eval_fleet is not None else None
+        return await self._eval_fleet.info() if self._eval_fleet is not None else None
 
     @lock_exempt
     async def pin_eval_fleet(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:

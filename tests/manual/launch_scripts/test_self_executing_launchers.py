@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+
 from tests.fast.launch_scripts.py_harness import (
     format_recording,
     freeze_environment,
@@ -9,11 +10,9 @@ from tests.fast.launch_scripts.py_harness import (
     install_shell_recorder,
     iter_self_executing_launchers,
 )
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
 
-from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY, assert_matches_snapshot
-
-_SNAPSHOT_DIR = REPO_ROOT / SNAPSHOT_DIRECTORY / "launch_scripts" / "self_executing"
+_SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "launch_scripts" / "self_executing"
 
 _P2P = "examples/infra_features/p2p_weight_transfer/run.py"
 _FORMAL_MATH = "examples/experimental/formal_math/single_round/run_minimal.py"

@@ -59,7 +59,7 @@ def build_worker_annotations(*, spec: BaseSpec, scaling: ScalingConfig) -> dict[
         dynamic_pool=scheduling.declares_dynamic_pool(),
         worker_class=spec.worker_class if isinstance(spec, BaseServeSpec) else None,
         port_infos=spec.port_infos,
-        static_meta=spec.static_meta,
+        static_meta=spec.compute_static_meta(scaling),
     )
     return {
         WORKER_METADATA_ANNOTATION: json.dumps(metadata.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))

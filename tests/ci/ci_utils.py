@@ -25,6 +25,8 @@ from tests.ci.metric_history import (
 from tests.ci.metric_history.gate import MIN_ENFORCED_BASELINES, GateStatus, evaluate_gate
 from tests.ci.metric_history.register import parse_ci_gate_specs
 
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
 # Env var the training process reads to find the per-attempt record directory; kept
 # in sync with miles.utils.tracking_utils.ci_history.RECORD_DIR_ENV.
 CI_GATE_RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
@@ -575,36 +577,36 @@ def run_unittest_files(
 
             try:
                 try:
-                    snapshot_runner = (
-                        ConfigSnapshotTestRunner.create(
-                            test=filename,
-                            repo_root=Path(__file__).resolve().parents[2],
-                            variant=ConfigSnapshotVariant(
-                                hardware=snapshot_hardware,
-                                wandb_available=bool(os.environ.get("WANDB_API_KEY")),
-                            ),
+                    if SNAPSHOT_TESTING_ENABLED:
+                        child_env = None
+                        snapshot_runner = (
+                            ConfigSnapshotTestRunner.create(
+                                test=filename,
+                                repo_root=Path(__file__).resolve().parents[2],
+                                variant=ConfigSnapshotVariant(
+                                    hardware=snapshot_hardware,
+                                    wandb_available=bool(os.environ.get("WANDB_API_KEY")),
+                                ),
+                            )
+                            if os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR)
+                            else None
                         )
-                        if os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR)
-                        else None
-                    )
+                        if snapshot_runner is not None:
+                            child_env = {
+                                **os.environ,
+                                SNAPSHOT_RECORD_DIR_ENV_VAR: str(snapshot_runner.record_directory),
+                            }
                     ret_code = run_with_timeout(
                         run_one_file,
                         args=(filename,),
                         kwargs={
                             "capture_output": enable_retry,
                             "record_dir": attempt_record_dir,
-                            "env": {
-                                **os.environ,
-                                **(
-                                    {SNAPSHOT_RECORD_DIR_ENV_VAR: str(snapshot_runner.record_directory)}
-                                    if snapshot_runner is not None
-                                    else {}
-                                ),
-                            },
+                            "env": child_env if SNAPSHOT_TESTING_ENABLED else None,
                         },
                         timeout=effective_timeout,
                     )
-                    if snapshot_runner is not None:
+                    if SNAPSHOT_TESTING_ENABLED and snapshot_runner is not None:
                         snapshot_runner.finish(returncode=ret_code)
                     attempt_elapsed = time.perf_counter() - attempt_tic
 

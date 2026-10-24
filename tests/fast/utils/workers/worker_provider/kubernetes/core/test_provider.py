@@ -3,16 +3,22 @@ from dataclasses import dataclass, field
 
 import pytest
 from tests.fast.utils.workers.worker_provider.kubernetes import fake_pod_api
-from tests.fast.utils.workers.worker_provider.kubernetes.core.test_pod_view import make_pod, make_unlabelled_pod
-from tests.fast.utils.workers.worker_provider.kubernetes.run_specs import make_pool_spec
+from tests.fast.utils.workers.worker_provider.kubernetes.core.test_pod_view import (
+    DEFAULT_WORKER_METADATA,
+    make_pod,
+    make_unlabelled_pod,
+    worker_metadata_annotations,
+)
 
+from miles.utils.workers.connection_config import WorkerPodMetadata
+from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import PodListPage, PodWatchEvent
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_provider.kubernetes.core import provider as core_provider
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo, KubernetesWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
-from miles.utils.workers.worker_spec import HostAndPort
+from miles.utils.workers.worker_spec import MASTER_PORT_NAME, HostAndPort, PortInfo, StaticMeta
 
 NAMESPACE = "rl"
 SELECTOR = "app.kubernetes.io/instance=r"
@@ -45,26 +51,39 @@ def _fake_pod_api(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(core_provider, "_kubernetes_pod_api", fake_pod_api.installed)
 
 
-def _run(api, *, ports, worker_classes=None, spec_metas=None, workers_per_pod=None) -> KubernetesRunInfo:
-    fake_pod_api.install(api)
+def _run(api, *, ports, worker_classes=None, static_metas=None, workers_per_pod=None) -> KubernetesRunInfo:
     worker_classes = worker_classes or {}
-    spec_metas = spec_metas or {}
+    static_metas = static_metas or {}
     workers_per_pod = workers_per_pod or {}
-    return KubernetesRunInfo(
-        namespace=NAMESPACE,
-        label_selector=SELECTOR,
-        label_keys=DEFAULT_LABEL_KEYS,
-        specs={
-            pool_id: make_pool_spec(
-                pool_id,
-                ports=spec_ports,
-                worker_class=worker_classes.get(pool_id),
-                meta=spec_metas.get(pool_id),
+    metadata_by_pool = {
+        pool_id: DEFAULT_WORKER_METADATA.model_copy(
+            update=dict(
                 workers_per_pod=workers_per_pod.get(pool_id, 1),
+                worker_class=worker_classes.get(pool_id),
+                port_infos=[
+                    PortInfo(name=name, static_port=port, mode="master" if name == MASTER_PORT_NAME else "per_worker")
+                    for name, port in pool_ports.items()
+                ],
+                static_meta=static_metas.get(pool_id, StaticMeta()),
             )
-            for pool_id, spec_ports in ports.items()
-        },
-    )
+        )
+        for pool_id, pool_ports in ports.items()
+    }
+    api.pods = [_annotated(pod, metadata_by_pool) for pod in api.pods]
+    api.events = [
+        event.model_copy(update={"pod": _annotated(event.pod, metadata_by_pool)}) if event.pod is not None else event
+        for event in api.events
+    ]
+    fake_pod_api.install(api)
+    return KubernetesRunInfo(namespace=NAMESPACE, label_selector=SELECTOR, label_keys=DEFAULT_LABEL_KEYS)
+
+
+def _annotated(pod: Pod, metadata_by_pool: dict[str, WorkerPodMetadata]) -> Pod:
+    metadata = metadata_by_pool.get(pod.metadata.labels.get(DEFAULT_LABEL_KEYS.pool_id))
+    if metadata is None:
+        return pod
+    annotations = pod.metadata.annotations | worker_metadata_annotations(metadata)
+    return pod.model_copy(update={"metadata": pod.metadata.model_copy(update={"annotations": annotations})})
 
 
 def _provider(api, worker_ports=None, pool_ids=("engine",), **kwargs):
@@ -328,6 +347,55 @@ class TestWatchedPods:
         assert all(selector != SELECTOR for selector in api.selectors), api.selectors
 
 
+class TestPoolSelection:
+    def test_a_provider_over_every_pool_watches_the_whole_release(self):
+        """A controller that must see pools created after it started cannot name them up front."""
+        api = FakePodApi(pods=[make_pod(name="engine-0-0")])
+        provider = KubernetesWorkerProvider(run=_run(api, ports={}), pool_ids=None, resync_period=None)
+
+        asyncio.run(_run_watch(provider, []))
+
+        assert set(api.selectors) == {SELECTOR}
+
+    def test_a_category_keeps_only_the_pools_of_that_category(self):
+        """Every engine pool is watched without listing it, so the category is what keeps trainers out."""
+        engine = DEFAULT_WORKER_METADATA.model_copy(update={"category": "inference-engine"})
+        trainer = DEFAULT_WORKER_METADATA.model_copy(update={"category": "trainer-engine"})
+        api = FakePodApi(
+            pods=[
+                make_pod(name="engine-0-0", worker_metadata=engine),
+                make_pod(name="trainer-0-0", pool_id="trainer", worker_metadata=trainer),
+            ]
+        )
+        provider = KubernetesWorkerProvider(
+            run=_run(api, ports={}), pool_ids=None, resync_period=None, category="inference-engine"
+        )
+
+        async def scenario():
+            stop = await _watch(provider, [])
+            try:
+                return provider.cell_ids()
+            finally:
+                await stop()
+
+        assert asyncio.run(scenario()) == ["engine-00000"]
+
+    def test_a_pod_of_a_static_pool_is_not_a_cell(self):
+        """Static workers are addressed through the static connection config, and a cell of them would be healed."""
+        static = DEFAULT_WORKER_METADATA.model_copy(update={"dynamic_pool": False})
+        api = FakePodApi(pods=[make_pod(name="engine-0-0", worker_metadata=static)])
+        provider = KubernetesWorkerProvider(run=_run(api, ports={}), pool_ids=None, resync_period=None)
+
+        async def scenario():
+            stop = await _watch(provider, [])
+            try:
+                return provider.cell_ids()
+            finally:
+                await stop()
+
+        assert asyncio.run(scenario()) == []
+
+
 class TestWatchCellsStateCommit:
     def test_a_reported_cell_leaving_the_wanted_set_is_reported_as_gone(self):
         """From this view the cell is gone, and only None says so; dropping it silently strands the consumer."""
@@ -440,15 +508,14 @@ class TestDebugCellIncarnation:
         assert absent is None
 
 
-def _spec_meta(context) -> dict:
-    return {"role": "actor", "cell_index": context.cell_index, "needs_offload": False, "model_id": "glm"}
+_SPEC_META = StaticMeta(values={"role": "actor", "needs_offload": False, "model_id": "glm"}, include_cell_index=True)
 
 
 class TestSpecMeta:
     def test_evaluates_the_meta_of_the_spec_for_every_cell_that_was_observed(self):
         """Two cells of one pool are two different cells, so one evaluation would collapse them into one."""
         api = FakePodApi(pods=[make_pod(name="engine-0-0"), make_pod(name="engine-1-0", cell_id_suffix="1")])
-        provider = _provider(api, spec_metas={"engine": _spec_meta})
+        provider = _provider(api, static_metas={"engine": _SPEC_META})
 
         first = _cell_info(provider, cell_id="engine-00000")
         second = _cell_info(provider, cell_id="engine-00001")
@@ -459,7 +526,7 @@ class TestSpecMeta:
     def test_keeps_the_python_types_the_spec_computed(self):
         """A chart can only carry strings, which is why this meta is computed here rather than rendered."""
         api = FakePodApi(pods=[make_pod(name="engine-0-0")])
-        provider = _provider(api, spec_metas={"engine": _spec_meta})
+        provider = _provider(api, static_metas={"engine": _SPEC_META})
 
         meta = _cell_info(provider).meta
 
@@ -474,7 +541,7 @@ class TestSpecMeta:
     def test_lets_a_pod_annotation_override_a_key_the_spec_also_computed(self):
         """The pod is what a platform actually created, so its own account of itself wins."""
         api = FakePodApi(pods=[make_pod(name="engine-0-0", annotations={"miles.radixark.io/meta-model_id": "qwen"})])
-        provider = _provider(api, spec_metas={"engine": _spec_meta})
+        provider = _provider(api, static_metas={"engine": _SPEC_META})
 
         assert _cell_info(provider).meta["model_id"] == "qwen"
 

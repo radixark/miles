@@ -161,7 +161,7 @@ class TrainerSpec(BaseServeSpec):
                 PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True),
                 DEFAULT_RPC_PORT_INFO,
             ],
-            static_meta=StaticMeta(values=dict(role=config.trainer_role), include_cell_index=True),
+            partial_static_meta=StaticMeta(values=dict(role=config.trainer_role), include_cell_index=True),
             worker_class=(
                 "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"
                 if config.train_backend == "megatron"

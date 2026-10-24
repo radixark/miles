@@ -388,13 +388,18 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             self._output_snapshotter.save(dir_temp / _EXECUTOR_DIRNAME)
 
     # async but never awaits, for the same reason as save
-    async def load(self, rollout_id: int, completed_rollout_ids: dict[str, int] | None = None) -> None:
-        if self.args.load is None:
+    async def load(
+        self, rollout_id: int, completed_rollout_ids: dict[str, int] | None = None, *, load: str | None
+    ) -> None:
+        assert not hasattr(  # config-access-exempt: reject checkpoint load paths in immutable rollout config
+            self.args, "load"
+        ), "Rollout checkpoint load path must be a runtime input"
+        if load is None:
             logger.warning("no --load: the rollout side starts fresh")
             return
         assert rollout_id >= 0, f"rollout {rollout_id} is not a trained step"
 
-        directory = compute_rollout_checkpoint_dir(self.args.load, rollout_id=rollout_id)
+        directory = compute_rollout_checkpoint_dir(load, rollout_id=rollout_id)
         assert directory.is_dir(), (
             f"the trainer restored rollout {rollout_id}, but {directory} does not exist; a run saved before the "
             f"rollout-side state moved into one directory per rollout cannot resume that state"

@@ -243,7 +243,7 @@ def _train_client(
 
 
 def _generate_url(args: Namespace, endpoint: str = "/generate") -> str:
-    routers = getattr(args, "sglang_model_routers", None)
+    routers = args.sglang_model_routers
     if routers and "default" in routers:
         ip, port = routers["default"]
     else:
@@ -255,7 +255,7 @@ async def _sglang_worker_urls(args: Namespace) -> list[str]:
     from miles.utils.http_utils import get
 
     router_url = _generate_url(args).removesuffix("/generate")
-    if not getattr(args, "use_miles_router", False):
+    if not args.use_miles_router:
         try:
             response = await get(f"{router_url}/workers")
             return [worker["url"] for worker in response["workers"]]
@@ -340,7 +340,7 @@ class MilesSGLangTransport:
             if session_id in self._seen_sessions:
                 self._seen_sessions.move_to_end(session_id)
             else:
-                max_prompt_len = getattr(self.args, "rollout_max_prompt_len", None)
+                max_prompt_len = self.args.rollout_max_prompt_len
                 if max_prompt_len is not None and len(prompt_ids) > max_prompt_len:
                     runtime = _import_verifiers()
                     raise runtime.OverlongPromptError(
@@ -363,7 +363,7 @@ class MilesSGLangTransport:
             payload["extra_key"] = body["cache_salt"]
 
         request_headers = None
-        if getattr(self.args, "sglang_router_policy", None) in ("consistent_hashing", "manual") and session_id:
+        if self.args.sglang_router_policy in ("consistent_hashing", "manual") and session_id:
             request_headers = {"X-SMG-Routing-Key": session_id}
 
         from miles.utils.http_utils import post
@@ -413,7 +413,9 @@ def _sample_status(trace) -> Sample.Status:
 def _serialize_prompt(prompt):
     if isinstance(prompt, list):
         return [
-            message.model_dump(mode="json", exclude_none=True) if hasattr(message, "model_dump") else message
+            (
+                message.model_dump(mode="json", exclude_none=True) if hasattr(message, "model_dump") else message
+            )  # config-access-exempt: Verifiers prompts accept both structured SDK messages and plain dictionaries
             for message in prompt
         ]
     return prompt or ""
@@ -422,9 +424,9 @@ def _serialize_prompt(prompt):
 def _validate_group_reward_sample_counts(args: Namespace, tasks, discover_decorated) -> None:
     if not any(discover_decorated(task, "group_reward") for task in tasks):
         return
-    if getattr(args, "num_rollout", None) != 0 and args.n_samples_per_prompt < 2:
+    if args.num_rollout != 0 and args.n_samples_per_prompt < 2:
         raise ValueError("Verifiers tasks with @group_reward require --n-samples-per-prompt >= 2.")
-    if getattr(args, "eval_interval", None) is not None and args.n_samples_per_eval_prompt < 2:
+    if args.eval_interval is not None and args.n_samples_per_eval_prompt < 2:
         raise ValueError("Verifiers tasks with @group_reward require --n-samples-per-eval-prompt >= 2.")
 
 
@@ -447,14 +449,20 @@ def _branch_to_sample(args: Namespace, trace, branch, *, group_index: int, index
     response_length = len(tokens) - first_sampled
     reward = trace.reward if args.reward_key is None else {**trace.rewards, "reward": trace.reward}
     task_data = trace.task.data
-    label = getattr(task_data, "label", None)
+    label = getattr(
+        task_data, "label", None
+    )  # config-access-exempt: Verifiers task schemas may use label, answer, or no reference answer
     if label is None:
-        label = getattr(task_data, "answer", None)
+        label = getattr(
+            task_data, "answer", None
+        )  # config-access-exempt: Verifiers task schemas may use label, answer, or no reference answer
 
     metadata = {
         "verifiers": {
             "branch_index": branch.index,
-            "task_index": getattr(task_data, "idx", None),
+            "task_index": getattr(
+                task_data, "idx", None
+            ),  # config-access-exempt: Verifiers task schemas may omit an external dataset index
             "rewards": dict(trace.rewards),
             "metrics": dict(trace.metrics),
             "stop_condition": trace.stop_condition,
@@ -466,7 +474,9 @@ def _branch_to_sample(args: Namespace, trace, branch, *, group_index: int, index
     sample = Sample(
         group_index=group_index,
         index=index,
-        prompt=_serialize_prompt(getattr(task_data, "prompt", "")),
+        prompt=_serialize_prompt(
+            getattr(task_data, "prompt", "")
+        ),  # config-access-exempt: interactive Verifiers tasks may construct prompts during the episode
         tokens=tokens,
         response=trace.last_reply,
         response_length=response_length,
@@ -553,7 +563,9 @@ def _make_eval_args(args: ImmutableNamespace) -> Namespace:
         ("eval_max_response_len", "rollout_max_response_len"),
         ("eval_max_context_len", "rollout_max_context_len"),
     ):
-        if (value := getattr(args, eval_name, None)) is not None:
+        if (
+            value := getattr(args, eval_name)
+        ) is not None:  # config-access-exempt: the fixed eval-to-rollout mapping selects declared configuration fields by name
             setattr(eval_args, rollout_name, value)
     eval_args.rollout_max_prompt_len = args.eval_max_prompt_len
     eval_args.reward_key = args.eval_reward_key or args.reward_key
@@ -577,7 +589,7 @@ def _validate_args(args: Namespace) -> None:
     run.py never builds these combinations; this catches a hand-rolled command
     before an episode runs and produces silently wrong training data.
     """
-    if getattr(args, "rollout_global_dataset", False):
+    if args.rollout_global_dataset:
         raise ValueError(
             "Verifiers rollouts replace Miles prompt data with the configured taskset; "
             "pass --disable-rollout-global-dataset."
@@ -602,7 +614,7 @@ def _validate_args(args: Namespace) -> None:
         for enabled, flag in (
             (args.use_opd, "--use-opd"),
             (args.use_rollout_routing_replay, "--use-rollout-routing-replay"),
-            (getattr(args, "use_rollout_indexer_replay", False), "--use-rollout-indexer-replay"),
+            (args.use_rollout_indexer_replay, "--use-rollout-indexer-replay"),
         )
         if enabled
     ]

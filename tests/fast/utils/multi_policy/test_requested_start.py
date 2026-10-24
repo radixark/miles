@@ -1,12 +1,9 @@
 from unittest.mock import AsyncMock
 
 import pytest
-from tests.fast.utils.multi_policy.requested_start_fixtures import _FreshPolicyStartup, fresh_policy_startup
+from tests.fast.utils.multi_policy.conftest import _FreshPolicyStartup
 
 from miles.utils.multi_policy.utils import assert_consistent_restore, create_trainers
-
-
-__all__ = ["fresh_policy_startup"]
 
 
 class TestRequestedPolicyStart:
@@ -19,9 +16,9 @@ class TestRequestedPolicyStart:
         assert all(handle.args.start_rollout_id is None for handle in startup.handles.values())
         rollout = AsyncMock()
 
-        trainers = await create_trainers(startup.args, rollout_executor=rollout, capability=object())
+        trainers = await create_trainers(startup.args, rollout_executor=rollout, handles=startup.handles)
 
         assert {name: trainer.start_rollout_id for name, trainer in trainers.items()} == {"solver": 9, "verifier": 9}
-        rollout.load.assert_awaited_once_with(8, completed_rollout_ids={"solver": 8, "verifier": 8})
+        rollout.load.assert_awaited_once_with(8, load=None, completed_rollout_ids={"solver": 8, "verifier": 8})
         with pytest.raises(AssertionError, match="holds no record"):
             assert_consistent_restore(startup.args, trainers=trainers, leader_model_id="solver")

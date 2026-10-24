@@ -49,6 +49,7 @@ class ConfigSnapshotGeneratedValue(FrozenStrictBaseModel):
         "host",
         "port",
         "external_host",
+        "wandb_key",
     ]
     name: str
     value: str = Field(min_length=1)

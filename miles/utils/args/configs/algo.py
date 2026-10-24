@@ -3,7 +3,6 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 class AlgoConfig(BaseConfig):
-    requested_load: str | None
     use_critic: bool
 
     ref_load: A[

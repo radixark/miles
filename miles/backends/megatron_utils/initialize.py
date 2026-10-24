@@ -13,6 +13,7 @@ from megatron.core.num_microbatches_calculator import init_num_microbatches_calc
 from megatron.core.tensor_parallel.random import _get_all_rng_states, _set_all_rng_states
 from megatron.training.global_vars import _build_tokenizer, set_args
 
+from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -97,6 +98,8 @@ def init(
     args,
     indep_dp_store_addr: str | None = None,
     indep_dp_info: IndepDPInfo | None = None,
+    *,
+    ckpt_load_config: MegatronCkptLoadConfig | None = None,
 ):
     assert isinstance(args.backend, MegatronArgsNamespace)
     if indep_dp_info is None:
@@ -161,7 +164,8 @@ def init(
         from miles.utils.function_registry import load_function
 
         custom_init = load_function(x)
-        fn_args = compute_custom_function_config(args, x)
+        extra_src = ckpt_load_config.model_dump() if ckpt_load_config is not None else {}
+        fn_args = compute_custom_function_config(args, x, extra_src)
         custom_init(fn_args)
 
 

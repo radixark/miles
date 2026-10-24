@@ -1,8 +1,6 @@
 import pytest
 from tests.fast.rollout.inference_rollout.conftest import make_eval_args, make_eval_prompt_dataset_cache, make_state
 from tests.fast.rollout.test_sglang_rollout import _make_generate_args
-from tests.fast.fixtures.args_fixtures import parser_defaults
-from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.rollout import sglang_rollout
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
@@ -32,8 +30,6 @@ class TestEvalDatasetHook:
             raise AssertionError("Dataset generator must override the global generator")
 
         args = _make_generate_args()
-        vars(args).update(parser_defaults() | vars(args) | {"rollout_num_gpus": 1, "rollout_num_gpus_per_engine": 1, "sglang_server_concurrency": 1})
-        args.sglang = make_sglang_config(enable_deterministic_inference=False, dp_size=1)
         vars(args).update(make_eval_args())
         args.sglang.base_args["dp_size"] = 1
         args.inference_runtime_mut_state = InferenceRuntimeMutState(engine_count=1, gpu_count=1)

@@ -12,6 +12,7 @@ from typing import Any, ClassVar, Literal
 import pydantic
 import yaml
 
+from miles.utils.args.custom_function import resolve_custom_function_overrides
 from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace, SerializableConfigDict
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.megatron_args_utils import compute_trainer_num_cells
@@ -310,15 +311,19 @@ def _compute_critic_trainer(args: Namespace, *, policy: MegatronTrainerConfig) -
 
 
 def _compute_critic_overrides(args: Namespace) -> dict[str, Any]:
-    return {
+    overrides = {
         "kl_coef": 0,
         "use_opd": False,
         "disable_param_buffers_cpu_backup": False,
-        "load": args.critic_load,
         "save": args.critic_save,
         "lr": args.critic_lr,
         "lr_warmup_iters": args.critic_lr_warmup_iters,
     }
+    if (x := args.critic_load) is not None:
+        overrides["load"] = x
+        # TODO: Separate fresh initialization weights from reference-model weights instead of overloading ref_load.
+        overrides["ref_load"] = x
+    return overrides
 
 
 def _resolve_raw_megatron_config(value: str | None) -> "_RawMegatronConfig | None":
@@ -365,7 +370,8 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
     ans.trainer_role = trainer.role
     ans.trainer_actor_index = trainer.actor_index
 
-    for key, value in trainer.overrides.items():
+    overrides = resolve_custom_function_overrides(trainer.overrides, args=args)
+    for key, value in overrides.items():
         assert hasattr(ans, key), (  # config-access-exempt: attribute selected at runtime from key
             f"--megatron-config trainer {trainer.trainer_id!r} overrides {key!r}, which this run's argument "
             f"parser does not know"
@@ -387,18 +393,7 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
         ans.load = compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
         ans.save_hf = compute_trainer_checkpoint_dir(base_dir=ans.save_hf, trainer_id=trainer.trainer_id)
 
-    if (
-        trainer.role == CRITIC_ROLE
-        and ans.ckpt_step is not None
-        and has_hf_checkpoint(ans.load)
-        and not has_megatron_checkpoint(ans.load, ckpt_step=ans.ckpt_step)
-    ):
-        # The actor's step selector does not apply to HF initialization of the critic.
-        ans.ckpt_step = None
-
     # TODO: a --use-critic critic keeps the actor's requested_load, so a hot restart reads the actor's checkpoint.
-    if args.train_backend == "megatron" and trainer.model_id is not None:
-        resolve_args_checkpoint_load(ans)
 
     ans.trainer_init_expected_num_cells = _resolve_trainer_init_expected_num_cells(ans, base=args, trainer=trainer)
 
@@ -450,18 +445,28 @@ def compute_trainer_checkpoint_dir(*, base_dir: str | None, trainer_id: str) -> 
     return str(Path(base_dir) / TRAINER_CHECKPOINT_DIRNAME / trainer_id)
 
 
-def resolve_args_checkpoint_load(args: Namespace) -> None:
+def resolve_args_checkpoint_load(args: Namespace, *, role: str) -> bool:
+    if (
+        role == CRITIC_ROLE
+        and args.ckpt_step is not None
+        and has_hf_checkpoint(args.load)
+        and not has_megatron_checkpoint(args.load, ckpt_step=args.ckpt_step)
+    ):
+        # The actor's step selector does not apply to HF initialization of the critic.
+        args.ckpt_step = None
+
     # TODO: refactor
     args.requested_load = args.load
+    resume_from_ckpt = has_megatron_checkpoint(args.load)
 
     explicit_selection = args.ckpt_step is not None or args.exit_on_missing_checkpoint
     if explicit_selection:
         if args.load is None:
             raise ValueError("an explicit checkpoint selection requires --load")
-        return
+        return resume_from_ckpt
 
-    if has_megatron_checkpoint(args.load):
-        return
+    if resume_from_ckpt:
+        return True
 
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
@@ -478,6 +483,8 @@ def resolve_args_checkpoint_load(args: Namespace) -> None:
         if args.ref_ckpt_step is not None:
             args.ckpt_step = args.ref_ckpt_step
         args.start_rollout_id = 0
+
+    return resume_from_ckpt
 
 
 def has_megatron_checkpoint(load_dir: str | None, ckpt_step: int | None = None) -> bool:

@@ -44,7 +44,7 @@ class RolloutExecutorSpec(BaseServeSpec):
             router_providers=compute_router_providers(ctx.args, capability=ctx.capability),
             session_server_provider=(
                 ctx.capability.static_worker_provider(pool_id=SESSION_SERVER_POOL_ID)
-                if ctx.args.use_session_server
+                if ctx.args.use_session_server and ctx.args.sglang.models
                 else None
             ),
             inference_controller_provider=compute_inference_controller_provider(ctx.args, capability=ctx.capability),

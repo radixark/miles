@@ -94,7 +94,7 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
     turns = 0
     perfect_cacheable_prefix_len = 0
     sticky_dp_rank = sample.index % args.rollout_num_gpus_per_engine
-    use_routing_replay = getattr(args, "use_rollout_routing_replay", False)
+    use_routing_replay = args.use_rollout_routing_replay
     routed_experts_chunks: list[np.ndarray] = []
     routed_experts_start_len = 0
 

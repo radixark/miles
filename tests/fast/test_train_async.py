@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 import train_async as train_async_driver
-from tests.fast.fixtures.args_fixtures import parser_defaults
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 from tests.fast.fixtures.driver_fakes import (
     FakeInferenceController,
     FakeObjectStore,
@@ -14,6 +14,7 @@ from tests.fast.fixtures.driver_fakes import (
     FakeWorkerManager,
 )
 
+from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.ray import placement_group as placement_group_mod
 from miles.ray import wiring
@@ -59,7 +60,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
     )
     for key, value in {**defaults, **overrides}.items():
         setattr(args, key, value)
-    return args
+    return resolve_parse_boundary_configs(args)
 
 
 def _startup_info(args: SimpleNamespace) -> ArgvOrchestratorStartupInfo:
@@ -79,10 +80,28 @@ def _install_driver_fakes(
     )
     capability = SimpleNamespace(cell_operations=lambda: components.cell_operations)
 
-    async def create_rollout_components(_args: SimpleNamespace, *, capability: Any) -> tuple[Any, Any, int]:
+    handles = {"actor": components.actor_model}
+    if args.use_critic:
+        handles["critic"] = components.critic_model
+
+    def create_trainer_handles(
+        _args: SimpleNamespace, *, trainer_configs: list[MegatronTrainerConfig], capability: Any
+    ) -> dict[str, FakeTrainingModel]:
+        assert [config.trainer_id for config in trainer_configs] == list(handles)
+        return handles
+
+    async def create_rollout_components(
+        _args: SimpleNamespace, *, capability: Any, trainer_handles: dict[str, FakeTrainingModel]
+    ) -> tuple[Any, Any, int]:
+        assert trainer_handles is handles
         return components.inference_controller, components.rollout_executor, 4
 
-    async def create_training_models(_args: SimpleNamespace, _executor: Any, *, capability: Any) -> tuple[Any, Any]:
+    async def create_training_models(
+        _args: SimpleNamespace, _executor: Any, *, handles: dict[str, FakeTrainingModel]
+    ) -> tuple[Any, Any]:
+        assert handles["actor"] is components.actor_model
+        if args.use_critic:
+            assert handles["critic"] is components.critic_model
         return components.actor_model, components.critic_model
 
     async def update_weights(
@@ -91,6 +110,7 @@ def _install_driver_fakes(
         events.append(f"update_weights:{rollout_id}")
 
     monkeypatch.setattr(train_async_driver, "init_orchestration_script", lambda _startup_info, *, disposer: capability)
+    monkeypatch.setattr(train_async_driver, "create_trainer_handles", create_trainer_handles)
     monkeypatch.setattr(train_async_driver, "create_rollout_components", create_rollout_components)
     monkeypatch.setattr(train_async_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(train_async_driver, "maybe_start_mini_ft_controller", lambda _args: None)
@@ -271,7 +291,7 @@ class TestTerminalLifecycle:
         args = _make_args()
         _install_driver_fakes(monkeypatch, args, events)
 
-        async def fail_creation(*args: Any) -> None:
+        async def fail_creation(*args: Any, handles: dict[str, FakeTrainingModel]) -> None:
             raise RuntimeError("model creation failed")
 
         monkeypatch.setattr(train_async_driver, "create_training_models", fail_creation)

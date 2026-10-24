@@ -64,7 +64,7 @@ from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.file_utils import atomic_write_text
 from miles.utils.object_store_config import ObjectStoreBackend
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
-from miles.utils.workers.argv_utils import ORCHESTRATOR_CONFIG_FLAG
+from miles.utils.workers.argv_utils import ORCHESTRATOR_CONFIG_FLAG, config_json_for_argv
 from miles.utils.workers.connection_config import StaticConnConfig
 from miles.utils.workers.naming import DNS_LABEL_PATTERN
 from miles.utils.workers.serving.utils import override_argv, override_env
@@ -398,7 +398,7 @@ def _compute_orchestrator_command(train_script: str, *, args: Any, static_connec
         args=OrchestratorConfig.slice_from(args).model_dump(mode="json", exclude={"env_report"}),
         static_connections=static_connections,
     )
-    return ["python", train_script, ORCHESTRATOR_CONFIG_FLAG, payload.model_dump_json()]
+    return ["python", train_script, ORCHESTRATOR_CONFIG_FLAG, config_json_for_argv(payload)]
 
 
 def _generate_wandb_run_id() -> str:

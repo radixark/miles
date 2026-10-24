@@ -28,6 +28,7 @@ class GeneratedValueRegistry:
             "host",
             "port",
             "external_host",
+            "wandb_key",
         ],
         value: str,
         name: str | None = None,

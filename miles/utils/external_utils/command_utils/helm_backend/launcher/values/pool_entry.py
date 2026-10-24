@@ -24,7 +24,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.place
     sentinel_to_placeholder,
     sentinels_to_placeholders,
 )
-from miles.utils.workers.argv_utils import python_argv_prefix
+from miles.utils.workers.argv_utils import config_json_for_argv, python_argv_prefix
 from miles.utils.workers.connection_config import StaticConnConfig, build_worker_annotations
 from miles.utils.workers.naming import compute_port_name
 from miles.utils.workers.serving.worker_config import ServeWorkerConfig
@@ -177,6 +177,7 @@ def _launch_context(
     pod_gpu_ids = real_or_sentinel_gpu_ids(spec, is_sub_node=is_sub_node, scaling=scaling)
     return LaunchCommandContext(
         args=args,
+        scaling=scaling,
         cell_index=cell_index,
         worker_in_cell_index=worker_in_cell_index,
         num_workers_per_cell=spec.scheduling(scaling).num_workers_per_cell,
@@ -212,7 +213,7 @@ def _serve_command(spec: BaseServeSpec, *, static_connections: StaticConnConfig,
         "-m",
         _SERVE_MODULE,
         "--config",
-        worker_config.model_dump_json(),
+        config_json_for_argv(worker_config),
     ]
     if workers_per_pod == 1:
         return serve

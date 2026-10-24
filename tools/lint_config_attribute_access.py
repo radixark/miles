@@ -10,7 +10,7 @@ _EXEMPTION = "config-access-exempt:"
 def main() -> None:
     violations = [
         message
-        for root in (Path("miles"), Path("miles_plugins"))
+        for root in (Path("miles"), Path("miles_plugins"), Path("examples"))
         for path in root.rglob("*.py")
         for message in _violations(path)
     ]

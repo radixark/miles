@@ -57,7 +57,7 @@ _GITHUB_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _clear_github_env(monkeypatch: pytest.MonkeyPatch, ci_snapshot_environment: None) -> None:
+def _clear_github_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test starts from a clean GitHub environment so leftovers from the
     real CI runner (or a prior test) cannot leak in."""
     for var in _GITHUB_ENV_VARS:

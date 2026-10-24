@@ -148,7 +148,7 @@ class TrainerController:
 
     async def _remove_cell(self, cell_id: str) -> None:
         cell = self._cells_by_id.pop(cell_id)
-        cell.health_checker.stop()
+        cell.dispose()
 
     def _create_cell(self, cell_id: str, *, cell_index: int, workers_hash: str) -> TrainerCell:
         cell = TrainerCell(
@@ -376,6 +376,7 @@ class TrainerController:
         cell_results = await asyncio.gather(
             *[
                 cell.init(
+                    ckpt_load_config=request.ckpt_load_config,
                     indep_dp_info=self._compute_indep_dp_info(
                         cell_index=cell.cell_index,
                         # all cells will be alive for this first initialization
@@ -391,7 +392,7 @@ class TrainerController:
     async def is_initialized(self) -> bool:
         return self._init_once.is_initialized()
 
-    async def load_state(self) -> list[Any]:
+    async def load_state(self, request: TrainerControllerInitRequest) -> list[Any]:
         assert self._init_once.is_initialized()
 
         await self._wait_expected_num_cells(timeout=_CELLS_READY_TIMEOUT_SECONDS)
@@ -399,7 +400,9 @@ class TrainerController:
         not_alive = [cell.cell_id for cell in self._cells if not cell.is_alive]
         assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
 
-        cell_results = await gather_and_raise_first([cell.load_state() for cell in self._cells])
+        cell_results = await gather_and_raise_first(
+            [cell.load_state(request.ckpt_load_config) for cell in self._cells]
+        )
         self._debug_trainer_load_state_timestamp = time.time()
         return [item for sublist in cell_results for item in sublist]
 

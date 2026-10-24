@@ -256,8 +256,9 @@ class _FakeRolloutApi:
             if not landed:
                 continue
             offset = 1.0 if rank in self.corrupted_ranks or selector in self.corrupted_roles else 0.0
+            prefix = "" if selector == "target" else f"{selector}."
             checksums = {
-                (name if selector == "target" else f"{selector}.{name}"): hash_tensor_sha256(
+                f"{prefix}{name}": hash_tensor_sha256(
                     torch.tensor(landed[self.published_address(rank, name, selector)]) + offset
                 )
                 for name in names

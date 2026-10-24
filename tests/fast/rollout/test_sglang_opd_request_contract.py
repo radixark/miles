@@ -44,8 +44,6 @@ class TestSglangOpdRequestContract:
                     parser_defaults()
                     | dict(
                         ci_test=False,
-                        rollout_num_gpus=1,
-                        sglang_server_concurrency=1,
                         sglang_router_ip="router",
                         sglang_router_port=30000,
                         use_opd=enabled,

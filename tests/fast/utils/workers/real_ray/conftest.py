@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 import ray
 from tests.fast.utils.workers.conftest import worker_manager_args
+from tests.fast.utils.workers.fake_specs import FakeCommandSpec
 
 from miles.utils.workers.ray_worker_manager import _ACTOR_NAME, RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
@@ -115,20 +116,20 @@ def make_command_spec(
     num_gpu_slots_per_worker: int = 0,
     pg_name: str | None = None,
 ) -> BaseCommandSpec:
-    return BaseCommandSpec(
+    return FakeCommandSpec(
         name=name,
         port_infos=(
             port_infos if port_infos is not None else [PortInfo(name="primary", static_port=8000, allow_dynamic=True)]
         ),
-        env_var=lambda _ctx: dict(env_var or {}),
-        scheduling=SchedulingSpec(
+        env_vars=lambda _ctx: dict(env_var or {}),
+        fixed_scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=num_workers_per_cell,
             num_gpus_per_worker=num_gpus_per_worker,
             num_gpu_slots_per_worker=num_gpu_slots_per_worker,
             pg_name=pg_name,
         ),
-        launch_command=launch_command,
+        command=launch_command,
     )
 
 

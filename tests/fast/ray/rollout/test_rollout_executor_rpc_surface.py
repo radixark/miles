@@ -61,7 +61,7 @@ class TestRolloutExecutorLifecycleRpc:
             assert asyncio.get_running_loop() is not rpc_loop
             loaded.set()
 
-        worker.args = Namespace(load=str(tmp_path), save_debug_event_data=None)
+        worker.args = Namespace(save_debug_event_data=None)
         worker.use_legacy_rollout_v1 = True
         compute_rollout_checkpoint_dir(tmp_path, rollout_id=7).mkdir(parents=True)
         worker._output_snapshotter = SimpleNamespace(
@@ -75,7 +75,7 @@ class TestRolloutExecutorLifecycleRpc:
 
         executor.start(
             spec=specs["load"],
-            kwargs={"rollout_id": 7},
+            kwargs={"rollout_id": 7, "load": str(tmp_path)},
             call_id="load",
             finish=recorder.finish,
         )

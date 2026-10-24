@@ -13,7 +13,6 @@ from miles.utils.workers.worker_spec import (
 )
 
 
-
 def _no_env_vars(_ctx: WorkerLaunchContext) -> dict[str, str]:
     return {}
 

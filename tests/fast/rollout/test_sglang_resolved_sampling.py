@@ -1,6 +1,5 @@
 import pytest
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
-from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.rollout.inference_rollout.conftest import make_eval_args, make_eval_prompt_dataset_cache, make_state
 from tests.fast.rollout.test_sglang_rollout import _make_generate_args
 
@@ -32,7 +31,6 @@ class TestResolvedDeterministicSampling:
             return GenerateFnOutput(samples=input.sample)
 
         args = _make_generate_args()
-        vars(args).update(parser_defaults() | vars(args) | {"rollout_num_gpus": 1, "rollout_num_gpus_per_engine": 1, "sglang_server_concurrency": 1})
         vars(args).update(make_eval_args())
         args.sglang = make_sglang_config(enable_deterministic_inference=enabled, dp_size=1)
         vars(args).pop("sglang_enable_deterministic_inference", None)
@@ -68,7 +66,6 @@ class TestResolvedDeterministicSampling:
     def test_legacy_state_sizes_dp_balancing_from_resolved_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Legacy generation state derives its DP lanes and deterministic group seeds from resolved ownership."""
         args = _make_generate_args()
-        vars(args).update(parser_defaults() | vars(args) | {"rollout_num_gpus": 1, "rollout_num_gpus_per_engine": 1, "sglang_server_concurrency": 1})
         args.sglang = make_sglang_config(enable_deterministic_inference=True, dp_size=3)
         args.rollout_seed = 17
         args.n_samples_per_prompt = 2

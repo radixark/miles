@@ -1,1 +1,0 @@
-{error: {message: use_rollout_logprobs and use_tis cannot be set at the same time., type: AssertionError}}

@@ -1,7 +1,13 @@
+import pytest
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
+if not SNAPSHOT_TESTING_ENABLED:
+    pytest.skip("Snapshot testing is disabled by op48-277", allow_module_level=True)
+
 import os
 from collections.abc import Callable
 
-import pytest
 from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 
 from miles.utils.args.trainer_utils import compute_trainer_config
@@ -13,6 +19,7 @@ from miles.utils.audit_utils.config_snapshot.generated_value_registry import (
 from miles.utils.audit_utils.config_snapshot.models import ConfigSnapshotGeneratedValue
 from miles.utils.audit_utils.config_snapshot.normalizer import normalize_record
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.env_report.redaction import redact_arg
 from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR, dump_snapshot
 
 
@@ -472,6 +479,51 @@ class TestGeneratedPathNormalization:
         assert dump_snapshot(ConfigSnapshotConverter.convert(records)) == dump_snapshot(
             ConfigSnapshotConverter.convert(list(reversed(records)))
         )
+
+
+class TestWandbCredentialProvenance:
+    @pytest.mark.parametrize("registered", [False, True])
+    @pytest.mark.parametrize("key", [None, "environment-key", "explicit-key"])
+    def test_only_matching_registered_credentials_normalize(
+        self, make_record: Callable, registered: bool, key: str | None
+    ) -> None:
+        """Credential provenance cannot hide disabled tracking or an explicit different key."""
+        digest = redact_arg("wandb_key", key)
+        record = make_record(config={"wandb_key": digest, "unrelated": digest}).model_copy(
+            update={
+                "generated_values": (
+                    [
+                        ConfigSnapshotGeneratedValue(
+                            kind="wandb_key", name="environment", value=redact_arg("wandb_key", "environment-key")
+                        )
+                    ]
+                    if registered
+                    else []
+                )
+            }
+        )
+
+        assert normalize_record(record) == {
+            "args": {
+                "wandb_key": "$WANDB_KEY_environment" if registered and key == "environment-key" else digest,
+                "unrelated": digest,
+            }
+        }
+
+    def test_environment_rotation_preserves_the_snapshot(self, make_record: Callable) -> None:
+        """Different environment credentials have one stable token when each has provenance."""
+        snapshots = []
+        for key in ("first-environment-key", "second-environment-key"):
+            digest = redact_arg("wandb_key", key)
+            record = make_record(config={"wandb_key": digest}).model_copy(
+                update={
+                    "generated_values": [
+                        ConfigSnapshotGeneratedValue(kind="wandb_key", name="environment", value=digest)
+                    ]
+                }
+            )
+            snapshots.append(normalize_record(record))
+        assert snapshots == [{"args": {"wandb_key": "$WANDB_KEY_environment"}}] * 2
 
 
 class TestOtherBackendGeneratedPaths:

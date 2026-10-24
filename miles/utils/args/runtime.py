@@ -1,6 +1,8 @@
 from pydantic import model_validator
 from typing_extensions import Self
 
+from miles.backends.megatron_utils.checkpoint_request import CHECKPOINT_LOAD_FIELDS
+
 from miles.utils.args.component_multi_lora import MultiLoraOnlyConfig
 from miles.utils.args.component_orchestrator import OrchestratorOnlyConfig
 from miles.utils.args.component_rollout import InferenceControllerOnlyConfig, RolloutOnlyConfig
@@ -144,6 +146,15 @@ class TrainerConfig(
     @model_validator(mode="after")
     def _validate_backend_name(self) -> Self:
         assert self.train_backend == self.backend.backend_name, "train_backend must match backend.backend_name"
+        return self
+
+    @model_validator(mode="after")
+    def _validate_no_checkpoint_load_fields(self) -> Self:
+        if self.train_backend == "megatron":
+            runtime_fields = CHECKPOINT_LOAD_FIELDS & vars(self.backend).keys()
+            assert (
+                not runtime_fields
+            ), f"Checkpoint load inputs do not belong in trainer config: {sorted(runtime_fields)}"
         return self
 
     @model_validator(mode="after")

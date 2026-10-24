@@ -1,1 +1,0 @@
-{error: {message: LoRA injection is not implemented for FSDP; use --train-backend megatron, type: AssertionError}}

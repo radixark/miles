@@ -67,7 +67,7 @@ class TestWorkerAnnotations:
                 num_gpu_slots_per_worker=1,
                 num_gpus_per_node=8,
             ),
-            static_meta=StaticMeta(include_cell_index=True, gpu_offset_base=4, gpu_offset_stride_per_cell=16),
+            partial_static_meta=StaticMeta(include_cell_index=True, gpu_offset_base=4, gpu_offset_stride_per_cell=16),
         )
         annotations = build_worker_annotations(
             spec=spec, scaling=ScalingConfig(sglang_scaling=SglangScalingConfig(groups={}))

@@ -19,6 +19,7 @@ from argparse import Namespace
 import pytest
 import torch
 import torch.nn as nn
+from tests.fast.fixtures.args_fixtures import make_trainer_config
 
 from miles.backends.fsdp_utils.arguments import validate_kernel_backend_args
 from miles.backends.fsdp_utils.plugins.hf_kernels import HubKernels, HubKernelSpec
@@ -123,7 +124,8 @@ def _all_hub_modules(**overrides):
 
 
 def test_native_is_the_default_and_stays_inert(monkeypatch):
-    args = _make_args(kernel_backend="native")
+    """A typed FSDP trainer config keeps native kernels independent of Hub dependencies."""
+    args = make_trainer_config(train_backend="fsdp", kernel_backend="native")
     monkeypatch.delitem(sys.modules, "kernels", raising=False)
 
     hub = HubKernels.prepare(args)

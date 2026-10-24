@@ -26,6 +26,7 @@ from miles.backends.training_utils.weight_update.snapshot_publisher import Snaps
 from miles.utils import megatron_bridge_utils
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
 from .lora.utils import is_lora_model, save_lora_checkpoint
@@ -141,10 +142,11 @@ def load_checkpoint(
             load_path
         ), f"{args.backend.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
-    ConfigSnapshotDumper.dump(
-        stage="checkpoint_load",
-        config={"args": args, "load": load_path, "local_checkpoint_manager": has_local_checkpoint_manager},
-    )
+    if SNAPSHOT_TESTING_ENABLED:
+        ConfigSnapshotDumper.dump(
+            stage="checkpoint_load",
+            config={"args": args, "load": load_path, "local_checkpoint_manager": has_local_checkpoint_manager},
+        )
 
     if has_local_checkpoint_manager or ckpt_step is not None or _is_megatron_checkpoint(load_path):
         checkpoint_path = (
@@ -164,6 +166,7 @@ def load_checkpoint(
             )
         if ckpt_step is not None and not args.backend.finetune and result_iteration != ckpt_step:
             raise ValueError(f"Requested checkpoint step {ckpt_step}, but Megatron loaded step {result_iteration}")
+        restored_trained_iteration = not args.backend.finetune
     else:
         if args.backend.exit_on_missing_checkpoint and not has_hf_checkpoint(load_path):
             raise FileNotFoundError(f"No checkpoint found under --load={load_path!r}")
@@ -173,7 +176,7 @@ def load_checkpoint(
             args=args,
             load_path=load_path,
         )
-    restored_trained_iteration = not args.backend.finetune
+        restored_trained_iteration = False
 
     ModelCompanionSampleConsumptionUtils.clear_for_finetune(ddp_model, args=args.backend)
 

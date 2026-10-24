@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
+from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.config import build_trainer_config
@@ -41,12 +42,14 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         args: Pickled,
         role: str,
         *,
+        ckpt_load_config: MegatronCkptLoadConfig | None = None,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
+        assert ckpt_load_config is None, "torchtitan backend does not support checkpoint healing"
         assert isinstance(args.backend, TorchtitanArgsNamespace)
         compat.install()
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)

@@ -98,11 +98,12 @@ class InferenceControllerEvalFleet:
         self.args = args
         self._srv = srv
 
-    @property
-    def info(self) -> EvalFleetInfo:
+    async def info(self) -> EvalFleetInfo:
+        async with self._srv.context_lock:
+            engine_gpu_counts = list(self._srv.engine_gpu_counts)
         return EvalFleetInfo(
             router=HostAndPort(host=self._srv.router_ip, port=self._srv.router_port),
-            engine_gpu_counts=self._srv.engine_gpu_counts,
+            engine_gpu_counts=engine_gpu_counts,
         )
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:

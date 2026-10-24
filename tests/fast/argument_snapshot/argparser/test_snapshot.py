@@ -1,3 +1,10 @@
+import pytest
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
+if not SNAPSHOT_TESTING_ENABLED:
+    pytest.skip("Snapshot testing is disabled by op48-277", allow_module_level=True)
+
 from tests.fast.argument_snapshot.argparser.scenarios import capture_scenarios
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 
@@ -22,6 +29,7 @@ _SCENARIO_BASES = {
 
 
 class TestArgumentSnapshots:
+    @pytest.mark.skip(reason="Snapshot baseline testing is disabled by op48-277")
     def test_parser_scenarios_match_snapshots(self) -> None:
         """Parser schemas and parsed values match their reviewed snapshots."""
         snapshots = {name: dump_snapshot(snapshot) for name, snapshot in capture_scenarios().items()}

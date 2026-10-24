@@ -1,2 +1,0 @@
-{error: {message: --rollout-external-router-pd only applies to external rollout engines; internally launched engines infer
-      PD from the sglang config., type: AssertionError}}

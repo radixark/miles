@@ -1,2 +1,0 @@
-{error: {message: --true-on-policy-mode is not supported on the megatron backend with this Megatron version; support lands
-      in a follow-up PR. Use --train-backend fsdp for true-on-policy., type: NotImplementedError}}

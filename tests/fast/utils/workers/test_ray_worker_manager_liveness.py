@@ -6,12 +6,13 @@ import pytest
 import ray
 from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_KILL, READINESS_METHOD, FakeRayCluster
+from tests.fast.utils.workers.fake_specs import FakeServeSpec
 
 from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
-from miles.utils.workers.worker_spec import BaseServeSpec, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT_INFO, BaseServeSpec, PortInfo, SchedulingSpec
 
 
 class DemoWorker:
@@ -23,15 +24,16 @@ _WORKER_CLASS_PATH = f"{DemoWorker.__module__}.{DemoWorker.__qualname__}"
 
 
 def _make_spec(name: str, *, num_cells: int = 1, num_workers_per_cell: int = 1) -> BaseServeSpec:
-    return BaseServeSpec(
+    return FakeServeSpec(
         name=name,
-        port_infos=[PortInfo(name="master", static_port=9000, mode="master", allow_dynamic=True)],
-        env_var=lambda _ctx: {},
-        scheduling=SchedulingSpec(
+        port_infos=[
+            PortInfo(name="master", static_port=9000, mode="master", allow_dynamic=True),
+            DEFAULT_RPC_PORT_INFO,
+        ],
+        fixed_scheduling=SchedulingSpec(
             num_cells=num_cells, num_workers_per_cell=num_workers_per_cell, num_gpus_per_worker=0
         ),
         worker_class=_WORKER_CLASS_PATH,
-        ctor_kwargs=lambda _ctx: {},
     )
 
 

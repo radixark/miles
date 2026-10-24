@@ -17,7 +17,6 @@ class TrainerBackendTraitConfig(BaseConfig):
     # from AlgoConfig
     ckpt_step: int | None
     rollout_indexer_topk_num_streams: int | None = None
-    load: A[str | None, Arg(reset=True)] = None
     save: A[str | None, Arg(reset=True)] = None
     save_interval: A[int | None, Arg(reset=True)] = None
     async_save: A[bool, Arg(reset=True)]
@@ -58,6 +57,8 @@ class TrainerBackendTraitConfig(BaseConfig):
         reset_arg(parser=parser, name="--lr", type=float, default=1e-6)
         reset_arg(parser=parser, name="--clip-grad", type=float, default=1.0)
         reset_arg(parser=parser, name="--calculate-per-token-loss", action="store_true")
+        reset_arg(parser=parser, name="--no-load-optim", action="store_true")
+        reset_arg(parser=parser, name="--no-load-rng", action="store_true")
         reset_arg(
             parser=parser,
             name="--no-save-optim",

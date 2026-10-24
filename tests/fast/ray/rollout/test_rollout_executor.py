@@ -2,10 +2,11 @@ import asyncio
 from argparse import Namespace
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import pytest
 import torch
-from tests.fast.ray.rollout.conftest import make_args, make_sample
+from tests.fast.ray.rollout.conftest import FakeInferenceTopologyProvider, make_args, make_rollout_config, make_sample
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.backends.training_utils.types import TrainStepOutcome
@@ -25,6 +26,7 @@ from miles.rollout.base_types import (
 from miles.rollout.data_source import RolloutDataSource
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import SampleOwnershipViolation
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import (
@@ -40,9 +42,18 @@ from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
 
+def _make_runtime_args(**overrides: Any) -> Namespace:
+    values = vars(make_args(**overrides))
+    return Namespace(**{key: value for key, value in values.items() if key not in {"load", "requested_load"}})
+
+
 class FakeInferenceController:
     def __init__(self) -> None:
         self.pins: list[tuple[str, str]] = []
+        self.info: EvalFleetInfo | None = None
+
+    async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
+        return self.info
 
     async def pin_eval_fleet(self, *, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
         self.pins.append((checkpoint_dir, weight_version))
@@ -94,7 +105,7 @@ class TestDispose:
             enable_event_analyzer=False,
         )
         executor._metric_checker = None
-        executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=make_args())
+        executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=_make_runtime_args())
         executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=6, data=[Sample(index=10)], metadata={})
         event_logger = EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor"))
         event_logger.log(
@@ -194,7 +205,7 @@ class TestSetEvalFleetInfo:
         eval_function = FakeEvalFunction()
         executor = RolloutExecutor.__new__(RolloutExecutor)
         executor._disposed = False
-        executor.args = Namespace(
+        executor.args = make_rollout_config(
             chat_template_path=None,
             custom_eval_rollout_log_function_path=None,
             custom_generate_function_path=None,
@@ -222,11 +233,8 @@ class TestSetEvalFleetInfo:
         executor.eval_generate_rollout = eval_function
         executor.last_get_rollout_id_of_model_id = {None: 9}
         executor._metric_checker = None
-        info = EvalFleetInfo(
-            router=HostAndPort(host="10.0.0.2", port=31000),
-            num_gpus=2,
-            num_gpus_per_engine=1,
-        )
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[1, 1])
+        controller.info = info
 
         await executor.set_eval_fleet_info(info)
         await executor._eval_checkpoint(
@@ -248,8 +256,9 @@ class TestSetEvalFleetInfo:
         assert isinstance(first.generate_state, GenerateState)
         assert first.generate_state.args.sglang_router_ip == info.router.host
         assert first.generate_state.args.sglang_router_port == info.router.port
-        assert first.generate_state.args.rollout_num_gpus == info.num_gpus
-        assert first.generate_state.args.rollout_num_gpus_per_engine == info.num_gpus_per_engine
+        assert first.generate_state.args.inference_runtime_mut_state == InferenceRuntimeMutState(
+            engine_count=2, gpu_count=2
+        )
         assert second.generate_state is None
 
 
@@ -297,7 +306,7 @@ class _FakeObjectStore:
 
 def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExecutor:
     executor = RolloutExecutor.__new__(RolloutExecutor)
-    executor.args = make_args(load=str(tmp_path), save=str(tmp_path))
+    executor.args = _make_runtime_args(load=str(tmp_path), save=str(tmp_path))
     executor.use_legacy_rollout_v1 = True
     executor.generate_rollout = rollout_fn
     executor.eval_generate_rollout = rollout_fn
@@ -325,7 +334,7 @@ class TestOutputSnapshotReplay:
     ) -> None:
         """A checkpoint restores issued history without repeating terminal drops from any saved stage."""
         event_dir = tmp_path / "active-events"
-        args = make_args(
+        args = _make_runtime_args(
             load=str(tmp_path),
             requested_load=str(tmp_path),
             save=str(tmp_path),
@@ -373,7 +382,7 @@ class TestOutputSnapshotReplay:
             resumed_fn = FailingRolloutFn(RolloutFnConstructorInput(args=args, data_source=_FakeDataSource(tmp_path)))
             resumed = _make_executor(tmp_path, _CountingRolloutFn())
             self._configure_async_executor(resumed, args=args, rollout_fn=resumed_fn)
-            await resumed.load(0)
+            await resumed.load(0, load=str(tmp_path))
             await resumed.get(rollout_id=1)
         finally:
             set_event_logger(None)
@@ -388,6 +397,9 @@ class TestOutputSnapshotReplay:
     @staticmethod
     def _configure_async_executor(executor: RolloutExecutor, *, args: Namespace, rollout_fn: BaseRolloutFn) -> None:
         executor.args = args
+        executor._inference_controller_provider = FakeInferenceTopologyProvider(
+            InferenceRuntimeImmutState(engine_count=8, gpu_count=8)
+        )
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = rollout_fn
         executor.eval_generate_rollout = rollout_fn
@@ -407,7 +419,7 @@ class TestOutputSnapshotReplay:
         executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=3, data=[Sample(index=7)], metadata={})
         await executor.save(2)
         restored = _make_executor(tmp_path, _CountingRolloutFn())
-        await restored.load(2)
+        await restored.load(2, load=str(tmp_path))
 
         caller_loop = asyncio.get_running_loop()
 
@@ -421,7 +433,7 @@ class TestOutputSnapshotReplay:
         assert (await restored.get(rollout_id=3)).sample_indices == [7]
         await restored.save(2)
         resumed_again = _make_executor(tmp_path, _CountingRolloutFn())
-        await resumed_again.load(2)
+        await resumed_again.load(2, load=str(tmp_path))
         assert (await resumed_again.get(rollout_id=3)).sample_indices == [7]
 
     async def test_a_generated_batch_is_captured_before_a_concurrent_save_runs(
@@ -488,7 +500,7 @@ class TestSampleOwnershipRolloutId:
         """The data source issues samples mid-get, so the recorder must stamp the rollout being served."""
         event_dir = tmp_path / "events"
         executor = _make_executor(tmp_path, _CountingRolloutFn())
-        executor.args = make_args(
+        executor.args = _make_runtime_args(
             load=str(tmp_path),
             save=str(tmp_path),
             save_debug_event_data=str(event_dir),
@@ -545,7 +557,7 @@ class TestOneDirectoryPerRolloutCheckpoint:
         assert set(_load_executor_state(tmp_path, rollout_id=4)) == {("verifier", 4)}
 
         restored = _make_executor(tmp_path, _CountingRolloutFn())
-        await restored.load(4, completed_rollout_ids={"solver": 4, "verifier": 4})
+        await restored.load(4, load=str(tmp_path), completed_rollout_ids={"solver": 4, "verifier": 4})
         assert restored._output_snapshotter.get(trainer_model_id="verifier", rollout_id=4) is None
 
     async def test_the_directory_appears_only_after_every_component_saved(
@@ -598,14 +610,14 @@ class TestOneDirectoryPerRolloutCheckpoint:
         executor = _make_executor(tmp_path, _CountingRolloutFn())
 
         with pytest.raises(AssertionError, match="cannot resume that state"):
-            await executor.load(5)
+            await executor.load(5, load=str(tmp_path))
 
     async def test_a_step_that_was_never_trained_is_refused(self, tmp_path: Path) -> None:
         """A run whose trainer starts from scratch has no rollout state, and must not be asked for any."""
         executor = _make_executor(tmp_path, _CountingRolloutFn())
 
         with pytest.raises(AssertionError, match="is not a trained step"):
-            await executor.load(-1)
+            await executor.load(-1, load=str(tmp_path))
 
         assert executor.data_source.loaded == []
 
@@ -616,7 +628,7 @@ class TestOneDirectoryPerRolloutCheckpoint:
         (compute_rollout_checkpoint_dir(tmp_path, rollout_id=5) / "executor" / "state.pt").unlink()
 
         with pytest.raises(AssertionError, match="executor/state.pt"):
-            await executor.load(5)
+            await executor.load(5, load=str(tmp_path))
 
     async def test_a_custom_data_source_does_not_imply_the_builtin_state_file(self, tmp_path: Path) -> None:
         """A custom source keeps its own checkpoint contract instead of writing the built-in cursor file."""
@@ -624,7 +636,7 @@ class TestOneDirectoryPerRolloutCheckpoint:
         executor.data_source = _CustomDataSource()
 
         await executor.save(5)
-        await executor.load(5)
+        await executor.load(5, load=str(tmp_path))
 
         assert not (compute_rollout_checkpoint_dir(tmp_path, rollout_id=5) / "data_source").exists()
 

@@ -291,7 +291,9 @@ def inkling_model_provider(
         sp=args.backend.sequence_parallel,
         etp=args.backend.expert_tensor_parallel_size or 1,
         cp=args.backend.context_parallel_size or 1,
-        varlen=args.backend.variable_seq_lengths,
+        varlen=getattr(
+            args.backend, "variable_seq_lengths", True
+        ),  # config-access-exempt: preserve the upstream conversion default
         permute_fusion=args.backend.moe_permute_fusion,
         fp32_residual=args.backend.fp32_residual_connection,
         pp_first_stage_layers=args.backend.decoder_first_pipeline_num_layers,

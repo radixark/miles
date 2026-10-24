@@ -19,6 +19,7 @@ from miles.ray.rollout.inference_controller import (
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import InferenceEngineSpec, compute_router_pool_id
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.audit_utils.checksum_utils import ChecksumCollectionFailure
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
@@ -290,9 +291,12 @@ class _FakeWorkerProvider(BaseWorkerProvider):
 
 class _RecordingInferenceControllerEvalFleet:
     def __init__(self, info: EvalFleetInfo):
-        self.info = info
+        self._info = info
         self.pins: list[dict] = []
         self.checked_versions: list[str] = []
+
+    async def info(self) -> EvalFleetInfo:
+        return self._info
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
         self.pins.append(dict(checkpoint_dir=checkpoint_dir, weight_version=weight_version))
@@ -765,7 +769,7 @@ class TestEngineMetaContract:
             alive=True,
             worker_names=["inference-engine-0-0-1-0"],
             workers_hash="pseudo-hash-0",
-            meta=spec.static_meta.resolve(cell_index=1),
+            meta=spec.compute_static_meta(ScalingConfig(sglang_scaling=args.sglang_scaling)).resolve(cell_index=1),
         )
 
         assert _compute_server_cell_meta_from_info(info) == ServerCellMetadata(
@@ -806,6 +810,24 @@ class TestUpdateWeightsLockWindow:
 
         await controller.abort_update_weights()
         assert not controller.context_lock.locked
+
+    async def test_aborting_without_a_pending_update_leaves_the_controller_usable(self) -> None:
+        """A takeover without an interrupted weight update must still reset the fleet."""
+        controller = _make_controller({})
+
+        await controller.abort_update_weights()
+        await controller.prepare_eval()
+
+        assert not controller.context_lock.locked
+
+    async def test_aborting_an_update_does_not_release_an_ordinary_active_call(self) -> None:
+        """Recovery may release an abandoned update window but never another call's lock."""
+        controller = _make_controller({})
+
+        async with controller.context_lock:
+            await asyncio.create_task(controller.abort_update_weights())
+            assert controller.context_lock.locked
+            assert controller.context_lock.held_in_current_context
 
     @pytest.mark.asyncio
     async def test_reconcile_waits_while_the_update_weights_window_is_open(self):
@@ -1545,7 +1567,7 @@ class TestEvalFleetSurface:
     def test_the_fleet_description_survives_the_wire(self):
         """The executor retargets its eval args to what it decodes, so every field must round-trip."""
         serializer = collect_rpc_method_specs(InferenceController)["get_eval_fleet_info"].serializer
-        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[1, 1])
 
         assert serializer.decode_result(serializer.encode_result(info)) == info
         assert serializer.decode_result(serializer.encode_result(None)) is None
@@ -1588,7 +1610,7 @@ class TestEvalFleetSurface:
     async def test_the_fleet_answers_and_pins_through_the_controller(self):
         """The fleet lives beside its engines: the executor only ever addresses it through the controller."""
         controller = _make_controller({})
-        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[1, 1])
         controller._eval_fleet = _RecordingInferenceControllerEvalFleet(info)
 
         assert await controller.get_eval_fleet_info() == info

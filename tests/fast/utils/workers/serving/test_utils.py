@@ -1,34 +1,23 @@
+import json
 import os
 import socket
 import sys
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
+from tests.fast.utils.workers.serving.registered_serve import serve_config_argv
+from tests.fast.utils.workers.serving.serve_smoke_worker import SmokeServeSpec, SmokeWorkerConfig
 
-from miles.utils.function_registry import function_registry
 from miles.utils.workers.serving import utils as serving_utils
-from miles.utils.workers.serving.utils import compute_serve_worker_spec, override_argv, override_env, split_worker_argv
-from miles.utils.workers.worker_spec import BaseCommandSpec, BaseServeSpec, PortInfo, SchedulingSpec
-
-SPECS_FN = "test:serving-utils-specs"
-POOL_ID = "trainer"
+from miles.utils.workers.serving.utils import override_argv, override_env, parse_serve_worker_config, split_worker_argv
 
 
-def _base_spec_fields() -> dict[str, object]:
-    return {
-        "name": POOL_ID,
-        "port_infos": [PortInfo(name="rpc", static_port=8000)],
-        "env_var": lambda context: {},
-        "scheduling": SchedulingSpec.single(num_gpus_per_worker=0),
-    }
-
-
-def _serve_spec() -> BaseServeSpec:
-    return BaseServeSpec(
-        **_base_spec_fields(),
-        worker_class="test.worker",
-        ctor_kwargs=lambda context: {},
+def _payload() -> dict:
+    (_, payload) = serve_config_argv(
+        spec_class=SmokeServeSpec, config=SmokeWorkerConfig(rpc_port=8000, worker_argv=["-v"])
     )
+    return json.loads(payload)
 
 
 class TestOverrideEnv:
@@ -61,28 +50,28 @@ class TestSplitWorkerArgv:
         assert worker_argv == []
 
 
-class TestComputeServeWorkerSpec:
-    @pytest.mark.parametrize(
-        "specs, error_match",
-        [
-            ([_serve_spec(), _serve_spec()], "not one spec named"),
-            (
-                [BaseCommandSpec(**_base_spec_fields(), launch_command=lambda context: "true")],
-                "BaseCommandSpec, which is not served",
-            ),
-        ],
-    )
-    def test_a_pool_must_match_exactly_one_serve_worker_spec(
-        self, specs: list[BaseServeSpec | BaseCommandSpec], error_match: str
-    ) -> None:
-        """A pool is rejected when its name is ambiguous or belongs to a non-served spec."""
+class TestParseServeWorkerConfig:
+    def test_a_launcher_payload_round_trips(self) -> None:
+        """The pod rebuilds its spec from exactly the worker type and config the launcher serialized."""
+        config = parse_serve_worker_config(json.dumps(_payload()))
 
-        def compute_specs(worker_argv: list[str]) -> list[BaseServeSpec | BaseCommandSpec]:
-            return specs
+        assert config.worker_type == SmokeServeSpec.worker_type
+        assert SmokeWorkerConfig.model_validate(config.args) == SmokeWorkerConfig(rpc_port=8000, worker_argv=["-v"])
 
-        with function_registry.temporary(SPECS_FN, compute_specs):
-            with pytest.raises(AssertionError, match=error_match):
-                compute_serve_worker_spec(specs_fn=SPECS_FN, pool_id=POOL_ID, worker_argv=[])
+    def test_a_payload_missing_a_field_is_refused(self) -> None:
+        """A field silently defaulted on the pod could differ from the value the launcher meant."""
+        payload = _payload()
+        del payload["static_connections"]["static_conn_infos"]
+
+        with pytest.raises(ValueError, match="Incomplete configuration"):
+            parse_serve_worker_config(json.dumps(payload))
+
+    def test_a_payload_with_an_unknown_field_is_refused(self) -> None:
+        """A field the pod does not know would be dropped instead of applied."""
+        payload = _payload() | {"pool_id": "trainer"}
+
+        with pytest.raises(ValidationError):
+            parse_serve_worker_config(json.dumps(payload))
 
 
 class TestOverrideArgv:

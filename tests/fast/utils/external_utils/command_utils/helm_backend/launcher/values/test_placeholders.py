@@ -1,10 +1,15 @@
 import itertools
 
 import pytest
-from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import LAYOUT, engine, trainer
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import (
+    LAYOUT,
+    SCALING,
+    build_values_as_launched,
+    engine,
+    trainer,
+)
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values import placeholders
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.workers.worker_spec import BaseSpec
 
@@ -12,29 +17,31 @@ from miles.utils.workers.worker_spec import BaseSpec
 class TestTheWorkerIndex:
     def test_replaces_only_the_node_rank_with_the_kubelet_placeholder(self):
         """Every pod of a group shares one command, so the rank must be the one part left to kubelet."""
-        command = build_values([engine()], LAYOUT).as_values()["run"]["inferenceEngines"][0]["command"]
+        command = build_values_as_launched([engine()], LAYOUT, scaling=SCALING).as_values()["run"]["inferenceEngines"][
+            0
+        ]["command"]
 
         assert command[command.index("--node-rank") + 1] == placeholders._WORKER_INDEX_PLACEHOLDER
         assert command[command.index("--base-gpu-id") + 1] == "0"
 
     def test_allows_a_command_that_never_mentions_its_rank(self):
         """Some engines do not take one; what matters is that no sentinel survives into the command."""
-        spec = engine().model_copy(update={"launch_command": lambda ctx: "python -m sglang.launch_server"})
+        spec = engine().model_copy(update={"command": lambda ctx: "python -m sglang.launch_server"})
 
-        command = build_values([spec], LAYOUT).as_values()["run"]["inferenceEngines"][0]["command"]
+        command = build_values_as_launched([spec], LAYOUT, scaling=SCALING).as_values()["run"]["inferenceEngines"][0][
+            "command"
+        ]
 
         assert str(placeholders.WORKER_INDEX_SENTINEL) not in " ".join(command)
 
     def test_refuses_a_spec_that_builds_the_rank_into_a_larger_argument(self):
         """Kubelet substitutes whole arguments, so --node-rank=N would reach the engine unexpanded."""
         spec = engine().model_copy(
-            update={
-                "launch_command": lambda ctx: f"python -m sglang.launch_server --node-rank={ctx.worker_in_cell_index}"
-            }
+            update={"command": lambda ctx: f"python -m sglang.launch_server --node-rank={ctx.worker_in_cell_index}"}
         )
 
         with pytest.raises(AssertionError, match="out of its pod index"):
-            build_values([spec], LAYOUT).as_values()
+            build_values_as_launched([spec], LAYOUT, scaling=SCALING).as_values()
 
 
 COLOCATE_LAYOUT = LAYOUT.model_copy(update={"colocate": True})
@@ -43,7 +50,7 @@ _LARGEST_PLAUSIBLE_CARD_OR_RANK = 1_000_000
 
 
 def _engine_command(specs: list[BaseSpec], plan: LaunchPlan) -> list[str]:
-    return build_values(specs, plan).as_values()["run"]["inferenceEngines"][0]["command"]
+    return build_values_as_launched(specs, plan, scaling=SCALING).as_values()["run"]["inferenceEngines"][0]["command"]
 
 
 def _base_gpu_id_argument(command: list[str]) -> str:
@@ -67,7 +74,9 @@ class TestBaseGpuIdOfASubNodeEngine:
             trainer(num_cells=2, gpus_per_cell=8),
         ]
 
-        entries = build_values(specs, COLOCATE_LAYOUT).as_values()["run"]["inferenceEngines"]
+        entries = build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()["run"][
+            "inferenceEngines"
+        ]
         after_trainer = next(entry for entry in entries if entry["poolId"] == "inference-engine-0-1")
 
         assert _base_gpu_id_argument(after_trainer["command"]) == "0"
@@ -99,11 +108,13 @@ class TestBaseGpuIdOfASubNodeEngine:
     def test_refuses_a_spec_that_builds_the_card_into_a_larger_argument(self):
         """Kubelet substitutes whole arguments, so a spelling like --gpus=N would reach sglang unexpanded."""
         spec = engine(num_cells=2, gpus_per_engine=4).model_copy(
-            update={"launch_command": lambda ctx: f"python -m sglang.launch_server --base-gpu-id={ctx.gpu_ids[0]}"}
+            update={"command": lambda ctx: f"python -m sglang.launch_server --base-gpu-id={ctx.gpu_ids[0]}"}
         )
 
         with pytest.raises(AssertionError, match="out of its base gpu id"):
-            build_values([spec, trainer(num_cells=1, gpus_per_cell=8)], COLOCATE_LAYOUT).as_values()
+            build_values_as_launched(
+                [spec, trainer(num_cells=1, gpus_per_cell=8)], COLOCATE_LAYOUT, scaling=SCALING
+            ).as_values()
 
 
 class TestEveryPairTheTableKnows:

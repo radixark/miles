@@ -1,6 +1,12 @@
+import pytest
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
+if not SNAPSHOT_TESTING_ENABLED:
+    pytest.skip("Snapshot testing is disabled by op48-277", allow_module_level=True)
+
 from pathlib import Path
 
-import pytest
 from tests.fast.fixtures.args_fixtures import make_trainer_args
 from tests.fast.fixtures.config_snapshot_fixtures import _capture_configuration, _stop_checkpoint_load
 

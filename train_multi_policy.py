@@ -6,7 +6,12 @@ import os
 from argparse import Namespace
 from pathlib import Path
 
-from miles.ray.placement_group import create_rollout_components, maybe_start_api_server, update_weights
+from miles.ray.placement_group import (
+    create_rollout_components,
+    create_trainer_handles,
+    maybe_start_api_server,
+    update_weights,
+)
 from miles.ray.specs.train import compute_trainer_configs
 from miles.utils.async_utils import Disposer, wait_cancelling_pending_on_first_completion, with_disposer
 from miles.utils.data import remove_rollout_data_refs
@@ -36,15 +41,18 @@ async def train_multi_policy(startup_info: OrchestratorStartupInfo, *, disposer:
     megatron_config = args.raw_megatron
     validate_multi_policy_args(args, megatron_config=megatron_config)
     capability = init_orchestration_script(startup_info, disposer=disposer)
+    trainer_handles = create_trainer_handles(
+        args, trainer_configs=compute_trainer_configs(args), capability=capability
+    )
 
     define_policy_metric_groups(megatron_config)
 
     inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
-        args, capability=capability
+        args, capability=capability, trainer_handles=trainer_handles
     )
     disposer.add(inference_controller, rollout_executor)
 
-    trainers = await create_trainers(args, rollout_executor=rollout_executor, capability=capability)
+    trainers = await create_trainers(args, rollout_executor=rollout_executor, handles=trainer_handles)
     for trainer in trainers.values():
         disposer.add(trainer.handle)
     assert_consistent_restore(args, trainers=trainers, leader_model_id=megatron_config.leader_model_id)

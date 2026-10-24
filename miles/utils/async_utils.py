@@ -4,7 +4,7 @@ import inspect
 import logging
 import threading
 import traceback
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any, TypeVar
@@ -175,6 +175,28 @@ async def gather_and_raise_first(
     if failures:
         raise failures[0]
     return results
+
+
+class CancellableTasks:
+    def __init__(self) -> None:
+        self._pending: set[asyncio.Future[Any]] = set()
+
+    def cancel(self) -> None:
+        for task in self._pending:
+            task.cancel()
+
+    async def gather(self, awaitables: Iterable[Awaitable[_T]], *, timeout: float | None) -> list[_T]:
+        tasks: list[asyncio.Future[_T]] = []
+        try:
+            for awaitable in awaitables:
+                tasks.append(asyncio.ensure_future(awaitable))
+            self._pending.update(tasks)
+            return await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._pending.difference_update(tasks)
 
 
 async def maybe_await(value: Awaitable[_T] | _T) -> _T:

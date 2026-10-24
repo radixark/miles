@@ -10,12 +10,13 @@ import torch.distributed as dist
 from megatron.training.async_utils import maybe_finalize_async_save
 from torch_memory_saver import torch_memory_saver
 
+from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.hf_export import save_hf_model
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
+from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
-from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
 from miles.backends.training_utils.data.rollout import (
     DataIterator,
     get_data_iterator,
@@ -47,6 +48,7 @@ from miles.utils import object_store
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -123,12 +125,17 @@ class MegatronTrainRayActor(TrainRayActor):
         args: Pickled,
         role: str,
         *,
+        ckpt_load_config: MegatronCkptLoadConfig | None = None,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
     ) -> int | None:
+        if recv_ckpt_src_rank is not None:
+            assert ckpt_load_config is None, "Peer recovery does not use disk checkpoint load inputs"
+            ckpt_load_config = MegatronCkptLoadConfig.for_peer_recovery()
+        assert ckpt_load_config is not None, "Megatron initialization requires checkpoint load inputs"
         self.weight_updater: WeightUpdater | None = None
         self.snapshot_publisher: SnapshotPublisher | None = None
         monkey_patch_torch_dist()
@@ -145,6 +152,7 @@ class MegatronTrainRayActor(TrainRayActor):
             args,
             indep_dp_store_addr=indep_dp_store_addr,
             indep_dp_info=indep_dp_info,
+            ckpt_load_config=ckpt_load_config,
         )
 
         trainer_pool_id = compute_trainer_pool_id(args.trainer_id)
@@ -209,20 +217,12 @@ class MegatronTrainRayActor(TrainRayActor):
         elif args.backend.non_persistent_ckpt_type == "local":
             checkpointing_context = {"local_checkpoint_manager": InMemoryCheckpointManager()}
 
+        # Peer recovery loads the received state, not a startup checkpoint or disk fallback.
         heal_load_overrides: dict[str, object] = (
-            # Peer recovery loads the received state, not a startup checkpoint or disk fallback.
-            dict(
-                load=None,
-                ckpt_step=None,
-                pretrained_checkpoint=None,
-                no_load_optim=False,
-                no_load_rng=False,
-                finetune=False,
-            )
-            if recv_ckpt_src_rank is not None
-            else {}
+            dict(pretrained_checkpoint=None) if recv_ckpt_src_rank is not None else {}
         )
-        self.model, self.optimizer, self.opt_param_scheduler = build_model_and_optimizer(args, role=role)
+        with ckpt_load_config.apply(args.backend):
+            self.model, self.optimizer, self.opt_param_scheduler = build_model_and_optimizer(args, role=role)
         self._post_init_random_state = RandomState.capture()
 
         parallel_state = get_parallel_state()
@@ -240,9 +240,12 @@ class MegatronTrainRayActor(TrainRayActor):
         self._grad_buffer_paused = False
 
         if role == "critic":
-            load_output = self._load_state_core(
-                checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
-            )
+            with ckpt_load_config.apply(args.backend):
+                load_output = self._load_state_core(
+                    checkpointing_context=checkpointing_context,
+                    overrider_for_loading=heal_load_overrides,
+                    resume_from_ckpt=ckpt_load_config.resume_from_ckpt,
+                )
             if self.args.offload_train:
                 self.sleep()
             return load_output.start_rollout_id
@@ -261,9 +264,12 @@ class MegatronTrainRayActor(TrainRayActor):
             with self.args.backend.mutable():
                 self.args.backend.vocab_size = self.tokenizer.vocab_size
 
-        load_output = self._load_state_core(
-            checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
-        )
+        with ckpt_load_config.apply(args.backend):
+            load_output = self._load_state_core(
+                checkpointing_context=checkpointing_context,
+                overrider_for_loading=heal_load_overrides,
+                resume_from_ckpt=ckpt_load_config.resume_from_ckpt,
+            )
 
         self._init_training_state()
 
@@ -345,7 +351,9 @@ class MegatronTrainRayActor(TrainRayActor):
                     module._fp8_workspaces.clear()
 
     @with_logs
-    def load_state(self) -> int:
+    def load_state(self, ckpt_load_config: MegatronCkptLoadConfig | None) -> int:
+        assert ckpt_load_config is not None, "Megatron reload requires checkpoint load inputs"
+        resume_from_ckpt = ckpt_load_config.resume_from_ckpt
         assert self.is_initialized()
 
         # reloading does not support things like these
@@ -365,38 +373,36 @@ class MegatronTrainRayActor(TrainRayActor):
         assert not (
             self.with_ref and self.args.ref_update_interval is not None
         ), "--ref-update-interval keeps the reference in memory only, and no checkpoint holds it"
-        assert (requested_load := self.args.requested_load) is not None, "a hot restart needs --load"
 
         self._finalize_pending_async_save()
 
-        resume_from_ckpt = read_checkpoint_tracker_iteration(requested_load) is not None
-        if not resume_from_ckpt and not (self.args.backend.ckpt_step is not None and self.args.backend.load == requested_load):
+        if not resume_from_ckpt and not (
+            ckpt_load_config.ckpt_step is not None
+            and has_megatron_checkpoint(ckpt_load_config.load, ckpt_step=ckpt_load_config.ckpt_step)
+        ):
             assert self.args.megatron_to_hf_mode != "bridge", "bridge mode unsupported"
-            assert self.args.backend.finetune
-            assert self.args.backend.no_load_optim
-            assert self.args.backend.no_load_rng
-            assert self.args.backend.ckpt_step == self.args.ref_ckpt_step
+            assert ckpt_load_config.finetune
+            assert ckpt_load_config.no_load_optim
+            assert ckpt_load_config.no_load_rng
+            assert ckpt_load_config.ckpt_step == self.args.ref_ckpt_step
 
         if self.opt_param_scheduler is not None:
             self.opt_param_scheduler.num_steps = 0
 
         if resume_from_ckpt:
             overrider_for_loading: dict[str, object] = dict(
-                load=requested_load, ckpt_step=None, finetune=False, no_load_optim=False, no_load_rng=False
+                load=ckpt_load_config.load, ckpt_step=None, finetune=False, no_load_optim=False, no_load_rng=False
             )
         else:
-            logger.info(
-                f"load_state found no recovery tracker under --load {requested_load!r}; loading the state the run "
-                f"started from"
-            )
+            logger.info("No checkpoint to resume; loading initial weights from %r", ckpt_load_config.load)
             overrider_for_loading = {}
-            reset_optim = self.args.backend.finetune or self.args.backend.no_load_optim
+            reset_optim = ckpt_load_config.finetune or ckpt_load_config.no_load_optim
             if reset_optim:
                 assert not self.args.backend.fp16
                 assert not self.args.backend.use_precision_aware_optimizer
                 assert not self.args.backend.optimizer_cpu_offload
                 assert not self.args.backend.offload_optimizer_states
-            if self.args.backend.finetune or self.args.backend.no_load_rng:
+            if ckpt_load_config.finetune or ckpt_load_config.no_load_rng:
                 self._post_init_random_state.restore()
             if reset_optim and self.optimizer is not None:
                 reset_optimizer_state(
@@ -405,10 +411,12 @@ class MegatronTrainRayActor(TrainRayActor):
                     chunked_optimizer_state_offload=self.args.backend.chunked_optimizer_state_offload,
                 )
 
-        load_output = self._load_state_core(
-            checkpointing_context=None,
-            overrider_for_loading=overrider_for_loading,
-        )
+        with ckpt_load_config.apply(self.args.backend):
+            load_output = self._load_state_core(
+                checkpointing_context=None,
+                overrider_for_loading=overrider_for_loading,
+                resume_from_ckpt=resume_from_ckpt,
+            )
         self._last_rollout_id = None
 
         rebind_env_reporting(self.args)
@@ -416,7 +424,7 @@ class MegatronTrainRayActor(TrainRayActor):
         return load_output.start_rollout_id
 
     def _load_state_core(
-        self, *, checkpointing_context: dict | None, overrider_for_loading: dict[str, object]
+        self, *, checkpointing_context: dict | None, overrider_for_loading: dict[str, object], resume_from_ckpt: bool
     ) -> LoadCheckpointOutput:
         with self.args.backend.mutable(), inplace_modify_args(self.args.backend, overrider_for_loading):
             load_output = load_model_state(
@@ -426,6 +434,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 opt_param_scheduler=self.opt_param_scheduler,
                 role=self.role,
                 checkpointing_context=checkpointing_context,
+                resume_from_ckpt=resume_from_ckpt,
             )
 
         if self.role != "critic":
@@ -846,7 +855,7 @@ class MegatronTrainRayActor(TrainRayActor):
         return TrainStepOutput(outcome=train_step_outcome)
 
     def _log_first_train_config(self) -> None:
-        if not self._config_snapshot_train_recorded:
+        if SNAPSHOT_TESTING_ENABLED and not self._config_snapshot_train_recorded:
             ConfigSnapshotDumper.dump(stage="train_first_step", config={"args": self.args, "role": self.role})
             self._config_snapshot_train_recorded = True
 

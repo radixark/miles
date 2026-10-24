@@ -242,7 +242,7 @@ def test_attempt_record_dir_disambiguates_test_filenames(tmp_path):
     assert sanitized_collision_a != sanitized_collision_b
 
 
-def test_run_unittest_files_hands_off_attempt_record_dir(tmp_path, monkeypatch, ci_snapshot_environment):
+def test_run_unittest_files_hands_off_attempt_record_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     record_base = tmp_path / "records"
     monkeypatch.setenv(RECORD_DIR_ENV, str(record_base))

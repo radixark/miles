@@ -22,7 +22,7 @@ def test_bridge_mtp_detachment(
     initial_detach: bool,
 ) -> None:
     """The provider takes --mtp-detach-heads from args, whatever the bridge's HF config set."""
-    runtime_args.mtp_detach_heads = detach
+    runtime_args.backend.mtp_detach_heads = detach
     provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=initial_detach)
 
     apply_bridge_runtime_config(provider, runtime_args)
@@ -37,8 +37,7 @@ def test_bridge_mtp_detachment(
     ids=["absent", "disabled", "enabled"],
 )
 def test_bridge_mtp_runtime_depth(apply_bridge_runtime_config, runtime_args, mtp_args, expected_layers):
-    del runtime_args.mtp_num_layers
-    vars(runtime_args).update(mtp_args)
+    vars(runtime_args.backend).update(mtp_args)
     provider = SimpleNamespace(mtp_num_layers=1)
 
     apply_bridge_runtime_config(provider, runtime_args)

@@ -305,7 +305,7 @@ class _CellManager(Generic[SpecT]):
             alive=self.alive and self._all_workers_have_addrs,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
             workers_hash=f"pseudo-hash-{self.generation}",
-            meta=self.spec.static_meta.resolve(cell_index=self.cell_index),
+            meta=self.spec.compute_static_meta(self.manager.scaling).resolve(cell_index=self.cell_index),
         )
 
     @property
@@ -463,6 +463,7 @@ class _CommandActorManager(_BaseActorManager[BaseCommandSpec]):
     async def post_setup(self) -> None:
         ctx = LaunchCommandContext(
             **dict(self.launch_context),
+            scaling=self.manager.scaling,
             self_addrs={
                 **self.self_addrs,
                 **self.parent.actors[0].master_mode_addrs,

@@ -11,6 +11,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil, GroupInfo, collective_bool_and
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.serving.utils import override_env
 
 from ...training_utils.parallel import ParallelState
 
@@ -49,7 +50,8 @@ def create_indep_dp_group(
         )
         return pg
 
-    nccl_pg = _create(ProcessGroupNCCL, "nccl")
+    with override_env({"TORCH_NCCL_ASYNC_ERROR_HANDLING": "0"}):
+        nccl_pg = _create(ProcessGroupNCCL, "nccl")
     gloo_pg = _create(ProcessGroupGloo, "gloo")
     log_structured(
         logger.info,

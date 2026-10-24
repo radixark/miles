@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -25,11 +26,12 @@ from sglang.srt.debug_utils.dumper import dumper
 from sglang.srt.debug_utils.source_patcher import apply_patches_from_config
 
 from miles.backends.megatron_utils.checkpoint import load_checkpoint
+from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.args.runtime import TrainerConfig
-from miles.utils.args.trainer_utils import compute_trainer_config
+from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config, compute_trainer_config
 from miles.utils.arguments import parse_args
 from miles.utils.debug_utils.run_megatron.worker.batch import loss_func, prepare_batch
 from miles.utils.debug_utils.run_megatron.worker.output import compute_and_save_output_info
@@ -43,19 +45,28 @@ from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_k
 from miles.utils.workers.serving.utils import override_argv
 
 
+@dataclass(frozen=True)
+class _WorkerInputs:
+    trainer: TrainerConfig
+    script: WorkerScriptArgs
+    ckpt_load_config: MegatronCkptLoadConfig
+
+
 def main() -> None:
-    trainer_args, script = _parse_args()
-    _initialize_megatron(args=trainer_args)
+    inputs = _parse_args()
+    trainer_args, script = inputs.trainer, inputs.script
+    with inputs.ckpt_load_config.apply(trainer_args.backend):
+        _initialize_megatron(args=trainer_args)
 
-    rank: int = dist.get_rank()
-    if rank == 0:
-        _print_config(trainer_args, script)
+        rank: int = dist.get_rank()
+        if rank == 0:
+            _print_config(trainer_args, script)
 
-    if script.source_patcher_config:
-        _apply_source_patches(script.source_patcher_config)
+        if script.source_patcher_config:
+            _apply_source_patches(script.source_patcher_config)
 
-    setup_replay_before_model(script)
-    model: list[Any] = _build_and_load_model(trainer_args, script)
+        setup_replay_before_model(script)
+        model: list[Any] = _build_and_load_model(trainer_args, script)
 
     for m in model:
         dumper.register_non_intrusive_dumper(m)
@@ -112,7 +123,7 @@ def main() -> None:
     dist.destroy_process_group()
 
 
-def _parse_args() -> tuple[TrainerConfig, WorkerScriptArgs]:
+def _parse_args() -> _WorkerInputs:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser(parser)
     worker_args, model_argv = parser.parse_known_args()
@@ -153,15 +164,17 @@ def _parse_args() -> tuple[TrainerConfig, WorkerScriptArgs]:
     assert args.actor_num_gpus_per_node == local_world_size
     if script_args.role == "critic":
         assert args.advantage_estimator == "ppo", "Standalone critic requires PPO configuration"
-        if script_args.ref_load is not None:
-            assert Path(args.critic_load) == script_args.ref_load
 
     trainers = [trainer for trainer in args.raw_megatron.trainers if trainer.role == script_args.role]
     assert len(trainers) == 1, "Standalone Megatron requires exactly one trainer for the requested role"
     trainer_args = compute_trainer_config(args, trainers[0])
     assert trainer_args.backend.world_size == world_size
     assert not trainer_args.offload_train
-    return trainer_args, script_args
+    ckpt_load_config = compute_trainer_ckpt_load_config(args, trainers[0])
+    assert ckpt_load_config is not None
+    if script_args.role == "critic" and script_args.ref_load is not None:
+        assert Path(ckpt_load_config.load) == script_args.ref_load
+    return _WorkerInputs(trainer=trainer_args, script=script_args, ckpt_load_config=ckpt_load_config)
 
 
 def _initialize_megatron(args: TrainerConfig) -> None:

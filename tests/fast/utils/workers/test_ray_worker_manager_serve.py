@@ -15,6 +15,7 @@ import pytest
 from ray import cloudpickle
 from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_KILL, FakeRayCluster
+from tests.fast.utils.workers.fake_specs import FakeServeSpec
 
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers import ray_worker_manager as rwm
@@ -25,7 +26,13 @@ from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rp
 from miles.utils.workers.serving.serve_actor import ServeActor
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
-from miles.utils.workers.worker_spec import BaseServeSpec, PortInfo, SchedulingSpec, WorkerLaunchContext
+from miles.utils.workers.worker_spec import (
+    DEFAULT_RPC_PORT_INFO,
+    BaseServeSpec,
+    PortInfo,
+    SchedulingSpec,
+    WorkerLaunchContext,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -103,11 +110,14 @@ def _make_spec(
     env_var=None,
     worker_class: str = _WORKER_CLASS_PATH,
 ) -> BaseServeSpec:
-    return BaseServeSpec(
+    return FakeServeSpec(
         name=name,
-        port_infos=[PortInfo(name="master", static_port=9000, mode="master", allow_dynamic=True)],
-        env_var=env_var if env_var is not None else (lambda _ctx: {}),
-        scheduling=SchedulingSpec(
+        port_infos=[
+            PortInfo(name="master", static_port=9000, mode="master", allow_dynamic=True),
+            DEFAULT_RPC_PORT_INFO,
+        ],
+        env_vars=env_var if env_var is not None else (lambda _ctx: {}),
+        fixed_scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=num_workers_per_cell,
             num_gpus_per_worker=num_gpus_per_worker,
@@ -116,7 +126,7 @@ def _make_spec(
             pg_name=pg_name,
         ),
         worker_class=worker_class,
-        ctor_kwargs=ctor_kwargs if ctor_kwargs is not None else (lambda _ctx: {}),
+        make_ctor_kwargs=ctor_kwargs if ctor_kwargs is not None else (lambda _ctx: {}),
         concurrency_groups=concurrency_groups,
     )
 
@@ -133,11 +143,13 @@ class _CtorKwargsProbe:
 class _RecordingCapability(BackendCapability):
     def __init__(self) -> None:
         self.operations = object()
-        self.requested_pool_ids: list[list[str]] = []
+        self.requested_pool_ids: list[list[str] | None] = []
+        self.requested_categories: list[str | None] = []
         self.requested_static_pool_ids: list[str] = []
 
-    def dynamic_worker_provider(self, *, pool_ids):
-        self.requested_pool_ids.append(list(pool_ids))
+    def dynamic_worker_provider(self, *, pool_ids, category=None):
+        self.requested_pool_ids.append(None if pool_ids is None else list(pool_ids))
+        self.requested_categories.append(category)
         return object()
 
     def static_worker_provider(self, *, pool_id: str):
@@ -149,7 +161,9 @@ class _RecordingCapability(BackendCapability):
 
 
 def _launch_context(*, worker_in_cell_index: int = 0) -> WorkerLaunchContext:
-    return WorkerLaunchContext(cell_index=0, worker_in_cell_index=worker_in_cell_index, gpu_ids=[])
+    return WorkerLaunchContext(
+        args=None, cell_index=0, worker_in_cell_index=worker_in_cell_index, num_workers_per_cell=4, gpu_ids=[]
+    )
 
 
 def _make_pgs(num_slots: int = 8) -> dict[str, PlacementGroupInfo]:
@@ -204,10 +218,12 @@ class TestServeWorkersAreLaunched:
     ):
         """What ships is the recipe and the rank's identity; the evaluated kwargs never leave the actor."""
         probe = _CtorKwargsProbe()
-        await _launch([_make_spec(num_workers_per_cell=3, ctor_kwargs=probe)])
+        spec = _make_spec(num_workers_per_cell=3, ctor_kwargs=probe)
+        await _launch([spec])
 
         assert [list(kwargs) for kwargs in fake_ray_cluster.ctor_kwargs] == [["ctor_kwargs", "context"]] * 3
-        assert all(kwargs["ctor_kwargs"] is probe for kwargs in fake_ray_cluster.ctor_kwargs)
+        assert all(kwargs["ctor_kwargs"] == spec.ctor_kwargs for kwargs in fake_ray_cluster.ctor_kwargs)
+        assert probe.contexts == []
         assert [kwargs["context"].worker_in_cell_index for kwargs in fake_ray_cluster.ctor_kwargs] == [0, 1, 2]
 
     async def test_gpu_ids_reach_the_actor(self, fake_ray_cluster: FakeRayCluster):
@@ -462,9 +478,11 @@ class TestTheBootstrappedClass:
         actor_class(ctor_kwargs=probe, context=_launch_context())
         capability = probe.contexts[0].capability
         capability.dynamic_worker_provider(pool_ids=["trainer-engine-actor"])
+        capability.dynamic_worker_provider(pool_ids=None, category="inference-engine")
         capability.static_worker_provider(pool_id="rollout-executor")
 
-        assert built.requested_pool_ids == [["trainer-engine-actor"]]
+        assert built.requested_pool_ids == [["trainer-engine-actor"], None]
+        assert built.requested_categories == [None, "inference-engine"]
         assert built.requested_static_pool_ids == ["rollout-executor"]
 
     async def test_passes_the_computed_keywords_to_the_wrapped_constructor(self):

@@ -4,11 +4,13 @@ import os
 
 from miles.ray.placement_group import (
     create_rollout_components,
+    create_trainer_handles,
     create_training_models,
     maybe_start_api_server,
     update_weights,
 )
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
+from miles.ray.specs.train import compute_trainer_configs
 from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.async_utils import Disposer, eager_create_task, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
@@ -29,16 +31,19 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
     assert not args.colocate or args.fully_async, "Colocation is only supported for async training with --fully-async."
     validate_async_off_policy_correction(args)
     capability = init_orchestration_script(startup_info, disposer=disposer)
+    trainer_handles = create_trainer_handles(
+        args, trainer_configs=compute_trainer_configs(args), capability=capability
+    )
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
     inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
-        args, capability=capability
+        args, capability=capability, trainer_handles=trainer_handles
     )
     disposer.add(inference_controller, rollout_executor)
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, rollout_executor, capability=capability)
+    actor_model, critic_model = await create_training_models(args, rollout_executor, handles=trainer_handles)
     disposer.add(critic_model, actor_model)
 
     disposer.add(

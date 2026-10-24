@@ -13,6 +13,7 @@ import pytest
 import torch
 
 from miles.backends.megatron_utils import checkpoint
+from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.runtime import TrainerConfig
@@ -54,23 +55,25 @@ class TestStandaloneModelConstruction:
         with pytest.raises(AttributeError, match="immutable"):
             backend.model_type = "leaked"
 
-    def test_checkpoint_loading_receives_the_typed_trainer_and_configured_path(
+    def test_checkpoint_loading_receives_the_typed_trainer_and_current_request(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Standalone loading reaches the real checkpoint wrapper with its typed trainer and configured path."""
+        """Standalone loading reaches the real checkpoint wrapper with its typed trainer and active request."""
         (tmp_path / "latest_checkpointed_iteration.txt").write_text("7")
         args = TrainerConfig.model_construct(
-            backend=MegatronArgsNamespace(spec=None, load=str(tmp_path), finetune=False),
+            backend=MegatronArgsNamespace(spec=None),
             custom_model_provider_path=CustomFunctionConfig(path="test.unused_provider"),
             lora_rank=0,
         )
+        request = MegatronCkptLoadConfig.for_peer_recovery().model_copy(update={"load": str(tmp_path)})
         model = torch.nn.Linear(2, 2).eval()
         loader = Mock(return_value=(7, 0))
         builder = Mock(return_value=[model])
         monkeypatch.setattr(worker, "get_model", builder)
         monkeypatch.setattr(checkpoint, "_load_checkpoint_megatron", loader)
 
-        result = worker._build_and_load_model(args=args, script=SimpleNamespace(role="actor", run_backward=True))
+        with request.apply(args.backend):
+            result = worker._build_and_load_model(args=args, script=SimpleNamespace(role="actor", run_backward=True))
 
         assert result == [model]
         assert model.training
@@ -78,7 +81,7 @@ class TestStandaloneModelConstruction:
         assert builder.call_args.kwargs["wrap_with_ddp"] is True
         loader.assert_called_once()
         assert loader.call_args.kwargs["ddp_model"] == [model]
-        assert args.backend.load == str(tmp_path)
+        assert "load" not in vars(args.backend)
 
 
 class TestSharedStandaloneConfiguration:
@@ -119,14 +122,15 @@ class TestSharedStandaloneConfiguration:
                 worker._parse_args()
             return
 
-        trainer, script = worker._parse_args()
+        inputs = worker._parse_args()
 
-        assert isinstance(trainer, TrainerConfig)
-        assert isinstance(trainer.backend, MegatronArgsNamespace)
-        assert trainer.trainer_role == role
-        assert trainer.backend.world_size == 1
-        assert trainer.backend.micro_batch_size == 1
-        assert not trainer.offload_train
-        assert script.role == role
-        assert Path(trainer.hf_checkpoint) == Path("/model")
+        assert isinstance(inputs.trainer, TrainerConfig)
+        assert isinstance(inputs.trainer.backend, MegatronArgsNamespace)
+        assert inputs.trainer.trainer_role == role
+        assert inputs.trainer.backend.world_size == 1
+        assert inputs.trainer.backend.micro_batch_size == 1
+        assert not inputs.trainer.offload_train
+        assert inputs.script.role == role
+        assert inputs.ckpt_load_config.load == "/model"
+        assert not inputs.ckpt_load_config.resume_from_ckpt
         assert sys.argv is argv

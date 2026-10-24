@@ -1,7 +1,0 @@
-base: megatron
-base_sha256: f60cce637c332fdc6aa3fad4de17b71a783391c94dc05adadd2c9c91eb68b57b
-edits:
-- at: 1675
-  delete: 0
-  insert: |2
-      snapshot_custom: 29

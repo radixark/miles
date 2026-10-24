@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import sys
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from tests.fast.ray.test_wiring import stub_kubernetes_capability
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.utils import (
+    LauncherArgs,
+    launcher_args_orchestrator_command,
+)
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import (
+    SCALING,
+    build_values_as_launched,
+)
+from tests.fast.utils.workers.fake_specs import FakeCommandSpec
 
 from miles.ray import wiring
 from miles.utils.external_utils.command_utils.base_backend import (
@@ -19,12 +27,12 @@ from miles.utils.external_utils.command_utils.helm_backend.backend import Kubern
 from miles.utils.external_utils.command_utils.helm_backend.launcher import entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan, MooncakeInfo
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.run_uuid import RUN_UUID_LENGTH
+from miles.utils.workers.serving.utils import parse_orchestrator_argv
 from miles.utils.workers.types import ClusterBackend, DeployComponent
-from miles.utils.workers.worker_spec import BaseCommandSpec, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec
 
 
 def declared_cluster_backends(argv: list[str]) -> list[str]:
@@ -72,13 +80,12 @@ def _request(train_args: str) -> ExecuteTrainRequest:
     )
 
 
-def _router() -> BaseCommandSpec:
-    return BaseCommandSpec(
+def _router() -> FakeCommandSpec:
+    return FakeCommandSpec(
         name="inference-router-0",
         port_infos=[PortInfo(name="primary", static_port=30000)],
-        env_var=lambda context: {},
-        scheduling=SchedulingSpec.single(num_gpus_per_worker=0),
-        launch_command=lambda context: "python -m router",
+        fixed_scheduling=SchedulingSpec.single(num_gpus_per_worker=0),
+        command=lambda context: "python -m router",
     )
 
 
@@ -100,25 +107,29 @@ def launch_argv(
     run_id: str = RUN_ID,
     deploy_component: DeployComponent = DeployComponent.ALL,
     recorded_releases: list[str] | None = None,
+    recorded_orchestrator_commands: list[list[str]] | None = None,
 ) -> list[str]:
     recorded: list[list[str]] = []
 
-    def fake_compute_specs(args: Any) -> list[BaseCommandSpec]:
+    def fake_compute_specs(args: Any) -> list[FakeCommandSpec]:
         recorded.append(list(args.argv))
         return [_router()]
 
-    def fake_parse_args() -> SimpleNamespace:
+    def fake_parse_args() -> LauncherArgs:
         argv = list(sys.argv[1:])
         declared = declared_deploy_components(argv)
-        return SimpleNamespace(
-            colocate=False,
+        backends = declared_cluster_backends(argv)
+        return LauncherArgs(
             deploy_component=declared[-1] if declared else DeployComponent.ALL.value,
-            deploy_instance_id=None,
+            cluster_backend=backends[-1] if backends else ClusterBackend.RAY.value,
             argv=argv,
-            train_env_vars={},
-            use_wandb=False,
-            wandb_run_id=None,
         )
+
+    def fake_orchestrator_command(train_script: str, *, args: LauncherArgs, static_connections: Any) -> list[str]:
+        command = launcher_args_orchestrator_command(train_script, args=args, static_connections=static_connections)
+        if recorded_orchestrator_commands is not None:
+            recorded_orchestrator_commands.append(command)
+        return command
 
     def fake_upgrade(**kwargs: Any) -> None:
         if recorded_releases is not None:
@@ -130,6 +141,7 @@ def launch_argv(
     monkeypatch.setattr(entrypoint, "compute_specs", fake_compute_specs)
     monkeypatch.setattr(entrypoint, "parse_args", fake_parse_args)
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
+    monkeypatch.setattr(entrypoint, "_compute_orchestrator_command", fake_orchestrator_command)
     monkeypatch.setattr(entrypoint, "_write_helm_values", lambda path, values: None)
     monkeypatch.setattr(entrypoint, "_compute_trainer_controller_addrs", lambda args, *, release, namespace: {})
     monkeypatch.setattr(Helm, "get_manifest", staticmethod(lambda release, namespace: None))
@@ -151,7 +163,7 @@ def launch_argv(
 
 
 def values_of(train_argv: list[str]) -> dict[str, Any]:
-    return build_values(
+    return build_values_as_launched(
         [_router()],
         LaunchPlan(
             run_id=RUN_ID,
@@ -161,6 +173,7 @@ def values_of(train_argv: list[str]) -> dict[str, Any]:
             orchestrator_command=["python", "/repo/train.py", *train_argv],
             worker_argv=train_argv,
         ),
+        scaling=SCALING,
     ).as_values()
 
 
@@ -171,11 +184,17 @@ class TestExecuteTrainTellsThePodsItsBackend:
 
         assert declared_cluster_backends(argv) == ["kubernetes"]
 
-    def test_the_orchestrator_command_and_the_worker_argv_both_carry_it(self, monkeypatch: pytest.MonkeyPatch):
-        """The orchestrator and its workers have to agree, and each reads its own copy of the argv."""
-        run = values_of(launch_argv(monkeypatch, train_args="--rollout-num-gpus 8"))["run"]
+    def test_the_orchestrator_payload_and_the_worker_argv_both_carry_it(self, monkeypatch: pytest.MonkeyPatch):
+        """The orchestrator and its workers have to agree: the orchestrator reads its payload, a worker its argv."""
+        orchestrator_commands: list[list[str]] = []
+        argv = launch_argv(
+            monkeypatch, train_args="--rollout-num-gpus 8", recorded_orchestrator_commands=orchestrator_commands
+        )
+        run = values_of(argv)["run"]
 
-        assert declared_cluster_backends(run["orchestrator"]["command"]) == ["kubernetes"]
+        [orchestrator_command] = orchestrator_commands
+        assert parse_orchestrator_argv(orchestrator_command).args["cluster_backend"] == ClusterBackend.KUBERNETES.value
+        assert declared_cluster_backends(orchestrator_command) == []
         assert declared_cluster_backends(run["staticWorkers"][0]["command"]) == []
 
     def test_a_user_supplied_agreeing_flag_is_not_repeated(self, monkeypatch: pytest.MonkeyPatch):
@@ -251,8 +270,8 @@ class TestThePodDispatchesOnThatFlag:
 
         stub = stub_kubernetes_capability(monkeypatch)
 
-        args = SimpleNamespace(cluster_backend=declared[0], num_gpus_per_node=8)
-        assert wiring.get_backend_capability(args) is stub.capability
+        args = LauncherArgs(cluster_backend=declared[0])
+        assert wiring.compute_backend_capability(args) is stub.capability
         assert stub.specs_computed_from == [args]
         assert ClusterBackend(declared[0]) is ClusterBackend.KUBERNETES
 
@@ -335,7 +354,7 @@ class TestApiServerHost:
 
 
 def _values_of_release(train_argv: list[str], *, run_id: str, release: str) -> dict[str, Any]:
-    return build_values(
+    return build_values_as_launched(
         [_router()],
         LaunchPlan(
             run_id=run_id,
@@ -345,6 +364,7 @@ def _values_of_release(train_argv: list[str], *, run_id: str, release: str) -> d
             orchestrator_command=[],
             worker_argv=train_argv,
         ),
+        scaling=SCALING,
     ).as_values()
 
 
@@ -359,7 +379,11 @@ spec:
     spec:
       containers:
         - name: orchestrator
-          command: ["python", "train.py", "--run-uuid", "aaaabbbbccccdddd"]
+          command:
+            - python
+            - train.py
+            - --orchestrator-config
+            - '{"args": {"run_uuid": "aaaabbbbccccdddd", "wandb_run_id": null}, "static_connections": {}}'
 """
 
 
@@ -370,28 +394,44 @@ class TestTheRunUuidALaunchStamps:
         config.run_uuid = None
 
         with pytest.raises(AssertionError, match="--run-uuid"):
-            entrypoint._resolve_run_uuid(config, installed_manifest=None, release=_release(DeployComponent.TRAINER))
+            entrypoint._resolve_run_uuid(config, installed_payload=None)
 
     def test_a_split_launch_keeps_the_one_it_was_given(self):
         """It is the value the layer deploying every part chose, and changing it would fail the handshake."""
         config = _config(deploy_component=DeployComponent.TRAINER)
 
-        assert (
-            entrypoint._resolve_run_uuid(config, installed_manifest=None, release=_release(DeployComponent.TRAINER))
-            == SPLIT_RUN_UUID
-        )
+        assert entrypoint._resolve_run_uuid(config, installed_payload=None) == SPLIT_RUN_UUID
 
     def test_a_first_install_mints_one(self):
         """A single deployment is the whole run, so nothing outside it has to agree on the value."""
-        stamped = entrypoint._resolve_run_uuid(_config(), installed_manifest=None, release=_release())
+        stamped = entrypoint._resolve_run_uuid(_config(), installed_payload=None)
 
         assert len(stamped) == RUN_UUID_LENGTH
 
     def test_an_upgrade_in_place_keeps_the_uuid_the_pods_already_carry(self):
-        """Resizing is the same training, and a fresh uuid would change every pod argv and trip the upgrade guard."""
+        """Resizing is the same training, and a fresh uuid would change every pod payload and trip the upgrade guard."""
         installed = Manifest.parse(_INSTALLED_MANIFEST, namespace=NAMESPACE)
+        installed_payload = entrypoint._installed_orchestrator_payload(installed, release=_release())
 
-        assert (
-            entrypoint._resolve_run_uuid(_config(), installed_manifest=installed, release=_release())
-            == "aaaabbbbccccdddd"
-        )
+        assert entrypoint._resolve_run_uuid(_config(), installed_payload=installed_payload) == "aaaabbbbccccdddd"
+
+    def test_a_release_installed_without_a_payload_mints_a_new_one(self):
+        """A release from before the orchestrator payload carries no uuid to keep, so the launch starts afresh."""
+        installed = Manifest.parse(_INSTALLED_MANIFEST_WITHOUT_PAYLOAD, namespace=NAMESPACE)
+
+        assert entrypoint._installed_orchestrator_payload(installed, release=_release()) is None
+
+
+_INSTALLED_MANIFEST_WITHOUT_PAYLOAD = """
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: miles-run-260101-000000-000-all-orchestrator
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: orchestrator
+          command: ["python", "train.py", "--run-uuid", "aaaabbbbccccdddd"]
+"""

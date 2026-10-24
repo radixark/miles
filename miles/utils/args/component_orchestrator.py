@@ -1,5 +1,6 @@
-from miles.utils.args.schema import BaseConfig
+from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 class OrchestratorOnlyConfig(BaseConfig):
-    pass
+    load: A[str | None, Arg(reset=True)] = None
+    requested_load: str | None
