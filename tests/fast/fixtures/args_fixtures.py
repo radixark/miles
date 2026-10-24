@@ -1,4 +1,8 @@
 from __future__ import annotations
+import os
+from miles.utils.args.runtime import AllConfig
+from miles.utils.arguments import parse_args
+
 
 import argparse
 import contextlib
@@ -57,6 +61,22 @@ def parser_defaults() -> dict[str, Any]:
     return {**_TRAIN_BACKEND_DEFAULTS, **vars(parsed), **_RESOLVED_AFTER_PARSING}
 
 
+_COMMON_TEST_ARGV = ['--rollout-batch-size', '2', '--num-rollout', '1', '--actor-num-gpus-per-node', '1', '--micro-batch-size', '1']
+
+
+_MEGATRON_TEST_ARGV = ['--train-backend', 'megatron', *_COMMON_TEST_ARGV, '--num-layers', '1', '--hidden-size', '128', '--num-attention-heads', '2']
+
+
+def parse_megatron_test_config(*argv: str) -> AllConfig:
+    return _parse_test_config([*_MEGATRON_TEST_ARGV, *argv])
+
+
+def _parse_test_config(argv: list[str]) -> AllConfig:
+    environment = {'RANK': '0', 'WORLD_SIZE': '1', 'LOCAL_RANK': '0', 'MILES_SCRIPT_ENV_REPORT': ''}
+    with patch.object(sys, 'argv', ['test', *argv]), patch.dict(os.environ, environment):
+        return parse_args()
+
+
 class ConfigNamespace(argparse.Namespace):
     def __iter__(self) -> Iterator[tuple[str, Any]]:
         return iter(vars(self).items())
@@ -64,16 +84,6 @@ class ConfigNamespace(argparse.Namespace):
 
 def make_trainer_args(*, train_backend: str = "megatron", **values: Any) -> ConfigNamespace:
     return ConfigNamespace(**(parser_defaults() | values | {"train_backend": train_backend}))
-
-
-def _parse_test_config(argv: list[str]) -> Any:
-    import os
-
-    from miles.utils.arguments import parse_args
-
-    environment = {"RANK": "0", "WORLD_SIZE": "1", "LOCAL_RANK": "0", "MILES_SCRIPT_ENV_REPORT": ""}
-    with patch.object(sys, "argv", ["test", *argv]), patch.dict(os.environ, environment):
-        return parse_args()
 
 
 def parse_fsdp_test_config(*argv: str) -> Any:
@@ -88,10 +98,6 @@ def make_trainer_config(**values: Any) -> Any:
 
     args = make_trainer_args(**values)
     return TrainerConfig.model_construct(**vars(args))
-
-
-def parse_megatron_test_config(*argv: str) -> Any:
-    return _parse_test_config([*['--train-backend', 'megatron', '--rollout-batch-size', '2', '--num-rollout', '1', '--actor-num-gpus-per-node', '1', '--micro-batch-size', '1', '--num-layers', '1', '--hidden-size', '128', '--num-attention-heads', '2'], *argv])
 
 
 def resolve_parse_boundary_configs(args: argparse.Namespace) -> argparse.Namespace:
