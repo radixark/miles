@@ -202,6 +202,7 @@ class TestTrainParallelConfigWiring:
         worker.args = Namespace()
         worker.model = object()
         worker._heartbeat = Mock()
+        worker.prof = Mock()
         trivial = GroupInfo(rank=0, size=1, group=None)
         state = ParallelState(
             intra_dp=trivial,
