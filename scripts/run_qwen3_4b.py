@@ -188,7 +188,7 @@ eval:
 
     optimizer_args = (
         "--optimizer adam "
-        # "--fsdp-cpu-offload "
+        # "--optimizer-cpu-offload "
         "--lr 1e-6 "
         "--lr-decay-style constant "
         "--weight-decay 0.1 "
