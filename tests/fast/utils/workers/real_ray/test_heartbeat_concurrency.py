@@ -3,22 +3,21 @@ from collections.abc import Callable
 from pathlib import Path
 
 import ray
+from tests.fast.utils.workers.fake_specs import FakeServeSpec
 
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
-from miles.utils.workers.worker_spec import BaseWorkerSpec, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseSpec, SchedulingSpec
 
 
 async def test_heartbeat_responds_while_the_same_caller_is_waiting_for_training(
-    manager_factory: Callable[[list[BaseWorkerSpec]], ray.actor.ActorHandle], tmp_path: Path
+    manager_factory: Callable[[list[BaseSpec]], ray.actor.ActorHandle], tmp_path: Path
 ) -> None:
     """A blocked training call must not prevent a dedicated heartbeat from running."""
-    spec = ServeWorkerSpec(
+    spec = FakeServeSpec(
         name="trainer",
         port_infos=[],
-        env_var=lambda _ctx: {},
-        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
+        fixed_scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
         worker_class="tests.fast.utils.workers.real_ray.heartbeat_worker._HeartbeatWorker",
-        ctor_kwargs=lambda _ctx: {},
         concurrency_groups={"heartbeat_status": 1, "default": 1},
     )
     manager = manager_factory([spec])
