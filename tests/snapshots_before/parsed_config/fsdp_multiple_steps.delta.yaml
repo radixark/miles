@@ -1,0 +1,27 @@
+base: fsdp
+base_sha256: 09ccc5d3186385bee825cfb00a994ed85926689c5eec4398446a87e2015f6a66
+edits:
+- at: 170
+  delete: 1
+  insert: |2
+      global_batch_size: 4
+- at: 173
+  delete: 1
+  insert: |2
+      grpo_std_normalization: true
+- at: 256
+  delete: 1
+  insert: |2
+      n_samples_per_prompt: 2
+- at: 266
+  delete: 1
+  insert: |2
+      num_steps_per_rollout: 2
+- at: 287
+  delete: 1
+  insert: |2
+      over_sampling_batch_size: 4
+- at: 318
+  delete: 1
+  insert: |2
+      rollout_batch_size: 4

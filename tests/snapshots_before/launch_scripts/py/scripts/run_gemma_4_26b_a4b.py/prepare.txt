@@ -1,0 +1,11 @@
+### 0
+mkdir -p /root/models /root/datasets
+
+### 1
+hf download google/gemma-4-26B-A4B-it
+  --local-dir /root/models/gemma-4-26B-A4B-it
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k

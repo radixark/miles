@@ -1,0 +1,11 @@
+base: megatron
+base_sha256: f60cce637c332fdc6aa3fad4de17b71a783391c94dc05adadd2c9c91eb68b57b
+edits:
+- at: 856
+  delete: 1
+  insert: |2
+      opd_type: sglang
+- at: 1792
+  delete: 1
+  insert: |2
+      use_opd: true

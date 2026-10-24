@@ -1,0 +1,11 @@
+base: megatron
+base_sha256: f60cce637c332fdc6aa3fad4de17b71a783391c94dc05adadd2c9c91eb68b57b
+edits:
+- at: 1567
+  delete: 1
+  insert: |2
+      sglang_router_policy: round_robin
+- at: 1807
+  delete: 1
+  insert: |2
+      use_session_server: true

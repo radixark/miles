@@ -1,0 +1,18 @@
+base: fsdp
+base_sha256: 09ccc5d3186385bee825cfb00a994ed85926689c5eec4398446a87e2015f6a66
+edits:
+- at: 113
+  delete: 1
+  insert: |2
+      dump_details: $FIXTURES/dump
+- at: 195
+  delete: 1
+  insert: |2
+      log_inference_engine_weight_checksums: true
+- at: 446
+  delete: 4
+  insert: |2
+      save_debug_event_data: $FIXTURES/dump/events
+      save_debug_rollout_data: $FIXTURES/dump/rollout_data/{rollout_id}.pt
+      save_debug_train_data: $FIXTURES/dump/train_data/{rollout_id}_{rank}.pt
+      save_debug_trajectory_data: $FIXTURES/dump/trajectory/{rollout_id}.jsonl

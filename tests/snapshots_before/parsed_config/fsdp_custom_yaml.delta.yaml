@@ -1,0 +1,23 @@
+base: fsdp
+base_sha256: 09ccc5d3186385bee825cfb00a994ed85926689c5eec4398446a87e2015f6a66
+edits:
+- at: 64
+  delete: 1
+  insert: |2
+      critic_lr: 9.0e-06
+- at: 70
+  delete: 1
+  insert: |2
+      custom_config_path: $FIXTURES/custom.yaml
+- at: 130
+  delete: 1
+  insert: |2
+      eps_clip: 0.31
+- at: 132
+  delete: 1
+  insert: |2
+      eps_clip_high: 0.31
+- at: 213
+  delete: 1
+  insert: |2
+      lr: 9.0e-06

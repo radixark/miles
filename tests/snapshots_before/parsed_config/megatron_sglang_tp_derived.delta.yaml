@@ -1,0 +1,11 @@
+base: megatron
+base_sha256: f60cce637c332fdc6aa3fad4de17b71a783391c94dc05adadd2c9c91eb68b57b
+edits:
+- at: 1003
+  delete: 1
+  insert: |2
+      rollout_num_gpus_per_engine: 2
+- at: 1647
+  delete: 1
+  insert: |2
+      sglang_tp_size: 2

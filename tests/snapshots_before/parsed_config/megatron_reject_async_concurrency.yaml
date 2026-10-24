@@ -1,0 +1,2 @@
+{error: {message: '--async-max-concurrent-samples (1) must be at least --n-samples-per-prompt (2): the worker submits whole
+      groups, so one group already puts n_samples_per_prompt trajectories in flight', type: AssertionError}}

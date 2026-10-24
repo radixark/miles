@@ -1,0 +1,31 @@
+base: megatron
+base_sha256: f60cce637c332fdc6aa3fad4de17b71a783391c94dc05adadd2c9c91eb68b57b
+edits:
+- at: 122
+  delete: 1
+  insert: |2
+      colocate: true
+- at: 232
+  delete: 1
+  insert: |2
+      disable_grad_buffers_cpu_backup: true
+- at: 235
+  delete: 1
+  insert: |2
+      disable_param_buffers_cpu_backup: true
+- at: 837
+  delete: 1
+  insert: |2
+      offload_rollout: true
+- at: 839
+  delete: 1
+  insert: |2
+      offload_train: true
+- at: 1002
+  delete: 1
+  insert: |2
+      rollout_num_gpus: 1
+- at: 1187
+  delete: 1
+  insert: |2
+      sglang_cuda_graph_backend_prefill: disabled

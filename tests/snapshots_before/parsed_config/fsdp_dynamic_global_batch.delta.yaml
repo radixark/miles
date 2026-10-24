@@ -1,0 +1,12 @@
+base: fsdp
+base_sha256: 09ccc5d3186385bee825cfb00a994ed85926689c5eec4398446a87e2015f6a66
+edits:
+- at: 222
+  delete: 1
+  insert: |2
+      max_tokens_per_gpu: 4096
+- at: 1014
+  delete: 2
+  insert: |2
+      use_dynamic_batch_size: true
+      use_dynamic_global_batch_size: true

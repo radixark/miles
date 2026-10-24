@@ -1,0 +1,64 @@
+### 0
+mkdir -p <SANDBOX>/models /root/datasets
+
+### 1
+hf download zai-org/GLM-5
+  --local-dir <SANDBOX>/models/GLM-5
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 3
+[multi_node num_nodes=None] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 8
+  --master-addr {{master_addr}}
+  --master-port 23456
+  --nnodes={{nnodes}}
+  --node-rank {{node_rank}} <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --spec miles_plugins.models.glm5.glm5 get_glm5_spec
+  --moe-layer-freq '[0]*3+[1]*75'
+  --num-experts 256
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-topk 8
+  --moe-grouped-gemm
+  --moe-permute-fusion
+  --moe-ffn-hidden-size 2048
+  --moe-router-score-function sigmoid
+  --moe-router-pre-softmax
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-router-topk-scaling-factor 2.5
+  --moe-aux-loss-coeff 0
+  --moe-router-dtype fp32
+  --make-vocab-size-divisible-by 16
+  --num-layers 78
+  --hidden-size 6144
+  --ffn-hidden-size 12288
+  --num-attention-heads 64
+  --disable-bias-linear
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --position-embedding-type rope
+  --no-position-embedding
+  --normalization RMSNorm
+  --qk-layernorm
+  --multi-latent-attention
+  --q-lora-rank 2048
+  --kv-lora-rank 512
+  --qk-head-dim 192
+  --v-head-dim 256
+  --kv-channels 192
+  --qk-pos-emb-head-dim 64
+  --vocab-size 154880
+  --rotary-base 1000000
+  --enable-experimental
+  --hf-checkpoint <SANDBOX>/models/GLM-5
+  --save <SANDBOX>/models/GLM-5_torch_dist
+  --tensor-model-parallel-size 1
+  --expert-tensor-parallel-size 1
+  --pipeline-model-parallel-size 4
+  --expert-model-parallel-size 32
+  --decoder-last-pipeline-num-layers 18 

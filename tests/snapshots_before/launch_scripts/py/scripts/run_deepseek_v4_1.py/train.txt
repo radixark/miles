@@ -1,0 +1,152 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "MILES_UPDATE_SNAPSHOTS": "", "MILES_SNAPSHOT_RECORD_DIR": "", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1", "NCCL_CUMEM_ENABLE": "1", "SGLANG_DSV4_FP4_EXPERTS": "0", "SGLANG_HEALTH_CHECK_TIMEOUT": "900", "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1", "TILELANG_CACHE_DIR": "/tmp/tilelang_cache", "TRITON_CACHE_DIR": "/tmp/triton_cache", "TORCHINDUCTOR_CACHE_DIR": "/tmp/inductor_cache", "SGLANG_OPT_FP8_WO_A_GEMM": "0", "SGLANG_OPT_DEEPGEMM_HC_PRENORM": "0", "SGLANG_OPT_FUSE_WQA_WKV": "0", "SGLANG_DISABLE_MULTIMEM_AG": "1", "SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE": "1", "SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT": "shared", "TORCHINDUCTOR_COMPILE_THREADS": "1", "PYTHONFAULTHANDLER": "1", "NCCL_ALGO": "Ring", "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0", "CUBLAS_WORKSPACE_CONFIG": ":4096:8", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --num-layers 40
+  --hidden-size 5120
+  --ffn-hidden-size 2304
+  --num-attention-heads 64
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --norm-epsilon 1e-20
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 129280
+  --make-vocab-size-divisible-by 64
+  --hidden-dropout 0.0
+  --attention-dropout 0.0
+  --multi-latent-attention
+  --q-lora-rank 1280
+  --kv-lora-rank 512
+  --qk-head-dim 512
+  --qk-pos-emb-head-dim 64
+  --v-head-dim 512
+  --qk-layernorm
+  --rotary-scaling-factor 16
+  --rotary-base 10000
+  --original-max-position-embeddings 65536
+  --beta-fast 32
+  --beta-slow 1
+  --attention-softmax-in-fp32
+  --no-rope-fusion
+  --num-experts 384
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --moe-ffn-hidden-size 2304
+  --moe-router-topk 6
+  --moe-shared-expert-intermediate-size 2304
+  --moe-router-pre-softmax
+  --moe-router-score-function sqrtsoftplus
+  --moe-router-enable-expert-bias
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-aux-loss-coeff 0
+  --moe-grouped-gemm
+  --moe-router-topk-scaling-factor 1.5
+  --num-residual-streams 4
+  --mhc-sinkhorn-iterations 20
+  --csa-compress-ratios '[0,0,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --csa-compress-rotary-base 160000
+  --o-groups 8
+  --o-lora-rank 1024
+  --moe-n-hash-layers 0
+  --csa-window-size 128
+  --dsa-indexer-n-heads 32
+  --dsa-indexer-head-dim 128
+  --dsa-indexer-topk 512
+  --spec miles_plugins.models.deepseek_v4_1.deepseek_v4_1 get_dsv41_spec
+  --activation-func-clamp-value 10
+  --no-bias-swiglu-fusion
+  --hf-checkpoint <SANDBOX>/models/DeepSeek-V4.1
+  --ref-load /root/models/DeepSeek-V4.1_torch_dist 
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --rm-type math
+  --num-rollout 5
+  --rollout-batch-size 16
+  --n-samples-per-prompt 8
+  --rollout-temperature 0.8
+  --num-steps-per-rollout 1
+  --balance-data
+  --rollout-max-response-len 256
+  --prompt-data /root/datasets/gsm8k/train.parquet
+  --input-key messages 
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98 
+  --advantage-estimator grpo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28 
+  --use-wandb
+  --wandb-project miles-run_deepseek_v4_1
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 4
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --sequence-parallel
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --micro-batch-size 1
+  --max-tokens-per-gpu 2048  
+  --rollout-num-gpus-per-engine 8
+  --sglang-tp-size 8
+  --sglang-dp-size 1
+  --sglang-ep-size 8
+  --sglang-attention-backend dsv4
+  --sglang-moe-runner-backend auto
+  --sglang-disable-cuda-graph
+  --sglang-max-running-requests 128
+  --sglang-disable-radix-cache
+  --sglang-mem-fraction-static 0.6
+  --router-health-success-threshold 1
+  --router-health-check-interval-secs 15
+  --router-health-failure-threshold 40 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --attention-softmax-in-fp32
+  --update-weight-buffer-size 1073741824
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --train-memory-margin-bytes 3221225472
+  --accumulate-allreduce-grads-in-fp32
+  --colocate
+  --colocate-memory-peak-device cpu
+  --dsv4-impl miles
+  --model-name deepseekv41
+  --qkv-format bshd
+  --moe-router-freeze-gate
+  --freeze-e-score-correction-bias
+  --check-weight-update-equal
+  --check-weight-update-skip-list engram_hasher. engram.embed.
+  --rollout-health-check-interval 300
+  --rollout-health-check-timeout 300
+  --transformer-impl transformer_engine
+  --bf16
+  --use-rollout-routing-replay
+  --deterministic-mode   
+  --deploy-component all

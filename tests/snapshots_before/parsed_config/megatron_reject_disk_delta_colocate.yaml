@@ -1,0 +1,2 @@
+error: {message: 'Disk-delta weight transfer mode is not compatible with --colocate. Colocate transfers weights via CUDA IPC
+    (only a handle crosses processes), so the delta bookkeeping (snapshot + diff + encode) is pure overhead.', type: AssertionError}

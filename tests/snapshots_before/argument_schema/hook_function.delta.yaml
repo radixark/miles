@@ -1,0 +1,35 @@
+base: megatron
+base_sha256: ac027b1154c5325865dd266b7e71d05b992a6a99660cdd77c0f61cb166d29cc1
+edits:
+- at: 17
+  delete: 0
+  insert: |
+    - --custom-generate-function-path
+    - tests.fast.argument_snapshot.argparser.scenarios._hook_function
+- {at: 173, delete: 1, insert: ''}
+- at: 1674
+  delete: 0
+  insert: |2
+          snapshot_hook: 23
+- at: 1849
+  delete: 2
+  insert: |2
+        - &id002
+          actor_num_gpus_per_node: 1
+          apply_chat_template_kwargs: {}
+          custom_generate_function_path: tests.fast.argument_snapshot.argparser.scenarios._hook_function
+          hidden_size: 128
+          num_attention_heads: 2
+          num_layers: 1
+          num_rollout: 1
+          rollout_batch_size: 2
+          train_env_vars: {}
+          yarn_correction_range_round_to_int: null
+- at: 1891
+  delete: 0
+  insert: |2
+        custom_generate_function_path: null
+- at: 19052
+  delete: 0
+  insert: |2
+          - {default: 23, dest: snapshot_hook, group: options, help: null, option_strings: [--snapshot-hook], type: {$callable: builtins.int}}

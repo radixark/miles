@@ -1,0 +1,2 @@
+{error: {message: 'native LoRA syncs adapters only to colocated engines; use --colocate, --lora-train-only, or --megatron-to-hf-mode
+      bridge', type: AssertionError}}

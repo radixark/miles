@@ -1,0 +1,56 @@
+base: megatron
+base_sha256: f60cce637c332fdc6aa3fad4de17b71a783391c94dc05adadd2c9c91eb68b57b
+edits:
+- at: 122
+  delete: 1
+  insert: |2
+      colocate: true
+- at: 232
+  delete: 1
+  insert: |2
+      disable_grad_buffers_cpu_backup: true
+- at: 235
+  delete: 1
+  insert: |2
+      disable_param_buffers_cpu_backup: true
+- at: 339
+  delete: 1
+  insert: |2
+      exclude_modules: v_proj
+- at: 443
+  delete: 1
+  insert: |2
+      hf_checkpoint: $FIXTURES/hf
+      hf_lora_targets: &id001 [model.layers.0.self_attn.o_proj, model.layers.0.self_attn.q_proj, model.layers.0.self_attn.k_proj]
+- at: 594
+  delete: 0
+  insert: |2
+      lora_adapter_targets: *id001
+- at: 597
+  delete: 1
+  insert: |2
+      lora_rank: 8
+- at: 837
+  delete: 1
+  insert: |2
+      offload_rollout: true
+- at: 839
+  delete: 1
+  insert: |2
+      offload_train: true
+- at: 1002
+  delete: 1
+  insert: |2
+      rollout_num_gpus: 1
+- at: 1187
+  delete: 1
+  insert: |2
+      sglang_cuda_graph_backend_prefill: disabled
+- at: 1694
+  delete: 1
+  insert: |2
+      target_modules: attn
+- at: 1717
+  delete: 1
+  insert: |2
+      tokenizer_model: $FIXTURES/hf
