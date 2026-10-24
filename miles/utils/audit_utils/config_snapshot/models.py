@@ -39,9 +39,37 @@ class ConfigSnapshotRecord(FrozenStrictBaseModel):
     config: JsonValue
 
 
+# ============================ Converted snapshots =============================
+
+
+class ConfigSnapshotProcess(FrozenStrictBaseModel):
+    """Represent equivalent ranks using one base sample and per-stage diffs."""
+
+    ranks: list[int]
+    base: JsonValue
+    diffs: dict[str, str]
+
+
+class ConfigSnapshotCase(FrozenStrictBaseModel):
+    """Collect all logical process snapshots for one test case."""
+
+    processes: dict[str, ConfigSnapshotProcess]
+
+
+# =============================== Test attempts ================================
+
+
 class ConfigSnapshotVariant(FrozenStrictBaseModel):
     hardware: Literal["cpu", "h100", "h200", "b200", "mi350"]
     wandb_available: bool = Field(strict=True)
 
     def to_key(self) -> str:
         return f"{self.hardware}/{'wandb' if self.wandb_available else 'no-wandb'}"
+
+
+class ConfigSnapshotTestAttempt(FrozenStrictBaseModel):
+    """Record the test identity and whether its execution completed successfully."""
+
+    test: str
+    variant: ConfigSnapshotVariant
+    completed: bool
