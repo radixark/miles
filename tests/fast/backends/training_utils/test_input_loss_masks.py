@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from miles.backends.training_utils import cp_utils
-from miles.backends.training_utils import data as data_utils
+from miles.backends.training_utils.data import context_parallel
+from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState
 
 
@@ -57,14 +57,13 @@ def test_mask_alignment_survives_packing_and_cp(
         for position, token_id in enumerate(token_ids.tolist()):
             input_weights[token_id] = weights[position]
 
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
-    monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *args, **kwargs: self)
+    monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
     total = 0
     seen_tokens = []
     for cp_rank in range(cp_size):
         state = _parallel_state(cp_size, cp_rank)
         monkeypatch.setattr(data_utils, "get_parallel_state", lambda state=state: state)
-        monkeypatch.setattr(cp_utils, "get_parallel_state", lambda state=state: state)
+        monkeypatch.setattr(context_parallel, "get_parallel_state", lambda state=state: state)
         batch = data_utils.get_batch(
             data_utils.DataIterator(rollout, micro_batch_size=len(tokens)),
             list(rollout),

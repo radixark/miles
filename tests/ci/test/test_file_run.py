@@ -1,6 +1,7 @@
 """Unit tests for `tests/ci/file_run.py`, the /rerun-test resolve step."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -40,16 +41,25 @@ def test_every_cpu_suite_is_allowed():
     assert set(CPU_SUITES) == set(CI_SUITES[HWBackend.CPU])
 
 
-def test_cuda_file_resolves_to_its_suite_runner_and_image():
+@pytest.mark.parametrize(
+    ("suite", "runner"),
+    [
+        ("stage-c-4-gpu-h200", ["h200", "4gpu"]),
+        ("stage-c-4-gpu-b200", ["b200", "4gpu"]),
+        ("stage-c-8-gpu-b200", ["b200", "8gpu"]),
+    ],
+)
+def test_cuda_file_resolves_to_its_suite_runner_and_image(suite, runner):
     tests = [
-        _make("tests/e2e/x/test_a.py", suite="stage-c-4-gpu-h200", nightly=True),
+        _make("tests/e2e/x/test_a.py", suite=suite, nightly=True),
         _make("tests/e2e/x/test_b.py"),
     ]
     plan = plan_file_run(tests, "tests/e2e/x/test_a.py", "dev")
     assert plan == {
         "hw": "cuda",
-        "suite": "stage-c-4-gpu-h200",
-        "runs_on": json.dumps(["h200", "4gpu"]),
+        "num_gpus": runner[1].removesuffix("gpu"),
+        "suite": suite,
+        "runs_on": json.dumps(runner),
         "container_image": "radixark/miles:dev",
         "timeout_seconds": "1800",
     }
@@ -60,6 +70,7 @@ def test_cpu_file_resolves_without_runner_labels():
     plan = plan_file_run(tests, "tests/fast/test_a.py", "pr-42")
     assert plan == {
         "hw": "cpu",
+        "num_gpus": "0",
         "suite": "stage-a-cpu",
         "runs_on": "",
         "container_image": "radixark/miles:pr-42",
@@ -70,6 +81,12 @@ def test_cpu_file_resolves_without_runner_labels():
 def test_long_file_extends_the_default_timeout():
     tests = [_make("tests/e2e/x/test_a.py", est_time=2000)]
     assert plan_file_run(tests, "tests/e2e/x/test_a.py", "dev")["timeout_seconds"] == "2500"
+
+
+def test_perf_file_times_out_at_its_estimate():
+    registration = _make("tests/fast/x/test_a.py", backend=HWBackend.CPU, suite="stage-b-cpu", est_time=400)
+    tests = [replace(registration, labels=["rollout", "perf"])]
+    assert plan_file_run(tests, "tests/fast/x/test_a.py", "dev")["timeout_seconds"] == "500"
 
 
 def test_unknown_cpu_suite_is_a_hard_error():
@@ -193,8 +210,11 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "DISPATCHED_SHA" not in workflow
     assert "checkout_ref" not in workflow
     assert "secrets: inherit" not in workflow
-    assert "CI_COMMAND_APP_PRIVATE_KEY" not in workflow
-    assert "NEON_DATABASE_URL" not in workflow
+    assert "CI_APP_PRIVATE_KEY" not in workflow
+    assert (
+        "NEON_DATABASE_URL: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.NEON_DATABASE_URL || '' }}"
+    ) in workflow
+    assert "NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}" not in workflow
     # Fork-ness comes from the live PR, and fork heads run without repository
     # secrets, matching the pr-test fork policy.
     assert "head_is_fork: ${{ steps.head-repo.outputs.head_is_fork }}" in workflow
@@ -207,6 +227,8 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" not in workflow
     assert "HF_TOKEN: ${{ secrets.HF_TOKEN }}" not in workflow
     assert "group: run-ci-file-${{ inputs.pull_number }}-${{ inputs.test_file }}" in workflow
+    assert "endsWith(needs.resolve-file-run.outputs.suite, '-b200')" in workflow
+    assert "&& 'b200-oma' || format('run-ci-file-execution-{0}-{1}'" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "queue: max" in workflow
     assert "comment_id: ${{ steps.announce.outputs.comment_id }}" in workflow
@@ -221,11 +243,16 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "actions: read" in report_job
     assert "needs: [announce-file-run, resolve-file-run, run-cuda-file, run-cpu-file]" in report_job
     assert "if: always()" in report_job
-    assert "tests.ci.run_suite" not in workflow
+    assert "python3 tests/ci/run_suite.py --hw cuda" in workflow
     assert "pytest '${{ inputs.test_file }}' -v -x" in workflow
-    assert "python3 '${{ inputs.test_file }}'" in workflow
-    assert workflow.count("timeout --signal=TERM --kill-after=30s") == 2
-    assert workflow.count("'${{ needs.resolve-file-run.outputs.timeout_seconds }}s'") == 2
+    assert "--test-file '${{ inputs.test_file }}'" in workflow
+    # CPU wraps pytest in the file timeout; CUDA hands it to run_suite, whose
+    # per-file timer covers only the test, as in stage runs.
+    cuda_job = workflow.split("  run-cuda-file:", 1)[1].split("  run-cpu-file:", 1)[0]
+    assert "timeout --signal" not in cuda_job
+    assert "--timeout-per-file '${{ needs.resolve-file-run.outputs.timeout_seconds }}'" in cuda_job
+    assert workflow.count("timeout --signal=TERM --kill-after=30s") == 1
+    assert workflow.count("'${{ needs.resolve-file-run.outputs.timeout_seconds }}s'") == 1
     for reusable in (gpu_workflow, cpu_workflow):
         assert "plan_already_resolved:" in reusable
         assert "if: ${{ !inputs.plan_already_resolved }}" in reusable

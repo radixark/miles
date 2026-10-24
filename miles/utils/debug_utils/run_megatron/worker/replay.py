@@ -127,7 +127,7 @@ def _load_replay(
         sliced: list[torch.Tensor] = indices_list
 
         if ranks.cp_size > 1:
-            from miles.backends.training_utils.cp_utils import natural_to_zigzag_slice
+            from miles.backends.training_utils.data.context_parallel import natural_to_zigzag_slice
 
             sliced = [natural_to_zigzag_slice(t, dim=0, cp_size=ranks.cp_size, cp_rank=ranks.cp_rank) for t in sliced]
 

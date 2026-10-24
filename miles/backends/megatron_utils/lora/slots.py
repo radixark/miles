@@ -19,7 +19,7 @@ def create_multi_lora_instance(args: Namespace, *, target_modules):
         dim=args.lora_rank,
         alpha=args.lora_alpha,
         dropout=getattr(args, "lora_dropout", 0.0),
-        lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
+        lora_A_init_method=args.lora_A_init_method,
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
 

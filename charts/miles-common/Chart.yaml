@@ -1,0 +1,8 @@
+apiVersion: v2
+name: miles-common
+description: Library chart holding the naming, labelling and shared-infra rendering every Miles chart repeats.
+type: library
+version: 0.1.0
+home: https://github.com/radixark/miles
+sources:
+  - https://github.com/radixark/miles

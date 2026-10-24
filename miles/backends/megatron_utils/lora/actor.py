@@ -4,9 +4,10 @@ from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.data import get_rollout_data
+from miles.backends.training_utils.data.rollout import get_rollout_data
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora.utils import AdapterSpec
-from miles.utils.ray_utils import Box
+from miles.utils.object_store import StoreObjectRef
 from miles.utils.tracking_utils.structured_log import with_logs
 
 
@@ -16,10 +17,14 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         self._init_weight_updater_and_publisher(update_weights=False, publish_snapshots=True)
 
     @with_logs
-    def forward_backward(self, batch_id: int, rollout_data_ref: Box) -> dict:
+    def forward_backward(self, batch_id: int, rollout_data_ref: StoreObjectRef) -> dict:
         self._heartbeat.bump()
         with ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
+            rollout_data, store_get_result = get_rollout_data(
+                args=self.args,
+                rollout_data_ref=rollout_data_ref,
+                train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
+            )
             stack.enter_context(store_get_result)
             return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data)
 
@@ -29,12 +34,16 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         return lora_model.optim_step(self.slot_optimizers, adam_params_by_slot)
 
     @with_logs
-    def forward_only(self, batch_id: int, rollout_data_ref: Box) -> dict:
+    def forward_only(self, batch_id: int, rollout_data_ref: StoreObjectRef) -> dict:
         """Same loss pass as forward_backward, without the backward: the Tinker
         forward() contract returns the requested loss per datum."""
         self._heartbeat.bump()
         with ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
+            rollout_data, store_get_result = get_rollout_data(
+                args=self.args,
+                rollout_data_ref=rollout_data_ref,
+                train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
+            )
             stack.enter_context(store_get_result)
             return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data, forward_only=True)
 

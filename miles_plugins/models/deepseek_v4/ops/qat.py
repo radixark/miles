@@ -2,7 +2,7 @@ import torch
 
 from tile_kernels.quant import per_token_cast_back
 
-from .kernel.act_quant import act_quant
+from miles.kernels.quant.fp8_act_quant import act_quant
 
 
 def fp8_simulate(x: torch.Tensor, block_size: int):

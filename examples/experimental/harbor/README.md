@@ -48,8 +48,11 @@ put it on a filesystem every worker can read.
 
 **Network.** In-sandbox agents (mini-swe-agent, claude-code) call the model
 from inside the sandbox, so the sandbox platform must reach the Miles session
-server. `--router-external-host` is the address substituted into the URL the
-agent gets. Two port ranges must route from the sandbox network: one
+server. `--session-server-external-host` is the address the sandboxes reach it
+on: the driver builds the URL the agent gets from it and keeps the session
+servers on the head node. On a multi-node job see the network note in
+[the agent-server example](../../swe-agent-harbor-docker/README.md). Two port
+ranges must route from the sandbox network: one
 session-server port per worker starting at `--session-server-port` (30000-30031
 for `run.py`'s 32 workers) and the SGLang router's 31000. Host-process agents
 (terminus-2) call the model from the worker and need no sandbox egress.
@@ -77,7 +80,7 @@ HARBOR_ENV_TYPE=e2b python examples/experimental/harbor/run.py \
     --save-dir /path/to/checkpoints \
     --prompt-data /path/to/tb2_train.jsonl \
     --harbor-tasks-dir /path/to/harbor_tasks \
-    --router-external-host <trainer-address-reachable-from-the-sandboxes> \
+    --session-server-external-host <trainer-address-reachable-from-the-sandboxes> \
     --rollout-batch-size 4 --n-samples-per-prompt 8 --global-batch-size 32 \
     --num-rollout 200 --save-interval 10
 ```

@@ -26,8 +26,9 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 _INSTANCE_ID = "0123456789abcdef-0"
 
 
-def _create_session(url: str) -> str:
-    return requests.post(f"{url}/sessions", timeout=5.0).json()["session_id"]
+def _create_session(url: str, *, extra_key: str | None = None) -> str:
+    body = {} if extra_key is None else {"extra_key": extra_key}
+    return requests.post(f"{url}/sessions", json=body, timeout=5.0).json()["session_id"]
 
 
 def _post_chat(url: str, session_id: str, payload: dict) -> requests.Response:
@@ -58,8 +59,7 @@ def router_env():
         choice["meta_info"] = {
             "output_token_logprobs": output_token_logprobs,
             "completion_tokens": len(output_token_logprobs),
-            # R3 replay payloads: must reach the session record but never the
-            # client-facing chat response (see _strip_replay_payloads).
+            # Replay payloads stay in the record along with the rest of meta_info.
             "routed_experts": [[0, 1], [2, 3]],
             "indexer_topk": [[4], [5]],
         }
@@ -282,12 +282,13 @@ class TestSessionProxy:
         assert resp.status_code == 502
         assert "assistant message content is None" in resp.json()["error"]
 
-    def test_chat_response_strips_replay_payloads_but_record_keeps_them(self, router_env):
+    def test_chat_response_omits_meta_info_but_record_keeps_it(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
 
         payload = {
             "messages": [{"role": "user", "content": "What is 2+2?"}],
-            "return_logprob": True,
+            "logprobs": True,
+            "return_meta_info": True,
         }
         resp = requests.post(
             f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
@@ -295,16 +296,39 @@ class TestSessionProxy:
             timeout=10.0,
         )
         assert resp.status_code == 200
-        client_meta = resp.json()["choices"][0]["meta_info"]
-        assert "routed_experts" not in client_meta
-        assert "indexer_topk" not in client_meta
-        # Stripping must not swallow the rest of meta_info.
-        assert "output_token_logprobs" in client_meta
+        client_response = resp.json()
+        client_choice = client_response["choices"][0]
+        assert "meta_info" not in client_choice
 
         record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
         record_meta = record["response"]["choices"][0]["meta_info"]
         assert record_meta["routed_experts"] == [[0, 1], [2, 3]]
         assert record_meta["indexer_topk"] == [[4], [5]]
+        assert record_meta["output_token_logprobs"]
+        assert record_meta["completion_tokens"] == len(record_meta["output_token_logprobs"])
+        assert client_choice["message"] == record["response"]["choices"][0]["message"]
+        assert client_choice["logprobs"] == record["response"]["choices"][0]["logprobs"]
+        assert client_response["usage"] == record["response"]["usage"]
+
+    @pytest.mark.parametrize(
+        "client_flags, expect_logprobs",
+        [({}, False), ({"logprobs": True}, True), ({"logprobs": False}, False)],
+        ids=["omitted", "asked", "explicit-false"],
+    )
+    def test_chat_response_carries_logprobs_only_when_the_client_asked(
+        self, router_env, client_flags, expect_logprobs
+    ):
+        session_id = _create_session(router_env.url)
+
+        resp = _post_chat(
+            router_env.url, session_id, {"messages": [{"role": "user", "content": "What is 3+3?"}], **client_flags}
+        )
+
+        assert resp.status_code == 200
+        assert ("logprobs" in resp.json()["choices"][0]) is expect_logprobs
+        # The record keeps logprobs for TITO and training, whatever the client asked for.
+        record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
+        assert record["response"]["choices"][0]["logprobs"]["content"]
 
 
 class TestChatFakeStreaming:
@@ -712,3 +736,35 @@ class TestAdditionR3RequestOffset:
             # The launch flag is authoritative: off means an explicit False, never a client-provided value.
             assert body["return_routed_experts"] is False
             assert "routed_experts_start_len" not in body
+
+
+class TestSessionExtraKey:
+    MESSAGES = [{"role": "user", "content": "partition me"}]
+    KEY = "train:-:7"
+
+    def test_v1_refuses_a_session_carrying_a_kv_cache_namespace(self, router_env):
+        """Only session server v2 stamps the namespace, so v1 must refuse it rather than silently drop it."""
+        response = requests.post(f"{router_env.url}/sessions", json={"extra_key": self.KEY}, timeout=5.0)
+
+        assert response.status_code == 500
+
+    @pytest.mark.parametrize(
+        ("client_body", "expected_extra_key"),
+        [({"extra_key": "mine"}, "mine"), ({}, None)],
+        ids=["client_key_untouched", "nothing_injected"],
+    )
+    def test_an_unkeyed_session_proxies_the_client_key_as_is(self, router_env, client_body, expected_extra_key):
+        """With the partition off the session is unkeyed, so the server neither rewrites nor injects extra_key."""
+        session_id = _create_session(router_env.url)
+
+        response = _post_chat(router_env.url, session_id, {"messages": self.MESSAGES, **client_body})
+
+        assert response.status_code == 200
+        assert router_env.backend.request_log[-1].get("extra_key") == expected_extra_key
+
+    def test_an_empty_body_still_creates_a_session(self, router_env):
+        """POST /sessions with no body at all is the unkeyed create."""
+        response = requests.post(f"{router_env.url}/sessions", data=b"", timeout=5.0)
+
+        assert response.status_code == 200
+        assert len(response.json()["session_id"]) == 32

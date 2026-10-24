@@ -38,7 +38,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -52,15 +52,18 @@ _CUDA_GRAPH_BS = " ".join(str(bs) for bs in [1, 2, 4, 8, *range(16, 129, 8)])
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = "moonshotai"
     model_name: str = "Kimi-K2.5"
     megatron_model_type: str = "kimi-k25"
     num_gpus_per_node: int | None = None
     enable_eval: bool = False
     num_rollout: int = 3000
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
+    global_batch_size: int = 256
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -68,8 +71,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hardware: Literal["auto", "H200", "H100", "B200"] = "auto"
 
     def __post_init__(self):
-        self.hardware = U.resolve_hardware(self)
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.model_name == "Kimi-K2.5":
             self.model_org = "moonshotai"
             self.megatron_model_type = "kimi-k25"
@@ -88,6 +91,7 @@ def _bf16_ref_dir(args: ScriptArgs) -> str:
 
 
 def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(
         f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
@@ -99,14 +103,16 @@ def _prepare_download(args: ScriptArgs):
 
 def _convert_to_bf16(args: ScriptArgs):
     """Dequantize the INT4 checkpoint to a BF16 reference for the Megatron bridge."""
+    U = args.create_backend()
     U.exec_command_gpu(
-        f"python {U.repo_base_dir}/tools/convert_kimi_int4_to_bf16.py "
+        f"python {command_utils.repo_base_dir}/tools/convert_kimi_int4_to_bf16.py "
         f"--model-dir {args.model_dir}/{args.model_name} "
         f"--output-dir {_bf16_ref_dir(args)} "
     )
 
 
 def _execute_train(args: ScriptArgs):
+    U = args.create_backend()
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
@@ -127,11 +133,11 @@ def _execute_train(args: ScriptArgs):
         "--balance-data "
         "--rm-type deepscaler "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 16384} "
         "--rollout-temperature 1 "
-        "--global-batch-size 256 "
+        f"--global-batch-size {args.global_batch_size} "
         "--use-dynamic-global-batch-size "
     )
 
@@ -231,7 +237,7 @@ def _execute_train(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -241,7 +247,6 @@ def _execute_train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
@@ -254,7 +259,7 @@ def _execute_train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     """Full pipeline: download, convert INT4->BF16, train."""
     _prepare_download(args)
@@ -263,7 +268,7 @@ def full_train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     """Download model/data and dequantize the BF16 reference (run on head node)."""
     _prepare_download(args)
@@ -271,7 +276,7 @@ def prepare(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run training only (assumes data is prepared)."""
     _execute_train(args)

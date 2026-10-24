@@ -2,18 +2,21 @@
 
 HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each request into primitives and calls these methods. Owns one ``SessionRegistry`` (per-session TITO/trajectory state) and one proxy ``backend``.
 
-- ``chat_completions`` strips training-only replay payloads from the client reply copy-on-write; the
-  ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
+- `chat_completions` omits choice `meta_info` from client replies, and choice `logprobs` unless the client's request asked for them, without modifying the stored response; `SessionRecord` retains both for sample collection and `GET /sessions/{id}`.
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
-- ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
+- ``collect_samples`` captures committed session state, then assembles and encodes it off the event loop; deterministic assembly failures return 422 with the assertion text.
 """
 
+import asyncio
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 
+import orjson
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
@@ -24,8 +27,8 @@ from miles.rollout.session.errors import (
     UpstreamGenerationAbortedError,
     UpstreamResponseError,
 )
-from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
+from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionRegistry
+from miles.rollout.session.request_args import ClientResponseIntent, filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.samples.merge import (
     compute_samples_from_openai_records,
@@ -73,26 +76,6 @@ def _samples_response(payload: bytes) -> Response:
     return Response(content=payload, status_code=200, media_type="application/octet-stream")
 
 
-_CLIENT_STRIPPED_META_KEYS = (
-    "routed_experts",
-    "indexer_topk",
-    "output_token_sampling_mask",
-    "output_token_sampling_logprobs",
-    "output_token_sampling_mask_length",
-)
-
-
-def _strip_replay_payloads(response: dict) -> dict:
-    stripped_choices = []
-    for choice in response.get("choices", []):
-        meta = choice.get("meta_info")
-        if isinstance(meta, dict) and any(k in meta for k in _CLIENT_STRIPPED_META_KEYS):
-            meta = {k: v for k, v in meta.items() if k not in _CLIENT_STRIPPED_META_KEYS}
-            choice = {**choice, "meta_info": meta}
-        stripped_choices.append(choice)
-    return {**response, "choices": stripped_choices}
-
-
 def _response_to_stream_chunk(response: dict) -> dict:
     """Synthesize the single ``chat.completion.chunk`` for a fake stream.
 
@@ -123,8 +106,21 @@ def _response_to_stream_chunk(response: dict) -> dict:
     return chunk
 
 
-def _chat_client_response(result: dict, response: dict, client_stream: bool) -> Response:
-    if client_stream:
+def _client_response_body(response: dict, response_intent: ClientResponseIntent) -> dict:
+    """The non-streaming reply without ``meta_info``, and without ``logprobs`` unless the client asked.
+
+    The session server asks for logprobs on every turn for TITO, and top-k logprobs for training make
+    one long reply very large. A client that never asked for them would still have to parse them.
+    """
+    omitted = {"meta_info"} if response_intent.logprobs else {"meta_info", "logprobs"}
+    return {
+        **response,
+        "choices": [{k: v for k, v in choice.items() if k not in omitted} for choice in response.get("choices", [])],
+    }
+
+
+def _chat_client_response(result: dict, response: dict, response_intent: ClientResponseIntent) -> Response:
+    if response_intent.stream:
         sse = b"data: " + _render_json(_response_to_stream_chunk(response)) + b"\n\ndata: [DONE]\n\n"
         # Fresh headers: upstream's headers describe its JSON body, not this SSE body.
         # X-Accel-Buffering keeps reverse proxies from buffering the stream.
@@ -136,7 +132,7 @@ def _chat_client_response(result: dict, response: dict, client_stream: bool) -> 
         )
     headers = {k: v for k, v in result["headers"].items() if k.lower() not in _DROP_RESPONSE_HEADERS}
     return Response(
-        content=_render_json(_strip_replay_payloads(response)),
+        content=_render_json(_client_response_body(response, response_intent)),
         status_code=result["status_code"],
         headers=headers,
         media_type=JSON_MEDIA_TYPE,
@@ -169,7 +165,8 @@ def extract_completion(result: dict) -> tuple:
     completion_token_ids)``; malformed upstream payloads raise
     ``UpstreamResponseError``.
     """
-    response = json.loads(result["response_body"])
+    # orjson: every turn parses a multi-MB body (per-token logprobs, R3); SGLang writes it with orjson too.
+    response = orjson.loads(result["response_body"])
     choice = response.get("choices", [{}])[0]
     if choice.get("finish_reason") == "abort":
         raise UpstreamGenerationAbortedError("upstream generation aborted before completion")
@@ -216,9 +213,14 @@ class SessionCore:
         self.registry = registry
         self.config = config
         self.instance_id = session_server_instance_id
+        # Keep materialization serial per server, without blocking its HTTP event loop.
+        self._sample_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-samples")
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
+
+    async def close(self) -> None:
+        await asyncio.to_thread(self._sample_executor.shutdown, wait=True, cancel_futures=True)
 
     def _maybe_request_addition_r3(
         self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
@@ -233,10 +235,10 @@ class SessionCore:
         if not (self.use_addition_r3 and request_body.get("return_routed_experts")):
             return
         previous_rows = max(0, len(checkpoint_token_ids) - 1)
-        stable_prefix_tokens = _lcp_len(checkpoint_token_ids, prompt_token_ids)
-        assert (
-            stable_prefix_tokens >= previous_rows
-        ), f"additional R3 requires {previous_rows} stable prefix tokens, got {stable_prefix_tokens}"
+        assert prompt_token_ids[:previous_rows] == checkpoint_token_ids[:previous_rows], (
+            f"additional R3 requires {previous_rows} stable prefix tokens, "
+            f"got {_lcp_len(checkpoint_token_ids, prompt_token_ids)}"
+        )
         request_body["routed_experts_start_len"] = previous_rows
 
     async def health(self) -> Response:
@@ -245,11 +247,14 @@ class SessionCore:
             body["session_server_instance_id"] = self.instance_id
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
-    async def create_session(self, *, evaluation: bool = False, sampling_defaults: dict | None = None) -> Response:
+    async def create_session(
+        self, *, evaluation: bool = False, sampling_defaults: dict | None = None, extra_key: str | None = None
+    ) -> Response:
         session_id = self.registry.create_session(
             evaluation=evaluation,
             sampling_defaults=sampling_defaults,
             sampling_support_replay=not evaluation and self.config.use_sampling_support_replay,
+            extra_key=extra_key,
         )
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 
@@ -284,6 +289,15 @@ class SessionCore:
         Validation failures return 422; unexpected errors propagate.
         """
         session = self.registry.get_session(session_id)
+        async with session.lock:
+            if session.closing:
+                raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            snapshot = session.snapshot()
+        return await asyncio.get_running_loop().run_in_executor(
+            self._sample_executor, partial(self._collect_samples, session_id, snapshot, max_seq_len=max_seq_len)
+        )
+
+    def _collect_samples(self, session_id: str, session: LinearTrajectory, *, max_seq_len: int | None) -> Response:
         metadata = self._session_metadata(session_id, session)
         tokenizer = self.registry.tokenizer
         fields = COMPUTED_FIELDS
@@ -299,6 +313,7 @@ class SessionCore:
                 accumulated_token_ids=metadata.get("accumulated_token_ids"),
                 max_trim_tokens=metadata.get("max_trim_tokens", 0),
                 use_addition_r3=self.use_addition_r3,
+                evaluation=session.evaluation,
             )
             if max_seq_len is not None:
                 samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
@@ -353,7 +368,7 @@ class SessionCore:
                 message_matcher=self.registry.message_matcher,
             )
             request_body, tito_tokenizer = prepared.body, self.registry.tito_tokenizer
-            client_stream = prepared.client_stream
+            response_intent = prepared.response_intent
             request_messages = request_body.get("messages", [])
             prompt_token_ids = request_body["input_ids"]
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
@@ -362,7 +377,8 @@ class SessionCore:
             # the checkpoint this request builds on.
             self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
 
-            proxy_body = json.dumps(request_body).encode()
+            # orjson: the body carries the whole prompt's input_ids on every turn.
+            proxy_body = orjson.dumps(request_body)
             expected_num_assistant = session.num_assistant
         # --- lock released ---
 
@@ -388,7 +404,7 @@ class SessionCore:
         async with session.lock:
             if session.closing:
                 logger.debug("Session %s closed during proxy, skipping state update", session_id)
-                return _chat_client_response(result, response, client_stream)
+                return _chat_client_response(result, response, response_intent)
 
             if session.num_assistant != expected_num_assistant:
                 logger.warning(
@@ -396,7 +412,7 @@ class SessionCore:
                     f"(expected num_assistant={expected_num_assistant}, "
                     f"got {session.num_assistant}), skipping state update"
                 )
-                return _chat_client_response(result, response, client_stream)
+                return _chat_client_response(result, response, response_intent)
 
             stored_request_messages = tito_tokenizer.preserve_server_message_state(
                 session.messages,
@@ -423,7 +439,7 @@ class SessionCore:
             session.append_record(record)
         # --- lock released ---
 
-        return _chat_client_response(result, response, client_stream)
+        return _chat_client_response(result, response, response_intent)
 
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes

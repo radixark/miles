@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 from collections.abc import Callable
 
 import httpx
@@ -11,7 +10,14 @@ from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellSpec, CellStatus
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.ft_utils.api_server.server import _create_api_app
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import (
+    FaultHookRecord,
+    FaultHookRequest,
+    FaultHookStatus,
+    ObservedFaultHookTarget,
+)
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
@@ -24,6 +30,7 @@ class MockCellState:
         is_suspended: bool = False,
         suspend_error: Exception | None = None,
         resume_error: Exception | None = None,
+        workers_hash: str = "pseudo-hash-1",
     ) -> None:
         self.phase = phase
         self.conditions = conditions or [
@@ -33,6 +40,7 @@ class MockCellState:
         self.is_suspended = is_suspended
         self.suspend_error = suspend_error
         self.resume_error = resume_error
+        self.workers_hash = workers_hash
         self.suspend_calls: int = 0
         self.resume_calls: int = 0
 
@@ -41,9 +49,9 @@ class MockHandler(_CellHandler):
     def __init__(self, cell_type: str) -> None:
         self._cell_type = cell_type
         self.cells: dict[str, MockCellState] = {}
-        self.injected: list[tuple[str, FailureMode, int]] = []
-        self.supports_inject_fault = False
-        self.inject_fault_error: Exception | None = None
+        self.commands: list[FaultHookCommand] = []
+        self.supports_fault_hook = False
+        self.fault_hook_error: Exception | None = None
 
     @property
     def cell_type(self) -> str:
@@ -97,12 +105,31 @@ class MockHandler(_CellHandler):
             {"type": "Healthy", "status": "True"},
         ]
 
-    async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        if not self.supports_inject_fault:
+    async def observe_fault_target(self, cell_id: str, *, rank: int) -> ObservedFaultHookTarget:
+        return ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash=self.cells[cell_id].workers_hash)
+
+    async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
+        if not self.supports_fault_hook:
             raise NotImplementedError(f"{type(self).__name__} does not support fault injection")
-        if self.inject_fault_error is not None:
-            raise self.inject_fault_error
-        self.injected.append((cell_id, mode, sub_index))
+        if self.fault_hook_error is not None:
+            raise self.fault_hook_error
+        self.commands.append(command)
+        return make_fault_record(command)
+
+
+def make_fault_command(*, cell_id: str, rank: int = 0) -> FaultHookCommand:
+    return FaultHookCommand(
+        operation=FaultHookOperation.SET,
+        request=FaultHookRequest(
+            request_id="test-request",
+            action=KillProcessAction(),
+            target=ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash="pseudo-hash-1"),
+        ),
+    )
+
+
+def make_fault_record(command: FaultHookCommand) -> FaultHookRecord:
+    return FaultHookRecord(request=command.request, status=FaultHookStatus.FIRED, set_at=1.0, changed_at=2.0)
 
 
 class MockGatedHandler(MockHandler):
@@ -151,27 +178,12 @@ class MockInferenceController:
         self._statuses = dict(statuses or {})
         self.status_calls: int = 0
 
-    def get_cell_statuses(self) -> dict[str, CellStatus]:
+    async def get_cell_statuses(self) -> dict[str, CellStatus]:
         self.status_calls += 1
         return dict(self._statuses)
 
     def observe_cell(self, cell_id: str, status: CellStatus) -> None:
         self._statuses[cell_id] = status
-
-
-class MockCellOperations:
-    def __init__(self, *, inject_fault_error: Exception | None = None) -> None:
-        self.stopped_cells: list[str] = []
-        self.injected: list[tuple[str, FailureMode, int]] = []
-        self._inject_fault_error = inject_fault_error
-
-    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
-        self.stopped_cells.append(cell_id)
-
-    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        if self._inject_fault_error is not None:
-            raise self._inject_fault_error
-        self.injected.append((cell_id, mode, sub_index))
 
 
 class MockWorkerManager:
@@ -207,7 +219,7 @@ class MockWorkerManager:
         log.append(list(cell_ids))
         for cell_id in cell_ids:
             previous = self._summaries[cell_id]
-            self._summaries[cell_id] = dataclasses.replace(previous, alive=not suspended)
+            self._summaries[cell_id] = previous.model_copy(update=dict(alive=not suspended))
 
 
 def make_cell_summaries(
@@ -259,7 +271,7 @@ class MockTrainerCell:
         )
 
 
-def make_mock_controller(cells: list[MockTrainerCell], *, pool_id: str = "trainer-actor") -> object:
+def make_mock_controller(cells: list[MockTrainerCell], *, pool_id: str = "trainer-engine-actor") -> object:
     from miles.ray.train.group import TrainerController
 
     group = object.__new__(TrainerController)

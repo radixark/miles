@@ -1,11 +1,12 @@
 from argparse import Namespace
 from types import SimpleNamespace
 
+import pytest
 import torch
 
-from miles.backends.training_utils import cp_utils
-from miles.backends.training_utils import data as data_utils
-from miles.backends.training_utils import log_utils
+from miles.backends.training_utils.data import context_parallel
+from miles.backends.training_utils.data import rollout as data_utils
+from miles.backends.training_utils.metrics import log_utils
 
 
 def test_true_on_policy_rollout_logprob_dtype_follows_training_precision():
@@ -20,7 +21,7 @@ def test_true_on_policy_rollout_logprob_dtype_follows_training_precision():
     )
 
 
-def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypatch):
+def _log_true_on_policy_rollout(monkeypatch, *, rollout_top_logprobs_num: int = 0) -> dict:
     captured = {}
     parallel_state = SimpleNamespace(
         tp=SimpleNamespace(rank=0),
@@ -29,7 +30,7 @@ def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypat
     )
 
     monkeypatch.setattr(log_utils, "get_parallel_state", lambda: parallel_state)
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(
         log_utils,
         "gather_log_data",
@@ -50,7 +51,9 @@ def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypat
         Namespace(
             ci_test=True,
             ci_disable_logprobs_checker=False,
+            trainer_model_id=None,
             true_on_policy_mode=True,
+            rollout_top_logprobs_num=rollout_top_logprobs_num,
             qkv_format="thd",
             log_multi_turn=False,
             log_passrate=False,
@@ -58,8 +61,18 @@ def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypat
         ),
         rollout_data,
     )
+    return captured["log_dict"]
 
-    assert captured["log_dict"]["log_probs"] == captured["log_dict"]["rollout_log_probs"]
+
+def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypatch):
+    log_dict = _log_true_on_policy_rollout(monkeypatch)
+    assert log_dict["log_probs"] == log_dict["rollout_log_probs"]
+
+
+def test_true_on_policy_top_k_check_fails_when_the_actor_skipped_it(monkeypatch):
+    # rollout top-k candidates were recorded, but no actor emitted the top-k metrics (e.g. a backend without the check)
+    with pytest.raises(AssertionError, match="did not score the rollout top-k candidates"):
+        _log_true_on_policy_rollout(monkeypatch, rollout_top_logprobs_num=128)
 
 
 def test_sampling_mask_csr_payload_is_not_averaged_as_a_metric(monkeypatch):
@@ -70,7 +83,7 @@ def test_sampling_mask_csr_payload_is_not_averaged_as_a_metric(monkeypatch):
         is_pp_last_stage=True,
     )
     monkeypatch.setattr(log_utils, "get_parallel_state", lambda: parallel_state)
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(
         log_utils,
         "gather_log_data",

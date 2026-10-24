@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.ray.rollout.conftest import make_args
 
+from miles.ray.rollout import rollout_server as rollout_server_module
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.utils.context_lock import ContextLock
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 
 class _RecordingCell:
@@ -31,12 +35,21 @@ class _RecordingCell:
         )
         return f"checked-{self.meta.cell_id}"
 
+    async def abort_all(self):
+        self.calls.append(("abort_all", {}))
+
+
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise AssertionError(f"fanning out to the cells must not resolve {worker_name}")
+
 
 def _make_server(cells: list[_RecordingCell], **overrides) -> RolloutServer:
     return RolloutServer(
-        server_cells={cell.meta.cell_id: cell for cell in cells},
-        args=SimpleNamespace(colocate=True),
+        all_server_cells={cell.meta.cell_id: cell for cell in cells},
+        args=make_args(colocate=True),
         context_lock=ContextLock("InferenceController"),
+        engine_provider=_StubProvider(),
         **overrides,
     )
 
@@ -91,7 +104,7 @@ class TestCheckWeightsFanOut:
                 action="snapshot", allow_quant_error=True, selector="lora", skip_list=["x"]
             )
 
-        assert results == [f"checked-{i}" for i in range(3)]
+        assert results == [(cell.meta, f"checked-{i}") for i, cell in enumerate(cells)]
         assert all(
             cell.calls
             == [
@@ -103,6 +116,17 @@ class TestCheckWeightsFanOut:
             for cell in cells
         )
 
+    async def test_named_cells_limit_the_check_to_them(self):
+        """A caller naming cells must not wait on another cell, which may be hanging under a fault."""
+        cells = [_RecordingCell(cell_id=str(i), needs_offload=False) for i in range(3)]
+        srv = _make_server(cells)
+
+        async with srv.context_lock:
+            results = await srv.check_weights(action="checksum", cell_ids=["0", "2"])
+
+        assert [meta.cell_id for meta, _body in results] == ["0", "2"]
+        assert cells[1].calls == []
+
     async def test_a_cell_without_an_address_yet_is_not_checked(self):
         """The check runs during the weight update window, which a gated cell has not entered."""
         gated = _RecordingCell(cell_id="gated", needs_offload=False, addressable=False)
@@ -112,3 +136,34 @@ class TestCheckWeightsFanOut:
             assert await srv.check_weights(action="snapshot") == []
 
         assert gated.calls == []
+
+
+class _NeverAnsweringCell(_RecordingCell):
+    async def abort_all(self):
+        self.calls.append(("abort_all", {}))
+        await asyncio.sleep(3600)
+
+
+class TestAbortFanOut:
+    async def test_every_addressable_cell_is_asked_to_abort(self):
+        """A take-over aborts what the previous script left generating, on every engine it can still reach."""
+        cells = [_RecordingCell(cell_id="a", needs_offload=False), _RecordingCell(cell_id="b", needs_offload=False)]
+        srv = _make_server(cells)
+
+        async with srv.context_lock:
+            await srv.abort_all()
+
+        assert all(cell.calls == [("abort_all", {})] for cell in cells)
+
+    async def test_a_cell_that_never_answers_is_given_up_on(self, monkeypatch):
+        """The abort runs under the controller's lock, so an engine that never answers would wedge every caller."""
+        monkeypatch.setattr(rollout_server_module, "ABORT_ALL_TIMEOUT_SECONDS", 0.01)
+        cells = [
+            _RecordingCell(cell_id="a", needs_offload=False),
+            _NeverAnsweringCell(cell_id="b", needs_offload=False),
+        ]
+        srv = _make_server(cells)
+
+        async with srv.context_lock:
+            with pytest.raises(TimeoutError):
+                await srv.abort_all()

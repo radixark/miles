@@ -72,7 +72,9 @@ _ARGS_DEFAULTS = dict(
     rollout_temperature=1.0,
     allgather_cp=False,
     log_probs_chunk_size=-1,
+    log_probs_backend="torch",
     true_on_policy_mode=True,
+    debug_unified_grad_fused_logprob=False,
     # compute_advantages_and_returns
     advantage_estimator="grpo",
     use_rollout_logprobs=False,

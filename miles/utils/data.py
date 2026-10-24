@@ -4,12 +4,21 @@ import logging
 import os
 import random
 import re
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
+from miles.ray.rollout.train_data_conversion import split_train_data_by_dp
 from miles.utils import object_store
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.pydantic_utils import StrictBaseModel
+
 from .audit_utils.witness.allocator import WitnessInfo
+
+if TYPE_CHECKING:
+    from miles.backends.training_utils.types import TrainStepOutput
 
 try:
     import pyarrow.parquet as pq
@@ -18,7 +27,6 @@ except ImportError:
 
 from miles.utils import chat_template_utils
 from miles.utils.types import MultimodalTypes, Sample
-
 
 __all__ = ["Dataset"]
 
@@ -288,8 +296,8 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
 def process_rollout_data(
     args,
     rollout_data_ref,
-    dp_rank,
-    dp_size,
+    dp_rank: int,
+    train_parallel_config: TrainParallelConfig,
     witness_info: WitnessInfo | None,
 ) -> tuple[dict, object_store.ObjectStoreGetResult]:
     from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
@@ -301,10 +309,17 @@ def process_rollout_data(
         raw = get_result.value
         if (x := witness_info) is not None:
             raw = {**raw, "seq_witness_ids": x.witness_ids}
-        raw = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)
+        with SampleOwnershipRecorder.suppress_drop_logging():
+            raw = split_train_data_by_dp(args, raw, train_parallel_config=train_parallel_config)
+        if args.enable_sample_ownership_checker:
+            assert sum(len(shard["tokens"]) for shard in raw) == len(
+                get_result.value["tokens"]
+            ), "Dropping samples during delayed DP splitting is not supported with the sample ownership checker."
+        if witness_info is not None:
+            _assert_witness_rows(total_rows=len(get_result.value["tokens"]), shards=raw)
         rollout_data = raw[dp_rank]
     else:
-        assert len(rollout_data_ref) == dp_size
+        assert len(rollout_data_ref) == train_parallel_config.dp_size
         assert witness_info is None
         get_result = store.get(rollout_data_ref[dp_rank])
         rollout_data = dict(get_result.value)
@@ -312,8 +327,34 @@ def process_rollout_data(
     return process_rollout_data_shard(args, rollout_data), get_result
 
 
-def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:
+def _assert_witness_rows(*, total_rows: int, shards: list[dict[str, Any]]) -> None:
+    kept_rows = sum(len(shard["tokens"]) for shard in shards)
+    assert kept_rows == total_rows, (
+        f"Witness ids were allocated for every row ({total_rows} rows), but the schedule dropped "
+        f"{total_rows - kept_rows} rows; pass --allow-partial-train-step or make the number of distinct "
+        "rollout ids a multiple of --global-batch-size."
+    )
+
+
+class RolloutDataPack(StrictBaseModel):
+    sample_indices: list[int] | None = None
+    data_ref: object_store.StoreObjectRef | list[object_store.StoreObjectRef] | None = None
+
+    @property
+    def data_refs(self) -> list[object_store.StoreObjectRef]:
+        if (ref := self.data_ref) is None:
+            return []
+        return ref if isinstance(ref, list) else [ref]
+
+
+def remove_rollout_data_refs(args, rollout_data_pack: RolloutDataPack) -> None:
     store = object_store.get_instance()
-    data_ref = rollout_data_pack["data_ref"]
-    for ref in data_ref if isinstance(data_ref, list) else [data_ref]:
+    for ref in rollout_data_pack.data_refs:
         store.remove(ref)
+
+
+def remove_train_output_refs(train_outputs: Sequence["TrainStepOutput"]) -> None:
+    store = object_store.get_instance()
+    for train_output in train_outputs:
+        if (ref := train_output.values) is not None:
+            store.remove(ref)

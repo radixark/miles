@@ -10,7 +10,6 @@ from scripts.run_glm5_744b_a40b import (
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
 
 # Basic smoke test that exercises the rollout indexer-topk replay path on
 # GLM-5 (every layer has an indexer). Enabling --use-rollout-indexer-replay
@@ -18,10 +17,11 @@ import miles.utils.external_utils.command_utils as U
 # side consumes the per-layer topk emitted by SGLang.
 
 register_cuda_ci(
-    est_time=1400,
+    est_time=1100,
     suite="stage-c-2-gpu-h200",
     labels=["megatron", "model-scripts", "replay"],
     hardware=["hopper", "blackwell"],
+    num_gpus=2,
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -32,12 +32,15 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         hardware="H200",
         model_name="GLM-5_4layer",
         num_nodes=1,
         num_gpus_per_node=2,
         num_rollout=2,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
+        global_batch_size=16,
         enable_optimizer_offload=True,
         extra_args=(
             "--ci-test "
@@ -56,6 +59,7 @@ def _args() -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)

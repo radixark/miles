@@ -1,6 +1,8 @@
 import logging
 from typing import Any
 
+from miles.backends.megatron_utils.lora.native import resolve_adapter_targets, validate_native_lora_args
+from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
@@ -13,8 +15,6 @@ from miles.utils.lora.hf_lora_targets import (
     resolve_hf_lora_targets,
 )
 from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, targets_expert_leaves
-from miles_plugins.models.inkling.lora import resolve_inkling_adapter_targets
-from miles_plugins.models.kimi_k3.lora import resolve_kimi_k3_adapter_targets
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,13 @@ def add_lora_arguments(parser):
         type=float,
         default=0.0,
         help="LoRA dropout rate (default: 0.0)",
+    )
+    parser.add_argument(
+        "--lora-A-init-method",
+        type=str,
+        default="xavier",
+        choices=["xavier", "kaiming", "normal"],
+        help="LoRA A initialization; B is zero-initialized (default: xavier)",
     )
     parser.add_argument(
         "--lora-type",
@@ -155,6 +162,12 @@ def validate_lora_args(args):
         )
 
 
+def validate_lora_args_after_megatron(args):
+    """LoRA checks that read Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
+    if is_lora_enabled(args) and args.megatron_to_hf_mode == "raw":
+        validate_native_lora_args(args)
+
+
 def _resolve_lora_targets(args, hf_config):
     """Return final HF and adapter targets without changing the CLI selectors in `args`."""
     hf_mapping = HfWeightMapping.from_config(hf_config)
@@ -205,14 +218,13 @@ def _resolve_lora_targets(args, hf_config):
 
     adapter_targets = list(hf_targets)
     if args.megatron_to_hf_mode == "raw":
-        if hf_config.model_type in ("inkling_model", "inkling_mm_model", "inkling_text"):
-            adapter_targets = resolve_inkling_adapter_targets(hf_config.to_dict(), hf_targets)
-        elif hf_config.model_type == "kimi_k3":
-            adapter_targets = resolve_kimi_k3_adapter_targets(
-                hf_targets,
-                canonical=args.lora_type == "canonical_lora",
-                experts_shared_outer_loras=args.experts_shared_outer_loras,
-            )
+        adapter_targets = resolve_adapter_targets(
+            hf_config.to_dict(),
+            hf_targets,
+            hf_modules=hf_modules,
+            lora_type=args.lora_type,
+            experts_shared_outer_loras=args.experts_shared_outer_loras,
+        )
     return hf_targets, adapter_targets
 
 
@@ -225,11 +237,10 @@ def validate_multi_lora_args(args: Any) -> None:
 
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
+    assert not getattr(
+        args, "allgather_cp", False
+    ), "Multi-LoRA does not support --allgather-cp: per-adapter token spans assume the zigzag CP layout."
     # Adapter routing is only recompute-safe without pipelining; enforce at launch.
-    assert getattr(args, "context_parallel_size", 1) == 1, (
-        "multi-LoRA requires --context-parallel-size 1: the Tinker losses zip "
-        "full-length per-datum vectors against log_probs, which CP would shard"
-    )
     assert getattr(args, "pipeline_model_parallel_size", 1) == 1, (
         "Multi-LoRA requires --pipeline-model-parallel-size 1: a pipelined schedule would "
         "recompute activations against a later micro-batch's adapter routing."
@@ -262,6 +273,11 @@ def validate_multi_lora_args(args: Any) -> None:
     assert getattr(args, "sglang_tokenizer_worker_num", 1) == 1, (
         "Multi-LoRA requires --sglang-tokenizer-worker-num 1: dynamic adapter loading "
         "requires a single tokenizer-side LoRA registry."
+    )
+    assert not sglang_attention_dp_enabled(args), (
+        "Multi-LoRA cannot run on SGLang attention DP: SGLang serves only pinned adapters there, and a pinned "
+        "adapter is never evicted, so the engine could not swap adapters through its LoRA slots. "
+        "Drop --sglang-attn-dp-size / --sglang-enable-dp-attention for multi-LoRA."
     )
     assert not args.calculate_per_token_loss, (
         "Multi-LoRA normalizes each sample by its adapter batch "

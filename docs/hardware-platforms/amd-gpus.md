@@ -9,7 +9,7 @@ launcher path.
 
 ## Images
 
-The two `mi35x` images are built daily from `main` by the sgl-project/sglang nightly
+The images are built daily from `main` by the sgl-project/sglang nightly
 workflows and published to Docker Hub under
 [`rocm/sgl-dev`](https://hub.docker.com/r/rocm/sgl-dev/tags?name=miles):
 
@@ -17,7 +17,7 @@ workflows and published to Docker Hub under
 |---|---|---|---|
 | `rocm/sgl-dev:miles-rocm10-mi35x` | 10 | MI350X / MI355X | Python 3.12 — the image the nightly tests run on |
 | `rocm/sgl-dev:miles-rocm724-mi35x` | 7.2.4 | MI350X / MI355X | Python 3.12 |
-| `rocm/sgl-dev:miles-rocm700-mi30x` | 7.0 | MI300X / MI325X | Not rebuilt daily — last built 2026-09-08 |
+| `rocm/sgl-dev:miles-rocm10-mi30x` | 10 | MI300X / MI325X | Python 3.12 — the image the MI300X nightly tests run on |
 
 Each undated tag moves with every build; append `-YYYYMMDD` (e.g.
 `miles-rocm10-mi35x-20260916`) to pin one.
@@ -25,7 +25,7 @@ Each undated tag moves with every build; append `-YYYYMMDD` (e.g.
 To build an image yourself, `docker/Dockerfile.rocm` holds the recipe:
 
 ```bash
-python docker/build.py --variant rocm10-mi35x --image-tag dev    # or rocm724-mi35x
+python docker/build.py --variant rocm10-mi35x --image-tag dev    # or rocm724-mi35x, rocm10-mi30x
 ```
 
 ## Start the container

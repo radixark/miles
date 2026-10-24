@@ -15,6 +15,25 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
         "self_attention.weights_proj.weight": ["model.layers.{layer_number}.self_attn.indexer.weights_proj.weight"],
         "self_attention.k_norm.weight": ["model.layers.{layer_number}.self_attn.indexer.k_norm.weight"],
         "self_attention.k_norm.bias": ["model.layers.{layer_number}.self_attn.indexer.k_norm.bias"],
+        # Mbridge maps each actual model parameter to HF, so both naming
+        # layouts can coexist here without duplicating checkpoint imports.
+        "self_attention.core_attention.indexer.linear_wq_b.weight": [
+            "model.layers.{layer_number}.self_attn.indexer.wq_b.weight"
+        ],
+        "self_attention.core_attention.indexer.linear_wk.weight": [
+            "model.layers.{layer_number}.self_attn.indexer.wk.weight"
+        ],
+        "self_attention.core_attention.indexer.linear_weights_proj.weight": [
+            "model.layers.{layer_number}.self_attn.indexer.weights_proj.weight"
+        ],
+        "self_attention.core_attention.indexer.k_norm.weight": [
+            "model.layers.{layer_number}.self_attn.indexer.k_norm.weight"
+        ],
+        "self_attention.core_attention.indexer.k_norm.bias": [
+            "model.layers.{layer_number}.self_attn.indexer.k_norm.bias"
+        ],
+        "self_attention.q_layernorm.weight": ["model.layers.{layer_number}.self_attn.q_a_layernorm.weight"],
+        "self_attention.kv_layernorm.weight": ["model.layers.{layer_number}.self_attn.kv_a_layernorm.weight"],
     }
     _ATTENTION_MAPPING = {**DeepseekV3Bridge._ATTENTION_MAPPING, **_DSA_ATTENTION_MAPPING}
 
@@ -74,8 +93,8 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
     ) -> tuple[list[str], list[torch.Tensor]]:
         """Apply rope reordering when exporting DSA attention weights to HF format.
 
-        Our training uses last half for rope while DeepSeek uses first half,
-        so we swap the two halves.
+        The Miles indexer stores RoPE channels in the last half. Native
+        Megatron's core_attention.indexer already uses HF channel order.
         """
         if not bool(getattr(self.hf_config, "indexer_rope_interleave", False)):
             return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)

@@ -2,30 +2,34 @@ import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "mooncake"], hardware=["hopper", "blackwell"]
+    est_time=400,
+    suite="stage-c-2-gpu-h200",
+    labels=["short", "mooncake"],
+    hardware=["hopper", "blackwell"],
+    num_gpus=2,
 )
-register_rocm_ci(est_time=240, suite="nightly-stage-c-8-gpu-mi350", labels=["short", "mooncake"])
-
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+register_rocm_ci(est_time=300, suite="nightly-stage-c-2-gpu-mi350", labels=["short", "mooncake"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 4 if FEW_GPU else 8
+NUM_GPUS = 2
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
 
-    object_store_args = U.get_mooncake_object_store_args()
+    object_store_args = command_utils.get_mooncake_object_store_args()
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -34,6 +38,8 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
+        # 3, not 2: train_async.py prefetches rollout k+1 during train k, so rollout 2 is the first
+        # one generated on updated weights.
         "--num-rollout 3 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 4 "
@@ -42,6 +48,8 @@ def execute():
         "--over-sampling-batch-size 16 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--global-batch-size 32 "
+        "--pause-generation-mode in_place "
+        "--namespaced-radix-cache "
     )
 
     eval_args = (
@@ -84,10 +92,9 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --sglang-enable-prefill-weight-versions --ci-assert-prefill-lag-max 3 "
 
-    fault_tolerance_args = (
-        "--use-fault-tolerance "
+    health_check_args = (
         "--rollout-health-check-interval 5 "
         "--rollout-health-check-timeout 10 "
         "--rollout-health-check-first-wait 0 "
@@ -100,8 +107,8 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
-        f"--rollout-num-gpus {3 if FEW_GPU else 6} "
+        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
+        f"--rollout-num-gpus {NUM_GPUS // 2} "
         "--megatron-to-hf-mode bridge "
     )
 
@@ -111,12 +118,12 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
         f"{ci_args} "
-        f"{fault_tolerance_args} "
+        f"{health_check_args} "
         f"{misc_args} "
     )
 
@@ -125,7 +132,6 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
-        before_ray_job_submit=U.start_mooncake_master,
     )
 
 

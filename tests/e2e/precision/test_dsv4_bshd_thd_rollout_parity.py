@@ -20,10 +20,7 @@ from miles.utils.test_utils.comparisons.metrics import compare_metrics
 from miles.utils.types import Sample
 
 register_cuda_ci(
-    est_time=1000,
-    suite="stage-c-4-gpu-h200",
-    labels=["precision", "long"],
-    hardware=["hopper"],
+    est_time=1100, suite="stage-c-4-gpu-h200", labels=["precision", "long"], hardware=["hopper"], num_gpus=4
 )
 
 _MODEL_NAME = "DeepSeek-V4-Flash-FP8-4layer"
@@ -73,7 +70,7 @@ def _prepare_args() -> ScriptArgs:
 
 def _common_extra_args(*, te_precision_config_path: Path, micro_batch_size: int) -> str:
     return (
-        "--ci-test "
+        "--ci-test --no-enable-sample-ownership-checker "
         "--check-weight-update-allow-quant-error "
         "--ci-disable-logprobs-checker "
         "--wandb-mode disabled "

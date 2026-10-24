@@ -18,11 +18,12 @@ from pathlib import Path
 import pytest
 import torch
 import torch.distributed as dist
+from tests.ci.ci_register import register_cpu_ci
 
-from miles.backends.training_utils.loss import compute_advantages_and_returns, loss_function
-from miles.backends.training_utils.loss_hub.corrections import icepop_function, vanilla_tis_function
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
-from miles.backends.training_utils.loss_hub.losses import policy_loss_function, sft_loss_function, value_loss_function
+from miles.backends.training_utils.loss.hub.corrections import icepop_function, vanilla_tis_function
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy, get_values
+from miles.backends.training_utils.loss.hub.losses import policy_loss_function, sft_loss_function, value_loss_function
+from miles.backends.training_utils.loss.objective import compute_advantages_and_returns, loss_function
 
 from .loss_test_utils import (
     args_from_dict,
@@ -37,6 +38,8 @@ from .loss_test_utils import (
     make_rollout_data,
     save_snapshot,
 )
+
+register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["precision"])
 
 SNAPSHOT_DIR = Path(__file__).parent / "loss_snapshots"
 VOCAB_SIZE = 128
@@ -148,7 +151,7 @@ def mode(request):
 
 
 def _get_sum_of_sample_mean(batch, args, parallel_state):
-    from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
+    from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
 
     return get_sum_of_sample_mean(
         batch["total_lengths"],

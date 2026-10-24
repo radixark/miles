@@ -6,10 +6,12 @@ from miles.utils.pydantic_utils import StrictBaseModel
 
 EXPECTED_BOOT_UUID_HEADER = "x-miles-expected-boot-uuid"
 BOOT_UUID_HEADER = "x-miles-boot-uuid"
+POD_UID_HEADER = "x-miles-pod-uid"
 
 BOOT_UUID_MISMATCH_STATUS = 412
 
 HEALTH_PATH = "/v1/health"
+IN_FLIGHT_PATH = "/v1/in-flight"
 CALL_STATUS_PATH = "/v1/calls/{call_id}"
 SUBMIT_PATH = "/v1/{method_name}"
 
@@ -31,7 +33,21 @@ class CallStatusResponse(StrictBaseModel):
     status: Literal["pending", "success", "failed"]
     result: Any = None
     error: str | None = None
+    error_type: str | None = None
+
+
+def exception_type_name(exception_type: type[BaseException]) -> str:
+    return f"{exception_type.__module__}.{exception_type.__qualname__}"
 
 
 class HealthResponse(StrictBaseModel):
     status: Literal["ok"] = "ok"
+
+
+class ServerHealth(StrictBaseModel):
+    boot_uuid: str | None
+    pod_uid: str | None
+
+
+class InFlightResponse(StrictBaseModel):
+    call_ids: list[str]

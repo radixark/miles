@@ -44,9 +44,11 @@ def test_auto_arch_rejects_an_unknown_set():
 
 # --- dispatch: which stages a registration executes in ----------------------
 
-PORTABLE = ("stage-c-8-gpu-h200", ["hopper", "blackwell"])
+PORTABLE_8_GPU = ("stage-c-8-gpu-h200", ["hopper", "blackwell"])
+PORTABLE_4_GPU = ("stage-c-4-gpu-h200", ["hopper", "blackwell"])
 HOPPER_ONLY = ("stage-c-4-gpu-h200", ["hopper"])
-BLACKWELL_ONLY = ("stage-c-8-gpu-b200", ["blackwell"])
+BLACKWELL_ONLY_8_GPU = ("stage-c-8-gpu-b200", ["blackwell"])
+BLACKWELL_ONLY_4_GPU = ("stage-c-4-gpu-b200", ["blackwell"])
 
 HOPPER = frozenset({"hopper"})
 BLACKWELL = frozenset({"blackwell"})
@@ -58,25 +60,35 @@ BOTH = frozenset({"hopper", "blackwell"})
     [
         # AUTO: everything at home, exactly once. This is the shape every run
         # without an explicit `run-on-*` takes, including nightly and weekly.
-        (PORTABLE, frozenset(), False, {"stage-c-8-gpu-h200"}),
+        (PORTABLE_8_GPU, frozenset(), False, {"stage-c-8-gpu-h200"}),
+        (PORTABLE_4_GPU, frozenset(), False, {"stage-c-4-gpu-h200"}),
         (HOPPER_ONLY, frozenset(), False, {"stage-c-4-gpu-h200"}),
-        (BLACKWELL_ONLY, frozenset(), False, {"stage-c-8-gpu-b200"}),
+        (BLACKWELL_ONLY_8_GPU, frozenset(), False, {"stage-c-8-gpu-b200"}),
+        (BLACKWELL_ONLY_4_GPU, frozenset(), False, {"stage-c-4-gpu-b200"}),
         # One arch requested: tests that cannot run there select nothing.
-        (PORTABLE, HOPPER, True, {"stage-c-8-gpu-h200"}),
+        (PORTABLE_8_GPU, HOPPER, True, {"stage-c-8-gpu-h200"}),
+        (PORTABLE_4_GPU, HOPPER, True, {"stage-c-4-gpu-h200"}),
         (HOPPER_ONLY, HOPPER, True, {"stage-c-4-gpu-h200"}),
-        (BLACKWELL_ONLY, HOPPER, True, set()),
-        (PORTABLE, BLACKWELL, True, {"stage-c-8-gpu-b200"}),
+        (BLACKWELL_ONLY_8_GPU, HOPPER, True, set()),
+        (BLACKWELL_ONLY_4_GPU, HOPPER, True, set()),
+        (PORTABLE_8_GPU, BLACKWELL, True, {"stage-c-8-gpu-b200"}),
+        (PORTABLE_4_GPU, BLACKWELL, True, {"stage-c-4-gpu-b200"}),
         (HOPPER_ONLY, BLACKWELL, True, set()),
-        (BLACKWELL_ONLY, BLACKWELL, True, {"stage-c-8-gpu-b200"}),
+        (BLACKWELL_ONLY_8_GPU, BLACKWELL, True, {"stage-c-8-gpu-b200"}),
+        (BLACKWELL_ONLY_4_GPU, BLACKWELL, True, {"stage-c-4-gpu-b200"}),
         # Both arches: a portable test runs twice, once per generation.
-        (PORTABLE, BOTH, True, {"stage-c-8-gpu-h200", "stage-c-8-gpu-b200"}),
+        (PORTABLE_8_GPU, BOTH, True, {"stage-c-8-gpu-h200", "stage-c-8-gpu-b200"}),
+        (PORTABLE_4_GPU, BOTH, True, {"stage-c-4-gpu-h200", "stage-c-4-gpu-b200"}),
         (HOPPER_ONLY, BOTH, True, {"stage-c-4-gpu-h200"}),
-        (BLACKWELL_ONLY, BOTH, True, {"stage-c-8-gpu-b200"}),
+        (BLACKWELL_ONLY_8_GPU, BOTH, True, {"stage-c-8-gpu-b200"}),
+        (BLACKWELL_ONLY_4_GPU, BOTH, True, {"stage-c-4-gpu-b200"}),
         # `run-ci-blackwell-only`: an arch without permission to leave home,
         # which is what makes it select only the Blackwell-exclusive tests.
-        (PORTABLE, BLACKWELL, False, set()),
+        (PORTABLE_8_GPU, BLACKWELL, False, set()),
+        (PORTABLE_4_GPU, BLACKWELL, False, set()),
         (HOPPER_ONLY, BLACKWELL, False, set()),
-        (BLACKWELL_ONLY, BLACKWELL, False, {"stage-c-8-gpu-b200"}),
+        (BLACKWELL_ONLY_8_GPU, BLACKWELL, False, {"stage-c-8-gpu-b200"}),
+        (BLACKWELL_ONLY_4_GPU, BLACKWELL, False, {"stage-c-4-gpu-b200"}),
     ],
 )
 def test_dispatch_targets(registration, dispatch, absorb, expected):
@@ -99,13 +111,12 @@ def test_absorb_false_never_leaves_the_home_stage():
     ("home", "arch", "expected"),
     [
         ("stage-c-8-gpu-h200", "hopper", "stage-c-8-gpu-h200"),
-        # Both 8-GPU Hopper stages collapse onto the one Blackwell stage: the
-        # h100/h200 split is a memory tier that Blackwell does not have.
+        # The h100/h200 split is a memory tier that Blackwell does not have.
         ("stage-c-8-gpu-h100", "blackwell", "stage-c-8-gpu-b200"),
         ("stage-c-8-gpu-h200", "blackwell", "stage-c-8-gpu-b200"),
-        # Narrower stages route up; a test brings its own GPU budget.
-        ("stage-b-2-gpu-h200", "blackwell", "stage-c-8-gpu-b200"),
-        ("stage-c-4-gpu-h200", "blackwell", "stage-c-8-gpu-b200"),
+        # Narrower stages use one of the two Blackwell half-node runners.
+        ("stage-b-2-gpu-h200", "blackwell", "stage-c-4-gpu-b200"),
+        ("stage-c-4-gpu-h200", "blackwell", "stage-c-4-gpu-b200"),
     ],
 )
 def test_target_stage(home, arch, expected):
@@ -119,11 +130,13 @@ def test_target_stage_is_none_when_no_stage_is_wide_enough():
 def test_blackwell_work_never_reaches_a_hopper_stage():
     """`target_stage` alone would route it; `dispatch_targets` never asks.
 
-    Both 8-GPU Hopper stages are wide enough to hold `stage-c-8-gpu-b200`'s
-    work, so the routing rule does answer. The guarantee comes one level up:
-    the home-stage invariant makes a Blackwell-homed test Blackwell-exclusive,
-    so intersecting its arches with a Hopper request yields nothing and routing
-    is never consulted.
+    Hopper stages are wide enough to hold both Blackwell stages' work, so the
+    routing rule does answer. The guarantee comes one level up: the home-stage
+    invariant makes a Blackwell-homed test Blackwell-exclusive, so intersecting
+    its arches with a Hopper request yields nothing and routing is never
+    consulted.
     """
     assert target_stage("stage-c-8-gpu-b200", "hopper") == "stage-c-8-gpu-h100"
+    assert target_stage("stage-c-4-gpu-b200", "hopper") == "stage-c-4-gpu-h200"
     assert dispatch_targets("stage-c-8-gpu-b200", ["blackwell"], dispatch_arches=HOPPER, absorb=True) == set()
+    assert dispatch_targets("stage-c-4-gpu-b200", ["blackwell"], dispatch_arches=HOPPER, absorb=True) == set()

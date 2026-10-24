@@ -410,6 +410,7 @@ class MetricStore:
         self._buffers: dict[Stream, list[Record]] = {s: [] for s in Stream}
         self._offsets: dict[Stream, int] = {s: 0 for s in Stream if s not in self.PARTITIONED_STREAMS}
         self._readers: dict[Stream, _PartitionReader] = {s: self._make_reader(s) for s in self.PARTITIONED_STREAMS}
+        self.unserializable_dropped = 0
         self._catalog: dict[str, dict] | None = None  # write-side lane catalog accumulator
         # full-window engine query cache, versioned by partition file sizes so
         # appended scrapes invalidate it; the lock is load-bearing because sync
@@ -476,6 +477,17 @@ class MetricStore:
         self.dir.mkdir(parents=True, exist_ok=True)
         (self.dir / Meta.FILENAME).write_text(json.dumps(asdict(meta), indent=1))
 
+    def _encode(self, records: list[Record]) -> str:
+        """JSON lines for ``records``, dropping (and counting in
+        ``unserializable_dropped``) any a JSON encoder rejects."""
+        lines = []
+        for record in records:
+            try:
+                lines.append(json.dumps(record.to_dict(), separators=(",", ":")) + "\n")
+            except (TypeError, ValueError):
+                self.unserializable_dropped += 1
+        return "".join(lines)
+
     def flush(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._merge_catalog()
@@ -497,10 +509,10 @@ class MetricStore:
                     groups.setdefault(_hour_key(ts), []).append(record)
                 for key, group in sorted(groups.items()):
                     with open(subdir / f"{key}.jsonl", "a") as f:
-                        f.write("".join(json.dumps(r.to_dict(), separators=(",", ":")) + "\n" for r in group))
+                        f.write(self._encode(group))
             else:
                 with open(self.dir / stream.filename, "a") as f:
-                    f.write("".join(json.dumps(r.to_dict(), separators=(",", ":")) + "\n" for r in buffer))
+                    f.write(self._encode(buffer))
             buffer.clear()
 
     def _merge_catalog(self) -> None:
@@ -786,6 +798,15 @@ class MetricStore:
 
     def step_keys(self) -> list[str]:
         return sorted({r.step_key for r in self.records[Stream.METRICS] if r.step_key is not None})
+
+    def step_key_of_metric_key(self) -> dict[str, str]:
+        ans: dict[str, str] = {}
+        for record in self.records[Stream.METRICS]:
+            if record.step_key is None:
+                continue
+            for key in record.metrics:
+                ans[key] = record.step_key
+        return ans
 
     def metric_series(
         self, keys: list[str], *, x_key: str, t0: float | None = None, t1: float | None = None
@@ -1470,14 +1491,23 @@ class MetricStore:
         perf metrics, with the wall-clock ts as the timeline zoom anchor."""
         out = []
         for record in self.records[Stream.METRICS]:
-            if record.step_key != "rollout/step":
+            if record.step_key is None or not record.step_key.endswith("rollout/step"):
                 continue
-            step_time = record.metrics.get("perf/step_time")
-            wait_ratio = record.metrics.get("perf/wait_time_ratio")
+            step_time = _metric_by_suffix(record.metrics, "perf/step_time")
+            wait_ratio = _metric_by_suffix(record.metrics, "perf/wait_time_ratio")
             if step_time is None and wait_ratio is None:
                 continue
             out.append(dict(step=record.step, ts=record.ts, step_time=step_time, wait_ratio=wait_ratio))
         return out
+
+
+def _metric_by_suffix(metrics: dict[str, float], base_key: str) -> float | None:
+    if (value := metrics.get(base_key)) is not None:
+        return value
+    for key, value in metrics.items():
+        if key.endswith(f"/{base_key}"):
+            return value
+    return None
 
 
 # ------------------------------ downsampling --------------------------------

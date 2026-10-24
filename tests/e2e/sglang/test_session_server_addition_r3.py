@@ -20,10 +20,7 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
 
 register_cuda_ci(
-    est_time=400,
-    suite="stage-c-2-gpu-h200",
-    labels=["sglang", "replay"],
-    hardware=["hopper"],
+    est_time=400, suite="stage-c-2-gpu-h200", labels=["sglang", "replay"], hardware=["hopper"], num_gpus=2
 )
 
 _MODEL_ID = "Qwen/Qwen3-30B-A3B"
@@ -83,6 +80,8 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         rollout_temperature=1.0,
         rollout_top_p=1.0,
         rollout_top_k=-1,
+        rollout_top_logprobs_num=0,
+        rollout_sampling_logprobs_mode="selected",
         save_debug_trajectory_data=None,
         pause_generation_mode="in_place",
         num_layers=_NUM_LAYERS,

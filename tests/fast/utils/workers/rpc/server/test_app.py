@@ -11,7 +11,12 @@ from fastapi.responses import JSONResponse
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
-from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, EXPECTED_BOOT_UUID_HEADER, CallStatusResponse
+from miles.utils.workers.rpc.common.protocol import (
+    BOOT_UUID_HEADER,
+    EXPECTED_BOOT_UUID_HEADER,
+    IN_FLIGHT_PATH,
+    CallStatusResponse,
+)
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 
@@ -117,13 +122,18 @@ class TestRoundtrip:
         """A sync method roundtrips its typed result through submit + query."""
         async with _client(_Worker()) as client:
             body = await _call(client, "demo_sync", {"a": 1, "b": 2})
-            assert body == {"status": "success", "result": 3, "error": None}
+            assert body == {"status": "success", "result": 3, "error": None, "error_type": None}
 
     async def test_async_method_success(self):
         """An async method runs on the event loop and returns a model result."""
         async with _client(_Worker()) as client:
             body = await _call(client, "demo_async_model", {"name": "abc"})
-            assert body == {"status": "success", "result": {"name": "abc", "value": 3}, "error": None}
+            assert body == {
+                "status": "success",
+                "result": {"name": "abc", "value": 3},
+                "error": None,
+                "error_type": None,
+            }
 
     async def test_business_exception_becomes_failed_envelope(self):
         """Worker exceptions surface as 200 + failed envelope with a traceback."""
@@ -231,7 +241,12 @@ class TestProtocolErrors:
 
             accepted = await _submit(client, "demo_sync", {"a": 1, "b": 2}, call_id="reused")
             assert accepted.response.status_code == 200
-            assert await _poll_until_done(client, "reused") == {"status": "success", "result": 3, "error": None}
+            assert await _poll_until_done(client, "reused") == {
+                "status": "success",
+                "result": 3,
+                "error": None,
+                "error_type": None,
+            }
 
     async def test_invalid_poll_timeout_400(self):
         """A negative long-poll timeout is a client error, reported as 400."""
@@ -307,7 +322,7 @@ class TestPendingAndCompletion:
 
             worker.release_slow.set()
             body = await _poll_until_done(client, submitted.call_id)
-            assert body == {"status": "success", "result": "s", "error": None}
+            assert body == {"status": "success", "result": "s", "error": None, "error_type": None}
 
     async def test_sync_call_completes_without_polling(self):
         """A submitted sync call runs to completion even if never polled."""
@@ -386,3 +401,27 @@ class TestBootUuid:
         async with _client(_Worker()) as second_client:
             second = (await second_client.get("/v1/health")).headers[BOOT_UUID_HEADER]
         assert first != second
+
+
+class TestTheInFlightEndpoint:
+    async def test_a_worker_running_nothing_reports_nothing_in_flight(self) -> None:
+        """A caller waiting a worker out reads this to decide the worker has really let go."""
+        async with _client(_Worker()) as client:
+            response = await client.get(IN_FLIGHT_PATH)
+
+            assert response.status_code == 200 and response.json() == {"call_ids": []}
+
+    async def test_it_names_the_call_the_worker_is_running(self) -> None:
+        """This is what a caller waits out, so a running call has to show up under its own id."""
+        worker = _Worker()
+        async with _client(worker) as client:
+            submitted = await _submit(client, "demo_slow", {"tag": "a"}, call_id="c1")
+            assert submitted.response.status_code == 200
+            assert worker.slow_started.wait(timeout=5.0)
+
+            assert (await client.get(IN_FLIGHT_PATH)).json() == {"call_ids": ["c1"]}
+
+            worker.release_slow.set()
+            await _poll_until_done(client, "c1")
+
+            assert (await client.get(IN_FLIGHT_PATH)).json() == {"call_ids": []}

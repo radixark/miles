@@ -20,13 +20,13 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
     megatron_model_type: str = "qwen3-4B-Instruct-2507"
     num_gpus_per_node: int = 4
@@ -52,10 +52,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # NeMo Gym settings
     nemo_gym_url: str = os.environ.get("NEMO_GYM_URL", "http://localhost:12000")
-    # Trainer address reachable from the NeMo Gym host; only needed when that
-    # host cannot resolve the trainer's hostname (e.g. it dials back over a
-    # tailnet).
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    # The trainer host the NeMo Gym host reaches, needed only when that host cannot resolve the trainer's
+    # hostname (e.g. it dials back over a tailnet). Passed as --session-server-external-host, which also
+    # keeps the session servers on the head node.
+    session_server_external_host: str = ""
 
 
 def cleanup():
@@ -73,6 +73,7 @@ def cleanup():
 
 def prepare(args: ScriptArgs):
     """Convert the HF checkpoint to torch_dist format if not already done."""
+    U = args.create_backend()
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -84,6 +85,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
@@ -140,6 +142,11 @@ def execute(args: ScriptArgs):
 
     sglang_args = "--rollout-num-gpus-per-engine 1 --sglang-mem-fraction-static 0.7 "
 
+    external_host_arg = (
+        f"--session-server-external-host {args.session_server_external_host} "
+        if args.session_server_external_host
+        else ""
+    )
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path nemogym_agent_function.run "
@@ -151,6 +158,7 @@ def execute(args: ScriptArgs):
         "--session-server-ip 0.0.0.0 "
         "--session-server-port 30000 "
         "--session-server-workers 32 "
+        f"{external_host_arg}"
         "--tito-model qwen3 "
     )
 
@@ -180,15 +188,12 @@ def execute(args: ScriptArgs):
     )
 
     extra_env_vars = {
-        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{U.repo_base_dir}",
+        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{command_utils.repo_base_dir}",
         "NEMO_GYM_URL": args.nemo_gym_url,
     }
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -196,7 +201,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     cleanup()
     if not args.skip_prepare:

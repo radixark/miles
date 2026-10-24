@@ -1,7 +1,0 @@
-### 0
-[multi_node num_nodes=None] mkdir -p /root/models/GLM-5_torch_dist && rsync -a
-  --info=progress2 <SANDBOX>/models/GLM-5_torch_dist/ /root/models/GLM-5_torch_dist
-
-### 1
-[multi_node num_nodes=None] mkdir -p /root/models/GLM-5 && rsync -a
-  --info=progress2 <SANDBOX>/models/GLM-5/ /root/models/GLM-5

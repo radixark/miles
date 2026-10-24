@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from miles.rollout.agentic.session import resolve_session_url
+from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ async def policy_loop(
             "chat_template_kwargs": {"enable_thinking": True, "truncate_history_thinking": False},
         }
         try:
-            response = await completion(client, resolve_session_url(base_url) + "/chat/completions", body, context)
+            response = await completion(client, openai_session_url(base_url) + "/chat/completions", body, context)
         except ContextBudgetExceeded:
             stop = "context_limit"
             break

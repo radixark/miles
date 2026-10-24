@@ -27,7 +27,10 @@ from typing import Any, ClassVar
 import polars as pl
 import torch
 
-from miles.backends.training_utils.cp_utils import assemble_log_prob_from_cp, get_logits_and_tokens_offset_with_cp
+from miles.backends.training_utils.data.context_parallel import (
+    assemble_log_prob_from_cp,
+    get_logits_and_tokens_offset_with_cp,
+)
 from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionsPerCall
 
 
@@ -361,7 +364,7 @@ class DumpReader:
     FRESH_SECONDS: ClassVar[float] = 60.0
 
     # bump to invalidate summary parquet caches when their columns change
-    SUMMARY_VERSION: ClassVar[int] = 7  # v7: turns counts unstamped calls, mixed_version spans flattened
+    SUMMARY_VERSION: ClassVar[int] = 9  # v9: prefill_lag is the per-call maximum
 
     # Column order of summary(). Only needed to give a step with no samples the
     # same shape as any other step; with rows present the schema comes from
@@ -380,6 +383,8 @@ class DumpReader:
         "weight_version_min",
         "mixed_version",
         "staleness",
+        "prefill_weight_version_min",
+        "prefill_lag",
         "turns",
         "tool_calls",
         "non_generation_time",
@@ -801,6 +806,7 @@ class DumpReader:
         spec = sample.spec_info
         cache_info = sample.prefix_cache_info
         versions, turns = _weight_version_summary(sample)
+        prefill_lags = [x for call in sample.weight_versions if (x := call.prefill_lag) is not None]
         entry = dict(
             sample_index=sample.index,
             sample_occurrence=sample_occurrence,
@@ -815,6 +821,8 @@ class DumpReader:
             mixed_version=len(set(versions)) > 1 if versions else None,
             # rollout_id - oldest weight version: rollout/fully_async/avg_staleness per sample
             staleness=(None if (oldest := _min_numeric_version(versions)) is None else rollout_id - oldest),
+            prefill_weight_version_min=sample.oldest_prefill_weight_version,
+            prefill_lag=max(prefill_lags) if prefill_lags else None,
             turns=turns,
             tool_calls=_tool_call_count(sample),
             non_generation_time=sample.non_generation_time,

@@ -1,33 +1,52 @@
 import asyncio
 import logging
-from collections.abc import Iterator
+import time
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
+from typing import Any, TypeVar
+from uuid import uuid4
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
+from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
-from miles.utils.async_utils import AsyncioGatherUtils
-from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
+from miles.ray.train_actor import WeightUpdateOutput
+from miles.utils import object_store
+from miles.utils.arguments import supports_partial_target_weight_update
+from miles.utils.async_utils import AsyncioGatherUtils, gather_and_raise_first
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
-    InferenceEngineWeightChecksumEvent,
     TrainGroupStepEndEvent,
+    WeightUpdateResultEvent,
     WitnessAllocateIdEvent,
 )
+from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
+from miles.utils.data import RolloutDataPack, remove_train_output_refs
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
-from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
+from miles.utils.init_once import InitOnce, init_once
+from miles.utils.logging_utils import configure_logger
+from miles.utils.misc import split_evenly
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
-from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
+from miles.utils.test_utils.fault_injector.controller import fault_hook_controller, reach_fault_hook_async
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookOwner
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.rpc.common.wire_types import Pickled
+from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
@@ -36,45 +55,43 @@ _RETRY_MAX_ATTEMPTS = 30
 _CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
+def compute_trainer_health_checker_config(args, *, expected_num_cells: int) -> SimpleHealthCheckerConfig | None:
+    if expected_num_cells == 1:
+        return None
+    return SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker")
+
+
 class TrainerController:
     def __init__(
         self,
-        args,
         *,
-        inference_controller: object | None,
-        rollout_executor: object | None,
+        deployment_identity: DeploymentIdentity,
+        cell_provider: BaseWorkerProvider,
+        cell_operations: BaseCellOperations,
+        trainer_id: str,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
-        self.args = args
-        self._inference_controller = inference_controller
-        self._rollout_executor = rollout_executor
+        self._init_once = InitOnce(type(self).__name__)
+        self._deployment_identity = deployment_identity
+        self._trainer_id = trainer_id
         self._role = role
         self._with_ref = with_ref
         self._with_opd_teacher = with_opd_teacher
-        self._pool_id = compute_trainer_pool_id(role)
+        self._pool_id = compute_trainer_pool_id(trainer_id)
+        self._provider = cell_provider
+        self._cell_operations = cell_operations
         self._watcher_disposer: StopWatchFn | None = None
 
         self._indep_dp_quorum_id = 0
-
-        self._health_checker_config = (
-            SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker")
-            if self._expected_num_cells > 1
-            else None
-        )
+        self._indep_dp_store: Any | None = None
+        self._indep_dp_store_addr: str | None = None
 
         self._health_checker_activeness = ActivenessTracker(active=True)
 
         self._cells_by_id: dict[str, TrainerCell] = {}
-
-        self._witness_allocator: WitnessIdAllocator | None = (
-            WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
-        )
-        if self._witness_allocator is not None and args.save_debug_event_data is not None:
-            self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
-
-        self._test_action_executor = FTTestActionControllerExecutor.from_args(args, controller=self)
+        self._debug_trainer_load_state_timestamp = time.time()
 
     @property
     def pool_id(self) -> str:
@@ -142,8 +159,8 @@ class TrainerController:
             cell_id=cell_id,
             cell_index=cell_index,
             workers_hash=workers_hash,
-            rollout_executor=self._rollout_executor,
             health_checker=NoopHealthChecker(),
+            provider=self._provider,
         )
 
         if self._health_checker_config is not None:
@@ -162,20 +179,26 @@ class TrainerController:
 
     # ------------------------ API :: train ------------------------
 
-    async def train(self, rollout_id: int, rollout_data_pack, external_data: list | None = None) -> list:
+    async def train(
+        self,
+        rollout_id: int,
+        rollout_data_pack: RolloutDataPack,
+        external_data: list[TrainStepOutput] | None = None,
+    ) -> list[TrainStepOutput]:
         """Do one rollout training"""
 
         assert (
             external_data is None or len(self._cells) == 1
         ), "external_data is only supported for a single cell, i.e. without independent DP"
 
-        event_analyzer.run_analysis_from_args(self.args)
+        await reach_fault_hook_async(FaultHookName.TRAINER_CONTROLLER_STEP_START, rollout_id=rollout_id)
+        await asyncio.to_thread(event_analyzer.run_analysis_from_args, self.args)
 
-        async def _fn(attempt: int) -> list:
+        async def _fn(attempt: int) -> list[TrainStepOutput]:
             witness_info = self._allocate_witness_info(
                 rollout_id=rollout_id,
                 attempt=attempt,
-                sample_indices=rollout_data_pack["sample_indices"],
+                sample_indices=rollout_data_pack.sample_indices,
             )
 
             log_structured(logger.info, tag="ft", op="train", phase="start", rollout=rollout_id, attempt=attempt)
@@ -183,7 +206,7 @@ class TrainerController:
             snapshot_alive_cells, results = await self._gather_all_alive_and_catch(
                 lambda cell: cell.train(
                     rollout_id=rollout_id,
-                    rollout_data_ref=rollout_data_pack["data_ref"],
+                    rollout_data_ref=rollout_data_pack.data_ref,
                     witness_info=witness_info,
                     attempt=attempt,
                     external_data=external_data,
@@ -191,24 +214,31 @@ class TrainerController:
                 debug_name="execute_all_alive_and_catch#train",
                 check_recoverable=False,
             )
-            self._check_train_one_attempt(snapshot_alive_cells, results)
-
-            self._log_step_end_event(
-                rollout_id=rollout_id,
-                snapshot_alive_cells=snapshot_alive_cells,
-                results=results,
-            )
-
-            return [
+            worker_results = [
                 worker_result
                 for cell_results in results
                 if not isinstance(cell_results, BaseException)
                 for worker_result in cell_results
             ]
 
+            try:
+                self._check_train_one_attempt(snapshot_alive_cells, results)
+            except Exception:
+                remove_train_output_refs(worker_results)
+                raise
+
+            self._log_step_end_event(
+                rollout_id=rollout_id,
+                attempt=attempt,
+                snapshot_alive_cells=snapshot_alive_cells,
+                results=results,
+            )
+
+            return worker_results
+
         worker_results = await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
 
-        await self._test_action_executor.run_after_step(rollout_id=rollout_id)
+        await reach_fault_hook_async(FaultHookName.TRAINER_CONTROLLER_STEP_END, rollout_id=rollout_id)
 
         return worker_results
 
@@ -231,7 +261,7 @@ class TrainerController:
 
         return witness_info
 
-    def _log_step_end_event(self, *, rollout_id: int, snapshot_alive_cells: list, results: list):
+    def _log_step_end_event(self, *, rollout_id: int, attempt: int, snapshot_alive_cells: list, results: list):
         if is_event_logger_initialized():
             cell_outcomes = {
                 cell.cell_index: (
@@ -241,7 +271,13 @@ class TrainerController:
             }
             get_event_logger().log(
                 TrainGroupStepEndEvent,
-                dict(rollout_id=rollout_id, cell_outcomes=cell_outcomes),
+                dict(
+                    rollout_id=rollout_id,
+                    attempt=attempt,
+                    role=self._role,
+                    cell_outcomes=cell_outcomes,
+                    cell_incarnations={cell.cell_id: cell.workers_hash for cell in snapshot_alive_cells},
+                ),
             )
 
     def _check_train_one_attempt(self, snapshot_alive_cells, results):
@@ -296,13 +332,42 @@ class TrainerController:
 
     # ------------------------ API :: others ------------------------
 
-    async def init(self):
+    @init_once
+    async def init(self, args: Pickled) -> list[Any]:
         """
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
         """
-        provider: BaseWorkerProvider = RayWorkerProvider.create(pool_ids=[self._pool_id])
-        self._watcher_disposer = await provider.watch_cells(self._reconcile)
+        self.args = args
+        configure_logger(
+            args, source=TrainerControllerProcessIdentity(trainer_id=self._trainer_id, model_id=args.trainer_model_id)
+        )
+        object_store.init_instance(args, contribute_segment=False)
+
+        if self._expected_num_cells > 1:
+            self._indep_dp_store, self._indep_dp_store_addr = create_tcp_store()
+
+        self._health_checker_config = compute_trainer_health_checker_config(
+            args, expected_num_cells=self._expected_num_cells
+        )
+
+        self._witness_allocator: WitnessIdAllocator | None = (
+            WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
+        )
+        if self._witness_allocator is not None and args.save_debug_event_data is not None:
+            self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
+
+        fault_hook_controller.configure(
+            resources=FaultHookResources(
+                args=args,
+                controller=self,
+                cell_operations=self._cell_operations,
+                owner_loop=asyncio.get_running_loop(),
+            ),
+            owner=FaultHookOwner.TRAINER_CONTROLLER,
+        )
+
+        self._watcher_disposer = await self._provider.watch_cells(self._reconcile)
         await self._wait_expected_num_cells()
 
         cell_results = await asyncio.gather(
@@ -312,14 +377,30 @@ class TrainerController:
                         cell_index=cell.cell_index,
                         # all cells will be alive for this first initialization
                         alive_cell_indices=list(range(len(self._cells))),
-                    )
+                    ),
+                    indep_dp_store_addr=self._indep_dp_store_addr,
                 )
                 for cell in self._cells
             ]
         )
         return [item for sublist in cell_results for item in sublist]
 
-    async def save_model(self, rollout_id: int, force_sync: bool = False):
+    async def is_initialized(self) -> bool:
+        return self._init_once.is_initialized()
+
+    async def load_state(self) -> list[Any]:
+        assert self._init_once.is_initialized()
+
+        await self._wait_expected_num_cells(timeout=_CELLS_READY_TIMEOUT_SECONDS)
+
+        not_alive = [cell.cell_id for cell in self._cells if not cell.is_alive]
+        assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
+
+        cell_results = await gather_and_raise_first([cell.load_state() for cell in self._cells])
+        self._debug_trainer_load_state_timestamp = time.time()
+        return [item for sublist in cell_results for item in sublist]
+
+    async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
@@ -327,45 +408,115 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def export_hf(self, rollout_id: int, path: str):
+    async def export_hf(self, rollout_id: int, path: str) -> None:
         """Export current weights as an HF checkpoint. Only cell 0 exports to avoid file write conflicts."""
         await retry(
             lambda _: self._execute_first_alive("export_hf", rollout_id=rollout_id, path=path),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def update_weights(self, rollout_id: int | None = None) -> int | None:
-        """Broadcast weights to rollout engines and answer the version they now serve."""
+    async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateOutput:
+        """Broadcast weights to rollout engines and return which of them now serve which version."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
-        # TODO: allow using all cells to update weights (instead of first alive cell)
-        # Fetch the updatable engines once (like V1 RayActorGroup) so all
-        # ranks observe a consistent engine set.
-        info = await self._inference_controller.start_update_weights()
+        debug_weight_update_id = uuid4().hex
+
+        if supports_partial_target_weight_update(self.args):
+            output = await self._update_weights_on_every_alive_cell(
+                info, debug_weight_update_id=debug_weight_update_id, rollout_id=rollout_id
+            )
+        else:
+            output = await self._update_weights_on_first_alive_cell(
+                info, debug_weight_update_id=debug_weight_update_id, rollout_id=rollout_id
+            )
+        if info.engine_cell_ids and set(output.failed_cell_ids) == set(info.engine_cell_ids):
+            raise NonRetryableError("No inference cell received the weights")
+
+        output = replace(
+            output,
+            debug_trainer_load_state_timestamp=self._debug_trainer_load_state_timestamp,
+            debug_weight_update_id=debug_weight_update_id,
+        )
+
+        updated_cell_ids = [cell_id for cell_id in info.engine_cell_ids if cell_id not in set(output.failed_cell_ids)]
+        if is_event_logger_initialized():
+            get_event_logger().log(
+                WeightUpdateResultEvent,
+                dict(
+                    debug_weight_update_id=debug_weight_update_id,
+                    debug_trainer_load_state_timestamp=self._debug_trainer_load_state_timestamp,
+                    rollout_id=rollout_id,
+                    candidate_version=output.weight_version,
+                    published_version=output.weight_version if updated_cell_ids else None,
+                    snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+                    updated_cell_ids=updated_cell_ids,
+                    failed_cell_ids=list(output.failed_cell_ids),
+                ),
+            )
+
+        return output
+
+    async def _update_weights_on_first_alive_cell(
+        self, info: UpdatableEngines, *, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        weight_versions = await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info),
+        outputs = await retry(
+            lambda _: self._execute_first_alive(
+                "update_weights",
+                timeout=self.args.update_weights_timeout,
+                info=info,
+                debug_weight_update_id=debug_weight_update_id,
+                rollout_id=rollout_id,
+            ),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
-        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        return _unique(outputs)
 
-        await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
+    async def _update_weights_on_every_alive_cell(
+        self, info: UpdatableEngines, *, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
+        alive_cells = [c for c in self._cells if c.is_alive]
+        if not alive_cells:
+            raise NonRetryableError("No alive cells, therefore cannot update weights")
+        splitted_infos = [info[sli] for sli in split_evenly(len(info.engine_cell_ids), len(alive_cells))]
+        cells_and_splitted_infos = [
+            (c, s) for c, s in zip(alive_cells, splitted_infos, strict=True) if s.engine_cell_ids
+        ]
 
-        return weight_versions[0]
-
-    async def _maybe_log_inference_engine_weight_checksums(self, *, rollout_id: int | None) -> None:
-        if not is_event_logger_initialized():
-            return
-        if self.args.debug_train_only or self.args.debug_rollout_only:
-            return
-
-        check_weights_result = await self._inference_controller.check_weights("checksum")
-        engine_checksums = flatten_inference_engine_checksums(check_weights_result)
-        get_event_logger().log(
-            InferenceEngineWeightChecksumEvent,
-            dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+        outcomes = await asyncio.gather(
+            *[
+                c.execute(
+                    "update_weights",
+                    timeout=self.args.update_weights_timeout,
+                    info=s,
+                    debug_weight_update_id=debug_weight_update_id,
+                    rollout_id=rollout_id,
+                )
+                for c, s in cells_and_splitted_infos
+            ],
+            return_exceptions=True,
         )
+        if cells_and_splitted_infos and not any(c.is_alive for c in alive_cells):
+            raise outcomes[0]
 
-    async def onload(self):
+        outputs = [
+            (
+                WeightUpdateOutput(weight_version=None, failed_cell_ids=tuple(s.engine_cell_ids))
+                if isinstance(outcome, BaseException)
+                else _unique(outcome)
+            )
+            for (_, s), outcome in zip(cells_and_splitted_infos, outcomes, strict=True)
+        ]
+        for (c, s), output in zip(cells_and_splitted_infos, outputs, strict=True):
+            if len(s.engine_cell_ids) >= 2 and set(output.failed_cell_ids) == set(s.engine_cell_ids):
+                logger.error(f"trainer cell {c.cell_id} reached none of its {len(s.engine_cell_ids)} targets")
+                await c.mark_errored_and_kill()
+        output = WeightUpdateOutput.merge(outputs)
+        return output
+
+    async def get_deployment_identity(self) -> DeploymentIdentity:
+        return self._deployment_identity
+
+    async def onload(self) -> None:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("wake_up")
         self._health_checker_activeness.bump_active(True)
@@ -378,16 +529,16 @@ class TrainerController:
         finally:
             self._health_checker_activeness.bump_active(True)
 
-    async def offload(self):
+    async def offload(self) -> None:
         self._health_checker_activeness.bump_active(False)
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("sleep")
 
-    async def clear_memory(self):
+    async def clear_memory(self) -> None:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
-    async def offload_grad_buffer(self):
+    async def offload_grad_buffer(self) -> None:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("offload_grad_buffer")
 
@@ -398,13 +549,13 @@ class TrainerController:
         assert cell.is_alive, "the Tinker trainer cell is unavailable"
         return await cell.execute(fn_name, **kwargs)
 
-    async def forward_backward(self, batch_id: int, data_ref) -> list:
+    async def forward_backward(self, batch_id: int, data_ref: object_store.StoreObjectRef) -> list:
         return await self._execute_slots("forward_backward", batch_id=batch_id, rollout_data_ref=data_ref)
 
     async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> list:
         return await self._execute_slots("optim_step", adam_params_by_slot=adam_params_by_slot)
 
-    async def forward_only(self, batch_id: int, data_ref) -> list:
+    async def forward_only(self, batch_id: int, data_ref: object_store.StoreObjectRef) -> list:
         return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
 
     async def load_slot(
@@ -425,10 +576,10 @@ class TrainerController:
     async def unload_slot(self, slot: int) -> list:
         return await self._execute_slots("unload_slot", slot=slot)
 
-    async def set_rollout_executor(self):
-        await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
+    async def get_train_parallel_config(self) -> TrainParallelConfig | None:
+        return (await self._execute_first_alive("get_train_parallel_config"))[0]
 
-    def get_cell_statuses(self) -> dict[str, CellStatus]:
+    async def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {cell_id: cell.cell_status() for cell_id, cell in list(self._cells_by_id.items())}
 
     # ------------------------ utils to forward calls to cells ------------------------
@@ -549,6 +700,7 @@ class TrainerController:
         src_alive_rank = will_alive_indices.index(src_cell_index)
         ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_healing_indices]
 
+        participating_cells = [c for c in self._cells if c.cell_index in will_alive_indices]
         with self._paused_health_checkers():
             coop_prepare_outputs = await asyncio.gather(
                 *[
@@ -557,6 +709,7 @@ class TrainerController:
                             indep_dp_info=self._compute_indep_dp_info(
                                 c.cell_index, alive_cell_indices=will_alive_indices
                             ),
+                            indep_dp_store_addr=self._indep_dp_store_addr,
                             send_ckpt_dst_ranks=ckpt_dst_alive_ranks if c.cell_index == src_cell_index else [],
                         )
                         if c.cell_index in snapshotted_alive_indices
@@ -564,11 +717,11 @@ class TrainerController:
                             indep_dp_info=self._compute_indep_dp_info(
                                 c.cell_index, alive_cell_indices=will_alive_indices
                             ),
+                            indep_dp_store_addr=self._indep_dp_store_addr,
                             recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_healing_indices else None,
                         )
                     )
-                    for c in self._cells
-                    if c.cell_index in will_alive_indices
+                    for c in participating_cells
                 ],
                 return_exceptions=True,
             )
@@ -593,6 +746,7 @@ class TrainerController:
                 src_cell_index=src_cell_index if snapshotted_healing_indices else None,
                 healed_cell_indices=snapshotted_healing_indices,
                 alive_cell_indices_after=will_alive_indices,
+                cell_incarnations_after={cell.cell_id: cell.workers_hash for cell in participating_cells},
             )
         else:
             log_structured(
@@ -613,6 +767,7 @@ class TrainerController:
         src_cell_index: int | None,
         healed_cell_indices: list[int],
         alive_cell_indices_after: list[int],
+        cell_incarnations_after: dict[str, str],
     ) -> None:
         if is_event_logger_initialized():
             get_event_logger().log(
@@ -623,6 +778,7 @@ class TrainerController:
                     src_cell_index=src_cell_index,
                     healed_cell_indices=healed_cell_indices,
                     alive_cell_indices_after=alive_cell_indices_after,
+                    cell_incarnations_after=cell_incarnations_after,
                 ),
             )
 
@@ -641,6 +797,11 @@ class TrainerController:
     @property
     def num_cells(self) -> int:
         return len(self._cells)
+
+
+def _unique(xs: Sequence[_T]) -> _T:
+    [x] = set(xs)
+    return x
 
 
 def _first_exception(results) -> BaseException | None:

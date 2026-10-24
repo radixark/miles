@@ -10,7 +10,7 @@ directly so the call site cannot drift from the constructor again.
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["megatron"])
 
 
 import ast
@@ -72,6 +72,9 @@ def helpers_module():
         stub("megatron", is_package=True)
         stub("megatron.core", is_package=True)
         stub("megatron.core.tensor_parallel", {"ColumnParallelLinear": type("ColumnParallelLinear", (), {})})
+        stub("megatron.core.transformer", is_package=True)
+        stub("megatron.core.transformer.moe", is_package=True)
+        stub("megatron.core.transformer.moe.router", {"TopKRouter": type("TopKRouter", (), {})})
         stub("megatron.core.utils", {"get_attr_wrapped_model": lambda *a, **k: None})
         install("megatron.core.parallel_state", parallel_state)
 

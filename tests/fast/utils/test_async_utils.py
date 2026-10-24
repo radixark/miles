@@ -5,11 +5,20 @@ import concurrent.futures
 import logging
 import threading
 import time
+from functools import partial
 
 import pytest
 
 from miles.utils import async_utils
-from miles.utils.async_utils import AsyncioGatherUtils, AsyncLoopThread, eager_create_task
+from miles.utils.async_utils import (
+    AsyncioGatherUtils,
+    AsyncLoopThread,
+    Disposer,
+    eager_create_task,
+    maybe_await,
+    wait_cancelling_pending_on_first_completion,
+    with_disposer,
+)
 
 
 @pytest.mark.asyncio
@@ -190,6 +199,20 @@ class TestAsyncioGatherUtilsLogError:
         assert len(error_records) == 2
         assert "index=0" in error_records[0].message
         assert "index=2" in error_records[1].message
+
+    def test_a_caller_can_name_each_failure_itself(self, caplog):
+        """A cell of a server means more to whoever reads the log than the index it happened to gather at."""
+        with caplog.at_level(logging.WARNING):
+            AsyncioGatherUtils.log_error([_ERR1, "ok"], describe_failure=lambda index: f"cell-{index} refused")
+
+        assert [r.message for r in caplog.records] == ["cell-0 refused"]
+
+    def test_a_caller_can_choose_the_level_it_is_logged_at(self, caplog):
+        """A failure that is about to be raised is an error, while a gather that carries on is a warning."""
+        with caplog.at_level(logging.ERROR):
+            AsyncioGatherUtils.log_error([_ERR1], debug_name="test_op", log=logging.getLogger("x").error)
+
+        assert [r.levelno for r in caplog.records] == [logging.ERROR]
 
     def test_logs_include_debug_name(self, caplog):
         with caplog.at_level(logging.WARNING):
@@ -445,3 +468,408 @@ class TestWaitFutures:
 
         assert len(set(idents)) == 1, "every request must run on the one background loop"
         assert threading.get_ident() not in idents, "the caller thread must stay free to enter the collective"
+
+
+@pytest.mark.asyncio
+class TestWaitCancellingPendingOnFirstCompletion:
+    async def test_callback_runs_before_pending_tasks_are_cancelled(self) -> None:
+        """The first-completion callback runs once before a pending follower observes cancellation."""
+        follower_started = asyncio.Event()
+        leader_release = asyncio.Event()
+        events: list[str] = []
+
+        async def leader() -> None:
+            await leader_release.wait()
+
+        async def follower() -> None:
+            follower_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                events.append("follower cancelled")
+                raise
+
+        leader_task: asyncio.Task[None] = asyncio.create_task(leader())
+        follower_task: asyncio.Task[None] = asyncio.create_task(follower())
+        await follower_started.wait()
+
+        def on_first_completion() -> None:
+            assert follower_task.cancelling() == 0
+            events.append("callback")
+
+        leader_release.set()
+        await wait_cancelling_pending_on_first_completion(
+            [leader_task, follower_task], on_first_completion=on_first_completion
+        )
+
+        assert events == ["callback", "follower cancelled"]
+
+    async def test_the_first_task_to_return_cancels_the_rest(self):
+        """The leader owns the length of a multi policy run, and its followers loop until it is over."""
+        cancelled = False
+
+        async def leader():
+            await asyncio.sleep(0.01)
+
+        async def follower():
+            nonlocal cancelled
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+
+        await wait_cancelling_pending_on_first_completion(
+            [asyncio.create_task(leader()), asyncio.create_task(follower())]
+        )
+
+        assert cancelled
+
+    async def test_the_failure_reaches_the_caller(self):
+        """A member that raises must fail the whole fan-out instead of being swallowed."""
+
+        async def failing():
+            raise ValueError("boom")
+
+        async def slow():
+            await asyncio.sleep(30)
+
+        with pytest.raises(ValueError, match="boom"):
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(failing()), asyncio.create_task(slow())]
+            )
+
+    async def test_a_failure_cancels_the_members_that_are_still_running(self):
+        """A survivor left running would keep working for a run that is already dead."""
+        cancelled = asyncio.Event()
+
+        async def failing():
+            await asyncio.sleep(0.01)
+            raise ValueError("boom")
+
+        async def slow():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        with pytest.raises(ValueError, match="boom"):
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(failing()), asyncio.create_task(slow())]
+            )
+
+        assert cancelled.is_set()
+
+    async def test_two_members_failing_at_once_report_the_first_one_and_log_the_rest(self, caplog):
+        """Which failure surfaced used to depend on set iteration order, and the other root cause vanished."""
+
+        async def failing(message: str):
+            raise ValueError(message)
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="first"):
+                await wait_cancelling_pending_on_first_completion(
+                    [asyncio.create_task(failing("first")), asyncio.create_task(failing("second"))]
+                )
+
+        assert len([record for record in caplog.records if record.getMessage() == "task failed"]) == 2
+
+    async def test_a_member_that_fails_while_being_cancelled_is_not_lost(self):
+        """Cleanup that raises is the second root cause of a run that is already failing."""
+
+        async def failing():
+            await asyncio.sleep(0.01)
+            raise ValueError("boom")
+
+        async def slow():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise RuntimeError("cleanup exploded") from None
+
+        with pytest.raises(ValueError, match="boom"):
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(failing()), asyncio.create_task(slow())]
+            )
+
+    async def test_primary_failure_precedes_a_cleanup_failure_from_an_earlier_task(self):
+        """Cancellation cleanup is attached without masking the failure that ended the run."""
+
+        async def cleanup_failure():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise RuntimeError("cleanup exploded") from None
+
+        async def primary_failure():
+            await asyncio.sleep(0.01)
+            raise ValueError("training failed")
+
+        with pytest.raises(ValueError, match="training failed") as exc_info:
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(cleanup_failure()), asyncio.create_task(primary_failure())]
+            )
+
+        assert any("RuntimeError: cleanup exploded" in note for note in exc_info.value.__notes__)
+
+    async def test_the_cancelled_members_are_awaited_before_the_error_is_raised(self):
+        """Raising before the cleanup lands would let a half-cancelled task outlive the caller."""
+        cleaned_up = False
+
+        async def failing():
+            raise ValueError("boom")
+
+        async def slow():
+            nonlocal cleaned_up
+            try:
+                await asyncio.sleep(30)
+            finally:
+                await asyncio.sleep(0)
+                cleaned_up = True
+
+        with pytest.raises(ValueError, match="boom"):
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(failing()), asyncio.create_task(slow())]
+            )
+
+        assert cleaned_up
+
+
+class TestGatherAndRaiseFirst:
+    async def test_it_answers_every_result_when_nothing_fails(self):
+        """Callers use the results, so the happy path has to hand back what a plain gather would."""
+
+        async def answer(value: int) -> int:
+            return value
+
+        assert await async_utils.gather_and_raise_first([answer(1), answer(2)]) == [1, 2]
+
+    async def test_it_logs_a_failure_and_raises_it(self, caplog):
+        """A caller that describes its failures wants them named, and still wants the error to reach it."""
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="only one"):
+                await async_utils.gather_and_raise_first(
+                    [_failing("only one")], describe_failure=lambda index: f"awaitable {index} failed"
+                )
+
+        assert "awaitable 0 failed" in caplog.text
+
+    async def test_it_logs_every_failure_before_raising_the_first(self, caplog):
+        """The point of gathering is to see the whole set of sick peers, not whichever one finished first."""
+
+        async def answer() -> int:
+            return 0
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="first"):
+                await async_utils.gather_and_raise_first(
+                    [_failing("first"), answer(), _failing("second")],
+                    describe_failure=lambda index: f"awaitable {index} failed",
+                )
+
+        assert "awaitable 0 failed" in caplog.text and "awaitable 2 failed" in caplog.text
+        assert "awaitable 1 failed" not in caplog.text
+
+    async def test_it_says_nothing_when_no_description_is_given(self, caplog):
+        """A caller that logs its own failures would otherwise have every one of them reported twice."""
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="quiet"):
+                await async_utils.gather_and_raise_first([_failing("quiet")])
+
+        assert caplog.text == ""
+
+
+class TestGetAsyncLoop:
+    def test_threads_arriving_together_share_one_loop(self, monkeypatch):
+        """A second loop would strand whatever already awaits on the first, which no caller can recover from."""
+        monkeypatch.setattr(async_utils, "async_loop", None)
+        built: list[object] = []
+
+        class SlowToBuild:
+            def __init__(self):
+                time.sleep(0.05)
+                built.append(self)
+
+        monkeypatch.setattr(async_utils, "AsyncLoopThread", SlowToBuild)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            loops = [future.result() for future in [pool.submit(async_utils.get_async_loop) for _ in range(8)]]
+
+        assert len(built) == 1
+        assert all(loop is built[0] for loop in loops)
+
+    def test_a_later_caller_is_answered_from_the_loop_already_built(self, monkeypatch):
+        """The guard must not rebuild the loop once one exists, nor pay a lock on every rollout call."""
+        monkeypatch.setattr(async_utils, "async_loop", None)
+        monkeypatch.setattr(async_utils, "AsyncLoopThread", lambda: object())
+
+        first = async_utils.get_async_loop()
+
+        assert async_utils.get_async_loop() is first
+
+
+class TestDisposer:
+    async def test_everything_added_is_released_in_reverse(self):
+        """The later object was built on the earlier one, so releasing it first is the only safe order."""
+        events: list[str] = []
+
+        class Engine:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            async def dispose(self) -> None:
+                events.append(self.name)
+
+        def close_reader() -> None:
+            events.append("reader")
+
+        async def close_writer() -> None:
+            events.append("writer")
+
+        async with Disposer() as disposer:
+            disposer.add(Engine("first"), Engine("second"))
+            disposer.add(close_reader)
+            disposer.add(close_writer)
+
+        assert events == ["writer", "reader", "second", "first"]
+
+    async def test_a_partial_is_awaited_like_the_coroutine_function_it_wraps(self):
+        """A teardown that needs an argument arrives as a partial, and dropping its await would skip it."""
+        released: list[object] = []
+
+        async def shutdown(handle: object) -> None:
+            released.append(handle)
+
+        handle = object()
+
+        async with Disposer() as disposer:
+            disposer.add(partial(shutdown, handle))
+
+        assert released == [handle]
+
+    async def test_everything_added_is_released_when_the_body_raises(self):
+        """The exit path nobody wrote code for is the one that used to leave the whole run behind."""
+        events: list[str] = []
+
+        with pytest.raises(ValueError, match="training failed"):
+            async with Disposer() as disposer:
+                disposer.add(partial(events.append, "released"))
+                raise ValueError("training failed")
+
+        assert events == ["released"]
+
+    def test_a_value_that_can_neither_dispose_nor_be_called_is_refused(self):
+        """Registering one silently would leave the object it stands for released by nobody."""
+        with pytest.raises(AssertionError):
+            Disposer().add(object())
+
+    async def test_an_object_that_was_never_created_is_skipped(self):
+        """A driver whose critic is optional registers both models in one call instead of guarding one."""
+        events: list[str] = []
+
+        async def close_actor() -> None:
+            events.append("actor")
+
+        async with Disposer() as disposer:
+            disposer.add(None, close_actor)
+
+        assert events == ["actor"]
+
+
+class TestWithDisposer:
+    async def test_what_the_body_registered_is_released_once_it_returns(self):
+        """The entry point owns the disposer so no driver has to remember to close one."""
+        events: list[str] = []
+
+        async def body(label: str, *, disposer: Disposer, suffix: str) -> str:
+            async def release_engine() -> None:
+                events.append("engine")
+
+            disposer.add(partial(events.append, "tracking"), release_engine)
+            events.append("body")
+            return label + suffix
+
+        assert await with_disposer(body, "driver", suffix="!") == "driver!"
+        assert events == ["body", "engine", "tracking"]
+
+    async def test_what_the_body_registered_is_released_when_the_body_raises(self):
+        """The exit path nobody wrote code for is the one that used to leave the whole run behind."""
+        events: list[str] = []
+
+        async def body(*, disposer: Disposer) -> None:
+            disposer.add(partial(events.append, "released"))
+            raise ValueError("training failed")
+
+        with pytest.raises(ValueError, match="training failed"):
+            await with_disposer(body)
+
+        assert events == ["released"]
+
+
+class TestMaybeAwait:
+    async def test_a_plain_result_is_handed_back_as_it_is(self):
+        """An out-of-tree hook written against the older contract returns None, and awaiting it would raise."""
+        assert await maybe_await(None) is None
+
+    async def test_an_awaitable_result_is_awaited(self):
+        """The in-tree hooks are coroutines, and their teardown must still finish before the caller moves on."""
+        finished = False
+
+        async def dispose():
+            nonlocal finished
+            finished = True
+            return "done"
+
+        assert await maybe_await(dispose()) == "done"
+        assert finished
+
+
+class _ErrorWithoutAddNote(Exception):
+    def __getattribute__(self, name: str):
+        if name == "add_note":
+            raise AttributeError(name)
+        return super().__getattribute__(name)
+
+
+class TestKeepingASecondaryFailureWhereNotesDoNotExist:
+    def test_a_secondary_failure_is_logged_when_the_primary_cannot_carry_notes(self, caplog):
+        """On 3.10 the annotation raised AttributeError from the error path and replaced the failure it described."""
+        primary = _ErrorWithoutAddNote("training failed")
+
+        with caplog.at_level(logging.ERROR):
+            async_utils._exception_add_note_or_log(primary, "RuntimeError: cleanup")
+
+        assert "RuntimeError: cleanup" in caplog.text
+
+    def test_a_primary_that_can_carry_notes_is_annotated_rather_than_logged(self, caplog):
+        """On 3.11 and later the note travels with the exception, which is where a caller reads it."""
+        primary = ValueError("training failed")
+
+        with caplog.at_level(logging.ERROR):
+            async_utils._exception_add_note_or_log(primary, "RuntimeError: cleanup")
+
+        assert any("RuntimeError: cleanup" in note for note in primary.__notes__)
+        assert caplog.text == ""
+
+    async def test_the_primary_failure_still_reaches_the_caller_unreplaced(self, caplog):
+        """Annotating the failure must never be able to become the failure the run reports."""
+
+        async def cleanup_failure():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise RuntimeError("cleanup exploded") from None
+
+        async def primary_failure():
+            await asyncio.sleep(0.01)
+            raise _ErrorWithoutAddNote("training failed")
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(_ErrorWithoutAddNote, match="training failed"):
+                await wait_cancelling_pending_on_first_completion(
+                    [asyncio.create_task(cleanup_failure()), asyncio.create_task(primary_failure())]
+                )
+
+        assert "Additional task failure while cancelling peers" in caplog.text
+        assert "RuntimeError: cleanup exploded" in caplog.text

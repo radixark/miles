@@ -3,7 +3,19 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 import torch
+
+
+@pytest.fixture(autouse=True)
+def _reset_stubs_after_test():
+    # the stub standing in for megatron is a plain module rather than a package, so a stub left behind
+    # makes every later import of a megatron submodule fail in whichever test happens to run next
+    saved = dict(sys.modules)
+    yield
+    for name in set(sys.modules) - set(saved):
+        del sys.modules[name]
+    sys.modules.update(saved)
 
 
 def install_bridge_stubs():
@@ -99,6 +111,16 @@ def install_bridge_stubs():
     sys.modules["mbridge"] = mbridge_mod
     sys.modules["mbridge.core"] = mbridge_core_mod
     sys.modules["mbridge.models"] = mbridge_models_mod
+
+    # the real mixin is dependency-free; loading its file directly skips the package
+    # __init__, which imports every bridge and their real megatron/mbridge deps
+    mixin_path = Path(__file__).resolve().parents[4] / "miles_plugins" / "mbridge" / "linear_attn.py"
+    spec = importlib.util.spec_from_file_location("miles_plugins.mbridge.linear_attn", mixin_path)
+    mixin_mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mixin_mod)
+    sys.modules["miles_plugins.mbridge"] = types.ModuleType("miles_plugins.mbridge")
+    sys.modules["miles_plugins.mbridge.linear_attn"] = mixin_mod
 
 
 def load_bridge_module():
@@ -200,3 +222,10 @@ def test_raw_qwen3_5_mtp_export_keeps_eh_proj_column_order():
     )
 
     assert converted == [("mtp.fc.weight", weight)]
+
+
+def test_the_stubs_do_not_outlive_the_test_that_installed_them():
+    """A megatron left stubbed is not a package, so the next test to import one of its submodules fails."""
+    stub = sys.modules.get("megatron")
+
+    assert stub is None or hasattr(stub, "__path__")

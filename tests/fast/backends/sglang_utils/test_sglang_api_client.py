@@ -1,27 +1,31 @@
 import asyncio
 import inspect
+import json
 
 import httpx
 import pytest
 
 from miles.backends.sglang_utils import sglang_api_client
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType
 from miles.utils.http_utils import GeneralHttpClientProvider
 
 SERVER_URL = "http://fake-host:1234"
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int = 200, payload: dict | None = None, text: str = ""):
+    def __init__(self, status_code: int = 200, payload: dict | None = None, text: str = "", body: bytes | None = None):
         self.status_code = status_code
         self._payload = payload if payload is not None else {"ok": True}
         self.text = text
+        self.content = json.dumps(self._payload).encode() if body is None else body
 
     def raise_for_status(self):
         if self.status_code >= 400:
             raise httpx.HTTPStatusError(f"status {self.status_code}", request=None, response=None)
 
     def json(self):
+        if not self.content:
+            raise ValueError("a response with no body carries no json")
         return self._payload
 
 
@@ -120,14 +124,14 @@ async def test_get_methods_hit_the_documented_endpoints(client, recorder):
     """GET-based methods keep their (non-uniform) endpoint names."""
     await client.health_generate()
     await client.get_server_info()
-    await client.get_parallelism_info(rank=3)
+    await client.get_parallelism_info(rank=3, role="draft")
 
     assert [(verb, url) for verb, url, _ in recorder.calls] == [
         ("get", f"{SERVER_URL}/health_generate"),
         ("get", f"{SERVER_URL}/server_info"),
         ("get", f"{SERVER_URL}/parallelism_config"),
     ]
-    assert recorder.calls[2][2]["params"] == {"rank": 3}
+    assert recorder.calls[2][2]["params"] == {"rank": 3, "role": "draft"}
 
 
 async def test_get_weight_version_falls_back_to_the_legacy_endpoint(client, monkeypatch):
@@ -302,7 +306,9 @@ async def test_every_remaining_post_method_wire_contract(client, recorder, call,
     """Each remaining POST method posts its documented payload to its own endpoint."""
     await call(client)
 
-    assert recorder.calls == [("post", f"{SERVER_URL}/{endpoint}", {"json": expected_payload})]
+    verb, url, kwargs = recorder.calls[0]
+    assert (verb, url, kwargs["json"]) == ("post", f"{SERVER_URL}/{endpoint}", expected_payload)
+    assert len(recorder.calls) == 1
 
 
 async def test_get_remote_instance_transfer_engine_info_unwraps_the_response(client, monkeypatch):
@@ -310,8 +316,8 @@ async def test_get_remote_instance_transfer_engine_info_unwraps_the_response(cli
     rec = _Recorder()
     rec.install(monkeypatch, responses=[_FakeResponse(payload={"remote_instance_transfer_engine_info": {"a": 1}})])
 
-    assert await client.get_remote_instance_transfer_engine_info(rank=2) == {"a": 1}
-    assert rec.calls[0][2]["params"] == {"rank": 2}
+    assert await client.get_remote_instance_transfer_engine_info(rank=2, role="target") == {"a": 1}
+    assert rec.calls[0][2]["params"] == {"rank": 2, "role": "target"}
 
 
 async def test_every_public_method_is_a_coroutine_function():
@@ -501,19 +507,19 @@ class TestInformationGetters:
         rec = _Recorder()
         rec.install(monkeypatch, responses=[_FakeResponse(payload={"remote_instance_transfer_engine_info": {"a": 1}})])
 
-        await client.get_remote_instance_transfer_engine_info(rank=2)
+        await client.get_remote_instance_transfer_engine_info(rank=2, role="target")
 
         verb, url, kwargs = rec.calls[0]
         assert (verb, url) == ("get", f"{SERVER_URL}/get_remote_instance_transfer_engine_info")
-        assert kwargs == {"params": {"rank": 2}, "timeout": 5.0}
+        assert (kwargs["params"], kwargs["timeout"]) == ({"rank": 2, "role": "target"}, 5.0)
 
     async def test_parallelism_info_returns_the_whole_json_body(self, client, monkeypatch):
         """Unlike the transfer-engine getter, this one does not unwrap a field."""
         rec = _Recorder()
         rec.install(monkeypatch, responses=[_FakeResponse(payload={"tp_size": 4, "dp_size": 2})])
 
-        assert await client.get_parallelism_info(rank=1) == {"tp_size": 4, "dp_size": 2}
-        assert rec.calls[0][2] == {"params": {"rank": 1}, "timeout": 5.0}
+        assert await client.get_parallelism_info(rank=1, role="target") == {"tp_size": 4, "dp_size": 2}
+        assert (rec.calls[0][2]["params"], rec.calls[0][2]["timeout"]) == ({"rank": 1, "role": "target"}, 5.0)
 
     async def test_server_info_returns_the_whole_json_body_without_params(self, client, monkeypatch):
         """``/server_info`` is rank-independent, so it must not send a rank parameter."""
@@ -521,18 +527,68 @@ class TestInformationGetters:
         rec.install(monkeypatch, responses=[_FakeResponse(payload={"version": "0.4.0"})])
 
         assert await client.get_server_info() == {"version": "0.4.0"}
-        assert rec.calls[0][2] == {"timeout": 5.0}
+        assert "params" not in rec.calls[0][2]
+        assert rec.calls[0][2]["timeout"] == 5.0
+
+    async def test_server_info_uses_the_clients_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A protected server must receive the client's API key as a bearer token."""
+        rec = _Recorder()
+        rec.install(monkeypatch)
+        client = SGLangApiClient(server_url=SERVER_URL, api_key="secret")
+
+        await client.get_server_info()
+
+        verb, url, kwargs = rec.calls[0]
+        assert (verb, url) == ("get", f"{SERVER_URL}/server_info")
+        assert kwargs["headers"]["Authorization"] == "Bearer secret"
 
 
 _DIRECT_HTTP_METHODS = [
-    ("get_remote_instance_transfer_engine_info", lambda c: c.get_remote_instance_transfer_engine_info(rank=0)),
-    ("get_parallelism_info", lambda c: c.get_parallelism_info(rank=0)),
+    (
+        "get_remote_instance_transfer_engine_info",
+        lambda c: c.get_remote_instance_transfer_engine_info(rank=0, role="target"),
+    ),
+    ("get_parallelism_info", lambda c: c.get_parallelism_info(rank=0, role="target")),
     ("get_server_info", lambda c: c.get_server_info()),
     ("pause_generation", lambda c: c.pause_generation()),
     ("continue_generation", lambda c: c.continue_generation()),
     ("start_profile", lambda c: c.start_profile()),
     ("stop_profile", lambda c: c.stop_profile()),
 ]
+
+_AUTHENTICATED_CALLS = [
+    ("abort_all_requests", lambda c: c.abort_all_requests()),
+    ("health_generate", lambda c: c.health_generate()),
+    ("get_server_info", lambda c: c.get_server_info()),
+    ("get_parallelism_info", lambda c: c.get_parallelism_info(rank=0, role="target")),
+    (
+        "get_remote_instance_transfer_engine_info",
+        lambda c: c.get_remote_instance_transfer_engine_info(rank=0, role="target"),
+    ),
+    ("get_weight_version", lambda c: c.get_weight_version()),
+    ("flush_cache", lambda c: c.flush_cache()),
+    ("pause_generation", lambda c: c.pause_generation()),
+    ("continue_generation", lambda c: c.continue_generation()),
+    ("start_profile", lambda c: c.start_profile()),
+    ("stop_profile", lambda c: c.stop_profile()),
+]
+
+
+class TestEveryRequestIsAuthenticated:
+    """An engine started with --sglang-api-key answers 401 to any request that carries no bearer token."""
+
+    @pytest.mark.parametrize("name, call", _AUTHENTICATED_CALLS, ids=[name for name, _call in _AUTHENTICATED_CALLS])
+    async def test_a_client_holding_an_api_key_sends_a_bearer_token(self, monkeypatch, name, call):
+        """Every endpoint the client speaks to sits behind the same key, whatever helper builds the request."""
+        rec = _Recorder()
+        rec.install(
+            monkeypatch,
+            responses=[_FakeResponse(payload={"weight_version": "v1", "remote_instance_transfer_engine_info": {}})],
+        )
+
+        await call(SGLangApiClient(server_url=SERVER_URL, api_key="secret"))
+
+        assert rec.calls[0][2]["headers"]["Authorization"] == "Bearer secret"
 
 
 class TestMethodsThatBypassMakeRequest:
@@ -596,7 +652,11 @@ class TestLoadLoraAdapterFromTensors:
                         "load_format": "direct",
                         "added_tokens_config": {"tok": 1},
                         "expected_checksums": {"w": "abc"},
-                    }
+                    },
+                    "headers": {
+                        "Content-Type": "application/json; charset=utf-8",
+                        "Authorization": "Bearer None",
+                    },
                 },
             )
         ]
@@ -699,7 +759,10 @@ class TestWeightControlPayloads:
             "weight_version": "run-7",
         }
 
-    async def test_distributed_update_forwards_a_weight_version_and_a_non_default_selector(self, client, recorder):
+    @pytest.mark.parametrize("load_format", [None, "flattened_bucket"])
+    async def test_distributed_update_forwards_a_weight_version_and_a_non_default_selector(
+        self, client, recorder, load_format
+    ):
         """The distributed path carries the same optional fields as the tensor path."""
         await client.update_weights_from_distributed(
             names=["w"],
@@ -708,6 +771,7 @@ class TestWeightControlPayloads:
             group_name="g",
             weight_version="run-7",
             selector="draft",
+            load_format=load_format,
         )
 
         assert recorder.calls[0][2]["json"] == {
@@ -718,6 +782,7 @@ class TestWeightControlPayloads:
             "flush_cache": False,
             "selector": "draft",
             "weight_version": "run-7",
+            **({"load_format": load_format} if load_format is not None else {}),
         }
 
     async def test_disk_update_omits_the_optional_fields_when_not_given(self, client, recorder):
@@ -734,6 +799,17 @@ class TestWeightControlPayloads:
             "action": "check",
             "allow_quant_error": True,
             "selector": "draft",
+        }
+
+    async def test_check_weights_asks_for_exactly_the_named_tensors(self, client, recorder):
+        """A raw checksum of one P2P write must cover the written names, not the whole model."""
+        await client.check_weights(action="raw_checksum", names=["w", "qk"])
+
+        assert recorder.calls[0][2]["json"] == {
+            "action": "raw_checksum",
+            "allow_quant_error": False,
+            "selector": "all",
+            "names": ["w", "qk"],
         }
 
     async def test_begin_weight_update_forwards_a_custom_selector(self, client, recorder):
@@ -793,3 +869,61 @@ class TestStartProfile:
 
 async def _noop_sleep(seconds):
     return None
+
+
+class TestABodylessSuccess:
+    async def test_a_success_carrying_no_body_answers_none_instead_of_raising(self, client, monkeypatch):
+        """The engine answers some endpoints with 200 and an empty body, and parsing that as json raises."""
+        _Recorder().install(monkeypatch, responses=[_FakeResponse(body=b"")])
+
+        assert await client.abort_all_requests() is None
+
+    async def test_a_success_carrying_a_body_is_still_parsed(self, client, monkeypatch):
+        """Every other endpoint answers with json the callers read, so the empty-body case must not swallow it."""
+        _Recorder().install(monkeypatch, responses=[_FakeResponse(payload={"ok": True})])
+
+        assert await client.abort_all_requests() == {"ok": True}
+
+    async def test_aborting_every_request_reaches_the_engines_abort_endpoint(self, client, recorder):
+        """A take-over aborts what the previous script left generating, and no other endpoint does that."""
+        await client.abort_all_requests()
+
+        assert recorder.calls[0][0] == "post"
+        assert recorder.calls[0][1] == f"{SERVER_URL}/abort_request"
+        assert recorder.calls[0][2]["json"] == {"abort_all": True}
+
+    async def test_aborting_every_request_carries_the_budget_the_caller_gives(self, client, recorder):
+        """A wedged tokenizer manager is exactly what a take-over aborts, and this client waits forever by default."""
+        await client.abort_all_requests(timeout=12.0)
+
+        assert recorder.calls[0][2]["timeout"] == 12.0
+
+    async def test_aborting_every_request_without_a_budget_leaves_the_client_default(self, client, recorder):
+        """Every other endpoint of this client is unbounded, so naming a timeout stays the caller's choice."""
+        await client.abort_all_requests()
+
+        assert "timeout" not in recorder.calls[0][2]
+
+
+class TestWorkerTypeInfer:
+    def test_a_prefill_engine_is_recognized_from_its_disaggregation_mode(self):
+        """PD registration reads the role off /server_info."""
+        assert WorkerType.from_server_info({"disaggregation_mode": "prefill"}) == WorkerType.PREFILL
+
+    def test_a_decode_engine_is_recognized_from_its_disaggregation_mode(self):
+        """The decode half of a PD fleet must be told apart from a regular engine."""
+        assert WorkerType.from_server_info({"disaggregation_mode": "decode"}) == WorkerType.DECODE
+
+    def test_an_engine_outside_pd_is_regular(self):
+        """sglang reports "null" for an engine that serves both phases."""
+        assert WorkerType.from_server_info({"disaggregation_mode": "null"}) == WorkerType.REGULAR
+
+    def test_an_engine_that_does_not_report_the_mode_at_all_is_refused(self):
+        """An engine whose /server_info lacks the key is a contract break, not a regular engine."""
+        with pytest.raises(KeyError):
+            WorkerType.from_server_info({})
+
+    def test_an_engine_reporting_an_unknown_mode_is_refused(self):
+        """A mode miles does not know must fail closed instead of being served as regular."""
+        with pytest.raises(ValueError):
+            WorkerType.from_server_info({"disaggregation_mode": "something_new"})
