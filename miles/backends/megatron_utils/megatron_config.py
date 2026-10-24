@@ -7,11 +7,12 @@ import re
 import sys
 from argparse import Namespace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import pydantic
 import yaml
 
+from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.argv_utils import coerce_dict_to_args, declared_arg_dests
@@ -180,6 +181,35 @@ class _RawMegatronConfig(FrozenStrictBaseModel):
 # ---------------------------- resolved config -----------------------------
 
 
+class MegatronArgsNamespace(EnhancedArgparseNamespace):
+    _mutable_fields: ClassVar[frozenset[str]] = frozenset(
+        {
+            "ckpt_format",
+            "ckpt_step",
+            "consumed_train_samples",
+            "consumed_valid_samples",
+            "finetune",
+            "load",
+            "lr_decay_iters",
+            "model_type",
+            "modelopt_enabled",
+            "no_load_optim",
+            "no_load_rng",
+            "padded_vocab_size",
+            "pretrained_checkpoint",
+            "rank",
+            "skipped_train_samples",
+            "train_iters",
+            "vocab_size",
+            "world_size",
+        }
+    )
+
+    @classmethod
+    def from_args(cls, args: Namespace, *, names: set[str]) -> "MegatronArgsNamespace":
+        return cls(**{name: value for name, value in vars(args).items() if name in names})
+
+
 class MegatronTrainerConfig(FrozenStrictBaseModel):
     trainer_id: str
     model_id: str | None
@@ -198,6 +228,12 @@ class MegatronTrainerConfig(FrozenStrictBaseModel):
 
 class MegatronConfig(FrozenStrictBaseModel):
     trainers: list[MegatronTrainerConfig]
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        from megatron.training.arguments import add_megatron_arguments
+
+        add_megatron_arguments(parser)
 
     @pydantic.model_validator(mode="after")
     def _validate_ids(self) -> "MegatronConfig":
