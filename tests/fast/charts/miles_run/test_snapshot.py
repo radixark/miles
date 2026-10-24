@@ -28,6 +28,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.build
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.test_utils.snapshot import assert_matches_snapshot
+from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.serving.utils import override_argv
 
 SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "charts" / "miles-run"
@@ -167,6 +168,7 @@ SCENARIO_ARGV = [
 @pytest.fixture(autouse=True)
 def parser_process_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-m", "pytest"])
+    monkeypatch.delenv(RECORD_DIR_ENV, raising=False)
     for name, value in PARSER_ENV.items():
         monkeypatch.setenv(name, value)
     tuning_env_name = "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"
