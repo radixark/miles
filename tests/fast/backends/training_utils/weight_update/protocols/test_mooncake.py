@@ -6,20 +6,29 @@ import pytest
 import torch
 from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
 
+from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import (
+    RemoteShard,
+    RemoteWeightLocation,
+)
+from miles.utils.audit_utils.event_logger.models import WeightTransferFailedEvent
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
+from miles.utils.test_utils.fault_injector.controller import fault_hook_controller
 from miles.utils.test_utils.fault_injector.models import FaultHookName
 
 
-def test_a_weight_of_another_size_on_the_shard_is_never_written(p2p_sender: Any, mooncake_module: ModuleType) -> None:
+def _p2p_transport_module(p2p_protocol: ModuleType) -> ModuleType:
+    return sys.modules[p2p_protocol.P2PTransport.__module__]
+
+
+def test_a_weight_of_another_size_on_the_shard_is_never_written(p2p_sender: Any, transport: Any) -> None:
     """Writing a weight whose published size differs would run past the target's memory."""
-    transport = mooncake_module.MooncakeTransport()
-    remote_shard = mooncake_module.RemoteShard(
+    remote_shard = RemoteShard(
         cell_id="cell-a",
         rollout_engine_ind=0,
         rollout_engine_rank=0,
         runner_role="target",
-        session_id="cell-a-r0",
-        weight_locations_by_name={"w": mooncake_module.RemoteWeightLocation(address=0x1000, numel=2, element_size=4)},
+        transport_peer="cell-a-r0",
+        weight_locations_by_name={"w": RemoteWeightLocation(address=0x1000, numel=2, element_size=4)},
     )
 
     with pytest.raises(
@@ -46,8 +55,8 @@ class TestBeforeSendFaultHook:
 
         assert log == [
             ("hook", FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND.value),
-            ("write", shard.session_id),
-            ("write", shard.session_id),
+            ("write", shard.transport_peer),
+            ("write", shard.transport_peer),
         ]
 
     def test_a_failing_hook_never_enters_native_code_or_poison_memory(
@@ -94,9 +103,9 @@ class TestNativeFailure:
         shard = make_remote_shard()
         transport.register_memory(tensor)
         if failure == "negative":
-            p2p_sender.transfer_engine.failing_sessions.add(shard.session_id)
+            p2p_sender.transfer_engine.failing_sessions.add(shard.transport_peer)
         else:
-            p2p_sender.transfer_engine.errors_by_session[shard.session_id] = RuntimeError("native exception")
+            p2p_sender.transfer_engine.errors_by_session[shard.transport_peer] = RuntimeError("native exception")
         (future,) = transport.write([shard], {"w": tensor}, run_write=lambda shard, write: write())
         with pytest.raises(RuntimeError):
             future.result(timeout=10)
@@ -105,43 +114,43 @@ class TestNativeFailure:
         with pytest.raises(RuntimeError, match="unknown native completion"):
             transport.unregister_memory(tensor)
         assert p2p_sender.transfer_engine.registered == [(tensor.data_ptr(), tensor.numel() * tensor.element_size())]
-        assert transport._registered_tensors[tensor.data_ptr()] is tensor
+        assert transport._registrations_by_address[tensor.data_ptr()][0] is tensor
 
     def test_a_late_native_failure_uses_the_submitted_update_and_cell_generation(
         self,
         p2p_sender: Any,
         transport: Any,
         make_remote_shard: Any,
-        mooncake_module: ModuleType,
+        p2p_protocol: ModuleType,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A late worker failure must never borrow the active context of a later weight update."""
         events = []
-        monkeypatch.setattr(mooncake_module, "is_event_logger_initialized", lambda: True)
+        monkeypatch.setattr(_p2p_transport_module(p2p_protocol), "is_event_logger_initialized", lambda: True)
         monkeypatch.setattr(
-            mooncake_module,
+            _p2p_transport_module(p2p_protocol),
             "get_event_logger",
             lambda: SimpleNamespace(log=lambda event_type, data, **kwargs: events.append((event_type, data, kwargs))),
         )
         tensor = torch.ones(4)
         shard = make_remote_shard()
         transport.register_memory(tensor)
-        hold = p2p_sender.transfer_engine.hold(shard.session_id)
-        p2p_sender.transfer_engine.failing_sessions.add(shard.session_id)
+        hold = p2p_sender.transfer_engine.hold(shard.transport_peer)
+        p2p_sender.transfer_engine.failing_sessions.add(shard.transport_peer)
         old = FaultHookContext(debug_weight_update_id="old", snapshot_cell_id_to_hashes={"cell-a": "old-generation"})
         new = FaultHookContext(debug_weight_update_id="new", snapshot_cell_id_to_hashes={"cell-a": "new-generation"})
-        with mooncake_module.fault_hook_controller.with_context(old):
+        with fault_hook_controller.with_context(old):
             (future,) = transport.write([shard], {"w": tensor}, run_write=lambda shard, write: write())
         assert hold.entered.wait(timeout=10)
 
-        with mooncake_module.fault_hook_controller.with_context(new):
+        with fault_hook_controller.with_context(new):
             hold.release.set()
             with pytest.raises(RuntimeError, match="returned -1"):
                 future.result(timeout=10)
 
         assert len(events) == 1
         event_type, data, kwargs = events[0]
-        assert event_type is mooncake_module.WeightTransferFailedEvent
+        assert event_type is WeightTransferFailedEvent
         assert (data["debug_weight_update_id"], data["cell_id"], data["workers_hash"]) == (
             "old",
             "cell-a",
@@ -156,7 +165,7 @@ class TestNativeFailure:
         p2p_sender: Any,
         transport: Any,
         make_remote_shard: Any,
-        mooncake_module: ModuleType,
+        p2p_protocol: ModuleType,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Observability failures must preserve the native error that makes the cell unusable."""
@@ -164,17 +173,19 @@ class TestNativeFailure:
         def fail_log(*args: Any, **kwargs: Any) -> None:
             raise ValueError("logger unavailable")
 
-        monkeypatch.setattr(mooncake_module, "is_event_logger_initialized", lambda: True)
-        monkeypatch.setattr(mooncake_module, "get_event_logger", lambda: SimpleNamespace(log=fail_log))
+        monkeypatch.setattr(_p2p_transport_module(p2p_protocol), "is_event_logger_initialized", lambda: True)
+        monkeypatch.setattr(
+            _p2p_transport_module(p2p_protocol), "get_event_logger", lambda: SimpleNamespace(log=fail_log)
+        )
         tensor = torch.ones(4)
         shard = make_remote_shard()
         transport.register_memory(tensor)
-        p2p_sender.transfer_engine.failing_sessions.add(shard.session_id)
+        p2p_sender.transfer_engine.failing_sessions.add(shard.transport_peer)
         context = FaultHookContext(
             debug_weight_update_id="update", snapshot_cell_id_to_hashes={"cell-a": "generation"}
         )
 
-        with mooncake_module.fault_hook_controller.with_context(context):
+        with fault_hook_controller.with_context(context):
             (future,) = transport.write([shard], {"w": tensor}, run_write=lambda shard, write: write())
         with pytest.raises(RuntimeError, match="returned -1"):
             future.result(timeout=10)

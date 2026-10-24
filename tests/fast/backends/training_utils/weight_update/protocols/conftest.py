@@ -15,6 +15,10 @@ import pytest
 import torch
 
 from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
+from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import (
+    RemoteShard,
+    RemoteWeightLocation,
+)
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfNameMapping
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     assign_rollout_engine_ranks_for_data_replica,
@@ -383,7 +387,7 @@ class _P2PSenderHarness:
             call.join()
         for protocol in self._protocols:
             if protocol._transport is not None:
-                for executor in protocol._transport._write_executors_by_rollout_engine_ind.values():
+                for executor in protocol._transport._executors_by_rollout_engine_ind.values():
                     executor.shutdown(wait=True)
 
     def _assign_rollout_engine_ranks(
@@ -529,26 +533,24 @@ def make_cell_updater(p2p_protocol: ModuleType) -> Callable[..., Any]:
 
 
 @pytest.fixture
-def make_remote_shard(mooncake_module: ModuleType) -> Callable[..., Any]:
+def make_remote_shard() -> Callable[..., Any]:
     def make(cell_id: str = "cell-a", rank: int = 0, runner_role: str = "target") -> Any:
-        return mooncake_module.RemoteShard(
+        return RemoteShard(
             cell_id=cell_id,
             rollout_engine_ind=0,
             rollout_engine_rank=rank,
             runner_role=runner_role,
-            session_id=f"{cell_id}-{runner_role}-r{rank}",
-            weight_locations_by_name={
-                "w": mooncake_module.RemoteWeightLocation(address=0x1000, numel=4, element_size=4)
-            },
+            transport_peer=f"{cell_id}-{runner_role}-r{rank}",
+            weight_locations_by_name={"w": RemoteWeightLocation(address=0x1000, numel=4, element_size=4)},
         )
 
     return make
 
 
 @pytest.fixture
-def transport(p2p_sender: Any, mooncake_module: ModuleType) -> Iterator[Any]:
-    transport = mooncake_module.MooncakeTransport()
+def transport(p2p_sender: Any, p2p_protocol: ModuleType, mooncake_module: ModuleType) -> Iterator[Any]:
+    transport = p2p_protocol.P2PTransport(mooncake_module.MooncakeTransport())
     yield transport
     p2p_sender.transfer_engine.release_all()
-    for executor in transport._write_executors_by_rollout_engine_ind.values():
+    for executor in transport._executors_by_rollout_engine_ind.values():
         executor.shutdown(wait=True)
