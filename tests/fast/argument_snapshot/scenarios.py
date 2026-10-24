@@ -20,7 +20,41 @@ class _Scenario:
 def capture_scenarios(selected: list[str] | None = None) -> dict[str, Any]:
     scenarios = {
         "megatron": _Scenario(backend="megatron"),
+        "fsdp": _Scenario(backend="fsdp"),
+        "fully_async": _Scenario(backend="megatron", arguments=("--fully-async",)),
+        "legacy": _Scenario(backend="megatron", legacy=True),
+        "custom_megatron": _Scenario(backend="megatron", custom=True),
+        "custom_fsdp": _Scenario(backend="fsdp", custom=True),
     }
+    for name, flag in {
+        "rollout": "--rollout-function-path",
+        "generate": "--custom-generate-function-path",
+        "inference": "--custom-inference-engine-provider-path",
+    }.items():
+        scenarios[f"hook_{name}"] = _Scenario(
+            backend="megatron", arguments=(flag, "tests.fast.argument_snapshot.scenarios._Hook")
+        )
+        scenarios[f"legacy_hook_{name}"] = _Scenario(
+            backend="megatron", arguments=(flag, "tests.fast.argument_snapshot.scenarios._Hook"), legacy=True
+        )
+    scenarios["missing_hook_module"] = _Scenario(
+        backend="megatron", arguments=("--custom-generate-function-path", "miles_snapshot_missing.module")
+    )
+    scenarios["hook_without_arguments"] = _Scenario(
+        backend="megatron", arguments=("--custom-generate-function-path", "builtins.str")
+    )
+    scenarios["invalid_hook_path"] = _Scenario(
+        backend="megatron", arguments=("--custom-generate-function-path", "invalid_snapshot_path")
+    )
+    scenarios["hook_function"] = _Scenario(
+        backend="megatron",
+        arguments=("--custom-generate-function-path", "tests.fast.argument_snapshot.scenarios._hook_function"),
+    )
+    scenarios["hook_fsdp"] = _Scenario(
+        backend="fsdp",
+        arguments=("--custom-inference-engine-provider-path", "tests.fast.argument_snapshot.scenarios._Hook"),
+    )
+    scenarios["megatron_repeat"] = _Scenario(backend="megatron")
     names = list(scenarios) if selected is None else selected
     if unknown := set(names) - scenarios.keys():
         raise ValueError(f"Unknown snapshot scenarios: {sorted(unknown)}; available: {list(scenarios)}")
@@ -39,7 +73,12 @@ def _capture_scenario(scenario: _Scenario) -> dict[str, Any]:
         custom = _custom_arguments if scenario.custom else None
         _, parser = parse_args_and_get_parser(add_custom_arguments=custom)
         parsed = {"minimal": vars(parser.parse_args(arguments))}
-        variants: dict[str, list[str]] = {}
+        variants = {
+            "lora_disabled": ["--no-sglang-lora-use-virtual-experts"],
+            "sglang_alias": ["--sglang-tp-size", "2"],
+            "eval_true": ["--eval-sglang-enable-metrics"],
+            "eval_false": ["--no-eval-sglang-enable-metrics"],
+        }
         for name, extra in variants.items():
             parsed[name] = vars(parser.parse_args(arguments + extra))
         return {"argv": arguments, "legacy": scenario.legacy, "schema": snapshot_parser(parser), "parsed": parsed}
