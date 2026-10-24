@@ -5,6 +5,7 @@ from argparse import Namespace
 import pytest
 from pydantic import ValidationError
 
+from miles.backends.megatron_utils.megatron_config import MegatronConfig
 from miles.rollout.session.config import SessionServerConfig, compute_session_server_config
 
 _ARGS_TO_CONFIG_FIELD = {
@@ -212,3 +213,17 @@ class TestSessionServerConfig:
         config = SessionServerConfig(**_COMPLETE_CONFIG_KWARGS)
         with pytest.raises(ValidationError):
             config.port = 5002
+
+
+class TestOptionalBackendRoutingMetadata:
+    def test_missing_raw_router_topk_does_not_read_a_stale_flat_value(self) -> None:
+        """A backend without MoE routing metadata keeps session top-k unset despite stale flat fields."""
+        args = _make_args()
+        args.raw_megatron = MegatronConfig(trainers=[], base_args={})
+        args.moe_router_topk = 99
+
+        config = compute_session_server_config(
+            args=args, host="127.0.0.1", port=5001, instance_id=None, backend_url="http://127.0.0.1:3000"
+        )
+
+        assert config.moe_router_topk is None

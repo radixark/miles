@@ -400,3 +400,18 @@ class TestTheIterationAResumeStartsFrom:
         multi_policy_utils.validate_multi_policy_args(
             _make_args("a", "b", ckpt_step=None), megatron_config=_make_config("a", "b")
         )
+
+
+class TestResolvedInferenceConfigOwnership:
+    def test_matching_models_are_accepted_without_a_legacy_config_path(self) -> None:
+        """Resolved matching inference models suffice without retaining a legacy configuration path."""
+        args = _make_args(
+            "a",
+            "b",
+            sglang=SimpleNamespace(
+                models=[SimpleNamespace(name="a", update_weights=True), SimpleNamespace(name="b", update_weights=True)]
+            ),
+        )
+        del args.sglang_config
+
+        multi_policy_utils.validate_multi_policy_args(args=args, megatron_config=_make_config("a", "b"))
