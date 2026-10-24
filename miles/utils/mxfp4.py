@@ -1,4 +1,4 @@
-"""MXFP4 (E2M1 elements + E8M0 block scales) pack/unpack.
+"""MXFP4 (E2M1 elements + E8M0 block scales) pack/unpack, and how an FP8 checkpoint declares MXFP4 experts.
 
 Torch-only, so checkpoint tooling can use it without importing Megatron.
 """
@@ -27,6 +27,15 @@ def quantize_mxfp4(weight, group_size):
     scale = (scale_exp + 127).to(torch.uint8)
     scale = scale.reshape(*weight.shape[:-1], weight.shape[-1] // group_size).contiguous()
     return packed, scale
+
+
+def has_mxfp4_routed_experts(quantization_config: dict) -> bool:
+    """Whether an FP8 checkpoint declares MXFP4 routed experts (SGLang: ModelConfig.is_fp4_experts).
+
+    `routed_experts_quant_method: mxfp4` is the generic key. `store_dtype: mxfp4` is MiMo-V2's own key for the
+    same layout. DeepSeek-V4 declares neither; SGLang detects its FP4 experts from the weights.
+    """
+    return "mxfp4" in (quantization_config.get("routed_experts_quant_method"), quantization_config.get("store_dtype"))
 
 
 def dequantize_mxfp4(

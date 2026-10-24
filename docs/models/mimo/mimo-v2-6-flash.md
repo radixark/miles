@@ -1,7 +1,7 @@
 ---
 title: MiMo-V2.6-Flash
 sidebarTitle: MiMo-V2.6
-description: Launch recipe for Xiaomi's MiMo-V2.6-Flash-RL (309B MoE, hybrid sliding-window attention) — Megatron bridge mode on a BF16 conversion, on two 8-GPU nodes.
+description: Launch recipe for Xiaomi's MiMo-V2.6-Flash-RL (309B MoE, hybrid sliding-window attention) — Megatron bridge mode on a BF16 conversion, on two 8×H200 nodes or one 8×B300 node.
 ---
 ## 1. Model Introduction
 
@@ -38,27 +38,63 @@ The converter dequantizes each kv-head shard of the fused `qkv_proj` with its ow
 
 ### 3.2 SGLang
 
-The BF16 engine needs the following MiMo-V2 fixes. The `sglang-miles` branch has them since [`8035002`](https://github.com/sgl-project/sglang/commit/8035002c4ed0360579004791378e5b7d1740503b), and the `radixark/miles:dev` image, built from that branch, includes them:
+The engine needs the following MiMo-V2 fixes. The `sglang-miles` branch has them since [`8035002`](https://github.com/sgl-project/sglang/commit/8035002c4ed0360579004791378e5b7d1740503b), and the `radixark/miles:dev` image, built from that branch, includes them:
 
 - upstream [sgl-project/sglang#40448](https://github.com/sgl-project/sglang/pull/40448) (MXFP4 MoE and BF16 router);
 - accepting the `split` attention layout of the BF16 conversion;
 - allocating the sliding-window KV pools inside the memory-saver region, otherwise a colocated engine cannot release its KV cache;
-- passing `layer_id` to the MoE top-k, otherwise `--use-rollout-routing-replay` crashes the CUDA-graph capture.
+- passing `layer_id` to the MoE top-k, otherwise `--use-rollout-routing-replay` crashes the CUDA-graph capture;
+- for the MXFP4 engines (section 4.2), an in-place reload in the MXFP4 Marlin MoE method: its post-processing repacks the experts and renames their scales, so without it the first weight sync writes checkpoint-shaped tensors into the Marlin layout and fails;
+- for `mxfp4_w4a16_linear` at an engine attention TP of 1 or 2, regrouping the BF16 fused `qkv_proj` of each rank into its q, k and v heads; the unmodified loader keeps the kv-head interleave of the checkpoint there and serves wrong attention (the launcher's TP4 is not affected).
 
 ## 4. Launch
 
-### 4.1 Two nodes
+### 4.1 Full model
 
-Join the second node to a ray head on the first, then launch from the head:
+On H200 the full model needs two nodes. Join the second node to a ray head on the first, then launch from the head:
 
 ```bash
 MILES_SCRIPT_EXTERNAL_RAY=1 MASTER_ADDR=<head ip> python scripts/run_mimo_v2_6_flash.py \
     --mode rl --model-name MiMo-V2.6-Flash-RL-bf16 --num-nodes 2 --train-offload-disk-dir /scratch/offload
 ```
 
+On B300 it fits one node:
+
+```bash
+python scripts/run_mimo_v2_6_flash.py \
+    --mode rl --model-name MiMo-V2.6-Flash-RL-bf16 --train-offload-disk-dir /scratch/offload
+```
+
+`--hardware` (default `auto`, the GPU the launcher runs on) selects the parallel layout and rollout engine of section 5.1; pass `H200` or `B300` to override it.
+
 On two 8×H200 nodes with node-local NVMe (4-drive RAID0), a step with 16 samples of up to 2048 response tokens took about 4 minutes of training, of which about 3 minutes is streaming the optimizer state (72 GB read and 144 GB written per GPU), plus 30 s of weight update. Peak GPU memory was 125 GB and peak host memory 1.05 TB per node.
 
 `--mode sft --prompt-data <chat jsonl>` trains SFT instead. It reads a `messages` column; put a reasoning trace in `reasoning_content`, since the MiMo chat template renders `<think>{reasoning_content}</think>`.
+
+### 4.2 MXFP4 rollout engines
+
+`--sglang-precision mxfp4_w4a16_linear` or `mxfp4_w4a8_linear` serves an MXFP4 checkpoint instead of the BF16 conversion, while the trainer keeps BF16 weights. Add it to either launch of section 4.1, for example on two H200 nodes:
+
+```bash
+MILES_SCRIPT_EXTERNAL_RAY=1 MASTER_ADDR=<head ip> python scripts/run_mimo_v2_6_flash.py \
+    --mode rl --model-name MiMo-V2.6-Flash-RL-bf16 --num-nodes 2 --train-offload-disk-dir /scratch/offload \
+    --sglang-precision mxfp4_w4a16_linear
+```
+
+| `--sglang-precision` | engine checkpoint | routed experts | fused `qkv_proj`, dense MLP | weight check |
+|---|---|---|---|---|
+| `mxfp4_w4a16_linear` | `MiMo-V2.6-Flash-RL-w4a16` (`--keep-quant --bf16-linears`) | MXFP4, Marlin W4A16 | BF16 | bit-exact |
+| `mxfp4_w4a8_linear` | the official download | MXFP4, Marlin W4A16 on H200, DeepGEMM (FP8 activations) on B300 | FP8 W8A8 (per-token-group activation quantization) | within the FP8 quantization error |
+
+- `--hf-checkpoint` is the engine checkpoint above (`prepare` builds the `mxfp4_w4a16_linear` checkpoint from the download; the `mxfp4_w4a8_linear` engine serves the download itself), and `--ref-load` the BF16 conversion the trainer loads.
+- Each weight sync re-encodes the engine format: MXFP4 experts, the modules in `ignored_layers` (`o_proj`, plus the qkv and dense MLP for `mxfp4_w4a16_linear`) as BF16, and the remaining FP8 linears as FP8 blocks (per kv-head shard of the fused `qkv_proj`).
+- The engine runs with TP4: the fused `qkv_proj` splits into 4 kv-head shards, so the engine's attention TP must divide 4.
+- MXFP4 experts come back bit-exact from the BF16 weights. FP8 block scales come back only within the quantization error (the block maximum is BF16-rounded), so `mxfp4_w4a8_linear` adds `--check-weight-update-allow-quant-error`.
+- `mxfp4_w4a8_linear` quantizes the activations of the fused `qkv_proj` and the dense MLP to FP8, which on H200 roughly doubles the BF16 engine's train/rollout log-prob gap; `mxfp4_w4a16_linear` keeps those linears in BF16 and stays within the BF16 engine's range, at about 3 GB more weights. The MXFP4 experts add no measurable gap.
+- The MTP layers keep their source format in both checkpoints: Miles does not train them, and SGLang's draft model maps their names differently.
+- No quantization-aware training: an update smaller than one MXFP4 step does not reach the engine.
+- Hardware: `--hardware` picks the MoE runner in the table, and every engine on B300 uses FA4 attention. The checkpoints, the fused `qkv_proj` export and the sync quantizer are the same on both; on Blackwell the FP8 block scales take SGLang's UE8M0 layout. On B300 the engines still need SGLang support on SM100 that section 3.2 does not list yet: Marlin admitting SM100 (sglang-miles raises `MXFP4 Marlin requires SM90 or SM120`) and an in-place weight reload for the DeepGEMM runner.
+- HF export (`--save-hf`) builds its bridge from `--hf-checkpoint`, so with an MXFP4 engine it writes that checkpoint's config over BF16 tensors; export from a BF16-engine run instead.
 
 ## 5. Recipe Configuration
 
@@ -66,13 +102,14 @@ On two 8×H200 nodes with node-local NVMe (4-drive RAID0), a step with 16 sample
 
 | `--model-name` | TP | PP | CP | EP | expert-TP | GPUs | rollout engine |
 |---|---|---|---|---|---|---|---|
-| `MiMo-V2.6-Flash-RL-bf16` | 2 | 2 | 1 | 8 | 1 | 16 (2 × 8) | TP8, `--sglang-mem-fraction-static 0.8` |
+| `MiMo-V2.6-Flash-RL-bf16` on H200 | 2 | 2 | 1 | 8 | 1 | 16 (2 × 8) | TP8, `--sglang-mem-fraction-static 0.8` |
+| `MiMo-V2.6-Flash-RL-bf16` on B300 | 2 | 1 | 1 | 8 | 1 | 8 | TP8, FA4 attention, `--sglang-mem-fraction-static 0.8` |
 
 TP is capped at 4 by the four global-attention KV heads. Context parallelism is not supported. `--sequence-parallel` is on whenever TP > 1. THD packing with `--use-dynamic-batch-size` is the default; `--qkv-format bshd` runs one sample per micro-batch.
 
 ### 5.2 Algorithm
 
-GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --entropy-coef 0.00` and `--rm-type math` on dapo-math-17k. No KL loss: bridge mode has no Megatron-format reference checkpoint for `--ref-load`.
+GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --entropy-coef 0.00` and `--rm-type math` on dapo-math-17k. No KL loss: bridge mode has no Megatron reference model (with an MXFP4 engine, `--ref-load` only names the trainer's BF16 weights).
 
 ### 5.3 Optimizer
 
