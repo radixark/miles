@@ -267,5 +267,17 @@ export async function renderRollout(view, meta, route) {
   };
   selectTab("samples");
 
-  view.replaceChildren(controls, stats, tabButtons, tabBody);
+  // a dump written before the cp_rank/cp_size fields: blank per-token columns
+  // here mean unreadable, not undumped
+  const unreadableCount = rows.filter((r) => r.alignment_failed).length;
+  const unreadableNote = unreadableCount
+    ? [
+        el("p", { class: "muted" }, [
+          `per-token columns are blank for ${unreadableCount} samples: their context-parallel slices could ` +
+            "not be placed, because this dump predates the cp_rank/cp_size fields. Blank here means unreadable, " +
+            "not undumped",
+        ]),
+      ]
+    : [];
+  view.replaceChildren(controls, stats, ...unreadableNote, tabButtons, tabBody);
 }

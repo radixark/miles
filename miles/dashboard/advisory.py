@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from itertools import pairwise
 from statistics import median
 
-from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.store import MetricStore, Stream
 
 # an open phase this much beyond its own median closed duration is a stall,
@@ -32,6 +31,10 @@ ABORT_WINDOW_S = 1800.0
 ABORT_MIN_REQUESTS = 100.0
 ZERO_STD_FRAC_WARN = 0.5
 TRUNCATED_FRAC_WARN = 0.25
+# logged by the rollout manager for every train step (miles/ray/rollout/metrics.py)
+ZERO_STD_FRAC_KEY = "rollout/zero_std/percentage"
+ALL_ZERO_FRAC_KEY = "rollout/zero_std/all_zero_percentage"
+TRUNCATED_FRAC_KEY = "rollout/truncated_ratio"
 KV_BOUND_TOKEN_USAGE = 0.90
 KV_BOUND_RUNNING_RATIO = 0.5
 
@@ -48,7 +51,7 @@ DP_IMBALANCE_RATIO = 0.25
 DEFAULT_LOW_MFU = 0.15
 MFU_KEY = "perf/actor_train_mfu"
 MFU_PEAK_KEY = "perf/mfu_peak_tflops"
-MFU_STEP_KEY = "rollout/step"
+ROLLOUT_STEP_KEY = "rollout/step"
 MFU_MIN_STEPS = 3
 
 
@@ -60,7 +63,6 @@ class Advisory:
 
 def compute_advisories(
     store: MetricStore,
-    reader: DumpReader | None = None,
     *,
     t0: float | None = None,
     t1: float | None = None,
@@ -73,8 +75,7 @@ def compute_advisories(
         t0, t1 = edge - MetricStore.MAX_WINDOW_S, edge
     alarms = _stall_advisories(store)
     alarms += _engine_alarm_advisories(store, args, t0, t1)
-    if reader is not None:
-        alarms += _rollout_advisories(reader, args)
+    alarms += _rollout_advisories(store, args)
     if alarms:
         return alarms
     return _tuning_advisories(store, args, t0, t1, mfu=mfu, low_mfu=low_mfu)
@@ -236,55 +237,37 @@ def _engine_alarm_advisories(store: MetricStore, args: dict, t0: float | None, t
     return out
 
 
-def _rollout_advisories(reader: DumpReader, args: dict) -> list[Advisory]:
-    """Degenerate-signal checks on the newest completed train rollout."""
-    train_ids = reader.rollout_ids().train
-    if not train_ids:
-        return []
-    rollout_id = train_ids[-1]
+def _rollout_advisories(store: MetricStore, args: dict) -> list[Advisory]:
+    """Degenerate-signal checks on the newest train rollout step, from the
+    rollout metrics logged for it: no dump is read."""
+    series = store.metric_series([ZERO_STD_FRAC_KEY, ALL_ZERO_FRAC_KEY, TRUNCATED_FRAC_KEY], x_key=ROLLOUT_STEP_KEY)
+    latest = {key: (points["x"][-1], points["y"][-1]) for key, points in series.items() if points["y"]}
     out = []
 
-    groups = reader.groups(rollout_id)
-    with_rewards = groups.filter(groups["reward_mean"].is_not_null())
-    if len(with_rewards):
-        zero_std = int(with_rewards["zero_std"].sum())
-        if zero_std / len(with_rewards) >= ZERO_STD_FRAC_WARN:
+    if ZERO_STD_FRAC_KEY in latest:
+        step, zero_std_frac = latest[ZERO_STD_FRAC_KEY]
+        if zero_std_frac >= ZERO_STD_FRAC_WARN:
             message = (
-                f"{zero_std}/{len(with_rewards)} groups in rollout {rollout_id} have zero reward std — "
+                f"{zero_std_frac:.0%} of groups in rollout {step} have zero reward std — "
                 "those groups contribute zero policy gradient"
             )
-            if with_rewards["reward_mean"].abs().max() < 1e-12:
+            if latest.get(ALL_ZERO_FRAC_KEY) == (step, 1.0):
                 message += (
                     "; every reward is 0, pointing at systematic failure (timeouts/truncation), not task difficulty"
                 )
             out.append(Advisory(level="warning", message=message))
 
-    summary = reader.summary(rollout_id)
-    if summary.height == 0:
-        return out
-    truncated_frac = summary["truncated"].cast(float).mean()
-    if truncated_frac is not None and truncated_frac >= TRUNCATED_FRAC_WARN:
-        message = f"{truncated_frac:.0%} of samples in rollout {rollout_id} are truncated"
-        cap = args.get("rollout_max_response_len")
-        if cap:
-            message += (
-                f" — check --rollout-max-response-len ({cap:g}): in multi-turn agentic runs "
-                "the per-turn cap is usually the binding limit, not the context length"
-            )
-        out.append(Advisory(level="warning", message=message))
-
-    if "alignment_failed" in summary.columns and bool(summary["alignment_failed"].any()):
-        unreadable = int(summary["alignment_failed"].sum())
-        out.append(
-            Advisory(
-                level="info",
-                message=(
-                    f"per-token columns are blank for {unreadable} samples in rollout {rollout_id}: their "
-                    "context-parallel slices could not be placed, because this dump predates the cp_rank/cp_size "
-                    "fields. Blank here means unreadable, not undumped"
-                ),
-            )
-        )
+    if TRUNCATED_FRAC_KEY in latest:
+        step, truncated_frac = latest[TRUNCATED_FRAC_KEY]
+        if truncated_frac >= TRUNCATED_FRAC_WARN:
+            message = f"{truncated_frac:.0%} of samples in rollout {step} are truncated"
+            cap = args.get("rollout_max_response_len")
+            if cap:
+                message += (
+                    f" — check --rollout-max-response-len ({cap:g}): in multi-turn agentic runs "
+                    "the per-turn cap is usually the binding limit, not the context length"
+                )
+            out.append(Advisory(level="warning", message=message))
     return out
 
 
@@ -327,7 +310,7 @@ def _dp_spread_hint(args: dict) -> str:
 
 
 def mfu_summary(store: MetricStore) -> dict | None:
-    series = store.metric_series([MFU_KEY, MFU_PEAK_KEY], x_key=MFU_STEP_KEY)
+    series = store.metric_series([MFU_KEY, MFU_PEAK_KEY], x_key=ROLLOUT_STEP_KEY)
     steady = series[MFU_KEY]["y"][1:]
     if not steady:
         return None
