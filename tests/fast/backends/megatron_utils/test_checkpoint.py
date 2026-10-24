@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from tests.fast.fixtures.args_fixtures import parser_defaults
+from tests.fast.fixtures.args_fixtures import make_trainer_args
 
 from miles.backends.megatron_utils import checkpoint
 from miles.backends.training_utils.model_companion import ModelCompanion
@@ -86,23 +86,24 @@ class TestCheckpointTrainingProvenance:
     ("ckpt_step", "iteration", "finetune", "fails"),
     [(0, 0, False, False), (0, 7, False, True), (7, 0, True, False)],
 )
-def test_explicit_checkpoint_selection(tmp_path, monkeypatch, ckpt_step, iteration, finetune, fails):
+def test_explicit_checkpoint_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ckpt_step: int, iteration: int, finetune: bool, fails: bool
+) -> None:
     """An explicit step selects Megatron even without a tracker and cannot silently load another step."""
     (tmp_path / f"iter_{ckpt_step:07d}").mkdir()
-    args = Namespace(load=str(tmp_path), ckpt_step=ckpt_step, finetune=finetune, lora_rank=0)
-    monkeypatch.setattr(checkpoint, "get_args", lambda: args)
+    args = make_trainer_args(load=str(tmp_path), ckpt_step=ckpt_step, finetune=finetune, lora_rank=0, spec=None)
     monkeypatch.setattr(checkpoint, "_load_checkpoint_megatron", lambda **_kwargs: (iteration, 0))
 
     with pytest.raises(ValueError, match="Requested checkpoint step") if fails else nullcontext():
-        result = checkpoint.load_checkpoint([], None, None, None, False)
+        result = checkpoint.load_checkpoint([], None, None, None, False, args=args)
         assert result == (iteration, not finetune)
 
 
 @pytest.mark.parametrize("layout", ["dsv4", "linear_attention"])
-def test_layout_validation_uses_explicit_step(tmp_path, monkeypatch, layout):
+def test_layout_validation_uses_explicit_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str) -> None:
+    """Layout validation inspects the explicitly selected checkpoint step."""
     (tmp_path / "latest_checkpointed_iteration.txt").write_text("100")
-    args = Namespace(load=str(tmp_path), ckpt_step=7, finetune=False, lora_rank=0)
-    monkeypatch.setattr(checkpoint, "get_args", lambda: args)
+    args = make_trainer_args(load=str(tmp_path), ckpt_step=7, finetune=False, lora_rank=0)
     monkeypatch.setattr(checkpoint, "_load_checkpoint_megatron", lambda **_kwargs: (7, 0))
     monkeypatch.setattr(checkpoint, "is_dsv4_model", lambda _args: layout == "dsv4")
     monkeypatch.setattr(checkpoint, "_has_linear_attention", lambda _model: layout == "linear_attention")
@@ -110,26 +111,26 @@ def test_layout_validation_uses_explicit_step(tmp_path, monkeypatch, layout):
     monkeypatch.setattr(checkpoint, "assert_checkpoint_is_current", validate)
     monkeypatch.setattr(checkpoint, "assert_linear_attn_checkpoint_is_current", validate)
 
-    checkpoint.load_checkpoint([], None, None, None, False)
+    checkpoint.load_checkpoint([], None, None, None, False, args=args)
 
     validate.assert_called_once_with(str(tmp_path / "iter_0000007"))
 
 
 @pytest.mark.parametrize("hf_checkpoint", [False, True])
-def test_exit_on_missing_checkpoint_does_not_fall_back_to_hf(tmp_path, monkeypatch, hf_checkpoint):
+def test_exit_on_missing_checkpoint_does_not_fall_back_to_hf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hf_checkpoint: bool
+) -> None:
+    """Explicit missing-checkpoint handling preserves the selected native or HF source."""
     if hf_checkpoint:
         (tmp_path / "config.json").write_text("{}")
     else:
         (tmp_path / "iter_0000007").mkdir()
-    args = Namespace(
-        **{**parser_defaults(), "load": str(tmp_path), "finetune": False, "exit_on_missing_checkpoint": True}
-    )
-    monkeypatch.setattr(checkpoint, "get_args", lambda: args)
+    args = make_trainer_args(load=str(tmp_path), finetune=False, exit_on_missing_checkpoint=True)
     load_hf = Mock(return_value=(0, 0))
     monkeypatch.setattr(checkpoint, "_load_checkpoint_hf", load_hf)
 
     with nullcontext() if hf_checkpoint else pytest.raises(FileNotFoundError, match="checkpoint"):
-        checkpoint.load_checkpoint([], None, None, None, False)
+        checkpoint.load_checkpoint([], None, None, None, False, args=args)
 
     assert load_hf.call_count == int(hf_checkpoint)
 
