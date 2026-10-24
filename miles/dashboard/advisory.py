@@ -11,6 +11,8 @@ utilization" that was a symptom, not headroom.
 
 from __future__ import annotations
 
+import json
+from bisect import bisect_left
 from dataclasses import dataclass
 from itertools import pairwise
 from statistics import median
@@ -66,6 +68,9 @@ def compute_advisories(
     low_mfu: float = DEFAULT_LOW_MFU,
 ) -> list[Advisory]:
     args = store.meta.args if store.meta else {}
+    if t0 is None and t1 is None and (edge := store.newest_engine_scrape_ts()) is not None:
+        # claims about the engines' current state, like the alarms below
+        t0, t1 = edge - MetricStore.MAX_WINDOW_S, edge
     alarms = _stall_advisories(store)
     alarms += _engine_alarm_advisories(store, args, t0, t1)
     if reader is not None:
@@ -146,6 +151,22 @@ def _counter_delta(series: list[dict], *, since: float = float("-inf")) -> float
     return total
 
 
+def _run_long_series(store: MetricStore, metric: str, recent: list[dict], *, t0: float, t1: float) -> list[dict]:
+    """Each series' run-long history before ``t0``, then its raw samples in
+    [t0, t1] (``recent``). The run-long view keeps one scrape per bucket, so
+    alone it can miss a counter's newest increments; stitched, every interval
+    of ``recent`` is in the result, so its total never falls below theirs."""
+    recent_by_key = {(one["addr"], json.dumps(one["labels"], sort_keys=True)): one for one in recent}
+    out = []
+    for history in store.engine_series(metric):
+        cut = bisect_left(history["ts"], t0)
+        raw = recent_by_key.pop(
+            (history["addr"], json.dumps(history["labels"], sort_keys=True)), dict(ts=[], value=[])
+        )
+        out.append(dict(ts=history["ts"][:cut] + raw["ts"], value=history["value"][:cut] + raw["value"]))
+    return out + list(recent_by_key.values())
+
+
 def _engine_alarm_advisories(store: MetricStore, args: dict, t0: float | None, t1: float | None) -> list[Advisory]:
     if not store.has_stream(Stream.ENGINE_SERIES):
         return []
@@ -159,14 +180,18 @@ def _engine_alarm_advisories(store: MetricStore, args: dict, t0: float | None, t
     # not store.time_range(): when the engines die the other streams keep
     # advancing, and a window that slid past the engine data would drop the
     # alarm exactly when it matters most.
-    requests = store.engine_series("sglang_num_requests_total")
-    aborts = store.engine_series("sglang_num_aborted_requests_total")
-    edge = max((one["ts"][-1] for one in requests + aborts if one["ts"]), default=0.0)
+    edge = store.newest_engine_scrape_ts()
+    # one extra window back: the interval crossing ``since`` needs its earlier sample
+    recent_window = dict(t0=edge - 2 * ABORT_WINDOW_S, t1=edge)
+    requests = store.engine_series("sglang_num_requests_total", **recent_window)
+    aborts = store.engine_series("sglang_num_aborted_requests_total", **recent_window)
     total = _counter_delta(requests, since=edge - ABORT_WINDOW_S)
     aborted = _counter_delta(aborts, since=edge - ABORT_WINDOW_S)
     if total >= ABORT_MIN_REQUESTS and aborted / total > ABORT_RATIO_WARN:
-        run_total = _counter_delta(requests)
-        run_aborted = _counter_delta(aborts)
+        run_total = _counter_delta(_run_long_series(store, "sglang_num_requests_total", requests, **recent_window))
+        run_aborted = _counter_delta(
+            _run_long_series(store, "sglang_num_aborted_requests_total", aborts, **recent_window)
+        )
         message = (
             f"{aborted / total:.0%} of engine requests were aborted client-side in the last "
             f"{_fmt_duration(ABORT_WINDOW_S)} ({aborted:.0f}/{total:.0f}; "

@@ -492,3 +492,74 @@ def test_earlier_long_stalls_do_not_raise_the_baseline(tmp_path):
 
     [advisory] = compute_advisories(MetricStore.load(tmp_path))
     assert advisory.level == "critical" and "train_wait" in advisory.message
+
+
+def test_tuning_advice_follows_the_recent_engine_state(tmp_path):
+    """A busy hour a day ago does not describe the engines now; the default
+    window ends at the newest scrape."""
+    day = 86400.0
+    store = _store(
+        tmp_path,
+        args={"sglang_max_running_requests": 100},
+        engine_samples=[
+            _engine("sglang_num_running_reqs", 90.0, ts=1.0),
+            _engine("sglang_num_running_reqs", 5.0, ts=day),
+        ],
+    )
+    [advisory] = compute_advisories(store)
+    assert "Peak concurrency (5)" in advisory.message
+
+
+def test_healthy_run_reads_no_run_long_engine_series(tmp_path, monkeypatch):
+    """Polled every few seconds by the live view: without an alarm to explain,
+    nothing may read the whole engine history."""
+    store = _store(
+        tmp_path,
+        args={"sglang_max_running_requests": 100},
+        engine_samples=[
+            _engine("sglang_num_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_requests_total", 1000.0, ts=2.0),
+            _engine("sglang_num_running_reqs", 90.0, ts=2.0),
+        ],
+    )
+    queried_windows = []
+    engine_series = store.engine_series
+    monkeypatch.setattr(
+        store,
+        "engine_series",
+        lambda metric, **kw: queried_windows.append((kw.get("t0"), kw.get("t1"))) or engine_series(metric, **kw),
+    )
+    compute_advisories(store)
+    assert queried_windows and (None, None) not in queried_windows
+
+
+def test_engine_stream_with_only_a_partial_line_makes_no_engine_claim(tmp_path):
+    """The live collector's first engine write can be mid-line when polled:
+    the stream exists but holds no record yet."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="partial", start_ts=0.0, args={}))
+    writer.flush()
+    (tmp_path / Stream.ENGINE_SERIES.value).mkdir()
+    (tmp_path / Stream.ENGINE_SERIES.value / "19700101_00.jsonl").write_bytes(b'{"ts":1')
+    store = MetricStore.load(tmp_path)
+    assert compute_advisories(store) == []
+    assert not store.has_stream(Stream.ENGINE_SERIES)
+
+
+def test_abort_storm_run_share_counts_the_newest_scrape(tmp_path, monkeypatch):
+    """The run-long view keeps one scrape per bucket and can drop the newest:
+    counters flat for an hour, then one storm in the last scrape."""
+    from miles.dashboard.store import _ThinnedEngineSeries
+
+    monkeypatch.setattr(_ThinnedEngineSeries, "SCRAPES_PER_ENGINE", 50)
+    last = 2001
+    samples = []
+    for k in range(last + 1):
+        requests, aborts = (200.0, 100.0) if k == last else (0.0, 0.0)
+        samples += [
+            _engine("sglang_num_requests_total", requests, ts=2.0 * k),
+            _engine("sglang_num_aborted_requests_total", aborts, ts=2.0 * k),
+        ]
+    [advisory] = compute_advisories(_store(tmp_path, args={}, engine_samples=samples))
+    assert advisory.level == "warning"
+    assert "(100/200; 50% over the run)" in advisory.message

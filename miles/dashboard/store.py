@@ -317,7 +317,13 @@ class _PartitionReader:
         return out
 
     def has_data(self) -> bool:
-        return any(path.stat().st_size > 0 for _, path in self.files())
+        """Whether a complete record exists: a writer mid-append leaves a file
+        holding a partial line, which no reader parses yet."""
+        for _, path in self.files():
+            with open(path, "rb") as f:
+                if f.readline().endswith(b"\n"):
+                    return True
+        return False
 
     def window(self, t0: float | None, t1: float | None) -> Any:
         """Concatenated block over the partitions intersecting [t0, t1]."""
@@ -366,27 +372,29 @@ class _PartitionReader:
 
     def edge_stamps(self) -> list[float]:
         """Global-range candidates from the first line of the oldest file and
-        the last complete line of the newest — no full scan."""
-        files = [(key, path) for key, path in self.files() if path.stat().st_size > 0]
-        if not files:
-            return []
+        the complete lines in the tail of the newest file holding any — no
+        full scan. One flush writes a batch in arrival order, so its last line
+        need not be its newest; and the newest file can hold only a line still
+        being written, which must not leave the oldest row as the edge."""
+        files = [path for _, path in self.files() if path.stat().st_size > 0]
         lines = []
-        with open(files[0][1], "rb") as f:
-            lines.append(f.readline())
-        with open(files[-1][1], "rb") as f:
-            f.seek(0, 2)
-            f.seek(max(0, f.tell() - 65536))
-            tail = f.read()
-        complete = tail[: tail.rfind(b"\n") + 1]
-        if complete:
-            lines.append(complete.splitlines()[-1])
-        stamps: list[float] = []
-        for line in lines:
-            try:
-                stamps.extend(self._line_stamps(json.loads(line)))
-            except json.JSONDecodeError:
-                pass  # partial line mid-append: no complete record to stamp yet
-        return stamps
+        if files:
+            with open(files[0], "rb") as f:
+                first_line = f.readline()
+            if first_line.endswith(b"\n"):
+                lines.append(first_line)
+        for path in reversed(files):
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                tail_start = max(0, f.tell() - 65536)
+                f.seek(tail_start)
+                tail = f.read()
+            # a mid-file seek cuts the first line
+            tail_lines = tail[: tail.rfind(b"\n") + 1].splitlines()[1 if tail_start else 0 :]
+            if tail_lines:
+                lines.extend(tail_lines)
+                break
+        return [stamp for line in lines for stamp in self._line_stamps(json.loads(line))]
 
 
 class _AppendCursor:
@@ -1318,6 +1326,10 @@ class MetricStore:
     ENGINE_MEAN_AGGREGATED_METRICS: ClassVar[frozenset[str]] = frozenset(
         {"sglang_token_usage", "sglang_cache_hit_rate", "sglang_kv_transfer_latency_ms"}
     )
+
+    def newest_engine_scrape_ts(self) -> float | None:
+        stamps = self._readers[Stream.ENGINE_SERIES].edge_stamps()
+        return max(stamps) if stamps else None
 
     def engine_metric_names(self) -> list[str]:
         """Distinct scraped engine metrics — the L0 sglang category catalog.
