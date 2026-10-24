@@ -79,10 +79,10 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     QwenNextTITOTokenizer,
     TITOTokenizer,
     TITOTokenizerType,
-    _build_dummy_assistant,
     extract_template_args,
     get_tito_tokenizer,
 )
+from miles.utils.chat_template_utils.tito_tokenizer.base import _build_dummy_assistant
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_trajectories import (
     IntermediateSystemTrajectory,
