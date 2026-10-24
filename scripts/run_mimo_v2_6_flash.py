@@ -119,21 +119,31 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def prepare(args: ScriptArgs):
     backend = args.create_backend()
-    target = Path(args.model_dir) / args.model_name
+    _prepare_checkpoint(backend, model_dir=args.model_dir, model_name=args.model_name)
+    if args.mode == "rl" and not args.prompt_data:
+        backend.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+
+
+def _official_checkpoint(model_dir: str) -> str:
+    """Where `prepare` downloads the official FP8/MXFP4 checkpoint that it converts."""
+    return f"{model_dir}/{_HF_REPO.split('/')[1]}"
+
+
+def _prepare_checkpoint(backend, *, model_dir: str, model_name: str):
+    """Convert the official checkpoint into `<model_dir>/<model_name>` unless that conversion finished."""
+    target = Path(model_dir) / model_name
     with U.exclusive_path_lock(str(target)):
         # The converter writes the index last, so it marks a finished conversion.
         if not (target / "model.safetensors.index.json").exists():
-            source = f"{args.model_dir}/{_HF_REPO.split('/')[1]}"
-            layers = _RECIPES[args.model_name].layers
+            source = _official_checkpoint(model_dir)
+            layers = _RECIPES[model_name].layers
             layer_args = f"--layers {layers}" if layers else ""
-            backend.exec_command_cpu(f"mkdir -p {args.model_dir}")
+            backend.exec_command_cpu(f"mkdir -p {model_dir}")
             backend.exec_command_cpu(f"hf download {_HF_REPO} --local-dir {source}")
             backend.exec_command_gpu(
                 f"python {U.repo_base_dir}/tools/convert_mimo_v2_to_bf16.py "
                 f"--model-dir {source} --save-dir {target} --device cuda {layer_args}"
             )
-    if args.mode == "rl" and not args.prompt_data:
-        backend.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
 
 def execute(args: ScriptArgs):

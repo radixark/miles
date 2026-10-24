@@ -43,6 +43,22 @@ def test_explicit_targets_preserve_user_choices(config, value, expected):
     assert resolve_hf_lora_targets(config, target_modules=parse_lora_targets(value)) == expected
 
 
+@pytest.mark.parametrize(
+    "moe_layer_freq,dense",
+    [([0, 1, 1, 1], True), ([1, 1, 1, 1], False)],
+    ids=["dense-layer-0", "all-moe"],
+)
+def test_mimo_v2_groups_follow_the_per_layer_mlp_types(moe_layer_freq, dense):
+    config = {"model_type": "mimo_v2", "moe_layer_freq": moe_layer_freq}
+    attention = [f"model.layers.*.self_attn.{name}_proj" for name in ("q", "k", "v", "o")]
+    dense_mlp = [f"model.layers.*.mlp.{name}_proj" for name in ("gate", "up", "down")]
+    experts = [f"model.layers.*.mlp.experts.*.{name}_proj" for name in ("gate", "up", "down")]
+
+    targets = resolve_hf_lora_targets(config, target_modules=["attn", "mlp", "unembed"])
+
+    assert targets == attention + (dense_mlp if dense else []) + experts + ["lm_head"]
+
+
 def test_exclude_leaf_applies_to_scoped_model_defaults():
     targets = resolve_hf_lora_targets({"model_type": "qwen3"})
     selected = exclude_hf_lora_targets(targets, parse_lora_targets("o_proj, down_proj"))
