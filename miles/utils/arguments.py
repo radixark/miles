@@ -44,6 +44,7 @@ from miles.utils.object_store_config import (
     compute_mooncake_init_kwargs_from_env,
     compute_mooncake_init_kwargs_vanilla,
 )
+from miles.utils.output_store.config import add_output_store_arguments, check_output_store_args
 from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_args
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.score_centering import validate_score_centering_args
@@ -2892,6 +2893,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
         parser = add_rollout_buffer_arguments(parser)
+        parser = add_output_store_arguments(parser)
         parser = add_mtp_training_arguments(parser)
         parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
@@ -2967,6 +2969,7 @@ def parse_args_and_get_parser(
         args = megatron_parse_args(extra_args_provider=add_miles_arguments_and_capture_parser)
         args.compress_ratios = None
         args.rollout_indexer_topk_num_streams = None
+        args.rollout_indexer_topk_width = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
             args.compress_ratios = getattr(hf_config, "compress_ratios", None)
@@ -2982,6 +2985,8 @@ def parse_args_and_get_parser(
                 args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - layer_types.count(
                     "linear_attention"
                 )
+                # ids per stream and token; sizes the output store buffer
+                args.rollout_indexer_topk_width = text_config.index_topk
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0
@@ -4189,6 +4194,10 @@ def miles_validate_args(args):
         assert (
             args.multi_lora_n_adapters == 0
         ), "--multi-lora-n-adapters drives RayWorkerManager, which --cluster-backend kubernetes does not use"
+        assert not args.use_output_store, (
+            "--use-output-store puts the store config in engine and session server commands, which --cluster-backend "
+            "kubernetes renders before it points Mooncake at the in-cluster master, with a 0.0.0.0 engine host"
+        )
         if ObjectStoreBackend(args.object_store_backend) != ObjectStoreBackend.MOONCAKE:
             logger.info(
                 f"Overriding --object-store-backend {args.object_store_backend} with "
@@ -4264,6 +4273,7 @@ def miles_validate_args(args):
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
 
     _validate_deploy_component(args)
+    check_output_store_args(args)
 
 
 def validate_skip_actor_forward_only(args) -> None:

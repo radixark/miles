@@ -48,6 +48,7 @@ def _make_input(*, prompt: str | list[dict[str, str]], label: str) -> GenerateFn
         rollout_max_context_len=None,
         rollout_top_logprobs_num=0,
         use_rollout_routing_replay=False,
+        use_output_store=False,
         use_rollout_indexer_replay=False,
         use_sampling_support_replay=False,
         lora_rank=0,

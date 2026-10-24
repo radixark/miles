@@ -1245,3 +1245,24 @@ def test_dp_splits_carry_the_store_plans_per_row(scheduled: bool):
     assert len(shards) == 2
     for shard in shards:
         assert shard["rollout_store_plan"] == [data["rollout_store_plan"][j] for j in shard["partition"]]
+
+
+class TestOutputStoreTookEffect:
+    def _convert(self, samples, **args):
+        return convert_samples_to_train_data(
+            make_args(rewards_normalization=False, **args),
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+    def test_inline_replay_under_the_switch_means_the_requests_never_opted_in(self):
+        sample = make_sample()
+        sample.rollout_sampling_mask = RolloutSamplingMask(ids=[1], offsets=[0, 1])
+
+        with pytest.raises(StorePlanError, match="builds its own SGLang requests"):
+            self._convert([sample], use_output_store=True)
+
+    def test_without_replay_there_is_nothing_to_store(self):
+        assert "rollout_store_plan" not in self._convert([make_sample()], use_output_store=True)

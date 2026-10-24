@@ -19,9 +19,11 @@ from miles.rollout.generate_utils.sampling_mask import (
 )
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.output_store.plan import (
+    FIELDS,
     OUTPUT_STORE_REF_KEY,
     OUTPUT_STORE_REQUEST_KEY,
     StorePlan,
+    StorePlanError,
     store_ref_from_dict,
 )
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
@@ -100,6 +102,11 @@ def compute_request_payload(
 
     if not evaluation:
         configure_rollout_topk_logprobs_request(args, payload)
+    if args.use_output_store and not evaluation and any(payload.get(field.request_key) for field in FIELDS):
+        if "image_data" in payload:
+            # A media prompt's routed experts have one row per expanded media token, not per prompt token.
+            raise StorePlanError("--use-output-store does not serve multimodal prompts")
+        payload[OUTPUT_STORE_REQUEST_KEY] = True
     return payload, None
 
 

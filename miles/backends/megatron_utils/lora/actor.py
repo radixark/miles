@@ -23,6 +23,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             rollout_data, store_get_result = get_rollout_data(
                 args=self.args,
                 rollout_data_ref=rollout_data_ref,
+                output_store_read=self.output_store_read,
                 train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
             )
             stack.enter_context(store_get_result)
@@ -42,6 +43,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             rollout_data, store_get_result = get_rollout_data(
                 args=self.args,
                 rollout_data_ref=rollout_data_ref,
+                output_store_read=self.output_store_read,
                 train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
             )
             stack.enter_context(store_get_result)

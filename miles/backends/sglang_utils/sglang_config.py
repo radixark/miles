@@ -10,6 +10,7 @@ from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.lora.utils import is_multi_lora_enabled
+from miles.utils.output_store.config import SGLANG_OUTPUT_STORE_FIELDS
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,10 @@ class ServerGroupConfig(FrozenStrictBaseModel):
             f"process derives each engine's url from the addr allocator and its disaggregation_mode from "
             f"worker_type, so an override would make it talk to the wrong endpoint or serve a different role "
             f"than the one it registers with"
+        )
+        assert not (set(SGLANG_OUTPUT_STORE_FIELDS) & set(raw.overrides)), (
+            f"sglang_overrides must not set {SGLANG_OUTPUT_STORE_FIELDS} ({raw.overrides=}): --use-output-store "
+            f"configures the output store of every engine"
         )
 
         rollout_pg_offset = _compute_rollout_offset(args)

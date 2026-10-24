@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from miles.rollout.session.config import SessionServerConfig, compute_session_server_config
+from miles.utils.output_store.config import output_store_backend_config
 
 _ARGS_TO_CONFIG_FIELD = {
     "miles_router_timeout": "timeout",
@@ -34,6 +35,8 @@ _ARGS_TO_CONFIG_FIELD = {
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
+# Derived from several args, tested on their own below.
+_DERIVED_FIELDS = ("output_store_backend_config",)
 _OPTIONAL_ARGS_ATTRS = (
     "num_layers",
     "pause_generation_mode",
@@ -67,6 +70,7 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    use_output_store=False,
 )
 
 
@@ -79,7 +83,7 @@ def _make_args(**overrides) -> Namespace:
 class TestComputeSessionServerConfig:
     def test_every_config_field_has_a_known_source(self):
         """Adding a config field without extending this test's mapping must fail here."""
-        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values())
+        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values()) | set(_DERIVED_FIELDS)
         assert covered == set(SessionServerConfig.model_fields)
 
     def test_call_site_fields_are_copied(self):
@@ -120,6 +124,28 @@ class TestComputeSessionServerConfig:
         )
         assert [getattr(config, name) for name in _OPTIONAL_ARGS_ATTRS] == [None] * len(_OPTIONAL_ARGS_ATTRS)
 
+    def test_the_output_store_config_deletes_only_and_leaves_the_host_to_the_server(self):
+        store_args = dict(
+            use_output_store=True,
+            mooncake_store_init_kwargs={"master_server_address": "10.0.0.1:50051", "local_hostname": "10.0.0.2"},
+            output_store_local_buffer_size="64mb",
+            mooncake_replica_num=1,
+            run_uuid="abcd",
+        )
+        config = compute_session_server_config(
+            _make_args(**store_args), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://x:1"
+        )
+        off = compute_session_server_config(
+            _make_args(), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://x:1"
+        )
+
+        assert config.output_store_backend_config == output_store_backend_config(
+            _make_args(**store_args), deletes_only=True
+        )
+        assert config.output_store_backend_config["local_buffer_size"] == 0
+        assert config.output_store_backend_config["local_hostname"] is None
+        assert off.output_store_backend_config is None
+
     def test_older_args_default_rollout_temperature(self):
         args = Namespace(
             **{key: value for key, value in _DISTINCT_ARGS_VALUES.items() if key != "rollout_temperature"}
@@ -158,6 +184,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_top_logprobs_num=0,
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
+    output_store_backend_config=None,
 )
 
 

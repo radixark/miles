@@ -44,6 +44,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
+from miles.utils.output_store.config import connect_output_store, output_store_backend_config
 from miles.utils.output_store.dropped import store_refs_of, take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
 from miles.utils.simple_checkpointer import atomic_save_folder
@@ -105,6 +106,9 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
+        if args.use_output_store:
+            store = connect_output_store(output_store_backend_config(args, deletes_only=True))
+            self._delete_store_refs = store.delete_many
 
         init_http_client(args)
 
@@ -217,7 +221,14 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         if self._delete_store_refs is None:
             raise StorePlanError(f"rollout {rollout_id} holds {len(refs)} output store refs, but no store client")
         # Off the loop: the fully-async producer keeps generating on it.
-        await asyncio.to_thread(self._delete_store_refs, list(refs.values()))
+        await asyncio.to_thread(self._try_delete_store_refs, list(refs.values()))
+
+    def _try_delete_store_refs(self, refs: list) -> None:
+        try:
+            self._delete_store_refs(refs)
+        except Exception:
+            # Nothing reads these objects any more, so a failed delete only leaks them.
+            logger.exception(f"Failed to delete {len(refs)} output store refs; their objects stay in Mooncake")
 
     async def _generate_rollout_data(
         self, *, rollout_id: int, trainer_model_id: str | None
@@ -418,7 +429,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                     f"Not deleting {len(restored)} restored output store refs: this run has no store client"
                 )
             else:
-                self._delete_store_refs(list(restored.values()))
+                self._try_delete_store_refs(list(restored.values()))
 
     # -------------------------- misc APIs -----------------------------
 

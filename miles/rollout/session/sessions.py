@@ -50,6 +50,7 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcherError,
     resolve_session_message_matcher,
 )
+from miles.utils.output_store.config import connect_output_store
 from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,11 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         chat_template_kwargs=config.apply_chat_template_kwargs,
     )
     merge_inline_system = not detect_inline_system_support(getattr(tokenizer, "chat_template", None))
+    output_store = (
+        None
+        if config.output_store_backend_config is None
+        else connect_output_store(config.output_store_backend_config)
+    )
 
     use_v2 = config.use_session_server == "v2"
     if use_v2:
@@ -81,10 +87,24 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         from miles.rollout.session.v2.session_state import SessionRegistryV2
 
         registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
-        core = SessionCoreV2(backend, registry, config, config.instance_id, use_addition_r3=use_addition_r3)
+        core = SessionCoreV2(
+            backend,
+            registry,
+            config,
+            config.instance_id,
+            use_addition_r3=use_addition_r3,
+            output_store=output_store,
+        )
     else:
         registry = SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
-        core = SessionCore(backend, registry, config, config.instance_id, use_addition_r3=use_addition_r3)
+        core = SessionCore(
+            backend,
+            registry,
+            config,
+            config.instance_id,
+            use_addition_r3=use_addition_r3,
+            output_store=output_store,
+        )
 
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):

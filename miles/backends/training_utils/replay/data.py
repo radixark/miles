@@ -134,7 +134,9 @@ def fill_replay_data(
 
         register_replay_list_func(replay_list, replay_data, models=models)
 
-    del rollout_data[data_key]
+    # A train-data dump, written after training, keeps the column so it holds what replay consumed.
+    if args.save_debug_train_data is None:
+        del rollout_data[data_key]
 
     for iterator in data_iterator:
         iterator.reset()

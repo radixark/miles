@@ -134,6 +134,12 @@ def convert_samples_to_train_data(
     if has_store_plan:
         _check_store_plans(args, samples)
         train_data["rollout_store_plan"] = [sample.rollout_store_plan.to_dict() for sample in samples]
+    elif getattr(args, "use_output_store", False) and any(_has_inline_replay(sample) for sample in samples):
+        # The switch only reaches requests built by compute_request_payload or the session server.
+        raise StorePlanError(
+            "--use-output-store is set, but the samples carry inline replay arrays and no output store plan: "
+            "the generate function builds its own SGLang requests"
+        )
 
     if k := args.rollout_top_logprobs_num:
         # Support mode with the output store: the trainer builds the candidates from the stored mask.
@@ -213,6 +219,13 @@ def convert_samples_to_train_data(
         train_data["dynamic_global_batch_size"] = x
 
     return train_data
+
+
+def _has_inline_replay(sample: Sample) -> bool:
+    return any(
+        replay is not None
+        for replay in (sample.rollout_routed_experts, sample.rollout_indexer_topk, sample.rollout_sampling_mask)
+    )
 
 
 def _check_store_plans(args, samples: list[Sample]) -> None:

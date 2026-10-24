@@ -141,6 +141,7 @@ class TestConfigToArgv:
             rollout_top_logprobs_num=128,
             rollout_sampling_logprobs_mode="selected",
             rollout_temperature=0.7,
+            output_store_backend_config={"master_server_address": "10.0.0.1:50051", "local_hostname": None},
         )
         assert parse_config_argv(SessionServerConfig, config_to_argv(session_config)) == session_config
 

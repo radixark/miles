@@ -62,7 +62,9 @@ def test_fill_replay_bshd_token_alignment(
     # Each token has unique expert IDs in both streams and top-k slots.
     expert_offsets = torch.arange(4).reshape(2, 2)
     routes = [token_ids[:-1, None, None] * 10 + expert_offsets for token_ids in tokens]
-    args = SimpleNamespace(qkv_format="bshd", allgather_cp=allgather_cp, sequence_parallel=sequence_parallel)
+    args = SimpleNamespace(
+        qkv_format="bshd", allgather_cp=allgather_cp, sequence_parallel=sequence_parallel, save_debug_train_data=None
+    )
 
     for cp_rank in range(cp_size):
         positions = list(range(max_seqlen))
@@ -124,11 +126,18 @@ def test_fill_replay_bshd_token_alignment(
                 torch.testing.assert_close(replay.recorded[0], expected[:, stream])
 
 
+@pytest.mark.parametrize("save_debug_train_data", [None, "/tmp/{rollout_id}_{rank}.pt"])
 @pytest.mark.parametrize("sequence_first", [False, True])
 @pytest.mark.parametrize("tp_size,sequence_parallel", [(1, False), (2, True)])
-def test_fill_replay_thd_preserves_packed_order(monkeypatch, sequence_first, tp_size, sequence_parallel):
+def test_fill_replay_thd_preserves_packed_order(
+    monkeypatch, sequence_first, tp_size, sequence_parallel, save_debug_train_data
+):
     args = SimpleNamespace(
-        qkv_format="thd", allgather_cp=False, sequence_parallel=sequence_parallel, data_pad_size_multiplier=2
+        qkv_format="thd",
+        allgather_cp=False,
+        sequence_parallel=sequence_parallel,
+        data_pad_size_multiplier=2,
+        save_debug_train_data=save_debug_train_data,
     )
     expected = torch.tensor([0, 1, -1, 2, 3, -1])
     if tp_size == 2:
@@ -156,3 +165,5 @@ def test_fill_replay_thd_preserves_packed_order(monkeypatch, sequence_first, tp_
         )
         local_expected = expected.chunk(tp_size)[tp_rank] if sequence_parallel else expected
         torch.testing.assert_close(replay.recorded[0][:, 0], local_expected)
+        # Only a train-data dump keeps the consumed column.
+        assert ("routes" in rollout_data) == (save_debug_train_data is not None)

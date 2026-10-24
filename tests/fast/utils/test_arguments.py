@@ -1032,6 +1032,13 @@ class TestClusterBackend:
         with pytest.raises(AssertionError, match="--use-distributed-post"):
             miles_validate_args(args)
 
+    def test_refuses_a_kubernetes_run_that_uses_the_output_store(self):
+        """Its launcher renders engine commands before it points Mooncake at the in-cluster master."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1", "--use-output-store"])
+
+        with pytest.raises(AssertionError, match="--use-output-store"):
+            miles_validate_args(args)
+
     def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path) -> None:
         """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
         from transformers import Qwen3Config

@@ -3,6 +3,7 @@ import logging
 import os
 import random
 from argparse import Namespace
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
@@ -28,6 +29,7 @@ from miles.utils.logging_utils import configure_logger, rebind_env_reporting
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.object_store import StoreObjectRef
+from miles.utils.output_store.config import output_store_reader
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
@@ -79,6 +81,9 @@ def _get_nvml_pci_bus_id(device: int) -> str:
 
 
 class TrainRayActor(NodeProbeMixin):
+    # This worker's reader of the SGLang output store; set in __init__ with --use-output-store.
+    output_store_read: Callable | None = None
+
     def __init__(
         self,
         *,
@@ -113,6 +118,7 @@ class TrainRayActor(NodeProbeMixin):
         )
 
         object_store.init_instance(args)
+        self.output_store_read = output_store_reader(args)
 
     def load_hf_assets(self, *, with_processor: bool = False) -> None:
         with one_rank_at_a_time():

@@ -1,0 +1,222 @@
+"""The ``--use-output-store`` switch: its flags, launch checks and the run's store clients.
+
+With the switch, training requests that ask for routed experts, indexer top-k or the sampling mask
+also ask SGLang to put those arrays in the run's Mooncake (``radix_transfer_plugins``) and return a
+ref. Every client Miles creates for it (SGLang engines, train workers, the rollout executor, the
+session server) takes its config from ``output_store_backend_config``, which derives the connection
+from Miles' own Mooncake config: one master for Miles' object store and the output store.
+"""
+
+from __future__ import annotations
+
+import argparse
+import functools
+import json
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+from sglang.srt.server_args import ServerArgs
+
+from miles.utils.environ import use_legacy_rollout_v1
+from miles.utils.object_store_config import _parse_size, compute_mooncake_store_config
+from miles.utils.workers.argv_utils import _record_field_names
+from miles.utils.workers.types import DeployComponent
+
+if TYPE_CHECKING:
+    from radix_transfer_plugins import OutputStore
+
+# SGLang's own fields for the store: Miles sets them on every engine it launches, so it exposes no
+# --sglang-* flag or per-group override for them.
+SGLANG_OUTPUT_STORE_FIELDS = ("output_store_backend", "output_store_backend_extra_config")
+
+_BACKEND = "mooncake"
+_KEY_PREFIX_BASE = "miles-output-store"
+
+
+def add_output_store_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser.add_argument(
+        "--use-output-store",
+        action="store_true",
+        default=False,
+        help=(
+            "Have SGLang put the routed experts, indexer top-k and sampling mask of training responses in the "
+            "run's Mooncake and return a ref instead of the arrays; the trainer reads them back, and the "
+            "objects are deleted once nothing can read them. Requires --object-store-backend mooncake."
+        ),
+    )
+    parser.add_argument(
+        "--output-store-local-buffer-size",
+        type=str,
+        # Fits a 32k-token DeepSeek-V3.2 response with indexer top-k (about 15.3 GiB).
+        default="16gb",
+        help=(
+            "Local buffer of every SGLang engine and train worker writing or reading the output store, in "
+            "bytes or as a string such as '16gb'. An engine puts all stored arrays of a response through it at "
+            "once, so it must hold one response's routed experts, indexer top-k and sampling mask together. "
+            "With RDMA, each of these clients pins the whole buffer in host memory when it starts."
+        ),
+    )
+    return parser
+
+
+def check_output_store_args(args: argparse.Namespace) -> None:
+    """Reject, all at once, launch settings the output store does not serve."""
+    if not args.use_output_store:
+        return
+    # Imported here: sglang_config imports this module, and the megatron_utils package patches deep_ep on import.
+    from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
+    from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
+
+    buffer_bytes = _parse_size(args.output_store_local_buffer_size)
+    indexer_topk_bytes = _max_indexer_topk_bytes(args)
+    # --save-debug-train-data stays allowed: the trainer dumps after its store columns are materialized.
+    debug_data_flags = {
+        "--save-debug-rollout-data (also set by --dump-details)": args.save_debug_rollout_data,
+        "--load-debug-rollout-data": args.load_debug_rollout_data,
+        "--ci-inject-rollout-data-path": args.ci_inject_rollout_data_path,
+    }
+    violations = [
+        reason
+        for violated, reason in (
+            (
+                not (
+                    args.use_rollout_routing_replay
+                    or args.use_rollout_indexer_replay
+                    or args.use_sampling_support_replay
+                ),
+                "no request would use it: pass --use-rollout-routing-replay or --use-rollout-indexer-replay, or a "
+                "positive --rollout-top-k for sampling-support replay",
+            ),
+            (
+                args.object_store_backend != _BACKEND,
+                f"--object-store-backend must be {_BACKEND}: the output store lives in the run's Mooncake, whose "
+                f"master Miles starts only for that backend (got {args.object_store_backend})",
+            ),
+            (
+                not _sglang_has_output_store(),
+                "the installed SGLang has no output store "
+                f"(ServerArgs lacks {' or '.join(SGLANG_OUTPUT_STORE_FIELDS)}), "
+                "and Miles drops server args SGLang does not know",
+            ),
+            (
+                use_legacy_rollout_v1(),
+                "the legacy rollout (MILES_USE_LEGACY_ROLLOUT_V1) never asks SGLang for the output store",
+            ),
+            (
+                args.rollout_external,
+                "external rollout engines are not supported: Miles configures the store of the engines it launches",
+            ),
+            (
+                resolve_sglang_config(args).has_pd_disaggregation or args.rollout_external_router_pd,
+                "PD disaggregation is not supported: SGLang rejects the output store there",
+            ),
+            (
+                args.custom_convert_samples_to_train_data_path is not None,
+                "a custom convert function would bypass the output store plan column",
+            ),
+            (
+                resolve_megatron_config(args).is_multi_policy,
+                "multi-policy training is not supported: stored objects are released per rollout id",
+            ),
+            (
+                DeployComponent(args.deploy_component) is not DeployComponent.ALL,
+                f"only --deploy-component {DeployComponent.ALL.value} is supported (got {args.deploy_component})",
+            ),
+            (args.debug_rollout_only, "--debug-rollout-only has no train worker to hold the stored objects"),
+            (
+                indexer_topk_bytes is not None and indexer_topk_bytes > buffer_bytes,
+                f"--output-store-local-buffer-size {args.output_store_local_buffer_size} cannot hold the "
+                f"{indexer_topk_bytes} bytes of indexer top-k that one --rollout-max-context-len sequence stores",
+            ),
+            *(
+                (value is not None, f"{flag} is not supported: saved output store refs do not outlive their run")
+                for flag, value in debug_data_flags.items()
+            ),
+        )
+        if violated
+    ]
+    if violations:
+        raise ValueError("--use-output-store: " + "; ".join(violations))
+
+
+def output_store_backend_config(
+    args: argparse.Namespace, *, local_hostname: str | None = None, deletes_only: bool = False
+) -> dict[str, Any]:
+    """The radix_transfer_plugins ``MooncakeConfig`` of a client of this run's output store.
+
+    The connection comes from Miles' own Mooncake config. ``local_hostname`` and ``device_name`` belong
+    to the client's node, which may not be the node building the config: an engine passes its host, and
+    None leaves either to ``connect_output_store`` in the process that connects. A client that only
+    deletes moves no data, so it registers no local buffer.
+    """
+    init_kwargs = args.mooncake_store_init_kwargs or {}
+    mooncake = compute_mooncake_store_config(init_kwargs, contribute_segment=False)
+    return {
+        "master_server_address": mooncake["master_server_addr"],
+        "local_hostname": local_hostname,
+        "local_buffer_size": 0 if deletes_only else args.output_store_local_buffer_size,
+        # Writers only: one prefix per launch, so a later sweep can find this run's objects.
+        "key_prefix": f"{_KEY_PREFIX_BASE}/{args.run_uuid}",
+        "protocol": mooncake["protocol"],
+        "metadata_server": mooncake["metadata_server"],
+        # MOONCAKE_DEVICE may differ by node, so only an init kwarg names the device for every client.
+        "device_name": init_kwargs.get("device_name") or None,
+        "replica_num": args.mooncake_replica_num,
+    }
+
+
+def sglang_output_store_server_args(args: argparse.Namespace, *, local_hostname: str) -> dict[str, str]:
+    """The ``ServerArgs`` fields that make an engine write to the run's output store."""
+    config = output_store_backend_config(args, local_hostname=local_hostname)
+    if config["device_name"] is None:
+        # SGLang reads no MOONCAKE_* variable: without an init kwarg, the engine names Mooncake no device,
+        # as Miles' own client does without MOONCAKE_DEVICE.
+        del config["device_name"]
+    return {"output_store_backend": _BACKEND, "output_store_backend_extra_config": json.dumps(config)}
+
+
+def connect_output_store(config: dict[str, Any]) -> OutputStore:
+    """A client of the output store ``config`` names, for this process."""
+    # radix_transfer_plugins ships with SGLang and is not a Miles dependency.
+    from radix_transfer_plugins import OutputStore, create_backend
+
+    # This node's address and device, resolved as Miles resolves its own Mooncake client's
+    # (MOONCAKE_LOCAL_HOSTNAME or the node IP, and MOONCAKE_DEVICE).
+    local = compute_mooncake_store_config({}, contribute_segment=False)
+    node_values = {"local_hostname": local["local_hostname"], "device_name": local["rdma_devices"]}
+    config = {**config, **{key: value for key, value in node_values.items() if config[key] is None}}
+
+    return OutputStore(backend=create_backend(_BACKEND, json.dumps(config)))
+
+
+def output_store_reader(args: argparse.Namespace) -> Callable | None:
+    """This train worker's ``read`` for ``materialize_store_columns``, or None without the switch."""
+    if not args.use_output_store:
+        return None
+    from radix_transfer_plugins.backends.mooncake import parse_size
+    from radix_transfer_plugins.stashes.token_output import TokenOutputStash
+
+    store = connect_output_store(output_store_backend_config(args))
+    return functools.partial(
+        store.read_many,
+        stash_type=TokenOutputStash,
+        buffer_bytes=parse_size(args.output_store_local_buffer_size),
+    )
+
+
+def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
+    """Bytes of the indexer top-k of a --rollout-max-context-len sequence, or None if unknown.
+
+    Only this field is sized at launch: on DeepSeek-V3.2 it takes about 0.5 MB per token, routed experts take
+    about 2 KB, and a sampling mask row holds the sampled support, which only sampling knows.
+    """
+    streams = getattr(args, "rollout_indexer_topk_num_streams", None)
+    width = getattr(args, "rollout_indexer_topk_width", None)
+    if not args.use_rollout_indexer_replay or args.rollout_max_context_len is None or not (streams and width):
+        return None
+    # One int32 row per forward step; no object outgrows the sequence it stores.
+    return (args.rollout_max_context_len - 1) * streams * width * 4
+
+
+def _sglang_has_output_store() -> bool:
+    return set(SGLANG_OUTPUT_STORE_FIELDS) <= set(_record_field_names(ServerArgs))
