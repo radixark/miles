@@ -380,9 +380,10 @@ def forward_only(
 
         return output_tensor, partial(f, **callback_kwargs)
 
-    # Turn on evaluation mode which disables dropout.
-    for model_module in model:
-        model_module.eval()
+    # eval() also selects inference kernels (TE attention), so it only switches off train-only behavior
+    if args.train_only_forward_options:
+        for model_module in model:
+            model_module.eval()
 
     if args.custom_megatron_before_log_prob_hook_path:
         from miles.utils.function_registry import load_function

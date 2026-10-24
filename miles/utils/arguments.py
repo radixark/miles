@@ -3018,6 +3018,7 @@ def parse_args_and_get_parser(
     if backend == "megatron":
         megatron_validate_args(args)
         validate_lora_args_after_megatron(args)
+        args.train_only_forward_options = _train_only_forward_options(args)
 
         # always use varlen
         args.variable_seq_lengths = True
@@ -4266,18 +4267,11 @@ def miles_validate_args(args):
     _validate_deploy_component(args)
 
 
-def validate_skip_actor_forward_only(args) -> None:
-    option = "--skip-actor-forward-only"
-    assert args.train_backend == "megatron", f"{option} only supports --train-backend megatron"
-    assert args.loss_type == "policy_loss", f"{option} only supports --loss-type policy_loss"
-    assert args.compute_advantages_and_returns, f"{option} requires actor advantage computation"
-
-    incompatible_options = [
+def _train_only_forward_options(args) -> list[str]:
+    """The enabled options under which a train-mode forward is not the log-prob forward: random or train-only."""
+    return [
         name
         for name, enabled in (
-            ("--keep-old-actor", args.keep_old_actor),
-            ("--kl-coef", args.kl_coef != 0),
-            ("--use-opd", args.use_opd),
             ("--hidden-dropout", args.hidden_dropout != 0),
             ("--attention-dropout", args.attention_dropout != 0),
             ("--lora-dropout", args.lora_dropout != 0),
@@ -4288,6 +4282,23 @@ def validate_skip_actor_forward_only(args) -> None:
                 "--moe-router-load-balancing-type sinkhorn",
                 "sinkhorn" in args.moe_router_load_balancing_type,
             ),
+        )
+        if enabled
+    ]
+
+
+def validate_skip_actor_forward_only(args) -> None:
+    option = "--skip-actor-forward-only"
+    assert args.train_backend == "megatron", f"{option} only supports --train-backend megatron"
+    assert args.loss_type == "policy_loss", f"{option} only supports --loss-type policy_loss"
+    assert args.compute_advantages_and_returns, f"{option} requires actor advantage computation"
+
+    incompatible_options = _train_only_forward_options(args) + [
+        name
+        for name, enabled in (
+            ("--keep-old-actor", args.keep_old_actor),
+            ("--kl-coef", args.kl_coef != 0),
+            ("--use-opd", args.use_opd),
             ("--use-rollout-entropy", args.use_rollout_entropy),
             ("--true-on-policy-mode", args.true_on_policy_mode),
             ("--log-correct-samples", args.log_correct_samples),
