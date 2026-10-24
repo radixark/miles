@@ -9,6 +9,7 @@ from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
 from miles.utils.output_store.plan import FIELDS, SamplingMaskSegments, StorePlanError
+from miles.utils.rollout_topk_logprobs import requests_support_logprobs
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
@@ -136,7 +137,7 @@ def convert_samples_to_train_data(
 
     if k := args.rollout_top_logprobs_num:
         # Support mode with the output store: the trainer builds the candidates from the stored mask.
-        store_support = has_store_plan and args.rollout_sampling_logprobs_mode == "support"
+        store_support = has_store_plan and requests_support_logprobs(args)
         candidate_fields = () if store_support else ("rollout_topk_token_ids", "rollout_topk_log_probs")
         for sample in samples:
             for field in (*candidate_fields, "rollout_log_probs"):
@@ -170,8 +171,7 @@ def convert_samples_to_train_data(
 
         train_data["rollout_sampling_mask_ids"] = sampling_mask_ids
         train_data["rollout_sampling_mask_offsets"] = sampling_mask_offsets
-        if k and args.loss_type == "score_centering" and args.rollout_sampling_logprobs_mode == "support":
-            _compact_candidate_ids(train_data)
+        compact_score_centering_candidates(args, train_data)
 
     if samples[0].rollout_routed_experts is not None:
         train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
@@ -238,12 +238,18 @@ def _check_store_plans(args, samples: list[Sample]) -> None:
             raise StorePlanError(
                 f"--{field.required_by.replace('_', '-')} is set but the samples' output store plans have no {field.name}."
             )
-    if args.rollout_top_logprobs_num and args.rollout_sampling_logprobs_mode == "support":
+    if requests_support_logprobs(args):
         if SamplingMaskSegments.name not in names:
             raise StorePlanError(
                 "Support-mode rollout top-k logprobs are built from the stored sampling mask; "
                 "the samples' output store plans have none."
             )
+
+
+def compact_score_centering_candidates(args, data: dict) -> None:
+    """Score centering trains on support-mode candidates compacted onto the sampling mask's ids."""
+    if requests_support_logprobs(args) and args.loss_type == "score_centering":
+        _compact_candidate_ids(data)
 
 
 def _compact_candidate_ids(data: dict) -> None:

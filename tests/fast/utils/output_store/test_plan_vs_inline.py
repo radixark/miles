@@ -116,12 +116,14 @@ def tokens_of(rng: np.random.Generator, low: int, high: int) -> list[int]:
     return rng.integers(0, VOCAB, size=int(rng.integers(low, high + 1))).tolist()
 
 
-def run_case(rng: np.random.Generator, *, mode: str, k: int, routed_experts: bool) -> tuple[Sample, Sample, dict]:
+def run_case(
+    rng: np.random.Generator, *, mode: str, k: int, routed_experts: bool, key_prefix: str = "", aborts: bool = True
+) -> tuple[Sample, Sample, dict]:
     """A session of 1-3 turns, each 1-3 responses with tool observations between them."""
     num_turns = int(rng.integers(1, 4))
     # A no-output abort ends a /generate sample; a session never records one, so no merge follows
     # it (inline, its missing routed experts would stop the merge).
-    abort_last = rng.random() < 0.15 and not (routed_experts and num_turns > 1)
+    abort_last = aborts and rng.random() < 0.15 and not (routed_experts and num_turns > 1)
     prefix = tokens_of(rng, 2, 4)
     inline_turns, store_turns, objects = [], [], {}
     for turn in range(num_turns):
@@ -134,7 +136,7 @@ def run_case(rng: np.random.Generator, *, mode: str, k: int, routed_experts: boo
                 for sample in (inline, store):
                     tool_call_utils.update_sample_with_tool_responses(sample, observation, Tokenizer())
             abort = abort_last and turn == num_turns - 1 and i == num_responses - 1
-            key = f"{turn}.{i}"
+            key = f"{key_prefix}{turn}.{i}"
             response = generate(
                 rng, key=key, num_tokens=len(inline.tokens), mode=mode, k=k, routed_experts=routed_experts, abort=abort
             )

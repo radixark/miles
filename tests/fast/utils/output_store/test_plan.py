@@ -22,6 +22,7 @@ from miles.utils.output_store.plan import (
     StorePlan,
     StorePlanError,
     combine_plans,
+    store_reads,
     store_ref_from_dict,
 )
 
@@ -225,6 +226,40 @@ class TestEdits:
         assert combine_plans(None, None, lambda a, b: a) is None
         with pytest.raises(StorePlanError, match="with output store data and one without"):
             combine_plans(with_mask, None, lambda a, b: a)
+
+
+class TestReads:
+    def test_only_the_arrays_the_rows_come_from_are_read_once_per_object(self):
+        plan = response("a", prompt=3, output=2).merge_turn(response("b", prompt=8, output=1), observation_tokens=3)
+        plan = plan.adopt_refs([ref("x", seq_rows=4)])
+
+        reads = store_reads([plan, plan], support_topk=2)
+
+        # "a"'s forward rows were replaced by "b"'s; "x" is owned but unused.
+        assert {key: names for key, (_, names) in reads.items()} == {
+            "b": [R3, INDEXER, MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS],
+            "a": [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS],
+        }
+        assert reads["b"][0] is plan.fields[R3].segs[0].ref
+
+    def test_plans_sharing_an_object_read_the_union_of_their_arrays(self):
+        merged = response("a", prompt=3, output=2).merge_turn(response("b", prompt=8, output=1), observation_tokens=3)
+        # Another sample whose forward rows still come from "a".
+        alone = response("a", prompt=3, output=2)
+
+        reads = store_reads([merged, alone], support_topk=2)
+
+        assert reads["a"][1] == [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS, R3, INDEXER]
+
+    def test_support_log_probs_are_read_only_in_support_mode(self):
+        # A selected-mode request: SGLang stores no support log-probs.
+        selected = Ref("s", (Spec(MASK_LENGTHS, "int32", (2,)), Spec(MASK_TOKEN_IDS, "int32", (3,))))
+        plan = StorePlan.from_response(selected, request=request({MASK}), num_tokens=5, response_length=2)
+
+        assert store_reads([plan], support_topk=0)["s"][1] == [MASK_LENGTHS, MASK_TOKEN_IDS]
+        # Asked for though the ref lacks them, so the read fails instead of materialize.
+        assert store_reads([plan], support_topk=2)["s"][1] == [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS]
+        assert store_reads([StorePlan(fields={}, owned_refs=(ref("x"),))], support_topk=2) == {}
 
 
 class TestValidate:
