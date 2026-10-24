@@ -53,12 +53,12 @@ def _is_ignored(name: str, ignore_rules: list[str], literal_rules: frozenset[str
 def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config is not None
     assert quantization_config.get("quant_algo") == "NVFP4" or quantization_config.get("quant_method") == "nvfp4"
-    if args is not None and bool(
+    if bool(
         getattr(args.backend, "fp4_param", False) or getattr(args.backend, "fp4_param_gather", False)
     ):  # config-access-exempt: FP4 option names differ across Megatron versions
         raise NotImplementedError("fp4-param-gather is unsupported for Miles NVFP4 checkpoint export.")
 
-    if args is not None and args.extra_high_precision_layers_megatron:
+    if args.extra_high_precision_layers_megatron:
         for layer_name in args.extra_high_precision_layers_megatron:
             if layer_name in megatron_name:
                 return converted_named_params
