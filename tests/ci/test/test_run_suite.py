@@ -36,7 +36,7 @@ from tests.ci.ci_policy import (
     resolve_policy,
     strip_run_ci_prefix,
 )
-from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
+from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files, register_cpu_ci
 from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import CI_SUITES, build_cpu_pytest_cmd, filter_tests
 from tests.ci.stage_selection import PR_GPU_STAGES
@@ -524,6 +524,40 @@ class TestWorkflowScopeSeam:
 
     def test_hopper_shards_are_not_throttled_before_runner_queue(self):
         assert "max-parallel:" not in self._workflow()
+
+    @pytest.mark.parametrize("cadence", [REGULAR_CADENCE, NIGHTLY_CADENCE])
+    @pytest.mark.parametrize("suite", ["stage-c-8-gpu-h100", "stage-c-8-gpu-h200"])
+    def test_eight_gpu_hopper_shards_fit_runtime_budget(self, cadence, suite):
+        workflow = self._workflow()
+        job = workflow.split(f"\n  {suite}:", 1)[1].split("\n  stage-", 1)[0]
+        if suite == "stage-c-8-gpu-h100":
+            assert (
+                "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' "
+                "&& '[0,1]' || '[0,1,2]') }}"
+            ) in job
+            shard_count = 2 if cadence == REGULAR_CADENCE else 3
+        else:
+            assert (
+                "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' "
+                "&& '[0,1,2,3]' || '[0,1,2,3,4]') }}"
+            ) in job
+            shard_count = 4 if cadence == REGULAR_CADENCE else 5
+        policy = resolve_policy(cadence, {"run-ci-image"} if cadence == REGULAR_CADENCE else set())
+        tests, _ = filter_tests(
+            collect_tests(discover_ci_files()),
+            HWBackend.CUDA,
+            suite,
+            policy.admit_nightly_tests,
+            labels=set(policy.include_labels),
+            dispatch_arches=policy.dispatch_arches,
+            absorb=policy.absorb,
+        )
+        loads = [
+            sum(test.est_time for test in run_suite_module.auto_partition(tests, rank, shard_count))
+            for rank in range(shard_count)
+        ]
+        assert all(load > 0 for load in loads)
+        assert max(loads) <= 7200 if cadence == REGULAR_CADENCE else max(loads) < 7200
 
     def test_b200_jobs_share_one_cross_pr_host_lease(self):
         workflow = self._workflow()

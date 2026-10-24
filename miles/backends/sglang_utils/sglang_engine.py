@@ -6,6 +6,7 @@ import shlex
 
 from sglang.srt.server_args import ServerArgs
 
+from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils.lora.utils import (
@@ -156,14 +157,20 @@ def _compute_server_args(
         )
     elif lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
-        kwargs["max_loras_per_batch"] = 1
+        # attention DP serves only pinned adapters (sgl-project/sglang#36389), and SGLang never pins the last slot
+        kwargs["max_loras_per_batch"] = 2 if sglang_attention_dp_enabled(args) else 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
         kwargs["lora_target_modules"] = (
             ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
         )
 
         if engine_loads_adapter_from_disk(args):
-            kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
+            if sglang_attention_dp_enabled(args):
+                kwargs["lora_paths"] = [
+                    {"lora_name": LORA_ADAPTER_NAME, "lora_path": args.lora_adapter_path, "pinned": True}
+                ]
+            else:
+                kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
         elif args.lora_adapter_path is not None:
             logger.info("Skipping startup lora_paths: the trainer pushes the adapter in the first weight sync")
         else:

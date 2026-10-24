@@ -201,7 +201,7 @@ def _render_action_argv(action: argparse.Action, value: object) -> list[str]:
     if action.nargs in ("*", "+") or isinstance(action.nargs, int):
         if isinstance(value, dict):
             return [flag, *(f"{key}={item}" for key, item in value.items())]
-        return [flag, *(str(item) for item in value)]
+        return [flag, *(json.dumps(item) if isinstance(item, dict) else str(item) for item in value)]
 
     if isinstance(value, dict | list | tuple):
         return [flag, json.dumps(value)]

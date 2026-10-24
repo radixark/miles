@@ -11,7 +11,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 # instability note surfaces as grad_norm explosions from step 1 if it regresses.
 
 register_cuda_ci(
-    est_time=900, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts", "lora"], hardware=["hopper"]
+    est_time=900, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts", "lora"], hardware=["hopper"]
 )
 register_rocm_ci(est_time=1100, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
