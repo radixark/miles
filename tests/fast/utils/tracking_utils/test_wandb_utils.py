@@ -126,3 +126,20 @@ def test_secondary_wandb_init_attaches_without_resuming(monkeypatch):
     assert settings.x_primary is False
     assert settings.x_update_finish_state is False
     assert settings.init_timeout == 300.0
+
+
+class TestPrimaryTrackingIdentity:
+
+    def test_randomized_primary_name_does_not_require_a_worker_rank(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The launcher identifies primary tracking as rank zero without carrying worker rank fields."""
+        args = _args(wandb_random_suffix=True)
+        del args.rank
+        init_calls: list[dict[str, object]] = []
+        monkeypatch.setattr(wandb_utils, 'generate_id', lambda: 'suffix')
+        monkeypatch.setattr(wandb_utils.wandb, 'init', lambda **kwargs: init_calls.append(kwargs))
+        monkeypatch.setattr(wandb_utils.wandb, 'define_metric', lambda *args, **kwargs: None)
+        monkeypatch.setattr(wandb_utils.wandb, 'run', SimpleNamespace(id='assigned'), raising=False)
+        wandb_utils.init_wandb_primary(args)
+        assert init_calls[0]['name'] == 'group_suffix-RANK_0'
+        assert init_calls[0]['group'] == 'group_suffix'
+        assert args.wandb_run_id == 'assigned'
