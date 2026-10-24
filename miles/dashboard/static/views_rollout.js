@@ -39,8 +39,14 @@ function versionSpan(row) {
   return row.mixed_version ? `v${lo}–v${row.weight_version}` : `v${row.weight_version}`;
 }
 
+// a step can hold tens of thousands of samples: build one page of rows, not all
+const TABLE_PAGE_ROWS = 200;
+
 function sortableTable(rows, columns, { onRowClick, flagRow, sortState }) {
-  const wrap = el("div", { class: "tablewrap" });
+  // the pager sits outside the scroll box, so it shows without scrolling
+  const pager = el("div");
+  const scrollBox = el("div", { class: "tablewrap" });
+  let page = 0;
   const render = () => {
     const { column, desc } = sortState;
     const sorted = [...rows].sort((a, b) => {
@@ -49,26 +55,45 @@ function sortableTable(rows, columns, { onRowClick, flagRow, sortState }) {
       if (vb === null) return -1;
       return (va > vb ? 1 : va < vb ? -1 : 0) * (desc ? -1 : 1);
     });
+    const pageCount = Math.max(1, Math.ceil(sorted.length / TABLE_PAGE_ROWS));
+    page = Math.min(page, pageCount - 1);
     const head = el("tr", {}, columns.map((c) =>
       el("th", {
         class: c === column ? "sorted" : "",
         onclick: () => {
           sortState.desc = sortState.column === c ? !sortState.desc : true;
           sortState.column = c;
+          page = 0;
           render();
+          scrollBox.scrollTop = 0;
         },
       }, [c === column ? `${c} ${desc ? "▾" : "▴"}` : c]),
     ));
-    const body = sorted.map((row) =>
+    const body = sorted.slice(page * TABLE_PAGE_ROWS, (page + 1) * TABLE_PAGE_ROWS).map((row) =>
       el("tr", {
         class: flagRow && flagRow(row) ? "flagged" : "",
         onclick: onRowClick ? () => onRowClick(row) : null,
       }, columns.map((c) => el("td", {}, [fmtNum(row[c])]))),
     );
-    wrap.replaceChildren(el("table", { class: "data" }, [el("thead", {}, [head]), el("tbody", {}, body)]));
+    const goToPage = (to) => () => {
+      page = to;
+      render();
+      scrollBox.scrollTop = 0;
+    };
+    const pagerControls = pageCount === 1 ? [] : [
+      el("div", { class: "controls" }, [
+        el("button", { onclick: goToPage(page - 1), disabled: page === 0 ? "" : null }, ["◀"]),
+        el("span", { class: "muted" }, [
+          `rows ${page * TABLE_PAGE_ROWS + 1}–${Math.min((page + 1) * TABLE_PAGE_ROWS, sorted.length)} of ${sorted.length}`,
+        ]),
+        el("button", { onclick: goToPage(page + 1), disabled: page === pageCount - 1 ? "" : null }, ["▶"]),
+      ]),
+    ];
+    pager.replaceChildren(...pagerControls);
+    scrollBox.replaceChildren(el("table", { class: "data" }, [el("thead", {}, [head]), el("tbody", {}, body)]));
   };
   render();
-  return wrap;
+  return el("div", {}, [pager, scrollBox]);
 }
 
 // How far back the "latest" landing will look for a step it can actually show.
