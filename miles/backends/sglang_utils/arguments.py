@@ -1,41 +1,9 @@
 import argparse
 
 from sglang.srt.server_args import ServerArgs
+
 from miles.utils.args.utils import config_values
 from miles.utils.http_utils import wrap_ipv6
-
-
-# TODO: use all sglang router arguments with `--sglang-router` prefix
-def add_sglang_router_arguments(parser):
-    """
-    Add arguments to the parser for the SGLang router.
-    """
-    parser.add_argument(
-        "--sglang-router-ip",
-        type=str,
-        default=None,
-        help="IP address of the SGLang router",
-    )
-    parser.add_argument(
-        "--sglang-router-port",
-        type=int,
-        default=None,
-        help="Port of the SGLang router",
-    )
-    parser.set_defaults(sglang_model_routers=None)
-    parser.add_argument(
-        "--sglang-router-policy",
-        type=str,
-        default=None,
-        help="Routing policy for the SGLang router (e.g., 'consistent_hashing', 'round_robin')",
-    )
-    parser.add_argument(
-        "--sglang-router-request-timeout-secs",
-        type=int,
-        default=14400,
-        help="Timeout for requests to the SGLang router in seconds",
-    )
-    return parser
 
 
 _SKIPPED_SERVER_ARGS = [
