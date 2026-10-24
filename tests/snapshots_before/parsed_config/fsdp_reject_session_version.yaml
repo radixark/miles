@@ -1,2 +1,0 @@
-{error: {message: '--use-session-server=''v3'' is not a known session server version; pass it bare (or ''v1'') for the append-only
-      linear server, or ''v2'' for tree serving.', type: ValueError}}

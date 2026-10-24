@@ -1,2 +1,0 @@
-{error: {message: P2P weight transfer mode is not compatible with --colocate. Please use broadcast mode or disable colocate.,
-    type: AssertionError}}

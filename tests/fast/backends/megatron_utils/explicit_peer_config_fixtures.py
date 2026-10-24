@@ -17,7 +17,7 @@ class PeerCheckpointBoundary:
     transport: _FakeTransport
     save_calls: list[dict[str, Any]]
     load_calls: list[dict[str, Any]]
-    snapshot_calls: list[dict[str, Any]]
+    checkpoint_calls: list[dict[str, Any]]
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def peer_checkpoint_boundary(
         transport=_FakeTransport(),
         save_calls=[],
         load_calls=[],
-        snapshot_calls=[],
+        checkpoint_calls=[],
     )
 
     def save_checkpoint(
@@ -61,22 +61,23 @@ def peer_checkpoint_boundary(
             return manager.find_latest(), 0
         return 0, 0
 
-    def dump(*, stage: str, config: dict[str, Any], **kwargs: Any) -> None:
-        args = config["args"]
-        boundary.snapshot_calls.append(
+    def observe_checkpoint_load(*args: Any, **kwargs: Any) -> Any:
+        trainer = kwargs["args"]
+        boundary.checkpoint_calls.append(
             dict(
-                stage=stage,
-                args=args,
-                load=args.backend.load,
-                ckpt_step=args.backend.ckpt_step,
-                config=config,
-                backend=dict(vars(args.backend)),
+                args=trainer,
+                load=trainer.backend.load,
+                ckpt_step=trainer.backend.ckpt_step,
+                local_checkpoint_manager="local_checkpoint_manager" in (kwargs["checkpointing_context"] or {}),
+                backend=dict(vars(trainer.backend)),
             )
         )
+        return checkpoint_module.load_checkpoint(*args, **kwargs)
 
     monkeypatch.setattr(model_module, "save_checkpoint", save_checkpoint)
     monkeypatch.setattr(checkpoint_module, "_load_checkpoint_megatron", load_checkpoint)
-    monkeypatch.setattr(checkpoint_module.ConfigSnapshotDumper, "dump", dump)
+    monkeypatch.setattr(model_module, "load_checkpoint", observe_checkpoint_load)
+    monkeypatch.setattr(actor_module, "load_checkpoint", observe_checkpoint_load)
     monkeypatch.setattr(
         memory_module,
         "get_args",

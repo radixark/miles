@@ -9,6 +9,7 @@ from miles.ray.specs.inference import (
 )
 from miles.rollout.session.types import SessionServerInstance
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
 from miles.utils.http_utils import wait_tcp_ready_async
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
@@ -49,17 +50,19 @@ async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerPro
     )
     router_addrs = {model_cfg.name: addr for model_cfg, addr in zip(config.models, ready, strict=True)}
 
-    dynamic_port = args.sglang_router_port is None
+    if SNAPSHOT_TESTING_ENABLED:
+        dynamic_port = args.sglang_router_port is None
     primary = router_addrs[config.models[0].name]
     args.sglang_router_ip = primary.host
     args.sglang_router_port = primary.port
     args.sglang_model_routers = {name: (addr.host, addr.port) for name, addr in router_addrs.items()}
 
-    for addr in router_addrs.values():
-        generated_value_registry.register(kind="host", name=addr.host, value=addr.host)
-        if dynamic_port:
-            generated_value_registry.register(kind="port", name=str(addr.port), value=str(addr.port))
-    ConfigSnapshotDumper.dump(stage="router_endpoints", config={"args": args})
+    if SNAPSHOT_TESTING_ENABLED:
+        for addr in router_addrs.values():
+            generated_value_registry.register(kind="host", name=addr.host, value=addr.host)
+            if dynamic_port:
+                generated_value_registry.register(kind="port", name=str(addr.port), value=str(addr.port))
+        ConfigSnapshotDumper.dump(stage="router_endpoints", config={"args": args})
 
     return router_addrs
 
@@ -112,13 +115,14 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
     ]
     _assert_hosts_keep_their_own_external_host(args.session_server_instances)
 
-    for addr in addrs:
-        generated_value_registry.register(kind="host", name=addr.host, value=addr.host)
-        if args.session_server_port is None:
-            generated_value_registry.register(kind="port", name=str(addr.port), value=str(addr.port))
-        if args.session_server_external_host is None and addr.external_host is None:
-            generated_value_registry.register(kind="external_host", name=addr.host, value=addr.host)
-    ConfigSnapshotDumper.dump(stage="session_endpoints", config={"args": args})
+    if SNAPSHOT_TESTING_ENABLED:
+        for addr in addrs:
+            generated_value_registry.register(kind="host", name=addr.host, value=addr.host)
+            if args.session_server_port is None:
+                generated_value_registry.register(kind="port", name=str(addr.port), value=str(addr.port))
+            if args.session_server_external_host is None and addr.external_host is None:
+                generated_value_registry.register(kind="external_host", name=addr.host, value=addr.host)
+        ConfigSnapshotDumper.dump(stage="session_endpoints", config={"args": args})
 
     await asyncio.gather(
         *[wait_tcp_ready_async(addr.host, addr.port, timeout=_SESSION_SERVER_READY_TIMEOUT_SECONDS) for addr in addrs]

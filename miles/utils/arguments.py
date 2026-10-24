@@ -31,6 +31,7 @@ from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
 from miles.utils.args.runtime import AllConfig
 from miles.utils.args.schema import reset_arg
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
@@ -1212,9 +1213,12 @@ def miles_validate_args(args):
     if args.critic_save is None and args.save is not None:
         # a sibling dir, not args.save itself: sharing a dir would clobber the actor's iteration tracker
         args.critic_save = args.save.rstrip("/") + "_critic"
-        for entry in generated_value_registry.read():
-            if entry.kind == "run_id" and args.save.rstrip("/").rsplit("/", 1)[-1] == entry.value:
-                generated_value_registry.register(kind="critic_run_id", name=entry.name, value=f"{entry.value}_critic")
+        if SNAPSHOT_TESTING_ENABLED:
+            for entry in generated_value_registry.read():
+                if entry.kind == "run_id" and args.save.rstrip("/").rsplit("/", 1)[-1] == entry.value:
+                    generated_value_registry.register(
+                        kind="critic_run_id", name=entry.name, value=f"{entry.value}_critic"
+                    )
 
     if args.offload:
         args.offload_train = True

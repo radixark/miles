@@ -4,9 +4,10 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-
 from tests.ci.ci_utils import CI_GATE_RECORD_DIR_ENV, TestFile, reaping_is_isolated, run_unittest_files
 from tests.ci.run_suite import snapshot_hardware
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 
 app = typer.Typer(add_completion=False)
 
@@ -27,7 +28,7 @@ def main(
             enable_retry=False,
             continue_on_error=False,
             gate_store=None,
-            snapshot_hardware=snapshot_hardware(suite) if suite is not None else None,
+            snapshot_hardware=snapshot_hardware(suite) if SNAPSHOT_TESTING_ENABLED and suite is not None else None,
             gate_write_baseline=False,
             reap_leftovers=reaping_is_isolated(),
         )

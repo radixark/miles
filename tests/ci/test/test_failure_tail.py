@@ -57,9 +57,7 @@ def test_the_tail_keeps_the_last_lines_and_drops_blank_ones():
     assert len(_failure_tail(deque([b"l\n" * 500])).splitlines()) <= FAILURE_TAIL_LINES
 
 
-def test_a_failing_test_explains_itself_inside_the_notifier_window(
-    tmp_path, monkeypatch, caplog, ci_snapshot_environment
-):
+def test_a_failing_test_explains_itself_inside_the_notifier_window(tmp_path, monkeypatch, caplog):
     Path(tmp_path / "test_boom.py").write_text(
         "for index in range(5000):\n"
         "    print(f'noise {index}')\n"

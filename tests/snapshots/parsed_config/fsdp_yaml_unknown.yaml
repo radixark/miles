@@ -1,2 +1,0 @@
-{error: {message: 'unknown key(s) in the YAML config: ''unknown_snapshot_option'' (did you mean ''memory_snapshot_path''?)',
-    type: ValueError}}

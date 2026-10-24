@@ -13,6 +13,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal, get_args
 
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
     _parse_extra_env_vars,
@@ -213,7 +214,8 @@ class BaseCommandBackend(ABC):
             _assert_train_args_name_no_other_run_uuid(train_argv, run_uuid=config.run_uuid)
             train_args = f"{train_args} {_RUN_UUID_FLAG} {config.run_uuid}"
 
-        train_args = _add_config_snapshot_name(train_args)
+        if SNAPSHOT_TESTING_ENABLED:
+            train_args = _add_config_snapshot_name(train_args)
         self._execute_train_inner(
             request=ExecuteTrainRequest(
                 train_args=train_args,

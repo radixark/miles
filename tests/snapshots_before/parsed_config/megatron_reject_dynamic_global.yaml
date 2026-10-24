@@ -1,3 +1,0 @@
-error: {message: '--use-dynamic-global-batch-size requires --use-dynamic-batch-size (with --max-tokens-per-gpu): static micro-batching
-    cannot guarantee dp_size * mb_group alignment when the physical sample count is data-dependent; this configuration is
-    not supported.', type: AssertionError}

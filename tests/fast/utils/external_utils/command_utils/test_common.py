@@ -49,6 +49,7 @@ class TestGetDefaultWandbArgs:
 
         assert events == ["configure:launcher", "Skip wandb configuration since WANDB_API_KEY is not found"]
 
+    @pytest.mark.skip(reason="Snapshot testing is disabled by op48-277")
     def test_environment_credentials_register_only_the_digest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Snapshot provenance exports no credential while the launch retains the actual key."""
         secret = "test-environment-wandb-secret"

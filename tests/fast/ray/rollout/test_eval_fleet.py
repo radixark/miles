@@ -397,11 +397,12 @@ class TestRolloutExecutorEvalFleet:
         ],
     )
     async def test_current_version_uses_controller_without_a_checkpoint(self, fleet_states, reply, reason):
+        """Return the fleet state only when the controller confirms the requested version."""
         controller = FakeInferenceController([reply])
         session = make_session(controller)
 
         if reason is None:
-            assert await session.current("5") == "fake-state-1"
+            assert (await session.current("5")).args is fleet_states[0]
         else:
             with pytest.raises(EvalSkip) as exc:
                 await session.current("5")

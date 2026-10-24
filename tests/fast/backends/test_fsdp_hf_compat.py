@@ -520,6 +520,7 @@ def test_native_causal_lm_resolves_concrete_class():
     assert _model_cls(model_type="qwen3") is transformers.Qwen3ForCausalLM
 
 
+@pytest.mark.skip(reason="Snapshot testing is disabled by op48-277")
 def test_first_training_snapshot_is_recorded_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """FSDP records its trainer configuration only at the first training entry."""
     from miles.backends.fsdp_utils import actor as actor_module

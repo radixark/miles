@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+
 from tests.fast.launch_scripts.py_harness import (
     CLEARED_ENV,
     FROZEN_HARDWARE,
@@ -16,11 +17,9 @@ from tests.fast.launch_scripts.py_harness import (
     iter_py_launch_scripts,
     launcher_hardware_literals,
 )
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
 
-from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY, assert_matches_snapshot
-
-_SNAPSHOT_DIR = REPO_ROOT / SNAPSHOT_DIRECTORY / "launch_scripts" / "py"
+_SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "launch_scripts" / "py"
 
 _SCRIPTS_IMPORTABLE_ONLY_UNDER_THE_NPU_PATCH = {"scripts/run_qwen3_4b_npu.py"}
 
@@ -58,7 +57,6 @@ def _nemotron_checkpoint(sandbox: Path) -> dict[str, object]:
 _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, object]]] = {
     "scripts/amd/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2_5layer", 5),
     "scripts/run_deepseek_v4.py": lambda sandbox: {"model_name": "DeepSeek-V4-Flash-FP8-4layer"},
-    "scripts/run_deepseek_v4_1.py": lambda sandbox: {"hf_checkpoint": str(sandbox / "models" / "DeepSeek-V4.1")},
     "scripts/run_glm5_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5", 78),
     "scripts/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2", 78),
     "scripts/run_inkling.py": lambda sandbox: {"model_name": "Inkling-4layer"},
@@ -103,15 +101,13 @@ def recorded(request, monkeypatch, tmp_path):
     rel, entrypoint = request.param
     freeze_environment(monkeypatch, hardware=_HARDWARE_A_RECORDING_REPRESENTS.get(rel, FROZEN_HARDWARE))
     recording = install_command_recorder(monkeypatch)
-    with monkeypatch.context() as environment:
-        environment.delenv("MILES_UPDATE_SNAPSHOTS", raising=False)
-        module = import_launch_script(REPO_ROOT / rel)
-        call_entrypoint(
-            module,
-            entrypoint,
-            _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED.get(rel, lambda sandbox: {})(tmp_path),
-            sandbox=tmp_path,
-        )
+    module = import_launch_script(REPO_ROOT / rel)
+    call_entrypoint(
+        module,
+        entrypoint,
+        _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED.get(rel, lambda sandbox: {})(tmp_path),
+        sandbox=tmp_path,
+    )
     return rel, entrypoint, recording, tmp_path
 
 

@@ -1,3 +1,10 @@
+import pytest
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
+if not SNAPSHOT_TESTING_ENABLED:
+    pytest.skip("Snapshot testing is disabled by op48-277", allow_module_level=True)
+
 import argparse
 import functools
 import re
@@ -6,7 +13,6 @@ from pathlib import Path
 from signal import Signals
 from typing import Any
 
-import pytest
 
 from miles.utils.test_utils.snapshot import snapshot_values
 

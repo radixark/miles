@@ -1,9 +1,15 @@
+import pytest
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
+if not SNAPSHOT_TESTING_ENABLED:
+    pytest.skip("Snapshot testing is disabled by op48-277", allow_module_level=True)
+
 import json
 import runpy
 import shlex
 from pathlib import Path
 
-import pytest
 
 from miles.utils.audit_utils.config_snapshot.generated_value_registry import GENERATED_VALUES_ENV_VAR
 from miles.utils.external_utils import command_utils

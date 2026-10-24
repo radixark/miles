@@ -71,11 +71,11 @@ class TestExplicitPeerCheckpointConfig:
         restored, _ = manager.load()
         for expected, actual in zip(expected_tensors, restored.tensors, strict=True):
             torch.testing.assert_close(actual, expected)
-        [snapshot] = boundary.snapshot_calls
-        assert snapshot["args"] is peer.args
-        assert snapshot["args"] is not donor.args
-        assert snapshot["ckpt_step"] is None
-        assert snapshot["config"]["local_checkpoint_manager"] is True
+        [load] = boundary.checkpoint_calls
+        assert load["args"] is peer.args
+        assert load["args"] is not donor.args
+        assert load["ckpt_step"] is None
+        assert load["local_checkpoint_manager"] is True
         assert boundary.load_calls[0]["checkpointing_context"] is context
         assert boundary.load_calls[0]["ddp_model"] is peer.model
         assert output.loaded_rollout_id == 17
@@ -110,13 +110,13 @@ class TestExplicitPeerCheckpointConfig:
             actor.load_other_checkpoint(model_tag=model_tag, path=str(path))
             assert vars(actor.args.backend) == original
 
-        [snapshot] = boundary.snapshot_calls
-        assert snapshot["args"] is actor.args
-        assert snapshot["load"] == str(path)
-        assert snapshot["ckpt_step"] == expected_step
-        assert snapshot["backend"]["no_load_optim"] is True
-        assert snapshot["backend"]["no_load_rng"] is True
-        assert snapshot["backend"]["finetune"] is True
+        [load] = boundary.checkpoint_calls
+        assert load["args"] is actor.args
+        assert load["load"] == str(path)
+        assert load["ckpt_step"] == expected_step
+        assert load["backend"]["no_load_optim"] is True
+        assert load["backend"]["no_load_rng"] is True
+        assert load["backend"]["finetune"] is True
         assert boundary.load_calls[0]["ddp_model"] is actor.model
         assert boundary.load_calls[0]["skip_load_to_model_and_opt"] is False
         assert CHECKPOINT_LOAD_FIELDS.isdisjoint(vars(actor.args.backend))

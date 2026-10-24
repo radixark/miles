@@ -1,7 +1,13 @@
+import pytest
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
+if not SNAPSHOT_TESTING_ENABLED:
+    pytest.skip("Snapshot testing is disabled by op48-277", allow_module_level=True)
+
 from pathlib import Path
 from types import ModuleType
 
-import pytest
 from tests.fast.backends.megatron_utils.test_shared_ppo_lifecycle import (
     _actor_worker,
     _critic_worker,

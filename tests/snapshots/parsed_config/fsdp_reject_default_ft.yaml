@@ -1,1 +1,0 @@
-{error: {message: 'weight_update FT requires Megatron, --update-weight-transfer-mode p2p, and no --colocate', type: AssertionError}}

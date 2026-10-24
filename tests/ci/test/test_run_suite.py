@@ -1235,6 +1235,7 @@ class TestFilterTestsBaseDimensions:
         assert _names(enabled) == {"tests/fast/q.py"}
 
 
+@pytest.mark.skip(reason="Snapshot testing is disabled by op48-277")
 class TestSnapshotHardware:
     def test_blackwell_dispatch_does_not_use_the_test_home_hardware(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A Hopper registration dispatched to Blackwell selects the executing hardware baseline."""

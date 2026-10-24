@@ -840,15 +840,14 @@ class TestBuildTrainEnvVars:
 
         assert list(env) == [
             "PYTHONUNBUFFERED",
-            "MILES_UPDATE_SNAPSHOTS",
-            "MILES_SNAPSHOT_RECORD_DIR",
             "CUDA_DEVICE_MAX_CONNECTIONS",
             "NCCL_NVLS_ENABLE",
             "MASTER_ADDR",
         ]
-        assert env["MILES_UPDATE_SNAPSHOTS"] == ""
-        assert env["MILES_SNAPSHOT_RECORD_DIR"] == ""
+        assert "MILES_UPDATE_SNAPSHOTS" not in env
+        assert "MILES_SNAPSHOT_RECORD_DIR" not in env
 
+    @pytest.mark.skip(reason="Snapshot testing is disabled by op48-277")
     def test_generated_run_provenance_reaches_the_worker_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A real generated run ID is passed to workers without changing metadata or backend key order."""
         monkeypatch.setenv(SNAPSHOT_RECORD_DIR_ENV_VAR, "/snapshot/records")

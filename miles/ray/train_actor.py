@@ -17,6 +17,7 @@ from miles.platforms import current_platform
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.utils import object_store
 from miles.utils.args.runtime import TrainerConfig
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import init_gloo_group, one_rank_at_a_time
@@ -96,7 +97,8 @@ class TrainRayActor(NodeProbeMixin):
         self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
-        self._config_snapshot_train_recorded = False
+        if SNAPSHOT_TESTING_ENABLED:
+            self._config_snapshot_train_recorded = False
 
         os.environ["WORLD_SIZE"] = str(self._world_size)
         os.environ["RANK"] = str(self._rank)

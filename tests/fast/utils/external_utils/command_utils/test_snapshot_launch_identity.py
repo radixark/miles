@@ -1,7 +1,13 @@
+import pytest
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
+if not SNAPSHOT_TESTING_ENABLED:
+    pytest.skip("Snapshot testing is disabled by op48-277", allow_module_level=True)
+
 import shlex
 from pathlib import Path
 
-import pytest
 from tests.fast.utils.test_command_utils import _backend, _submit, bare_environment, commands
 
 from miles.utils.external_utils.command_utils import base_backend

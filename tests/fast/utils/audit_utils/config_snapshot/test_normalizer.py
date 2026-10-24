@@ -1,7 +1,13 @@
+import pytest
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
+if not SNAPSHOT_TESTING_ENABLED:
+    pytest.skip("Snapshot testing is disabled by op48-277", allow_module_level=True)
+
 import os
 from collections.abc import Callable
 
-import pytest
 from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 
 from miles.utils.args.trainer_utils import compute_trainer_config

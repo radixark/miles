@@ -48,6 +48,7 @@ from miles.utils import object_store
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -854,7 +855,7 @@ class MegatronTrainRayActor(TrainRayActor):
         return TrainStepOutput(outcome=train_step_outcome)
 
     def _log_first_train_config(self) -> None:
-        if not self._config_snapshot_train_recorded:
+        if SNAPSHOT_TESTING_ENABLED and not self._config_snapshot_train_recorded:
             ConfigSnapshotDumper.dump(stage="train_first_step", config={"args": self.args, "role": self.role})
             self._config_snapshot_train_recorded = True
 

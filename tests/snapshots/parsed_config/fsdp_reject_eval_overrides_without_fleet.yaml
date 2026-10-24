@@ -1,2 +1,0 @@
-{error: {message: '--eval-sglang-* configures the dedicated eval fleet, which needs --eval-num-gpus > 0. Got [''enable_metrics'']
-      with --eval-num-gpus 0.', type: AssertionError}}
