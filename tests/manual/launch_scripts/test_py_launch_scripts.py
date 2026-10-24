@@ -4,7 +4,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-
 from tests.fast.launch_scripts.py_harness import (
     CLEARED_ENV,
     FROZEN_HARDWARE,
@@ -17,7 +16,9 @@ from tests.fast.launch_scripts.py_harness import (
     iter_py_launch_scripts,
     launcher_hardware_literals,
 )
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT
+
+from miles.utils.test_utils.snapshot import assert_matches_snapshot
 
 _SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "launch_scripts" / "py"
 

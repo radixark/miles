@@ -1,8 +1,7 @@
-import difflib
-
-from tests.fast.argument_snapshot.scenarios import capture_scenarios
+from miles.utils.test_utils.snapshot import assert_scenario_snapshots
+from tests.fast.argument_snapshot.argparser.scenarios import capture_scenarios
 from tests.fast.argument_snapshot.schema import dump_snapshot
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 
 _SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "argument_snapshot"
 _SCENARIO_BASES = {
@@ -30,21 +29,4 @@ class TestArgumentSnapshots:
         """Parser schemas and parsed values match their reviewed snapshots."""
         snapshots = {name: dump_snapshot(snapshot) for name, snapshot in capture_scenarios().items()}
 
-        for name, snapshot in snapshots.items():
-            suffix = ".yaml"
-            if base := _SCENARIO_BASES.get(name):
-                snapshot = "".join(
-                    difflib.unified_diff(
-                        snapshots[base].splitlines(keepends=True),
-                        snapshot.splitlines(keepends=True),
-                        fromfile=base,
-                        tofile=name,
-                        n=0,
-                    )
-                )
-                suffix = ".diff"
-            assert_matches_snapshot(
-                snapshot=_SNAPSHOT_DIR / f"{name}{suffix}",
-                actual=snapshot,
-                subject=f"argument scenario {name}",
-            )
+        assert_scenario_snapshots(snapshots=snapshots, bases=_SCENARIO_BASES, directory=_SNAPSHOT_DIR)

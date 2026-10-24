@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 import yaml
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot, sanitize
+from miles.utils.test_utils.snapshot import assert_matches_snapshot
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 
 from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
 from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
