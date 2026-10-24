@@ -27,6 +27,7 @@ from __future__ import annotations
 import calendar
 import io
 import json
+import math
 import os
 import threading
 import time
@@ -497,6 +498,120 @@ def _raw_field_value(line: bytes, prefix: bytes) -> bytes:
     return line[start : end if end >= 0 else line.rindex(b"}")].strip()
 
 
+class _ThinnedEngineSeries:
+    """Run-long engine series thinned to at most ``2 * SCRAPES_PER_ENGINE``
+    scrapes per engine.
+
+    Engine queries stride-sample each series down to ``max_points``, so a
+    run-long query needs a few times that many scrapes, not every one: the
+    first scrape of each engine per bucket of ``bucket_s`` stands in for the
+    bucket. ``bucket_s`` doubles as the run grows, re-thinning the kept rows
+    (first-per-2P of first-per-P is first-per-2P of the raw stream), so the
+    raw bytes are parsed once. Whole scrapes are kept so dp ranks still fold
+    and counters still difference."""
+
+    SCRAPES_PER_ENGINE: ClassVar[int] = 4000
+
+    def __init__(
+        self, reader: _PartitionReader, parse: Callable[[bytes, Path, int], pl.DataFrame], empty: pl.DataFrame
+    ):
+        self._cursor = _AppendCursor(reader)
+        self._parse = parse
+        self._kept_scrapes = empty
+        self._bucket_s = 0.0  # 0 keeps every scrape
+        # a scrape can straddle two flushes: its later rows follow the first ones in
+        self._last_kept_ts_by_addr: dict[str, float] = {}
+        # updated from each append's kept rows, so the bound check never scans the whole view
+        self._kept_scrape_count_by_addr: dict[str, int] = {}
+        self.version = 0
+        self._lock = threading.Lock()
+
+    def kept_scrapes(self) -> tuple[pl.DataFrame, int]:
+        with self._lock:
+            for path, offset, complete_lines in self._cursor.appended():
+                self._append_thinned(self._parse(complete_lines, path, offset))
+                self.version += 1
+            return self._kept_scrapes, self.version
+
+    def _append_thinned(self, rows: pl.DataFrame) -> None:
+        continued = dict(self._last_kept_ts_by_addr)
+        kept = self._thin(rows)
+        self._kept_scrapes = pl.concat([self._kept_scrapes, kept], rechunk=False)
+        # the one scrape a chunk can share with the view is the continued one
+        new_scrapes = (
+            kept.select("addr", "ts")
+            .unique()
+            .join(
+                pl.DataFrame(
+                    dict(addr=list(continued), ts=list(continued.values())), schema=dict(addr=pl.String, ts=pl.Float64)
+                ),
+                on=["addr", "ts"],
+                how="anti",
+            )
+        )
+        for addr, count in new_scrapes.group_by("addr").len().iter_rows():
+            self._kept_scrape_count_by_addr[addr] = self._kept_scrape_count_by_addr.get(addr, 0) + count
+        while max(self._kept_scrape_count_by_addr.values(), default=0) > 2 * self.SCRAPES_PER_ENGINE:
+            self._bucket_s = 2 * self._bucket_s if self._bucket_s else self._compute_initial_bucket_s()
+            self._last_kept_ts_by_addr = {}
+            self._kept_scrapes = self._thin(self._kept_scrapes)
+            self._kept_scrape_count_by_addr = dict(
+                self._kept_scrapes.group_by("addr").agg(pl.col("ts").n_unique()).iter_rows()
+            )
+        self._kept_scrapes = (
+            self._kept_scrapes.rechunk() if self._kept_scrapes.n_chunks() > 256 else self._kept_scrapes
+        )
+
+    def _compute_initial_bucket_s(self) -> float:
+        span = self._kept_scrapes["ts"].max() - self._kept_scrapes["ts"].min()
+        return 2.0 ** math.floor(math.log2(max(span / self.SCRAPES_PER_ENGINE, 1.0)))
+
+    def _thin(self, rows: pl.DataFrame) -> pl.DataFrame:
+        if not self._bucket_s or rows.is_empty():
+            kept = rows
+        else:
+            scrapes = rows.select("addr", "ts").unique()
+            last_kept = pl.DataFrame(
+                dict(addr=list(self._last_kept_ts_by_addr), ts=list(self._last_kept_ts_by_addr.values())),
+                schema=dict(addr=pl.String, ts=pl.Float64),
+            )
+            first_per_bucket = (
+                scrapes.join(last_kept, on="addr", how="left", suffix="_kept")
+                .filter(pl.col("ts_kept").is_null() | (pl.col("ts") > pl.col("ts_kept")))
+                .with_columns(bucket=(pl.col("ts") / self._bucket_s).floor())
+                .filter(
+                    pl.col("ts_kept").is_null() | (pl.col("bucket") > (pl.col("ts_kept") / self._bucket_s).floor())
+                )
+                .group_by("addr", "bucket")
+                .agg(pl.col("ts").min())
+                .select("addr", "ts")
+            )
+            scrapes_to_keep = pl.concat([first_per_bucket, scrapes.join(last_kept, on=["addr", "ts"], how="semi")])
+            kept = rows.join(scrapes_to_keep, on=["addr", "ts"], how="semi")
+        if not kept.is_empty():
+            for addr, ts in kept.group_by("addr").agg(pl.col("ts").max()).iter_rows():
+                self._last_kept_ts_by_addr[addr] = max(ts, self._last_kept_ts_by_addr.get(addr, ts))
+        return kept
+
+
+def _concat_frames(frames: list[pl.DataFrame]) -> pl.DataFrame:
+    merged = frames[0] if len(frames) == 1 else pl.concat(frames, rechunk=False)
+    # bound chunk fragmentation from long tail sessions
+    return merged.rechunk() if merged.n_chunks() > 256 else merged
+
+
+def _split_by_metric(frame: pl.DataFrame) -> dict[str, pl.DataFrame]:
+    return {metric: part for (metric,), part in frame.partition_by("metric", as_dict=True).items()}
+
+
+def _concat_blocks_by_metric(blocks: list[dict[str, pl.DataFrame]]) -> dict[str, pl.DataFrame]:
+    frames_by_metric: dict[str, list[pl.DataFrame]] = {}
+    for block in blocks:
+        for metric, frame in block.items():
+            frames_by_metric.setdefault(metric, []).append(frame)
+    return {metric: _concat_frames(frames) for metric, frames in frames_by_metric.items()}
+
+
 class MetricStore:
     COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES)
     PARTITIONED_STREAMS: ClassVar[tuple[Stream, ...]] = (
@@ -509,6 +624,7 @@ class MetricStore:
     MAX_WINDOW_S: ClassVar[float] = 4 * 3600.0
     PARTITION_CACHE_BLOCKS: ClassVar[int] = 24
     CATALOG_FILENAME: ClassVar[str] = "lane_catalog.json"
+    ENGINE_CATALOG_FILENAME: ClassVar[str] = "engine_catalog.json"
     FRAME_SCHEMAS: ClassVar[dict[Stream, dict[str, Any]]] = {
         Stream.GPU_UTIL: dict(
             ts=pl.Float64, node=pl.String, gpu=pl.Int64, util=pl.Int64, mem_mb=pl.Int64, power_w=pl.Int64
@@ -529,24 +645,35 @@ class MetricStore:
         self.unserializable_dropped = 0
         self._phase_index = _PhaseIndex(self._readers[Stream.PHASES], longer_than_s=self.MAX_WINDOW_S)
         self._catalog: dict[str, dict] | None = None  # write-side lane catalog accumulator
-        # full-window engine query cache, versioned by partition file sizes so
-        # appended scrapes invalidate it; the lock is load-bearing because sync
-        # endpoints serve concurrently from FastAPI's threadpool
-        self._engine_cache_lock = threading.Lock()
-        self._engine_cache_version: tuple | None = None
-        self._engine_frame_cache: pl.DataFrame | None = None
+        self._thinned_engine_series = _ThinnedEngineSeries(
+            self._readers[Stream.ENGINE_SERIES],
+            parse=lambda raw, path, offset: self._parse_columnar(Stream.ENGINE_SERIES, raw, path, offset),
+            empty=pl.DataFrame(schema=self.FRAME_SCHEMAS[Stream.ENGINE_SERIES]),
+        )
+        # sync endpoints serve concurrently from FastAPI's threadpool
+        self._engine_parts_lock = threading.Lock()
+        self._engine_parts_version = -1
         self._engine_parts_cache: dict[tuple[str, bool], dict[tuple[str, str], pl.DataFrame]] = {}
+        self._cataloged_engine_metrics: set[str] | None = None  # write-side accumulator
+        self._writes_engine_catalog: bool | None = None  # decided at the first merge
 
     def _make_reader(self, stream: Stream) -> _PartitionReader:
+        if stream is Stream.ENGINE_SERIES:
+            # every engine query asks for one metric: blocks are kept split by it
+            return _PartitionReader(
+                self.dir / stream.value,
+                self.dir / stream.filename,
+                parse=lambda raw, path, offset: _split_by_metric(self._parse_columnar(stream, raw, path, offset)),
+                concat=_concat_blocks_by_metric,
+                length=lambda frames_by_metric: sum(frame.height for frame in frames_by_metric.values()),
+                line_stamps=lambda data: (data["ts"],),
+                max_blocks=self.PARTITION_CACHE_BLOCKS,
+            )
         if stream in self.COLUMNAR_STREAMS:
             empty = pl.DataFrame(schema=self.FRAME_SCHEMAS[stream])
 
             def concat_frames(blocks: list, empty: pl.DataFrame = empty) -> pl.DataFrame:
-                if not blocks:
-                    return empty
-                merged = blocks[0] if len(blocks) == 1 else pl.concat(blocks, rechunk=False)
-                # bound chunk fragmentation from long tail sessions
-                return merged.rechunk() if merged.n_chunks() > 256 else merged
+                return _concat_frames(blocks) if blocks else empty
 
             return _PartitionReader(
                 self.dir / stream.value,
@@ -608,6 +735,7 @@ class MetricStore:
     def flush(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._merge_catalog()
+        self._merge_engine_catalog()
         for stream, buffer in self._buffers.items():
             if not buffer:
                 continue
@@ -677,9 +805,36 @@ class MetricStore:
                 lane["ranks"].sort()
                 lane["engine_addrs"].sort()
                 lane["roles"].sort()
-            tmp = self.dir / (self.CATALOG_FILENAME + ".tmp")
-            tmp.write_text(json.dumps(dict(version=1, lanes=lanes)))
-            os.replace(tmp, self.dir / self.CATALOG_FILENAME)
+            staging_path = self.dir / (self.CATALOG_FILENAME + ".tmp")
+            staging_path.write_text(json.dumps(dict(version=1, lanes=lanes)))
+            os.replace(staging_path, self.dir / self.CATALOG_FILENAME)
+
+    def _merge_engine_catalog(self) -> None:
+        """Fold buffered engine metric names into ``engine_catalog.json``, so
+        the sglang category needs no stream scan.
+
+        The catalog exists only if it covers the whole stream: a dir whose
+        engine stream predates it (written by older code, now resumed) gets
+        none, and readers keep scanning. Atomic rewrite, only when changed;
+        the accumulator moves only once the rewrite landed, so a failed flush
+        rewrites it on retry."""
+        path = self.dir / self.ENGINE_CATALOG_FILENAME
+        if self._writes_engine_catalog is None:
+            self._writes_engine_catalog = path.exists() or not self._readers[Stream.ENGINE_SERIES].has_data()
+            self._cataloged_engine_metrics = set(json.loads(path.read_text())["metrics"]) if path.exists() else set()
+        if not self._writes_engine_catalog:
+            return
+        names = {sample.metric for sample in self._buffers[Stream.ENGINE_SERIES]}
+        if names <= self._cataloged_engine_metrics:
+            return
+        merged = self._cataloged_engine_metrics | names
+        staging_path = self.dir / (self.ENGINE_CATALOG_FILENAME + ".tmp")
+        with open(staging_path, "w") as f:
+            f.write(json.dumps(dict(version=1, metrics=sorted(merged))))
+            f.flush()
+            os.fsync(f.fileno())  # a rename can outlive unsynced data across a crash
+        os.replace(staging_path, path)
+        self._cataloged_engine_metrics = merged
 
     # ------------------------------ read side -------------------------------
 
@@ -904,7 +1059,8 @@ class MetricStore:
                     labels={k: v for k, v in json.loads(row["labels_json"]).items() if v is not None},
                     value=row["value"],
                 )
-                for row in self._readers[stream].window(None, None).iter_rows(named=True)
+                for frame in self._readers[stream].window(None, None).values()
+                for row in frame.iter_rows(named=True)
             ]
         if stream is Stream.PHASES:
             return list(self._readers[stream].window(None, None))
@@ -1164,9 +1320,15 @@ class MetricStore:
     )
 
     def engine_metric_names(self) -> list[str]:
-        """Distinct scraped engine metrics — the L0 sglang category catalog."""
-        frame, _ = self._engine_cache()
-        raw = set(frame.get_column("metric").unique())
+        """Distinct scraped engine metrics — the L0 sglang category catalog.
+
+        Read from ``engine_catalog.json``; a dir written before it existed
+        falls back to the run-long view."""
+        path = self.dir / self.ENGINE_CATALOG_FILENAME
+        if path.exists():
+            raw = set(json.loads(path.read_text())["metrics"])
+        else:
+            raw = set(self._thinned_engine_series.kept_scrapes()[0].get_column("metric").unique())
         names = {name for name in raw if not name.endswith(self._CUMULATIVE_SUFFIXES)}
         names.update(derived for derived, base in self.ENGINE_RATE_METRICS.items() if base in raw)
         names.update(
@@ -1216,9 +1378,9 @@ class MetricStore:
     ) -> dict[tuple[str, str], pl.DataFrame]:
         if t0 is None and t1 is None:
             return self._engine_parts_cached(metric, per_dp_rank)
-        frame = self._window(self._readers[Stream.ENGINE_SERIES].window(t0, t1), t0, t1).filter(
-            pl.col("metric") == metric
-        )
+        frames_by_metric = self._readers[Stream.ENGINE_SERIES].window(t0, t1)
+        empty = pl.DataFrame(schema=self.FRAME_SCHEMAS[Stream.ENGINE_SERIES])
+        frame = self._window(frames_by_metric.get(metric, empty), t0, t1)
         if not per_dp_rank:
             frame = self._fold_dp_ranks(frame, metric)
         return {
@@ -1246,22 +1408,14 @@ class MetricStore:
         agg = pl.col("value").mean() if metric in self.ENGINE_MEAN_AGGREGATED_METRICS else pl.col("value").sum()
         return frame.group_by(["ts", "addr", "metric", "labels_json"]).agg(agg.alias("value"))
 
-    def _engine_cache(self) -> tuple[pl.DataFrame, dict[tuple[str, bool], dict[tuple[str, str], pl.DataFrame]]]:
-        """The full-window frame and its partition cache, returned as a pair so a
-        caller racing a rebuild files partitions under the frame they came from."""
-        reader = self._readers[Stream.ENGINE_SERIES]
-        with self._engine_cache_lock:
-            version = tuple((key, path.stat().st_size) for key, path in reader.files())
-            if version != self._engine_cache_version:
-                self._engine_frame_cache = reader.window(None, None)
-                self._engine_parts_cache = {}
-                self._engine_cache_version = version  # last: a failed rebuild must not look cached
-            return self._engine_frame_cache, self._engine_parts_cache
-
     def _engine_parts_cached(self, metric: str, per_dp_rank: bool) -> dict[tuple[str, str], pl.DataFrame]:
-        frame, cache = self._engine_cache()
-        cache_key = (metric, per_dp_rank)
-        parts = cache.get(cache_key)
+        frame, version = self._thinned_engine_series.kept_scrapes()
+        with self._engine_parts_lock:
+            if version != self._engine_parts_version:
+                self._engine_parts_cache = {}
+                self._engine_parts_version = version
+            cache_key = (metric, per_dp_rank)
+            parts = self._engine_parts_cache.get(cache_key)
         if parts is None:
             frame = frame.filter(pl.col("metric") == metric)
             if not per_dp_rank:
@@ -1270,7 +1424,9 @@ class MetricStore:
                 key: part.sort("ts")
                 for key, part in sorted(frame.partition_by(["addr", "labels_json"], as_dict=True).items())
             }
-            cache[cache_key] = parts
+            with self._engine_parts_lock:
+                if version == self._engine_parts_version:
+                    self._engine_parts_cache[cache_key] = parts
         return parts
 
     def _derived_series(self, num_parts, den_parts, max_points: int) -> list[dict]:
