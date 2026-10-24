@@ -1,11 +1,11 @@
 import logging
-from argparse import Namespace
 from contextlib import contextmanager
 
 import torch
 import torch.distributed as dist
 
 from miles.backends.torchtitan_utils import compat
+from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
@@ -14,7 +14,9 @@ from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.replay.routing_replay import enable as enable_routing_replay
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
+from miles.backends.training_utils.torch_native.step_runner import StepRunner
 from miles.platforms import current_platform
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.context_utils import with_defer
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory
@@ -26,7 +28,7 @@ from miles.utils.workers.rpc.common.wire_types import Pickled
 logger = logging.getLogger(__name__)
 
 
-def _steps_per_rollout(args: Namespace) -> int:
+def _steps_per_rollout(args: TrainerConfig) -> int:
     return max(args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size, 1)
 
 
@@ -45,6 +47,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
+        assert isinstance(args.backend, TorchtitanArgsNamespace)
         compat.install()
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
         assert indep_dp_info.quorum_id == 0
@@ -101,7 +104,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
     def _step_runner(self):
         return self.trainer.step_runner()
 
-    def _build_ref_runner(self, args: Namespace):
+    def _build_ref_runner(self, args: TrainerConfig) -> StepRunner:
         if not args.ref_load:
             raise ValueError("--ref-load is required to build a torchtitan reference model")
         ref_config = build_trainer_config(args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref")

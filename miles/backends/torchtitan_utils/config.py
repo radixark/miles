@@ -2,15 +2,17 @@ import importlib
 import logging
 import os
 import tempfile
-from argparse import Namespace
+from types import ModuleType
 
 from torchtitan.components.optimizer import ParamGroupConfig
 from torchtitan.distributed.activation_checkpoint import FullAC
+from torchtitan.protocols.model_spec import ModelSpec
 from torchtitan.trainer import Trainer
 
 from miles.backends.torchtitan_utils.components import EmptyDataLoader, TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.parallel import parallel_dims_from_config
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
 
 logger = logging.getLogger(__name__)
@@ -19,7 +21,7 @@ logger = logging.getLogger(__name__)
 _MODEL_PACKAGE_ROOTS = ("miles.backends.torchtitan_utils.models", "torchtitan.models")
 
 
-def _model_package(name: str):
+def _model_package(name: str) -> ModuleType:
     for root in _MODEL_PACKAGE_ROOTS:
         module_name = f"{root}.{name}"
         try:
@@ -33,7 +35,7 @@ def _model_package(name: str):
     )
 
 
-def resolve_model_spec(args: Namespace):
+def resolve_model_spec(args: TrainerConfig) -> ModelSpec:
     module = _model_package(args.titan_model_name)
     registry = getattr(
         module, "model_registry", None
@@ -51,7 +53,9 @@ def _latest_step_dir(load_root: str, dump_subdir: str) -> str | None:
     return os.path.join(folder, f"step-{max(steps)}") if steps else None
 
 
-def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps: int, dump_subdir: str):
+def build_trainer_config(
+    args: TrainerConfig, *, hf_assets_path: str, lr_total_steps: int, dump_subdir: str
+) -> Trainer.Config:
     if args.optimizer != "adam":
         raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.optimizer!r}")
 
