@@ -14,6 +14,8 @@ _SECRET_ARG_NAMES = frozenset(
         "router_api_key",
         "router_oracle_password",
         "router_control_plane_api_keys",
+        "oracle_password",
+        "control_plane_api_keys",
         *(f"{prefix}{name}" for prefix in ("sglang_", "eval_sglang_") for name in _SGLANG_SECRET_ARG_BASE_NAMES),
     }
 )

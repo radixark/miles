@@ -168,3 +168,24 @@ class TestRedactServerInfo:
         """The engine's schema is not miles's to control, and an unexpected shape must not raise."""
         assert redact_server_info({"internal_states": None}) == {"internal_states": None}
         assert redact_server_info({"internal_states": ["opaque"]}) == {"internal_states": ["opaque"]}
+
+
+class TestNormalizedRouterSecrets:
+    def test_unprefixed_router_credentials_are_redacted_without_hiding_regular_fields(self) -> None:
+        """Normalized router dictionaries cannot expose credentials after their CLI prefixes are removed."""
+        from miles.utils.env_report.redaction import redact_config_values
+
+        original = {
+            "router_args": {
+                "oracle_password": "oracle-secret",
+                "control_plane_api_keys": ["key-secret"],
+                "policy": "random",
+            }
+        }
+
+        result = redact_config_values(original)
+
+        assert result["router_args"]["oracle_password"] == _redact("oracle-secret")
+        assert result["router_args"]["control_plane_api_keys"] == [_redact("key-secret")]
+        assert result["router_args"]["policy"] == "random"
+        assert original["router_args"]["oracle_password"] == "oracle-secret"
