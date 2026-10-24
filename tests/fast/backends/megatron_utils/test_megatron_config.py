@@ -903,7 +903,9 @@ class TestSynthesizedCriticTrainer:
             finetune=True,
         )
 
-        actor, critic = [compute_trainer_args(args, trainer) for trainer in resolve_megatron_config(args).trainers]
+        actor, critic = [
+            compute_trainer_args(args, trainer) for trainer in resolve_megatron_config(args, base_args={}).trainers
+        ]
 
         assert actor.ckpt_step == args.ckpt_step == 7
         assert critic.load == str(critic_load)

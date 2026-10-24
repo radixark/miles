@@ -12,7 +12,7 @@ from typing import Any, ClassVar, Literal
 import pydantic
 import yaml
 
-from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace
+from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace, SerializableConfigDict
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.argv_utils import coerce_dict_to_args, declared_arg_dests
@@ -228,6 +228,7 @@ class MegatronTrainerConfig(FrozenStrictBaseModel):
 
 class MegatronConfig(FrozenStrictBaseModel):
     trainers: list[MegatronTrainerConfig]
+    base_args: SerializableConfigDict = {}
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
@@ -270,11 +271,11 @@ class MegatronConfig(FrozenStrictBaseModel):
         raise KeyError(f"Unknown trainer model id {model_id!r}, known ids: {self.model_ids}")
 
 
-def resolve_megatron_config(args) -> MegatronConfig:
-    return MegatronConfig(trainers=_compute_trainers(args))
+def resolve_megatron_config(args: Namespace, *, base_args: dict[str, Any]) -> MegatronConfig:
+    return MegatronConfig(trainers=_compute_trainers(args), base_args=base_args)
 
 
-def _compute_trainers(args) -> list[MegatronTrainerConfig]:
+def _compute_trainers(args: Namespace) -> list[MegatronTrainerConfig]:
     if (raw := _resolve_raw_megatron_config(args.megatron_config)) is None:
         trainers = [MegatronTrainerConfig(trainer_id=ACTOR_ROLE, model_id=None, role=ACTOR_ROLE, overrides={})]
     else:
@@ -291,7 +292,7 @@ def _compute_trainers(args) -> list[MegatronTrainerConfig]:
     return trainers
 
 
-def _compute_critic_trainer(args, *, policy: MegatronTrainerConfig) -> MegatronTrainerConfig:
+def _compute_critic_trainer(args: Namespace, *, policy: MegatronTrainerConfig) -> MegatronTrainerConfig:
     model_id = policy.model_id
     return MegatronTrainerConfig(
         trainer_id=CRITIC_ROLE if model_id is None else f"{model_id}-{CRITIC_ROLE}",
@@ -301,7 +302,7 @@ def _compute_critic_trainer(args, *, policy: MegatronTrainerConfig) -> MegatronT
     )
 
 
-def _compute_critic_overrides(args) -> dict[str, Any]:
+def _compute_critic_overrides(args: Namespace) -> dict[str, Any]:
     return {
         "kl_coef": 0,
         "use_opd": False,
