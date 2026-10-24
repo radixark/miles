@@ -4414,12 +4414,16 @@ def hf_validate_args(args, hf_config):
     if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:
         assert args.allgather_cp, "zigzag CP is not supported for DeepSeek V4."
 
+    # MiniMax-M3 names the expert width intermediate_size and the dense width dense_intermediate_size
+    if hasattr(hf_config, "dense_intermediate_size"):
+        ffn_pairs = [("dense_intermediate_size", "ffn_hidden_size"), ("intermediate_size", "moe_ffn_hidden_size")]
+    else:
+        ffn_pairs = [("intermediate_size", "ffn_hidden_size"), ("moe_intermediate_size", "moe_ffn_hidden_size")]
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
         ("num_hidden_layers", "num_layers", equal),
-        ("intermediate_size", "ffn_hidden_size", equal),
-        ("moe_intermediate_size", "moe_ffn_hidden_size", equal),
+        *((hf_name, mg_name, equal) for hf_name, mg_name in ffn_pairs),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
         (
             "rms_norm_eps",

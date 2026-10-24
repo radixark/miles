@@ -23,6 +23,7 @@ Each model name links to its recipe page.
 | **JoyAI** | [JoyAI-LLM-Flash](https://github.com/radixark/miles/blob/main/scripts/run_joy_ai_llm_flash.py) |
 | **GPT-OSS** | [gpt-oss-20b](/models/gpt-oss/gpt-oss) |
 | **MiMo** | [MiMo-V2.6-Flash](/models/mimo/mimo-v2-6-flash) |
+| **MiniMax** | [MiniMax-M3.1-Flash](/models/minimax/minimax-m3-1-flash) |
 | **StepFun** | [Step-5-Preview](/models/stepfun/step5) |
 | **Muse Spark** | [Muse Spark Open](/models/muse-spark/muse-spark-open) |
 | **Reflection** | [Beam-1.0-501B-A23B](/models/reflection/beam) |

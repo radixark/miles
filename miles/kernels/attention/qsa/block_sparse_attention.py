@@ -362,9 +362,12 @@ def _tile_mask(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk
         sel = torch.nn.functional.pad(sel, (0, 0, 0, pad_q))
     picked = sel.view(nqt, bq, nb).amax(dim=1).to(torch.int32)
     tile = torch.zeros(nqt, nkt, dtype=torch.int32, device=sel.device)
-    # block_size <= bk, so a block touches at most the tiles of its first and last token
-    tile.index_add_(1, block_first.long() // bk, picked)
-    tile.index_add_(1, block_last.long() // bk, picked)
+    # a block wider than a tile, or off the tile grid, touches every tile between its first and last token
+    first_tile = block_first.long() // bk
+    last_tile = block_last.long() // bk
+    span = int((last_tile - first_tile).max().item()) if first_tile.numel() else 0
+    for off in range(span + 1):
+        tile.index_add_(1, torch.minimum(first_tile + off, last_tile), picked)
     return tile > 0
 
 

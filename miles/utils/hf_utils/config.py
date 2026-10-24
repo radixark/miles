@@ -15,7 +15,7 @@ import importlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM, PretrainedConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 
 
@@ -126,6 +126,9 @@ def load_hf_config(
     """
     register_hf_config_aliases()
     config = AutoConfig.from_pretrained(checkpoint_path, trust_remote_code=trust_remote_code, **autoconfig_kwargs)
+    # some remote config classes (MiniMax-M3) keep the nested text config as a plain dict
+    if isinstance(getattr(config, "text_config", None), dict):
+        config.text_config = PretrainedConfig.from_dict(config.text_config)
 
     if overrides:
         for key, value in overrides.items():
