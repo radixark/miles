@@ -1,0 +1,47 @@
+import uuid
+from typing import Literal
+
+from pydantic import Field, JsonValue, NonNegativeInt
+
+from miles.utils.audit_utils.process_identity import ProcessIdentity
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
+
+
+# =============================== Raw snapshots ================================
+
+
+class ConfigSnapshotContext(FrozenStrictBaseModel):
+    """Identify a capture session, its source process, and its run UUID."""
+
+    name: str
+    deploy_component: str
+    deploy_instance_id: str
+    source: ProcessIdentity
+    run_uuid: str = Field(min_length=1)
+    capture_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+
+
+class ConfigSnapshotPoint(FrozenStrictBaseModel):
+    """Identify one occurrence of a stage within a capture session."""
+
+    stage: str  # Capture point, such as process_config, checkpoint_load, or train_first_step.
+    index: NonNegativeInt  # Zero-based occurrence of this stage within the same capture session.
+
+    def to_key(self) -> str:
+        return f"{self.stage}-{self.index:04d}"
+
+
+class ConfigSnapshotRecord(FrozenStrictBaseModel):
+    """Store one raw configuration capture with its context and sampling point."""
+
+    context: ConfigSnapshotContext
+    point: ConfigSnapshotPoint
+    config: JsonValue
+
+
+class ConfigSnapshotVariant(FrozenStrictBaseModel):
+    hardware: Literal["cpu", "h100", "h200", "b200", "mi350"]
+    wandb_available: bool = Field(strict=True)
+
+    def to_key(self) -> str:
+        return f"{self.hardware}/{'wandb' if self.wandb_available else 'no-wandb'}"

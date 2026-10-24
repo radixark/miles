@@ -15,6 +15,7 @@ import yaml
 from pydantic import BaseModel
 
 SNAPSHOT_UPDATE_ENV_VAR = "MILES_UPDATE_SNAPSHOTS"
+SNAPSHOT_RECORD_DIR_ENV_VAR = "MILES_SNAPSHOT_RECORD_DIR"
 
 
 def dump_snapshot(value: Any) -> str:
@@ -33,10 +34,12 @@ def snapshot_values(value: Any) -> Any:
     if isinstance(value, argparse.Action):
         return snapshot_values(_action_state(value))
     if isinstance(value, BaseModel):
-        return snapshot_values({
-            **{name: value.__getattribute__(name) for name in type(value).model_fields},
-            **(value.model_extra or {}),
-        })
+        return snapshot_values(
+            {
+                **{name: value.__getattribute__(name) for name in type(value).model_fields},
+                **(value.model_extra or {}),
+            }
+        )
     if is_dataclass(value) and not isinstance(value, type):
         return snapshot_values({field.name: value.__getattribute__(field.name) for field in fields(value)})
     if isinstance(value, Mapping):
