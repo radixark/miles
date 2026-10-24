@@ -225,8 +225,12 @@ def get_mooncake_master_port(train_argv: list[str]) -> int:
     return parse_host_and_port(address).port
 
 
-def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT, master_host: str = "127.0.0.1") -> str:
+def get_mooncake_object_store_args(
+    master_port: int = MOONCAKE_MASTER_PORT, master_host: str = "127.0.0.1", global_segment_size: str | None = None
+) -> str:
     init_kwargs = compute_mooncake_init_kwargs_vanilla(host=master_host, master_port=master_port)
+    if global_segment_size is not None:
+        init_kwargs["global_segment_size"] = global_segment_size
     return (
         f"{OBJECT_STORE_BACKEND_FLAG} {MOONCAKE_BACKEND_NAME} "
         f"{MOONCAKE_INIT_KWARGS_FLAG} {shlex.quote(json.dumps(init_kwargs))} "
