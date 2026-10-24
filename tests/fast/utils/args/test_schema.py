@@ -1,6 +1,52 @@
 from miles.utils.arguments import reset_arg
 import argparse
+from typing import Annotated
 import pytest
+from pydantic import Field
+from miles.utils.args.schema import Arg, BaseConfig
+
+class TestArgumentSchema:
+
+    def test_aliases_optional_types_and_boolean_flags_parse_together(self) -> None:
+        """CLI aliases retain their declared destination and optional scalar conversion."""
+
+        class Config(BaseConfig):
+            count: Annotated[int | None, Arg(aliases=('-n',))] = None
+            enabled: Annotated[bool, Arg()] = False
+            internal: str = 'private'
+        parser = argparse.ArgumentParser()
+        Config.add_arguments(parser)
+        assert vars(parser.parse_args(['-n', '7', '--enabled'])) == {'count': 7, 'enabled': True}
+        assert vars(parser.parse_args([])) == {'count': None, 'enabled': False}
+
+    def test_default_factories_are_independent_between_parsers(self) -> None:
+        """Mutating one parser's list default cannot contaminate another parser."""
+
+        class Config(BaseConfig):
+            items: Annotated[list[int], Arg(type_parser=int, nargs='+')] = Field(default_factory=lambda: [2])
+        first = argparse.ArgumentParser()
+        second = argparse.ArgumentParser()
+        Config.add_arguments(first)
+        Config.add_arguments(second)
+        first.parse_args([]).items.append(9)
+        assert second.parse_args([]).items == [2]
+        assert second.parse_args(['--items', '4', '5']).items == [4, 5]
+
+    def test_ambiguous_argument_metadata_is_rejected(self) -> None:
+        """A field cannot silently select one of two competing CLI declarations."""
+
+        class Config(BaseConfig):
+            value: Annotated[int, Arg(), Arg()] = 1
+        with pytest.raises(ValueError, match='Multiple argument declarations'):
+            Config.add_arguments(argparse.ArgumentParser())
+
+    def test_unsupported_types_require_an_explicit_converter(self) -> None:
+        """Complex values cannot accidentally fall through scalar CLI inference."""
+
+        class Config(BaseConfig):
+            values: Annotated[list[int], Arg()] = []
+        with pytest.raises(TypeError, match='Explicit type_parser'):
+            Config.add_arguments(argparse.ArgumentParser())
 
 class TestResetArgument:
 
@@ -26,3 +72,17 @@ class TestResetArgument:
         parser = argparse.ArgumentParser()
         reset_arg(parser=parser, name='--count', type=int, default=2)
         assert parser.parse_args(['--count', '8']).count == 8
+
+class TestResetMetadata:
+
+    def test_explicit_const_and_positional_arguments_keep_their_semantics(self) -> None:
+        """Optional-value flags distinguish omission, a bare flag and an explicit scalar."""
+
+        class Config(BaseConfig):
+            path: Annotated[str, Arg(cli_name='path')]
+            limit: Annotated[int | None, Arg(nargs='?', const=7)] = None
+        parser = argparse.ArgumentParser()
+        Config.add_arguments(parser)
+        assert vars(parser.parse_args(['data'])) == {'path': 'data', 'limit': None}
+        assert vars(parser.parse_args(['data', '--limit'])) == {'path': 'data', 'limit': 7}
+        assert vars(parser.parse_args(['data', '--limit', '9'])) == {'path': 'data', 'limit': 9}
