@@ -7,6 +7,7 @@ from miles.backends.megatron_utils.megatron_config import (
     compute_trainer_args,
 )
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
+from miles.utils.args.configs.backend_fields import TrainerBackendTraitConfig
 from miles.utils.args.runtime import AllConfig, TrainerConfig
 
 
@@ -27,6 +28,8 @@ def compute_trainer_config(all_config: AllConfig, *, trainer: MegatronTrainerCon
     base_args = Namespace(**(dict(all_config) | base_backend_values))
     values = vars(compute_trainer_args(args=base_args, trainer=trainer))
 
-    values["backend"] = backend_cls(**{name: values[name] for name in base_backend_values})
+    values["backend"] = backend_cls(
+        **{name: values[name] for name in base_backend_values.keys() | TrainerBackendTraitConfig.model_fields.keys()}
+    )
 
     return TrainerConfig.model_validate({name: values[name] for name in TrainerConfig.model_fields if name in values})

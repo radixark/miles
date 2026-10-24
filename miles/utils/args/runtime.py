@@ -10,6 +10,7 @@ from miles.utils.args.component_rollout import InferenceControllerOnlyConfig, Ro
 from miles.utils.args.component_shared import SglangFieldsConfig
 from miles.utils.args.component_trainer import TrainerOnlyConfig
 from miles.utils.args.configs.algo import AlgoConfig
+from miles.utils.args.configs.backend_fields import TrainerBackendTraitConfig
 from miles.utils.args.configs.ci import CiConfig
 from miles.utils.args.configs.cluster import ClusterConfig
 from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig, DsaMegatronPluginsConfig
@@ -39,6 +40,7 @@ from miles.utils.args.runtime_base import BaseLeafConfig
 
 class OrchestratorConfig(
     BaseLeafConfig,
+    TrainerBackendTraitConfig,
     OrchestratorOnlyConfig,
     RunUuidConfig,
     ClusterConfig,
@@ -110,6 +112,7 @@ class TrainerConfig(
 
 class InferenceControllerConfig(
     BaseLeafConfig,
+    TrainerBackendTraitConfig,
     InferenceControllerOnlyConfig,
     RunUuidConfig,
     ClusterConfig,
@@ -144,6 +147,7 @@ class InferenceControllerConfig(
 
 class RolloutConfig(
     BaseLeafConfig,
+    TrainerBackendTraitConfig,
     RolloutOnlyConfig,
     RunUuidConfig,
     ClusterConfig,
@@ -178,6 +182,7 @@ class RolloutConfig(
 
 class MultiLoraConfig(
     BaseLeafConfig,
+    TrainerBackendTraitConfig,
     MultiLoraOnlyConfig,
     RunUuidConfig,
     ClusterConfig,
@@ -212,6 +217,7 @@ class MultiLoraConfig(
 
 class AllConfig(
     BaseLeafConfig,
+    TrainerBackendTraitConfig,
     RunUuidConfig,
     ClusterConfig,
     TrainConfig,
