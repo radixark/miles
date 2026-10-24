@@ -158,14 +158,14 @@ def test_requires_dsn_when_env_unset(monkeypatch):
 def test_reads_dsn_from_env(monkeypatch, fake_conn):
     monkeypatch.setenv(NEON_DATABASE_URL_ENV, "postgresql://env/db")
     s = NeonMetricHistoryStore()
-    s.recent_trusted_values("t", "b", "s", "m", LAST_STEPS_KEY, REL_CONSTRAINT_KEY, -1, limit=1)
+    s.recent_trusted_values("t", "b", "s", "m", -1, limit=1)
     assert fake_conn.connected_dsns == ["postgresql://env/db"]
 
 
 def test_explicit_dsn_takes_precedence(monkeypatch, fake_conn):
     monkeypatch.delenv(NEON_DATABASE_URL_ENV, raising=False)
     s = NeonMetricHistoryStore(dsn="postgresql://explicit/db")
-    s.recent_trusted_values("t", "b", "s", "m", LAST_STEPS_KEY, REL_CONSTRAINT_KEY, -1, limit=1)
+    s.recent_trusted_values("t", "b", "s", "m", -1, limit=1)
     assert fake_conn.connected_dsns == ["postgresql://explicit/db"]
 
 
@@ -256,8 +256,6 @@ def test_recent_trusted_values_issues_baseline_join(store, fake_conn):
         IDENTITY.backend,
         IDENTITY.suite,
         "reward_mean",
-        LAST_STEPS_KEY,
-        REL_CONSTRAINT_KEY,
         -1,
         limit=10,
     )
@@ -274,22 +272,19 @@ def test_recent_trusted_values_issues_baseline_join(store, fake_conn):
         "r.backend = %s",
         "r.suite = %s",
         "mv.metric_key = %s",
-        "mv.steps_key = %s",
-        "mv.constraint_key = %s",
         "mv.step = %s",
         "r.trusted = true",
         "order by r.created_at desc",
         "limit %s",
     ):
         assert fragment in sql, f"baseline query missing: {fragment!r}"
+    assert "steps_key" not in sql and "constraint_key" not in sql
     # Params in the exact positional order the placeholders expect.
     assert params == (
         IDENTITY.test_path,
         IDENTITY.backend,
         IDENTITY.suite,
         "reward_mean",
-        LAST_STEPS_KEY,
-        REL_CONSTRAINT_KEY,
         -1,
         10,
     )
@@ -339,7 +334,7 @@ def test_each_operation_opens_and_closes_its_own_connection(store, fake_conn):
     # minutes-long gaps between e2e tests (Neon kills idle sockets); every
     # operation gets a fresh connection and releases it before returning.
     store.write_run(IDENTITY, PROVENANCE, "2026-06-02T00:00:00+00:00", True, [_sample("m", 0.5)])
-    store.recent_trusted_values("t", "b", "s", "m", LAST_STEPS_KEY, REL_CONSTRAINT_KEY, -1, limit=1)
+    store.recent_trusted_values("t", "b", "s", "m", -1, limit=1)
     assert fake_conn.connect_count == 2
     assert fake_conn.close_count == 2
 
@@ -437,8 +432,6 @@ def test_live_postgres_round_trip():
             identity.backend,
             identity.suite,
             "m",
-            LAST_STEPS_KEY,
-            REL_CONSTRAINT_KEY,
             -1,
             limit=10,
         )
@@ -451,8 +444,6 @@ def test_live_postgres_round_trip():
             identity.backend,
             identity.suite,
             "m",
-            LAST_STEPS_KEY,
-            REL_CONSTRAINT_KEY,
             -1,
             limit=10,
         )

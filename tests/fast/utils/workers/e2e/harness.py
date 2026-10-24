@@ -13,9 +13,12 @@ from pathlib import Path
 
 import httpx
 
+from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
+
 REPO_ROOT = Path(__file__).resolve().parents[5]
-WORKER_PATH = "tests.fast.utils.workers.e2e.e2e_worker.make_worker"
-ENV_FN_PATH = "tests.fast.utils.workers.e2e.e2e_worker.compute_env_vars"
+SPECS_PATH = "tests.fast.utils.workers.e2e.e2e_worker.compute_specs"
+POOL_ID = "e2e-pool"
+RPC_PORT_FLAG = "--rpc-port"
 
 READY_TIMEOUT_SECONDS = 60.0
 STOP_TIMEOUT_SECONDS = 15.0
@@ -76,22 +79,20 @@ def spawn_server(
     log_path: Path,
     port: int | None = None,
     worker_argv: list[str] | None = None,
-    env_var_fn: bool = True,
     extra_env: dict[str, str] | None = None,
-    worker_path: str = WORKER_PATH,
+    specs_path: str = SPECS_PATH,
 ) -> ServerProcess:
     port = reserve_port() if port is None else port
 
     env = dict(os.environ)
     env["PYTHONPATH"] = f"{REPO_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
     env["PYTHONUNBUFFERED"] = "1"
+    env[CELL_INDEX_ENV_VAR] = "0"
     env.update(extra_env or {})
 
-    argv = [sys.executable, "-m", "miles.utils.workers.serving.serve", "--worker", worker_path]
-    if env_var_fn:
-        argv += ["--env-var-fn", ENV_FN_PATH]
-    argv += ["--host", "127.0.0.1", "--port", str(port)]
-    argv += ["--", "--state-dir", str(state_dir)]
+    argv = [sys.executable, "-m", "miles.utils.workers.serving.serve"]
+    argv += ["--specs", specs_path, "--pool-id", POOL_ID]
+    argv += ["--", "--state-dir", str(state_dir), RPC_PORT_FLAG, str(port)]
     argv += worker_argv or []
 
     with log_path.open("w") as log_file:
@@ -136,6 +137,7 @@ class FlakyProxy:
     def __init__(self, upstream_port: int | None) -> None:
         self._upstream_port = upstream_port
         self._server: asyncio.Server | None = None
+        self._connections: dict[asyncio.StreamWriter, asyncio.Task] = {}
         self.requests: list[ProxyRequest] = []
         self.reject_status: int | None = None
         self.reject_remaining = 0
@@ -164,12 +166,27 @@ class FlakyProxy:
         self.drop_remaining = count
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0)
 
     async def stop(self) -> None:
         if self._server is not None:
             self._server.close()
+            # Python 3.12 waits for accepted connections, including abandoned requests.
+            tasks = list(self._connections.values())
+            for writer, task in self._connections.items():
+                writer.close()
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             await self._server.wait_closed()
+
+    def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # An accept callback may already be queued when stop() closes the listener.
+        if not self._server.is_serving():
+            writer.close()
+            return
+        task = asyncio.create_task(self._handle(reader, writer))
+        self._connections[writer] = task
+        task.add_done_callback(lambda _: self._connections.pop(writer))
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:

@@ -9,7 +9,7 @@ Miles ships recipes for the DeepSeek family across three generations. **DeepSeek
 
 | Model | Active / Total | HF ID | Recipe |
 |---|---|---|---|
-| DeepSeek-V4.1 Flash | 6 of 384 experts / ~750 B | `deepseek-ai/DeepSeek-V4.1-Flash`; image `radixark/miles:deepseek-v41` | [deepseek-v4-1-flash](/models/deepseek/deepseek-v4-1-flash) |
+| DeepSeek-V4.1 Flash | 6 of 384 experts / ~750 B | `deepseek-ai/DeepSeek-V4.1-Flash`; image `radixark/miles:dev` | [deepseek-v4-1-flash](/models/deepseek/deepseek-v4-1-flash) |
 | DeepSeek-V4-Pro | 49 B / 1.6 T | TBA | [deepseek-v4-pro](/models/deepseek/deepseek-v4-pro) |
 | DeepSeek-V4-Flash | 13 B / 284 B | `sgl-project/DeepSeek-V4-Flash-FP8` | [deepseek-v4-flash](/models/deepseek/deepseek-v4-flash) |
 | DeepSeek-V3.2 | 37 B / 671 B | `deepseek-ai/DeepSeek-V3.2` | [deepseek-v3-2](/models/deepseek/deepseek-v3-2) |

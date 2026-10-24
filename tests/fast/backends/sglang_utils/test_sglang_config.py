@@ -4,12 +4,14 @@ from argparse import Namespace
 
 import pytest
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import (
     ServerGroupConfig,
     _compute_megatron_num_gpus,
     _compute_rollout_offset,
     resolve_sglang_config,
 )
+from miles.utils.external_utils.command_utils.common import encode_pseudo_file
 
 
 def _make_args(**overrides) -> Namespace:
@@ -287,7 +289,10 @@ class TestPrefillNumServersPath:
             )
         )
         groups = cfg.models[0].server_groups
-        assert [(group.worker_type, group.num_gpus) for group in groups] == [("prefill", 6), ("decode", 10)]
+        assert [(group.worker_type, group.num_gpus) for group in groups] == [
+            (WorkerType.PREFILL, 6),
+            (WorkerType.DECODE, 10),
+        ]
         assert cfg.models[0].update_weights is not multi_lora
 
     def test_prefill_consuming_all_gpus_is_rejected(self):
@@ -592,6 +597,22 @@ class TestMegatronNumGpus:
 
 
 class TestHostPortOverrideRejection:
+    @pytest.mark.parametrize("mode", ["null", "prefill", "decode"])
+    def test_a_disaggregation_mode_override_is_rejected_at_resolve_time(self, tmp_path, mode: str):
+        """worker_type owns the engine's role; an override would launch a different role than the one registered."""
+        with pytest.raises(AssertionError, match="must not override host/port/disaggregation_mode"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                f"          disaggregation_mode: {mode}\n",
+                rollout_num_gpus=8,
+            )
+
     def test_a_port_override_is_rejected_at_resolve_time(self, tmp_path):
         """Overriding the allocator-owned port must fail fast instead of desyncing engine and controller."""
         with pytest.raises(AssertionError, match="must not override host/port"):
@@ -677,3 +698,21 @@ class TestHostPortOverrideRejection:
                 eval_num_gpus=2,
                 eval_sglang_gated_launch_port=13007,
             )
+
+
+class TestSglangConfigFileArg:
+    _YAML = (
+        "sglang:\n" "  - name: actor\n" "    server_groups:\n" "      - worker_type: regular\n" "        num_gpus: 8\n"
+    )
+
+    def test_a_path_is_still_read_from_disk(self, tmp_path):
+        """The flag has always named a file, and every existing launch script still passes one."""
+        cfg = _resolve_yaml(tmp_path, self._YAML)
+
+        assert [model.name for model in cfg.models] == ["actor"]
+
+    def test_an_inline_base64_payload_is_accepted(self, tmp_path):
+        """A test or a launcher that has no writable shared path must be able to inline the config."""
+        cfg = resolve_sglang_config(_make_args(sglang_config=encode_pseudo_file(self._YAML)))
+
+        assert [model.name for model in cfg.models] == ["actor"]

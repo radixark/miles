@@ -2,6 +2,7 @@ from copy import deepcopy
 from dataclasses import fields
 from typing import Any
 
+from miles.rollout.generate_utils.rollout_topk_logprobs import merge_rollout_topk_logprobs_field
 from miles.rollout.generate_utils.sampling_mask import merge_sampling_masks
 from miles.utils.types import Sample
 
@@ -35,8 +36,12 @@ def _introduces_replay_gap(a: Sample, b: Sample) -> bool:
 
 
 def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
-    """Merge two samples generated from sibling inference engine calls."""
-    a, b = deepcopy(a), deepcopy(b)
+    """Merge two samples generated from sibling inference engine calls.
+
+    Neither input is modified. The result shares the inputs' values it keeps unchanged,
+    such as ``b``'s tokens and prompt: copying both samples on every step made merging a
+    long trajectory quadratic in its number of turns.
+    """
 
     def _merge_equal_value(field):
         x = getattr(a, field)
@@ -44,11 +49,9 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         assert x == y, f"{field} mismatch: a.{field}={x}, b.{field}={y}"
         return x
 
-    def _fill_defaults(sample: Sample):
-        if sample.loss_mask is None:
-            sample.loss_mask = [1] * sample.response_length
-        if sample.rollout_log_probs is None:
-            sample.rollout_log_probs = [0.0] * sample.response_length
+    def _per_token(sample: Sample, field: str, default) -> list:
+        value = getattr(sample, field)
+        return value if value is not None else [default] * sample.response_length
 
     def _merge_optional_per_token(field):
         # Optional OPD per-token lists (teacher_log_probs, opd_reverse_kl): merge like
@@ -63,7 +66,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
     def _pop_opd_student_top_logprobs(metadata):
         if metadata is None:
             return None, None
-        metadata = deepcopy(metadata)
+        metadata = dict(metadata)
         top_logprobs = metadata.pop(_OPD_STUDENT_TOP_LOGPROBS_KEY, None)
         return metadata, top_logprobs
 
@@ -123,9 +126,6 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             merged_metadata["messages"] = messages
         return merged_metadata
 
-    _fill_defaults(a)
-    _fill_defaults(b)
-
     obs_len = len(b.tokens) - len(a.tokens) - b.response_length
     obs_tokens = b.tokens[len(a.tokens) : len(a.tokens) + obs_len]
     # TODO: is this acceptable?
@@ -150,6 +150,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             Sample,
             group_index=_merge_equal_value("group_index"),
             index=_merge_equal_value("index"),
+            lineage=_merge_equal_value("lineage"),
             rollout_id=_merge_equal_value("rollout_id"),
             prompt=b.prompt,
             tokens=b.tokens,
@@ -159,9 +160,14 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             response_length=a.response_length + obs_len + b.response_length,
             label=_merge_equal_value("label"),
             reward=_merge_equal_value("reward"),
-            loss_mask=a.loss_mask + [0] * obs_len + b.loss_mask,
+            loss_mask=_per_token(a, "loss_mask", 1) + [0] * obs_len + _per_token(b, "loss_mask", 1),
             weight_versions=a.weight_versions + b.weight_versions,
-            rollout_log_probs=a.rollout_log_probs + [0.0] * obs_len + b.rollout_log_probs,
+            kv_cache_namespace=_merge_equal_value("kv_cache_namespace"),
+            rollout_log_probs=(
+                _per_token(a, "rollout_log_probs", 0.0) + [0.0] * obs_len + _per_token(b, "rollout_log_probs", 0.0)
+            ),
+            rollout_topk_token_ids=merge_rollout_topk_logprobs_field(a, b, "rollout_topk_token_ids", obs_len),
+            rollout_topk_log_probs=merge_rollout_topk_logprobs_field(a, b, "rollout_topk_log_probs", obs_len),
             rollout_sampling_mask=sampling_mask,
             teacher_log_probs=_merge_optional_per_token("teacher_log_probs"),
             opd_reverse_kl=_merge_optional_per_token("opd_reverse_kl"),
@@ -174,6 +180,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             train_metadata=_merge_equal_value("train_metadata"),
             reward_spec=_merge_equal_value("reward_spec"),
             routing_key=_merge_equal_value("routing_key"),
+            trainer_model_id=_merge_equal_value("trainer_model_id"),
             non_generation_time=_merge_equal_value("non_generation_time"),
             spec_info=_merge_spec_info(a.spec_info, b.spec_info),
             prefix_cache_info=_merge_prefix_cache_info(a.prefix_cache_info, b.prefix_cache_info),

@@ -13,12 +13,12 @@ from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
 
-async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFnOutput:
     args = input.args
     sample = input.sample
     sampling_params = input.sampling_params
     assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"{sample.status=}"
-    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    url = url or f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
     prompt_ids = compute_prompt_ids_from_sample(input.state, sample)
 
@@ -40,6 +40,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sampling_params=sampling_params,
         multimodal_inputs=sample.multimodal_inputs,
         evaluation=input.evaluation,
+        kv_cache_namespace=sample.kv_cache_namespace,
     )
     if payload is None:
         sample.status = halt_status

@@ -1,12 +1,14 @@
+import functools
 import ipaddress
 import logging
 import os
 import shlex
-import sys
 
 from sglang.srt.server_args import ServerArgs
 
+from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils.lora.utils import (
     LORA_ADAPTER_NAME,
     engine_loads_adapter_from_disk,
@@ -37,8 +39,9 @@ def build_server_url(host: str, port: int) -> str:
 def compute_engine_launch_cmd(
     args,
     *,
+    interpreter_prefix: list[str],
     node_rank: int,
-    worker_type: str,
+    worker_type: WorkerType,
     base_gpu_id: int,
     sglang_overrides: dict,
     num_gpus_per_engine: int,
@@ -51,6 +54,8 @@ def compute_engine_launch_cmd(
     gated_launch_port: int,
     random_seed: int,
 ) -> str:
+    _assert_launch_gate_served()
+
     server_args_dict = _compute_server_args(
         args,
         node_rank=node_rank,
@@ -69,7 +74,7 @@ def compute_engine_launch_cmd(
     )
 
     launch_args = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
-    return shlex.join([sys.executable, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
+    return shlex.join([*interpreter_prefix, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
 
 
 def _compute_server_args(
@@ -80,7 +85,7 @@ def _compute_server_args(
     nccl_port,
     host,
     port,
-    worker_type: str = "regular",
+    worker_type: WorkerType = WorkerType.REGULAR,
     disaggregation_bootstrap_port: int | None,
     base_gpu_id: int,
     engine_info_bootstrap_port: int | None,
@@ -123,15 +128,15 @@ def _compute_server_args(
     if os.environ.get("MILES_SGLANG_DUMMY_LOAD") == "1":
         kwargs["load_format"] = "dummy"
 
-    if worker_type == "prefill":
-        kwargs["disaggregation_mode"] = "prefill"
+    if worker_type == WorkerType.PREFILL:
+        kwargs["disaggregation_mode"] = WorkerType.PREFILL.value
         kwargs.setdefault("load_balance_method", "round_robin")
         assert (
             disaggregation_bootstrap_port is not None
         ), "disaggregation_bootstrap_port must be set for prefill worker"
         kwargs["disaggregation_bootstrap_port"] = disaggregation_bootstrap_port
-    elif worker_type == "decode":
-        kwargs["disaggregation_mode"] = "decode"
+    elif worker_type == WorkerType.DECODE:
+        kwargs["disaggregation_mode"] = WorkerType.DECODE.value
         kwargs["prefill_round_robin_balance"] = True
 
     if args.use_rollout_routing_replay:
@@ -152,14 +157,20 @@ def _compute_server_args(
         )
     elif lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
-        kwargs["max_loras_per_batch"] = 1
+        # attention DP serves only pinned adapters (sgl-project/sglang#36389), and SGLang never pins the last slot
+        kwargs["max_loras_per_batch"] = 2 if sglang_attention_dp_enabled(args) else 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
         kwargs["lora_target_modules"] = (
             ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
         )
 
         if engine_loads_adapter_from_disk(args):
-            kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
+            if sglang_attention_dp_enabled(args):
+                kwargs["lora_paths"] = [
+                    {"lora_name": LORA_ADAPTER_NAME, "lora_path": args.lora_adapter_path, "pinned": True}
+                ]
+            else:
+                kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
         elif args.lora_adapter_path is not None:
             logger.info("Skipping startup lora_paths: the trainer pushes the adapter in the first weight sync")
         else:
@@ -183,7 +194,7 @@ def _compute_server_args(
 
     unused_keys = set(kwargs.keys())
     for name in _record_field_names(ServerArgs):
-        if worker_type == "decode" and name == "enable_hierarchical_cache":
+        if worker_type == WorkerType.DECODE and name == "enable_hierarchical_cache":
             continue
         if hasattr(args, f"sglang_{name}") and name not in kwargs:
             kwargs[name] = getattr(args, f"sglang_{name}")
@@ -202,4 +213,15 @@ def _compute_server_args(
             # TODO: dynamic allocation
             kwargs["max_loaded_loras"] = 2 * kwargs["max_loras_per_batch"]
 
+    if kwargs.get("device") is None:
+        kwargs["device"] = "cuda"
+
     return kwargs
+
+
+@functools.cache
+def _assert_launch_gate_served() -> None:
+    assert "gated_launch_port" in _record_field_names(ServerArgs), (
+        "this sglang has no --gated-launch-port, and miles launches every inference engine through "
+        "that gate; upgrade sglang to one that serves it"
+    )

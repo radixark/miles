@@ -10,8 +10,9 @@ Three cases, in the order of how much machinery each adds:
                   a self-launched sglang server outside the Ray placement group.
 
 Each case is a full ``train_async.py --fully-async`` run, so a crash anywhere in
-the dispatch/export/drain path fails the case; the gated train metrics come from
-the same runs.
+the dispatch/export/drain path fails the case. The three runs share one
+metric-history record with repeated steps, so this file declares no
+``register_ci_gate``.
 
 Requires: 8 GPUs, Qwen3-4B, GSM8K. Triggered by label: run-ci-megatron or run-ci-eval.
 """
@@ -20,25 +21,19 @@ import os
 from tempfile import TemporaryDirectory
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
-from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=2400,
-    suite="stage-c-8-gpu-h200",
+    suite="stage-c-8-gpu-h100",
     labels=["megatron", "eval", "fully-async"],
     hardware=["hopper", "blackwell"],
+    num_gpus=8,
 )
 register_rocm_ci(est_time=1500, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "eval", "fully-async"])
 
-register_ci_gate(metric_key="train/grad_norm")
-register_ci_gate(metric_key="train/ppo_kl")
-register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
-register_ci_gate(metric_key="train/train_rollout_kl")
-register_ci_gate(metric_key="rollout/raw_reward")
-
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+FEW_GPU = command_utils.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
@@ -49,6 +44,7 @@ EVAL_MODES = ("shared", "fleet", "external")
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
@@ -63,6 +59,7 @@ def prepare():
 
 
 def execute(eval_mode: str, eval_hf_dir: str):
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
@@ -81,6 +78,7 @@ def execute(eval_mode: str, eval_hf_dir: str):
         "--global-batch-size 32 "
         "--balance-data "
         "--pause-generation-mode in_place "
+        "--namespaced-radix-cache "
     )
 
     eval_args = (
@@ -100,7 +98,10 @@ def execute(eval_mode: str, eval_hf_dir: str):
         eval_args += "--eval-num-gpus 1 --eval-num-gpus-per-engine 1 "
     elif eval_mode == "external":
         eval_args += "--eval-function-path examples.infra_features.fully_async.external_eval_fn.ExternalSglangEvalFn "
-        eval_env = {"MILES_EXTERNAL_EVAL_GPUS": str(NUM_GPUS - 1)}
+        eval_env = {
+            "MILES_EXTERNAL_EVAL_GPUS": str(NUM_GPUS - 1),
+            "MILES_EXTERNAL_EVAL_SERVER_ARGS": "--enable-prefill-weight-versions",
+        }
 
     perf_args = (
         "--tensor-model-parallel-size 2 "
@@ -142,6 +143,7 @@ def execute(eval_mode: str, eval_hf_dir: str):
     ci_args = (
         "--ci-test --ci-metric-checker-key eval/gsm8k --ci-metric-checker-threshold 0.4 "
         "--ci-metric-checker-expect-num 3 "
+        "--sglang-enable-prefill-weight-versions --ci-assert-prefill-lag-max 3 "
     )
 
     misc_args = (
@@ -156,7 +158,7 @@ def execute(eval_mode: str, eval_hf_dir: str):
 
     train_args = (
         f"{ckpt_args} {rollout_args} {eval_args} {optimizer_args} {grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} {perf_args} {sglang_args} {ci_args} {misc_args} "
+        f"{command_utils.get_default_wandb_args(__file__)} {perf_args} {sglang_args} {ci_args} {misc_args} "
     )
 
     U.execute_train(

@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["eval"])
 
 import asyncio
 from argparse import Namespace
@@ -27,6 +27,7 @@ def make_args(**overrides) -> Namespace:
         debug_train_only=False,
         offload_train=False,
         ci_test=False,
+        namespaced_radix_cache=False,
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
     )
     defaults.update(overrides)
@@ -60,7 +61,7 @@ class CheckpointFnStub(CheckpointEvalFn):
             raise EvalSkip(self.skip_reason)
         return RolloutFnEvalOutput(data={"ds": {"rewards": [1.0]}})
 
-    def dispose(self):
+    async def dispose(self):
         self.disposed = True
 
 
@@ -69,7 +70,7 @@ def make_manager(args, eval_fn=None, fleet=None):
         getattr(rollout_executor_mod.RolloutExecutor, "__ray_actor_class__", rollout_executor_mod.RolloutExecutor)
     )
     mgr.args = args
-    mgr.rollout_id = 7
+    mgr.last_get_rollout_id_of_model_id = {None: 7}
     mgr._eval_lock = asyncio.Lock()
     mgr._health_monitors = []
     mgr.use_legacy_rollout_v1 = False
@@ -134,7 +135,8 @@ async def test_debug_train_only_runs_snapshot_eval(controller_env, tmp_path):
     assert fn.inputs[0].weight_version == "5"
 
 
-async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, monkeypatch, tmp_path):
+@pytest.mark.parametrize("weight_version", [None, "3"])
+async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, monkeypatch, tmp_path, weight_version):
     """The fleet only delivers weights — the configured eval fn still generates, and it
     is the same object the shared posture would call."""
     snapshot = tmp_path / "step_5"
@@ -150,22 +152,50 @@ async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, mon
     class FakeFleet:
         def __init__(self):
             self.pins = []
+            self.current_versions = []
 
         async def pin(self, checkpoint_dir, weight_version):
             self.pins.append((checkpoint_dir, weight_version))
             return "fleet-state"
 
+        async def current(self, weight_version):
+            self.current_versions.append(weight_version)
+            return "fleet-state"
+
     fleet = FakeFleet()
-    monkeypatch.setattr(rollout_executor_mod, "call_rollout_function", lambda fn, input: fn(input))
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path))
     mgr = make_manager(args, eval_fn=eval_generate_rollout, fleet=fleet)
 
-    await mgr.eval(5, hf_dir=str(snapshot))
+    if weight_version is not None:
+        monkeypatch.setattr(
+            rollout_executor_mod,
+            "is_complete_hf_export",
+            lambda _path: pytest.fail("live evaluation must not inspect a checkpoint"),
+        )
+    hf_dir = str(snapshot) if weight_version is None else None
+    await mgr.eval(5, hf_dir=hf_dir, weight_version=weight_version)
 
-    assert fleet.pins == [(str(snapshot), "5")]
+    assert fleet.pins == ([(str(snapshot), "5")] if weight_version is None else [])
+    assert fleet.current_versions == ([] if weight_version is None else [weight_version])
     assert seen_inputs[0].generate_state == "fleet-state"
-    assert seen_inputs[0].hf_dir == str(snapshot)
-    assert seen_inputs[0].weight_version == "5"
+    assert seen_inputs[0].hf_dir == hf_dir
+    assert seen_inputs[0].weight_version == ("5" if weight_version is None else weight_version)
+
+
+async def test_unconfirmed_current_version_never_generates(controller_env):
+    class UnconfirmedFleet:
+        async def current(self, weight_version):
+            assert weight_version == "3"
+            raise EvalSkip("pin_violation")
+
+    def eval_generate_rollout(_input):
+        pytest.fail("unconfirmed weights must not generate")
+
+    mgr = make_manager(make_args(), eval_fn=eval_generate_rollout, fleet=UnconfirmedFleet())
+    await mgr.eval(5, weight_version="3")
+
+    assert controller_env.logged["skip"] == (5, "pin_violation")
+    assert "eval" not in controller_env.logged
 
 
 async def test_eval_checkpoint_missing_marker_skips(controller_env, tmp_path):
@@ -218,7 +248,6 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
         seen_inputs.append(input)
         return RolloutFnEvalOutput(data={})
 
-    monkeypatch.setattr(rollout_executor_mod, "call_rollout_function", lambda fn, input: fn(input))
     args = make_args(hf_checkpoint="/base", eval_num_gpus=0)
     mgr = make_manager(args, eval_fn=eval_generate_rollout)
 
@@ -233,6 +262,15 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
 
 
 class TestSnapshotEvalGuards:
+    @pytest.mark.parametrize("debug_train_only", [False, True])
+    async def test_explicit_version_requires_a_dedicated_pool(self, controller_env, debug_train_only):
+        mgr = make_manager(make_args(eval_num_gpus=0, debug_train_only=debug_train_only))
+
+        with pytest.raises(ValueError, match="requires a dedicated synchronized fleet"):
+            await mgr.eval(5, weight_version="3")
+
+        assert controller_env.logged == {}
+
     async def test_snapshot_eval_without_an_hf_dir_is_rejected(self, controller_env):
         """Snapshot eval has no checkpoint to evaluate without a dir, so it must fail loudly."""
         fn = CheckpointFnStub()
@@ -282,12 +320,11 @@ class TestEvalFleetSerialization:
         def eval_generate_rollout(input):
             return RolloutFnEvalOutput(data={"ds": {"rewards": [1.0]}})
 
-        monkeypatch.setattr(rollout_executor_mod, "call_rollout_function", lambda fn, input: fn(input))
         args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path))
         mgr = make_manager(args, eval_fn=eval_generate_rollout)
         args.eval_uses_snapshots = True
         fleet = BlockingFleet()
-        mgr.set_eval_fleet(fleet)
+        mgr._eval_fleet = fleet
 
         first = asyncio.create_task(mgr.eval(5, hf_dir=str(tmp_path / "step_5")))
         second = asyncio.create_task(mgr.eval(6, hf_dir=str(tmp_path / "step_6")))
@@ -315,7 +352,7 @@ class FakeManagerActor:
         outer = self
 
         class _Eval:
-            def remote(self, rollout_id, hf_dir=None, export_time_seconds=None, require_marker=True):
+            def __call__(self, rollout_id, hf_dir=None, export_time_seconds=None, require_marker=True):
                 outer.eval_calls.append((rollout_id, hf_dir, export_time_seconds))
                 outer.marker_flags.append(require_marker)
                 fut = asyncio.get_event_loop().create_future()
@@ -323,7 +360,7 @@ class FakeManagerActor:
                 return fut
 
         class _Skip:
-            def remote(self, rollout_id, reason):
+            def __call__(self, rollout_id, reason):
                 outer.skip_calls.append((rollout_id, reason))
                 fut = asyncio.get_event_loop().create_future()
                 fut.set_result(None)
@@ -348,14 +385,10 @@ class FakeActorModel:
 
 
 @pytest.fixture
-def dispatcher_env(monkeypatch):
+def dispatcher_env():
+    """The dispatcher tracks its exports as asyncio tasks, so there is nothing left to stand in for."""
     import miles.ray.rollout.eval_dispatch as eval_dispatch
 
-    # ray.wait/ray.get over asyncio futures: done iff the future is resolved.
-    monkeypatch.setattr(
-        eval_dispatch.ray, "wait", lambda refs, timeout=0: (refs, []) if refs[0].done() else ([], refs)
-    )
-    monkeypatch.setattr(eval_dispatch.ray, "get", lambda ref: ref.result())
     return eval_dispatch
 
 
@@ -556,7 +589,7 @@ async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
         def __init__(self):
             self.calls = []
 
-        def remote(self, rollout_id):
+        def __call__(self, rollout_id):
             self.calls.append(rollout_id)
             fut = asyncio.get_event_loop().create_future()
             fut.set_result(None)
@@ -590,8 +623,8 @@ def external_fn_env(monkeypatch):
         calls.append(("get", url))
         return {"weight_version": server.loaded_version}
 
-    async def fake_run_eval(state, cache):
-        calls.append(("eval", state))
+    async def fake_run_eval(state, cache, *, kv_cache_namespace: str | None = None):
+        calls.append(("eval", state, kv_cache_namespace))
         return {"ds": {"rewards": [1.0]}}
 
     async def fake_wait_ok(url, **kwargs):
@@ -629,6 +662,7 @@ async def test_external_eval_fn_waits_pins_then_evals(external_fn_env):
     )
     assert external_fn_env.calls[2] == ("get", "http://eval-host:31000/model_info")
     assert external_fn_env.calls[3][0] == "eval"
+    assert external_fn_env.calls[3][2] is None
     # The eval state targets the external server, built from the real training args.
     state = external_fn_env.calls[3][1]
     assert (state.args.sglang_router_ip, state.args.sglang_router_port) == ("eval-host", 31000)
@@ -646,7 +680,7 @@ async def test_external_eval_fn_pin_failure_retries_then_raises(external_fn_env)
     assert not [c for c in external_fn_env.calls if c[0] == "eval"]
 
 
-def test_external_eval_fn_launches_own_server(external_fn_env, monkeypatch):
+async def test_external_eval_fn_launches_own_server(external_fn_env, monkeypatch):
     """Launch mode is the black-box promise: init prepares everything, pinned to
     the GPUs the user names, extra sglang flags passed through; dispose tears down."""
     procs = []
@@ -666,5 +700,5 @@ def test_external_eval_fn_launches_own_server(external_fn_env, monkeypatch):
     assert proc.cmd[proc.cmd.index("--model-path") + 1] == "/base"
     assert proc.cmd[-2:] == ["--attention-backend", "fa3"]
     assert fn._url == "http://127.0.0.1:31000"
-    fn.dispose()
+    await fn.dispose()
     assert proc.terminated

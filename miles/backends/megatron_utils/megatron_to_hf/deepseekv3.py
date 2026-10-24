@@ -3,6 +3,17 @@ import re
 import torch
 
 
+_NATIVE_DSA_ATTENTION_MAPPING = {
+    "self_attention.core_attention.indexer.linear_wq_b.weight": "indexer.wq_b.weight",
+    "self_attention.core_attention.indexer.linear_wk.weight": "indexer.wk.weight",
+    "self_attention.core_attention.indexer.linear_weights_proj.weight": "indexer.weights_proj.weight",
+    "self_attention.core_attention.indexer.k_norm.weight": "indexer.k_norm.weight",
+    "self_attention.core_attention.indexer.k_norm.bias": "indexer.k_norm.bias",
+    "self_attention.q_layernorm.weight": "q_a_layernorm.weight",
+    "self_attention.kv_layernorm.weight": "kv_a_layernorm.weight",
+}
+
+
 def convert_deepseekv3_to_hf(args, name, param):
     if name == "module.module.embedding.word_embeddings.weight":
         return [("model.embed_tokens.weight", param)]
@@ -21,6 +32,11 @@ def convert_deepseekv3_to_hf(args, name, param):
     match = re.match(decoder_layers_pattern, name)
     if match:
         layer_idx, rest = match.groups()
+
+        if rest in _NATIVE_DSA_ATTENTION_MAPPING:
+            # Native Megatron applies indexer RoPE in HF order; only the Miles
+            # indexer below stores the reordered channels.
+            return [(f"model.layers.{layer_idx}.self_attn.{_NATIVE_DSA_ATTENTION_MAPPING[rest]}", param)]
 
         # experts
         expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"

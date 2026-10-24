@@ -40,6 +40,7 @@ from miles.utils.debug_utils.run_megatron.worker.replay import (
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
 from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_k
 from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
+from miles_plugins.models.glm5.arguments import add_dsa_arguments
 
 
 def main() -> None:
@@ -111,6 +112,7 @@ def _register_worker_arguments(parser: argparse.ArgumentParser) -> argparse.Argu
     """Worker arguments plus the plugin arguments the model scripts pass through."""
     WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser(parser)
     add_dsv4_arguments(parser)
+    add_dsa_arguments(parser)
     return parser
 
 

@@ -5,68 +5,18 @@ forward row, which dominates its train/rollout logprob gap. We derive per-doc bo
 position_ids and feed seq_idx to the mixer's un-fused conv/scan kernels + run attention as varlen
 flash-attn with cu_seqlens, so each doc stays isolated. Boundaries are stashed from the CausalLM
 forward (position_ids don't reach the mixers otherwise). No-op when not packing.
-
-The post-load fixup re-asserts checkpoint weights that transformers' Mamba ``_init_weights`` clobbers.
 """
 
 import functools
-import glob
-import json
 import logging
-import os
 import sys
 
-import torch
-
-from ..adaptations.packing.boundaries import packed_seq_context
+from ..adaptations.packing import packed_seq_context
 
 logger = logging.getLogger(__name__)
 
-_CLOBBERED_PARAM_SUFFIXES = (".mixer.dt_bias", ".mixer.out_proj.weight")
-
-
-def reload_nemotron_h_clobbered_weights(model, ckpt_path, tol=1e-3) -> int:
-    """Restore NemotronH mixer parameters overwritten after checkpoint loading."""
-    try:
-        from safetensors import safe_open
-    except Exception:  # pragma: no cover
-        return 0
-    files = sorted(glob.glob(os.path.join(ckpt_path, "*.safetensors")))
-    if not files:
-        return 0
-    index = os.path.join(ckpt_path, "model.safetensors.index.json")
-    if os.path.exists(index):
-        with open(index) as f:
-            shard_of = json.load(f)["weight_map"]
-    else:
-        shard_of = {}
-
-    reloaded = 0
-    with torch.no_grad():
-        for name, param in model.named_parameters():
-            if not name.endswith(_CLOBBERED_PARAM_SUFFIXES) or param.device.type == "meta":
-                continue
-            shards = [os.path.join(ckpt_path, shard_of[name])] if name in shard_of else files
-            for f in shards:
-                try:
-                    with safe_open(f, framework="pt") as sf:
-                        if name not in sf.keys():
-                            continue
-                        disk = sf.get_tensor(name)
-                except Exception:
-                    continue
-                if disk.shape == param.shape:
-                    disk = disk.to(device=param.device, dtype=param.dtype)
-                    if (param.detach() - disk).abs().max().item() > tol:
-                        param.copy_(disk)
-                        reloaded += 1
-                break
-    if reloaded:
-        logger.info(
-            "[fsdp post_load] restored %d NemotronH mixer parameter(s) overwritten by _init_weights",
-            reloaded,
-        )
-    return reloaded
+# Set per attention-mixer instance by plugins/hf_kernels/binders.py; read per forward.
+HUB_VARLEN_ATTR = "_hub_flash_attn_varlen_func"
 
 
 def _inject_seq_idx(fn, seq_idx):
@@ -115,15 +65,18 @@ def _patch_attn_forward(attn_cls):
         return
 
     try:
-        from flash_attn import flash_attn_varlen_func
+        from flash_attn import flash_attn_varlen_func as native_varlen_func
     except Exception:  # pragma: no cover
-        flash_attn_varlen_func = None
+        native_varlen_func = None
 
     @functools.wraps(orig)
     def forward(self, hidden_states, *args, **kwargs):
         cu = getattr(self, "_packing_cu_seqlens", None)
         cache = kwargs.get("past_key_values", kwargs.get("cache_params"))
-        if cu is None or cache is not None or flash_attn_varlen_func is None:
+        # A hub kernel bound on the instance wins over the flash-attn wheel; without either,
+        # the packed-document reset below cannot run and attention goes dense across documents.
+        varlen_func = getattr(self, HUB_VARLEN_ATTR, None) or native_varlen_func
+        if cu is None or cache is not None or varlen_func is None:
             return orig(self, hidden_states, *args, **kwargs)
         # Packed rows arrive as (1, total_tokens, hidden); flash varlen consumes flat
         # (tokens, heads, head_dim) and handles GQA natively, so K/V stay at kv-head count.
@@ -132,9 +85,7 @@ def _patch_attn_forward(attn_cls):
         kf = self.k_proj(hidden_states).view(b * q, -1, self.head_dim)
         vf = self.v_proj(hidden_states).view(b * q, -1, self.head_dim)
         ml = self._packing_max_seqlen
-        o = flash_attn_varlen_func(
-            qf, kf, vf, cu_seqlens_q=cu, cu_seqlens_k=cu, max_seqlen_q=ml, max_seqlen_k=ml, causal=True
-        )
+        o = varlen_func(qf, kf, vf, cu_seqlens_q=cu, cu_seqlens_k=cu, max_seqlen_q=ml, max_seqlen_k=ml, causal=True)
         return self.o_proj(o.reshape(b, q, -1)), None
 
     forward._nemotron_packing = True

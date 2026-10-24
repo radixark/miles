@@ -90,7 +90,6 @@ def tasks_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
     # so tests never read a real key file from the developer's machine
     monkeypatch.setenv("E2B_API_KEY", "test-key")
-    monkeypatch.delenv("MILES_ROUTER_EXTERNAL_HOST", raising=False)
     monkeypatch.delenv("HARBOR_ENV_KWARGS", raising=False)
     monkeypatch.delenv("HARBOR_CPU_ENFORCEMENT_POLICY", raising=False)
     monkeypatch.delenv("HARBOR_MEMORY_ENFORCEMENT_POLICY", raising=False)
@@ -319,13 +318,12 @@ def test_harbor_exceptions_map_to_the_exit_status_vocabulary(exc_type, exit_stat
 # --- entry -----------------------------------------------------------------
 
 
-def test_run_returns_the_verdict_and_trial_dir(tasks_dir, fake_harbor, monkeypatch):
+def test_run_returns_the_verdict_and_trial_dir(tasks_dir, fake_harbor):
     fake_harbor.result = _verdict(reward=1.0)
-    monkeypatch.setenv("MILES_ROUTER_EXTERNAL_HOST", "trainer.tailnet")
 
     out = run_async(
         haf.run(
-            "http://10.0.0.1:30000/sessions/s1",
+            "http://trainer.tailnet:30000/sessions/s1",
             [],
             {"temperature": 0.8},
             {"instance_id": "task-1", "agent_name": "mini-swe-agent"},
@@ -335,7 +333,8 @@ def test_run_returns_the_verdict_and_trial_dir(tasks_dir, fake_harbor, monkeypat
     assert out["reward"] == 1.0 and out["exit_status"] == "Submitted"
     assert out["trial_dir"].endswith("task-1")
     (trial,) = fake_harbor.created
-    # in-sandbox agents call the model from inside the sandbox: the external host must be in the URL they get
+    # in-sandbox agents call the model from inside the sandbox: base_url already names the
+    # instance the way the sandbox reaches it, so it goes through with only /v1 appended
     assert trial.config.agent.env["OPENAI_API_BASE"] == "http://trainer.tailnet:30000/sessions/s1/v1"
 
 

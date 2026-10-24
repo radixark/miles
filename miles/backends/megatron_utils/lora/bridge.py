@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import logging
 from argparse import Namespace
+from collections.abc import Sequence
 from dataclasses import dataclass
 
+import torch
 import torch.distributed as dist
 from megatron.core.tensor_parallel import ColumnParallelLinear
+from megatron.core.transformer.moe.router import TopKRouter
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
@@ -20,6 +23,7 @@ from miles.backends.megatron_utils.lora.utils import (
     create_lora_instance,
     patch_param_grad_buffer_for_colocate_mode_lora,
 )
+from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
@@ -39,6 +43,11 @@ class _BridgeWrapperConfig:
 
 def _ensure_model_list(model):
     return model if isinstance(model, list) else [model]
+
+
+def _install_model_companions(model_chunks: Sequence[torch.nn.Module]) -> None:
+    for chunk_index, chunk in enumerate(model_chunks):
+        ModelCompanionInstallationUtils.install(model=chunk, chunk_index=chunk_index)
 
 
 def _make_value_model_hook(hidden_size: int):
@@ -137,6 +146,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     from megatron.bridge import AutoBridge
     from megatron.bridge.models.conversion.model_bridge import _megatron_local_name_to_global
     from megatron.bridge.training.config import DistributedDataParallelConfig
+    from megatron.bridge.utils.fusions import validate_rope_fusion_compatibility
 
     hf_config = load_hf_config(args.hf_checkpoint)
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
@@ -156,9 +166,19 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.recompute_modules = args.recompute_modules
     provider.distribute_saved_activations = args.distribute_saved_activations
     provider.attention_backend = args.attention_backend
+    provider.apply_rope_fusion = args.apply_rope_fusion
+    # Custom providers can bypass GPTModelProvider.provide() and its fusion checks.
+    if not validate_rope_fusion_compatibility(provider):
+        provider.apply_rope_fusion = False
+    provider.bias_activation_fusion = args.bias_swiglu_fusion
+    provider.moe_router_dtype = args.moe_router_dtype
+    provider.moe_router_use_torch_mm = args.moe_router_use_torch_mm
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
+    # The HF config can carry MTP layers; LoRA trains none and SGLang serves no MTP draft with LoRA, so build none.
+    assert not args.enable_mtp_training, "LoRA does not support MTP training"
+    provider.mtp_num_layers = None
     if is_multi_lora_enabled(args) and targets_expert_leaves(args.hf_lora_targets):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
         # MoE providers default the fusion on — so turn it off rather than refuse to build.
@@ -208,10 +228,16 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         )
         lora = create_adapter(args, target_modules=adapter_targets)
         transformed = lora(model_chunks, training=True)
+        if is_multi_lora_enabled(args):
+            for chunk in transformed:
+                for module in chunk.modules():
+                    if isinstance(module, TopKRouter):
+                        module.frozen_expert_bias = True
         lora.set_params_to_save(transformed)
         return transformed
 
     provider.register_pre_wrap_hook(apply_lora_hook)
+    provider.register_pre_wrap_hook(_install_model_companions)
 
     is_value_model = (
         "ForTokenClassification" in hf_config.architectures[0]

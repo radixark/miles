@@ -10,6 +10,8 @@ import pytest
 import ray
 from sglang_router.launch_router import RouterArgs
 
+from tests.fast.fixtures.args_fixtures import parser_defaults
+
 from miles.utils import object_store
 from miles.utils.types import Sample
 
@@ -35,6 +37,8 @@ def make_args(**overrides: Any) -> Namespace:
         rollout_temperature=1.0,
         rollout_top_p=1.0,
         rollout_top_k=-1,
+        rollout_top_logprobs_num=0,
+        rollout_sampling_logprobs_mode="selected",
         use_sampling_support_replay=False,
         over_sampling_batch_size=None,
         rollout_global_dataset=False,
@@ -42,6 +46,7 @@ def make_args(**overrides: Any) -> Namespace:
         update_weights_interval=1,
         check_weight_update_equal=False,
         check_weight_update_skip_list=None,
+        check_weight_update_selector="all",
         # batch / training
         global_batch_size=8,
         use_dynamic_global_batch_size=False,
@@ -51,6 +56,7 @@ def make_args(**overrides: Any) -> Namespace:
         delay_split_train_data_by_dp=False,
         # object store
         object_store_backend="ray",
+        worker_comm_backend="ray",
         mooncake_store_init_kwargs=None,
         mooncake_replica_num=1,
         # advantage / reward
@@ -61,6 +67,7 @@ def make_args(**overrides: Any) -> Namespace:
         log_reward_category=None,
         log_passrate=False,
         pin_rollout_manager_to_head=False,
+        cluster_backend="ray",
         # placement / colocation
         debug_train_only=False,
         debug_rollout_only=False,
@@ -83,6 +90,7 @@ def make_args(**overrides: Any) -> Namespace:
         critic_num_nodes=0,
         critic_num_gpus_per_node=0,
         use_critic=False,
+        megatron_config=None,
         critic_train_only=False,
         # sglang router
         sglang_router_ip=None,
@@ -108,13 +116,23 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_server_concurrency=512,
         use_session_server=False,
         use_rollout_routing_replay=False,
+        sglang_enable_prefill_weight_versions=False,
         session_server_ip=None,
+        session_server_external_host=None,
         session_server_port=None,
         session_server_workers=1,
         run_uuid="0123456789abcdef",
+        # deployment
+        deploy_component="all",
+        deploy_instance_id=None,
+        init_expected_num_cells=None,
+        trainer_controller_addrs=None,
+        inference_controller_addr=None,
         # external rollout
         rollout_external=False,
         rollout_external_engine_addrs=None,
+        rollout_external_router_pd=False,
+        custom_inference_engine_provider_path="miles.ray.specs.inference.backend_inference_engine_provider",
         # offload / fault tolerance
         offload_rollout=False,
         use_fault_tolerance=False,
@@ -128,6 +146,7 @@ def make_args(**overrides: Any) -> Namespace:
         fp16=False,
         use_rollout_indexer_replay=False,
         env_report=None,
+        env_report_interval_seconds=3600.0,
         # checkpoint / data source
         hf_checkpoint="/fake/model",
         lora_rank=0,
@@ -148,11 +167,15 @@ def make_args(**overrides: Any) -> Namespace:
         ci_inject_rollout_data_min_match_ratio=0.9,
         # event checkpointing (event_logger.restore/snapshot in RolloutExecutor)
         save_debug_event_data=None,
+        enable_sample_ownership_checker=False,
+        sample_ownership_grace_steps=10,
         load=None,
+        requested_load=None,
         save=None,
         # CI
         ci_test=False,
         ci_tito_special_token_count_threshold=0.0,
+        ci_assert_prefill_lag_max=None,
         # dumper (sglang debug dumper integration)
         dumper_enable=False,
         dumper_inference=False,
@@ -162,7 +185,7 @@ def make_args(**overrides: Any) -> Namespace:
     defaults.setdefault("starts_inference_engines", not defaults["debug_train_only"] or defaults["eval_num_gpus"] > 0)
     if defaults["debug_train_only"]:
         defaults["rollout_num_gpus"] = 0
-    return Namespace(**defaults)
+    return Namespace(**{**parser_defaults(), **defaults})
 
 
 def make_sample(
@@ -228,7 +251,7 @@ def make_sglang_config_yaml(
     update_weights: bool | None = None,
     model_path: str | None = None,
 ) -> str:
-    """Render a small SglangConfig YAML for from_yaml() round-trip tests."""
+    """Render a small SglangConfig YAML for from_file_arg() round-trip tests."""
     server_groups = server_groups or [{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 1}]
     lines = ["sglang:", f"  - name: {name}"]
     if model_path is not None:
@@ -242,6 +265,13 @@ def make_sglang_config_yaml(
         if "num_gpus_per_engine" in g:
             lines.append(f"        num_gpus_per_engine: {g['num_gpus_per_engine']}")
     return "\n".join(lines) + "\n"
+
+
+def make_args_with_sglang_config(tmp_path, *, server_groups: list[dict] | None = None, **overrides: Any) -> Namespace:
+    """Args namespace pointed at a freshly written sglang config file."""
+    config_path = tmp_path / "sglang.yaml"
+    config_path.write_text(make_sglang_config_yaml(server_groups=server_groups))
+    return make_args(sglang_config=str(config_path), **overrides)
 
 
 # --------------------------- server cell fixtures ---------------------------

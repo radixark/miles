@@ -9,6 +9,7 @@ from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     CellState,
     StateDisposed,
+    StateErrored,
     StateInitializing,
     StatePendingWeights,
     StateServing,
@@ -22,8 +23,17 @@ from miles.ray.rollout.server_cell import (
     compute_pending_rollout_cell_status,
 )
 from miles.utils.ft_utils.api_server.models import CellStatus, TriState
+from miles.utils.workers.worker_spec import HostAndPort
 
 _ADDR_INFO = CellAddrInfo(server_url="http://10.0.0.1:30000", bootstrap_port=None, gate_url="http://10.0.0.1:13000")
+
+
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> dict[str, HostAndPort]:
+        return dict(
+            primary=HostAndPort(host="10.0.0.1", port=30000),
+            gate=HostAndPort(host="10.0.0.1", port=13000),
+        )
 
 
 def _make_cell(state: CellState, health: TriState = TriState.TRUE, workers_hash: str = "pseudo-hash-0") -> ServerCell:
@@ -42,6 +52,7 @@ def _make_cell(state: CellState, health: TriState = TriState.TRUE, workers_hash:
             workers_hash=workers_hash,
         ),
         router_api_client=SimpleNamespace(),
+        provider=_StubProvider(),
     )
     cell._state = state
     cell._health_checker = SimpleNamespace(status=health)
@@ -127,6 +138,36 @@ class TestServerCellStatus:
             ("Serving", TriState.TRUE),
         ]
 
+    def test_an_errored_cell_is_running_but_neither_healthy_nor_serving(self):
+        """A cell whose weight update failed still owns its gpus, so it must be reported allocated yet unusable."""
+        status = _make_cell(StateErrored(addr_info=_ADDR_INFO)).cell_status()
+
+        assert status.phase == "Running"
+        assert _conditions(status) == [
+            ("Allocated", TriState.TRUE),
+            ("Healthy", TriState.FALSE),
+            ("Serving", TriState.FALSE),
+        ]
+
+    def test_an_errored_cell_names_the_reason_the_ft_controller_heals_on(self):
+        """A generic unhealthy verdict would not tell a crashed engine from one taken out of service."""
+        status = _make_cell(StateErrored(addr_info=_ADDR_INFO)).cell_status()
+
+        (healthy,) = [condition for condition in status.conditions if condition.type == "Healthy"]
+        assert healthy.reason == "CellErrored"
+
+    def test_an_errored_cell_ignores_a_still_passing_probe(self):
+        """Its health checker is stopped, so a stale passing verdict must not advertise the cell as healthy."""
+        status = _make_cell(StateErrored(addr_info=_ADDR_INFO), health=TriState.TRUE).cell_status()
+
+        assert ("Healthy", TriState.FALSE) in _conditions(status)
+
+    def test_an_errored_cell_still_names_its_generation(self):
+        """Healing replaces the cell, so the verdict must say which processes it is about."""
+        status = _make_cell(StateErrored(addr_info=_ADDR_INFO), workers_hash="hash-7").cell_status()
+
+        assert status.workers_hash == "hash-7"
+
     def test_a_disposed_cell_is_suspended(self):
         """Nothing is left to probe once the cell has been torn down."""
         status = _make_cell(StateDisposed()).cell_status()
@@ -143,6 +184,7 @@ class TestServerCellStatusGeneration:
             StateInitializing(addr_info=_ADDR_INFO, start_time=time.monotonic()),
             StatePendingWeights(addr_info=_ADDR_INFO),
             StateServing(addr_info=_ADDR_INFO),
+            StateErrored(addr_info=_ADDR_INFO),
             StateDisposed(),
         ],
     )
@@ -182,48 +224,50 @@ class TestGetCellStatuses:
     def _controller(self, servers: dict[str, SimpleNamespace]) -> SimpleNamespace:
         return SimpleNamespace(servers=servers)
 
-    def test_every_cell_of_every_server_is_reported(self):
+    async def test_every_cell_of_every_server_is_reported(self):
         """The api server renders one row per cell, so a missing model means missing rows."""
         cell_a = _make_cell(StateServing(addr_info=_ADDR_INFO))
         cell_b = _make_cell(StateUninitialized())
         controller = self._controller(
             {
-                "actor": SimpleNamespace(server_cells={"engine-0": cell_a}),
-                "critic": SimpleNamespace(server_cells={"engine-1": cell_b}),
+                "actor": SimpleNamespace(all_server_cells={"engine-0": cell_a}),
+                "critic": SimpleNamespace(all_server_cells={"engine-1": cell_b}),
             }
         )
 
-        statuses = InferenceController.get_cell_statuses(controller)
+        statuses = await InferenceController.get_cell_statuses(controller)
 
         assert {cell_id: status.phase for cell_id, status in statuses.items()} == {
             "engine-0": "Running",
             "engine-1": "Pending",
         }
 
-    def test_each_status_carries_the_generation_it_describes(self):
+    async def test_each_status_carries_the_generation_it_describes(self):
         """A status without its generation is indistinguishable from one about the process it replaced."""
         controller = self._controller(
             {
                 "actor": SimpleNamespace(
-                    server_cells={"engine-0": _make_cell(StateServing(addr_info=_ADDR_INFO), workers_hash="hash-7")}
+                    all_server_cells={
+                        "engine-0": _make_cell(StateServing(addr_info=_ADDR_INFO), workers_hash="hash-7")
+                    }
                 )
             }
         )
 
-        statuses = InferenceController.get_cell_statuses(controller)
+        statuses = await InferenceController.get_cell_statuses(controller)
 
         assert statuses["engine-0"].workers_hash == "hash-7"
 
-    def test_a_controller_without_servers_reports_nothing(self):
+    async def test_a_controller_without_servers_reports_nothing(self):
         """debug-train-only runs have no rollout cells, and must not fabricate any."""
-        assert InferenceController.get_cell_statuses(self._controller({})) == {}
+        assert await InferenceController.get_cell_statuses(self._controller({})) == {}
 
-    def test_each_pending_cell_gets_its_own_status_object(self):
+    async def test_each_pending_cell_gets_its_own_status_object(self):
         """A shared status instance would let one cell's mutation rewrite every other pending cell."""
         controller = self._controller(
             {
                 "actor": SimpleNamespace(
-                    server_cells={
+                    all_server_cells={
                         "engine-0": _make_cell(StateUninitialized()),
                         "engine-1": _make_cell(StateUninitialized()),
                     }
@@ -231,6 +275,6 @@ class TestGetCellStatuses:
             }
         )
 
-        statuses = InferenceController.get_cell_statuses(controller)
+        statuses = await InferenceController.get_cell_statuses(controller)
 
         assert statuses["engine-0"] is not statuses["engine-1"]

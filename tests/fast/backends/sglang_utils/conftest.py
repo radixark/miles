@@ -43,6 +43,8 @@ def make_engine_args(**overrides: Any) -> Namespace:
         num_gpus_per_node=8,
         rollout_num_gpus_per_engine=1,
         sglang_dp_size=1,
+        sglang_attn_dp_size=1,
+        sglang_enable_dp_attention=False,
         sglang_pp_size=1,
         sglang_ep_size=1,
         use_rollout_routing_replay=False,

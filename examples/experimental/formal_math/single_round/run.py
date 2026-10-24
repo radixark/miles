@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 # TODO unify "arg" prefix
@@ -22,6 +22,7 @@ NUM_GPUS = 8
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     if arg_ref_load is None:
@@ -35,7 +36,8 @@ def prepare():
 
 
 def execute():
-    run_id: str = U.create_run_id()
+    U = command_utils.default_config().create_backend()
+    run_id: str = command_utils.create_run_id()
 
     load_save_path = f"/root/models/{MODEL_NAME}_ckpt__{Path(__file__).stem}_{run_id}/"
     ckpt_args = (
@@ -164,7 +166,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "

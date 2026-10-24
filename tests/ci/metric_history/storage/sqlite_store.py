@@ -7,7 +7,7 @@
   (:class:`NeonMetricHistoryStore` in neon_store.py), so tests exercising this
   implementation validate the contract the gate relies on in production —
   including the authoritative baseline query's plain-equality match on the
-  `(metric_key, steps_key, constraint_key, step)` coordinate.
+  `(metric_key, step)` coordinate.
 * This module owns a small local schema literal for tests; production Postgres
   schema setup is out-of-band (provisioned outside the repo).
 * Schema is applied at construction (`apply_schema`), never on the
@@ -68,8 +68,6 @@ WHERE r.test_path = ?
   AND r.backend = ?
   AND r.suite = ?
   AND mv.metric_key = ?
-  AND mv.steps_key = ?
-  AND mv.constraint_key = ?
   AND mv.step = ?
   AND r.trusted = 1
 ORDER BY r.created_at DESC
@@ -142,14 +140,12 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
         backend: str,
         suite: str,
         metric_key: str,
-        steps_key: str,
-        constraint_key: str,
         step: int,
         limit: int,
     ) -> list[float]:
         rows = self._conn.execute(
             _BASELINE_SQL,
-            (test_path, backend, suite, metric_key, steps_key, constraint_key, step, limit),
+            (test_path, backend, suite, metric_key, step, limit),
         ).fetchall()
         return [row[0] for row in rows]
 

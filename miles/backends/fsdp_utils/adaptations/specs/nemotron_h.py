@@ -1,17 +1,10 @@
-"""NemotronH (Mamba2 hybrid) adaptations: a config-time repair of sglang's stale pattern-parsing
-monkeypatch, a post-load packed-doc reset, and a clobber-reload that re-asserts the checkpoint over
-mixer params transformers' _init_weights re-inits after loading."""
+"""NemotronH (Mamba2 hybrid): a config-time repair of sglang's stale pattern-parsing monkeypatch and a
+packed-doc reset patch."""
 
-from ..class_patches import ModelPatchHook, register_model_patch
-from ..packing.registry import PackingPatch, register_packing_patch
-from ..post_load_fixups import PostLoadFixup, register_post_load_fixup
+from miles.backends.fsdp_utils.adaptations.arch_adapter import ArchAdapter
 
 
-def _is_nemotron_h(hf_config) -> bool:
-    return str(getattr(hf_config, "model_type", "") or "") == "nemotron_h"
-
-
-def _repair_pattern_to_list(hf_config, args) -> None:
+def _repair_pattern_to_list() -> None:
     """``import sglang`` monkeypatches ``NemotronHConfig._pattern_to_list`` to drop unmapped chars,
     silently deleting every ``-`` (MLP) layer, so any transformers-side NemotronH constructed afterwards
     is mis-shaped (wrong depth, shifted attention layers). Probe for that and re-assert the full native
@@ -33,22 +26,15 @@ def _repair_pattern_to_list(hf_config, args) -> None:
     NemotronHConfig._pattern_to_list = _pattern_to_list
 
 
-def _packing_applies(hf_config) -> bool:
-    return "nemotron_h" in str(getattr(hf_config, "model_type", "") or "").lower()
+class NemotronHAdapter(ArchAdapter):
+    model_types = frozenset({"nemotron_h"})
+    verified = True
 
+    def patch_classes(self, args):
+        _repair_pattern_to_list()
 
-def _packing_apply(model):
-    from ...models.nemotron_h import apply_nemotron_h_sglang_match_patch
+    def patch_model(self, model, args):
+        # HF's NemotronH mixer hardcodes seq_idx=None, so per-document resets need a patch, not kwargs.
+        from miles.backends.fsdp_utils.models.nemotron_h import apply_nemotron_h_sglang_match_patch
 
-    return apply_nemotron_h_sglang_match_patch(model)
-
-
-def _post_load_apply(model, ckpt_path):
-    from ...models.nemotron_h import reload_nemotron_h_clobbered_weights
-
-    return reload_nemotron_h_clobbered_weights(model, ckpt_path)
-
-
-register_model_patch(ModelPatchHook("nemotron_h_pattern_repair", _is_nemotron_h, _repair_pattern_to_list))
-register_packing_patch(PackingPatch("nemotron_h_packing", _packing_applies, "post_load", _packing_apply))
-register_post_load_fixup(PostLoadFixup("nemotron_h_clobber_reload", _is_nemotron_h, _post_load_apply))
+        apply_nemotron_h_sglang_match_patch(model)

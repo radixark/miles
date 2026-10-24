@@ -1,17 +1,21 @@
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.eval_fleet import EvalFleet
+from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
-from miles.ray.rollout.router_manager import wait_session_server_ready
+from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
-from miles.ray.specs.inference import compute_engine_pool_ids
+from miles.utils import async_utils
+from miles.utils.audit_utils.checksum_utils import ChecksumCollectionFailure
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.context_lock import (
     ContextLock,
     acquires_lock,
@@ -22,12 +26,13 @@ from miles.utils.context_lock import (
     with_lock,
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
-from miles.utils.ft_utils.health_checker import ActivenessTracker
-from miles.utils.misc import SimpleTicker
-from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.init_once import InitOnce, init_once
+from miles.utils.logging_utils import configure_logger
+from miles.utils.misc import SimpleTicker, partition
+from miles.utils.retry_utils import retry
+from miles.utils.workers.registration.hub import RegistrationHub
+from miles.utils.workers.registration.models import RegistrationSnapshot
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
 logger = logging.getLogger(__name__)
@@ -41,62 +46,97 @@ CELLS_READY_TIMEOUT_SECONDS = 3600.0
 @enforce_lock_discipline
 class InferenceController:
     @lock_exempt
-    def __init__(self, args):
+    def __init__(
+        self,
+        args,
+        *,
+        engine_provider: BaseWorkerProvider,
+        router_providers: Sequence[BaseWorkerProvider],
+    ) -> None:
+        self._init_once = InitOnce(type(self).__name__)
         self.args = args
+        self._engine_provider = engine_provider
+        self._router_providers = router_providers
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
-        self.eval_fleet: EvalFleet | None = None
+        self._eval_fleet: InferenceControllerEvalFleet | None = None
         self._watcher_disposers: list[StopWatchFn] = []
-        self._health_checker_activeness = ActivenessTracker(active=True)
         self._ticker: SimpleTicker | None = None
 
     @lock_exempt
+    @init_once
     async def init(self) -> None:
+        configure_logger(self.args, source=SimpleProcessIdentity(component="inference_controller"))
+
         if not self.args.starts_inference_engines:
             return
 
+        await self._engine_provider.init()
+        router_addrs = await resolve_router_addrs(self.args, router_providers=self._router_providers)
         self.servers = await create_rollout_servers(
             self.args,
             context_lock=self.context_lock,
-            global_health_checker_activeness=self._health_checker_activeness.get,
+            engine_provider=self._engine_provider,
+            router_addrs=router_addrs,
         )
-        # TODO: may change to InferenceController.init(engine_provider, ...) later
-        provider: BaseWorkerProvider = RayWorkerProvider.create(
-            pool_ids=compute_engine_pool_ids(self.args)
-        )  # TODO inject instance
-        self._watcher_disposers.append(await provider.watch_cells(self._reconcile))
+        if self.args.eval_num_gpus > 0:
+            self._eval_fleet = InferenceControllerEvalFleet(self.args, srv=self.servers["eval"])
+
+        self._watcher_disposers.append(await self._engine_provider.watch_cells(self._reconcile))
         self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
 
         dashboard_hooks.register_router(self.args)
-        await wait_session_server_ready(self.args)
 
-        await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
+        await self.wait_expected_num_cells()
 
-        if self.args.eval_num_gpus > 0:
-            self.eval_fleet = await self._build_eval_fleet(srv=self.servers["eval"])
+    # -------------------------- take over -----------------------------
+
+    @lock_exempt
+    async def is_initialized(self) -> bool:
+        return self._init_once.is_initialized()
+
+    @lock_exempt
+    async def wait_expected_num_cells(self, timeout: float = CELLS_READY_TIMEOUT_SECONDS) -> None:
+        await asyncio.gather(*[srv.wait_init_expected_num_cells(timeout=timeout) for srv in self.servers.values()])
 
     @with_lock
-    async def _build_eval_fleet(self, *, srv: RolloutServer) -> EvalFleet:
-        return EvalFleet(
-            self.args,
-            api_clients=list(srv.api_clients),
-            router_host=srv.router_ip,
-            router_port=srv.router_port,
+    async def abort_all(self) -> None:
+        await async_utils.gather_and_raise_first([srv.abort_all() for srv in self.servers.values()])
+
+    # -------------------------- registration -----------------------------
+
+    @lock_exempt
+    async def registration_ingest(self, *, snapshot: RegistrationSnapshot) -> None:
+        assert self.servers, (
+            f"this inference controller is not ready: reporter {snapshot.reporter_id} announced its cells before "
+            f"the orchestration script built this controller's servers, so it does not know yet which models this "
+            f"run serves; the reporter announces them again, and they are taken in once the controller is up"
         )
+        assert isinstance(provider := self._engine_provider, RegistrationHub), (
+            f"run {self.args.run_uuid} deploys its own engines and takes no registration "
+            f"(reporter {snapshot.reporter_id})"
+        )
+        for cell in snapshot.cells:
+            assert (
+                model_id := cell.info.meta.get("model_id")
+            ) in self.servers, (
+                f"cell {cell.info.cell_id} serves model {model_id!r}, this run serves {sorted(self.servers)}"
+            )
+        await provider.ingest(snapshot)
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
     @with_lock
-    async def prepare_rollout(self, rollout_id):
-        await self._health_monitoring_resume()
-        await dashboard_hooks.register_engines(self.servers)
+    async def prepare_rollout(self, rollout_id: int, model_id: str | None = None) -> None:
+        await self._health_monitoring_resume(model_id)
+        await dashboard_hooks.register_engines(self.servers, provider=self._engine_provider)
 
     @with_lock
-    async def prepare_eval(self):
-        await self._health_monitoring_resume()
+    async def prepare_eval(self, model_id: str | None = None) -> None:
+        await self._health_monitoring_resume(model_id)
 
     @with_lock
-    async def dispose(self):
+    async def dispose(self) -> None:
         if (ticker := self._ticker) is not None:
             self._ticker = None
             await ticker.dispose()
@@ -112,39 +152,39 @@ class InferenceController:
 
     # TODO may parallelly execute offload/onload across services
     @with_lock
-    async def offload(self, tags: list[str] | None = None):
+    async def offload(self, tags: list[str] | None = None) -> None:
         await self._offload(tags=tags)
 
     @with_lock
-    async def onload(self, tags: list[str] | None = None):
+    async def onload(self, tags: list[str] | None = None) -> None:
         await self._onload(tags=tags)
 
     @with_lock
-    async def onload_weights(self):
+    async def onload_weights(self) -> None:
         if "weight" not in self.args.offload_rollout_level:
             return
         await self._onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     @with_lock
-    async def onload_kv(self):
+    async def onload_kv(self) -> None:
         await self._onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
 
     @with_lock
-    async def offload_kv(self):
+    async def offload_kv(self) -> None:
         tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
         if "kv_cache" in self.args.offload_rollout_level:
             tags.append(GPU_MEMORY_TYPE_KV_CACHE)
         await self._offload(tags=tags)
 
     @with_lock
-    async def offload_weights(self):
+    async def offload_weights(self) -> None:
         if "weight" not in self.args.offload_rollout_level:
             return
         await self._offload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     @requires_lock
     async def _offload(self, tags: list[str] | None):
-        await self._health_monitoring_pause()
+        await self._health_monitoring_pause(None)
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
@@ -153,48 +193,116 @@ class InferenceController:
         for srv in self.servers.values():
             await srv.onload(tags)
 
+    # -------------------------- generation pause -----------------------------
+
+    @with_lock
+    async def pause_generation(self, mode: str) -> None:
+        await asyncio.gather(*[srv.pause_generation(mode=mode) for srv in self.servers.values()])
+
+    @with_lock
+    async def continue_generation(self) -> None:
+        await asyncio.gather(*[srv.continue_generation() for srv in self.servers.values()])
+
+    @with_lock
+    async def flush_cache(self) -> None:
+        await asyncio.gather(*[srv.flush_cache() for srv in self.servers.values()])
+
     # -------------------------- engine management -----------------------------
 
     @acquires_lock
-    async def start_update_weights(self) -> "UpdatableEngines":
+    async def start_update_weights(
+        self, model_id: str | None = None, receiver_pool: str = "rollout"
+    ) -> "UpdatableEngines":
         """Return engines eligible for weight updates."""
-        await self._health_monitoring_pause()
-        await self._ensure_cells_ready()
+        if receiver_pool not in {"rollout", "eval"}:
+            raise ValueError(f"Unknown receiver pool: {receiver_pool!r}")
+        if receiver_pool == "eval":
+            if self._eval_fleet is None:
+                raise ValueError("This run has no dedicated eval pool")
+            if model_id is not None:
+                raise ValueError("Dedicated eval synchronization does not select a training model")
+            model_id = "eval"
+        await self._health_monitoring_pause(model_id)
+        await self._ensure_cells_ready(model_id=model_id)
 
-        srv = self._get_updatable_server()
+        srv = self._get_updatable_server(model_id=model_id, receiver_pool=receiver_pool)
         if not srv:
             return UpdatableEngines(
                 rollout_engines=[],
                 engine_gpu_counts=[],
                 engine_gpu_offsets=[],
+                engine_cell_ids=[],
                 snapshot_cell_id_to_hashes={},
+                receiver_pool=receiver_pool,
             )
 
         return UpdatableEngines(
             rollout_engines=srv.api_clients,
             engine_gpu_counts=srv.engine_gpu_counts,
             engine_gpu_offsets=srv.engine_gpu_offsets,
-            snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
+            engine_cell_ids=srv.engine_cell_ids,
+            snapshot_cell_id_to_hashes={
+                cell_id: cell.meta.workers_hash for cell_id, cell in srv.normal_server_cells.items()
+            },
+            receiver_pool=receiver_pool,
         )
 
     @releases_lock
-    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]):
-        await asyncio.gather(
-            *[
-                cell.mark_weights_ready()
-                for srv in self.servers.values()
-                for cell_id, cell in srv.server_cells.items()
-                if cell_id in snapshot_cell_id_to_hashes
-                and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
-                and cell.is_pending_weights
-            ]
+    async def abort_update_weights(self) -> None:
+        pass
+
+    @releases_lock
+    async def end_update_weights(
+        self,
+        snapshot_cell_id_to_hashes: dict[str, str],
+        failed_cell_ids: Sequence[str],
+        checksum_model_id: str | None = None,
+        collect_checksums: bool = False,
+    ) -> list[tuple[ServerCellMetadata, Any]] | ChecksumCollectionFailure:
+        checksum_results: list[tuple[ServerCellMetadata, Any]] | ChecksumCollectionFailure = []
+        if collect_checksums:
+            try:
+                async with asyncio.timeout(self.args.update_weight_engine_request_timeout):
+                    checksum_results = await self._collect_update_checksums(
+                        model_id=checksum_model_id,
+                        cell_ids=sorted(set(snapshot_cell_id_to_hashes) - set(failed_cell_ids)),
+                    )
+            except Exception as error:
+                logger.exception("Could not collect inference engine checksum observation")
+                checksum_results = ChecksumCollectionFailure(reason=repr(error))
+
+        cells = [
+            (cell_id, cell)
+            for srv in self.servers.values()
+            for cell_id, cell in srv.all_server_cells.items()
+            if cell_id in snapshot_cell_id_to_hashes and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
+        ]
+        failed_cells, updated_cells = partition(cells, lambda kv: kv[0] not in failed_cell_ids)
+        await asyncio.gather(*[cell.mark_errored() for _, cell in failed_cells])
+        await asyncio.gather(*[cell.mark_weights_ready() for _, cell in updated_cells if cell.is_pending_weights])
+
+        return checksum_results
+
+    @requires_lock
+    async def _collect_update_checksums(
+        self, *, model_id: str | None, cell_ids: list[str]
+    ) -> list[tuple[ServerCellMetadata, Any]]:
+        srv = self._get_updatable_server(model_id=model_id)
+        if srv is None:
+            return []
+        return await retry(
+            lambda _: srv.check_weights(action="checksum", cell_ids=cell_ids),
+            initial_delay=2.0,
+            max_delay=2.0,
         )
 
     @requires_lock
-    async def _ensure_cells_ready(self) -> None:
+    async def _ensure_cells_ready(self, model_id: str | None = None) -> None:
         deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
         while True:
-            cells = [cell for srv in self.servers.values() for cell in srv.server_cells.values()]
+            cells = [
+                cell for srv in self._get_servers_of_model_id(model_id) for cell in srv.normal_server_cells.values()
+            ]
             if self.args.colocate:
                 await asyncio.gather(*[cell.init() for cell in cells if cell.is_uninitialized])
             pending = [cell for cell in cells if not cell.is_pending_weights_or_serving]
@@ -210,7 +318,25 @@ class InferenceController:
                 await asyncio.sleep(CELLS_READY_POLL_INTERVAL_SECONDS)
 
     @requires_lock
-    def _get_updatable_server(self) -> RolloutServer | None:
+    def _get_servers_of_model_id(self, model_id: str | None) -> list[RolloutServer]:
+        if model_id is None:
+            return list(self.servers.values())
+        srv = self.servers.get(model_id)
+        assert srv is not None, f"No server for model_id {model_id!r}, known ids: {sorted(self.servers)}"
+        return [srv]
+
+    @requires_lock
+    def _get_updatable_server(
+        self, model_id: str | None = None, receiver_pool: str = "rollout"
+    ) -> RolloutServer | None:
+        if model_id is not None:
+            [srv] = self._get_servers_of_model_id(model_id)
+            # Explicit eval selection is admitted above; ordinary updates keep eval frozen.
+            assert (
+                srv.update_weights or receiver_pool == "eval"
+            ), f"Server for model_id {model_id!r} is frozen (update_weights=False)"
+            return srv
+
         updatable = [srv for srv in self.servers.values() if srv.update_weights]
         match updatable:
             case []:
@@ -220,53 +346,66 @@ class InferenceController:
             case _:
                 raise ValueError(
                     f"Multiple servers have update_weights=True: {[srv.model_name for srv in updatable]}. "
-                    f"Only one updatable server is supported."
+                    f"Pass model_id to update exactly one of them."
                 )
 
-    # -------------------------- cell operations -----------------------------
+    # -------------------------- eval fleet -----------------------------
 
-    # TEMPORARY: exists only so a suspend can take this lock, reverted with the weight-update fault tolerance work
-    @with_lock
-    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
-        await RayWorkerManager.get_handle().stop_cells.remote([cell_id])
+    @lock_exempt
+    async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
+        return self._eval_fleet.info if self._eval_fleet is not None else None
 
-    # TEMPORARY: exists only so fault injection can take this lock, reverted with the weight-update fault tolerance work
-    @with_lock
-    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        # TEMPORARY: colocate cannot kill rollout workers while trainer ranks own the shared GPUs
-        if not self._health_checker_activeness.get().active:
-            raise RuntimeError(f"Rollout cell {cell_id!r} is offloaded; refusing fault injection")
-        await RayWorkerManager.get_handle().inject_fault.remote(
-            cell_id, mode=mode.value, worker_in_cell_index=sub_index
-        )
+    @lock_exempt
+    async def pin_eval_fleet(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
+        assert (
+            self._eval_fleet is not None
+        ), "this run deploys no eval fleet, so nothing asked this controller to pin one"
+        return await self._eval_fleet.pin(checkpoint_dir=checkpoint_dir, weight_version=weight_version)
+
+    @lock_exempt
+    async def check_eval_fleet_version(self, weight_version: str) -> EvalFleetPin:
+        """Check the already-synchronized eval pool without loading a checkpoint."""
+        if self._eval_fleet is None:
+            raise ValueError("This run has no dedicated eval fleet")
+        return await self._eval_fleet.check_version(weight_version)
 
     # -------------------------- misc APIs -----------------------------
 
     @lock_exempt
-    def get_cell_statuses(self) -> dict[str, CellStatus]:
+    async def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {
             cell_id: cell.cell_status()
             for srv in list(self.servers.values())
-            for cell_id, cell in list(srv.server_cells.items())
+            for cell_id, cell in list(srv.all_server_cells.items())
         }
 
     @with_lock
     async def check_weights(
-        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
-    ):
+        self,
+        action: str,
+        allow_quant_error: bool = False,
+        selector: str = "all",
+        skip_list: list[str] | None = None,
+        model_id: str | None = None,
+        cell_ids: list[str] | None = None,
+    ) -> list[tuple[ServerCellMetadata, Any]]:
         # Only the updatable model is re-synced; a frozen model would always mismatch.
-        srv = self._get_updatable_server()
+        srv = self._get_updatable_server(model_id=model_id)
         if srv is None:
             return []
         return await srv.check_weights(
-            action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+            action=action,
+            allow_quant_error=allow_quant_error,
+            selector=selector,
+            skip_list=skip_list,
+            cell_ids=cell_ids,
         )
 
     # -------------------------- tick -----------------------------
 
     @with_lock
     async def _tick_cells(self) -> None:
-        cells = [cell for srv in list(self.servers.values()) for cell in list(srv.server_cells.values())]
+        cells = [cell for srv in list(self.servers.values()) for cell in list(srv.all_server_cells.values())]
         results = await asyncio.gather(
             *[asyncio.wait_for(cell.tick(), timeout=CELL_TICK_TIMEOUT_SECONDS) for cell in cells],
             return_exceptions=True,
@@ -282,7 +421,7 @@ class InferenceController:
         actual_srv: RolloutServer | None = None
         actual_cell: ServerCell | None = None
         for srv in self.servers.values():
-            if (c := srv.server_cells.get(cell_id)) is not None:
+            if (c := srv.all_server_cells.get(cell_id)) is not None:
                 actual_srv, actual_cell = srv, c
                 break
 
@@ -304,12 +443,14 @@ class InferenceController:
     # -------------------------- utils -----------------------------
 
     @requires_lock
-    async def _health_monitoring_pause(self) -> None:
-        self._health_checker_activeness.bump_active(False)
+    async def _health_monitoring_pause(self, model_id: str | None) -> None:
+        for srv in self._get_servers_of_model_id(model_id):
+            srv.health_checker_activeness.bump_active(False)
 
     @requires_lock
-    async def _health_monitoring_resume(self) -> None:
-        self._health_checker_activeness.bump_active(True)
+    async def _health_monitoring_resume(self, model_id: str | None) -> None:
+        for srv in self._get_servers_of_model_id(model_id):
+            srv.health_checker_activeness.bump_active(True)
 
 
 @dataclass(frozen=True)
@@ -317,7 +458,33 @@ class UpdatableEngines:
     rollout_engines: list[SGLangApiClient]
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
+    engine_cell_ids: list[str]
     snapshot_cell_id_to_hashes: dict[str, str]
+    receiver_pool: str = "rollout"
+
+    def __post_init__(self) -> None:
+        num_engines = len(self.rollout_engines)
+        assert (
+            len(self.engine_gpu_counts) == len(self.engine_gpu_offsets) == len(self.engine_cell_ids) == num_engines
+        ), "Per-engine metadata lists must be aligned with the rollout engines"
+        assert len(set(self.engine_cell_ids)) == num_engines, "Each engine must name its own cell"
+        assert set(self.snapshot_cell_id_to_hashes) == set(
+            self.engine_cell_ids
+        ), "The generation snapshot must cover exactly these engines"
+        assert all(
+            type(count) is int and count > 0 for count in self.engine_gpu_counts
+        ), f"Engine GPU counts include a value which cannot be updated: {self.engine_gpu_counts}"
+
+    def __getitem__(self, s: slice) -> "UpdatableEngines":
+        cell_ids = self.engine_cell_ids[s]
+        return UpdatableEngines(
+            rollout_engines=self.rollout_engines[s],
+            engine_gpu_counts=self.engine_gpu_counts[s],
+            engine_gpu_offsets=self.engine_gpu_offsets[s],
+            engine_cell_ids=cell_ids,
+            snapshot_cell_id_to_hashes={c: self.snapshot_cell_id_to_hashes[c] for c in cell_ids},
+            receiver_pool=self.receiver_pool,
+        )
 
 
 # TODO may move and generalize later

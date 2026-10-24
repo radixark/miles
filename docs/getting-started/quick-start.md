@@ -170,7 +170,8 @@ size 256.
   and training. Sharing GPUs also makes the weight sync local — each rank gathers
   its shards over NCCL and hands them to its engine through IPC, no network
   involved. Disaggregated runs choose a transport with
-  `--update-weight-transfer-mode`: `broadcast` (the default, over NCCL),
+  `--update-weight-transfer-mode`: `broadcast` (the default, one NCCL broadcast per tensor),
+  `broadcast_packed` (one byte-buffer broadcast per bucket; non-colocated Megatron),
   [`p2p`](/advanced/p2p-weight-transfer) (point-to-point RDMA via Mooncake), or
   [`disk-delta`](/advanced/disaggregated-rollout) (versioned deltas through
   shared storage). `p2p` and `disk-delta` are incompatible with `--colocate`.

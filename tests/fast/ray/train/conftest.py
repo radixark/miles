@@ -8,15 +8,27 @@ import ray
 from tests.fast.ray.train.fake_worker_manager import FakeWorkerManager
 
 import miles.ray.train.group as group_module
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
+from miles.utils import object_store
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import BaseHealthChecker, NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import retry
+from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.types import DeploymentIdentity
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 fake_worker_manager: FakeWorkerManager | None = None
+
+FAKE_STORE_ADDR = "10.0.0.7:29500"
+
+
+def make_deployment_identity(**overrides: Any) -> DeploymentIdentity:
+    defaults: dict[str, Any] = dict(run_uuid="0123456789abcdef", deploy_component="trainer")
+    return DeploymentIdentity(**{**defaults, **overrides})
 
 
 @pytest.fixture(autouse=True)
@@ -29,11 +41,6 @@ def _patch_worker_backends(monkeypatch: pytest.MonkeyPatch):
     global fake_worker_manager
     fake_worker_manager = FakeWorkerManager()
     monkeypatch.setattr(RayWorkerManager, "get_handle", lambda: fake_worker_manager)
-    monkeypatch.setattr(
-        RayWorkerProvider,
-        "create",
-        lambda *, pool_ids=None: RayWorkerProvider(worker_manager_handle=fake_worker_manager, pool_ids=pool_ids),
-    )
     yield
     fake_worker_manager.kill_all_actors()
 
@@ -41,6 +48,16 @@ def _patch_worker_backends(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture(scope="module", autouse=True)
 def ray_env(ray_local_mode):
     yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_object_store_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(object_store, "_INSTANCE", None)
+
+
+@pytest.fixture(autouse=True)
+def _fake_indep_dp_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(group_module, "create_tcp_store", lambda: (object(), FAKE_STORE_ADDR))
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +100,10 @@ class RecordingHealthChecker(BaseHealthChecker):
         self.task_started = True
 
 
+def make_provider(trainer_id: str = "actor") -> BaseWorkerProvider:
+    return RayWorkerProvider(worker_manager_handle=fake_worker_manager, pool_ids=[compute_trainer_pool_id(trainer_id)])
+
+
 def get_raw_actor_handles(cell: TrainerCell) -> list[ray.actor.ActorHandle]:
     return [handle._actor_handle for handle in cell._get_worker_handles()]
 
@@ -109,7 +130,6 @@ def make_cell(
     cell_index: int = 0,
     *,
     actor_count: int = 2,
-    rollout_executor: object | None = None,
     health_checker: BaseHealthChecker | None = None,
 ) -> TrainerCell:
     fake_worker_manager.actor_count_per_cell = actor_count
@@ -117,11 +137,11 @@ def make_cell(
         args=MagicMock(),
         role="actor",
         with_ref=False,
-        cell_id=f"trainer-actor-{cell_index}",
+        cell_id=compute_cell_id(pool_id="trainer-engine-actor", cell_index=cell_index),
         cell_index=cell_index,
         workers_hash="pseudo-hash-1",
-        rollout_executor=rollout_executor,
         health_checker=health_checker if health_checker is not None else NoopHealthChecker(),
+        provider=make_provider(),
     )
 
 

@@ -5,7 +5,6 @@ name: Release Docker Images
 # tag push; independently pushed matching tags and manual retries also run it.
 # Builds and publishes:
 #   - radixark/miles:v{version}        (cu13, amd64+arm64)
-#   - radixark/miles:v{version}-cu12   (cu12.9, amd64)
 # SGLANG_COMMIT and MEGATRON_COMMIT come from release-lock.json; MILES_COMMIT
 # is the checked-out SHA. Wheel release tags remain rolling inputs whose
 # lockfile fingerprints are audit records, not restored build inputs.
@@ -110,23 +109,12 @@ jobs:
             --build-arg "MILES_COMMIT=${{ steps.lock.outputs.miles_commit }}" \
             --push
 
-      - name: Build and push cu12-x86 (v${{ steps.resolve.outputs.version }}-cu12)
-        shell: bash
-        run: |
-          python3 docker/build.py --variant cu12-x86 --image-tag custom \
-            --custom-tag "v${{ steps.resolve.outputs.version }}" \
-            --build-arg "SGLANG_COMMIT=${{ steps.lock.outputs.sglang_commit }}" \
-            --build-arg "MEGATRON_COMMIT=${{ steps.lock.outputs.megatron_commit }}" \
-            --build-arg "MILES_COMMIT=${{ steps.lock.outputs.miles_commit }}" \
-            --push
-
       - name: Summary
         shell: bash
         run: |
           {
             echo "## Released radixark/miles v${{ steps.resolve.outputs.version }}"
             echo "- \`radixark/miles:v${{ steps.resolve.outputs.version }}\` (cu13, amd64+arm64)"
-            echo "- \`radixark/miles:v${{ steps.resolve.outputs.version }}-cu12\` (cu12.9, amd64)"
             echo "- sglang: \`${{ steps.lock.outputs.sglang_commit }}\`"
             echo "- Megatron-LM: \`${{ steps.lock.outputs.megatron_commit }}\`"
             echo "- miles: \`${{ steps.lock.outputs.miles_commit }}\`"

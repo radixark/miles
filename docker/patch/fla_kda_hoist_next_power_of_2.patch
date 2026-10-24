@@ -1,0 +1,27 @@
+diff --git a/ops/kda/chunk_intra_token_parallel.py b/ops/kda/chunk_intra_token_parallel.py
+--- a/ops/kda/chunk_intra_token_parallel.py
++++ b/ops/kda/chunk_intra_token_parallel.py
+@@ -44,6 +44,7 @@
+     H: tl.constexpr,
+     HV: tl.constexpr,
+     K: tl.constexpr,
++    BK: tl.constexpr,
+     BT: tl.constexpr,
+     BC: tl.constexpr,
+     BH: tl.constexpr,
+@@ -91,7 +92,6 @@
+     Akk += bos * HV*BC
+     beta += bos * HV
+ 
+-    BK: tl.constexpr = triton.next_power_of_2(K)
+     o_hv = i_hg * BH + tl.arange(0, BH)
+     o_h = o_hv // G
+     o_k = tl.arange(0, BK)
+@@ -174,6 +174,7 @@
+         H=H,
+         HV=HV,
+         K=K,
++        BK=triton.next_power_of_2(K),
+         BT=BT,
+         BC=BC,
+     )

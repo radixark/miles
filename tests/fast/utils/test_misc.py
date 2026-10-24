@@ -1,8 +1,6 @@
 import asyncio
-import json
 import logging
 import socket
-import subprocess
 import sys
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -10,9 +8,9 @@ from dataclasses import dataclass
 import pytest
 
 from miles.utils import misc
-from miles.utils.env_report import ENV_REPORT_PREFIX
-from miles.utils.http_utils import MILES_HOST_IP_ENV, get_host_info
+from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.misc import (
+    MutableBox,
     NodeProbeMixin,
     SimpleTicker,
     cancel_and_await_task,
@@ -20,6 +18,9 @@ from miles.utils.misc import (
     get_current_node_ip,
     get_free_port,
     get_gpu_uuids,
+    merge_asserting_consistency,
+    partition,
+    split_evenly,
 )
 
 
@@ -125,6 +126,17 @@ class TestGetGpuUuids:
 
 
 class TestNodeProbeMixin:
+    def test_get_node_external_ip_is_absent_until_the_node_sets_it(self, monkeypatch):
+        """A node without the env var reports None, which keeps its placed address in use."""
+        monkeypatch.delenv("MILES_NODE_EXTERNAL_IP", raising=False)
+        assert NodeProbeMixin._get_node_external_ip() is None
+
+        monkeypatch.setenv("MILES_NODE_EXTERNAL_IP", "")
+        assert NodeProbeMixin._get_node_external_ip() is None
+
+        monkeypatch.setenv("MILES_NODE_EXTERNAL_IP", "100.64.0.7")
+        assert NodeProbeMixin._get_node_external_ip() == "100.64.0.7"
+
     def test_get_node_ip_returns_nonempty_string(self):
         """The node ip probe answers with a usable address string."""
         node_ip = NodeProbeMixin._get_node_ip()
@@ -195,12 +207,6 @@ class TestNodeProbeMixin:
         monkeypatch.setenv(MILES_HOST_IP_ENV, "")
 
         assert NodeProbeMixin._get_node_ip() == get_current_node_ip()
-
-    def test_get_node_ip_publishes_the_same_override_as_the_host_info_probe(self, monkeypatch):
-        """The worker and the host probe must read one env var, or a deployment's override reaches only half of them."""
-        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.20.30.40")
-
-        assert NodeProbeMixin._get_node_ip() == get_host_info()[1]
 
     def test_get_node_ip_follows_an_override_that_changes_between_calls(self, monkeypatch):
         """The probe runs inside the worker at allocation time, so a cached first answer would outlive its address."""
@@ -287,23 +293,6 @@ class TestNodeProbeMixin:
         uuids = NodeProbeMixin._get_gpu_uuids([0, 1, 2])
         assert len(uuids) == 3
         assert all(uuid is None or isinstance(uuid, str) for uuid in uuids)
-
-    def test_collect_env_report_forwards_probe_context(self, monkeypatch, capsys) -> None:
-        """Role, rank and the launcher's partial report all reach the printed env report."""
-
-        def _failing_pip_inspect(*args, **kwargs) -> subprocess.CompletedProcess:
-            return subprocess.CompletedProcess(args=["pip", "inspect"], returncode=1, stdout="", stderr="no pip")
-
-        monkeypatch.setattr("miles.utils.env_report.subprocess.run", _failing_pip_inspect)
-
-        NodeProbeMixin._collect_env_report(role="rollout", rank=7, partial_env_report='{"flavor": "probe"}')
-
-        lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith(ENV_REPORT_PREFIX)]
-        assert len(lines) == 1
-        parsed = json.loads(lines[0].removeprefix(ENV_REPORT_PREFIX))
-        assert parsed["role"] == "rollout"
-        assert parsed["rank"] == 7
-        assert parsed["launcher_env_report"] == {"flavor": "probe"}
 
 
 async def _append(calls: list[int]) -> None:
@@ -478,3 +467,93 @@ class TestCancelAndAwaitTask:
 
         with pytest.raises(RuntimeError, match="teardown exploded"):
             await cancel_and_await_task(task)
+
+
+class TestMergeAssertingConsistency:
+    def test_disjoint_keys_are_merged(self):
+        """The common case: two views of the same cell describe different fields of it."""
+        assert merge_asserting_consistency({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
+
+    def test_a_key_both_sides_agree_on_is_kept_once(self):
+        """Two pods of one cell repeat the cell-wide annotations, which is not a conflict."""
+        assert merge_asserting_consistency({"a": 1, "b": 2}, {"b": 2, "c": 3}) == {"a": 1, "b": 2, "c": 3}
+
+    def test_a_key_the_two_sides_disagree_on_is_rejected(self):
+        """Silently picking a winner would hand the caller one pod's answer as the whole cell's."""
+        with pytest.raises(AssertionError, match="disagree"):
+            merge_asserting_consistency({"a": 1}, {"a": 2})
+
+
+class TestMutableBox:
+    def test_a_closure_writes_through_the_box_its_caller_reads(self):
+        """A name rebound inside a nested function rebinds nothing its caller can see, which is the point."""
+        box: MutableBox[int] = MutableBox(value=0)
+
+        def advance() -> None:
+            box.value += 2
+
+        advance()
+        advance()
+
+        assert box.value == 4
+
+    def test_a_box_holds_whatever_it_was_opened_with(self):
+        """Callers open it on an optional handle as readily as on a counter."""
+        assert MutableBox(value=None).value is None
+        assert MutableBox(value="a").value == "a"
+
+    def test_two_boxes_of_the_same_value_do_not_share_it(self):
+        """Each caller's box is its own; a shared default would let one run's cursor drive another's."""
+        first: MutableBox[int] = MutableBox(value=0)
+        second: MutableBox[int] = MutableBox(value=0)
+
+        first.value = 7
+
+        assert second.value == 0
+
+
+class TestPartition:
+    def test_the_matching_items_come_back_second(self):
+        """The helper answers (falses, trues), so reading it the other way round inverts every caller."""
+        assert partition([1, 2, 3, 4], lambda x: x % 2 == 0) == ([1, 3], [2, 4])
+
+    def test_each_side_keeps_the_input_order(self):
+        """Callers pair the partitioned cells back against their own ordered bookkeeping."""
+        assert partition("bacd", lambda c: c < "c") == (["c", "d"], ["b", "a"])
+
+    def test_an_empty_input_yields_two_empty_lists(self):
+        """An update that reached no cell at all must not be mistaken for a missing answer."""
+        assert partition([], lambda x: True) == ([], [])
+
+    def test_a_predicate_no_item_matches_leaves_the_true_side_empty(self):
+        """Every cell succeeding is the happy path and must produce an empty failure list."""
+        assert partition([1, 3], lambda x: x % 2 == 0) == ([1, 3], [])
+
+
+class TestSplitEvenly:
+    def test_a_divisible_total_is_cut_into_equal_parts(self):
+        """Four rollout cells over two trainer cells must be two apiece, not a lopsided share."""
+        assert split_evenly(4, 2) == [slice(0, 2), slice(2, 4)]
+
+    def test_the_remainder_is_handed_to_the_earliest_parts(self):
+        """Spreading the leftovers one per part keeps any two shares within one of each other."""
+        assert split_evenly(7, 3) == [slice(0, 3), slice(3, 5), slice(5, 7)]
+
+    def test_every_part_is_produced_even_when_there_is_nothing_to_put_in_it(self):
+        """The caller zips the slices against its parts, so a short list would misalign them."""
+        assert split_evenly(2, 5) == [slice(0, 1), slice(1, 2), slice(2, 2), slice(2, 2), slice(2, 2)]
+
+    def test_nothing_to_split_yields_one_empty_slice_per_part(self):
+        """An update window with no engines must still answer one slice per trainer cell."""
+        assert split_evenly(0, 3) == [slice(0, 0), slice(0, 0), slice(0, 0)]
+
+    def test_one_part_takes_the_whole_range(self):
+        """A lone surviving trainer cell owns every target."""
+        assert split_evenly(5, 1) == [slice(0, 5)]
+
+    def test_the_slices_tile_the_range_without_gaps_or_overlaps(self):
+        """A target that lands in two shares would be updated twice, and one in none would be skipped."""
+        items = list(range(11))
+        parts = [items[s] for s in split_evenly(len(items), 4)]
+
+        assert [x for part in parts for x in part] == items

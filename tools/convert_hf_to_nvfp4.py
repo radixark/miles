@@ -6,8 +6,8 @@ python tools/convert_hf_to_nvfp4.py [-h] [--model-dir MODEL_DIR] [--save-dir SAV
                                    [--extra-high-precision-layers-hf ...]
 
 Convert a BF16/FP16/FP32 HF safetensors checkpoint to NVFP4 (E2M1) for MoE
-routed-expert GEMMs only. Shared experts and dense linear layers are left
-unmodified.
+routed-expert GEMMs in the main language decoder only. MTP, vision/audio
+components, shared experts, and dense linear layers are left unmodified.
 Use --extra-high-precision-layers-hf to keep additional HF weight-name
 substrings unquantized.
 
@@ -53,6 +53,16 @@ SHARED_EXPERT_NAME_MARKERS = (
     ".shared_experts.",
 )
 
+LANGUAGE_MODEL_LAYER_PREFIXES = (
+    "model.layers",
+    "language_model.model.layers",
+    "model.language_model.layers",
+    "language_model.layers",
+)
+LANGUAGE_MODEL_LAYER_PATTERN = re.compile(
+    r"^(?:" + "|".join(re.escape(prefix) for prefix in LANGUAGE_MODEL_LAYER_PREFIXES) + r")\.(\d+)\."
+)
+
 FUSED_QKV_SUFFIXES = (".q_proj", ".k_proj", ".v_proj")
 GATED_PAIR_SUFFIXES = {
     ".gate_proj.weight": "gate",
@@ -75,23 +85,34 @@ def _is_routed_expert_weight_name(name: str) -> bool:
 def _get_num_hidden_layers(model_dir: str) -> int:
     config_path = os.path.join(model_dir, "config.json")
     if not os.path.exists(config_path):
-        raise ValueError(
-            "config.json is required to use --num-layers-at-start-in-bf16 or --num-layers-at-end-in-bf16."
-        )
+        raise ValueError("config.json is required to identify the main language decoder layers.")
     cfg = json.load(open(config_path))
-    num_layers = cfg.get("num_hidden_layers")
-    if num_layers is None and isinstance(cfg.get("text_config"), dict):
-        num_layers = cfg["text_config"].get("num_hidden_layers")
+    text_config = cfg.get("text_config")
+    num_layers = text_config.get("num_hidden_layers") if isinstance(text_config, dict) else None
+    if num_layers is None:
+        num_layers = cfg.get("num_hidden_layers")
     if num_layers is None:
         raise ValueError("num_hidden_layers not found in config.json.")
     return int(num_layers)
+
+
+def _get_bf16_layer_prefixes(num_hidden_layers: int, num_at_start: int, num_at_end: int) -> tuple[str, ...]:
+    layer_indices = set(range(num_at_start)) | set(range(num_hidden_layers - num_at_end, num_hidden_layers))
+    return tuple(sorted(f"{prefix}.{i}." for prefix in LANGUAGE_MODEL_LAYER_PREFIXES for i in layer_indices))
 
 
 def should_quantize(
     name: str,
     weight: torch.Tensor,
     skip_weight_substrings: tuple[str, ...] = (),
+    *,
+    num_hidden_layers: int | None = None,
 ) -> bool:
+    # An allowlist keeps modality towers and separately named MTP stacks out.
+    # DeepSeek/GLM checkpoints append MTP to model.layers, so also bound its index.
+    match = LANGUAGE_MODEL_LAYER_PATTERN.match(name)
+    if match is None or (num_hidden_layers is not None and int(match.group(1)) >= num_hidden_layers):
+        return False
     if any(substr in name for substr in skip_weight_substrings):
         return False
     if not _is_routed_expert_weight_name(name):
@@ -188,6 +209,11 @@ def _update_quantization_config(cfg: dict, ignore_list: list[str]) -> None:
                 section["group_size"] = NVFP4_GROUP_SIZE
 
     cfg["quantization_config"] = quant_cfg
+    # Composite model configs can expose the text config's quantization policy
+    # as their top-level policy when loaded. Do not leave that policy stale.
+    text_config = cfg.get("text_config")
+    if isinstance(text_config, dict) and "quantization_config" in text_config:
+        _update_quantization_config(text_config, ignore_list)
 
 
 def _write_hf_quant_config(output_path: str, ignore_list: list[str], input_path: str) -> None:
@@ -221,7 +247,7 @@ def _augment_ignore_list(ignore_list: list[str]) -> list[str]:
                 if name.endswith(suffix):
                     extra.add(name[: -len(suffix)] + ".qkv_proj")
                     break
-        match = re.match(r"(.*\.mlp\.experts)\.\d+\.(gate_proj|up_proj|down_proj)$", name)
+        match = re.fullmatch(r"(.*\.experts)(?:\.\d+)?\.(gate_proj|up_proj|down_proj|gate_up_proj|w1|w2|w3)", name)
         if match:
             extra.add(match.group(1))
     ignore_set.update(extra)
@@ -241,13 +267,16 @@ def _collect_gated_pair_locations(
     safetensors_files: list[str],
     device: str,
     skip_weight_substrings: tuple[str, ...],
+    num_hidden_layers: int,
 ) -> dict[str, dict[str, tuple[str, str]]]:
     gated_pairs: dict[str, dict[str, tuple[str, str]]] = {}
     for filename in safetensors_files:
         with safetensors.safe_open(os.path.join(input_path, filename), framework="pt", device=device) as f:
             for key in f.keys():
                 tensor = f.get_tensor(key)
-                if not should_quantize(key, tensor, skip_weight_substrings=skip_weight_substrings):
+                if not should_quantize(
+                    key, tensor, skip_weight_substrings=skip_weight_substrings, num_hidden_layers=num_hidden_layers
+                ):
                     continue
                 base, role = _split_gated_pair_name(key)
                 if base is None or role is None:
@@ -300,14 +329,9 @@ def process_file(
 
     modules_to_not_convert: list[str] = []
     q_weights: dict[str, torch.Tensor] = {}
-    head_end_idx = num_layers_at_start_in_bf16
-    tail_start_idx = num_hidden_layers - num_layers_at_end_in_bf16
-    dynamic_skip_layer_prefixes: set[str] = set()
-    dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(0, head_end_idx)})
-    dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(tail_start_idx, num_hidden_layers)})
-
-    if num_layers_at_end_in_bf16 > 0 or num_layers_at_start_in_bf16 > 0:
-        modules_to_not_convert.extend(sorted(dynamic_skip_layer_prefixes))
+    dynamic_skip_layer_prefixes = _get_bf16_layer_prefixes(
+        num_hidden_layers, num_layers_at_start_in_bf16, num_layers_at_end_in_bf16
+    )
 
     dynamic_skip_substrings = (
         *extra_high_precision_layers_hf,
@@ -324,7 +348,9 @@ def process_file(
                 continue
 
             tensor = f.get_tensor(key)
-            if should_quantize(key, tensor, skip_weight_substrings=dynamic_skip_substrings):
+            if should_quantize(
+                key, tensor, skip_weight_substrings=dynamic_skip_substrings, num_hidden_layers=num_hidden_layers
+            ):
                 base, _role = _split_gated_pair_name(key)
                 if base in gated_pair_locations:
                     if base in processed_gated_pairs:
@@ -359,10 +385,13 @@ def process_file(
             else:
                 if key.endswith(".weight"):
                     module_name = key[: -len(".weight")]
-                    is_dynamic_bf16 = any(prefix in key for prefix in dynamic_skip_layer_prefixes)
+                    matched_layer_prefixes = [
+                        prefix for prefix in dynamic_skip_layer_prefixes if key.startswith(prefix)
+                    ]
+                    modules_to_not_convert.extend(matched_layer_prefixes)
                     if ".experts." not in key:
                         modules_to_not_convert.append(module_name)
-                    elif is_dynamic_bf16:
+                    elif matched_layer_prefixes:
                         # ModelOpt needs the exact FusedMoE container in addition to the layer prefix.
                         expert_prefix = module_name.split(".experts.", 1)[0] + ".experts"
                         modules_to_not_convert.append(expert_prefix)
@@ -393,11 +422,9 @@ def convert_nvfp4(
     safetensors_files = [f for f in os.listdir(input_path) if f.endswith(".safetensors")]
 
     num_hidden_layers = _get_num_hidden_layers(input_path)
-    head_end_idx = num_layers_at_start_in_bf16
-    tail_start_idx = num_hidden_layers - num_layers_at_end_in_bf16
-    dynamic_skip_layer_prefixes: set[str] = set()
-    dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(0, head_end_idx)})
-    dynamic_skip_layer_prefixes.update({f"model.layers.{i}." for i in range(tail_start_idx, num_hidden_layers)})
+    dynamic_skip_layer_prefixes = _get_bf16_layer_prefixes(
+        num_hidden_layers, num_layers_at_start_in_bf16, num_layers_at_end_in_bf16
+    )
     dynamic_skip_substrings = (
         *extra_high_precision_layers_hf,
         *sorted(dynamic_skip_layer_prefixes),
@@ -408,6 +435,7 @@ def convert_nvfp4(
         safetensors_files=safetensors_files,
         device=device,
         skip_weight_substrings=dynamic_skip_substrings,
+        num_hidden_layers=num_hidden_layers,
     )
     processed_gated_pairs: set[str] = set()
     deferred_quantized_entries: dict[str, dict[str, dict[str, torch.Tensor]]] = {}

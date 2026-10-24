@@ -31,7 +31,9 @@ servers to prefill, with the rest used for decode.
 
 `--prefill-num-servers` is mutually exclusive with the `sglang_config`
 attribute (the YAML `server_groups` config), and also cannot be combined
-with `--rollout-external` (`arguments.py`).
+with external rollout engines (`--rollout-external-engine-addrs`); a PD
+external fleet declares itself with `--rollout-external-router-pd` instead
+(`arguments.py`).
 
 ## When PD is worth it
 

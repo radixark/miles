@@ -4,12 +4,24 @@ import time
 import httpx
 import pytest
 from tests.fast.utils.workers.e2e.e2e_worker import E2eWorker
-from tests.fast.utils.workers.e2e.harness import ConnectionCountingRelay
+from tests.fast.utils.workers.e2e.harness import ConnectionCountingRelay, FlakyProxy
 
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 
 
 class TestConnectionBehaviour:
+    async def test_proxy_stop_closes_idle_connections(self):
+        proxy = FlakyProxy(upstream_port=None)
+        await proxy.start()
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
+        try:
+            await asyncio.wait_for(proxy.stop(), timeout=1.0)
+            assert await asyncio.wait_for(reader.read(), timeout=1.0) == b""
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            await proxy.stop()
+
     async def test_client_disconnect_does_not_stop_the_call(self, server, make_handle, tag):
         """Dropping the submitting connection leaves the accepted call running."""
         async with httpx.AsyncClient(base_url=server.url, timeout=5.0, trust_env=False) as client:

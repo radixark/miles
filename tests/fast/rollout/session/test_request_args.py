@@ -8,8 +8,10 @@ from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.request_args import (
+    ClientResponseIntent,
     apply_session_sampling_defaults,
     filter_turn_args,
+    parse_chat_request,
     prepare_chat_request,
     resolve_request_args_by_config,
 )
@@ -36,6 +38,21 @@ class TestResolveRequestArgsByConfig:
         }
         assert list(wire)[:4] == ["model", "temperature", "unknown", "messages"]
         assert wire is request_args
+
+    @pytest.mark.parametrize(
+        "client_args, expected",
+        [
+            ({}, ClientResponseIntent(stream=False, logprobs=False)),
+            ({"logprobs": True, "stream": True}, ClientResponseIntent(stream=True, logprobs=True)),
+            ({"logprobs": False}, ClientResponseIntent(stream=False, logprobs=False)),
+        ],
+        ids=["omitted", "both-asked", "explicit-false"],
+    )
+    def test_response_intent_keeps_the_client_values_the_backend_request_overrides(self, client_args, expected):
+        wire, intent = resolve_request_args_by_config(dict(client_args), make_session_server_config())
+
+        assert wire["logprobs"] is True and wire["return_meta_info"] is True and "stream" not in wire
+        assert intent == expected
 
     def test_replay_flags_follow_the_launch_flags(self):
         config = make_session_server_config(use_rollout_routing_replay=True, use_rollout_indexer_replay=True)
@@ -219,7 +236,22 @@ class TestPrepareChatRequest:
         assert prepared.body["temperature"] == 0.3
         assert prepared.body["unknown"] == {"values": [1, 2]}
         assert prepared.template_args == {"model_option": True}
-        assert prepared.client_stream is True
+        assert prepared.response_intent.stream is True
+
+    def test_messages_are_shared_read_only_while_other_fields_are_owned(self):
+        messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "", "tool_calls": []}]
+        client_args = {"messages": messages, "tools": self.TOOLS, "unknown": {"values": [1]}}
+        original = deepcopy(client_args)
+        prepared = prepare_chat_request(
+            client_args,
+            self._tito(chat_template_kwargs=self.LAUNCH),
+            config=make_session_server_config(),
+            turn_args={"chat_template_kwargs": self.LAUNCH, "tools": self.TOOLS},
+        )
+        prepared.body["unknown"]["values"].append(2)
+        assert client_args == original
+        assert prepared.body["messages"] is messages
+        assert prepared.body["tools"] == self.TOOLS and prepared.body["tools"] is not client_args["tools"]
 
 
 def test_template_projection_only_selects_render_fields():
@@ -337,3 +369,14 @@ def test_template_compatibility_applies_to_train_and_eval(evaluation):
             turn_args={"chat_template_kwargs": {}},
             evaluation=evaluation,
         )
+
+
+@pytest.mark.parametrize("body", [b"{", b'{"value":NaN}', b'{"value":Infinity}', b'{"value":-Infinity}'])
+def test_parse_chat_request_rejects_invalid_json(body):
+    with pytest.raises(MessageValidationError, match="invalid JSON body"):
+        parse_chat_request(body)
+
+
+def test_parse_chat_request_preserves_unicode_and_empty_body():
+    assert parse_chat_request(b"") == {}
+    assert parse_chat_request(rb'{"content":"\u4f60\u597d \ud83d\ude00"}') == {"content": "你好 😀"}

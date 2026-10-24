@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["eval"])
 
 import asyncio
 
@@ -15,7 +15,7 @@ class FakeRemoteMethod:
         self.log = log
         self.name = name
 
-    def remote(self, *args):
+    def __call__(self, *args):
         self.log.append((self.name, args))
         fut = asyncio.get_event_loop().create_future()
         fut.set_result(None)
@@ -46,7 +46,7 @@ class TestSettle:
         exported_dir = str(tmp_path / "step_3")
 
         class FailingRemoteMethod(FakeRemoteMethod):
-            def remote(self, *args):
+            def __call__(self, *args):
                 self.log.append((self.name, args))
                 fut = asyncio.get_event_loop().create_future()
                 fut.set_exception(RuntimeError("CI eval 3 skipped: crashed"))

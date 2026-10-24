@@ -29,13 +29,22 @@ class FSDPArgs:
 
     attn_implementation: str = "flash_attention_2"
 
+    # Compute kernels. "hub" resolves the module-level kernels in plugins/hf_kernels/presets.py
+    # from the Hugging Face Hub instead of the image's wheels; see plugins/hf_kernels/loader.py.
+    kernel_backend: str = "native"  # {"native", "hub"}
+    kernel_mapping_path: str = ""  # dotted path to a (args) -> dict[str, HubKernelSpec] provider
+    kernel_strict: bool = False  # raise instead of falling back to the native kernel
+
     # Logging
     wandb_project: str = "miles-fsdp"
     wandb_run_name: str | None = None
 
     # Precision
-    gradient_checkpointing: bool = False
+    bf16: bool = True
     fp16: bool = False
+    # Activation recompute: --recompute-granularity full is Megatron's spelling of the same switch
+    gradient_checkpointing: bool = False
+    recompute_granularity: str | None = None
     keep_fp32_master: bool = True
 
     # FSDP configuration
@@ -66,10 +75,14 @@ class FSDPArgs:
     config: str | None = None
 
 
-def build_fsdp_parser(extra_args_provider=None) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser("FSDP SFT Training (miles)")
+def build_dataclass_parser(
+    args_cls: type,
+    prog: str,
+    extra_args_provider=None,
+) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog)
     parser.add_argument("--config", type=str, default=None, help="YAML config path")
-    for f in dataclasses.fields(FSDPArgs):
+    for f in dataclasses.fields(args_cls):
         if f.name == "config":
             continue
 
@@ -93,6 +106,10 @@ def build_fsdp_parser(extra_args_provider=None) -> argparse.ArgumentParser:
     return parser
 
 
+def build_fsdp_parser(extra_args_provider=None) -> argparse.ArgumentParser:
+    return build_dataclass_parser(FSDPArgs, "FSDP SFT Training (miles)", extra_args_provider)
+
+
 def parse_fsdp_cli(extra_args_provider=None):
     return build_fsdp_parser(extra_args_provider).parse_args()
 
@@ -109,8 +126,7 @@ def reject_unknown_config_keys(data: dict, known: set[str]) -> None:
     raise ValueError(f"unknown key(s) in the YAML config: {', '.join(described)}")
 
 
-def load_fsdp_args(extra_args_provider=None):
-    parser = build_fsdp_parser(extra_args_provider)
+def load_args_from_parser(parser: argparse.ArgumentParser):
     args = parser.parse_args()
     if args.config:
         with open(args.config) as f:
@@ -119,7 +135,37 @@ def load_fsdp_args(extra_args_provider=None):
         parser.set_defaults(**data)
         args = parser.parse_args()
     args.bf16 = not args.fp16
+    if args.recompute_granularity is not None:
+        if args.recompute_granularity != "full":
+            raise ValueError(
+                f"--recompute-granularity {args.recompute_granularity!r}: this backend recomputes whole layers only; use full"
+            )
+        args.gradient_checkpointing = True
     return args
+
+
+def load_fsdp_args(extra_args_provider=None):
+    return load_args_from_parser(build_fsdp_parser(extra_args_provider))
+
+
+def validate_kernel_backend_args(args) -> None:
+    """Validate --kernel-backend and keep hub kernels out of the bit-exact run modes.
+
+    --true-on-policy-mode requires the training-side kernel to match SGLang's build exactly;
+    until that equivalence is established per hub kernel, the two stay mutually exclusive.
+    """
+    if args.kernel_backend not in ("native", "hub"):
+        raise ValueError(f"--kernel-backend must be one of ('native', 'hub'), got {args.kernel_backend!r}")
+
+    if args.kernel_backend != "hub":
+        if args.kernel_strict:
+            raise ValueError("--kernel-strict only applies with --kernel-backend hub")
+        if args.kernel_mapping_path:
+            raise ValueError("--kernel-mapping-path only applies with --kernel-backend hub")
+        return
+
+    if args.true_on_policy_mode or args.deterministic_mode:
+        raise ValueError("--kernel-backend hub is incompatible with --true-on-policy-mode / --deterministic-mode")
 
 
 def validate_hybrid_shard_args(args) -> None:

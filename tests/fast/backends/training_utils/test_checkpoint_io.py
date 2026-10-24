@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
+from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 
 
 @pytest.mark.parametrize("error", [OSError("disk full"), RuntimeError("directory creation failed")])

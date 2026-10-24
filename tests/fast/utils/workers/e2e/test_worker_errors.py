@@ -1,7 +1,6 @@
 import asyncio
 
 import pytest
-from pydantic import ValidationError
 
 from miles.utils.workers.rpc.client.misc import RpcWorkerCallError
 from miles.utils.workers.worker_handle import WorkerUnreachableError
@@ -69,14 +68,14 @@ class TestResultContract:
         with pytest.raises(RpcWorkerCallError):
             await handle.demo_unserializable_result()
 
-    async def test_result_type_mismatch_is_caught_client_side(self, handle):
-        """A result that does not match the annotation fails validation on the client."""
-        with pytest.raises(ValidationError):
+    async def test_result_type_mismatch_fails_on_the_server(self, handle):
+        """A result that does not match the annotation fails in the process that produced it."""
+        with pytest.raises(RpcWorkerCallError, match="demo_wrong_result_type"):
             await handle.demo_wrong_result_type()
 
     async def test_server_survives_a_mismatched_result(self, handle):
-        """A validation failure on the client leaves the server usable."""
-        with pytest.raises(ValidationError):
+        """A failed result serialization leaves the server usable."""
+        with pytest.raises(RpcWorkerCallError):
             await handle.demo_wrong_result_type()
         assert await handle.demo_sync(a=2, b=2) == 4
 
@@ -126,17 +125,22 @@ class TestNonExceptionExits:
         make_handle,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A concurrent accepted call dies with the server and reaches its own deadline."""
+        """An in-flight call fails by cancellation or its deadline when the server exits."""
         from miles.utils.workers.rpc.client import call as client_module
 
         monkeypatch.setattr(client_module, "RETRY_INITIAL_DELAY_SECONDS", 0.01)
         monkeypatch.setattr(client_module, "DEFAULT_POLL_TIMEOUT_SECONDS", 0.05)
-        handle = make_handle(spawn(), call_timeout_seconds=0.3)
+        server = spawn()
+        handle = make_handle(server, call_timeout_seconds=0.3)
         other = asyncio.create_task(handle.demo_sleep_async(tag="doomed", seconds=30.0))
         await asyncio.sleep(0.05)
 
         with pytest.raises((WorkerUnreachableError, TimeoutError)):
             await handle.demo_system_exit()
 
-        with pytest.raises(TimeoutError):
+        with pytest.raises((TimeoutError, RpcWorkerCallError)) as exc_info:
             await other
+        if isinstance(exc_info.value, RpcWorkerCallError):
+            assert str(exc_info.value) == "E2eWorker.demo_sleep_async failed remotely:\nCancelledError()"
+
+        assert server.wait(timeout=10.0) is not None

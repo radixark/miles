@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -29,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 
 from miles.dashboard.advisory import DEFAULT_LOW_MFU, compute_advisories, mfu_summary
 from miles.dashboard.dump_reader import STEP_AGGREGATE_METRICS, DumpReader, DumpStillWriting
+from miles.dashboard.sandbox_health import SNAPSHOT_FILENAME, read_snapshot, sandbox_summary
 from miles.dashboard.store import MetricStore, Stream
 
 DUMP_METRIC_PREFIX = "dump/"
@@ -103,11 +105,13 @@ def make_app(
             metric_keys=store.metric_keys() + dump_keys,
             engine_metric_keys=store.engine_metric_names(),
             step_keys=store.step_keys(),
+            step_key_of_metric_key=store.step_key_of_metric_key(),
             capabilities=dict(
                 has_metrics=store.has_stream(Stream.METRICS),
                 has_tokenizer=(reader.dump_dir / "tokenizer").is_dir(),
                 has_timeline=store.has_stream(Stream.PHASES) or store.has_stream(Stream.GPU_UTIL),
                 has_engine_series=store.has_stream(Stream.ENGINE_SERIES),
+                has_sandboxes=(store.dir / SNAPSHOT_FILENAME).is_file(),
                 max_window_s=MetricStore.MAX_WINDOW_S,
                 use_utilization_overview=use_utilization_overview,
             ),
@@ -235,6 +239,17 @@ def make_app(
             return dict(
                 series=store.engine_series(metric, t0=t0, t1=t1, max_points=max_points, per_dp_rank=per_dp_rank)
             )
+
+    @app.get("/api/sandboxes")
+    def sandboxes(stale_after_s: float = 300.0):
+        with _translate_errors():
+            if not 0 < stale_after_s < math.inf:
+                raise ValueError(f"{stale_after_s=} must be positive and finite")
+            snapshot = read_snapshot(store.dir / SNAPSHOT_FILENAME)
+            snapshot_ts, rows = snapshot if snapshot else (time.time(), [])
+            # a finished run is judged at its last snapshot, not at viewing time
+            now = time.time() if follow else snapshot_ts
+            return sandbox_summary(rows, now=now, stale_after_s=stale_after_s)
 
     @app.get("/api/timeline/bubbles")
     def timeline_bubbles():

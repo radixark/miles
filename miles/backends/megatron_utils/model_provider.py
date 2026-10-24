@@ -17,6 +17,7 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
+from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
@@ -37,6 +38,12 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     parallelism, memory, and numerics settings that really come from args. Put
     new training flags here, not spread across the code.
     """
+    # Bridge providers may default to frozen parts (Qwen3-VL MoE freezes the language model and ViT);
+    # start from fully trainable and let miles args freeze parts below.
+    for freeze_field in ("freeze_language_model", "freeze_vision_model", "freeze_vision_projection"):
+        if hasattr(provider, freeze_field):
+            setattr(provider, freeze_field, False)
+
     # parallelism / sharding
     provider.tensor_model_parallel_size = args.tensor_model_parallel_size
     provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
@@ -49,9 +56,8 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     provider.calculate_per_token_loss = args.calculate_per_token_loss  # CP>1 VL models assert this
     provider.variable_seq_lengths = args.variable_seq_lengths
 
-    # Match the non-bridge path: MTP must only train its own draft parameters.
-    if getattr(args, "enable_mtp_training", False):
-        provider.mtp_detach_heads = True
+    # The non-bridge path reads it from args through core_transformer_config_from_args.
+    provider.mtp_detach_heads = args.mtp_detach_heads
 
     # numerics (training infra, not model-defining)
     provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
@@ -81,6 +87,11 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
 
     # attention kernel selection
     provider.attention_backend = args.attention_backend
+
+    # The HF checkpoint can contain an MTP module even when this run trains only
+    # the target model. An explicit runtime value, including None, overrides it.
+    if hasattr(args, "mtp_num_layers"):
+        provider.mtp_num_layers = args.mtp_num_layers
 
     # MoE token dispatcher (same-name, always present)
     provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
@@ -162,7 +173,7 @@ def get_model_provider_func(
                 model.output_layer = LinearForLastLayer(
                     input_size=model.config.hidden_size, output_size=1, config=model.config
                 )
-            _maybe_install_witness(args, model)
+            _maybe_install_witness(args, model, vp_stage=vp_stage)
             return model
 
         return wrapped_model_provider
@@ -196,6 +207,7 @@ def get_model_provider_func(
                     input_size=model.config.hidden_size, output_size=1, config=model.config
                 )
             assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
+            ModelCompanionInstallationUtils.install(model=model, chunk_index=vp_stage or 0)
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.
             _bridge_forward = model.forward
 
@@ -232,13 +244,6 @@ def get_model_provider_func(
         # Experimental loading arguments from yaml
         assert config is None, "miles builds the config from args, so it expects config to be None"
         config = core_transformer_config_from_args(args)
-
-        # `enable_mtp_training` comes from miles' arg parser; megatron-only arg contexts
-        # (e.g. the run_megatron debug worker) won't have it, so default to False.
-        if getattr(args, "enable_mtp_training", False):
-            # Detach the MTP heads so RL MTP gradients do not flow into the shared
-            # output layer / embedding.
-            config.mtp_detach_heads = True
 
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)
@@ -337,20 +342,34 @@ def get_model_provider_func(
         with build_model_context(**build_model_context_args):
             model = GPTModel(**kwargs)
 
+        _maybe_freeze_native_dsa_indexer(args, model)
+
         if post_process and role == "critic":
             model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
 
-        _maybe_install_witness(args, model)
+        _maybe_install_witness(args, model, vp_stage=vp_stage)
 
         return model
 
     return model_provider
 
 
+def _maybe_freeze_native_dsa_indexer(args: argparse.Namespace, model: GPTModel) -> None:
+    if args.dsa_impl == "megatron" and model.config.dsa_indexer_loss_coeff == 0:
+        # Native DSA runs its indexer under no_grad without the auxiliary objective.
+        # Exclude these unused parameters from DDP and optimizer weight decay.
+        for name, parameter in model.named_parameters():
+            if ".self_attention.core_attention.indexer." in name:
+                parameter.requires_grad_(False)
+
+
 def _maybe_install_witness(
     args: argparse.Namespace,
     model: GPTModel,
+    *,
+    vp_stage: int | None,
 ) -> None:
+    ModelCompanionInstallationUtils.install(model=model, chunk_index=vp_stage or 0)
     if getattr(args, "enable_witness", False):
         install_witness(
             model,

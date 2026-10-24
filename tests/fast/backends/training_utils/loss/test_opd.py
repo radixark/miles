@@ -11,8 +11,8 @@ from argparse import Namespace
 import pytest
 import torch
 
-from miles.backends.training_utils import loss as loss_utils
-from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
+from miles.backends.training_utils.loss import objective as loss_utils
+from miles.backends.training_utils.loss.hub.opd import apply_opd_kl_to_advantages
 
 from .loss_test_utils import make_parallel_state
 

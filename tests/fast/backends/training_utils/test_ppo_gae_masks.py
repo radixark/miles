@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from miles.backends.training_utils.loss_hub.math_utils import get_advantages_and_returns_batch, vanilla_gae
+from miles.backends.training_utils.loss.hub.math_utils import get_advantages_and_returns_batch, vanilla_gae
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 
 

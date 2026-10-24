@@ -44,9 +44,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          # 3.11 required for BaseException.add_note (PEP 678), used in miles
-          # source (e.g. miles/rollout/generate_utils/sample_utils.py).
-          python-version: '3.11'
+          # Match the Miles Docker runtime.
+          python-version: '3.12'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -117,7 +116,17 @@ jobs:
           UV_SYSTEM_PYTHON: "1"
         run: |
           uv pip install -r requirements.txt -r tests/ci/requirements-ci-cpu.txt
-          python tests/ci/verify_source_resolution.py
+
+      - name: Install Megatron Bridge override
+        if: ${{ github.event.inputs.ci_megatron_bridge_pr != '' || contains(github.event.pull_request.body, 'ci-megatron-bridge-pr:') }}
+        uses: ./.github/actions/install-megatron-bridge
+        with:
+          ref: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
+          pr_body: ${{ github.event.pull_request.body || '' }}
+
+      - name: Verify source resolution
+        shell: bash
+        run: python tests/ci/verify_source_resolution.py
 
       - name: Install Helm
         uses: azure/setup-helm@v4

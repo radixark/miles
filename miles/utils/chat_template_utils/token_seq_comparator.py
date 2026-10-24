@@ -171,6 +171,9 @@ class TokenSeqComparator:
 
         mismatches: list[Mismatch] = []
         for idx, (exp, act) in enumerate(zip(exp_segs, act_segs, strict=True)):
+            # Equal token IDs decode to equal text: nothing to classify or decode.
+            if exp.token_ids == act.token_ids:
+                continue
             is_assistant_content = self._is_assistant_content(exp_segs, idx) and self._is_assistant_content(
                 act_segs, idx
             )

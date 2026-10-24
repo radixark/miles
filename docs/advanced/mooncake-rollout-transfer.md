@@ -17,25 +17,28 @@ Rollout-data transfer and model-weight transfer are separate settings:
 
 Before starting a Miles job:
 
-- Run the same Miles revision and Mooncake version on every Ray node.
+- Run the same Miles revision and Mooncake version on every Ray node and on the host
+  that runs `mooncake_master`.
 - Start `mooncake_master`, or provide a Mooncake HA endpoint, and make the endpoint
   reachable from every node. Miles connects as a client and does not manage the
   endpoint lifecycle.
 - Use routable data-network addresses for Ray and Mooncake clients.
 - Reserve enough host memory for `global_segment_size` and `local_buffer_size`.
 - For RDMA, expose the RDMA device to the Miles environment, allow memory locking,
-  and set the local device name on each node.
+  and set the local device name on each node. Leaving it to automatic selection can
+  spread host-memory transfers across every HCA and run far slower
+  ([kvcache-ai/Mooncake#4322](https://github.com/kvcache-ai/Mooncake/issues/4322)).
 
-The current Miles CUDA 13 image includes the Mooncake structured-object APIs used by
-this backend. For a custom environment, install a Mooncake package that matches the
-CUDA runtime and is compatible with the Miles revision. Follow the
+This backend imports the structured-object API from `mooncake.structured_object_store`
+(`FieldSchema`, `MooncakeBundleTransfer`, `export_ref`, `import_ref`), which Mooncake
+provides from 0.3.12.post1 on; earlier releases ship the module without these names. The
+Miles CUDA images use the Mooncake package that ships in the SGLang base image, and the
+ROCm images add Mooncake's Python files from `mooncake-transfer-engine-non-cuda` (see
+`docker/Dockerfile.rocm`). For a custom environment, install a Mooncake package that
+matches the CUDA runtime and is compatible with the Miles revision. Follow the
 [Mooncake installation guide](https://kvcache-ai.github.io/Mooncake/getting_started/build.html)
-for current package names and supported platforms.
-
-The structured-object wheel ships only on the CUDA 13 path, so
-`mooncake.structured_object_store` fails to import on a CUDA 12 image. See
-[Versions and Images](/developer/versions) for the `ENABLE_CUDA_13` switch and
-that failure mode.
+for current package names and supported platforms. See
+[Versions and Images](/developer/versions) for how the images pick their Mooncake.
 
 ## Configure the backend
 

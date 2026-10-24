@@ -1,14 +1,9 @@
 name: Comment command gateway
 run-name: Comment command by ${{ github.event.comment.user.login }}
 
-# Actions-capability commands (/rerun-test, /rerun-failed-ci) run on the
-# workflow's own GITHUB_TOKEN with per-job permissions: GitHub's recursion
-# guard suppresses GITHUB_TOKEN-triggered events with the documented exception
-# of workflow_dispatch and repository_dispatch, and reruns are new attempts of
-# an existing run rather than new event-triggered runs, so neither needs the
-# command App. Only the issues-capability label commands still require it —
-# a label added with GITHUB_TOKEN would never fire the pull_request(labeled)
-# CI workflows — and they stay behind CI_COMMAND_APP_ENABLED.
+# Label commands need a CI App token to trigger pull_request(labeled) workflows.
+# /rerun-test and /rerun-failed-ci use GITHUB_TOKEN: workflow_dispatch and reruns
+# are not blocked by its event recursion guard.
 
 on:
   issue_comment:
@@ -55,12 +50,12 @@ jobs:
            steps.authorize.outputs.success_reaction != '+1')
         run: exit 1
 
-      - name: Require the command App for label commands
+      - name: Require the CI App for label commands
         if: >-
           steps.authorize.outputs.capability == 'issues' &&
-          vars.CI_COMMAND_APP_ENABLED != 'true'
+          vars.CI_APP_ENABLED != 'true'
         run: |
-          echo "::error::label commands need the command App (CI_COMMAND_APP_ENABLED; see docs/developer/ci/01-label.md); /rerun-test and /rerun-failed-ci work without it"
+          echo "::error::label commands need the CI App (CI_APP_ENABLED; see docs/developer/ci/01-label.md); /rerun-test and /rerun-failed-ci work without it"
           exit 1
 
       - name: Mint the issues-scoped App token
@@ -68,8 +63,8 @@ jobs:
         id: issues-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
-          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           permission-issues: write
           # The label lands on a pull request, and GitHub gates issues-API writes
           # on a PR on pull-requests scope, so read alone fails the label POST.

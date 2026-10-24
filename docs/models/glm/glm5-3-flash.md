@@ -28,7 +28,6 @@ GLM5.2 flagships, not a smaller cut of them.
 | Variant | `--model-name` | Layers |
 |---|---|---|
 | Full | `GLM-5.3-Flash` | 45 |
-| 8-layer slice | `GLM-5.3-Flash-8layer` | 8 |
 | 4-layer slice | `GLM-5.3-Flash-4layer` | 4 (launcher default) |
 
 ## 3. Environment Setup
@@ -83,16 +82,14 @@ python scripts/run_glm5_3_flash.py train --num-nodes 1 --num-gpus-per-node 8
 
 | Shape | TP | PP | EP | Rollout engine |
 |---|---|---|---|---|
-| 16 × 4 (full, validated) | 8 | 4 | 16 | 8 GPUs, SGLang TP 8 / EP 8 |
-| 8 × 4 (full) | 8 | 4 | 16 | 8 GPUs, SGLang TP 8 / EP 8 |
-| 6 × 4 (full) | 8 | 3 | 8 | 8 GPUs, SGLang TP 8 / EP 8 |
-| 2 × 4 or 1 × 8 (slices) | 2 | 2 | 2 | 4 GPUs, SGLang TP 4 / EP 4 |
+| 16 × 4 (full) | 8 | 4 | 16 | 8 GPUs, SGLang TP 8 / EP 8 |
+| 8 × 4 (full) | 8 | 4 | 8 | 8 GPUs, SGLang TP 8 / EP 8 |
+| 2 × 4 or 1 × 8 (4-layer slice) | 2 | 2 | 2 | 4 GPUs, SGLang TP 4 / EP 4 |
 
 The PP-4 shapes run 11 / 11 / 11 / 12 layers per stage, since 45 does not divide by 4.
 GRPO on DAPO-Math-17k, Adam at `lr 1e-6`, `max_tokens_per_gpu 8192`, full uniform recompute.
 Rollout is colocated, with the trainer offloaded to disk; both DSA paths run on tilelang and
-the KV cache is BF16. Routing replay is wired end to end, and indexer-topk replay
-(`--use-rollout-indexer-replay`) is implemented but off by default.
+the KV cache is BF16. Routing replay turns on with `--enable-r3`.
 
 ## 5. What a Healthy Run Looks Like
 
@@ -108,3 +105,40 @@ From the validation run in [#2786](https://github.com/radixark/miles/pull/2786) 
 
 `train/train_rollout_logprob_abs_diff` is the one to read first on a fresh bring-up: it
 covers the KDA, DSA and hyper-connection paths at once.
+
+## 6. LoRA RL
+
+[`scripts/run_glm5_3_flash_lora.py`](https://github.com/radixark/miles/blob/main/scripts/run_glm5_3_flash_lora.py)
+trains a LoRA adapter through native LoRA (`--megatron-to-hf-mode raw`): the trainer is the
+glm5_next model of section 4, loaded from the `torch_dist` base of section 3, and
+`miles.backends.megatron_utils.lora.native` attaches the adapters. With `--lora-base-cpu-backup`
+SGLang keeps the frozen base across colocated offload and onload, so each step syncs only the
+adapter.
+
+| Layer type | Adapted HF projections |
+|---|---|
+| KDA (34 layers) | `q/k/v/o_proj`, `b_proj`, `forget_gate.f_a/f_b_proj`, `g_a/g_b_proj` |
+| DSA (11 layers) | `q_a/q_b_proj`, `kv_a_proj_with_mqa`, `o_proj` |
+| MLP | dense and shared-expert `gate/up/down_proj` |
+
+The 288 routed experts stay frozen, since native LoRA has no per-expert adapter. `kv_b_proj` stays
+frozen too: the DSA attention absorbs its weight into the query and output without calling the
+module, so an adapter on it would never run. The launcher's
+`--target-modules attn,mlp --exclude-modules "*.mlp.experts.*,*.self_attn.kv_b_proj"` selects
+exactly the table, and selecting a frozen projection fails at argument validation. The KDA
+`conv1d`, `A_log`, `dt_bias` and `o_norm`, the DSA indexer and the mHC parameters are not LoRA
+targets.
+
+Serving the adapter needs SGLang LoRA on the KDA projections, which `sglang-miles` does not have
+yet; it is in [sgl-project/sglang#44862](https://github.com/sgl-project/sglang/pull/44862).
+
+```bash
+python scripts/run_glm5_3_flash_lora.py prepare --model-name GLM-5.3-Flash-4layer
+python scripts/run_glm5_3_flash_lora.py train --model-name GLM-5.3-Flash-4layer \
+  --num-nodes 1 --num-gpus-per-node 8
+
+# full model, 3 x 8 GPUs: TP 8, EP 24, PP 1, one colocated 8-GPU engine per node
+export MILES_SCRIPT_EXTERNAL_RAY=1   # after `ray start` on every node
+python scripts/run_glm5_3_flash_lora.py train --model-name GLM-5.3-Flash \
+  --num-nodes 3 --num-gpus-per-node 8
+```

@@ -1,3 +1,0 @@
-### 0
-[multi_node num_nodes=None] mkdir -p /root/models/Inkling-4layer_torch_dist && rsync -a
-  --info=progress2 /root/models/Inkling-4layer_torch_dist/ /root/models/Inkling-4layer_torch_dist

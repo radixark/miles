@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import abc
 from argparse import Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from miles.rollout.data_source import DataSource
 from miles.utils.types import Sample
@@ -33,6 +35,8 @@ class RolloutFnBaseInput:
 class RolloutFnTrainInput(RolloutFnBaseInput):
     # engine weight version, None before the first weight update
     weight_version: int | None = None
+    # which policy model asked for this rollout; None when the run trains one policy
+    trainer_model_id: str | None = None
 
     @property
     def evaluation(self):
@@ -41,6 +45,7 @@ class RolloutFnTrainInput(RolloutFnBaseInput):
 
 @dataclass(frozen=True)
 class RolloutFnEvalInput(RolloutFnBaseInput):
+    invocation_id: str = field(default_factory=lambda: uuid4().hex)
     generate_state: GenerateState | None = None
     weight_version: str | None = None
     hf_dir: str | None = None
@@ -48,6 +53,25 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
     @property
     def evaluation(self):
         return True
+
+
+def compute_kv_cache_namespace(args: Namespace, input: RolloutFnBaseInput) -> str | None:
+    if not args.namespaced_radix_cache:
+        return None
+    if input.evaluation:
+        assert isinstance(input, RolloutFnEvalInput)
+        return f"eval:-:{input.rollout_id}:{input.invocation_id}"
+    return f"train:{input.trainer_model_id or '-'}:{input.rollout_id}"
+
+
+def stamp_kv_cache_namespace(samples: Sample | list[Any], *, namespace: str | None) -> None:
+    if namespace is None:
+        return
+    if isinstance(samples, list):
+        for item in samples:
+            stamp_kv_cache_namespace(item, namespace=namespace)
+    elif samples.kv_cache_namespace is None:
+        samples.kv_cache_namespace = namespace
 
 
 # TODO make it frozen
@@ -76,10 +100,13 @@ class BaseRolloutFn(abc.ABC):
     def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         raise NotImplementedError
 
-    def save(self, rollout_id: int) -> None:
+    def save(self, directory: Path) -> None:
         return None
 
-    def load(self, rollout_id: int | None) -> None:
+    def load(self, directory: Path) -> None:
+        return None
+
+    async def dispose(self) -> None:
         return None
 
 

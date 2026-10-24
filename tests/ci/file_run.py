@@ -12,22 +12,13 @@ import re
 import sys
 from pathlib import Path
 
-from tests.ci.ci_register import HWBackend, collect_tests
+from tests.ci.ci_register import HWBackend, collect_tests, file_timeout
+from tests.ci.hardware import CUDA_STAGES
 
 CPU_SUITES = frozenset({"stage-a-cpu", "stage-b-cpu"})
 DISCOVERY_ROOTS = ("tests/fast", "tests/fast-gpu", "tests/e2e", "tests/ci")
 
-# Runner labels per CUDA suite, mirroring the pr-test.yml job wiring.
-# `tests/ci/test/test_file_run.py` locks the key set to
-# `run_suite.CI_SUITES[HWBackend.CUDA]` so a new suite cannot ship unmapped.
-CUDA_SUITE_RUNS_ON = {
-    "stage-b-2-gpu-h200": ["h200", "2gpu"],
-    "stage-c-8-gpu-h100": ["h100", "8gpu"],
-    "stage-c-8-gpu-h200": ["h200", "8gpu"],
-    "stage-c-4-gpu-h200": ["h200", "4gpu"],
-    "stage-c-2-gpu-h200": ["h200", "2gpu"],
-    "stage-c-8-gpu-b200": ["b200", "8gpu"],
-}
+CUDA_SUITE_RUNS_ON = {name: list(stage.runs_on) for name, stage in CUDA_STAGES.items()}
 
 # Same shape the pr-test.yml resolve-ci-image step enforces for a Docker tag.
 _IMAGE_TAG_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
@@ -89,6 +80,8 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
         runs_on = CUDA_SUITE_RUNS_ON.get(registration.suite)
         if runs_on is None:
             raise FileRunError(f"CUDA suite {registration.suite} has no runner mapping in CUDA_SUITE_RUNS_ON")
+        if CUDA_STAGES[registration.suite].arch == "blackwell":
+            runs_on = ["b200", f"{registration.required_gpus}gpu"]
         hw = "cuda"
         runs_on_json = json.dumps(runs_on)
     else:
@@ -98,10 +91,11 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
         runs_on_json = ""
     return {
         "hw": hw,
+        "num_gpus": str(registration.required_gpus if hw == "cuda" else 0),
         "suite": registration.suite,
         "runs_on": runs_on_json,
         "container_image": f"radixark/miles:{image_tag}",
-        "timeout_seconds": str(max(1800, int(registration.est_time * 1.25))),
+        "timeout_seconds": str(file_timeout(registration.est_time, registration.labels, 1800)),
     }
 
 

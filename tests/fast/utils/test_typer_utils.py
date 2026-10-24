@@ -408,6 +408,20 @@ class TestFieldTypes:
         assert result.exit_code == 0
         assert "color=red" in result.stdout
 
+    def test_the_argument_table_prints_an_enum_value_without_its_python_class_name(self) -> None:
+        """The argument table prints an enum default using its wire value."""
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli(env_var_prefix="")
+        def cmd(args: _EnumArgs) -> None:
+            pass
+
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert "| color | red" in result.stdout
+        assert "_Color.RED" not in result.stdout
+
     def test_enum_field_override(self) -> None:
         app = typer.Typer()
 

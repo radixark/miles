@@ -2,13 +2,13 @@
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Literal
 
 import pydantic
 import yaml
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -22,7 +22,7 @@ class _RawServerGroupConfig(FrozenStrictBaseModel):
     """Configuration for a single server group.
 
     Attributes:
-        worker_type: One of "regular", "prefill", "decode", or "placeholder".
+        worker_type: One of the WorkerType values.
                      "placeholder" reserves GPU slots without creating engines.
         num_gpus: Total number of GPUs for this group.
         num_gpus_per_engine: GPUs per engine for this group.  Overrides the
@@ -32,7 +32,7 @@ class _RawServerGroupConfig(FrozenStrictBaseModel):
                    arguments in ``_compute_server_args``.
     """
 
-    worker_type: Literal["regular", "prefill", "decode", "placeholder"]
+    worker_type: WorkerType
     num_gpus: int
     num_gpus_per_engine: int | None = None
     overrides: dict = {}
@@ -72,7 +72,7 @@ class _RawModelConfig(FrozenStrictBaseModel):
 class _RawSglangConfig(FrozenStrictBaseModel):
     """Configuration for SGLang engine deployment.
 
-    Loaded from ``--sglang-config`` YAML file.
+    Loaded from ``--sglang-config``: either a YAML file path or an inline ``base64:`` payload.
 
     **Config format**::
 
@@ -111,8 +111,8 @@ class _RawSglangConfig(FrozenStrictBaseModel):
     models: list[_RawModelConfig] = pydantic.Field(validation_alias=pydantic.AliasChoices("models", "sglang"))
 
     @classmethod
-    def from_yaml(cls, path: str) -> "_RawSglangConfig":
-        return cls.model_validate(yaml.safe_load(Path(path).read_text()))
+    def from_file_arg(cls, value: str) -> "_RawSglangConfig":
+        return cls.model_validate(yaml.safe_load(resolve_file_arg(value)))
 
     @staticmethod
     def from_prefill_num_servers(args) -> "_RawSglangConfig":
@@ -126,8 +126,8 @@ class _RawSglangConfig(FrozenStrictBaseModel):
                 _RawModelConfig(
                     name="default",
                     server_groups=[
-                        _RawServerGroupConfig(worker_type="prefill", num_gpus=prefill_gpus),
-                        _RawServerGroupConfig(worker_type="decode", num_gpus=decode_gpus),
+                        _RawServerGroupConfig(worker_type=WorkerType.PREFILL, num_gpus=prefill_gpus),
+                        _RawServerGroupConfig(worker_type=WorkerType.DECODE, num_gpus=decode_gpus),
                     ],
                 )
             ]
@@ -142,7 +142,7 @@ class _RawSglangConfig(FrozenStrictBaseModel):
 
 
 class ServerGroupConfig(FrozenStrictBaseModel):
-    worker_type: Literal["regular", "prefill", "decode", "placeholder"]
+    worker_type: WorkerType
     num_gpus: int = pydantic.Field(gt=0)
     num_gpus_per_engine: int = pydantic.Field(gt=0)
     gpu_offset: int = pydantic.Field(ge=0)
@@ -163,9 +163,11 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         default_model_path: str,
         offset_cursor: "_OffsetCursor",
     ) -> "ServerGroupConfig":
-        assert not ({"host", "port", "gated_launch_port"} & set(raw.overrides)), (
-            f"sglang_overrides must not override host/port ({raw.overrides=}): the rollout process derives "
-            f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
+        assert not ({"host", "port", "gated_launch_port", "disaggregation_mode"} & set(raw.overrides)), (
+            f"sglang_overrides must not override host/port/disaggregation_mode ({raw.overrides=}): the rollout "
+            f"process derives each engine's url from the addr allocator and its disaggregation_mode from "
+            f"worker_type, so an override would make it talk to the wrong endpoint or serve a different role "
+            f"than the one it registers with"
         )
 
         rollout_pg_offset = _compute_rollout_offset(args)
@@ -251,14 +253,14 @@ class ModelConfig(FrozenStrictBaseModel):
 
     @property
     def has_pd_disaggregation(self) -> bool:
-        return any(g.worker_type in ("prefill", "decode") for g in self.server_groups)
+        return any(g.worker_type in (WorkerType.PREFILL, WorkerType.DECODE) for g in self.server_groups)
 
     @property
     def num_server_cells(self) -> int:
         return sum(
             group.num_gpus // group.num_gpus_per_engine
             for group in self.server_groups
-            if group.worker_type != "placeholder"
+            if group.worker_type != WorkerType.PLACEHOLDER
         )
 
 
@@ -298,7 +300,7 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
     rollout_num_gpus = args.rollout_num_gpus or 0
 
     if getattr(args, "sglang_config", None) is not None:
-        config = _RawSglangConfig.from_yaml(args.sglang_config)
+        config = _RawSglangConfig.from_file_arg(args.sglang_config)
         expected = rollout_num_gpus + eval_num_gpus
         actual = config.total_num_gpus
         assert (
@@ -324,7 +326,9 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
             models=[
                 _RawModelConfig(
                     name="default",
-                    server_groups=[_RawServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
+                    server_groups=[
+                        _RawServerGroupConfig(worker_type=WorkerType.REGULAR, num_gpus=args.rollout_num_gpus)
+                    ],
                 )
             ]
         )
@@ -335,7 +339,7 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
     eval_model = _compute_eval_raw_model(
         _RawModelConfig(
             name="eval",
-            server_groups=[_RawServerGroupConfig(worker_type="regular", num_gpus=eval_num_gpus)],
+            server_groups=[_RawServerGroupConfig(worker_type=WorkerType.REGULAR, num_gpus=eval_num_gpus)],
         ),
         args,
     )

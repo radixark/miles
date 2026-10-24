@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 import time
+from types import SimpleNamespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     StateDisposed,
+    StateErrored,
     StateInitializing,
     StatePendingWeights,
     StateServing,
     StateUninitialized,
 )
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils import retry_utils
+from miles.utils.workers.worker_spec import HostAndPort
 
 pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
 
@@ -22,6 +28,12 @@ _ADDR_INFO = CellAddrInfo(
     server_url="http://10.0.0.1:30000",
     bootstrap_port=None,
     gate_url="http://10.0.0.1:13000",
+)
+
+_ADDR_INFO_NO_GATE = CellAddrInfo(
+    server_url="http://10.0.0.1:30000",
+    bootstrap_port=None,
+    gate_url=None,
 )
 
 
@@ -43,6 +55,14 @@ def _make_meta(**overrides) -> ServerCellMetadata:
     )
 
 
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> dict[str, HostAndPort]:
+        return dict(
+            primary=HostAndPort(host="10.0.0.1", port=30000),
+            gate=HostAndPort(host="10.0.0.1", port=13000),
+        )
+
+
 class _RecordingRouterApiClient:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
@@ -60,8 +80,9 @@ class _RecordingRouterApiClient:
 class _RecordingApiClient:
     calls: list[tuple[str, dict]] = []
 
-    def __init__(self, server_url: str):
+    def __init__(self, server_url: str, api_key: str | None = None):
         self.server_url = server_url
+        self.api_key = api_key
 
     async def release_memory_occupation(self, tags=None):
         _RecordingApiClient.calls.append(("release", dict(tags=tags)))
@@ -78,8 +99,9 @@ class _ResultApiClient:
     results: dict[str, dict] = {}
     errors: dict[str, Exception] = {}
 
-    def __init__(self, server_url: str):
+    def __init__(self, server_url: str, api_key: str | None = None):
         self.server_url = server_url
+        self.api_key = api_key
 
     async def release_memory_occupation(self, tags=None):
         return await self._record("release_memory_occupation", dict(tags=tags))
@@ -143,6 +165,7 @@ def _make_cell(
             args=make_args(**(args_overrides or {})),
             meta=_make_meta(**meta_overrides),
             router_api_client=router or _RecordingRouterApiClient(),
+            provider=_StubProvider(),
         )
     )
 
@@ -179,22 +202,8 @@ class TestInit:
         with pytest.raises(AssertionError):
             await cell.init()
 
-    async def test_external_rollout_initialization_is_rejected_before_allocating_an_address(
-        self, cell_env, monkeypatch
-    ):
-        """External address allocation was removed, so the cell must refuse instead of opening a gate it does not own."""
-
-        async def _unexpected_compute_addr_info(self) -> CellAddrInfo:
-            raise AssertionError("external rollout initialization looked up a worker address")
-
-        monkeypatch.setattr(ServerCell, "_compute_addr_info", _unexpected_compute_addr_info)
-        cell = _make_cell(args_overrides=dict(rollout_external=True))
-
-        with pytest.raises(NotImplementedError):
-            await cell.init()
-
-        assert cell.is_uninitialized
-        assert cell_env["activated"] == []
+        assert cell.is_initializing
+        assert len(cell_env["activated"]) == 1
 
     async def test_an_address_lookup_failure_leaves_the_cell_uninitialized_and_retryable(self, cell_env, monkeypatch):
         """Worker addresses appear late, so a lookup error must not consume the cell's only init."""
@@ -239,6 +248,75 @@ class TestInit:
 
         assert isinstance(cell._state, StateInitializing)
         assert cell_env["activated"] == ["http://10.0.0.1:13000"]
+
+    async def test_a_cell_without_a_gate_port_skips_activation(self, cell_env, monkeypatch):
+        """External engines run no launch-gate wrapper, so init must not dial one."""
+
+        async def _compute(self) -> CellAddrInfo:
+            return _ADDR_INFO_NO_GATE
+
+        monkeypatch.setattr(ServerCell, "_compute_addr_info", _compute)
+        cell = _make_cell()
+
+        await cell.init()
+
+        assert cell_env["activated"] == []
+        assert cell.is_initializing
+
+
+class TestGatelessCellLifecycle:
+    async def test_a_gateless_cell_still_waits_for_a_weight_push_before_serving(self, cell_env, monkeypatch):
+        """An external cell keeps on-policy semantics: only a weight update publishes it to the router."""
+
+        async def _compute(self) -> CellAddrInfo:
+            return _ADDR_INFO_NO_GATE
+
+        monkeypatch.setattr(ServerCell, "_compute_addr_info", _compute)
+        router = _RecordingRouterApiClient()
+        cell = _make_cell(router=router)
+
+        await cell.init()
+        await cell.tick()
+        assert cell.is_pending_weights
+        assert router.calls == []
+
+        await cell.mark_weights_ready()
+
+        assert cell.is_serving
+        assert [name for name, _kwargs in router.calls] == ["add_worker"]
+
+
+class TestTickReportsTheEngineEnv:
+    async def test_a_cell_that_serves_nothing_yet_is_not_asked_for_its_env(self, cell_env, monkeypatch):
+        """An engine that has not answered a probe cannot answer /server_info either."""
+        cell_env["health"]["ready"] = False
+        cell = _make_cell()
+        asked: list[tuple[str, str]] = []
+        monkeypatch.setattr(cell._env_reporter, "report_if_due", _record_into(asked))
+
+        await cell.init()
+        await cell.tick()
+
+        assert asked == []
+
+    async def test_a_serving_cell_is_asked_for_its_env_on_every_tick(self, cell_env, monkeypatch):
+        """The reporter decides how often to actually read; the tick just keeps offering it the chance."""
+        cell = _make_cell()
+        asked: list[tuple[str, str]] = []
+        monkeypatch.setattr(cell._env_reporter, "report_if_due", _record_into(asked))
+
+        await cell.init()
+        await cell.tick()
+        await cell.tick()
+
+        assert asked == [(cell.meta.cell_id, cell.meta.workers_hash)] * 2
+
+
+def _record_into(asked: list[tuple[str, str]]):
+    async def _report_if_due(*, cell_id: str, workers_hash: str, server_url: str, api_client) -> None:
+        asked.append((cell_id, workers_hash))
+
+    return _report_if_due
 
 
 class TestTick:
@@ -481,6 +559,19 @@ class TestTick:
         assert [kwargs["action"] for kwargs in checker_calls] == ["snapshot", "reset_tensors"]
         assert checker_calls[1]["skip_list"] == ["a"]
 
+    async def test_the_checker_snapshots_and_resets_only_the_runners_it_compares(self, cell_env):
+        """A draft the sync leaves out would stay scrambled for the rest of the run."""
+        cell = _make_cell(args_overrides=dict(check_weight_update_equal=True, check_weight_update_selector="target"))
+        await cell.init()
+
+        await cell.tick()
+
+        checker_calls = [kwargs for name, kwargs in cell_env["memory_calls"] if name == "check_weights"]
+        assert [(kwargs["action"], kwargs["selector"]) for kwargs in checker_calls] == [
+            ("snapshot", "target"),
+            ("reset_tensors", "target"),
+        ]
+
     async def test_the_weight_update_checker_stays_out_of_the_way_when_it_is_disabled(self, cell_env):
         """The checker is a ci-only tool and must not touch engines in a normal run."""
         cell = _make_cell()
@@ -618,7 +709,7 @@ class TestMarkWeightsReady:
                 "add_worker",
                 dict(
                     worker_url="http://10.0.0.1:30000",
-                    worker_type="regular",
+                    worker_type=WorkerType.REGULAR,
                     use_legacy_api=False,
                     bootstrap_port=None,
                 ),
@@ -720,7 +811,7 @@ class TestDispose:
 
         assert isinstance(cell._state, StateDisposed)
 
-    async def test_a_router_that_rejects_the_removal_still_disposes_the_cell(self, cell_env):
+    async def test_a_router_that_rejects_the_removal_still_disposes_the_cell(self, cell_env, instant_retry_sleeps):
         """Teardown is how a wedged engine is reclaimed, so a router error must not abort it."""
 
         class _RejectingRouter(_RecordingRouterApiClient):
@@ -816,3 +907,257 @@ class TestCheckWeights:
 
         with pytest.raises(RuntimeError, match="weights checker is unavailable"):
             await cell.check_weights(action="compare", allow_quant_error=False, selector="all", skip_list=None)
+
+
+@pytest.fixture
+def instant_retry_sleeps(monkeypatch) -> list[float]:
+    """Make the unregister retry backoff free so a failing router costs no wall-clock time."""
+    slept: list[float] = []
+    elapsed = [0.0]
+    monotonic = time.monotonic
+
+    async def _sleep(seconds: float) -> None:
+        slept.append(seconds)
+        elapsed[0] += seconds
+
+    monkeypatch.setattr(retry_utils, "time", SimpleNamespace(monotonic=lambda: monotonic() + elapsed[0]))
+    monkeypatch.setattr(retry_utils.asyncio, "sleep", _sleep)
+    return slept
+
+
+class _FailingRouterApiClient(_RecordingRouterApiClient):
+    def __init__(self, *, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+
+    async def remove_worker(self, **kwargs):
+        self.calls.append(("remove_worker", kwargs))
+        if self.failures > 0:
+            self.failures -= 1
+            raise RuntimeError("router rejected the removal")
+
+
+class _HangingRouterApiClient(_RecordingRouterApiClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hangs = True
+
+    async def remove_worker(self, **kwargs):
+        self.calls.append(("remove_worker", kwargs))
+        if self.hangs:
+            await asyncio.Event().wait()
+
+
+async def _make_serving_cell(cell_env, *, router: _RecordingRouterApiClient) -> ServerCell:
+    cell = _make_cell(router=router)
+    await cell.init()
+    await cell.tick()
+    await cell.mark_weights_ready()
+    return cell
+
+
+class TestMarkErrored:
+    async def test_a_serving_cell_leaves_the_router_and_reports_itself_errored(self, cell_env):
+        """A cell holding a half-written model must stop receiving requests the moment the trainer says so."""
+        router = _RecordingRouterApiClient()
+        cell = await _make_serving_cell(cell_env, router=router)
+
+        await cell.mark_errored()
+
+        assert isinstance(cell._state, StateErrored)
+        assert [name for name, _kwargs in router.calls] == ["add_worker", "remove_worker"]
+
+    async def test_an_errored_cell_keeps_the_address_it_was_serving_on(self, cell_env):
+        """The address is what lets the status endpoint and a later dispose still name the engine."""
+        cell = await _make_serving_cell(cell_env, router=_RecordingRouterApiClient())
+
+        await cell.mark_errored()
+
+        assert cell._state.addr_info == _ADDR_INFO
+
+    async def test_a_cell_that_never_reached_the_router_errors_without_unregistering(self, cell_env):
+        """A cell still awaiting its first weights was never published, so removing it would be a bogus call."""
+        router = _RecordingRouterApiClient()
+        cell = _make_cell(router=router)
+        await cell.init()
+        await cell.tick()
+
+        await cell.mark_errored()
+
+        assert isinstance(cell._state, StateErrored)
+        assert router.calls == []
+
+    async def test_an_errored_cell_is_no_longer_serving_or_awaiting_weights(self, cell_env):
+        """Every list the server derives is filtered on these predicates, so they must all go false together."""
+        cell = await _make_serving_cell(cell_env, router=_RecordingRouterApiClient())
+
+        await cell.mark_errored()
+
+        assert cell.is_errored
+        assert not cell.is_serving
+        assert not cell.is_pending_weights
+        assert not cell.is_pending_weights_or_serving
+
+    async def test_an_errored_cell_stops_being_probed(self, cell_env):
+        """Healing acts on the errored verdict, so a probe failing on top of it only adds noise."""
+        cell = await _make_serving_cell(cell_env, router=_RecordingRouterApiClient())
+
+        await cell.mark_errored()
+
+        assert not cell._get_health_checker_active_and_epoch().active
+
+    async def test_marking_an_errored_cell_again_does_not_unregister_it_twice(self, cell_env):
+        """Two trainer ranks can blame the same cell, and a second removal would target a foreign entry."""
+        router = _RecordingRouterApiClient()
+        cell = await _make_serving_cell(cell_env, router=router)
+
+        await cell.mark_errored()
+        await cell.mark_errored()
+
+        assert [name for name, _kwargs in router.calls] == ["add_worker", "remove_worker"]
+        assert isinstance(cell._state, StateErrored)
+
+    async def test_marking_a_disposed_cell_errored_is_a_noop(self, cell_env):
+        """Reconcile can remove a cell while the trainer is still reporting on it."""
+        router = _RecordingRouterApiClient()
+        cell = await _make_serving_cell(cell_env, router=router)
+        await cell.dispose()
+
+        await cell.mark_errored()
+
+        assert isinstance(cell._state, StateDisposed)
+        assert [name for name, _kwargs in router.calls] == ["add_worker", "remove_worker"]
+
+    async def test_a_cell_still_booting_cannot_be_marked_errored(self, cell_env):
+        """It was never handed any weights, so blaming it would hide which cell really failed."""
+        cell = _make_cell()
+        await cell.init()
+
+        with pytest.raises(AssertionError):
+            await cell.mark_errored()
+
+        assert cell.is_initializing
+
+    async def test_a_cell_that_was_never_initialized_cannot_be_marked_errored(self, cell_env):
+        """A gated cell has no address at all, so it cannot be the target of a weight update."""
+        cell = _make_cell()
+
+        with pytest.raises(AttributeError):
+            await cell.mark_errored()
+
+        assert cell.is_uninitialized
+
+    async def test_an_errored_cell_is_inert_under_the_tick_sweep(self, cell_env, monkeypatch):
+        """The sweep keeps visiting it until reconcile removes it, and must not address it again."""
+        cell = await _make_serving_cell(cell_env, router=_RecordingRouterApiClient())
+        asked: list[tuple[str, str]] = []
+        monkeypatch.setattr(cell._env_reporter, "report_if_due", _record_into(asked))
+        await cell.mark_errored()
+
+        await cell.tick()
+
+        assert isinstance(cell._state, StateErrored)
+        assert asked == []
+
+    async def test_an_errored_cell_can_still_be_disposed(self, cell_env):
+        """Healing removes the cell afterwards, and a rejected transition would leak its checker task."""
+        cell = await _make_serving_cell(cell_env, router=_RecordingRouterApiClient())
+        await cell.mark_errored()
+
+        await cell.dispose()
+
+        assert isinstance(cell._state, StateDisposed)
+
+    async def test_disposing_an_errored_cell_does_not_unregister_it_a_second_time(self, cell_env):
+        """It already left the router, so a removal here would aim at whatever now holds that url."""
+        router = _RecordingRouterApiClient()
+        cell = await _make_serving_cell(cell_env, router=router)
+        await cell.mark_errored()
+
+        await cell.dispose()
+
+        assert [name for name, _kwargs in router.calls] == ["add_worker", "remove_worker"]
+
+
+class TestUnregisterFromRouterRetries:
+    async def test_a_transient_router_failure_is_retried_until_the_cell_leaves_service(
+        self, cell_env, instant_retry_sleeps
+    ):
+        """A single failed removal used to leave the errored engine serving requests for ever."""
+        router = _FailingRouterApiClient(failures=2)
+        cell = await _make_serving_cell(cell_env, router=router)
+
+        await cell.mark_errored()
+
+        assert len([name for name, _kwargs in router.calls if name == "remove_worker"]) == 3
+        assert isinstance(cell._state, StateErrored)
+
+    async def test_a_router_that_never_accepts_the_removal_fails_mark_errored(self, cell_env, instant_retry_sleeps):
+        """Silently giving up would report a cell as out of service while the router still routes to it."""
+        router = _FailingRouterApiClient(failures=1000)
+        cell = await _make_serving_cell(cell_env, router=router)
+
+        with pytest.raises(RuntimeError, match="router rejected the removal"):
+            await cell.mark_errored()
+
+        assert len([name for name, _kwargs in router.calls if name == "remove_worker"]) > 1
+        router.failures = 0
+
+    async def test_a_cell_whose_unregister_never_succeeds_stays_serving(self, cell_env, instant_retry_sleeps):
+        """Moving to errored anyway would stop the health checker of a cell the router still addresses."""
+        router = _FailingRouterApiClient(failures=1000)
+        cell = await _make_serving_cell(cell_env, router=router)
+
+        with pytest.raises(RuntimeError):
+            await cell.mark_errored()
+
+        assert cell.is_serving
+        assert cell._get_health_checker_active_and_epoch().active
+        router.failures = 0
+
+    async def test_the_retries_stop_once_the_unregister_budget_is_spent(self, cell_env, monkeypatch):
+        """An unbounded retry loop would hold the weight-update window open for the rest of the run."""
+        monkeypatch.setattr(server_cell_module, "UNREGISTER_FROM_ROUTER_TIMEOUT", 0.3)
+        router = _FailingRouterApiClient(failures=1000)
+        cell = await _make_serving_cell(cell_env, router=router)
+
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(cell.mark_errored(), timeout=5.0)
+
+        router.failures = 0
+
+    async def test_a_router_that_never_answers_one_attempt_is_cut_off_and_retried(
+        self, cell_env, instant_retry_sleeps, monkeypatch
+    ):
+        """The http client has no read timeout, so without the per-attempt bound one hang wedges the window."""
+        monkeypatch.setattr(server_cell_module, "SHUTDOWN_TIMEOUT", 0.01)
+        router = _HangingRouterApiClient()
+        cell = await _make_serving_cell(cell_env, router=router)
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(cell.mark_errored(), timeout=10.0)
+
+        assert len([name for name, _kwargs in router.calls if name == "remove_worker"]) > 1
+        router.hangs = False
+
+    async def test_a_cell_whose_unregister_exhausts_its_budget_is_still_disposed(self, cell_env, instant_retry_sleeps):
+        """Disposal is the only way to reclaim the engine, so a wedged router must not block it."""
+        cell = await _make_serving_cell(cell_env, router=_FailingRouterApiClient(failures=1000))
+
+        await cell.dispose()
+
+        assert isinstance(cell._state, StateDisposed)
+
+    async def test_a_cell_whose_mark_errored_failed_can_still_be_marked_errored_later(
+        self, cell_env, instant_retry_sleeps
+    ):
+        """The trainer retries the next window, and a cell stuck serving would keep answering with bad weights."""
+        router = _FailingRouterApiClient(failures=1000)
+        cell = await _make_serving_cell(cell_env, router=router)
+        with pytest.raises(RuntimeError):
+            await cell.mark_errored()
+
+        router.failures = 0
+        await cell.mark_errored()
+
+        assert isinstance(cell._state, StateErrored)

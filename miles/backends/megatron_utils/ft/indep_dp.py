@@ -1,17 +1,17 @@
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import torch.distributed as dist
 from megatron.core import mpu
 
+from miles.backends.training_utils.metrics.log_utils import aggregate_train_losses
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil, GroupInfo, collective_bool_and
 from miles.utils.tracking_utils.structured_log import log_structured
 
-from ...training_utils.log_utils import aggregate_train_losses
 from ...training_utils.parallel import ParallelState
 
 if TYPE_CHECKING:
@@ -116,6 +116,7 @@ def allreduce_grads_and_losses_across_replicas(
     parallel_state: ParallelState,
     losses_reduced: list,
     num_rollouts: int | None = None,
+    collect_training_metadata: Callable[[], None] | None = None,
 ) -> tuple[bool, dict[str, float]]:
     assert not args.calculate_per_token_loss, "calculate_per_token_loss is not supported with indep_dp yet"
     assert parallel_state.intra_dp.size == 1, (
@@ -139,6 +140,8 @@ def allreduce_grads_and_losses_across_replicas(
     loss_reduced: dict[str, float] = {}
     allreduce_success = True
     try:
+        if collect_training_metadata is not None:
+            collect_training_metadata()
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
             loss_reduced = aggregate_train_losses(losses_reduced, num_rollouts)
         for model_chunk in model:

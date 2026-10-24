@@ -12,6 +12,8 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 
+from miles.backends.training_utils.checkpoint.tracker import CHECKPOINT_TRACKER_FILENAME
+
 logger = logging.getLogger(__name__)
 
 
@@ -92,7 +94,7 @@ def load(actor: Any) -> dict[str, Any] | None:
 
     target_step = getattr(actor.args, "ckpt_step", None)
     if target_step is None:
-        tracker_file = root_path / "latest_checkpointed_iteration.txt"
+        tracker_file = root_path / CHECKPOINT_TRACKER_FILENAME
         if not tracker_file.exists():
             logger.info(f"[FSDP] No tracker file at {tracker_file}; skipping load.")
             return None
@@ -243,7 +245,7 @@ def save(actor: Any, iteration: int) -> None:
         }
         _write_checkpoint_metadata(checkpoint_dir / "meta.json", metadata)
 
-        tracker_file = base_dir / "latest_checkpointed_iteration.txt"
+        tracker_file = base_dir / CHECKPOINT_TRACKER_FILENAME
         tracker_file.write_text(str(step_id))
         logger.info(f"[FSDP] Saved checkpoint to {checkpoint_dir}")
 

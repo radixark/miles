@@ -49,8 +49,8 @@ class MilesBackend:
         self.router_url = router_url
         self.dp_size = dp_size
 
-    def trainer_dead(self) -> bool:
-        return self.trainer.has_errored_cell()
+    async def trainer_dead(self) -> bool:
+        return await self.trainer.has_errored_cell()
 
     async def load_slot(
         self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True

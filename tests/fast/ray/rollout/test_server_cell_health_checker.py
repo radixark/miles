@@ -4,13 +4,19 @@ import argparse
 import asyncio
 from collections.abc import Callable, Coroutine
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
 from miles.ray.rollout import server_cell as server_cell_module
-from miles.ray.rollout.cell_state import CellAddrInfo, StatePendingWeights, StateServing, StateUninitialized
+from miles.ray.rollout.cell_state import (
+    CellAddrInfo,
+    StateErrored,
+    StatePendingWeights,
+    StateServing,
+    StateUninitialized,
+)
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
@@ -19,12 +25,12 @@ from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.api_server.models import CellCondition, TriState
 from miles.utils.ft_utils.health_checker import (
     ActiveAndEpoch,
-    ActivenessTracker,
     NoopHealthChecker,
     SimpleHealthChecker,
     SimpleHealthCheckerConfig,
 )
 from miles.utils.test_utils.clock import FakeClock
+from miles.utils.workers.worker_spec import HostAndPort
 
 pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
 
@@ -46,13 +52,22 @@ def _make_meta(*, needs_offload: bool = False) -> ServerCellMetadata:
     )
 
 
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> dict[str, HostAndPort]:
+        return dict(
+            primary=HostAndPort(host="10.0.0.1", port=30000),
+            gate=HostAndPort(host="10.0.0.1", port=31000),
+        )
+
+
 def _make_cell(*, ft_components: list[str], global_activeness: bool = True, **arg_overrides: Any) -> ServerCell:
     return track_server_cell(
         ServerCell(
             args=make_args(ft_components=ft_components, **arg_overrides),
             meta=_make_meta(),
-            router_api_client=MagicMock(),
-            global_health_checker_activeness=lambda: ActiveAndEpoch(active=global_activeness, epoch=0),
+            router_api_client=MagicMock(remove_worker=AsyncMock()),
+            provider=_StubProvider(),
+            health_checker_activeness=lambda: ActiveAndEpoch(active=global_activeness, epoch=0),
         )
     )
 
@@ -62,8 +77,9 @@ def _addr_info() -> CellAddrInfo:
 
 
 class _RecordingApiClient:
-    def __init__(self, server_url: str) -> None:
+    def __init__(self, server_url: str, api_key: str | None = None) -> None:
         self.server_url = server_url
+        self.api_key = api_key
 
     async def health_generate(self, timeout: float = 5.0) -> bool:
         _ENDPOINT_CALLS.append(("health_generate", self.server_url))
@@ -71,8 +87,9 @@ class _RecordingApiClient:
 
 
 class _NoopEngineApiClient:
-    def __init__(self, server_url: str) -> None:
+    def __init__(self, server_url: str, api_key: str | None = None) -> None:
         self.server_url = server_url
+        self.api_key = api_key
 
     async def health_generate(self, timeout: float = 5.0) -> bool:
         return True
@@ -131,6 +148,7 @@ class TestRolloutCellHealthCheckerActiveness:
             (StateUninitialized(), False),
             (StatePendingWeights(addr_info=_addr_info()), True),
             (StateServing(addr_info=_addr_info()), True),
+            (StateErrored(addr_info=_addr_info()), False),
         ],
     )
     async def test_only_a_started_engine_is_probed(self, state, expected):
@@ -260,10 +278,35 @@ class TestRolloutCellHealthConditionDuringPause:
         assert _healthy_condition(cell) == CellCondition.healthy(TriState.FALSE, reason="HealthCheckFailed")
 
         async with controller.context_lock:
-            await controller._health_monitoring_pause()
+            await controller._health_monitoring_pause(None)
 
         assert _healthy_condition(cell) == CellCondition.healthy(TriState.UNKNOWN, reason="HealthCheckUnknown")
         checker.stop()
+
+
+class TestRolloutCellHealthCheckerAfterAnError:
+    async def test_marking_a_cell_errored_stops_its_checker(self, monkeypatch):
+        """A cell taken out of service is never healed back, so its probe loop would poll a dead engine forever."""
+        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _NoopEngineApiClient)
+        cell = _make_cell(ft_components=["rollout"])
+        cell.router_api_client = _NoopRouterApiClient()
+        cell._state = StateServing(addr_info=_addr_info())
+        assert cell._health_checker._task is not None
+
+        await cell.mark_errored()
+
+        assert cell._health_checker._task is None
+
+    async def test_an_errored_cell_is_never_probed_again_even_while_the_controller_is_active(self, monkeypatch):
+        """The global activeness flips back on after every weight update, and must not revive this cell."""
+        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _NoopEngineApiClient)
+        cell = _make_cell(ft_components=["rollout"], global_activeness=True)
+        cell.router_api_client = _NoopRouterApiClient()
+        cell._state = StateServing(addr_info=_addr_info())
+
+        await cell.mark_errored()
+
+        assert cell._health_checker._get_activeness().active is False
 
 
 class TestRolloutCellHealthCheckerDisposal:
@@ -299,20 +342,19 @@ async def _make_controller_with_serving_cell(
     controller = InferenceController.__new__(InferenceController)
     controller.args = args
     controller.context_lock = ContextLock("InferenceController")
-    controller._health_checker_activeness = ActivenessTracker(active=True)
 
     srv = RolloutServer(
-        server_cells={},
+        all_server_cells={},
         args=args,
         context_lock=controller.context_lock,
-        global_health_checker_activeness=controller._health_checker_activeness.get,
+        engine_provider=_StubProvider(),
     )
     controller.servers = {"default": srv}
 
     async with controller.context_lock:
         await srv.add_cell(_make_meta(needs_offload=True))
 
-    cell: ServerCell = track_server_cell(srv.server_cells["inference-engine-0-0-0"])
+    cell: ServerCell = track_server_cell(srv.all_server_cells["inference-engine-0-0-0"])
     cell.router_api_client = _NoopRouterApiClient()
     cell._state = StateServing(addr_info=_addr_info())
     return controller, cell

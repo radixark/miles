@@ -32,7 +32,7 @@ def prepare_batch(
     global_tokens: torch.Tensor = token_tensor.clone()
 
     if cp_size > 1:
-        from miles.backends.training_utils.cp_utils import slice_with_cp
+        from miles.backends.training_utils.data.context_parallel import slice_with_cp
 
         cp_kwargs: dict[str, object] = dict(
             pad_value=0,

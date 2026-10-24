@@ -2,21 +2,29 @@
 
 import json
 import os
+import shlex
 import shutil
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS
 from tests.e2e.ft.conftest_ft.modes import DEBUG_ROLLOUT_DATA_HF_REPO, FTTestMode
+from tests.utils.cluster_backends import create_backend_for_run
+from tests.utils.ft.launch import (
+    DEFAULT_TRAIN_SCRIPT,
+    DETERMINISTIC_ENV_VARS,
+    MEGATRON_PATH,
+    launch_training,
+    resolve_config,
+)
+from tests.utils.soak.core.utils import API_SERVER_ARGS, DATA_DIR, MODEL_DIR, get_dumps_root
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
+from miles.utils.external_utils import command_utils
 
-_RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="ft_test_dumper_"))
-_MEGATRON_SOURCE_PATCHER_CONFIG_PATH: Path = _RUN_DIR / "megatron_source_patcher.yaml"
-_MEGATRON_PATH: str = os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM")
-_MODEL_DIR: str = os.environ.get("MILES_SCRIPT_MODEL_DIR", "/root/models")
-_DATA_DIR: str = os.environ.get("MILES_SCRIPT_DATA_DIR", "/root/datasets")
-_DEBUG_ROLLOUT_DATA_DIR: str = f"{_DATA_DIR}/{DEBUG_ROLLOUT_DATA_HF_REPO.split('/')[-1]}"
+_LAUNCH_ID: str = uuid4().hex
+_DEBUG_ROLLOUT_DATA_DIR: str = f"{DATA_DIR}/{DEBUG_ROLLOUT_DATA_HF_REPO.split('/')[-1]}"
 
 
 def materialize_cyclic_debug_rollout_data(count: int) -> str:
@@ -24,7 +32,8 @@ def materialize_cyclic_debug_rollout_data(count: int) -> str:
     available = sorted(int(p.stem) for p in src.glob("*.pt") if p.stem.isdigit())
     if not available:
         raise FileNotFoundError(f"No debug rollout data files found in {src}")
-    dst = Path(tempfile.mkdtemp(prefix="ft_cyclic_rollout_"))
+    dst = Path(tempfile.mkdtemp(prefix="ft_cyclic_rollout_", dir=DATA_DIR))
+    dst.chmod(0o755)
     for i in range(count):
         (dst / f"{i}.pt").symlink_to(src / f"{available[i % len(available)]}.pt")
     return str(dst)
@@ -35,11 +44,17 @@ def _get_hf_num_layers(model_path: str) -> int:
         return json.load(f)["num_hidden_layers"]
 
 
-def prepare(mode: FTTestMode) -> None:
-    U.exec_command_cpu(f"mkdir -p {_MODEL_DIR} {_DATA_DIR}")
-    U.exec_command_cpu(f"hf download {mode.model_hf_repo} --local-dir {_MODEL_DIR}/{mode.model_name}")
+def prepare(mode: FTTestMode, *, config: command_utils.ExecuteTrainConfig | None = None) -> None:
+    config = resolve_config(config)
+    patcher_path = _source_patcher_path()
 
-    hf_model_path = f"{_MODEL_DIR}/{mode.model_name}"
+    patcher_path.parent.mkdir(parents=True, exist_ok=True)
+
+    U = create_backend_for_run(config)
+    U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
+    U.exec_command_cpu(f"hf download {mode.model_hf_repo} --local-dir {MODEL_DIR}/{mode.model_name}")
+
+    hf_model_path = f"{MODEL_DIR}/{mode.model_name}"
     num_layers = _get_hf_num_layers(hf_model_path)
     convert_gpus = min(mode.train_gpus_per_node, num_layers)
 
@@ -47,16 +62,16 @@ def prepare(mode: FTTestMode) -> None:
         model_name=mode.model_name,
         megatron_model_type=mode.megatron_model_type,
         num_gpus_per_node=convert_gpus,
-        megatron_path=_MEGATRON_PATH,
+        megatron_path=MEGATRON_PATH,
         hf_checkpoint=hf_model_path,
-        dir_dst=_MODEL_DIR,
+        dir_dst=MODEL_DIR,
     )
     if not mode.has_real_rollout:
-        U.hf_download_dataset(DEBUG_ROLLOUT_DATA_HF_REPO, data_dir=_DATA_DIR)
-    U.hf_download_dataset("zhuzilin/gsm8k", data_dir=_DATA_DIR)
+        U.hf_download_dataset(DEBUG_ROLLOUT_DATA_HF_REPO, data_dir=DATA_DIR)
+    U.hf_download_dataset("zhuzilin/gsm8k", data_dir=DATA_DIR)
 
     megatron_yaml: str = MEGATRON_PATCHER_YAMLS["thd"]
-    _MEGATRON_SOURCE_PATCHER_CONFIG_PATH.write_text(megatron_yaml)
+    patcher_path.write_text(megatron_yaml)
 
 
 def get_common_train_args(
@@ -67,9 +82,7 @@ def get_common_train_args(
     enable_dumper: bool = True,
     debug_rollout_data_dir: str | None = None,
 ) -> str:
-    ckpt_args = (
-        f"--hf-checkpoint {_MODEL_DIR}/{mode.model_name} " f"--ref-load {_MODEL_DIR}/{mode.model_name}_torch_dist "
-    )
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{mode.model_name} --ref-load {MODEL_DIR}/{mode.model_name}_torch_dist "
 
     optimizer_args = (
         "--optimizer adam "
@@ -83,10 +96,11 @@ def get_common_train_args(
     )
 
     rollout_args: str
+    rollout_data_path = Path(dump_dir) / "rollout_data" / "{rollout_id}.pt"
     if not mode.has_real_rollout:
         rollout_dir = debug_rollout_data_dir or _DEBUG_ROLLOUT_DATA_DIR
         rollout_args = (
-            f"--prompt-data {_DATA_DIR}/gsm8k/train.parquet "
+            f"--prompt-data {DATA_DIR}/gsm8k/train.parquet "
             f"--load-debug-rollout-data {rollout_dir}/{{rollout_id}}.pt "
             "--debug-train-only "
             "--rollout-batch-size 32 "
@@ -94,7 +108,7 @@ def get_common_train_args(
         )
     else:
         rollout_args = (
-            f"--prompt-data {_DATA_DIR}/gsm8k/train.parquet "
+            f"--prompt-data {DATA_DIR}/gsm8k/train.parquet "
             "--input-key messages "
             "--label-key label "
             "--apply-chat-template "
@@ -105,15 +119,10 @@ def get_common_train_args(
             "--rollout-batch-size 32 "
             "--n-samples-per-prompt 8 "
             # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
-            "--sglang-enable-deterministic-inference "
-            "--sglang-attention-backend flashinfer "
-            "--deterministic-mode "
-            f"--save-debug-rollout-data {dump_dir}/rollout_data/{{rollout_id}}.pt "
+            + DETERMINISTIC_ROLLOUT_ARGS + f"--save-debug-rollout-data {shlex.quote(str(rollout_data_path))} "
             f"--rollout-num-gpus {mode.total_rollout_gpus} "
-            f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} " + ("--colocate " if mode.colocate else "")
+            f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} "
         )
-
-    event_logger_args = f"--save-debug-event-data {dump_dir}/events "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -125,56 +134,96 @@ def get_common_train_args(
         f"--global-batch-size 256 "
         "--delay-split-train-data-by-dp "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 32768 "
+        f"--max-tokens-per-gpu {mode.max_tokens_per_gpu} "
         "--moe-token-dispatcher-type alltoall "
         "--advantage-estimator grpo "
         "--eps-clip 0.2 "
         f"--num-rollout {num_steps if num_steps is not None else mode.num_steps} "
     )
 
-    dumper_args = ""
-    if enable_dumper:
-        dumper_args = (
-            f"--dumper-dir {dump_dir}/dumps "
-            f"--dumper-fwd-bwd enable=1 enable_model_value=1 enable_model_grad=1 include_parallel_rank_in_filename=1 "
-            f"--dumper-source-patcher-config-train {_MEGATRON_SOURCE_PATCHER_CONFIG_PATH} "
-        )
-
     train_args = (
         f"{ckpt_args} "
         f"{optimizer_args} "
         f"{rollout_args} "
-        f"{event_logger_args} "
+        f"{get_debug_dump_args(dump_dir=dump_dir, enable_dumper=enable_dumper)} "
         f"{mode.parallel_args} "
         f"{misc_args} "
-        f"{dumper_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
     )
 
     return train_args
 
 
-def get_ft_args(mode: FTTestMode) -> str:
-    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} --api-server-port 0 "
+def get_debug_dump_args(*, dump_dir: str, enable_dumper: bool) -> str:
+    dumper_args: str = ""
+    if enable_dumper:
+        dumper_args = (
+            f"--dumper-dir {shlex.quote(str(Path(dump_dir) / 'dumps'))} "
+            f"--dumper-fwd-bwd enable=1 enable_model_value=1 enable_model_grad=1 include_parallel_rank_in_filename=1 "
+            f"--dumper-source-patcher-config-train {shlex.quote(str(_source_patcher_path()))} "
+        )
+
+    return f"--save-debug-event-data {shlex.quote(str(Path(dump_dir) / EVENTS_DIRNAME))} {dumper_args}"
 
 
-# Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
-_DETERMINISTIC_ENV_VARS: dict[str, str] = {
-    "NCCL_ALGO": "Ring",
-    "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
-    "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-    # The default 4096 split overflows FlashInfer's fixed 2 GiB deterministic workspace
-    # while capturing the 8192-token prefill graph for the 5-layer Qwen3 MoE model.
-    "SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE": "8192",
+def get_ft_args(
+    mode: FTTestMode, *, api_server_args: str = "--api-server-port 0 ", extra_ft_components: tuple[str, ...] = ()
+) -> str:
+    ft_components = [*mode.ft_components, *extra_ft_components]
+    if "rollout" in ft_components:
+        ft_components.append("weight_update")
+
+    return (
+        "--use-fault-tolerance --enable-event-analyzer --enable-witness "
+        f"--ft-components {' '.join(ft_components)} {api_server_args}"
+    )
+
+
+DETERMINISTIC_ROLLOUT_ARGS: str = (
+    "--sglang-enable-deterministic-inference --sglang-attention-backend flashinfer --deterministic-mode "
+    "--sglang-disable-overlap-schedule "
+)
+DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {
+    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false",
+    "SGLANG_ENABLE_JIT_DEEPGEMM": "false",
 }
+ROLLOUT_HEALTH_CHECK_INTERVAL_SECONDS: float = 1.0
 
 
-def get_train_env_vars_arg(mode: FTTestMode, *, deterministic: bool) -> str:
+def get_deterministic_p2p_train_args(
+    mode: FTTestMode,
+    *,
+    dump_dir: str,
+    num_steps: int,
+    enable_dumper: bool,
+    test_name: str,
+    extra_ft_components: tuple[str, ...] = (),
+) -> str:
+    assert mode.has_real_rollout, f"{test_name} transfers weights to engines, but mode {mode.model_name} has none"
+
+    args = get_common_train_args(mode, dump_dir=dump_dir, num_steps=num_steps, enable_dumper=enable_dumper)
+    args += get_ft_args(mode, api_server_args=API_SERVER_ARGS, extra_ft_components=extra_ft_components)
+    args += "--mini-ft-controller-enable "
+    args += "--debug-deterministic-collective "
+    args += "--sglang-disable-radix-cache "
+    args += "--update-weight-transfer-mode p2p --sglang-router-policy round_robin "
+    args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
+    args += f"--rollout-health-check-interval {ROLLOUT_HEALTH_CHECK_INTERVAL_SECONDS} "
+    args += "--weight-decay 0 "
+    args += get_train_env_vars_arg(mode, deterministic=True, extra_env_vars=DETERMINISTIC_INFERENCE_ENV_VARS)
+    return args
+
+
+def get_train_env_vars_arg(
+    mode: FTTestMode, *, deterministic: bool, extra_env_vars: dict[str, str] | None = None
+) -> str:
     env_vars: dict[str, str] = {}
     if deterministic:
-        env_vars.update(_DETERMINISTIC_ENV_VARS)
+        env_vars.update(DETERMINISTIC_ENV_VARS)
     if mode.has_real_rollout:
         env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    if extra_env_vars is not None:
+        env_vars.update(extra_env_vars)
     if not env_vars:
         return ""
     return f"--train-env-vars '{json.dumps(env_vars)}' "
@@ -186,30 +235,20 @@ def run_training(
     *,
     dump_dir: str | None = None,
     extra_env_vars: dict[str, str] | None = None,
+    config: command_utils.ExecuteTrainConfig | None = None,
+    train_script: str = DEFAULT_TRAIN_SCRIPT,
 ) -> None:
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
-    merged_env_vars = {
-        **_DETERMINISTIC_ENV_VARS,
-        # Run eager (no torch.compile). A cell respawned after a crash cold-recompiles its first
-        # forward; under dynamic batch sizes that is a per-shape Inductor compile that is slow
-        # (observed 124s..1510s, growing) and memory-heavy enough to OOM-kill the actor. That
-        # recompile-on-respawn is a torch.compile + FT infra limitation orthogonal to what these
-        # tests assert (FT crash recovery + baseline-vs-target metric equivalence); both runs are
-        # eager so the comparison stays valid.
-        #
-        # TODO: this only sidesteps the respawn recompile cost, it does not fix it. Investigate
-        # keeping torch.compile under FT respawn (warm/shared Inductor cache survivor->respawn, or
-        # bounded recompile) so the tests can exercise the compiled path again.
-        "TORCHDYNAMO_DISABLE": "1",
-        "RAY_DEDUP_LOGS": "0",
-        "SGLANG_LOG_MS": "1",
-        **(extra_env_vars or {}),
-    }
-    U.execute_train(
+    launch_training(
         train_args=train_args,
         num_gpus_per_node=mode.total_node_gpus,
         megatron_model_type=mode.megatron_model_type,
-        extra_env_vars=merged_env_vars,
-        megatron_path=_MEGATRON_PATH,
+        config=config,
+        train_script=train_script,
+        extra_env_vars=extra_env_vars,
     )
+
+
+def _source_patcher_path() -> Path:
+    return get_dumps_root() / "launch-config" / _LAUNCH_ID / "megatron_source_patcher.yaml"

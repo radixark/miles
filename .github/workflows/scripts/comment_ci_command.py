@@ -56,6 +56,11 @@ PR_BODY_PINS = (
         re.compile(r"#[0-9]+|[A-Za-z0-9_][A-Za-z0-9_./-]*"),
     ),
     (
+        "ci_megatron_bridge_pr",
+        re.compile(r"^ci-megatron-bridge-pr:\s+(\S+)", re.MULTILINE),
+        re.compile(r"#[0-9]+|[A-Za-z0-9_][A-Za-z0-9_./-]*"),
+    ),
+    (
         "ci_sglang_pr",
         re.compile(r"^ci-sglang-pr:\s+(\S+)", re.MULTILINE),
         re.compile(r"#[0-9]+|[A-Za-z0-9_][A-Za-z0-9_./-]*"),
