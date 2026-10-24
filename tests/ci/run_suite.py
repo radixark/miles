@@ -52,6 +52,16 @@ CI_SUITES = {
 }
 
 
+def snapshot_hardware(suite: str) -> str:
+    if suite in CI_SUITES[HWBackend.CPU]:
+        return "cpu"
+    if suite in CUDA_STAGES:
+        return CUDA_STAGES[suite].runs_on[0]
+    if suite in CI_SUITES[HWBackend.ROCM]:
+        return suite.rsplit("-", maxsplit=1)[-1]
+    raise ValueError(f"Unknown snapshot execution suite: {suite!r}")
+
+
 def runs_in_stage(
     registration: CIRegistry,
     suite: str,
@@ -309,6 +319,7 @@ def run_a_suite(args):
         retry_wait_seconds=args.retry_wait_seconds,
         gate_store=gate_store,
         gate_executing_suite=suite,
+        snapshot_hardware=snapshot_hardware(suite),
         gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
         reap_leftovers=reaping_is_isolated(),

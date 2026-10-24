@@ -255,6 +255,7 @@ class TestIntegrationStatusMatrix:
 
         rc = run_unittest_files(
             files,
+            snapshot_hardware="cpu",
             timeout_per_file=2,
             continue_on_error=True,
             enable_retry=False,
@@ -354,6 +355,7 @@ class TestIntegrationTimeoutClosesGroup:
 
         rc = run_unittest_files(
             files,
+            snapshot_hardware="cpu",
             timeout_per_file=2,
             continue_on_error=False,
             enable_retry=False,
@@ -412,6 +414,7 @@ class TestIntegrationRetryFailThenPass:
 
         rc = run_unittest_files(
             files,
+            snapshot_hardware="cpu",
             timeout_per_file=10,
             continue_on_error=False,
             enable_retry=True,
@@ -481,6 +484,7 @@ class TestIntegrationBaselineLocalMode:
 
         rc = run_unittest_files(
             files,
+            snapshot_hardware="cpu",
             timeout_per_file=10,
             continue_on_error=True,
             enable_retry=False,
@@ -513,6 +517,7 @@ class TestIntegrationBaselineLocalMode:
 
         rc = run_unittest_files(
             files,
+            snapshot_hardware="cpu",
             timeout_per_file=10,
             continue_on_error=True,
             enable_retry=False,
