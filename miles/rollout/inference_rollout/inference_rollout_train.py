@@ -19,6 +19,7 @@ from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRec
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.misc import as_completed_async, call_agent_abort_hook
+from miles.utils.retry_utils import NonRetryableError
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,9 @@ async def generate_rollout_async(
         for task in done:
             try:
                 group: list[Sample] = task.result()
+            except NonRetryableError:
+                # A broken contract fails every later group the same way; stop instead of spinning.
+                raise
             except Exception as e:
                 logger.error(f"[rollout] Task raised exception: {e!r}", exc_info=True)
                 continue

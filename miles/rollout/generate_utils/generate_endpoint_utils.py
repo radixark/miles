@@ -12,8 +12,18 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
     append_rollout_topk_logprobs,
     configure_rollout_topk_logprobs_request,
 )
-from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata, should_return_sampling_mask
+from miles.rollout.generate_utils.sampling_mask import (
+    append_sampling_metadata,
+    read_sampled_logprobs,
+    should_return_sampling_mask,
+)
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.output_store.plan import (
+    OUTPUT_STORE_REF_KEY,
+    OUTPUT_STORE_REQUEST_KEY,
+    StorePlan,
+    store_ref_from_dict,
+)
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
 
@@ -106,13 +116,23 @@ async def update_sample_from_response(
     else:
         new_response_tokens, new_response_log_probs = [], []
 
+    via_store = payload.get(OUTPUT_STORE_REQUEST_KEY, False)
+    sampling_logprobs_mode = payload.get("sampling_logprobs_mode", "selected")
     if payload.get("return_sampling_mask", False):
-        new_response_log_probs = append_sampling_metadata(
-            sample,
-            new_response_tokens,
-            output["meta_info"],
-            sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
-        )
+        if via_store:
+            # Only the mask rows are stored; the sampled tokens' log-probs, one per token, stay in meta_info.
+            new_response_log_probs = read_sampled_logprobs(
+                output["meta_info"],
+                new_response_tokens,
+                sampling_logprobs_mode=sampling_logprobs_mode,
+            )
+        else:
+            new_response_log_probs = append_sampling_metadata(
+                sample,
+                new_response_tokens,
+                output["meta_info"],
+                sampling_logprobs_mode=sampling_logprobs_mode,
+            )
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens
@@ -122,12 +142,13 @@ async def update_sample_from_response(
     if sample.rollout_log_probs is None:
         sample.rollout_log_probs = []
     sample.rollout_log_probs += new_response_log_probs
-    if payload.get("top_logprobs_num") or payload.get("sampling_logprobs_mode") == "support":
+    # With the output store, the trainer builds support-mode candidates from the stored mask.
+    if payload.get("top_logprobs_num") or (sampling_logprobs_mode == "support" and not via_store):
         append_rollout_topk_logprobs(
             sample,
             output["meta_info"],
             args.rollout_top_logprobs_num,
-            sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+            sampling_logprobs_mode=sampling_logprobs_mode,
         )
 
     if update_loss_mask:
@@ -138,9 +159,33 @@ async def update_sample_from_response(
     # TODO handle multi-turn cases (may need concat instead of assignment)
     sample.rollout_routed_experts = get_routed_experts_from_response(args, output, len(sample.tokens) - 1)
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
+    if via_store:
+        # This response's routed experts, indexer top-k and mask are in the output store: record its rows.
+        sample.rollout_store_plan = _append_store_response(
+            sample.rollout_store_plan,
+            payload,
+            output["meta_info"],
+            num_tokens=len(sample.tokens),
+            response_length=len(new_response_tokens),
+        )
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
+
+
+def _append_store_response(
+    plan: StorePlan | None, payload: dict, meta_info: dict, *, num_tokens: int, response_length: int
+) -> StorePlan:
+    """The sample's plan after a response whose replay arrays SGLang put in the output store."""
+    no_output_abort = not response_length and (meta_info.get("finish_reason") or {}).get("type") == "abort"
+    new = StorePlan.from_response(
+        store_ref_from_dict(meta_info.get(OUTPUT_STORE_REF_KEY)),
+        request=payload,
+        num_tokens=num_tokens,
+        response_length=response_length,
+        no_output_abort=no_output_abort,
+    )
+    return new if plan is None else plan.append_response(new)
 
 
 def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) -> np.ndarray:

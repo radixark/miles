@@ -9,7 +9,7 @@ import json
 import numpy as np
 import pytest
 import safetensors.numpy
-from tests.fast.utils.output_store.test_plan import Ref, ref, response
+from tests.fast.utils.output_store.test_plan import fake_store_refs, ref, response
 
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
@@ -416,8 +416,7 @@ class TestWeightVersionsOnTheSamplesWire:
 class TestStorePlanOnTheSamplesWire:
     @pytest.fixture(autouse=True)
     def _fake_refs(self, monkeypatch):
-        # CPU CI has no radix_transfer_plugins: read the fake refs back instead.
-        monkeypatch.setattr("miles.utils.output_store.plan.store_ref_from_dict", Ref.from_builtins)
+        fake_store_refs(monkeypatch)
 
     @staticmethod
     def _plan():

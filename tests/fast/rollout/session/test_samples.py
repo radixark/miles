@@ -10,10 +10,25 @@ from unittest.mock import MagicMock
 import numpy as np
 import pybase64
 import pytest
+from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.rollout.session.samples.merge import compute_samples_from_openai_records, merge_samples_with_addition_r3
+from miles.rollout.session.samples.merge import (
+    adopt_session_records,
+    compute_samples_from_openai_records,
+    merge_samples_with_addition_r3,
+    truncate_samples_by_total_tokens,
+)
 from miles.rollout.session.types import SessionRecord
+from miles.utils.output_store.plan import (
+    MASK_LENGTHS,
+    MASK_SUPPORT_LOGPROBS,
+    MASK_TOKEN_IDS,
+    OUTPUT_STORE_REF_KEY,
+    OUTPUT_STORE_REQUEST_KEY,
+    RoutedExpertsSegments,
+    StorePlanError,
+)
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -985,6 +1000,206 @@ class TestAdditionR3Assembly:
 
         with pytest.raises(ValueError):
             _merge_addition(records, accumulated)
+
+
+# ── test: output store plans (routed experts rebuilt from the records) ──
+
+R3 = RoutedExpertsSegments.name
+
+
+def _store_record(
+    key: str,
+    prompt_token_ids: list[int],
+    output_token_ids: list[int],
+    *,
+    routed_experts: np.ndarray | None = None,
+    routed_experts_start_len: int | None = None,
+    sampling_logprobs_mode: str = "selected",
+    finish_reason: str = "stop",
+) -> tuple[SessionRecord, dict[str, np.ndarray]]:
+    """A record whose replay arrays SGLang put in the output store, and those arrays."""
+    log_probs = [-0.1 * (i + 1) for i in range(len(output_token_ids))]
+    sampled_key = (
+        "output_token_sampling_selected_logprobs"
+        if sampling_logprobs_mode == "support"
+        else "output_token_sampling_logprobs"
+    )
+    arrays = {
+        MASK_LENGTHS: np.ones(len(output_token_ids), dtype=np.int32),
+        MASK_TOKEN_IDS: np.asarray(output_token_ids, dtype=np.int32),
+    }
+    request = {
+        "messages": [{"role": "user", "content": "hello"}],
+        "input_ids": prompt_token_ids,
+        OUTPUT_STORE_REQUEST_KEY: True,
+        "return_sampling_mask": True,
+    }
+    if sampling_logprobs_mode == "support":
+        request["sampling_logprobs_mode"] = "support"
+        arrays[MASK_SUPPORT_LOGPROBS] = np.asarray(log_probs, dtype=np.float32)
+    if routed_experts is not None:
+        request["return_routed_experts"] = True
+        arrays[R3] = routed_experts
+    if routed_experts_start_len is not None:
+        request["routed_experts_start_len"] = routed_experts_start_len
+    meta_info = {
+        "output_token_logprobs": [(lp, tid) for tid, lp in zip(output_token_ids, log_probs, strict=True)],
+        "completion_tokens": len(output_token_ids),
+        sampled_key: log_probs,
+        OUTPUT_STORE_REF_KEY: Ref(key, tuple(Spec(n, a.dtype.name, a.shape) for n, a in arrays.items())).to_builtins(),
+    }
+    record = SessionRecord(
+        timestamp=0.0,
+        method="POST",
+        path="/v1/chat/completions",
+        status_code=200,
+        request=request,
+        response={
+            "choices": [{"message": {"role": "assistant"}, "finish_reason": finish_reason, "meta_info": meta_info}]
+        },
+    )
+    return record, arrays
+
+
+def _merge_store(records, accumulated, *, use_addition_r3=True, max_trim_tokens=0, max_seq_len=None):
+    """What a session server's collect does with the records."""
+    tok = _mock_tokenizer()
+    samples = compute_samples_from_openai_records(
+        _ARGS_R3,
+        records,
+        tok,
+        accumulated_token_ids=accumulated,
+        max_trim_tokens=max_trim_tokens,
+        use_addition_r3=use_addition_r3,
+    )
+    if max_seq_len is not None:
+        samples = truncate_samples_by_total_tokens(samples, max_seq_len, tok)
+    if use_addition_r3:
+        merged = merge_samples_with_addition_r3(_ARGS_R3, samples, records, tok)
+    else:
+        merged = merge_samples(samples, tok)
+    adopt_session_records(merged, records)
+    return merged
+
+
+def _routed_experts(merged: Sample, objects: dict) -> np.ndarray:
+    tokens = np.asarray(merged.tokens[len(merged.tokens) - merged.response_length :])
+    columns = merged.rollout_store_plan.materialize(
+        objects, response_tokens=tokens, support_topk=0, indexer_streams=None
+    )
+    return columns["rollout_routed_experts"]
+
+
+class TestStoreSessionAssembly:
+    """Per-turn plans carry the mask; ``adopt_session_records`` rebuilds routed experts from the
+    untrimmed records, like ``merge_samples_with_addition_r3``, and adopts every record's object."""
+
+    @pytest.fixture(autouse=True)
+    def _fake_refs(self, monkeypatch):
+        fake_store_refs(monkeypatch)
+
+    def _trimmed_session(self):
+        # Turn 0's trailing stop token (99) is trimmed: the next prompt holds only the 14 tokens
+        # before it, then 6 new tokens. Turn 1 continues routed experts from row 14 = len(checkpoint 0) - 1.
+        full = _r3_rows(23, seed=0)
+        prompt0, out0 = list(range(1, 11)), [11, 12, 13, 14, 99]
+        prompt1, out1 = list(range(1, 15)) + [41, 42, 43, 44, 45, 46], [51, 52, 53, 54]
+        r0, a0 = _store_record("r0", prompt0, out0, routed_experts=full[:14], routed_experts_start_len=0)
+        r1, a1 = _store_record("r1", prompt1, out1, routed_experts=full[14:], routed_experts_start_len=14)
+        return [r0, r1], {"r0": a0, "r1": a1}, prompt1 + out1, full
+
+    def test_per_turn_plans_leave_routed_experts_to_the_records(self):
+        records, _, accumulated, _ = self._trimmed_session()
+        samples = compute_samples_from_openai_records(
+            _ARGS_R3,
+            records,
+            _mock_tokenizer(),
+            accumulated_token_ids=accumulated,
+            max_trim_tokens=1,
+            use_addition_r3=True,
+        )
+        for sample in samples:
+            assert list(sample.rollout_store_plan.fields) == ["sampling_mask"]
+            assert sample.rollout_sampling_mask is None and sample.rollout_routed_experts is None
+            sample.validate()
+        # The TITO trim cut turn 0's plan with its tokens.
+        assert (
+            samples[0].response_length == 4 and samples[0].rollout_store_plan.fields["sampling_mask"].num_rows() == 4
+        )
+
+    def test_a_trimmed_turn_keeps_every_routed_experts_row(self):
+        records, objects, accumulated, full = self._trimmed_session()
+
+        merged = _merge_store(records, accumulated, max_trim_tokens=1)
+
+        assert merged.tokens == accumulated and merged.response_length == 4 + 6 + 4
+        plan = merged.rollout_store_plan
+        assert [(None if s.ref is None else s.ref.key, s.start, s.end) for s in plan.fields[R3].segs] == [
+            ("r0", 0, 14),
+            ("r1", 0, 9),
+        ]
+        np.testing.assert_array_equal(_routed_experts(merged, objects), full)
+        assert [r.key for r in plan.owned_refs] == ["r0", "r1"]
+
+    def test_retract_mode_takes_the_whole_forward_of_the_last_turn(self):
+        # Without routed_experts_start_len every forward stores all its rows and replaces the earlier ones.
+        records, _, accumulated, full = self._trimmed_session()
+        r0, a0 = _store_record("r0", records[0].request["input_ids"], [11, 12, 13, 14, 99], routed_experts=full[:14])
+        r1, a1 = _store_record("r1", records[1].request["input_ids"], [51, 52, 53, 54], routed_experts=full)
+
+        merged = _merge_store([r0, r1], accumulated, use_addition_r3=False, max_trim_tokens=1)
+
+        np.testing.assert_array_equal(_routed_experts(merged, {"r0": a0, "r1": a1}), full)
+
+    def test_a_turn_dropped_by_the_length_budget_still_has_its_object_owned(self):
+        records, objects, accumulated, full = self._trimmed_session()
+
+        merged = _merge_store(records, accumulated, max_trim_tokens=1, max_seq_len=20)
+
+        assert merged.tokens == accumulated[:14]
+        np.testing.assert_array_equal(_routed_experts(merged, objects), full[:13])
+        assert [r.key for r in merged.rollout_store_plan.owned_refs] == ["r0", "r1"]
+
+    @pytest.mark.parametrize("max_seq_len", [None, 23])
+    def test_a_gap_before_a_record_raises(self, max_seq_len):
+        # Record 1 starts at row 15, but only 14 rows precede it; with the length budget the row
+        # counts would even match, with every later row at the wrong position.
+        full = _r3_rows(23, seed=0)
+        r0, _ = _store_record(
+            "r0", list(range(1, 11)), [11, 12, 13, 14, 99], routed_experts=full[:14], routed_experts_start_len=0
+        )
+        r1, _ = _store_record(
+            "r1",
+            list(range(1, 15)) + [41, 42, 43, 44, 45, 46],
+            [51, 52, 53, 54],
+            routed_experts=full[15:],
+            routed_experts_start_len=15,
+        )
+        with pytest.raises(StorePlanError, match="continues from row 15, but only 14 rows precede it"):
+            _merge_store(
+                [r0, r1], r1.request["input_ids"] + [51, 52, 53, 54], max_trim_tokens=1, max_seq_len=max_seq_len
+            )
+
+    def test_a_first_record_starting_late_raises(self):
+        record, _ = _store_record("r0", [1, 2, 3], [10, 11], routed_experts=_r3_rows(1, 0), routed_experts_start_len=3)
+        with pytest.raises(StorePlanError, match="continues from row 3, but only 0 rows precede it"):
+            _merge_store([record], [1, 2, 3, 10, 11])
+
+    def test_a_record_without_its_routed_experts_raises(self):
+        record, _ = _store_record("r0", [1, 2, 3], [10, 11])
+        record.request["return_routed_experts"] = True  # asked for, but not in the stored object
+        with pytest.raises(StorePlanError, match="asked for routed_experts"):
+            _merge_store([record], [1, 2, 3, 10, 11])
+
+    def test_support_mode_records_leave_the_candidates_to_the_trainer(self):
+        record, _ = _store_record("r0", [1, 2, 3], [10, 11], sampling_logprobs_mode="support")
+        args = SimpleNamespace(**vars(_ARGS_R3), rollout_top_logprobs_num=2)
+
+        (sample,) = compute_samples_from_openai_records(args, [record], _mock_tokenizer())
+
+        assert sample.rollout_topk_token_ids is None and sample.rollout_topk_log_probs is None
+        assert sample.rollout_log_probs == [-0.1, -0.2]
+        assert list(sample.rollout_store_plan.fields) == ["sampling_mask"]
 
 
 # ── test: thinking token issue (documents known failure mode) ────────
