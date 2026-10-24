@@ -257,7 +257,8 @@ class MegatronTrainRayActor(TrainRayActor):
         self._active_model_tag: str | None = "actor"
 
         if self.args.backend.vocab_size is None:
-            self.args.backend.vocab_size = self.tokenizer.vocab_size
+            with self.args.backend.mutable():
+                self.args.backend.vocab_size = self.tokenizer.vocab_size
 
         load_output = self._load_state_core(
             checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
@@ -416,7 +417,7 @@ class MegatronTrainRayActor(TrainRayActor):
     def _load_state_core(
         self, *, checkpointing_context: dict | None, overrider_for_loading: dict[str, object]
     ) -> LoadCheckpointOutput:
-        with inplace_modify_args(self.args.backend, overrider_for_loading):
+        with self.args.backend.mutable(), inplace_modify_args(self.args.backend, overrider_for_loading):
             load_output = load_model_state(
                 self.args,
                 model=self.model,
@@ -1033,7 +1034,7 @@ class MegatronTrainRayActor(TrainRayActor):
         elif model_tag == "teacher":
             ckpt_step = self.args.opd_teacher_ckpt_step
 
-        with inplace_modify_args(
+        with self.args.backend.mutable(), inplace_modify_args(
             self.args.backend,
             dict(load=path, no_load_optim=True, no_load_rng=True, finetune=True, ckpt_step=ckpt_step),
         ):

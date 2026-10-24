@@ -152,13 +152,14 @@ def load_checkpoint(
             assert_checkpoint_is_current(checkpoint_path)
         if not has_local_checkpoint_manager and _has_linear_attention(ddp_model):
             assert_linear_attn_checkpoint_is_current(checkpoint_path)
-        result_iteration, _ = _load_checkpoint_megatron(
-            ddp_model=ddp_model,
-            optimizer=optimizer,
-            opt_param_scheduler=opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=skip_load_to_model_and_opt,
-        )
+        with args.backend.mutable():
+            result_iteration, _ = _load_checkpoint_megatron(
+                ddp_model=ddp_model,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            )
         if ckpt_step is not None and not args.backend.finetune and result_iteration != ckpt_step:
             raise ValueError(f"Requested checkpoint step {ckpt_step}, but Megatron loaded step {result_iteration}")
     else:
