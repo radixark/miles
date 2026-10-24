@@ -91,8 +91,9 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
         keep_old_actor=False,
         use_pytorch_profiler=False,
         record_memory_history=False,
-        use_checkpoint_opt_param_scheduler=True,
-        global_batch_size=1,
+        rollout_batch_size=1,
+        n_samples_per_prompt=1,
+        start_rollout_id=None,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -290,7 +291,7 @@ class TestLoadStateScheduler:
 
         actor.load_state()
 
-        assert scheduler.num_steps == 0
+        assert scheduler.num_steps == (iteration + 1 if saved_checkpoint else 0)
 
 
 class TestTheCheckpointAReloadRollsBackTo:

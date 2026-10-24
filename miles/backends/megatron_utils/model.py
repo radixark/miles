@@ -1009,6 +1009,7 @@ def load_model_state(
     else:
         load_ctx = nullcontext()
 
+    scheduler_steps_before_load = getattr(opt_param_scheduler, "num_steps", None)
     load_dir = getattr(args, "load", None)
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     explicit_selection = getattr(args, "ckpt_step", None) is not None or getattr(
@@ -1042,15 +1043,15 @@ def load_model_state(
 
     check_model_hashes(args, model, iteration)
 
-    # Megatron checkpoint loads can restore scheduler state directly. In that
-    # case, stepping by the checkpoint iteration here would double-count.
-    if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
-        opt_param_scheduler.step(increment=iteration * args.global_batch_size)
-
     if not restored_trained_iteration:
         assert iteration == 0, f"Weight initialization returned a trained iteration: {iteration}"
         start_rollout_id = 0
     else:
         start_rollout_id = iteration + 1
+
+    if opt_param_scheduler is not None and opt_param_scheduler.num_steps == scheduler_steps_before_load:
+        # Fresh starts set --start-rollout-id 0, though a bridge or HF load reports iteration 0 as trained.
+        resume_rollout_id = start_rollout_id if args.start_rollout_id is None else args.start_rollout_id
+        opt_param_scheduler.step(increment=resume_rollout_id * args.rollout_batch_size * args.n_samples_per_prompt)
 
     return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)

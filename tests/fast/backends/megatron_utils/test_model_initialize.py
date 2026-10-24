@@ -166,60 +166,71 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
     stack.enter_context(patch("miles.backends.megatron_utils.model.check_model_hashes"))
 
 
-def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
-    from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
+@pytest.mark.parametrize(
+    ("restored_by", "use_checkpoint_opt_param_scheduler", "iteration", "start_rollout_id", "expected_increment"),
+    [
+        pytest.param("checkpoint", False, 100, None, None, id="restored-by-checkpoint"),
+        pytest.param("lora_adapter", False, 100, None, None, id="restored-by-lora-adapter"),
+        pytest.param(None, False, 100, None, 101 * 4 * 2, id="not-restored"),
+        pytest.param(None, True, 100, None, 101 * 4 * 2, id="not-restored-with-checkpoint-scheduler-flag"),
+        pytest.param(None, False, 0, None, 1 * 4 * 2, id="not-restored-iteration-zero-checkpoint"),
+        pytest.param(None, False, 0, 0, 0, id="fresh-start"),
+    ],
+)
+def test_a_load_leaves_the_scheduler_after_the_rollouts_already_trained(
+    tmp_path: Path,
+    restored_by: str | None,
+    use_checkpoint_opt_param_scheduler: bool,
+    iteration: int,
+    start_rollout_id: int | None,
+    expected_increment: int | None,
+):
+    """The scheduler counts samples; a load that did not restore it catches up on the rollouts before the resume."""
+    from miles.backends.megatron_utils.model import load_model_state
 
-    args = Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8, finetune=False)
-    model = [_FakeModelChunk()]
-    optimizer = object()
-    opt_param_scheduler = MagicMock()
+    lora = restored_by == "lora_adapter"
+    opt_param_scheduler = MagicMock(num_steps=0)
 
+    def restore(*_args, **_kwargs):
+        opt_param_scheduler.num_steps = 808
+        return iteration if lora else (iteration, True)
+
+    load_checkpoint = MagicMock(return_value=(0, False) if lora else (iteration, True))
+    restore_lora_adapter = MagicMock(return_value=None)
+    if restored_by == "checkpoint":
+        load_checkpoint.side_effect = restore
+    elif restored_by == "lora_adapter":
+        restore_lora_adapter.side_effect = restore
+    load_dir = tmp_path / "ckpt"
+    load_dir.mkdir()
+    (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
     with ExitStack() as stack:
-        stack.enter_context(
-            patch(
-                "miles.backends.megatron_utils.model.setup_model_and_optimizer",
-                return_value=(model, optimizer, opt_param_scheduler),
-            )
-        )
-        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True)))
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", load_checkpoint))
+        stack.enter_context(patch("miles.backends.megatron_utils.model.restore_lora_adapter", restore_lora_adapter))
         _patch_initialize_side_effects(stack)
-        result = initialize_model_and_optimizer(args)
-
-    assert result == (
-        model,
-        optimizer,
-        opt_param_scheduler,
-        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
-    )
-    opt_param_scheduler.step.assert_not_called()
-
-
-def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
-    from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
-
-    args = Namespace(use_checkpoint_opt_param_scheduler=False, global_batch_size=8, finetune=False)
-    model = [_FakeModelChunk()]
-    optimizer = object()
-    opt_param_scheduler = MagicMock()
-
-    with ExitStack() as stack:
-        stack.enter_context(
-            patch(
-                "miles.backends.megatron_utils.model.setup_model_and_optimizer",
-                return_value=(model, optimizer, opt_param_scheduler),
-            )
+        load_model_state(
+            Namespace(
+                use_checkpoint_opt_param_scheduler=use_checkpoint_opt_param_scheduler,
+                rollout_batch_size=4,
+                n_samples_per_prompt=2,
+                start_rollout_id=start_rollout_id,
+                finetune=lora,
+                lora_rank=8 if lora else 0,
+                megatron_to_hf_mode="core",
+                lora_adapter_path=str(tmp_path / "adapter") if lora else None,
+                load=str(load_dir),
+            ),
+            model=[_FakeModelChunk()],
+            optimizer=None,
+            opt_param_scheduler=opt_param_scheduler,
+            role="actor",
+            checkpointing_context=None,
         )
-        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True)))
-        _patch_initialize_side_effects(stack)
-        result = initialize_model_and_optimizer(args)
 
-    assert result == (
-        model,
-        optimizer,
-        opt_param_scheduler,
-        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
-    )
-    opt_param_scheduler.step.assert_called_once_with(increment=800)
+    if expected_increment is None:
+        opt_param_scheduler.step.assert_not_called()
+    else:
+        opt_param_scheduler.step.assert_called_once_with(increment=expected_increment)
 
 
 def _load_model_state_with(
