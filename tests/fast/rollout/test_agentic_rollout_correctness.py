@@ -131,8 +131,7 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
         "".join(json.dumps({"prompt": [{"role": "user", "content": str(i)}], "label": ""}) + "\n" for i in range(2))
     )
     bench = Namespace(hf_checkpoint="Qwen/Qwen3-0.6B", sessions=2, repetitions=1)
-    args = build_args(bench, prompt_path, port)
-    args.apply_chat_template = False
+    args = build_args(bench, prompt_path, port, apply_chat_template=False)
     backend = UvicornThreadServer(app, host="127.0.0.1", port=port)
     SingletonMeta.clear_all_instances()
     try:

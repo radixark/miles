@@ -37,7 +37,7 @@ NUM_LAYERS = 48
 TOPK = 8
 
 
-def build_args(bench, prompt_path, backend_port):
+def build_args(bench, prompt_path, backend_port, *, apply_chat_template=True):
     from miles.utils.arguments import parse_args
 
     argv = [
@@ -54,7 +54,6 @@ def build_args(bench, prompt_path, backend_port):
         "prompt",
         "--label-key",
         "label",
-        "--apply-chat-template",
         "--rollout-batch-size",
         str(bench.sessions),
         "--n-samples-per-prompt",
@@ -92,6 +91,8 @@ def build_args(bench, prompt_path, backend_port):
         "--pause-generation-mode",
         "in_place",
     ]
+    if apply_chat_template:
+        argv.append("--apply-chat-template")
     with patch.object(sys, "argv", argv):
         args = parse_args()
     args.num_layers = NUM_LAYERS
