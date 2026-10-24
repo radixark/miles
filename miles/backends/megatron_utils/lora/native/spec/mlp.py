@@ -40,6 +40,7 @@ class SplitGateUpMLPSpec(LayoutSpec):
     """Fused ``[gate; up]`` FC1 plus row-parallel down projection."""
 
     name = "split_gate_up_mlp"
+    hf_block_pattern = r"mlp(?:\.shared_experts?)?"
     layout = ModuleLayout(
         name="split_gate_up_mlp",
         present_when_attr="linear_fc1",
@@ -57,6 +58,37 @@ class SplitGateUpMLPSpec(LayoutSpec):
         singles=(
             ProjectionBinding(
                 projection=ProjectionSpec("down_proj", "down", ShardLayout.ROW),
+                module_attr="linear_fc2",
+                in_dim=_fc1_inter_local,
+                out_dim=L.hidden_size,
+                adapter_attr="lora_fc2_adapter",
+            ),
+        ),
+    )
+
+
+class DeepSeekV4SharedExpertSpec(SplitGateUpMLPSpec):
+    """DeepSeek-V4's shared expert under its HF names, ``ffn.shared_experts.w1``/``w3`` (gate/up) and ``w2``."""
+
+    name = "deepseek_v4_shared_expert"
+    hf_block_pattern = r"ffn\.shared_experts"
+    layout = ModuleLayout(
+        name="deepseek_v4_shared_expert",
+        present_when_attr="linear_fc1",
+        fused=(
+            FusedAttach(
+                module_attr="linear_fc1",
+                projections=(
+                    ProjectionSpec("w1", "gate", ShardLayout.COLUMN),
+                    ProjectionSpec("w3", "up", ShardLayout.COLUMN),
+                ),
+                adapter_attr="lora_fc1_adapter",
+                build=_build_split_fc1,
+            ),
+        ),
+        singles=(
+            ProjectionBinding(
+                projection=ProjectionSpec("w2", "down", ShardLayout.ROW),
                 module_attr="linear_fc2",
                 in_dim=_fc1_inter_local,
                 out_dim=L.hidden_size,
@@ -106,6 +138,7 @@ class FusedGateUpMLPSpec(LayoutSpec):
     """An HF MLP whose gate/up is one ``gate_up_proj`` module (GLM-4, Inkling), plus the down projection."""
 
     name = "fused_gate_up_mlp"
+    hf_block_pattern = r"mlp(?:\.shared_experts?)?"
     layout = ModuleLayout(
         name="fused_gate_up_mlp",
         present_when_attr="linear_fc1",

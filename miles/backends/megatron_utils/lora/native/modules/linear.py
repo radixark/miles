@@ -248,6 +248,36 @@ class LoRAReplicatedPlainLinear(LoRALinear):
         assert self.layout == ShardLayout.REPLICATED, f"{type(self).__name__} requires a replicated projection"
 
 
+class LoRAGroupedColumnLinear(LoRALinear):
+    """Column-parallel adapter on a grouped product: one ``A`` for every group, ``B`` split by group.
+
+    The host multiplies group ``g`` of its input by row block ``g`` of its weight only, and so does the
+    adapter, which makes its merged delta ``B @ A`` a plain LoRA on that weight. Each rank's input holds
+    only that rank's groups, so unlike ``LoRALinear`` the input takes no TP copy.
+    """
+
+    host_returns_bias = False
+
+    def __init__(self, *, n_groups: int, **kwargs):
+        super().__init__(**kwargs)
+        assert self.layout == ShardLayout.COLUMN, f"{type(self).__name__} requires a column-parallel projection"
+        self.n_groups = n_groups
+        # the host weight lives on the attention block; a list keeps it out of this adapter's parameters
+        self._host_weight = [kwargs["reference"]]
+
+    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
+        b = getattr(self, f"{self.param_prefix}_B")
+        x = apply_lora_dropout(x, self.context, base_module.training)
+        down = F.linear(x, getattr(self, f"{self.param_prefix}_A"))
+        return torch.einsum("bsgk,grk->bsgr", down, b.view(self.n_groups, -1, b.shape[-1]))
+
+    def weight_deltas(self):
+        (weight,) = self._host_weight
+        a = getattr(self, f"{self.param_prefix}_A")
+        b = getattr(self, f"{self.param_prefix}_B")
+        yield weight, lambda: self.context.lora.scale * (b.float() @ a.float())
+
+
 class LoRASplitAdapter(NativeLoRAAdapter):
     """Independent per-projection adapters whose deltas pack into one fused output.
 

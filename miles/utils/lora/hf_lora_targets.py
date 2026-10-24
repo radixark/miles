@@ -82,6 +82,14 @@ def _deepseek_targets(config):
     return _mla_attention_targets(config), _deepseek_mlp_targets(config)
 
 
+def _deepseek_v41_targets(config):
+    # every V4.1 layer is MoE
+    mlp = list(_prefix_paths("ffn.experts.*", "w1", "w2", "w3"))
+    if config["n_shared_experts"]:
+        mlp.extend(_prefix_paths("ffn.shared_experts", "w1", "w2", "w3"))
+    return _prefix_paths("attn", "wq_a", "wq_b", "wkv", "wo_a", "wo_b"), tuple(mlp)
+
+
 def _kimi_targets(config):
     # Kimi's custom HF implementation retains per-expert modules and interleaved dense layers.
     num_moe_layers = sum(
@@ -226,6 +234,7 @@ _HF_LORA_MODELS = {
     "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v3": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v32": _HfLoraModelSpec(_deepseek_targets),
+    "deepseek_v41": _HfLoraModelSpec(_deepseek_v41_targets, layer_prefix="layers.*", unembed="head"),
     "kimi_k2": _HfLoraModelSpec(_kimi_targets),
     "kimi_k25": _HfLoraModelSpec(
         _kimi_targets,
