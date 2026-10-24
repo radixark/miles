@@ -1363,6 +1363,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     'JSON string for multimodal data mapping media types to data keys. Example: \'{"image": "image_file"}\''
                 ),
             )
+            parser.add_argument(
+                "--shared-media-dir",
+                type=str,
+                default=None,
+                help="Directory shared with every SGLang engine; media that is not a file path yet is written here.",
+            )
             parser.add_argument("--metadata-key", type=str, default="metadata", help="JSON dataset key")
             parser.add_argument(
                 "--tool-key",

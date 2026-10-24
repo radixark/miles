@@ -170,22 +170,6 @@ def render_inkling_messages_to_ids(
     return input_ids
 
 
-def _load_pil_image(spec):
-    """Resolve one image content part's payload to a PIL image (no resize)."""
-    from PIL import Image
-
-    if isinstance(spec, Image.Image):
-        return spec
-    if isinstance(spec, str):
-        path = spec[len("file://") :] if spec.startswith("file://") else spec
-        if path.startswith(("http://", "https://", "data:")):
-            raise ValueError(f"Inkling extract_media: resolve URL images upstream, got {spec[:64]!r}")
-        img = Image.open(path)
-        img.load()
-        return img
-    raise TypeError(f"unsupported image payload type {type(spec).__name__}")
-
-
 class InklingTrainProcessor:
     """Duck-typed processor for miles' generic multimodal pipeline (Inkling)."""
 
@@ -207,35 +191,6 @@ class InklingTrainProcessor:
             }
         )
         self.tok = _TokenizerAdapter(load_tokenizer(hf_checkpoint, trust_remote_code=True))
-
-    def extract_media(self, prompt: list[dict[str, Any]]) -> dict:
-        images, audios = [], []
-        for msg in prompt:
-            content = msg.get("content", "")
-            if not isinstance(content, (list, tuple)):
-                continue
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                ptype = part.get("type")
-                if ptype in _IMAGE_PART_TYPES:
-                    spec = part.get("image", part.get("image_url"))
-                    if isinstance(spec, dict):
-                        spec = spec.get("url")
-                    images.append(_load_pil_image(spec))
-                elif ptype in _AUDIO_PART_TYPES:
-                    spec = part.get("audio", part.get("audio_url"))
-                    if isinstance(spec, dict):
-                        spec = spec.get("url")
-                    if isinstance(spec, str):
-                        path = spec[len("file://") :] if spec.startswith("file://") else spec
-                        with open(path, "rb") as f:
-                            spec = f.read()
-                    assert isinstance(
-                        spec, (bytes, bytearray)
-                    ), f"audio payload must be a path or bytes, got {type(spec).__name__}"
-                    audios.append(bytes(spec))
-        return {"images": images or None, "audios": audios or None, "videos": None}
 
     def __call__(self, text=None, images=None, videos=None, audios=None, **kwargs):
         assert videos is None or not videos, "Inkling processor: video inputs unsupported"

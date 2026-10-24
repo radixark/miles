@@ -12,7 +12,7 @@ from examples.geo3k_vlm.multi_turn.base_env import BaseInteractionEnv
 # When executed as a module: python -m examples.geo3k_vlm.multi_turn.rollout
 from miles.rollout.sglang_rollout import GenerateState
 from miles.utils.http_utils import post
-from miles.utils.processing_utils import encode_image_for_rollout_engine
+from miles.utils.media_refs import load_media_for_processor, resolve_media_refs
 from miles.utils.types import Sample
 
 DEFAULT_ENV_MODULE = "examples.geo3k_vlm.multi_turn.env_geo3k"
@@ -58,6 +58,7 @@ def _encode_observation_for_generation(
     metadata: dict | None,
     apply_chat_template: bool,
     apply_chat_template_kwargs: dict | None,
+    media_dir: str | None,
 ):
     """
     Encode a single observation turn that may include images/videos in the content list.
@@ -87,15 +88,10 @@ def _encode_observation_for_generation(
     else:
         formatted_prompt = [message]
 
-    multimodal_inputs = None
+    multimodal_inputs = resolve_media_refs([message], media_dir)
     multimodal_train_inputs = None
     if processor:
-        # Convert content-embedded images/videos into multimodal inputs for the processor.
-        from qwen_vl_utils import process_vision_info
-
-        images, videos = process_vision_info([message])
-        multimodal_inputs = {"images": images, "videos": videos}
-        processor_output = processor(text=formatted_prompt, **multimodal_inputs)
+        processor_output = processor(text=formatted_prompt, **load_media_for_processor(multimodal_inputs))
         prompt_ids = processor_output["input_ids"][0]
         multimodal_train_inputs = {
             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
@@ -106,9 +102,7 @@ def _encode_observation_for_generation(
     if trim_length:
         prompt_ids = prompt_ids[trim_length:]
 
-    image_data = []
-    if multimodal_inputs and multimodal_inputs.get("images"):
-        image_data = [encode_image_for_rollout_engine(img) for img in multimodal_inputs["images"]]
+    image_data = (multimodal_inputs or {}).get("images", [])
     return prompt_ids, image_data, multimodal_inputs, multimodal_train_inputs
 
 
@@ -153,7 +147,7 @@ def _initialize_resources(args: Any, sample: Sample):
 
 def _prepare_initial_inputs(sample: Sample, processor, tokenizer):
     if processor:
-        processor_output = processor(text=sample.prompt, **(sample.multimodal_inputs or {}))
+        processor_output = processor(text=sample.prompt, **load_media_for_processor(sample.multimodal_inputs))
         prompt_ids = processor_output["input_ids"][0]
         sample.multimodal_train_inputs = {
             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
@@ -161,9 +155,7 @@ def _prepare_initial_inputs(sample: Sample, processor, tokenizer):
     else:
         prompt_ids = tokenizer.encode(sample.prompt, add_special_tokens=False)
 
-    image_data = []
-    if sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
-        image_data = [encode_image_for_rollout_engine(img) for img in sample.multimodal_inputs["images"]]
+    image_data = list((sample.multimodal_inputs or {}).get("images", []))
     return prompt_ids, image_data, sample.multimodal_train_inputs
 
 
@@ -223,6 +215,7 @@ def _process_env_step(env: BaseInteractionEnv, response_text: str, tokenizer, pr
             sample_metadata,
             args.apply_chat_template,
             args.apply_chat_template_kwargs,
+            args.shared_media_dir,
         )
     )
 
