@@ -10,7 +10,7 @@ from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
 
 
 class TestCaptureState:
-    @pytest.mark.parametrize("mode", ["not_ci", "disabled"])
+    @pytest.mark.parametrize("mode", ["not_ci", "disabled", "no_directory"])
     def test_reconfiguring_capture_off_does_not_leak_the_previous_process_state(
         self, capture_args: Namespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
     ) -> None:

@@ -1,5 +1,5 @@
 import uuid
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import Field, JsonValue, NonNegativeInt
 
@@ -7,6 +7,12 @@ from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 # =============================== Raw snapshots ================================
+
+
+class ConfigSnapshotGeneration(NamedTuple):
+    name: str
+    run_uuid: str
+    deploy_instance_id: str
 
 
 class ConfigSnapshotContext(FrozenStrictBaseModel):
@@ -19,6 +25,9 @@ class ConfigSnapshotContext(FrozenStrictBaseModel):
     run_uuid: str = Field(min_length=1)
     capture_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
 
+    @property
+    def generation(self) -> ConfigSnapshotGeneration:
+        return ConfigSnapshotGeneration(self.name, self.run_uuid, self.deploy_instance_id)
 
 
 class ConfigSnapshotPoint(FrozenStrictBaseModel):
@@ -31,12 +40,27 @@ class ConfigSnapshotPoint(FrozenStrictBaseModel):
         return f"{self.stage}-{self.index:04d}"
 
 
+class ConfigSnapshotGeneratedValue(FrozenStrictBaseModel):
+    kind: Literal[
+        "run_id",
+        "critic_run_id",
+        "temporary_directory",
+        "ci_commit_name",
+        "host",
+        "port",
+        "external_host",
+    ]
+    name: str
+    value: str = Field(min_length=1)
+
+
 class ConfigSnapshotRecord(FrozenStrictBaseModel):
     """Store one raw configuration capture with its context and sampling point."""
 
     context: ConfigSnapshotContext
     point: ConfigSnapshotPoint
     config: JsonValue
+    generated_values: list[ConfigSnapshotGeneratedValue] = Field(default_factory=list)
 
 
 # ============================ Converted snapshots =============================

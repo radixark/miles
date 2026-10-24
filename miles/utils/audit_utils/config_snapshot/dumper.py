@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
 from miles.utils.audit_utils.config_snapshot.models import (
     ConfigSnapshotContext,
     ConfigSnapshotPoint,
@@ -33,10 +34,10 @@ class ConfigSnapshotDumper:
         if args.ci_disable_config_snapshot or not args.ci_test:
             return
 
+        if not (record_directory := os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR)):
+            return
         if not args.config_snapshot_name:
             raise ValueError("Snapshot name is required")
-        if not (record_directory := os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR)):
-            raise ValueError(f"{SNAPSHOT_RECORD_DIR_ENV_VAR} is required for configuration snapshots")
         cls._state = _SnapshotState(
             storage=ConfigSnapshotStorage(directory=Path(record_directory)),
             context=ConfigSnapshotContext(
@@ -61,6 +62,7 @@ class ConfigSnapshotDumper:
             context=state.context,
             point=ConfigSnapshotPoint(stage=stage, index=index),
             config=_redact(snapshot_values(config)),
+            generated_values=generated_value_registry.read(),
         )
         state.storage.write(record)
 

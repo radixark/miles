@@ -25,6 +25,7 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
@@ -3838,6 +3839,9 @@ def miles_validate_args(args):
     if args.critic_save is None and args.save is not None:
         # a sibling dir, not args.save itself: sharing a dir would clobber the actor's iteration tracker
         args.critic_save = args.save.rstrip("/") + "_critic"
+        for entry in generated_value_registry.read():
+            if entry.kind == "run_id" and args.save.rstrip("/").rsplit("/", 1)[-1] == entry.value:
+                generated_value_registry.register(kind="critic_run_id", name=entry.name, value=f"{entry.value}_critic")
 
     if args.offload:
         args.offload_train = True

@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.object_store_config import (
@@ -56,6 +57,7 @@ def train_env_vars(
         "PYTHONUNBUFFERED": "1",
         SNAPSHOT_UPDATE_ENV_VAR: os.environ.get(SNAPSHOT_UPDATE_ENV_VAR, ""),
         SNAPSHOT_RECORD_DIR_ENV_VAR: os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR, ""),
+        **generated_value_registry.to_env(),
         # If setting this in FSDP, the computation communication overlapping may have issues
         **(
             {}
@@ -102,6 +104,7 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
 
     wandb_run_name = run_id or create_run_id()
     if (x := os.environ.get("GITHUB_COMMIT_NAME")) is not None:
+        generated_value_registry.register(kind="ci_commit_name", value=x, name="github")
         wandb_run_name += f"_{x}"
     if (x := run_name_prefix) is not None:
         wandb_run_name = f"{x}_{wandb_run_name}"
@@ -118,7 +121,9 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
 
 
 def create_run_id() -> str:
-    return datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
+    value = datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
+    generated_value_registry.register(kind="run_id", value=value)
+    return value
 
 
 _warned_bool_env_var_keys = set()
