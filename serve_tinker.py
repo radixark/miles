@@ -40,6 +40,10 @@ async def serve(args, *, disposer: Disposer):
         trainer_token_limit = local_token_limit * args.raw_megatron.base_args["context_parallel_size"]
         max_tokens_per_datum = min(max_tokens_per_datum, trainer_token_limit)
     assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
+    engine_context_length = args.sglang_context_length or hf_config.max_position_embeddings
+    # SGLang rejects inputs with len >= min(context_len - 1, kv_capacity - 1) - 5, assuming the KV pool
+    # exceeds one context; a sequence sampled up to the window must still be accepted as a scoring prompt.
+    max_tokens_per_sample = min(max_tokens_per_datum, engine_context_length - 7)
     capability = init_orchestration_script(ArgvOrchestratorStartupInfo.create(args), disposer=disposer)
 
     await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
@@ -63,6 +67,7 @@ async def serve(args, *, disposer: Disposer):
         checkpoint_root=checkpoint_root,
         vocab_size=hf_config.vocab_size,
         max_tokens_per_datum=max_tokens_per_datum,
+        max_tokens_per_sample=max_tokens_per_sample,
         lora_alpha=args.lora_alpha,
         max_lora_rank=args.lora_rank,
         trains_attn="attn" in args.tinker_lora_groups,
