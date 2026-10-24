@@ -1,18 +1,19 @@
 from __future__ import annotations
+from miles.backends.sglang_utils.sglang_config import ModelConfig, SglangConfig
+
 
 from argparse import Namespace
 
 import pytest
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
-from miles.backends.sglang_utils.sglang_config import (
-    ServerGroupConfig,
-    _compute_megatron_num_gpus,
-    _compute_rollout_offset,
-    resolve_sglang_config,
-)
+from miles.backends.sglang_utils.sglang_config import ServerGroupConfig, _compute_megatron_num_gpus, _compute_rollout_offset
 from miles.utils.external_utils.command_utils.common import encode_pseudo_file
 
+
+
+def resolve_sglang_config(args):
+    return SglangConfig.parse_args(args)
 
 def _make_args(**overrides) -> Namespace:
     defaults = dict(
@@ -716,3 +717,30 @@ class TestSglangConfigFileArg:
         cfg = resolve_sglang_config(_make_args(sglang_config=encode_pseudo_file(self._YAML)))
 
         assert [model.name for model in cfg.models] == ["actor"]
+
+
+class TestCommonValueBoundaries:
+
+    @pytest.mark.parametrize('second_overrides', [{}, {'x': 3}])
+    def test_disagreeing_groups_cannot_supply_a_shared_value(self, second_overrides: dict[str, int]) -> None:
+        """A shared consumer cannot silently select one engine group's conflicting setting."""
+        groups = [ServerGroupConfig(worker_type='regular', num_gpus_per_engine=1, needs_offload=False, overrides=value) for value in [{'x': 2}, second_overrides]]
+        model = ModelConfig(name='actor', model_path=None, server_groups=groups, update_weights=True)
+        with pytest.raises(AssertionError, match="Field 'x' differs"):
+            SglangConfig(models=[model], base_args={'x': 1}).common_value('x')
+
+    @pytest.mark.parametrize('include_engine', [False, True])
+    def test_placeholder_overrides_do_not_affect_shared_engine_values(self, include_engine: bool) -> None:
+        """GPU reservations without engines cannot override settings used by live engine consumers."""
+        groups = [ServerGroupConfig(worker_type='placeholder', num_gpus_per_engine=1, needs_offload=False, overrides={'x': 99})]
+        if include_engine:
+            groups.append(ServerGroupConfig(worker_type='regular', num_gpus_per_engine=1, needs_offload=False))
+        model = ModelConfig(name='actor', model_path=None, server_groups=groups, update_weights=True)
+        assert SglangConfig(models=[model], base_args={'x': 1}).common_value('x') == 1
+
+    def test_a_field_missing_from_one_live_group_is_rejected(self) -> None:
+        """An override in only one group cannot manufacture a globally available setting."""
+        groups = [ServerGroupConfig(worker_type='regular', num_gpus_per_engine=1, needs_offload=False, overrides=value) for value in [{'x': 2}, {}]]
+        model = ModelConfig(name='actor', model_path=None, server_groups=groups, update_weights=True)
+        with pytest.raises(AttributeError, match="No common field 'x'"):
+            SglangConfig(models=[model], base_args={}).common_value('x')
