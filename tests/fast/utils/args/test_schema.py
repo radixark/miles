@@ -75,6 +75,28 @@ class TestResetArgument:
 
 class TestResetMetadata:
 
+    def test_reset_metadata_updates_the_backend_default(self) -> None:
+        """Annotated reset declarations preserve the backend's explicit CLI values."""
+
+        class Config(BaseConfig):
+            count: Annotated[int, Arg(reset=True)] = 4
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--count', type=int, default=1)
+        Config.add_arguments(parser)
+        assert parser.parse_args([]).count == 4
+        assert parser.parse_args(['--count', '9']).count == 9
+
+    def test_reset_metadata_rejects_aliases_before_touching_the_parser(self) -> None:
+        """Reset declarations cannot ambiguously target several option names."""
+
+        class Config(BaseConfig):
+            count: Annotated[int, Arg(reset=True, aliases=('-n',))] = 4
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--count', type=int, default=1)
+        with pytest.raises(ValueError, match='exactly one'):
+            Config.add_arguments(parser)
+        assert parser.parse_args([]).count == 1
+
     def test_explicit_const_and_positional_arguments_keep_their_semantics(self) -> None:
         """Optional-value flags distinguish omission, a bare flag and an explicit scalar."""
 
