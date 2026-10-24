@@ -419,6 +419,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--stream-optimizer-state-page-cache-mb",
+                type=int,
+                default=None,
+                help=(
+                    "Per-rank cap (MiB) on the streamed Adam state that may sit in the host page cache "
+                    "waiting to be written back. With a cap, a writer thread writes back and drops each "
+                    "flushed bucket off the step's critical path, a flush waits only while more than the "
+                    "cap is still waiting, and the step finishes its writeback before returning, so none "
+                    "of the store's files stay cached past a step and the next step reads them from disk. "
+                    "Unset leaves the cache to the kernel, which is fastest when host RAM holds the whole "
+                    "state, but a colocated run then races that cache at every pinned allocation. "
+                    "Initialization never leaves its writes cached either way."
+                ),
+            )
+            parser.add_argument(
                 "--offload-train-disk-dir",
                 type=str,
                 default=None,
@@ -3984,6 +3999,13 @@ def miles_validate_args(args):
             f"chunk={args.offload_train_disk_chunk_mb}MB"
         )
 
+    if args.stream_optimizer_state_page_cache_mb is not None:
+        assert args.stream_optimizer_state_to_disk, (
+            "--stream-optimizer-state-page-cache-mb caps the page cache of the streamed optimizer state; "
+            "it needs --stream-optimizer-state-to-disk"
+        )
+        assert args.stream_optimizer_state_page_cache_mb >= 0, "--stream-optimizer-state-page-cache-mb must be >= 0"
+
     if args.stream_optimizer_state_to_disk:
         assert args.offload_train_target == "disk" or not args.offload_train, (
             "--stream-optimizer-state-to-disk with --offload-train requires "
@@ -4008,6 +4030,10 @@ def miles_validate_args(args):
                 "--stream-optimizer-state-to-disk with Muon is the disk backend for the chunked "
                 "offloader; pass --chunked-optimizer-state-offload and a non-zero "
                 "--optimizer-state-offload-fraction"
+            )
+            assert args.stream_optimizer_state_page_cache_mb is None, (
+                "--stream-optimizer-state-page-cache-mb caps the Adam bucket store; Muon's disk state is "
+                "file-backed mappings the chunked offloader owns"
             )
         else:
             assert (
@@ -4052,9 +4078,11 @@ def miles_validate_args(args):
         assert (
             not args.enable_witness
         ), "--enable-witness reads the master optimizer's per-param state, which the NVMe store owns"
+        page_cache_mb = args.stream_optimizer_state_page_cache_mb
         logger.info(
             f"Streaming optimizer state to disk, dir={args.offload_train_disk_dir}, "
-            f"chunk={args.offload_train_disk_chunk_mb}MB, moments={args.stream_optimizer_state_moment_dtype}"
+            f"chunk={args.offload_train_disk_chunk_mb}MB, moments={args.stream_optimizer_state_moment_dtype}, "
+            f"page cache {'left to the kernel' if page_cache_mb is None else f'capped at {page_cache_mb}MB'}"
         )
 
     if args.async_max_concurrent_samples is not None:
