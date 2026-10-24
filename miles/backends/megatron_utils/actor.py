@@ -825,6 +825,7 @@ class MegatronTrainRayActor(TrainRayActor):
         log_perf_data(
             rollout_id,
             self.args,
+            compute_total_fwd_flops=self._fwd_tflops,
             extra_metrics=self.weight_updater.pop_metrics() if self.weight_updater is not None else {},
         )
 
