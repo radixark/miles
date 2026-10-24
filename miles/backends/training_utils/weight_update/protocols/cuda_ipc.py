@@ -16,7 +16,7 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.utils import async_utils
-from miles.utils.lora.utils import lora_base_cpu_backup_enabled, lora_rollout_enabled
+from miles.utils.lora.utils import lora_rollout_enabled
 
 try:
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
@@ -163,15 +163,11 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         # collective among the group's members.
         self.is_sender = self._ipc_gather_group is not None
 
-        # A LoRA sync must re-push the frozen base unless the engines keep it
-        # across pauses (CPU backup, persistent GPU copy, or remote engines);
-        # the weight checker always needs the full rewrite.
-        base_persists = (
-            self.use_distribute
-            or lora_base_cpu_backup_enabled(self.args)
-            or (self.args.colocate and not self.args.offload_rollout)
+        # Remote engines (use_distribute) keep the base as well. Never true unless
+        # args.lora_sync_sends_base, which is all the trainer's host backup reads.
+        self.needs_base_resync_for_lora = self.args.lora_sync_sends_base and (
+            self.args.check_weight_update_equal or not self.use_distribute
         )
-        self.needs_base_resync_for_lora = self.args.check_weight_update_equal or not base_persists
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         futures, long_lived_tensors = _send_to_colocated_engine(

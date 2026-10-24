@@ -134,6 +134,57 @@ def test_actor_ref_actor_switch_restores_model_companion(
     assert torch.equal(weight, torch.tensor([2.0]))
 
 
+def _colocated_lora_actor(actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, **args) -> object:
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    real_empty_like = torch.empty_like
+    monkeypatch.setattr(
+        torch,
+        "empty_like",
+        lambda tensor, **kwargs: real_empty_like(
+            tensor, **{key: value for key, value in kwargs.items() if key != "pin_memory"}
+        ),
+    )
+    train_actor = object.__new__(actor_module.MegatronTrainRayActor)
+    train_actor.args = SimpleNamespace(
+        colocate=True,
+        offload_rollout=True,
+        offload_train_target="disk",
+        lora_rank=4,
+        keep_old_actor=False,
+        megatron_to_hf_mode="bridge",
+        **args,
+    )
+    train_actor.with_ref = False
+    train_actor.with_opd_teacher = False
+    train_actor._asleep = True
+    train_actor._active_model_tag = "actor"
+    train_actor.model = [torch.nn.Module()]
+    train_actor.model[0].add_module(
+        "model_companion", ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+    )
+    train_actor.model[0].register_parameter("frozen_base", torch.nn.Parameter(torch.ones(2), requires_grad=False))
+    train_actor.model[0].register_parameter("trained_base", torch.nn.Parameter(torch.ones(2)))
+    train_actor.model[0].register_parameter("adapter", torch.nn.Parameter(torch.ones(2)))
+    train_actor.weights_backuper = TensorBackuper.create(source_getter=train_actor._actor_weights_to_back_up)
+    train_actor.weights_backuper.backup("actor")
+    return train_actor
+
+
+@pytest.mark.parametrize("sync_sends_base", [False, True], ids=["sync-skips-base", "sync-sends-base"])
+def test_colocated_lora_host_backup_holds_the_frozen_base_only_when_the_sync_sends_it(
+    actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, sync_sends_base: bool
+) -> None:
+    """The weight sync reads this backup while the trainer is offloaded. A frozen base the sync
+    never sends would cost the whole model per rank in pinned host memory."""
+    train_actor = _colocated_lora_actor(actor_module, monkeypatch, lora_sync_sends_base=sync_sends_base)
+
+    backed_up = set(train_actor.weights_backuper.get("actor"))
+
+    assert {"vp_stages.0.adapter", "vp_stages.0.trained_base"} <= backed_up
+    assert any("model_companion" in name for name in backed_up)
+    assert ("vp_stages.0.frozen_base" in backed_up) is sync_sends_base
+
+
 class TestSendCheckpoint:
     def test_healing_before_the_first_train_step_is_refused_without_sending(
         self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch

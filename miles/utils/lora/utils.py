@@ -41,6 +41,20 @@ def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
 
 
+def lora_colocated_engine_keeps_base(args: Namespace) -> bool:
+    """The colocated engines hold the frozen LoRA base across pauses: a host backup, or
+    weights that are never released."""
+    return lora_base_cpu_backup_enabled(args) or (args.colocate and not args.offload_rollout)
+
+
+def lora_sync_sends_base(args: Namespace) -> bool:
+    """A colocated LoRA weight sync re-sends the frozen base unless the engines keep it; the
+    weight checker always rewrites every tensor, and --lora-train-only syncs as full weights."""
+    return (
+        not lora_rollout_enabled(args) or args.check_weight_update_equal or not lora_colocated_engine_keeps_base(args)
+    )
+
+
 def save_adapter_to_disk(out_dir, config: dict, tensors: dict) -> None:
     """Write a LoRA adapter dir (adapter_config.json + adapter_model.safetensors)."""
     import safetensors.torch  # lazy: this module is imported on paths that never touch weights

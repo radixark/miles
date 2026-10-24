@@ -36,7 +36,7 @@ from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args, validate_lora_args_after_megatron
-from miles.utils.lora.utils import is_lora_enabled
+from miles.utils.lora.utils import is_lora_enabled, lora_sync_sends_base
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.object_store_config import (
@@ -3960,6 +3960,8 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+    # One decision for both the colocated LoRA weight sync and the trainer's host backup.
+    args.lora_sync_sends_base = lora_sync_sends_base(args)
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True

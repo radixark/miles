@@ -3,7 +3,6 @@ import logging
 import os
 import shutil
 from contextlib import ExitStack, nullcontext
-from functools import partial
 
 import torch
 import torch.distributed as dist
@@ -248,7 +247,7 @@ class MegatronTrainRayActor(TrainRayActor):
             main_cast_ctx = build_main_cast_context(args, model=self.model, optimizer=self.optimizer)
 
         self.weights_backuper = TensorBackuper.create(
-            source_getter=partial(self._named_actor_weights, include_model_companion=True),
+            source_getter=self._actor_weights_to_back_up,
             main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
@@ -532,7 +531,34 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.colocate
             and is_lora_enabled(self.args)
             and self.args.offload_train_target == "cpu"
-            and not (self.with_ref or self.with_opd_teacher or self.args.keep_old_actor)
+            and not self._switches_models
+        )
+
+    @property
+    def _switches_models(self) -> bool:
+        """Restoring another model's weights needs a full host backup of every model."""
+        return self.with_ref or self.with_opd_teacher or self.args.keep_old_actor
+
+    @property
+    def _host_backup_skips_frozen_params(self) -> bool:
+        """Colocated LoRA whose sync never sends the frozen base (the engines keep it) and that
+        switches no models: a host copy of frozen params is never read, and costs the whole
+        base per rank, which is what an --offload-train-target=disk run cannot afford."""
+        return (
+            self.args.colocate
+            and is_lora_enabled(self.args)
+            and not self.args.lora_sync_sends_base
+            and not self._switches_models
+        )
+
+    def _actor_weights_to_back_up(self):
+        weights = self._named_actor_weights(include_model_companion=True)
+        if not self._host_backup_skips_frozen_params:
+            return weights
+        return (
+            (name, tensor)
+            for name, tensor in weights
+            if tensor.requires_grad or ModelCompanionInstallationUtils.is_companion_parameter(name)
         )
 
     @property

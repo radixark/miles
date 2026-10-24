@@ -67,6 +67,7 @@ class TestConnect:
             check_weight_update_equal=False,
             colocate=True,
             offload_rollout=True,
+            lora_sync_sends_base=True,
         )
         protocol.rollout_engines = None
         protocol._model_update_groups = None
