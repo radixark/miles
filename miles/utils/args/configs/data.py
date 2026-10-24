@@ -1,11 +1,13 @@
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 # data
 class DataConfig(BaseConfig):
+    _mutable_fields: ClassVar[frozenset[str]] = frozenset({"start_rollout_id", "num_rollout"})
+
     # dataset
     # TODO: maybe add an num_epoch and calculate the num_rollout from buffer
     num_rollout: A[

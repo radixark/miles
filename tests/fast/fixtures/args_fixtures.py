@@ -64,3 +64,17 @@ class ConfigNamespace(argparse.Namespace):
 
 def make_trainer_args(*, train_backend: str = "megatron", **values: Any) -> ConfigNamespace:
     return ConfigNamespace(**(parser_defaults() | values | {"train_backend": train_backend}))
+
+
+def _parse_test_config(argv: list[str]) -> Any:
+    import os
+
+    from miles.utils.arguments import parse_args
+
+    environment = {"RANK": "0", "WORLD_SIZE": "1", "LOCAL_RANK": "0", "MILES_SCRIPT_ENV_REPORT": ""}
+    with patch.object(sys, "argv", ["test", *argv]), patch.dict(os.environ, environment):
+        return parse_args()
+
+
+def parse_fsdp_test_config(*argv: str) -> Any:
+    return _parse_test_config([*['--train-backend', 'fsdp', '--rollout-batch-size', '2', '--num-rollout', '1', '--actor-num-gpus-per-node', '1', '--micro-batch-size', '1'], *argv])

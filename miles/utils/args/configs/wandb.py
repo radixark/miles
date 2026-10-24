@@ -1,8 +1,12 @@
+from typing import ClassVar
+
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 # wandb
 class WandbConfig(BaseConfig):
+    _mutable_fields: ClassVar[frozenset[str]] = frozenset({"wandb_run_id"})
+
     # wandb parameters
     use_wandb: A[bool, Arg()] = False
     wandb_mode: A[
