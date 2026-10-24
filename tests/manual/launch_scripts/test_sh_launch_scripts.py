@@ -3,9 +3,9 @@ from dataclasses import dataclass, field
 import pytest
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, format_invocations, iter_launch_scripts, run_launch_script
 
-from miles.utils.test_utils.snapshot import assert_matches_snapshot
+from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY, assert_matches_snapshot
 
-_SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "launch_scripts" / "sh"
+_SNAPSHOT_DIR = REPO_ROOT / SNAPSHOT_DIRECTORY / "launch_scripts" / "sh"
 
 
 @dataclass(frozen=True)

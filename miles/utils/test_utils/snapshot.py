@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from miles.utils.test_utils.snapshot_text import read_snapshot, write_snapshot
 from miles.utils.test_utils.snapshot_yaml import dump_snapshot_delta, dump_snapshot_yaml
 
-SNAPSHOT_DIRECTORY = Path("tests/snapshots")
+SNAPSHOT_DIRECTORY = Path("tests/snapshots_before")
 
 SNAPSHOT_UPDATE_ENV_VAR = "MILES_UPDATE_SNAPSHOTS"
 SNAPSHOT_RECORD_DIR_ENV_VAR = "MILES_SNAPSHOT_RECORD_DIR"

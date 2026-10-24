@@ -27,11 +27,11 @@ from miles.utils.external_utils.command_utils.common import rsync_cmd
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.external_utils.model_args_utils import load_model_args
-from miles.utils.test_utils.snapshot import assert_matches_snapshot
+from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY, assert_matches_snapshot
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.serving.utils import override_argv
 
-SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "charts" / "miles-run"
+SNAPSHOT_DIR = REPO_ROOT / SNAPSHOT_DIRECTORY / "charts" / "miles-run"
 FIXTURE_DIR = Path(__file__).resolve().parent
 INFRA_VALUES = FIXTURE_DIR / "typical-infra.yaml"
 SGLANG_CONFIG = FIXTURE_DIR / "typical-sglang.yaml"

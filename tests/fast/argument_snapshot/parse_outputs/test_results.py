@@ -5,7 +5,7 @@ from tests.fast.argument_snapshot.parse_outputs.result_scenarios import result_s
 from tests.fast.argument_snapshot.parse_outputs.results import ResultScenario, capture_result
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 
-from miles.utils.test_utils.snapshot import assert_scenario_snapshots, dump_snapshot
+from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY, assert_scenario_snapshots, dump_snapshot
 
 
 class TestArgumentResults:
@@ -20,5 +20,5 @@ class TestArgumentResults:
         assert_scenario_snapshots(
             snapshots=snapshots,
             bases={} if name == scenario.backend else {name: scenario.backend},
-            directory=REPO_ROOT / "tests" / "snapshots" / "argument_results",
+            directory=REPO_ROOT / SNAPSHOT_DIRECTORY / "parsed_config",
         )

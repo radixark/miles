@@ -5,6 +5,9 @@ generated: never edit a file by hand, regenerate it and review the diff.
 
 | Directory | Produced by | Contains |
 | --- | --- | --- |
+| `argument_schema/` | `tests/fast/argument_snapshot/argparser/test_snapshot.py` | parser schemas and selected parsing results |
+| `parsed_config/` | `tests/fast/argument_snapshot/parse_outputs/test_results.py` | complete parsing results and errors for each scenario |
+| `runtime_config/` | runtime configuration snapshot collection | normalized runtime configurations with shared templates |
 | `launch_scripts/sh/` | `tests/manual/launch_scripts/test_sh_launch_scripts.py` | every external command each `scripts/**.sh` and `examples/**.sh` launcher issues, including the full `ray job submit` argv |
 | `launch_scripts/py/` | `tests/manual/launch_scripts/test_py_launch_scripts.py` | every shell command each `scripts/run_*.py` entrypoint builds |
 | `launch_scripts/self_executing/` | `tests/manual/launch_scripts/test_self_executing_launchers.py` | the `ray job submit` argv of the launchers that build their own command line |

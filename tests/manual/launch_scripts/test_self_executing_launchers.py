@@ -11,9 +11,9 @@ from tests.fast.launch_scripts.py_harness import (
 )
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 
-from miles.utils.test_utils.snapshot import assert_matches_snapshot
+from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY, assert_matches_snapshot
 
-_SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "launch_scripts" / "self_executing"
+_SNAPSHOT_DIR = REPO_ROOT / SNAPSHOT_DIRECTORY / "launch_scripts" / "self_executing"
 
 _P2P = "examples/infra_features/p2p_weight_transfer/run.py"
 _FORMAL_MATH = "examples/experimental/formal_math/single_round/run_minimal.py"

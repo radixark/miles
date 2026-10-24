@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 import yaml
-from miles.utils.test_utils.snapshot import assert_matches_snapshot
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 
 from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
@@ -18,9 +17,10 @@ from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo
+from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY, assert_matches_snapshot
 from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
 
-SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "helm_backend"
+SNAPSHOT_DIR = REPO_ROOT / SNAPSHOT_DIRECTORY / "helm_backend"
 
 FROZEN_RUN_ID = "260101-000000-000"
 FROZEN_LAUNCH_TOKEN = "260101-000000-000001"
