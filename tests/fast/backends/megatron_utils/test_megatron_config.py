@@ -1006,3 +1006,27 @@ class TestOverrideWhitelistShape:
         ]
 
         assert misspelled == []
+
+
+class TestTrainerNormalizationBoundary:
+    @pytest.mark.parametrize("role", ["actor", "critic"])
+    @pytest.mark.parametrize("deterministic", [False, True])
+    def test_role_and_collective_settings_are_resolved_without_mutating_run_args(
+        self, role: str, deterministic: bool
+    ) -> None:
+        """Actor initialization receives normalized private values while the launcher retains its inputs."""
+        args = _make_args(
+            use_critic=True,
+            loss_type="policy_loss",
+            debug_deterministic_collective=deterministic,
+            distributed_backend="nccl",
+        )
+        trainer = next(item for item in resolve_megatron_config(args, base_args={}).trainers if item.role == role)
+
+        resolved = compute_trainer_args(args, trainer)
+
+        assert resolved.loss_type == ("value_loss" if role == "critic" else "policy_loss")
+        assert resolved.distributed_backend == ("det_nccl" if deterministic else "nccl")
+        assert args.loss_type == "policy_loss"
+        assert args.distributed_backend == "nccl"
+        assert resolved is not args
