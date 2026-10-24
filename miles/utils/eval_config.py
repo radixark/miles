@@ -4,6 +4,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+
+def uses_synced_eval(args) -> bool:
+    """Select the dedicated live-eval policy implemented for GPU-delta."""
+    return args.update_weight_transfer_mode == "gpu-delta" and args.eval_num_gpus > 0
+
+
 _MISSING = object()
 
 # TODO: This is ugly, temporarily leave this. We should unify all the config name for dataset, default, and args. (advice from Tom.)

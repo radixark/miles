@@ -29,10 +29,16 @@ from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.environ import use_legacy_rollout_v1
-from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from miles.utils.eval_config import (
+    EvalDatasetConfig,
+    build_eval_dataset_configs,
+    ensure_dataset_list,
+    uses_synced_eval,
+)
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
+from miles.utils.gpu_delta.admission import validate_gpu_delta_args
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args, validate_lora_args_after_megatron
@@ -689,7 +695,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The huggingface checkpoint of the trained model. "
                     "This is used to initialize sglang and also provide the tokenizer. "
                     "Weight synchronization replaces startup weights with the loaded trainer weights before the first rollout. "
-                    "Disk-delta uses this checkpoint as the common baseline for the initial delta."
+                    "Disk-delta and GPU-delta use this checkpoint as the common baseline for the initial delta."
                 ),
             )
             parser.add_argument(
@@ -1126,7 +1132,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
+                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "gpu-delta"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
@@ -1137,7 +1143,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "exceed --update-weight-buffer-size. "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                    "them into a host-local checkpoint that the engine reloads from."
+                    "them into a host-local checkpoint that the engine reloads from. "
+                    "'gpu-delta' publishes canonical GPU-encoded frames using publication-selected "
+                    "Snappy-Zstd, LZ4-Zstd or LZ4 for streaming SGLang GPU apply."
                 ),
             )
             parser.add_argument(
@@ -1147,7 +1155,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Filesystem directory disk-delta weight sync publishes to: one delta directory "
                     "(changed tensors only) per sync, written by the trainer and read by every "
-                    "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                    "rollout host. Also stores immutable framed publications for gpu-delta. "
+                    "Required for disk-delta and gpu-delta."
                 ),
             )
             parser.add_argument(
@@ -1168,7 +1177,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["xor", "overwrite"],
                 default="xor",
                 help=(
-                    "On-disk delta encoding for disk-delta weight sync. 'xor' (default): new ^ old — "
+                    "Delta encoding: gpu-delta supports only xor; disk-delta supports xor and overwrite. "
+                    "'xor' (default): new ^ old — "
                     "smallest wire and fastest, but an involution that must be applied exactly once "
                     "against the correct base (applying it twice reverts). 'overwrite': changed positions "
                     "+ new absolute values — larger, but idempotent. Both are byte-level and dtype-blind; "
@@ -1190,7 +1200,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to a custom function called on each trainer rank after a disk-delta sync's "
+                    "Path to a custom function called on each trainer rank after a disk-delta or gpu-delta sync's "
                     "files are written, before the engines read them — to publish the writes on a "
                     "non-POSIX filesystem (no cross-host visibility without an explicit sync). "
                     "Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``; the hook gates itself."
@@ -1536,10 +1546,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=0,
                 help=(
-                    "Number of GPUs for a dedicated eval engine fleet. When > 0, eval runs on "
-                    "its own engines behind its own router, synced by loading HF checkpoint "
-                    "snapshots (never by joining training weight updates). 0 disables the "
-                    "fleet and keeps today's shared-engine eval behavior. The fleet's engine "
+                    "Number of GPUs for a dedicated eval engine pool. When > 0, eval runs on "
+                    "its own engines behind its own router, using an independent GPU-delta "
+                    "receiver pool or loading HF checkpoint snapshots for other transfer modes. "
+                    "0 keeps shared-engine eval. The dedicated engines' "
                     "settings inherit every --sglang-* value; override individually with "
                     "--eval-sglang-* (e.g. --eval-sglang-mem-fraction-static 0.9)."
                 ),
@@ -3478,7 +3488,7 @@ def miles_validate_args(args):
             setattr(args, k, v)
 
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "gpu-delta"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -3889,6 +3899,8 @@ def miles_validate_args(args):
         ), "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
 
+    validate_gpu_delta_args(args)
+
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
             "Disk-delta weight transfer mode is not compatible with --colocate. Colocate transfers "
@@ -3960,6 +3972,8 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+    if args.update_weight_transfer_mode == "gpu-delta":
+        assert not args.offload_rollout, "GPU delta requires resident original rollout weight storage"
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
@@ -4093,10 +4107,13 @@ def miles_validate_args(args):
             not use_legacy_rollout_v1()
         ), "Snapshot eval requires the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         assert args.eval_interval is not None, "Snapshot eval requires --eval-interval."
-        assert args.eval_hf_dir is not None or args.save_hf is not None, (
-            "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
-            "or --save-hf (reuse periodic HF checkpoints)."
-        )
+        if uses_synced_eval(args):
+            assert not args.debug_train_only, "Synchronized eval requires live trainer weight synchronization."
+        else:
+            assert args.eval_hf_dir is not None or args.save_hf is not None, (
+                "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
+                "or --save-hf (reuse periodic HF checkpoints)."
+            )
         assert not args.colocate, "Snapshot eval is not supported with --colocate."
         assert not args.debug_rollout_only, "Snapshot eval is not supported with debug_rollout_only."
         assert (
@@ -4107,7 +4124,7 @@ def miles_validate_args(args):
                 "Snapshot eval during --debug-train-only requires an explicit --eval-function-path; "
                 "the training rollout function cannot evaluate snapshots."
             )
-        if args.eval_hf_dir is None:
+        if args.eval_hf_dir is None and not uses_synced_eval(args):
             if not any(field == "rollout_id" for _, field, _, _ in Formatter().parse(args.save_hf)):
                 args.save_hf = os.path.join(args.save_hf, "step_{rollout_id}")
                 logger.info(f"Using per-step checkpoints for snapshot eval: --save-hf={args.save_hf}")

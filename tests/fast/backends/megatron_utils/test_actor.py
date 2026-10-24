@@ -217,7 +217,7 @@ class _FakeWeightUpdater:
         assert pool == "rollout"
         return nullcontext()
 
-    def update_weights(self, *, weight_version: int) -> None:
+    def update_weights(self, *, weight_version: int, rollout_id: int | None = None) -> None:
         self.weight_versions.append(weight_version)
         reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
         if self.error is not None:
@@ -240,6 +240,7 @@ def _make_updating_actor(
     )
     train_actor._heartbeat = Mock()
     train_actor._asleep = False
+    train_actor._last_rollout_id = None
     train_actor.weight_updater = updater
     train_actor._get_actor_weight_version = lambda: 7
     return train_actor
