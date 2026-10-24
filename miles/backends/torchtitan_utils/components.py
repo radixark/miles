@@ -5,6 +5,8 @@ import torch.distributed.checkpoint as dcp
 from torchtitan.components import checkpoint as titan_checkpoint
 from torchtitan.components.dataloader import BaseDataLoader
 
+from miles.backends.torchtitan_utils import lora
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +38,8 @@ class TiedCheckpointManager(titan_checkpoint.CheckpointManager):
             return super().dcp_load(state_dict, checkpoint_id, from_hf, from_quantized)
 
         assert self.sd_adapter is not None
-        hf_state = self.sd_adapter.to_hf(state_dict)
+        # LoRA adapters have no HF checkpoint tensors; they keep their init
+        hf_state = self.sd_adapter.to_hf({k: v for k, v in state_dict.items() if not lora.is_adapter_key(k)})
         if self.sd_adapter.fqn_to_index_mapping:
             available = set(self.sd_adapter.fqn_to_index_mapping)
             dropped = sorted(k for k in hf_state if k not in available)

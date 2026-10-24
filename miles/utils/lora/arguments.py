@@ -144,10 +144,13 @@ def validate_lora_args(args):
     validate_multi_lora_args(args)
     if not is_lora_enabled(args):
         return
-    assert args.train_backend == "megatron", "LoRA injection is not implemented for FSDP; use --train-backend megatron"
+    assert args.train_backend in (
+        "megatron",
+        "torchtitan",
+    ), f"LoRA injection is not implemented for --train-backend {args.train_backend}; use megatron or torchtitan"
     assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
-    hf_config = load_hf_config(args.hf_checkpoint)
-    args.hf_lora_targets, args.lora_adapter_targets = _resolve_lora_targets(args, hf_config)
+    args.hf_lora_targets = _resolve_lora_targets(args, load_hf_config(args.hf_checkpoint))
+    args.lora_adapter_targets = list(args.hf_lora_targets)
 
     # Training and serving must agree on shared-outer grouped-expert LoRA (expert_dim=1).
     if args.experts_shared_outer_loras and hasattr(args, "sglang_experts_shared_outer_loras"):
@@ -163,15 +166,28 @@ def validate_lora_args(args):
 
 
 def validate_lora_args_after_megatron(args):
-    """LoRA checks that read Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
-    if is_lora_enabled(args) and args.megatron_to_hf_mode == "raw":
-        validate_native_lora_args(args)
+    """Megatron's native (raw-mode) LoRA: the targets its spec serves, and the run checks that read
+    Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
+    if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
+        return
+    hf_config = load_hf_config(args.hf_checkpoint)
+    args.lora_adapter_targets = resolve_adapter_targets(
+        hf_config.to_dict(),
+        args.hf_lora_targets,
+        hf_modules=_hf_modules(hf_config),
+        lora_type=args.lora_type,
+        experts_shared_outer_loras=args.experts_shared_outer_loras,
+    )
+    validate_native_lora_args(args)
 
 
-def _resolve_lora_targets(args, hf_config):
-    """Return final HF and adapter targets without changing the CLI selectors in `args`."""
-    hf_mapping = HfWeightMapping.from_config(hf_config)
-    hf_modules = [name.removesuffix(".weight") for name in hf_mapping.parameter_names]
+def _hf_modules(hf_config) -> list[str]:
+    return [name.removesuffix(".weight") for name in HfWeightMapping.from_config(hf_config).parameter_names]
+
+
+def _resolve_lora_targets(args, hf_config) -> list[str]:
+    """Return the final HF targets without changing the CLI selectors in `args`."""
+    hf_modules = _hf_modules(hf_config)
     targets = parse_lora_targets(args.target_modules)
     exclusions = parse_lora_targets(args.exclude_modules) or []
     explicit_targets = []
@@ -215,17 +231,7 @@ def _resolve_lora_targets(args, hf_config):
     else:
         layout = get_hf_lora_targets(hf_config.to_dict())
         hf_targets = exclude_hf_lora_targets(expand_hf_lora_targets(targets, layout), exclusions)
-
-    adapter_targets = list(hf_targets)
-    if args.megatron_to_hf_mode == "raw":
-        adapter_targets = resolve_adapter_targets(
-            hf_config.to_dict(),
-            hf_targets,
-            hf_modules=hf_modules,
-            lora_type=args.lora_type,
-            experts_shared_outer_loras=args.experts_shared_outer_loras,
-        )
-    return hf_targets, adapter_targets
+    return hf_targets
 
 
 def validate_multi_lora_args(args: Any) -> None:
