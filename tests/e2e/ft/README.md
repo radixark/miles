@@ -559,6 +559,9 @@ Fault recovery must not cost end-to-end learning, which the comparison scenarios
 
 ### `scenario_random_crash_fully_async` and `scenario_realistic_gsm8k_fully_async`
 
+- **Random-crash Ray final evaluation**: the fully-async soak uses the normal `train_async.py` entry and evaluates the prepared GSM8K test split after the final weight update, with no pre-training eval, one sample per prompt and a 200-token response limit. Normal eval preparation resumes rollout health checks; the original final-state and fault-coverage assertions remain unchanged.
+- **Random-crash Ray probe grace**: the fully-async eager soak sets `--trainer-heartbeat-checker-first-wait 0`; a 300-second wait after each recovery otherwise consumes its 60-rollout injection window before every enabled fault form can run. Health probes, quiescence, recovery witnesses and coverage assertions remain mandatory.
+
 ```
 Type: shells - each calls its sync twin with fully_async=True and pins nothing else
 Entries: test_random_crash_fully_async__kill_train_rollout__dp2_cp2.py,

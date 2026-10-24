@@ -265,7 +265,8 @@ class TestServeSchedulingOptions:
 
         actor_class = _actor_classes(fake_ray_cluster)[0]
         assert actor_class is not bootstrapped_worker_class(_GROUPED_WORKER_CLASS_PATH)
-        assert actor_class.isolated.__ray_concurrency_group__ == "kill_self"
+        assert inspect.unwrap(actor_class.isolated).__ray_concurrency_group__ == "kill_self"
+        assert inspect.signature(actor_class.isolated) == inspect.signature(_GroupedWorker.isolated)
 
     async def test_a_worker_without_groups_reaches_ray_unannotated(self, fake_ray_cluster: FakeRayCluster):
         """Ray refuses to build an actor whose method names a group the class never declares."""

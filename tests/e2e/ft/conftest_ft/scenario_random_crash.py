@@ -29,6 +29,7 @@ from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.runner import SoakRunner
 from tests.utils.soak.core.utils import (
     API_SERVER_ARGS,
+    DATA_DIR,
     assert_fresh_dump_dir,
     create_soak_config,
     evidence_directory,
@@ -43,6 +44,7 @@ from tests.utils.soak.ft.entrypoint import run_cell_soak
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE, FaultTrigger
 
 from miles.utils.external_utils import command_utils
+from miles.utils.workers.types import ClusterBackend
 
 app: typer.Typer = typer.Typer()
 
@@ -143,6 +145,13 @@ def _build_train_args(
         + get_fully_async_args(fully_async=fully_async)
         + "--mini-ft-controller-enable "
     )
+    if fully_async and config.cluster_backend is ClusterBackend.RAY:
+        train_args += (
+            "--trainer-heartbeat-checker-first-wait 0 "
+            f"--eval-interval {num_steps} --skip-eval-before-train "
+            f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "
+            "--n-samples-per-eval-prompt 1 --eval-max-response-len 200 --eval-top-k 1 "
+        )
     if ft_mode.has_real_rollout:
         train_args += "--update-weight-transfer-mode p2p "
         train_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -518,6 +519,8 @@ def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Calla
     def routed(self, *args, **kwargs):
         return method(self, *args, **kwargs)
 
+    routed.__signature__ = inspect.signature(method)
+    del routed.__wrapped__
     return ray.method(concurrency_group=group)(routed)
 
 
