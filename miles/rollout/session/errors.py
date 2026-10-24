@@ -9,6 +9,7 @@ SessionError (base)
 ├── TokenizationError          → 500  TITO tokenizer / prefix mismatch
 ├── UpstreamResponseError      → 502  SGLang response invalid or unexpected
 └── UpstreamGenerationAbortedError → 503  SGLang aborted the generation
+    └── RoutingReplayForcingRefusedError → 503  routing replay forcing refused the turn
 """
 
 
@@ -65,3 +66,11 @@ class UpstreamGenerationAbortedError(SessionError):
     """Raised when upstream aborts a generation without an HTTP error."""
 
     status_code: int = 503
+
+
+class RoutingReplayForcingRefusedError(UpstreamGenerationAbortedError):
+    """Raised when routing replay forcing refused or did not confirm a turn; the session yields no sample."""
+
+
+# Session metadata key: how many of a session's turns routing replay forcing refused.
+FORCING_REFUSED_TURNS_KEY = "forcing_refused_turns"

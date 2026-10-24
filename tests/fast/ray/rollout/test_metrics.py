@@ -489,6 +489,27 @@ class TestComputePassrateFromSamples:
         }
 
 
+class TestR3Metrics:
+    @staticmethod
+    def _turn(retractions: int, forced_tokens: int | None = None) -> dict:
+        segment = {"t1": 1.0, "turn": 1, "num_retractions": retractions}
+        if forced_tokens is not None:
+            segment["routed_experts_forcing"] = dict(held_tokens=forced_tokens, forced_tokens=forced_tokens)
+        return segment
+
+    def test_turn_rates_count_every_turn_of_merged_and_single_turn_samples(self):
+        samples = [
+            make_sample(index=0, metadata={"lifecycle": [self._turn(0, 0), self._turn(1, 30), self._turn(0, 50)]}),
+            make_sample(index=1, metadata={"lifecycle": self._turn(0, 0)}),
+            make_sample(index=2, metadata={"lifecycle": [self._turn(2)]}),  # an unkeyed turn has no forcing counters
+        ]
+
+        out = _compute_metrics_from_samples(make_args(use_rollout_routing_replay=True), samples)
+
+        assert (out["r3/retracted_turn_frac"], out["r3/forced_turn_frac"]) == (0.4, 0.5)
+        assert not any(key.startswith("r3/") for key in _compute_metrics_from_samples(make_args(), samples))
+
+
 class TestWeightVersionMetrics:
     def test_all_numeric_inputs_keep_the_existing_decode_metric_keys_and_values(self):
         """All-numeric decode spans retain the complete pre-existing metric surface."""

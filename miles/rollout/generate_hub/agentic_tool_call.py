@@ -42,6 +42,7 @@ from miles.dashboard.hooks import push_sandbox_reports
 from miles.rollout.agentic.agent_function import AGENT_FUNCTION_MODES, call_agent_function
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
+from miles.rollout.session.errors import FORCING_REFUSED_TURNS_KEY
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
@@ -126,12 +127,17 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         return GenerateFnOutput(samples=[sample] if use_v2 else sample)
 
     if not result.samples:
+        refused_turns = result.session_metadata.get(FORCING_REFUSED_TURNS_KEY, 0)
         if result.empty_reason == "all_truncated":
             logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
+        elif result.empty_reason == "routing_replay_forcing_refused":
+            logger.warning(f"{log_prefix} Routing replay forcing refused {refused_turns} turn(s)")
         else:
             logger.warning("No model calls recorded for sample")
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
+        if refused_turns:
+            sample.metadata[FORCING_REFUSED_TURNS_KEY] = refused_turns  # counted by MetricGatherer.on_forcing_refusals
         if collect_spec_metrics:
             sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
         return GenerateFnOutput(samples=[sample] if use_v2 else sample)

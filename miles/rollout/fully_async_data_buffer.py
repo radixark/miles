@@ -188,6 +188,7 @@ class DefaultDataBuffer(DataBuffer):
             self._cond.notify_all()
 
     def _preput_filter(self, input: DataBufferInput) -> bool:
+        self._metric_gatherer.on_forcing_refusals(input.group)
         output = apply_aborted_filter(self._args, input.group)
         if not output.keep:
             self._metric_aborted_groups += 1

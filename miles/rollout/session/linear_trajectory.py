@@ -92,6 +92,7 @@ class LinearTrajectory:
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
+    forcing_refused_turns: int = 0
 
     def snapshot(self) -> "LinearTrajectory":
         """Copy the mutable containers, sharing committed payloads read-only. Caller holds the lock."""

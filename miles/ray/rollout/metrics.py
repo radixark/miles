@@ -126,6 +126,7 @@ def _compute_metrics_from_samples(args, samples):
         prefix="weight_version/prefill_",
     )
     log_dict |= _compute_prefill_lag_metrics(samples)
+    log_dict |= _compute_r3_metrics(args, samples)
     if args.ci_test and args.ci_assert_prefill_lag_max is not None:
         _assert_prefill_lag_metrics(metrics=log_dict, bound=args.ci_assert_prefill_lag_max)
 
@@ -235,6 +236,22 @@ def _compute_prefill_lag_metrics(samples: list[Sample]) -> dict[str, float]:
         "weight_version/prefill_stale_token_ratio": stale_tokens / prompt_tokens,
         "weight_version/prefill_lag_max": max(lag for _, lag in comparable),
     }
+
+
+def _compute_r3_metrics(args, samples: list[Sample]) -> dict[str, float]:
+    """Fractions of session turns the engine retracted and forced, from each turn's lifecycle segment."""
+    if not args.use_rollout_routing_replay:
+        return {}
+    segments = []
+    for sample in samples:
+        lifecycle = sample.metadata.get("lifecycle") or []
+        segments += lifecycle if isinstance(lifecycle, list) else [lifecycle]
+    log_dict = {}
+    if retractions := [segment["num_retractions"] for segment in segments if "num_retractions" in segment]:
+        log_dict["r3/retracted_turn_frac"] = sum(count > 0 for count in retractions) / len(retractions)
+    if forcing := [segment["routed_experts_forcing"] for segment in segments if "routed_experts_forcing" in segment]:
+        log_dict["r3/forced_turn_frac"] = sum(f["forced_tokens"] > 0 for f in forcing) / len(forcing)
+    return log_dict
 
 
 def _assert_prefill_lag_metrics(*, metrics: dict[str, float], bound: int) -> None:

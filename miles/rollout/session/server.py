@@ -67,7 +67,8 @@ class SessionServer:
 
         # `retract` may recompute earlier rows and must return full R3; all other
         # pause modes preserve prior rows and can request only the appended R3.
-        self.use_addition_r3 = config.pause_generation_mode != "retract"
+        # Forcing keeps earlier rows exact under retract too.
+        self.use_addition_r3 = config.pause_generation_mode != "retract" or config.use_rollout_routing_replay_forcing
         self._core = setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
 
     @asynccontextmanager

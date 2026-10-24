@@ -27,6 +27,7 @@ class ProcessResultMetaInfo:
     spec_num_correct_drafts: int | None = None
     spec_num_proposed_drafts: int | None = None
     spec_verify_ct: int | None = None
+    num_retractions: int | None = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -213,6 +214,11 @@ class MockSGLangServer:
         }
         if prompt_ids is not None:
             choice["prompt_token_ids"] = prompt_ids
+        if payload.get("routed_experts_session_key") is not None:
+            # An engine that held and forced every token the turn builds on; tests inject its refusals.
+            held = payload["routed_experts_start_len"]
+            forcing = dict(held_tokens=held, forced_tokens=held, unforced_tokens=0, retract_snapshots=0)
+            choice["meta_info"]["routed_experts_forcing"] = forcing
 
         # Real SGLang chat responses always carry ``usage``; clients that
         # validate the full ChatCompletionResponse schema require it.

@@ -1,7 +1,21 @@
 from argparse import Namespace
 
 from miles.rollout.filter_hub.base_types import MetricGatherer
+from miles.rollout.session.errors import FORCING_REFUSED_TURNS_KEY
 from miles.utils.types import Sample
+
+
+class TestMetricGathererForcingRefusals:
+    def test_refused_turns_of_aborted_samples_are_summed_across_groups(self):
+        """Refused sessions abort their samples, so the gatherer is the only place their count survives."""
+        gatherer = MetricGatherer()
+        assert "rollout/r3/forcing_refused_turns" not in gatherer.collect()
+
+        refused = Sample(status=Sample.Status.ABORTED, metadata={FORCING_REFUSED_TURNS_KEY: 2})
+        gatherer.on_forcing_refusals([refused, _sample(reward=1.0)])
+        gatherer.on_forcing_refusals([[Sample(status=Sample.Status.ABORTED, metadata={FORCING_REFUSED_TURNS_KEY: 1})]])
+
+        assert gatherer.collect()["rollout/r3/forcing_refused_turns"] == 3
 
 
 class TestMetricGathererUnfilteredRawReward:

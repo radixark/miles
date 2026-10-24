@@ -14,13 +14,21 @@ import requests
 from fastapi.responses import JSONResponse
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
+from miles.rollout.session.errors import FORCING_REFUSED_TURNS_KEY
+from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import strict_message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.http_utils import find_available_port
-from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
+from miles.utils.test_utils.mock_sglang_server import (
+    MockSGLangServer,
+    ProcessResult,
+    ProcessResultMetaInfo,
+    with_mock_server,
+)
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
+from miles.utils.types import Sample
 
 
 _INSTANCE_ID = "0123456789abcdef-0"
@@ -736,6 +744,80 @@ class TestAdditionR3RequestOffset:
             # The launch flag is authoritative: off means an explicit False, never a client-provided value.
             assert body["return_routed_experts"] is False
             assert "routed_experts_start_len" not in body
+
+
+class TestRoutingReplayForcing:
+    """Routing replay forcing keys each turn by its session and fails closed on a refused or unconfirmed turn."""
+
+    MESSAGES = [{"role": "user", "content": "hi"}]
+    FORCING = {"use_rollout_routing_replay": True, "use_rollout_routing_replay_forcing": True}
+
+    @staticmethod
+    def _collect(url: str, session_id: str):
+        response = requests.post(f"{url}/sessions/{session_id}/samples", json={}, timeout=10.0)
+        assert response.status_code == 200, response.text
+        return decode_samples_and_merge_input_sample(response.content, Sample())
+
+    def test_every_turn_sends_its_session_key_and_the_engine_counters_reach_the_sample(self):
+        def retracted_process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(text="ok", meta_info=ProcessResultMetaInfo(num_retractions=1))
+
+        with _serve_router(self.FORCING) as env, patch.object(env.backend, "process_fn", new=retracted_process_fn):
+            session_id = _create_session(env.url)
+            first = _post_chat(env.url, session_id, {"messages": self.MESSAGES})
+            tool_turn = {"role": "tool", "content": "ok", "tool_call_id": "t0"}
+            messages = [*self.MESSAGES, first.json()["choices"][0]["message"], tool_turn]
+            assert _post_chat(env.url, session_id, {"messages": messages}).status_code == 200
+
+            bodies = env.backend.request_log[-2:]
+            assert [body["routed_experts_session_key"] for body in bodies] == [session_id, session_id]
+            # Under retract (the router's default here) forcing keeps addition R3: turn 2 asks only for new rows.
+            held_tokens = bodies[1]["routed_experts_start_len"]
+            assert held_tokens > 0
+            [sample] = self._collect(env.url, session_id).samples
+            segments = sample.metadata["lifecycle"]
+            assert [segment["routed_experts_forcing"]["held_tokens"] for segment in segments] == [0, held_tokens]
+            assert [segment["num_retractions"] for segment in segments] == [1, 1]
+
+    @pytest.mark.parametrize(
+        ("abort_message", "counters", "refused"),
+        [
+            ("routed_experts_missing: held=0 requested=5", None, True),
+            ("routed_experts_forcing_disabled: start the server with forcing", None, True),
+            (None, None, True),  # an engine that ignored the key
+            (None, {"held_tokens": 0, "forced_tokens": 0}, True),
+            (None, {"held_tokens": 4, "forced_tokens": 2, "unforced_tokens": 2}, True),
+            ("Abort by the scheduler", None, False),
+        ],
+    )
+    def test_an_unforced_or_refused_turn_fails_closed(self, abort_message, counters, refused):
+        original_reply = MockSGLangServer._compute_chat_completions_response
+
+        def broken_reply(self, payload: dict) -> dict:
+            response = original_reply(self, payload)
+            choice = response["choices"][0]
+            if abort_message is not None:
+                choice.update(finish_reason="abort", meta_info={"finish_reason": {"message": abort_message}})
+            elif counters is None:
+                del choice["meta_info"]["routed_experts_forcing"]
+            else:
+                choice["meta_info"]["routed_experts_forcing"] = counters
+            return response
+
+        with (
+            patch.object(MockSGLangServer, "_compute_chat_completions_response", new=broken_reply),
+            _serve_router(self.FORCING) as env,
+        ):
+            session_id = _create_session(env.url)
+            assert _post_chat(env.url, session_id, {"messages": self.MESSAGES}).status_code == 503
+            # A retry cannot revive a refused session, so it is answered without reaching the engine.
+            num_engine_requests = len(env.backend.request_log)
+            assert _post_chat(env.url, session_id, {"messages": self.MESSAGES}).status_code == 503
+            assert (len(env.backend.request_log) == num_engine_requests) is refused
+            reply = self._collect(env.url, session_id)
+            assert reply.samples == []
+            assert (reply.empty_reason == "routing_replay_forcing_refused") is refused
+            assert reply.session_metadata.get(FORCING_REFUSED_TURNS_KEY) == (1 if refused else None)
 
 
 class TestSessionExtraKey:

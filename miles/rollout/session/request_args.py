@@ -180,6 +180,12 @@ def resolve_request_args_by_config(
             f"routed_experts_start_len={value!r} is not accepted: R3 offsets are computed by the session server"
         )
     request_args.pop("routed_experts_start_len", None)
+    if not evaluation and (value := request_args.get("routed_experts_session_key")) is not None:
+        raise MessageValidationError(
+            f"routed_experts_session_key={value!r} is not accepted: routing replay forcing keys are set by "
+            "the session server"
+        )
+    request_args.pop("routed_experts_session_key", None)
     if (value := request_args.get("logprob_start_len")) is not None:
         raise MessageValidationError(
             f"logprob_start_len={value!r} is not accepted: not supported on the session chat path"

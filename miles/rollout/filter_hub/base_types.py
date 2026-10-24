@@ -3,6 +3,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from miles.rollout.session.errors import FORCING_REFUSED_TURNS_KEY
 from miles.utils.types import Sample
 
 
@@ -41,6 +42,7 @@ class MetricGatherer:
         self._dynamic_filter_drop_reason_count = defaultdict(lambda: 0)
         self._unfiltered_reward_sum = 0.0
         self._unfiltered_reward_count = 0
+        self._forcing_refused_turns = 0
 
     def on_group_before_dynamic_filter(self, args: argparse.Namespace, group: list) -> None:
         for sample in _iter_group_samples(group):
@@ -52,6 +54,11 @@ class MetricGatherer:
                 continue
             self._unfiltered_reward_sum += float(value)
             self._unfiltered_reward_count += 1
+
+    def on_forcing_refusals(self, group: list) -> None:
+        """Count forcing-refused turns; their aborted samples drop the group before any filter sees it."""
+        for sample in _iter_group_samples(group):
+            self._forcing_refused_turns += sample.metadata.get(FORCING_REFUSED_TURNS_KEY, 0)
 
     def on_dynamic_filter_drop(self, reason: str | None):
         if not reason:
@@ -65,6 +72,8 @@ class MetricGatherer:
         }
         if self._unfiltered_reward_count:
             metrics["rollout/raw_reward_unfiltered"] = self._unfiltered_reward_sum / self._unfiltered_reward_count
+        if self._forcing_refused_turns:
+            metrics["rollout/r3/forcing_refused_turns"] = self._forcing_refused_turns
         return metrics
 
 

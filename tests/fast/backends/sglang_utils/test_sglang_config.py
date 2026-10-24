@@ -325,6 +325,27 @@ class TestGpuOffset:
         assert cfg.models[1].server_groups[0].gpu_offset == 8
 
 
+class TestRoutingReplayForcing:
+    def test_a_frozen_model_runs_without_forcing(self, tmp_path):
+        """Sessions reach only the trained model, and a frozen side model need not even be MoE."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 4\n"
+            "  - name: reward\n"
+            "    update_weights: false\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 4\n",
+        )
+
+        forcing = [model.server_groups[0].overrides.get("enable_routed_experts_forcing") for model in cfg.models]
+        assert forcing == [None, False]
+
+
 class TestEngineOffset:
     def test_engine_offsets_count_the_workers_of_every_preceding_group(self, tmp_path):
         """Groups of different engine widths contribute different worker counts, so a gpu offset alone cannot number them."""

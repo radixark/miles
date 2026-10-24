@@ -5,6 +5,7 @@ import pytest
 import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
 from miles.ray.rollout.rollout_data_conversion import validate_compact_rollout_ids
 from miles.rollout.base_types import GenerateFnInput
+from miles.rollout.session.errors import FORCING_REFUSED_TURNS_KEY
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.types import SessionServerInstance
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
@@ -147,6 +148,21 @@ async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason):
     assert output.samples[0] is not generate_input.sample
     assert output.samples[0].status == Sample.Status.ABORTED
     assert SESSION_ROLLOUT_METRICS_KEY not in output.samples[0].metadata
+
+
+@pytest.mark.asyncio
+async def test_a_forcing_refused_session_aborts_its_sample_and_carries_the_count(monkeypatch):
+    """The count rides the aborted sample to where the rollout drops its group."""
+    session_metadata = {FORCING_REFUSED_TURNS_KEY: 2}
+    reply = SamplesReply(samples=[], session_metadata=session_metadata, empty_reason="routing_replay_forcing_refused")
+    _patch_agent(monkeypatch, _Tracer(reply))
+    generate_input = _generate_input(use_session_server=True)
+
+    output = await agentic_tool_call.generate(generate_input)
+
+    assert output.samples.status == Sample.Status.ABORTED
+    assert output.samples.metadata[FORCING_REFUSED_TURNS_KEY] == 2
+    assert FORCING_REFUSED_TURNS_KEY not in generate_input.sample.metadata
 
 
 @pytest.mark.asyncio
