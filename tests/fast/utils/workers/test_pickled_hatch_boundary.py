@@ -20,6 +20,7 @@ PICKLED_PARAMETERS = {
     ("miles/ray/train/group.py", "TrainerController.init", "args"),
     ("miles/ray/train_actor.py", "TrainRayActor.init", "args"),
     ("miles/backends/megatron_utils/actor.py", "MegatronTrainRayActor.init", "args"),
+    ("miles/backends/megatron_utils/actor.py", "MegatronTrainRayActor._init", "args"),
     ("miles/backends/fsdp_utils/actor.py", "FSDPTrainRayActor.init", "args"),
     ("miles/backends/torchtitan_utils/actor.py", "TorchtitanTrainRayActor.init", "args"),
 }

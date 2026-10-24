@@ -54,3 +54,12 @@ def parser_defaults() -> dict[str, Any]:
     with _with_relaxed_parser_required_args(parser), patch.object(sys, "argv", ["test"]):
         parsed, _ = parser.parse_known_args([])
     return {**_TRAIN_BACKEND_DEFAULTS, **vars(parsed), **_RESOLVED_AFTER_PARSING}
+
+
+class ConfigNamespace(argparse.Namespace):
+    def __iter__(self) -> Iterator[tuple[str, Any]]:
+        return iter(vars(self).items())
+
+
+def make_trainer_args(*, train_backend: str = "megatron", **values: Any) -> ConfigNamespace:
+    return ConfigNamespace(**(parser_defaults() | values | {"train_backend": train_backend}))

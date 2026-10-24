@@ -3,6 +3,8 @@ import os
 import re
 import sys
 import warnings
+
+from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.audit_utils.event_logger.logger import EventLogger, is_event_logger_initialized, set_event_logger
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.env_report.reporter import EnvReporter, start_env_reporting
@@ -18,6 +20,8 @@ _FATAL_ASYNC_PATTERN = "coroutine .* was never awaited"
 def configure_logger(args, *, source: ProcessIdentity, report_env: bool = True) -> None:
     name = source.to_name()
     configure_logger_raw(name)
+    ConfigSnapshotDumper.configure(args=args, source=source)
+    ConfigSnapshotDumper.dump(stage="process_config", config={"args": args})
 
     if (event_dir := getattr(args, "save_debug_event_data", None)) is not None:
         if not is_event_logger_initialized():

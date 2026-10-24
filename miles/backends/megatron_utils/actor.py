@@ -45,6 +45,7 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils import object_store
 from miles.utils.argparse_utils import inplace_modify_args
+from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -649,6 +650,7 @@ class MegatronTrainRayActor(TrainRayActor):
         compute_advantages_and_returns(self.args, rollout_data)
 
         self.args.loss_type = "value_loss"
+        self._log_first_train_config()
         train_step_outcome: TrainStepOutcome = train(
             rollout_id,
             self.model,
@@ -784,6 +786,7 @@ class MegatronTrainRayActor(TrainRayActor):
             num_rollouts = get_num_rollouts(self.args, rollout_data, num_optimizer_steps)
             self._set_replay_stage("replay_backward")
             with timer("actor_train"):
+                self._log_first_train_config()
                 train_step_outcome = train(
                     rollout_id,
                     self.model,
@@ -830,6 +833,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self._heartbeat.bump()
         return TrainStepOutput(outcome=train_step_outcome)
+
+    def _log_first_train_config(self) -> None:
+        if not self._config_snapshot_train_recorded:
+            ConfigSnapshotDumper.dump(
+                stage="train_first_step", config={"args": self.args, "role": self.role}
+            )
+            self._config_snapshot_train_recorded = True
 
     def _publish_model_companion_info(self, *, rollout_id: int, attempt: int, result: TrainStepOutput) -> None:
         if (
