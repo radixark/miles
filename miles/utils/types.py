@@ -5,6 +5,7 @@ from typing import Any
 import numpy
 import torch
 
+from miles.utils.output_store.plan import StorePlan
 from miles.utils.sampling_mask import RolloutSamplingMask
 
 LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
@@ -193,6 +194,7 @@ class Sample:
     rollout_indexer_topk: numpy.ndarray | None = (
         None  # Indexer topk from rollout engine. shape: (num_tokens-1, num_indexer_layers, index_topk), dtype=int32
     )
+    rollout_store_plan: StorePlan | None = None  # Output store: where the replay arrays live in stored objects
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
     opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
@@ -393,6 +395,8 @@ class Sample:
             actual = len(self.rollout_indexer_topk)
             expect = len(self.tokens) - 1
             assert actual == expect, f"rollout_indexer_topk length ({actual}) != len(tokens) - 1 ({expect})"
+        if self.rollout_store_plan is not None:
+            self.rollout_store_plan.validate(num_tokens=len(self.tokens), response_length=self.response_length)
         previous_end = 0
         for span in self.all_weight_version_spans:
             assert span.version, f"weight version span has empty version: {self.weight_versions}"
@@ -432,6 +436,8 @@ class Sample:
             self.rollout_routed_experts = self.rollout_routed_experts[:-n]
         if self.rollout_indexer_topk is not None:
             self.rollout_indexer_topk = self.rollout_indexer_topk[:-n]
+        if self.rollout_store_plan is not None:
+            self.rollout_store_plan = self.rollout_store_plan.strip_tail(n)
         self.weight_versions = [
             call for call in self.weight_versions if call.output_start is None or call.output_start <= len(self.tokens)
         ]
@@ -462,6 +468,7 @@ class Sample:
         self.rollout_sampling_mask = None
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None
+        self.rollout_store_plan = None
         self.status = Sample.Status.ABORTED
         self.trainer_model_id = None
         self.kv_cache_namespace = None

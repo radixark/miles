@@ -62,6 +62,28 @@ def _make_rollout_data() -> dict[str, Any]:
             ],
             [],
         ],
+        # StorePlan.to_dict rows: a forced segment has a null key.
+        "rollout_store_plan": [
+            {
+                "fields": {"sampling_mask": [["miles/r0", 0, 2], [None, 0, 1]]},
+                "refs": [
+                    {
+                        "backend": "mooncake",
+                        "key": "miles/r0",
+                        "fields": [
+                            {
+                                "name": "output_token_sampling_mask_lengths",
+                                "dtype": "int32",
+                                "shape": [2],
+                                "codec": "raw",
+                                "nbytes": 8,
+                            }
+                        ],
+                    }
+                ],
+            },
+            {"fields": {"sampling_mask": [[None, 0, 2]]}, "refs": []},
+        ],
     }
 
 
@@ -74,6 +96,7 @@ def _assert_roundtrip_equal(fetched: dict[str, Any], original: dict[str, Any]) -
     assert list(fetched["prompt"]) == original["prompt"]
     assert list(fetched["weight_versions"]) == original["weight_versions"]
     assert list(fetched["metadata"]) == original["metadata"]
+    assert list(fetched["rollout_store_plan"]) == original["rollout_store_plan"]
 
 
 @pytest.fixture(autouse=True)

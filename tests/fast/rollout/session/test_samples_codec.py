@@ -9,6 +9,7 @@ import json
 import numpy as np
 import pytest
 import safetensors.numpy
+from tests.fast.utils.output_store.test_plan import Ref, ref, response
 
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
@@ -410,3 +411,37 @@ class TestWeightVersionsOnTheSamplesWire:
 
         with pytest.raises(expected_error, match=match):
             decode_samples_and_merge_input_sample(payload, Sample())
+
+
+class TestStorePlanOnTheSamplesWire:
+    @pytest.fixture(autouse=True)
+    def _fake_refs(self, monkeypatch):
+        # CPU CI has no radix_transfer_plugins: read the fake refs back instead.
+        monkeypatch.setattr("miles.utils.output_store.plan.store_ref_from_dict", Ref.from_builtins)
+
+    @staticmethod
+    def _plan():
+        # A forced row and an unused ref, so the JSON carries a null key and an extra ref.
+        return response("a", prompt=3, output=1).insert_tokens(1).adopt_refs([ref("x")])
+
+    @pytest.mark.parametrize("fields", [COMPUTED_FIELDS, COMPUTED_FIELDS_V2])
+    def test_plan_crosses_the_wire_as_its_dict(self, fields):
+        plan = self._plan()
+        payload = encode_samples([_computed_sample(rollout_store_plan=plan)], {}, fields=fields)
+
+        meta = json.loads(safetensors.numpy.load(payload)["_samples_meta"].tobytes().decode("utf-8"))
+        assert meta["samples"][0]["rollout_store_plan"] == plan.to_dict()
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample(), fields=fields).samples
+        assert out.rollout_store_plan == plan
+
+    @pytest.mark.parametrize("fields", [COMPUTED_FIELDS, COMPUTED_FIELDS_V2])
+    def test_without_plans_the_payload_keeps_its_bytes(self, fields):
+        without_plan = tuple(field for field in fields if field != "rollout_store_plan")
+        assert encode_samples([_computed_sample()], {}, fields=fields) == encode_samples(
+            [_computed_sample()], {}, fields=without_plan
+        )
+
+    def test_no_plan_on_the_wire_replaces_the_input_samples_plan(self):
+        payload = encode_samples([_computed_sample()], {}, None)
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample(rollout_store_plan=self._plan())).samples
+        assert out.rollout_store_plan is None

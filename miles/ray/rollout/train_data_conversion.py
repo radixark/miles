@@ -8,6 +8,7 @@ from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRec
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
+from miles.utils.output_store.plan import FIELDS, SamplingMaskSegments, StorePlanError
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
@@ -48,6 +49,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
     "weight_versions": ValueSpec(codec="msgpack_ragged"),
+    "rollout_store_plan": ValueSpec(codec="msgpack_ragged"),
     "raw_reward": ValueSpec(codec="auto"),
     "total_lengths": ValueSpec(codec="auto"),
     "dynamic_global_batch_size": ValueSpec(codec="auto"),
@@ -127,19 +129,28 @@ def convert_samples_to_train_data(
     if samples[0].rollout_log_probs is not None:
         train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
 
+    has_store_plan = any(sample.rollout_store_plan is not None for sample in samples)
+    if has_store_plan:
+        _check_store_plans(args, samples)
+        train_data["rollout_store_plan"] = [sample.rollout_store_plan.to_dict() for sample in samples]
+
     if k := args.rollout_top_logprobs_num:
+        # Support mode with the output store: the trainer builds the candidates from the stored mask.
+        store_support = has_store_plan and args.rollout_sampling_logprobs_mode == "support"
+        candidate_fields = () if store_support else ("rollout_topk_token_ids", "rollout_topk_log_probs")
         for sample in samples:
-            for field in ("rollout_topk_token_ids", "rollout_topk_log_probs", "rollout_log_probs"):
+            for field in (*candidate_fields, "rollout_log_probs"):
                 if getattr(sample, field) is None:
                     raise ValueError(
                         f"Rollout top-k logprobs collection requires {field}; "
                         f"sample_index={sample.index}. Custom rollout producers must record probabilities during generation."
                     )
-        if args.ci_test:
-            for sample in samples:
-                validate_rollout_topk_logprobs_sample(sample, k)
-        train_data["rollout_topk_token_ids"] = [sample.rollout_topk_token_ids for sample in samples]
-        train_data["rollout_topk_log_probs"] = [sample.rollout_topk_log_probs for sample in samples]
+        if not store_support:
+            if args.ci_test:
+                for sample in samples:
+                    validate_rollout_topk_logprobs_sample(sample, k)
+            train_data["rollout_topk_token_ids"] = [sample.rollout_topk_token_ids for sample in samples]
+            train_data["rollout_topk_log_probs"] = [sample.rollout_topk_log_probs for sample in samples]
 
     has_sampling_mask = any(sample.rollout_sampling_mask is not None for sample in samples)
     if has_sampling_mask:
@@ -164,7 +175,7 @@ def convert_samples_to_train_data(
 
     if samples[0].rollout_routed_experts is not None:
         train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
-    elif getattr(args, "use_rollout_routing_replay", False):
+    elif getattr(args, "use_rollout_routing_replay", False) and not has_store_plan:
         raise ValueError(
             "--use-rollout-routing-replay is set but the rollout samples carry no "
             "rollout_routed_experts: the engine response meta_info lacked 'routed_experts'."
@@ -172,7 +183,7 @@ def convert_samples_to_train_data(
 
     if samples[0].rollout_indexer_topk is not None:
         train_data["rollout_indexer_topk"] = [sample.rollout_indexer_topk for sample in samples]
-    elif getattr(args, "use_rollout_indexer_replay", False):
+    elif getattr(args, "use_rollout_indexer_replay", False) and not has_store_plan:
         raise ValueError(
             "--use-rollout-indexer-replay is set but the rollout samples carry no "
             "rollout_indexer_topk: the engine response meta_info lacked 'indexer_topk'."
@@ -202,6 +213,37 @@ def convert_samples_to_train_data(
         train_data["dynamic_global_batch_size"] = x
 
     return train_data
+
+
+def _check_store_plans(args, samples: list[Sample]) -> None:
+    """Every sample has a plan matching its rows; all plans have the same fields, including the flag-required ones."""
+    for position, sample in enumerate(samples):
+        if sample.rollout_store_plan is None:
+            raise StorePlanError(
+                "output store plans must be present for every training sample; "
+                f"missing at position={position}, sample_index={sample.index}, status={sample.status}"
+            )
+        # Nothing else checks a store-path sample's row counts before the trainer.
+        sample.validate()
+    names = samples[0].rollout_store_plan.fields.keys()
+    for sample in samples:
+        if sample.rollout_store_plan.fields.keys() != names:
+            raise StorePlanError(
+                f"output store plans must have the same fields: sample_index={samples[0].index} has {sorted(names)}, "
+                f"sample_index={sample.index} has {sorted(sample.rollout_store_plan.fields)}"
+            )
+    for field in FIELDS:
+        # The fields are the same on every plan, so the first plan speaks for all.
+        if field.required_by and getattr(args, field.required_by, False) and field.name not in names:
+            raise StorePlanError(
+                f"--{field.required_by.replace('_', '-')} is set but the samples' output store plans have no {field.name}."
+            )
+    if args.rollout_top_logprobs_num and args.rollout_sampling_logprobs_mode == "support":
+        if SamplingMaskSegments.name not in names:
+            raise StorePlanError(
+                "Support-mode rollout top-k logprobs are built from the stored sampling mask; "
+                "the samples' output store plans have none."
+            )
 
 
 def _compact_candidate_ids(data: dict) -> None:
@@ -484,6 +526,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "rollout_sampling_mask_offsets",
             "rollout_routed_experts",
             "rollout_indexer_topk",
+            "rollout_store_plan",
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
