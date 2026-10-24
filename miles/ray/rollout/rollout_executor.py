@@ -231,7 +231,14 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         if self._delete_store_refs is None:
             raise StorePlanError(f"rollout {rollout_id} holds {len(refs)} output store refs, but no store client")
         # Off the loop: the fully-async producer keeps generating on it.
-        await asyncio.to_thread(self._delete_store_refs, list(refs.values()))
+        await asyncio.to_thread(self._try_delete_store_refs, list(refs.values()))
+
+    def _try_delete_store_refs(self, refs: list) -> None:
+        try:
+            self._delete_store_refs(refs)
+        except Exception:
+            # Nothing reads these objects any more, so a failed delete only leaks them.
+            logger.exception(f"Failed to delete {len(refs)} output store refs; their objects stay in Mooncake")
 
     async def _generate_rollout_data(
         self, *, rollout_id: int, trainer_model_id: str | None
@@ -443,7 +450,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                     f"Not deleting {len(restored)} restored output store refs: this run has no store client"
                 )
             else:
-                self._delete_store_refs(list(restored.values()))
+                self._try_delete_store_refs(list(restored.values()))
 
     # -------------------------- misc APIs -----------------------------
 

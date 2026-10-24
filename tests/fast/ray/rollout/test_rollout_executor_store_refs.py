@@ -87,6 +87,20 @@ async def test_a_rollout_without_refs_deletes_nothing_and_needs_no_client():
     assert executor._unreleased_store_refs == {}
 
 
+async def test_a_failed_delete_is_logged_and_the_run_goes_on(caplog):
+    executor, _ = make_executor({5: [sample_owning("a")]})
+
+    def delete(refs):
+        raise RuntimeError("Mooncake remove failed")
+
+    executor._delete_store_refs = delete
+    await executor.get(rollout_id=5)
+    await executor.release(5)
+
+    assert "Failed to delete 1 output store refs" in caplog.text
+    assert executor._unreleased_store_refs == {}
+
+
 async def test_refs_without_a_store_client_fail_loudly():
     executor, _ = make_executor({5: [sample_owning("a")]})
     executor._delete_store_refs = None

@@ -643,11 +643,24 @@ class TestOneDirectoryPerRolloutCheckpoint:
 
         assert not (compute_rollout_checkpoint_dir(tmp_path, rollout_id=5) / "data_source").exists()
 
-    @pytest.mark.parametrize("has_store_client", [True, False], ids=["store", "no-store"])
+    @pytest.mark.parametrize(
+        ("store_client", "log"),
+        [
+            ("works", None),
+            ("fails", "Failed to delete 1 output store refs"),
+            (None, "Not deleting 1 restored output store refs"),
+        ],
+        ids=["store", "failing-store", "no-store"],
+    )
     async def test_restored_output_store_refs_are_settled_when_loading_ends(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, has_store_client: bool
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        store_client: str | None,
+        log: str | None,
     ) -> None:
-        """A dropped restored batch's refs are deleted at load, or only logged in a run without a store client."""
+        """A dropped restored batch's refs are deleted at load; a failed delete or a run without a client only logs."""
         monkeypatch.setattr(dropped, "_dropped", {})
         saved = _make_executor(tmp_path, _CountingRolloutFn())
         saved._output_snapshotter.capture(
@@ -656,15 +669,19 @@ class TestOneDirectoryPerRolloutCheckpoint:
         await saved.save(5)
 
         deleted: list[list[str]] = []
+
+        def delete(refs):
+            if store_client == "fails":
+                raise RuntimeError("Mooncake remove failed")
+            deleted.append([ref.key for ref in refs])
+
         executor = _make_executor(tmp_path, _CountingRolloutFn())
-        executor._delete_store_refs = (
-            (lambda refs: deleted.append([ref.key for ref in refs])) if has_store_client else None
-        )
+        executor._delete_store_refs = None if store_client is None else delete
         await executor.load(5, load=str(tmp_path))
 
-        assert deleted == ([["stored"]] if has_store_client else [])
+        assert deleted == ([["stored"]] if store_client == "works" else [])
         assert take_dropped_refs() == {}
-        assert has_store_client or "Not deleting 1 restored output store refs" in caplog.text
+        assert log is None or log in caplog.text
 
     async def test_a_run_that_saves_nowhere_refuses_to_save(self, tmp_path: Path) -> None:
         """Without --save the orchestration never asks for a checkpoint, so a save is a bug."""
