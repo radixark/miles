@@ -3,7 +3,7 @@ import json
 from typing import Any, Literal
 
 from miles.utils.args.schema import A, Arg, BaseConfig
-from miles.utils.object_store import ObjectStoreBackend
+from miles.utils.object_store_config import ObjectStoreBackend
 
 
 # rollout

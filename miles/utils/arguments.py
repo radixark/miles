@@ -65,9 +65,9 @@ from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
 from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
-from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.object_store_config import (
     MOONCAKE_MASTER_ADDRESS_KEY,
+    ObjectStoreBackend,
     compute_mooncake_init_kwargs_from_env,
     compute_mooncake_init_kwargs_vanilla,
 )

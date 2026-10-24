@@ -37,6 +37,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 import ray
+from tests.fast.import_isolation_utils import run_with_blocked_imports
 from tests.fast.utils.fake_ray_ids import fake_ray_node_id
 
 from miles.utils import http_utils
@@ -812,3 +813,15 @@ class TestInitHttpClientConcurrency:
     def test_no_client_without_gpus_or_snapshot_eval(self, monkeypatch):
         _, client = self._init(monkeypatch, self._args(eval_uses_snapshots=False))
         assert client is None
+
+
+def test_http_utilities_import_without_router_logging_initialization() -> None:
+    """General HTTP helpers remain available without importing the router logging dependency graph."""
+    run_with_blocked_imports(
+        blocked_prefixes=("miles.utils.logging_utils",),
+        script="""
+from miles.utils.http_utils import wrap_ipv6
+assert wrap_ipv6("::1") == "[::1]"
+assert wrap_ipv6("127.0.0.1") == "127.0.0.1"
+""",
+    )

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, NamedTuple
+from argparse import Namespace
+from typing import NamedTuple
 
+from miles.utils.args.runtime import RolloutConfig, TrainerConfig
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.seqlen_balancing import (
@@ -33,12 +35,18 @@ class DPSchedule(NamedTuple):
     num_rollouts: list[int]  # (num_steps,): distinct rollout counts
 
 
-def _calculate_workloads(step_lengths, args):
-    return [calculate_fwd_flops([sl], args) for sl in step_lengths]
+def _calculate_workloads(step_lengths: list[int], args: TrainerConfig | RolloutConfig) -> list[float]:
+    if isinstance(args, TrainerConfig):
+        backend_values = vars(args.backend)
+    else:
+        assert isinstance(args, RolloutConfig)
+        backend_values = args.raw_megatron.base_args if args.train_backend == "megatron" else vars(args.raw_fsdp)
+    flops_args = Namespace(**(dict(args) | backend_values))
+    return [calculate_fwd_flops([sl], flops_args) for sl in step_lengths]
 
 
 def build_dp_schedule(
-    args: Any,
+    args: TrainerConfig | RolloutConfig,
     train_parallel_config: TrainParallelConfig,
     total_lengths: list[int],
     *,

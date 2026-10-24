@@ -57,7 +57,7 @@ from miles.utils.external_utils.command_utils.helm_backend.naming import Release
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator.observer import wait_for_run
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.file_utils import atomic_write_text
-from miles.utils.object_store import ObjectStoreBackend
+from miles.utils.object_store_config import ObjectStoreBackend
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.workers.naming import DNS_LABEL_PATTERN
 from miles.utils.workers.serving.utils import override_argv, override_env

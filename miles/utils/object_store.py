@@ -6,7 +6,6 @@ from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
 from types import TracebackType
 from typing import Annotated, Any, Literal
 
@@ -18,6 +17,7 @@ except ImportError:
     _ray_free = None
 from pydantic import AfterValidator, ConfigDict, Field, PlainSerializer
 
+from miles.utils.object_store_config import ObjectStoreBackend as ObjectStoreBackend
 from miles.utils.object_store_config import compute_mooncake_store_config
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.types import WorkerCommBackend
@@ -37,11 +37,6 @@ except ImportError as exc:
 
 
 # ============================== types ==============================
-
-
-class ObjectStoreBackend(Enum):
-    RAY = "ray"
-    MOONCAKE = "mooncake"
 
 
 class _BaseStoreObjectRef(StrictBaseModel):
