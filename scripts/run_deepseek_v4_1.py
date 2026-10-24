@@ -267,7 +267,6 @@ def _train(args: ScriptArgs):
         "NCCL_CUMEM_ENABLE": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "900",
-        "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         # JIT caches (tilelang/triton/inductor) on an NFS home go stale under
         # 16-rank concurrent compilation; keep them node-local
         "TILELANG_CACHE_DIR": "/tmp/tilelang_cache",

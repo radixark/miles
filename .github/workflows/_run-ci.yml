@@ -112,7 +112,7 @@ jobs:
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
       # Persist shared JIT caches across job containers; see tests/ci/README.md.
       SGLANG_CACHE_DIR: /data/miles_ci/jit
-      # DeepGEMM's PID-based subdirectories must not collide across containers.
+      # Container-local DeepGEMM JIT cache, shared by every engine in the job.
       SGLANG_DG_CACHE_DIR: /tmp/deep_gemm
       TRITON_CACHE_DIR: /data/miles_ci/jit/triton
       TORCHINDUCTOR_CACHE_DIR: /data/miles_ci/jit/inductor
