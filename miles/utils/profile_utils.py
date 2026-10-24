@@ -16,7 +16,7 @@ class TrainProfiler:
         self._torch_profiler_overall = None
         self._memory_profiler_overall = None
 
-        if args.use_pytorch_profiler and ("train_overall" in args.profile_target):
+        if _torch_profiler_enabled(args, name="train_overall"):
             self._torch_profiler_overall = _create_torch_profiler(args, name="train_overall")
 
         if args.record_memory_history and ("train_overall" in args.profile_target):
@@ -45,8 +45,15 @@ class TrainProfiler:
         return _profile_simple_loop(iterator, self.args, name="train_log_probs")
 
 
+def _torch_profiler_enabled(args, name) -> bool:
+    if not (args.use_pytorch_profiler and name in args.profile_target):
+        return False
+    # Megatron's --profile-ranks: an empty list profiles every rank.
+    return not args.profile_ranks or torch.distributed.get_rank() in args.profile_ranks
+
+
 def _profile_simple_loop(iterator, args, name):
-    if not (args.use_pytorch_profiler and (name in args.profile_target)):
+    if not _torch_profiler_enabled(args, name=name):
         yield from iterator
         return
 
@@ -71,10 +78,10 @@ def _create_torch_profiler(args, name):
             worker_name=f"{name}_rank_{torch.distributed.get_rank()}",
             use_gzip=True,
         ),
-        record_shapes=True,
-        with_stack=True,
-        profile_memory=True,
-        with_flops=True,
+        # As in Megatron's own profiler: shapes and stacks only on request, memory and FLOPs never (no Megatron flag).
+        # Per-op recording turns one large-model train step into a trace of tens of GB per rank.
+        record_shapes=args.pytorch_profiler_collect_shapes,
+        with_stack=args.pytorch_profiler_collect_callstack,
     )
 
 

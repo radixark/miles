@@ -368,12 +368,15 @@ contract, session behavior, and model-family selection.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--profile-target` | enum+ | `[train_overall]` | Which sub-loop to profile: `train_overall`, `train_actor`, `train_log_probs`. |
-| `--use-pytorch-profiler` | flag | off | FSDP only: enable PyTorch profiler. |
-| `--profile-step-start` | int | `10` | FSDP only: first step to profile. |
-| `--profile-step-end` | int | `12` | FSDP only: last step to profile. |
-| `--memory-snapshot-path` | str | `snapshot.pickle` | FSDP only: memory snapshot output. |
-| `--tensorboard-dir` | str | – | FSDP only: TensorBoard output dir. |
+| `--profile-target` | enum+ | `[train_overall]` | Which loop to profile: `train_overall`, `train_actor`, `train_log_probs` (the last two not on Megatron). |
+| `--use-pytorch-profiler` | flag | off | Enable the PyTorch profiler. This and the rows below are Megatron's flags; FSDP and torchtitan mirror them. |
+| `--profile-step-start` | int | `10` | First step to trace (a rollout step for `train_overall`). |
+| `--profile-step-end` | int | `12` | Tracing stops before this step. |
+| `--profile-ranks` | int+ | `[]` | Global ranks to trace; an empty list traces every rank. Megatron owns the default: `[]` in the Miles images, `[0]` in older upstream releases such as the NPU setup's. |
+| `--pytorch-profiler-collect-callstack` | flag | off | Record Python call stacks (much larger traces). |
+| `--pytorch-profiler-collect-shapes` | flag | off | Record tensor shapes. |
+| `--memory-snapshot-path` | str | `snapshot.pickle` | File name suffix of the `--record-memory-history` snapshot. |
+| `--tensorboard-dir` | str | – | Trace output dir. |
 
 ### Debugging
 
