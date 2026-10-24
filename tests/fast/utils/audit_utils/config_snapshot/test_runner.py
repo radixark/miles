@@ -1,13 +1,11 @@
-from pathlib import Path
-SNAPSHOT_DIRECTORY = Path('tests/snapshots')
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
 from miles.utils.audit_utils.config_snapshot.models import ConfigSnapshotVariant
 from miles.utils.audit_utils.config_snapshot.runner import ConfigSnapshotMismatch, ConfigSnapshotTestRunner
-from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR, SNAPSHOT_UPDATE_ENV_VAR
+from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY, SNAPSHOT_RECORD_DIR_ENV_VAR, SNAPSHOT_UPDATE_ENV_VAR
 
 
 _VARIANT = ConfigSnapshotVariant(hardware="h200", wandb_available=False)

@@ -8,6 +8,7 @@ import pytest
 from miles.utils.audit_utils.config_snapshot.models import ConfigSnapshotTestAttempt, ConfigSnapshotVariant
 from miles.utils.audit_utils.config_snapshot.storage import ConfigSnapshotStorage
 from miles.utils.audit_utils.config_snapshot.sync import download, sync
+from miles.utils.test_utils.snapshot import SNAPSHOT_DIRECTORY
 
 
 class TestSnapshotArtifactDownload:
@@ -70,7 +71,7 @@ class TestSnapshotSyncWrites:
         )
         ConfigSnapshotStorage(directory=attempt / "records").write(make_record(config={"value": "updated"}))
         root = tmp_path / "repo"
-        target = root / "tests/snapshots/runtime_config/variants/h200/no-wandb/tests/e2e/test_training.yaml"
+        target = root / SNAPSHOT_DIRECTORY / "runtime_config/variants/h200/no-wandb/tests/e2e/test_training.yaml"
         target.parent.mkdir(parents=True)
         target.write_text("obsolete golden")
         unrelated = target.with_name("test_other.yaml")

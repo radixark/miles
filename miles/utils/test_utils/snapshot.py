@@ -14,6 +14,11 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
+from miles.utils.test_utils.snapshot_text import read_snapshot, write_snapshot
+from miles.utils.test_utils.snapshot_yaml import dump_snapshot_delta, dump_snapshot_yaml
+
+SNAPSHOT_DIRECTORY = Path("tests/snapshots")
+
 SNAPSHOT_UPDATE_ENV_VAR = "MILES_UPDATE_SNAPSHOTS"
 SNAPSHOT_RECORD_DIR_ENV_VAR = "MILES_SNAPSHOT_RECORD_DIR"
 
@@ -74,24 +79,27 @@ def snapshot_values(value: Any) -> Any:
 
 
 def assert_scenario_snapshots(*, snapshots: dict[str, str], bases: dict[str, str], directory: Path) -> None:
+    snapshots = {name: dump_snapshot_yaml(yaml.safe_load(snapshot)) for name, snapshot in snapshots.items()}
+    update = bool(os.environ.get(SNAPSHOT_UPDATE_ENV_VAR))
     failures = []
     for name, snapshot in snapshots.items():
         suffix = ".yaml"
         if base := bases.get(name):
-            snapshot = "".join(
-                difflib.unified_diff(
-                    snapshots[base].splitlines(keepends=True),
-                    snapshot.splitlines(keepends=True),
-                    fromfile=base,
-                    tofile=name,
-                    n=0,
-                )
-            )
-            suffix = ".diff"
+            delta = dump_snapshot_delta(base=snapshots[base], actual=snapshot, base_name=base)
+            if len(delta.encode()) < len(snapshot.encode()):
+                snapshot = delta
+                suffix = ".delta.yaml"
         try:
             assert_matches_snapshot(
-                snapshot=directory / f"{name}{suffix}", actual=snapshot, subject=f"snapshot scenario {name}"
+                snapshot=directory / f"{name}{suffix}",
+                actual=snapshot,
+                subject=f"snapshot scenario {name}",
+                update=update,
             )
+            if update:
+                for alternate in (".yaml", ".delta.yaml", ".diff"):
+                    if alternate != suffix:
+                        (directory / f"{name}{alternate}").unlink(missing_ok=True)
         except AssertionError as error:
             failures.append(str(error))
     if failures:
@@ -100,12 +108,11 @@ def assert_scenario_snapshots(*, snapshots: dict[str, str], bases: dict[str, str
 
 def assert_matches_snapshot(snapshot: Path, actual: str, subject: str, *, update: bool | None = None) -> None:
     if update if update is not None else bool(os.environ.get(SNAPSHOT_UPDATE_ENV_VAR)):
-        snapshot.parent.mkdir(parents=True, exist_ok=True)
-        snapshot.write_text(actual)
+        write_snapshot(path=snapshot, actual=actual)
         return
 
     exists = snapshot.exists()
-    expected = snapshot.read_text() if exists else ""
+    expected = read_snapshot(snapshot) if exists else ""
     if not exists or actual != expected:
         diff = difflib.unified_diff(
             expected.splitlines(), actual.splitlines(), fromfile=f"{snapshot}", tofile="actual", lineterm=""
