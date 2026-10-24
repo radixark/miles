@@ -5,6 +5,7 @@ import pytest
 from huggingface_hub import hf_hub_download
 
 from miles.utils.flops_utils import KeyTerm, LayerFlops, ModelFlops, _total_keys, model_flops_from_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 
 
 def config(**fields):
@@ -232,6 +233,39 @@ def test_kda_layers_are_one_indexed_and_mla_fills_the_rest():
     assert per_layer(flops, 0).per_token == kda + 6 * hidden * 9216
 
 
+def test_compressed_attention_layers_read_window_plus_compressed_history():
+    deepseek_v4 = config(
+        model_type="deepseek_v4",
+        hidden_size=4096,
+        num_attention_heads=64,
+        head_dim=512,
+        q_lora_rank=1024,
+        o_lora_rank=1024,
+        o_groups=8,
+        sliding_window=128,
+        compress_ratios=[0, 4, 128, 0],
+        index_topk=512,
+        index_n_heads=64,
+        index_head_dim=128,
+        moe_intermediate_size=2048,
+        n_routed_experts=256,
+        n_shared_experts=1,
+        num_experts_per_tok=6,
+        num_hidden_layers=3,
+        vocab_size=129280,
+    )
+    flops = model_flops_from_hf_config(deepseek_v4)
+    per_key = 4 * 64 * 512
+    assert per_layer(flops, 0).key_terms == (KeyTerm(per_key, cap=128),)
+    assert per_layer(flops, 1).key_terms == (
+        KeyTerm(per_key, cap=128),
+        KeyTerm(per_key, pool=4, cap=512),
+        KeyTerm(2 * 64 * 128, pool=4),
+    )
+    assert per_layer(flops, 2).key_terms == (KeyTerm(per_key, cap=128), KeyTerm(per_key, pool=128))
+    assert len(flops.layers) == 3
+
+
 NEMOTRON_NANO = dict(
     model_type="nemotron_h",
     hidden_size=2688,
@@ -283,12 +317,16 @@ def test_latent_moe_runs_routed_experts_in_the_latent_width():
 RELEASED_MODEL_FLOPS = {
     "deepseek-ai/DeepSeek-V3": (73249193984, 52526179793502208),
     "deepseek-ai/DeepSeek-V3.2-Exp": (74952212480, 19740118264840192),
+    "deepseek-ai/DeepSeek-V4.1-Flash": (32181125120, 5096652402589696),
+    "deepseek-ai/DeepSeek-V4-Flash": (26468679680, 4661701693669376),
     "zai-org/GLM-4.5-Air": (25604653056, 22777974654763008),
     "zai-org/GLM-4.7-Flash": (7158628352, 9206686258561024),
     "zai-org/GLM-5": (81663885312, 17554128204988416),
     "zai-org/GLM-5.2": (80595517440, 13403046071500800),
     "zai-org/GLM-5.3-Flash": (33626390528, 4792992309182464),
     "openai/gpt-oss-120b": (10262200320, 3883326643372032),
+    "thinkingmachines/Inkling": (79719383040, 13665937857183744),
+    "thinkingmachines/Inkling-Small": (22371270656, 3955825013948416),
     "google/gemma-4-31b-it": (61392027648, 13895362502721536),
     "google/gemma-4-26b-a4b-it": (7643660288, 2464016504979456),
     "XiaomiMiMo/MiMo-V2.6-Flash-RL": (29641146368, 7078529595867136),
@@ -302,6 +340,7 @@ RELEASED_MODEL_FLOPS = {
     "Qwen/Qwen3-30B-A3B": (6083313664, 7552803069231104),
     "Qwen/Qwen3.5-35B-A3B": (5986713600, 2192076145950720),
     "Qwen/Qwen3.5-397B-A17B": (32945438720, 8540381406822400),
+    "Qwen/Qwen3.8-Flash-Next": (13497024512, 1874016537149440),
     "Qwen/Qwen3-8B": (15136194560, 7050519528865792),
     "Qwen/Qwen3-Next-80B-A3B-Instruct": (7240155136, 2637844359151616),
 }
@@ -313,6 +352,52 @@ def test_released_config_flops(repo_id):
     per_token, at_128k = RELEASED_MODEL_FLOPS[repo_id]
     assert flops.per_token == pytest.approx(per_token, rel=1e-9)
     assert flops.fwd_flops([131072]) == pytest.approx(at_128k, rel=1e-9)
+
+
+def test_deepseek_v4_1_shares_compressed_kv_and_index_scores_from_source_layers():
+    flops = released_model_flops("deepseek-ai/DeepSeek-V4.1-Flash")
+    window = KeyTerm(4 * 64 * 512, cap=128)
+    top_k = KeyTerm(4 * 64 * 512, pool=2, cap=512)
+    index_scores = KeyTerm(2 * 32 * 128, pool=2)
+    assert per_layer(flops, 0).key_terms == (window,)
+    assert per_layer(flops, 2).key_terms == (window, top_k, index_scores)
+    assert per_layer(flops, 3).key_terms == (window, top_k)
+    compressor = 2 * 5120 * 512 * 2
+    indexer = 2 * 1280 * 32 * 128 + 2 * 5120 * 32 + 2 * 512 * 128 / 2
+    assert per_layer(flops, 2).per_token - per_layer(flops, 3).per_token == pytest.approx(compressor + indexer)
+    engram = 2 * 3 * 8 * 256 * 5120 * 5
+    assert per_layer(flops, 1).per_token - per_layer(flops, 0).per_token == pytest.approx(engram)
+
+
+def test_inkling_windows_local_layers():
+    flops = released_model_flops("thinkingmachines/Inkling")
+    assert per_layer(flops, 0).key_terms == (KeyTerm(4 * 64 * 128, cap=512),)
+    assert per_layer(flops, 5).key_terms == (KeyTerm(4 * 64 * 128),)
+
+
+def test_qwen3_8_next_full_attention_layers_are_sparse_when_the_config_has_an_indexer_budget():
+    flops = released_model_flops("Qwen/Qwen3.8-Flash-Next")
+    assert per_layer(flops, 0).key_terms == ()
+    assert per_layer(flops, 3).key_terms == (KeyTerm(4 * 24 * 256, cap=2048), KeyTerm(2 * 4 * 128, pool=4))
+
+
+def test_deepseek_v4_sizes_the_same_from_transformers_per_type_compress_rates():
+    with open(hf_hub_download("deepseek-ai/DeepSeek-V4-Flash", "config.json")) as f:
+        checkpoint_config = json.load(f)
+    ratios = checkpoint_config["compress_ratios"][: checkpoint_config["num_hidden_layers"]]
+    layer_type = {0: "sliding_attention", 4: "compressed_sparse_attention", 128: "heavily_compressed_attention"}
+    transformers_config = {k: v for k, v in checkpoint_config.items() if k != "compress_ratios"} | {
+        "compress_rates": {"compressed_sparse_attention": 4, "heavily_compressed_attention": 128},
+        "layer_types": [layer_type[ratio] for ratio in ratios],
+        "mlp_layer_types": ["hash_moe"] * 3 + ["moe"] * (len(ratios) - 3),
+        "first_k_dense_replace": 3,
+    }
+    assert model_flops_from_hf_config(transformers_config) == model_flops_from_hf_config(checkpoint_config)
+
+
+@pytest.mark.parametrize("repo_id", ["deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4.1-Flash"])
+def test_deepseek_v4_config_objects_size_like_their_checkpoint_configs(repo_id):
+    assert model_flops_from_hf_config(load_hf_config(repo_id)) == released_model_flops(repo_id)
 
 
 @pytest.mark.parametrize(
