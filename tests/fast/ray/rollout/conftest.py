@@ -42,6 +42,7 @@ def make_args(**overrides: Any) -> Namespace:
         use_sampling_support_replay=False,
         over_sampling_batch_size=None,
         rollout_global_dataset=False,
+        fully_async=False,
         num_rollout=1,
         update_weights_interval=1,
         check_weight_update_equal=False,

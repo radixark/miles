@@ -8,6 +8,7 @@ from miles.ray.rollout.metrics import (
     _compute_episode_response_length_metrics,
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
+    _compute_perf_metrics_from_samples,
     _compute_spec_metrics,
     _compute_training_sample_metrics,
     _compute_zero_std_metrics,
@@ -136,6 +137,19 @@ class TestTrainingSampleMetrics:
             "num_training_samples": 0,
             "episode_raw_reward": 0.0,
         }
+
+
+class TestPerfMetrics:
+    @pytest.mark.parametrize("rollout_interval_time, seconds", [(None, 2.0), (8.0, 8.0)])
+    def test_throughput_divides_by_the_rollout_interval_when_there_is_one(self, rollout_interval_time, seconds):
+        samples = [make_sample(index=i, response_length=40) for i in range(4)]
+
+        out = _compute_perf_metrics_from_samples(make_args(rollout_num_gpus=8), samples, 2.0, rollout_interval_time)
+
+        assert out["rollout_time"] == 2.0
+        assert out.get("rollout_interval_time") == rollout_interval_time
+        assert out["tokens_per_gpu_per_sec"] == pytest.approx(160 / seconds / 8)
+        assert out["longest_sample_tokens_per_sec"] == pytest.approx(40 / seconds)
 
 
 class TestComputeZeroStdMetrics:

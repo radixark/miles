@@ -411,6 +411,9 @@ For performance work, use the metrics below as a basic reference:
    `--async-max-concurrent-samples`, and throughput-oriented SGLang settings. If
    training is slower, consider more GPUs for training, a lower concurrency, and
    latency-oriented SGLang settings.
+4. **Rollout throughput.** Without `--colocate`, `perf/tokens_per_gpu_per_sec` divides a
+   batch's tokens by `perf/rollout_interval_time`, the time since the previous batch was
+   handed to the trainer; `perf/rollout_time` only covers the wait for the batch.
 ### Arguments: Logging options
 
 Two flags replace the default metric logging, both defined in

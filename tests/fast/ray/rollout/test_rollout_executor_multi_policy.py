@@ -49,6 +49,7 @@ def _make_executor() -> RolloutExecutor:
         debug_rollout_only=False,
         debug_train_only=False,
         debug_skip_weight_update=False,
+        fully_async=False,
         lora_rank=0,
         update_weights_interval=1,
         ci_inject_missing_prefetched_batch_bug=False,
@@ -60,6 +61,7 @@ def _make_executor() -> RolloutExecutor:
     executor._weight_versions_of_model_id = {}
     executor._train_parallel_configs_of_model_id = {}
     executor._rollouts_since_publish_of_model_id = defaultdict(int)
+    executor._last_rollout_end_time_of_model_id = {}
     executor.last_get_rollout_id_of_model_id = {}
     executor._eval_lock = asyncio.Lock()
     executor._eval_fleet = None
