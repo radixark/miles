@@ -388,7 +388,7 @@ async def test_collect_samples_non_2xx_raises_with_body_and_still_deletes(monkey
     calls = _CollectCalls(monkeypatch, post_outcome=RuntimeError("422: trim_count 2 exceeds allowed=1"))
     with pytest.raises(RuntimeError, match="trim_count 2 exceeds allowed=1"):
         await _tracer().collect_samples(Sample(), max_seq_len=7)
-    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1?samples_received=false"
 
 
 @pytest.mark.asyncio
@@ -398,7 +398,16 @@ async def test_collect_samples_timeout_raises_and_still_deletes(monkeypatch):
     calls = _CollectCalls(monkeypatch, post_outcome=asyncio.TimeoutError())
     with pytest.raises(asyncio.TimeoutError):
         await _tracer().collect_samples(Sample(), max_seq_len=7)
-    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+    # The server may have built the reply; without it, the session deletes what it handed over too.
+    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1?samples_received=false"
+
+
+@pytest.mark.asyncio
+async def test_collect_samples_undecodable_reply_counts_as_not_received(monkeypatch):
+    calls = _CollectCalls(monkeypatch, post_outcome=b"not a samples reply")
+    with pytest.raises(ValueError):
+        await _tracer().collect_samples(Sample(), max_seq_len=7)
+    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1?samples_received=false"
 
 
 @pytest.mark.asyncio

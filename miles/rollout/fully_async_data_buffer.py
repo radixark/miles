@@ -28,6 +28,7 @@ from miles.rollout.filter_hub.common_filters import (
 )
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
+from miles.utils.output_store.dropped import record_dropped_samples, store_refs_of
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,8 @@ NO_PROGRESS_WARN_SECS = 30.0
 class UnusedReason(str, Enum):
     ABORTED = "aborted"
     STALE = "stale"
+    # Restored from a checkpoint with output store refs, whose objects did not survive the restart.
+    RESTORED = "restored"
 
 
 def add_data_buffer_arguments(parser: ArgumentParser) -> None:
@@ -191,12 +194,15 @@ class DefaultDataBuffer(DataBuffer):
         output = apply_aborted_filter(self._args, input.group)
         if not output.keep:
             self._metric_aborted_groups += 1
+            # Before the handler: a retry resets the prompt group, plans included.
+            record_dropped_samples([input.prompt_group, input.group])
             self._unused_handler_fn(input.prompt_group, UnusedReason.ABORTED)
             return False
 
         output = apply_missing_reward_filter(self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
+            record_dropped_samples([input.prompt_group, input.group])
             SampleOwnershipRecorder.log_dropped_samples(
                 args=self._args, samples=input.prompt_group, reason="missing_reward"
             )
@@ -206,6 +212,7 @@ class DefaultDataBuffer(DataBuffer):
         output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
+            record_dropped_samples([input.prompt_group, input.group])
             SampleOwnershipRecorder.log_dropped_samples(
                 args=self._args, samples=input.prompt_group, reason="dynamic_filter"
             )
@@ -251,6 +258,7 @@ class DefaultDataBuffer(DataBuffer):
             else:
                 logger.info(f"Filtered stale group ({staleness=} > max={limit})")
                 self._metric_stale_groups += 1
+                record_dropped_samples([entry.prompt_group, entry.group])
                 self._unused_handler_fn(entry.prompt_group, UnusedReason.STALE)
 
         if len(kept) != len(self._buffer):
@@ -282,7 +290,12 @@ class DefaultDataBuffer(DataBuffer):
 
     def load_state_dict(self, state: list[DataBufferInput]) -> None:
         assert not self._buffer
-        self._buffer = list(state)
+        for entry in state:
+            if store_refs_of(entry.group):
+                record_dropped_samples([entry.prompt_group, entry.group])
+                self._unused_handler_fn(entry.prompt_group, UnusedReason.RESTORED)
+            else:
+                self._buffer.append(entry)
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         prefix = "rollout/fully_async/"

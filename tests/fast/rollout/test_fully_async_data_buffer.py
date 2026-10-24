@@ -620,3 +620,79 @@ class TestCheckpointQueueOrder:
             buffer.load_state_dict([])
 
         assert caplog.text.count("not checkpointed") == 2
+
+
+# ============================ output store refs =============================
+
+from tests.fast.utils.output_store.test_plan import ref
+
+from miles.utils.output_store import dropped
+from miles.utils.output_store.dropped import take_dropped_refs
+from miles.utils.output_store.plan import StorePlan
+
+
+def _with_store_refs(group: list[Sample]) -> list[Sample]:
+    for sample in group:
+        sample.rollout_store_plan = StorePlan(fields={}, owned_refs=(ref(f"key-{sample.index}"),))
+    return group
+
+
+def _recycling_buffer(**overrides) -> _BufferUnderTest:
+    """A buffer whose handler resets the prompt group, as the retry policy does."""
+    unused: list[tuple[list[Sample], UnusedReason]] = []
+
+    def recycle(prompt_group: list[Sample], reason: UnusedReason) -> None:
+        for sample in prompt_group:
+            sample.reset_for_retry()
+        unused.append((prompt_group, reason))
+
+    buffer = DefaultDataBuffer(
+        DataBufferConstructorInput(args=_make_single_policy_args(**overrides), unused_handler_fn=recycle)
+    )
+    return _BufferUnderTest(buffer=buffer, unused=unused)
+
+
+class TestDroppedGroupsHandOverTheirOutputStoreRefs:
+    @pytest.fixture(autouse=True)
+    def _empty_dropped(self, monkeypatch):
+        monkeypatch.setattr(dropped, "_dropped", {})
+
+    async def test_an_aborted_group_hands_its_refs_over_before_the_handler_resets_it(self) -> None:
+        under_test = _recycling_buffer()
+        group = _with_store_refs(_make_finished_group(1, status=Sample.Status.ABORTED))
+
+        await _put(under_test.buffer, group)
+
+        assert sorted(take_dropped_refs()) == ["key-10", "key-11"]
+        assert all(sample.rollout_store_plan is None for sample in group)
+
+    async def test_a_stale_group_hands_its_refs_over_before_the_handler_resets_it(self) -> None:
+        under_test = _recycling_buffer(max_weight_staleness=2)
+        await _put(under_test.buffer, _with_store_refs(_make_finished_group(1, weight_version=7)))
+        await _put(under_test.buffer, fresh := _make_finished_group(2, weight_version=10))
+
+        assert (await _get_one(under_test.buffer, current_version=10)).group is fresh
+        assert sorted(take_dropped_refs()) == ["key-10", "key-11"]
+
+    async def test_a_filtered_group_hands_its_refs_over(self) -> None:
+        under_test = _make_buffer(dynamic_sampling_filter_path=f"{__name__}._reject_group_1")
+
+        await _put(under_test.buffer, _with_store_refs(_make_finished_group(1)))
+
+        assert sorted(take_dropped_refs()) == ["key-10", "key-11"]
+
+    def test_restored_groups_with_refs_are_handed_back_instead_of_buffered(self) -> None:
+        under_test = _make_buffer()
+        restored = _with_store_refs(_make_finished_group(1))
+        inline = _make_finished_group(2)
+
+        under_test.buffer.load_state_dict(
+            [
+                DataBufferInput(prompt_group=restored, group=restored),
+                DataBufferInput(prompt_group=inline, group=inline),
+            ]
+        )
+
+        assert under_test.unused == [(restored, UnusedReason.RESTORED)]
+        assert [entry.group for entry in under_test.buffer.state_dict()] == [inline]
+        assert sorted(take_dropped_refs()) == ["key-10", "key-11"]

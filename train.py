@@ -132,6 +132,7 @@ async def train(args, *, disposer: Disposer):
         else:
             await actor_model.train(rollout_id, rollout_data_pack)
         remove_rollout_data_refs(args, rollout_data_pack)
+        await rollout_executor.release(rollout_id)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(

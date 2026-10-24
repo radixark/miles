@@ -6,6 +6,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.output_store.dropped import record_dropped_samples, store_refs_of
 from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import Sample
 
@@ -76,6 +78,19 @@ class _RolloutExecutorOutputSnapshotter:
             entry.phase is _OutputSnapshotPhase.CAPTURED for entry in self._snapshots.values()
         ), "the executor restores its untrained outputs before it generates any"
         outputs = load_simple_checkpoint(directory=directory)
+        for key, (data, _) in list(outputs.items()):
+            if store_refs_of(data):
+                # Output store refs may not outlive the run, so the batch is neither replayed nor handed back to
+                # the data source; the executor deletes its refs once loading ends, if it has a store client.
+                logger.warning(
+                    f"Dropping untrained rollout batch {key} restored with output store refs; "
+                    f"its {len(data)} samples are not replayed"
+                )
+                record_dropped_samples(data)
+                SampleOwnershipRecorder.log_dropped_samples(
+                    args=self._args, samples=data, reason="restored_output_store_refs"
+                )
+                del outputs[key]
 
         self._snapshots.update(
             {

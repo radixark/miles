@@ -159,7 +159,9 @@ class SessionCoreV2(SessionCore):
         # authoritative server-owned value only at the wire boundary.
         if self.config.sglang_speculative_algorithm is not None:
             metadata[SESSION_ROLLOUT_METRICS_KEY] = build_session_rollout_metrics(session_id, session.tree.nodes)
-        return _samples_response(encode_samples(samples, metadata, fields=fields))
+        response = _samples_response(encode_samples(samples, metadata, fields=fields))
+        session.store_refs.hand_over(samples)
+        return response
 
     async def chat_completions(
         self, session_id: str, *, method: str, query: str, headers: dict, body: bytes
@@ -208,6 +210,7 @@ class SessionCoreV2(SessionCore):
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
         )
+        await self._take_store_ref(session, request_body, result)
 
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the
         # agent can retry or handle the error.
