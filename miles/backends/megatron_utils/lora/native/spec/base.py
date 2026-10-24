@@ -65,7 +65,9 @@ class AttachContext:
 
     @property
     def output_gate(self) -> bool:
-        return bool(getattr(self.transformer_config, "attention_output_gate", False))
+        return bool(
+            getattr(self.transformer_config, "attention_output_gate", False)
+        )  # config-access-exempt: only attention architectures with output gates declare this config field
 
 
 class AttentionLoRASpec(Protocol):

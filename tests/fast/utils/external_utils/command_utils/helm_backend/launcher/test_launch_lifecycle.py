@@ -1,13 +1,16 @@
 import json
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 from typing import NamedTuple
 
 import pytest
 import yaml
 from tests.fast.charts.utils import REPO_ROOT
 from tests.fast.utils.external_utils.command_utils.fake_launch_guard import GuardRefusedError, RecordingLaunchGuard
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.utils import (
+    LauncherArgs,
+    launcher_args_orchestrator_command,
+)
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
@@ -31,6 +34,7 @@ from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state im
     OrchestratorState,
     OrchestratorStatus,
 )
+from miles.utils.workers.argv_utils import ORCHESTRATOR_CONFIG_FLAG
 from miles.utils.workers.k8s_types import ContainerState, ContainerStatus, Pod, PodMetadata, PodStatus
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name
@@ -46,17 +50,10 @@ def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False, deploy_co
     monkeypatch.setattr(
         entrypoint,
         "parse_args",
-        lambda: SimpleNamespace(
-            colocate=colocate,
-            deploy_component=deploy_component,
-            deploy_instance_id=None,
-            argv=[],
-            train_env_vars={},
-            use_wandb=False,
-            wandb_run_id=None,
-        ),
+        lambda: LauncherArgs(colocate=colocate, deploy_component=deploy_component),
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
+    monkeypatch.setattr(entrypoint, "_compute_orchestrator_command", launcher_args_orchestrator_command)
     monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: followed.append(kwargs))
     return followed
 
@@ -810,7 +807,12 @@ _RENDERED_WITH_ANOTHER_KEY = _RENDERED + "data:\n  extra: added\n"
 _ORCHESTRATOR_OBJECT = component_name(_RELEASE, ORCHESTRATOR_COMPONENT)
 _RUN_UUID = "0123456789abcdef"
 _REACHABLE_AT = {"actor": f"{_RELEASE}-trainer-controller-actor-0.rl.svc.cluster.local:29500"}
-_INSTALLED_ARGV = ["python", "/repo/train.py", "--cluster-backend", "kubernetes", "--run-uuid", _RUN_UUID]
+_INSTALLED_ARGV = [
+    "python",
+    "/repo/train.py",
+    ORCHESTRATOR_CONFIG_FLAG,
+    json.dumps({"args": {"run_uuid": _RUN_UUID, "wandb_run_id": None}, "static_connections": {}}),
+]
 _RENDERED_ORCHESTRATOR = f"""---
 apiVersion: apps/v1
 kind: StatefulSet

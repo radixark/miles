@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 import yaml
+from tests.fast.charts.conftest import vendored_dependencies
 from tests.fast.charts.utils import RUN_CHART_DIR, documents_of, requires_helm
 from tests.fast.e2e.external_rollout_script import load_external_rollout_script
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT
@@ -17,10 +18,12 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher import comma
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
-from miles.utils.workers.serving.utils import override_argv
+from miles.utils.object_store_config import MOONCAKE_MASTER_ADDRESS_KEY
+from miles.utils.workers.serving.utils import override_argv, parse_orchestrator_argv, parse_serve_worker_config
 from miles.utils.workers.types import ClusterBackend
 
 script = load_external_rollout_script()
+_ = vendored_dependencies
 
 NAMESPACE = "rl"
 RUN_ID = "260101-000000-000"
@@ -44,7 +47,6 @@ MODEL_CONFIG_JSON = """\
 }
 """
 
-EXTERNAL_ROLLOUT_FLAG = "--rollout-external-engine-addrs"
 CONTROLLER_POOL = "inference-controller"
 TRAINER_POOL = "trainer-engine-actor"
 ENGINE_POOL_PREFIX = "inference-engine"
@@ -139,9 +141,9 @@ def launch(monkeypatch, sandbox: Path) -> _Launch:
     planned: list[LaunchPlan] = []
     build_values = entrypoint.build_values
 
-    def record_plan(specs, plan):
+    def record_plan(specs, plan, *, scaling, static_connections):
         planned.append(plan)
-        return build_values(specs, plan)
+        return build_values(specs, plan, scaling=scaling, static_connections=static_connections)
 
     monkeypatch.setattr(entrypoint, "build_values", record_plan)
 
@@ -202,7 +204,7 @@ class TestTheScriptOwnArgvSelectsTheExternalPath:
             args = parse_args()
 
         assert args.rollout_external
-        assert args.custom_inference_engine_provider_path == STATIC_ENGINE_PROVIDER
+        assert args.custom_inference_engine_provider_path.path == STATIC_ENGINE_PROVIDER
 
 
 @requires_helm
@@ -217,9 +219,17 @@ class TestTheScriptOwnArgvSurvivesTheWholeLauncher:
     def test_the_master_the_pods_dial_is_the_one_this_release_installs(self, monkeypatch, tmp_path):
         """The script names a loopback address, which is nothing at all from another pod."""
         launched = launch(monkeypatch, tmp_path)
+        orchestrator = parse_orchestrator_argv(launched.values["run"]["orchestrator"]["command"])
+        controller_command = named_pool_entry(launched.values, CONTROLLER_POOL)["command"]
+        controller = parse_serve_worker_config(controller_command[controller_command.index("--config") + 1])
 
         assert launched.values["run"]["mooncake"]["enabled"] is True
-        assert "127.0.0.1" not in " ".join(launched.plan.worker_argv)
+        dialed = {
+            payload["mooncake_store_init_kwargs"][MOONCAKE_MASTER_ADDRESS_KEY]
+            for payload in (orchestrator.args, controller.args)
+        }
+        assert len(dialed) == 1, f"the orchestrator and a served pod dial different mooncake masters: {dialed}"
+        assert not any(address.startswith("127.0.0.1") for address in dialed)
 
     def test_the_run_declares_no_inference_engine_pool_of_its_own(self, monkeypatch, tmp_path):
         """External rollout means miles provisions none, and one rendered anyway would take gpus and idle."""
@@ -245,8 +255,8 @@ class TestTheScriptOwnArgvSurvivesTheWholeLauncher:
             )
         ).addrs
 
-        start = command.index(EXTERNAL_ROLLOUT_FLAG) + 1
-        assert command[start : start + len(addrs)] == addrs
+        worker_config = parse_serve_worker_config(command[command.index("--config") + 1])
+        assert worker_config.args["rollout_external_engine_addrs"] == addrs
 
     def test_the_engines_the_script_wrote_are_installed_with_the_run(self, monkeypatch, tmp_path):
         """The whole point of the kubernetes half: the engines ride along in the release that trains against them."""

@@ -6,7 +6,7 @@ import pytest
 import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
+from tests.fast.ray.rollout.conftest import make_args, make_rollout_config, make_sample, make_samples_grouped
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray.rollout import train_data_conversion
@@ -33,7 +33,7 @@ class TestConvertSamplesToTrainData:
         converted = {"custom_payload": [1, 2]}
 
         out = convert_samples_to_train_data(
-            make_args(enable_sample_ownership_checker=False),
+            make_rollout_config(enable_sample_ownership_checker=False),
             [make_sample()],
             metadata={},
             custom_convert_samples_to_train_data_func=lambda args, samples: converted,
@@ -631,7 +631,7 @@ class TestPostProcessRewards:
         assert raw == processed == []
 
     def test_custom_reward_post_process_short_circuits(self):
-        args = make_args(advantage_estimator="grpo", rewards_normalization=True)
+        args = make_rollout_config(advantage_estimator="grpo", rewards_normalization=True)
         sentinel = ([0.0], [1.0])
         raw, processed = _post_process_rewards(
             args, [make_sample()], custom_reward_post_process_func=lambda a, s: sentinel

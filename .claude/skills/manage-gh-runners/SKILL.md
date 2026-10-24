@@ -57,7 +57,7 @@ needed. Tokens expire ~1 hour after issuance.
 
 ## Label and CVD convention
 
-Every runner gets:
+Every GPU runner gets:
 
 ```
 self-hosted, Linux, X64, gpu-runner, <name>, <hwtype>, <Ngpu>gpu
@@ -67,6 +67,8 @@ self-hosted, Linux, X64, gpu-runner, <name>, <hwtype>, <Ngpu>gpu
 * `<hwtype>` — `h200`, `h100`, ... (matches workflow `runs_on` predicates).
 * `<Ngpu>gpu` — `2gpu`, `4gpu`, `8gpu` (meta-label required by jobs that
   pin GPU count, e.g. `pr-test.yml`'s `stage-c-4-gpu-h200`).
+
+CPU-only runners, even on GPU hosts, MUST NOT carry GPU-model, GPU-count, or `gpu-runner` labels; Docker builders retain `cpu` and `docker-build`.
 
 `--ngpu` must equal the number of devices in `--cvd`; the script enforces
 this so a 4-GPU runner can't accidentally claim the `2gpu` label.

@@ -7,7 +7,7 @@ from argparse import Namespace
 
 import pytest
 import torch
-from tests.fast.fixtures.args_fixtures import parser_defaults
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 import miles.rollout.inference_rollout.inference_rollout_train as train
@@ -42,7 +42,7 @@ def make_args(**overrides) -> Namespace:
         sglang_router_port=30000,
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return resolve_parse_boundary_configs(Namespace(**defaults))
 
 
 def make_group(group_index: int) -> list[Sample]:

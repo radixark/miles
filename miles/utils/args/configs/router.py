@@ -1,0 +1,69 @@
+import argparse
+from typing import Any, ClassVar
+
+from sglang_router.launch_router import RouterArgs
+
+from miles.utils.args.schema import A, Arg, BaseConfig
+
+
+_ROUTER_DEST_PREFIX = "router_"
+
+
+# TODO: use all sglang router arguments with `--sglang-router` prefix
+class RouterConfig(BaseConfig):
+    _mutable_fields: ClassVar[frozenset[str]] = frozenset(
+        {"sglang_model_routers", "sglang_router_ip", "sglang_router_port"}
+    )
+
+    sglang_model_routers: dict[str, tuple[str, int]] | None
+    sglang_router_ip: A[str | None, Arg(help="IP address of the SGLang router")] = None
+    sglang_router_port: A[int | None, Arg(help="Port of the SGLang router")] = None
+    sglang_router_policy: A[
+        str | None,
+        Arg(help="Routing policy for the SGLang router (e.g., 'consistent_hashing', 'round_robin')"),
+    ] = None
+    sglang_router_request_timeout_secs: A[
+        int,
+        Arg(help="Timeout for requests to the SGLang router in seconds"),
+    ] = 14400
+
+    router_args: dict[str, Any]
+
+    use_miles_router: A[
+        bool,
+        Arg(help="Whether to use MilesRouter for text-based routing instead of SGLang token-based routing"),
+    ] = False
+    miles_router_timeout: A[float | None, Arg(help="Timeout for MilesRouter HTTP requests in seconds.")] = None
+    miles_router_max_connections: A[
+        int | None,
+        Arg(help="Max connections for MilesRouter HTTP client. When unset, the HTTP client has no connection cap."),
+    ] = None
+    miles_router_health_check_failure_threshold: A[
+        int,
+        Arg(help="Number of consecutive failures before marking a worker as unhealthy."),
+    ] = 3
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        super().add_arguments(parser=parser)
+        RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> dict[str, Any]:
+        parser = _make_prefixed_cli_parser()
+        values = vars(args)
+        return {
+            "router_args": {
+                action.dest.removeprefix(_ROUTER_DEST_PREFIX): values[action.dest] for action in parser._actions
+            }
+        }
+
+    @classmethod
+    def arg_names(cls) -> set[str]:
+        return {action.dest for action in _make_prefixed_cli_parser()._actions}
+
+
+def _make_prefixed_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(add_help=False)
+    RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
+    return parser

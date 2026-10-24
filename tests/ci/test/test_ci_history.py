@@ -271,6 +271,7 @@ sys.exit(1)
 
     rc = run_unittest_files(
         [TestFile(name=child.name, estimated_time=1)],
+        snapshot_hardware="cpu",
         timeout_per_file=10,
         enable_retry=True,
         max_attempts=2,

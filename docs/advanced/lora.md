@@ -232,6 +232,13 @@ Bridge-only.
 
 Native LoRA is colocated only. Remote/disaggregated LoRA sync requires Bridge.
 
+On SGLang attention DP (`--sglang-attn-dp-size N`, or the deprecated
+`--sglang-enable-dp-attention --sglang-dp-size N`), SGLang serves LoRA only from
+pinned adapters and requires the attention DP size to equal the engine's TP size
+(sgl-project/sglang#36389). miles pins the rollout adapter there and gives the engine
+a second LoRA slot, which SGLang keeps for the base model. Multi-LoRA cannot run on
+attention DP: pinned adapters are never evicted.
+
 LoRA is not supported by the P2P/RDMA or disk-delta weight-transfer modes. A
 hybrid job with both colocated and additional remote rollout engines also cannot
 send LoRA weights to the remote engines today.

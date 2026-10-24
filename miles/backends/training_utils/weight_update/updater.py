@@ -16,6 +16,7 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
@@ -99,7 +100,10 @@ class WeightUpdater:
             engine_cell_ids=engine_cell_ids,
             parallel_state=self.parallel_state,
             placement=self._hf_weight_iterator.placement,
-            selector=weight_update_selector(self.args),
+            selector=weight_update_selector(
+                speculative_algorithm=self.args.sglang.base_args["speculative_algorithm"],
+                enable_mtp_training=self.args.enable_mtp_training,
+            ),
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
@@ -147,7 +151,14 @@ class WeightUpdater:
         if protocol.use_weight_update_session and driver:
             maybe_pause_engines(self.args, cell_updaters)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
-            begin_weight_update(cell_updaters, weight_update_selector(self.args), sync_base=sync_base)
+            begin_weight_update(
+                cell_updaters,
+                weight_update_selector(
+                    speculative_algorithm=self.args.sglang.base_args["speculative_algorithm"],
+                    enable_mtp_training=self.args.enable_mtp_training,
+                ),
+                sync_base=sync_base,
+            )
         _mark_cells_errored_on_any_rank(cell_updaters)
         dist.barrier(group=get_gloo_group())
 
@@ -203,7 +214,16 @@ class WeightUpdater:
             config = self._lora_sync_config
             if adapter is not None:
                 config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
-            register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
+            register_lora_adapter(
+                rollout_engines,
+                lora_name=lora_name,
+                lora_config=config,
+                pinned=sglang_attention_dp_enabled(
+                    attn_dp_size=self.args.sglang.base_args["attn_dp_size"],
+                    enable_dp_attention=self.args.sglang.base_args["enable_dp_attention"],
+                    dp_size=self.args.sglang.base_args["dp_size"],
+                ),
+            )
             self._registered_adapters.add(lora_name)
 
 

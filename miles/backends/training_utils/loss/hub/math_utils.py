@@ -359,6 +359,20 @@ def _gather_true_on_policy_full_logits(
     return _prepare_true_on_policy_full_logits(full_logits, vocab_size=vocab_size)
 
 
+def true_on_policy_full_log_probs(
+    logits: torch.Tensor,
+    tp_group: dist.ProcessGroup | None,
+    *,
+    vocab_size: int | None = None,
+    sampling_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """``[R, V]`` full-vocabulary log-probs, computed exactly as the true-on-policy scoring computes them."""
+    full_logits = _gather_true_on_policy_full_logits(
+        _apply_sampling_mask(logits, sampling_mask), tp_group, vocab_size=vocab_size
+    )
+    return torch.log_softmax(full_logits, dim=-1)
+
+
 def _split_replicated_loss_gather_grad(
     grad_output: torch.Tensor,
     *,

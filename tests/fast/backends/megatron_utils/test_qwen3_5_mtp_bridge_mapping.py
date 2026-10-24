@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 import torch
 
+from miles.utils.args.runtime import TrainerConfig
+
 
 @pytest.fixture(autouse=True)
 def _reset_stubs_after_test():
@@ -218,7 +220,7 @@ def test_raw_qwen3_5_mtp_export_keeps_eh_proj_column_order():
 
     weight = torch.arange(24, dtype=torch.float32).view(3, 8)
     converted = module.convert_qwen3_5_to_hf(
-        types.SimpleNamespace(), "module.module.mtp.layers.0.eh_proj.weight", weight
+        TrainerConfig.model_construct(), "module.module.mtp.layers.0.eh_proj.weight", weight
     )
 
     assert converted == [("mtp.fc.weight", weight)]
@@ -229,3 +231,38 @@ def test_the_stubs_do_not_outlive_the_test_that_installed_them():
     stub = sys.modules.get("megatron")
 
     assert stub is None or hasattr(stub, "__path__")
+
+
+@pytest.mark.parametrize("suffix", ["in_proj_qkv.weight", "conv1d.weight"])
+@pytest.mark.parametrize("mtp", [False, True])
+def test_gdn_export_reads_the_explicit_hf_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, suffix: str, mtp: bool
+) -> None:
+    """GDN export reads the shared HF path from trainer configuration."""
+    from miles.backends.megatron_utils.megatron_to_hf import linear_attn_layout
+
+    module = load_raw_export_module()
+    checkpoint = str(tmp_path)
+    loaded = []
+
+    def load_config(path: str) -> types.SimpleNamespace:
+        loaded.append(path)
+        return types.SimpleNamespace(
+            linear_num_key_heads=2, linear_num_value_heads=2, linear_key_head_dim=1, linear_value_head_dim=1
+        )
+
+    monkeypatch.setattr(linear_attn_layout, "load_hf_config", load_config)
+    backend = types.SimpleNamespace(kv_channels=1, hidden_size=1, num_attention_heads=2, num_query_groups=2)
+    args = TrainerConfig.model_construct(backend=backend, hf_checkpoint=checkpoint)
+    prefix = "mtp.layers.0.transformer_layer" if mtp else "decoder.layers.0"
+    weight = torch.arange(6, dtype=torch.float32).reshape(6, 1)
+
+    converted = module.convert_qwen3_5_to_hf(
+        args, f"module.module.{prefix}.self_attention.linear_attn.{suffix}", weight
+    )
+
+    expected_prefix = "mtp.layers.0" if mtp else "model.language_model.layers.0"
+    assert len(converted) == 1
+    assert converted[0][0] == f"{expected_prefix}.linear_attn.{suffix}"
+    assert torch.equal(converted[0][1], weight[[0, 3, 1, 4, 2, 5]])
+    assert loaded == [checkpoint]

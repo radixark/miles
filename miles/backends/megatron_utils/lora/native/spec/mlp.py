@@ -74,18 +74,27 @@ class LoRAFusedGateUp(LoRALinear):
     """
 
     def export_plan(self, gather) -> list:
-        b = getattr(self, f"{self.param_prefix}_B")
+        b = getattr(
+            self, f"{self.param_prefix}_B"
+        )  # config-access-exempt: the projection prefix selects its registered B parameter
         i_loc = b.shape[0] // 2
         gate = gather.request(b[:i_loc], 0)
         up = gather.request(b[i_loc:], 0)
         return [
-            (f"{self.hf_prefix}gate_up_proj.lora_A.weight", getattr(self, f"{self.param_prefix}_A")),
+            (
+                f"{self.hf_prefix}gate_up_proj.lora_A.weight",
+                getattr(self, f"{self.param_prefix}_A"),
+            ),  # config-access-exempt: the projection prefix selects its registered A parameter
             (f"{self.hf_prefix}gate_up_proj.lora_B.weight", lambda: torch.cat([gate(), up()], dim=0)),
         ]
 
     def load_plan(self, take) -> list:
-        a = getattr(self, f"{self.param_prefix}_A")
-        b = getattr(self, f"{self.param_prefix}_B")
+        a = getattr(
+            self, f"{self.param_prefix}_A"
+        )  # config-access-exempt: the projection prefix selects its registered A parameter
+        b = getattr(
+            self, f"{self.param_prefix}_B"
+        )  # config-access-exempt: the projection prefix selects its registered B parameter
         i_loc = b.shape[0] // 2
         full_b = take(f"{self.hf_prefix}gate_up_proj.lora_B.weight")
         full_i = full_b.shape[0] // 2
