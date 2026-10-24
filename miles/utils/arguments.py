@@ -1285,7 +1285,9 @@ def miles_validate_args(args):
 
     if args.check_weight_update_selector is None:
         # reset_tensors scrambles every tensor it covers, so it must cover only what the sync rewrites
-        args.check_weight_update_selector = weight_update_selector(args)
+        args.check_weight_update_selector = weight_update_selector(
+            speculative_algorithm=args.sglang_speculative_algorithm, enable_mtp_training=args.enable_mtp_training
+        )
 
     # always true on offload for colocate at the moment.
     assert (

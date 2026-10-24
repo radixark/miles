@@ -120,10 +120,10 @@ class TestComputeSessionServerConfig:
         )
         assert [getattr(config, name) for name in _OPTIONAL_ARGS_ATTRS] == [None] * len(_OPTIONAL_ARGS_ATTRS)
 
-    def test_older_args_default_rollout_temperature(self):
-        args = Namespace(
-            **{key: value for key, value in _DISTINCT_ARGS_VALUES.items() if key != "rollout_temperature"}
-        )
+    def test_older_args_default_rollout_temperature(self) -> None:
+        """Older session inputs retain the default temperature after owner migration."""
+        args = _make_args()
+        del args.rollout_temperature
         config = compute_session_server_config(
             args, host="127.0.0.1", port=5001, instance_id=None, backend_url="http://127.0.0.1:3000"
         )

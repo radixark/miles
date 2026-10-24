@@ -100,7 +100,10 @@ class WeightUpdater:
             engine_cell_ids=engine_cell_ids,
             parallel_state=self.parallel_state,
             placement=self._hf_weight_iterator.placement,
-            selector=weight_update_selector(self.args),
+            selector=weight_update_selector(
+                speculative_algorithm=self.args.sglang.base_args["speculative_algorithm"],
+                enable_mtp_training=self.args.enable_mtp_training,
+            ),
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
@@ -148,7 +151,14 @@ class WeightUpdater:
         if protocol.use_weight_update_session and driver:
             maybe_pause_engines(self.args, cell_updaters)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
-            begin_weight_update(cell_updaters, weight_update_selector(self.args), sync_base=sync_base)
+            begin_weight_update(
+                cell_updaters,
+                weight_update_selector(
+                    speculative_algorithm=self.args.sglang.base_args["speculative_algorithm"],
+                    enable_mtp_training=self.args.enable_mtp_training,
+                ),
+                sync_base=sync_base,
+            )
         _mark_cells_errored_on_any_rank(cell_updaters)
         dist.barrier(group=get_gloo_group())
 

@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import torch
 
+from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfNameMapping
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
@@ -342,7 +343,7 @@ class _P2PSenderHarness:
             update_weight_engine_request_timeout=_FAILURE_BOUND,
             update_weight_buffer_size=update_weight_buffer_size,
             check_weight_transfer_checksum=check_weight_transfer_checksum,
-            sglang_pp_size=1,
+            sglang=SglangConfig(models=[], base_args={"pp_size": 1}),
         )
         protocol = self._p2p_protocol.UpdateWeightP2P(args)
         self._protocols.append(protocol)

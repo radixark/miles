@@ -46,6 +46,8 @@ class TestConfigValuesConsumers:
 class TestSecondaryTypedTracking:
     def test_secondary_wandb_submits_custom_typed_fields_to_the_sdk(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Secondary tracking submits Pydantic extras rather than only the declared storage dictionary."""
+        from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
+
         calls: list[dict[str, object]] = []
         config = _LoggedConfig(
             wandb_run_id="run",
@@ -56,7 +58,7 @@ class TestSecondaryTypedTracking:
             wandb_team=None,
             wandb_project="project",
             custom_value=7,
-            sglang_enable_metrics=False,
+            sglang=make_sglang_config(enable_metrics=False),
         )
         monkeypatch.setattr(wandb_utils.wandb, "init", lambda **kwargs: calls.append(kwargs))
         monkeypatch.setattr(wandb_utils.wandb, "define_metric", lambda *args, **kwargs: None)

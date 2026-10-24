@@ -96,7 +96,7 @@ async def eval_rollout_single_dataset(
             if policy_uses_routing_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
-            if getattr(args, "sglang_enable_deterministic_inference", False):
+            if args.sglang.common_value("enable_deterministic_inference"):
                 sampling_params = base_sampling_params.copy()
                 sampling_params["sampling_seed"] = args.rollout_seed + j
             tasks.append(

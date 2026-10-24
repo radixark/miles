@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import async_utils
@@ -112,7 +114,7 @@ def _make_updater(
     args = Namespace(
         pause_generation_mode=pause_generation_mode,
         check_lora_weight_equal=False,
-        sglang_speculative_algorithm=None,
+        sglang=SglangConfig(models=[], base_args={"speculative_algorithm": None}),
         enable_mtp_training=False,
         fully_async=False,
         colocate=True,
@@ -343,3 +345,41 @@ class TestFinalizationFailure:
             _run(updater)
 
         updater.protocol.after_engines_resumed.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "base_algorithm, group_algorithm, selector", [("EAGLE", None, "target"), (None, "EAGLE", "all")]
+)
+def test_weight_sync_keeps_the_global_selector_with_group_overrides(
+    base_algorithm: str | None, group_algorithm: str | None, selector: str
+) -> None:
+    """Per-group overrides do not change the existing global weight-update selection."""
+    calls: list[tuple[int, str, dict]] = []
+    updater = _make_updater(_make_engines(calls))
+    sglang = SglangConfig(
+        base_args={"speculative_algorithm": base_algorithm},
+        models=[
+            ModelConfig(
+                name="eval",
+                model_path="/model",
+                update_weights=False,
+                server_groups=[
+                    ServerGroupConfig(
+                        worker_type=WorkerType.REGULAR,
+                        num_gpus_per_engine=1,
+                        overrides={"speculative_algorithm": group_algorithm},
+                        needs_offload=False,
+                    )
+                ],
+            )
+        ],
+    )
+    updater.args.sglang = sglang
+    updater.protocol.connect = MagicMock()
+    updater.connect_rollout_engines([], None, None, [])
+    assert updater.protocol.connect.call_args.kwargs["selector"] == selector
+
+    _run(updater)
+    begins = [kwargs for _, name, kwargs in calls if name == "begin_weight_update"]
+    assert len(begins) == _ENGINE_COUNT
+    assert all(kwargs["selector"] == selector for kwargs in begins)
