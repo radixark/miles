@@ -264,7 +264,7 @@ without the option.
 ```bash
 --object-store-backend mooncake \
 --use-output-store \
---output-store-local-buffer-size 1gb
+--output-store-local-buffer-size 16gb
 ```
 
 Requirements:
@@ -276,12 +276,16 @@ Requirements:
 - A router that forwards `return_outputs_via_store`: `--use-miles-router`, or an
   `sgl-router` wheel from `radixark/sgl-router-for-miles` with that fix. A router that
   drops it fails the rollout instead of falling back to inline arrays.
-- `--output-store-local-buffer-size` sets the local buffer of every output store client;
-  an engine puts all stored arrays of a response through it at once, so it must hold one
-  response's routed experts, indexer top-k and sampling mask together. Indexer top-k
-  dominates: `index_topk` int32 ids per DSA layer and token, about 0.5 MB per token on
-  DeepSeek-V3.2. With `--rollout-max-context-len`, a buffer that cannot hold the indexer
-  top-k of a sequence that long is rejected at launch.
+- `--output-store-local-buffer-size` (default 16gb) sets the local buffer of every
+  engine and train worker that writes or reads the store; the rollout executor and the
+  session server only delete and register none. An engine puts all stored arrays of a
+  response through it at once, so it must hold one response's routed experts, indexer
+  top-k and sampling mask together. Indexer top-k dominates: `index_topk` int32 ids per
+  DSA layer and token, about 0.5 MB per token on DeepSeek-V3.2, so the default fits a
+  32k-token response. With `--rollout-max-context-len`, a buffer that cannot hold the
+  indexer top-k of a sequence that long is rejected at launch. With RDMA, each client
+  pins its whole buffer in host memory when it starts; with TCP, pages are committed as
+  transfers first touch them.
 - An RDMA device for engines through `device_name` in `--mooncake-store-init-kwargs`
   when they need one: SGLang reads no `MOONCAKE_*` variable. The other clients also
   read `MOONCAKE_DEVICE` on their own node.

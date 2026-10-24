@@ -112,7 +112,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
         if args.use_output_store:
-            self._delete_store_refs = connect_output_store(output_store_backend_config(args)).delete_many
+            store = connect_output_store(output_store_backend_config(args, deletes_only=True))
+            self._delete_store_refs = store.delete_many
 
         init_http_client(args)
 

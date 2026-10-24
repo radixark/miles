@@ -115,19 +115,22 @@ def check_output_store_args(args: argparse.Namespace) -> None:
         raise ValueError("--use-output-store: " + "; ".join(violations))
 
 
-def output_store_backend_config(args: argparse.Namespace, *, local_hostname: str | None = None) -> dict[str, Any]:
+def output_store_backend_config(
+    args: argparse.Namespace, *, local_hostname: str | None = None, deletes_only: bool = False
+) -> dict[str, Any]:
     """The radix_transfer_plugins ``MooncakeConfig`` of a client of this run's output store.
 
     The connection comes from Miles' own Mooncake config. ``local_hostname`` and ``device_name`` belong
     to the client's node, which may not be the node building the config: an engine passes its host, and
-    None leaves either to ``connect_output_store`` in the process that connects.
+    None leaves either to ``connect_output_store`` in the process that connects. A client that only
+    deletes moves no data, so it registers no local buffer.
     """
     init_kwargs = args.mooncake_store_init_kwargs or {}
     mooncake = compute_mooncake_store_config(init_kwargs, contribute_segment=False)
     return {
         "master_server_address": mooncake["master_server_addr"],
         "local_hostname": local_hostname,
-        "local_buffer_size": args.output_store_local_buffer_size,
+        "local_buffer_size": 0 if deletes_only else args.output_store_local_buffer_size,
         # Writers only: one prefix per launch, so a later sweep can find this run's objects.
         "key_prefix": f"{_KEY_PREFIX_BASE}/{args.run_uuid}",
         "protocol": mooncake["protocol"],

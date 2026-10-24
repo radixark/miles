@@ -71,5 +71,7 @@ def compute_session_server_config(
         rollout_temperature=getattr(
             args, "rollout_temperature", 1.0
         ),  # config-access-exempt: legacy session inputs omit rollout_temperature
-        output_store_backend_config=output_store_backend_config(args) if args.use_output_store else None,
+        output_store_backend_config=(
+            output_store_backend_config(args, deletes_only=True) if args.use_output_store else None
+        ),
     )

@@ -85,13 +85,15 @@ class TestLaunchChecks:
             "use_rollout_indexer_replay": True,
             "rollout_indexer_topk_num_streams": 61,
             "rollout_indexer_topk_width": 2048,
-            "rollout_max_context_len": 4097,
+            "rollout_max_context_len": 32769,
         }
-        # 4096 rows x 61 streams x 2048 ids x 4 bytes
-        with pytest.raises(ValueError, match="cannot hold the 2046820352 bytes of indexer top-k"):
-            check_output_store_args(make_args(**dsa))
-        check_output_store_args(make_args(**dsa, output_store_local_buffer_size="2gb"))
-        check_output_store_args(make_args(**{**dsa, "rollout_max_context_len": None}))
+        # 32768 rows x 61 streams x 2048 ids x 4 bytes: under the 16gb default, over 15gb
+        check_output_store_args(make_args(**dsa))
+        with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
+            check_output_store_args(make_args(**dsa, output_store_local_buffer_size="15gb"))
+        check_output_store_args(
+            make_args(**{**dsa, "rollout_max_context_len": None}, output_store_local_buffer_size="15gb")
+        )
 
     def test_the_launch_facts_owned_elsewhere_are_checked_and_reported_together(self, launch, monkeypatch):
         launch.pd = launch.multi_policy = True
@@ -109,7 +111,7 @@ class TestStoreClients:
     def test_every_client_shares_miles_mooncake_and_the_run_prefix(self):
         args = make_args(output_store_local_buffer_size="64mb", mooncake_replica_num=2, run_uuid="abcd")
 
-        assert output_store_backend_config(args) == {
+        expected = {
             "master_server_address": "10.0.0.1:50051",
             "local_hostname": None,
             "local_buffer_size": "64mb",
@@ -119,6 +121,9 @@ class TestStoreClients:
             "device_name": "mlx5_0",
             "replica_num": 2,
         }
+
+        assert output_store_backend_config(args) == expected
+        assert output_store_backend_config(args, deletes_only=True) == {**expected, "local_buffer_size": 0}
 
     def test_an_engine_writes_with_its_own_host(self):
         args = make_args()

@@ -12,15 +12,15 @@ class OutputStoreConfig(BaseConfig):
             )
         ),
     ] = False
-    # Arbitrary until measured.
+    # Fits a 32k-token DeepSeek-V3.2 response with indexer top-k (about 15.3 GiB).
     output_store_local_buffer_size: A[
         str,
         Arg(
             help=(
-                "Local buffer of every output store client Miles creates (SGLang writers, trainer readers, the "
-                "deleting clients), in bytes or as a string such as '1gb'. An engine puts all stored arrays of a "
-                "response through it at once, so it must hold one response's routed experts, indexer top-k and "
-                "sampling mask together."
+                "Local buffer of every SGLang engine and train worker writing or reading the output store, in "
+                "bytes or as a string such as '16gb'. An engine puts all stored arrays of a response through it at "
+                "once, so it must hold one response's routed experts, indexer top-k and sampling mask together. "
+                "With RDMA, each of these clients pins the whole buffer in host memory when it starts."
             )
         ),
-    ] = "1gb"
+    ] = "16gb"
