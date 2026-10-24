@@ -278,7 +278,10 @@ Requirements:
   drops it fails the rollout instead of falling back to inline arrays.
 - `--output-store-local-buffer-size` sets the local buffer of every output store client;
   an engine puts all stored arrays of a response through it at once, so it must hold one
-  response's routed experts, indexer top-k and sampling mask together.
+  response's routed experts, indexer top-k and sampling mask together. Indexer top-k
+  dominates: `index_topk` int32 ids per DSA layer and token, about 0.5 MB per token on
+  DeepSeek-V3.2. With `--rollout-max-context-len`, a buffer that cannot hold the indexer
+  top-k of a sequence that long is rejected at launch.
 - An RDMA device for engines through `device_name` in `--mooncake-store-init-kwargs`
   when they need one: SGLang reads no `MOONCAKE_*` variable. The other clients also
   read `MOONCAKE_DEVICE` on their own node.

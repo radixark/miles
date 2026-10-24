@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from sglang.srt.server_args import ServerArgs
 
 from miles.utils.environ import use_legacy_rollout_v1
-from miles.utils.object_store_config import compute_mooncake_store_config
+from miles.utils.object_store_config import _parse_size, compute_mooncake_store_config
 from miles.utils.workers.argv_utils import _record_field_names
 from miles.utils.workers.types import DeployComponent
 
@@ -43,6 +43,8 @@ def check_output_store_args(args: argparse.Namespace) -> None:
     from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
     from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 
+    buffer_bytes = _parse_size(args.output_store_local_buffer_size)
+    indexer_topk_bytes = _max_indexer_topk_bytes(args)
     # --save-debug-train-data stays allowed: the trainer dumps after its store columns are materialized.
     debug_data_flags = {
         "--save-debug-rollout-data (also set by --dump-details)": args.save_debug_rollout_data,
@@ -97,6 +99,11 @@ def check_output_store_args(args: argparse.Namespace) -> None:
                 f"only --deploy-component {DeployComponent.ALL.value} is supported (got {args.deploy_component})",
             ),
             (args.debug_rollout_only, "--debug-rollout-only has no train worker to hold the stored objects"),
+            (
+                indexer_topk_bytes is not None and indexer_topk_bytes > buffer_bytes,
+                f"--output-store-local-buffer-size {args.output_store_local_buffer_size} cannot hold the "
+                f"{indexer_topk_bytes} bytes of indexer top-k that one --rollout-max-context-len sequence stores",
+            ),
             *(
                 (value is not None, f"{flag} is not supported: saved output store refs do not outlive their run")
                 for flag, value in debug_data_flags.items()
@@ -168,6 +175,20 @@ def output_store_reader(args: argparse.Namespace) -> Callable | None:
         stash_type=TokenOutputStash,
         buffer_bytes=parse_size(args.output_store_local_buffer_size),
     )
+
+
+def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
+    """Bytes of the indexer top-k of a --rollout-max-context-len sequence, or None if unknown.
+
+    Only this field is sized at launch: on DeepSeek-V3.2 it takes about 0.5 MB per token, routed experts take
+    about 2 KB, and a sampling mask row holds the sampled support, which only sampling knows.
+    """
+    streams = getattr(args, "rollout_indexer_topk_num_streams", None)
+    width = getattr(args, "rollout_indexer_topk_width", None)
+    if not args.use_rollout_indexer_replay or args.rollout_max_context_len is None or not (streams and width):
+        return None
+    # One int32 row per forward step; no object outgrows the sequence it stores.
+    return (args.rollout_max_context_len - 1) * streams * width * 4
 
 
 def _sglang_has_output_store() -> bool:

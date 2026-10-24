@@ -80,6 +80,19 @@ class TestLaunchChecks:
         with pytest.raises(ValueError, match=message):
             check_output_store_args(make_args(**overrides))
 
+    def test_a_buffer_that_cannot_hold_the_indexer_top_k_of_a_full_context_is_rejected(self, launch):
+        dsa = {
+            "use_rollout_indexer_replay": True,
+            "rollout_indexer_topk_num_streams": 61,
+            "rollout_indexer_topk_width": 2048,
+            "rollout_max_context_len": 4097,
+        }
+        # 4096 rows x 61 streams x 2048 ids x 4 bytes
+        with pytest.raises(ValueError, match="cannot hold the 2046820352 bytes of indexer top-k"):
+            check_output_store_args(make_args(**dsa))
+        check_output_store_args(make_args(**dsa, output_store_local_buffer_size="2gb"))
+        check_output_store_args(make_args(**{**dsa, "rollout_max_context_len": None}))
+
     def test_the_launch_facts_owned_elsewhere_are_checked_and_reported_together(self, launch, monkeypatch):
         launch.pd = launch.multi_policy = True
         launch.sglang_has_store = False
