@@ -165,6 +165,22 @@ def megatron_defaults(monkeypatch):
     return module.set_default_megatron_args
 
 
+def _shared_parser_args(argv, **overrides):
+    parser = ArgumentParser()
+    parser.add_argument("--cp-comm-type", nargs="+", default=["p2p"])
+    add_dsa_arguments(parser)
+    defaults = dict(
+        optimizer="adam",
+        fp16=False,
+        seq_length=None,
+        vocab_size=None,
+        tokenizer_model=None,
+        tokenizer_type=None,
+        hf_checkpoint="/model",
+    )
+    return _args(**vars(parser.parse_args(argv)), **(defaults | overrides))
+
+
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
@@ -176,21 +192,27 @@ def megatron_defaults(monkeypatch):
     ids=["default-miles", "explicit-miles-cp", "default-native", "explicit-native-cp"],
 )
 def test_shared_parser_normalizes_omitted_cp_without_overriding_explicit_settings(megatron_defaults, argv, expected):
-    parser = ArgumentParser()
-    parser.add_argument("--cp-comm-type", nargs="+", default=["p2p"])
-    add_dsa_arguments(parser)
-    args = _args(
-        **vars(parser.parse_args(argv)),
-        optimizer="adam",
-        fp16=False,
-        seq_length=None,
-        vocab_size=None,
-        tokenizer_model=None,
-        tokenizer_type=None,
-        hf_checkpoint="/model",
-    )
+    args = _shared_parser_args(argv)
     megatron_defaults(args)
     assert args.cp_comm_type == expected
+
+
+@pytest.mark.parametrize(
+    ("dispatcher", "expected"),
+    [("allgather", "alltoall"), ("alltoall", "alltoall"), ("flex", "flex")],
+    ids=["allgather-rewritten", "alltoall", "flex"],
+)
+def test_shared_defaults_always_pack_variable_length_sequences(megatron_defaults, dispatcher, expected):
+    """The offline converter and the debug worker build their model through the same bridge provider
+    as training, and it reads args.variable_seq_lengths unguarded; training's own post-processing
+    is not run by either of them."""
+    args = _shared_parser_args([], moe_token_dispatcher_type=dispatcher)
+    assert not hasattr(args, "variable_seq_lengths")
+
+    megatron_defaults(args)
+
+    assert args.variable_seq_lengths is True
+    assert args.moe_token_dispatcher_type == expected
 
 
 @pytest.mark.parametrize("argv,implementation", [([], "miles"), (["--dsa-impl", "megatron"], "megatron")])
