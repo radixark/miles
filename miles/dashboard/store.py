@@ -265,6 +265,15 @@ def _hour_bounds(key: str) -> tuple[float, float]:
     return float(start), float(start + 3600)
 
 
+def _read_complete_lines(path: Path, offset: int) -> bytes:
+    """The newline-terminated lines appended to ``path`` past ``offset``. A
+    line still being written is left for a later read once its writer ends it."""
+    with open(path, "rb") as f:
+        f.seek(offset)
+        appended = f.read()
+    return appended[: appended.rfind(b"\n") + 1]
+
+
 class _PartitionReader:
     """One hourly-partitioned JSONL stream on the read side.
 
@@ -338,15 +347,12 @@ class _PartitionReader:
             if key in self._blocks and path.stat().st_size <= offset:
                 self._blocks.move_to_end(key)
                 return self._blocks[key]
-            with open(path, "rb") as f:
-                f.seek(offset)
-                chunk = f.read()
-            end = chunk.rfind(b"\n")
-            if end >= 0:
-                new = self._parse(chunk[: end + 1], path, offset)
+            complete_lines = _read_complete_lines(path, offset)
+            if complete_lines:
+                new = self._parse(complete_lines, path, offset)
                 pieces = [self._blocks[key], new] if key in self._blocks else [new]
                 self._blocks[key] = self._concat([piece for piece in pieces if self._length(piece)])
-                self._offsets[key] = offset + end + 1
+                self._offsets[key] = offset + len(complete_lines)
             elif key not in self._blocks:
                 self._blocks[key] = self._concat([])
                 self._offsets[key] = offset
@@ -590,15 +596,11 @@ class MetricStore:
             path = self.dir / stream.filename
             if not path.exists():
                 continue
-            with open(path, "rb") as f:
-                f.seek(self._offsets[stream])
-                chunk = f.read()
-            end = chunk.rfind(b"\n")
-            if end < 0:
+            complete_lines = _read_complete_lines(path, self._offsets[stream])
+            if not complete_lines:
                 continue
-            complete = chunk[: end + 1]
             record_type = _RECORD_TYPE_OF_STREAM[stream]
-            for line in complete.splitlines():
+            for line in complete_lines.splitlines():
                 try:
                     self.records[stream].append(record_type.from_dict(json.loads(line)))
                 except (json.JSONDecodeError, TypeError, KeyError) as e:
@@ -606,7 +608,7 @@ class MetricStore:
                         f"corrupt record in {path} near byte {self._offsets[stream]}: {line[:200]!r}"
                     ) from e
                 num_new += 1
-            self._offsets[stream] += len(complete)
+            self._offsets[stream] += len(complete_lines)
         for reader in self._readers.values():
             num_new += reader.refresh_cached()
         return num_new
