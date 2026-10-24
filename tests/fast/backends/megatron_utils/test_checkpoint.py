@@ -7,10 +7,12 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from tests.fast.fixtures.args_fixtures import make_trainer_args
+import torch.distributed.checkpoint as dist_cp
+from tests.fast.fixtures.args_fixtures import make_trainer_args, parser_defaults
 
 from miles.backends.megatron_utils import checkpoint
 from miles.backends.training_utils.model_companion import ModelCompanion
+from miles_plugins.models.deepseek_v4.arguments import DSV4_SPEC_MODULE, DSV41_SPEC_MODULE
 
 
 class TestCheckpointTrainingProvenance:
@@ -160,3 +162,30 @@ class TestRawMbridgeCompanionIsolation:
             assert companion.weight_version.item() == 7
             assert companion.sample_consumptions.tolist() == [[1, 2, 3, 4, 0]]
             torch.testing.assert_close(model.weight, torch.full_like(model.weight, 5))
+
+
+class TestDeepSeekCheckpointCompatibility:
+    @pytest.mark.parametrize("spec_module", [DSV4_SPEC_MODULE, DSV41_SPEC_MODULE])
+    def test_old_attention_keys_are_rejected_before_loading(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spec_module: str
+    ) -> None:
+        """The backend model spec must reject legacy DeepSeek weights before loading partial state."""
+        dist_cp.save(
+            {"decoder.layers.0.self_attention.wq_a.weight": torch.zeros(2)},
+            checkpoint_id=str(tmp_path / "release"),
+        )
+        (tmp_path / "latest_checkpointed_iteration.txt").write_text("release")
+        args = make_trainer_args(load=str(tmp_path), spec=[spec_module, "get_spec"])
+        monkeypatch.setattr(
+            checkpoint, "_load_checkpoint_megatron", lambda **kwargs: pytest.fail("Loaded legacy weights")
+        )
+
+        with pytest.raises(ValueError, match="Re-convert it from the HuggingFace checkpoint"):
+            checkpoint.load_checkpoint(
+                ddp_model=[],
+                optimizer=None,
+                opt_param_scheduler=None,
+                checkpointing_context=None,
+                skip_load_to_model_and_opt=False,
+                args=args,
+            )

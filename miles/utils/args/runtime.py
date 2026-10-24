@@ -13,7 +13,11 @@ from miles.utils.args.configs.algo import AlgoConfig
 from miles.utils.args.configs.backend_fields import TrainerBackendTraitConfig
 from miles.utils.args.configs.ci import CiConfig
 from miles.utils.args.configs.cluster import ClusterConfig
-from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig, DsaMegatronPluginsConfig
+from miles.utils.args.configs.custom_megatron_plugins import (
+    CustomMegatronPluginsConfig,
+    DsaMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
+)
 from miles.utils.args.configs.dashboard import DashboardConfig
 from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.debug import DebugConfig
@@ -58,6 +62,7 @@ class OrchestratorConfig(
     RewardModelConfig,
     RolloutBufferConfig,
     CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
     MtpTrainingConfig,
     PrefillDecodeDisaggregationConfig,
@@ -92,6 +97,7 @@ class TrainerConfig(
     RewardModelConfig,
     RolloutBufferConfig,
     CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
     MtpTrainingConfig,
     PrefillDecodeDisaggregationConfig,
@@ -136,6 +142,7 @@ class InferenceControllerConfig(
     RewardModelConfig,
     RolloutBufferConfig,
     CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
     MtpTrainingConfig,
     PrefillDecodeDisaggregationConfig,
@@ -171,6 +178,7 @@ class RolloutConfig(
     RewardModelConfig,
     RolloutBufferConfig,
     CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
     MtpTrainingConfig,
     PrefillDecodeDisaggregationConfig,
@@ -206,6 +214,7 @@ class MultiLoraConfig(
     RewardModelConfig,
     RolloutBufferConfig,
     CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
     MtpTrainingConfig,
     PrefillDecodeDisaggregationConfig,
@@ -240,6 +249,7 @@ class AllConfig(
     RewardModelConfig,
     RolloutBufferConfig,
     CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
     DsaMegatronPluginsConfig,
     MtpTrainingConfig,
     PrefillDecodeDisaggregationConfig,

@@ -17,15 +17,15 @@ from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.utils.arguments import LINEAR_ATTENTION_BACKENDS, LINEAR_ATTENTION_INPUT_NORMS
+from miles.utils.args.configs.custom_megatron_plugins import Dsv4MegatronPluginsConfig
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.memory_utils import print_memory
-from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
 from miles_plugins.models.glm5.arguments import add_dsa_arguments
 
 
 def add_conversion_args(parser):
     """Add conversion arguments, plus the plugin arguments the model scripts pass through."""
-    add_dsv4_arguments(parser)
+    Dsv4MegatronPluginsConfig.add_arguments(parser=parser)
     add_dsa_arguments(parser)
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
     parser.add_argument("--linear-attention-backend", choices=LINEAR_ATTENTION_BACKENDS, default="fla")
