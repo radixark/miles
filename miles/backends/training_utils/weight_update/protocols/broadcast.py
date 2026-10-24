@@ -195,7 +195,9 @@ def _flatten_weight_bucket(named_tensors: Sequence[tuple[str, torch.Tensor]]) ->
     # Keep SGLang optional for callers using the existing per-tensor protocol.
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket
 
-    if not getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
+    if not getattr(
+        FlattenedTensorBucket, "supports_multi_dtypes", False
+    ):  # config-access-exempt: tensor bucket versions differ in mixed-dtype support
         raise RuntimeError("Flattened broadcasts require SGLang's mixed-dtype FlattenedTensorBucket")
 
     # SGLang concatenates raw bytes without padding. Each reconstructed dtype

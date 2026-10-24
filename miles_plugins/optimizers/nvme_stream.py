@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import torch
 from megatron.core.fp8_utils import is_float8tensor
 
+
 if TYPE_CHECKING:
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
 
@@ -124,7 +125,9 @@ def _disk_backed_like(tensor: torch.Tensor, directory: str) -> torch.Tensor:
 
 
 def _is_disk_backed(tensor: torch.Tensor) -> bool:
-    return getattr(tensor, "_miles_disk_backed", False)
+    return getattr(
+        tensor, "_miles_disk_backed", False
+    )  # config-access-exempt: the disk-backed marker is attached only to mapped tensors
 
 
 _MS_SYNC = 4
@@ -435,8 +438,12 @@ class NVMeOptimizerStateStore:
         from megatron.core.transformer.module import param_is_not_shared
 
         dist_opt = self.dist_opt
-        tp_group = getattr(dist_opt, "tp_group", None)
-        expert_tp_group = getattr(dist_opt, "expert_tp_group", None)
+        tp_group = getattr(
+            dist_opt, "tp_group", None
+        )  # config-access-exempt: Megatron optimizer versions may omit the tensor parallel group
+        expert_tp_group = getattr(
+            dist_opt, "expert_tp_group", None
+        )  # config-access-exempt: Megatron optimizer versions may omit the expert tensor parallel group
         sum_sq = torch.zeros((), dtype=torch.float32, device=torch.cuda.current_device())
         for bucket in self.buckets:
             for entry in bucket.entries:
@@ -446,7 +453,9 @@ class NVMeOptimizerStateStore:
                     and param_is_not_tensor_parallel_duplicate(
                         main, tp_group=tp_group, expert_tp_group=expert_tp_group
                     )
-                    and not getattr(main, "_is_witness_param", False)
+                    and not getattr(
+                        main, "_is_witness_param", False
+                    )  # config-access-exempt: only witness parameters carry the witness marker
                 ):
                     sum_sq += torch.linalg.vector_norm(self._model_grad_shard(entry), dtype=torch.float32) ** 2
         return [sum_sq.sqrt().reshape(1)]

@@ -155,7 +155,9 @@ class HubKernels:
         if spec is None or slot in self._slot_failures:
             return None
         module = self._modules[(spec.repo_id, spec.version, spec.revision)]
-        return {name: getattr(module, name) for name in spec.functions}
+        return {
+            name: getattr(module, name) for name in spec.functions
+        }  # config-access-exempt: hub function names are selected by the kernel specification
 
     def _resolve_module(self, spec: HubKernelSpec) -> ModuleType | None:
         key = (spec.repo_id, spec.version, spec.revision)
@@ -178,7 +180,9 @@ class HubKernels:
         module = self._resolve_module(spec)
         if module is None:
             return None, self._module_errors[(spec.repo_id, spec.version, spec.revision)]
-        missing = [name for name in spec.functions if not callable(getattr(module, name, None))]
+        missing = [
+            name for name in spec.functions if not callable(getattr(module, name, None))
+        ]  # config-access-exempt: hub function names are selected by the kernel specification
         if missing:
             return None, f"{spec.describe()} does not expose callable {missing}"
 

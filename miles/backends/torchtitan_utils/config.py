@@ -35,7 +35,9 @@ def _model_package(name: str):
 
 def resolve_model_spec(args: Namespace):
     module = _model_package(args.titan_model_name)
-    registry = getattr(module, "model_registry", None)
+    registry = getattr(
+        module, "model_registry", None
+    )  # config-access-exempt: imported TorchTitan model packages may omit the registry entry point
     if registry is None:
         raise ValueError(f"{module.__name__} exposes no model_registry(); cannot build a ModelSpec")
     return registry(args.titan_model_flavor, attn_backend="flex")

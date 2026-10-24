@@ -23,7 +23,9 @@ def _fix_v5_tokenizer_components(tokenizer: PreTrainedTokenizerBase, model_name_
     # fix the loaded tokenizer decodes Metaspace ▁ instead of ByteLevel Ġ/Ċ
     # and diverges from the sglang-served tokenizer.  Mirrors sglang's
     # _fix_v5_tokenizer_components (hf_transformers_utils.py).
-    backend = getattr(tokenizer, "_tokenizer", None)
+    backend = getattr(
+        tokenizer, "_tokenizer", None
+    )  # config-access-exempt: processor capabilities vary across tokenizer and modality implementations
     if backend is None:
         return
 
@@ -120,7 +122,9 @@ def processor_requires_medias(processor) -> bool:
         params = inspect.signature(processor).parameters
         return "medias" in params and "text" in params
     except (TypeError, ValueError):
-        return hasattr(processor, "media_processor")
+        return hasattr(
+            processor, "media_processor"
+        )  # config-access-exempt: processor capabilities vary across tokenizer and modality implementations
 
 
 def call_processor(processor, text, multimodal_inputs: dict | None = None):
@@ -166,13 +170,17 @@ def load_processor(name_or_path: str, **kwargs):
 
 
 def process_vision_info(prompt, processor):
-    if hasattr(processor, "extract_media"):
+    if hasattr(
+        processor, "extract_media"
+    ):  # config-access-exempt: processor capabilities vary across tokenizer and modality implementations
         return processor.extract_media(prompt)
 
     # TODO: temporary solution, will write image utils for miles later
     from qwen_vl_utils import process_vision_info as qwen_process_vision_info
 
-    if hasattr(processor.image_processor, "patch_size"):
+    if hasattr(
+        processor.image_processor, "patch_size"
+    ):  # config-access-exempt: processor capabilities vary across tokenizer and modality implementations
         image_patch_size = processor.image_processor.patch_size
     else:
         logger.info(f"Using default patch size: {DEFAULT_PATCH_SIZE}")

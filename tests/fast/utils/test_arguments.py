@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Callable
 from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
@@ -3609,6 +3610,37 @@ class TestMilesValidateArgsDiskDeltaResume:
         load_dir.mkdir()
 
         miles_validate_args(self._parse(load_dir, tmp_path))
+
+    @pytest.mark.parametrize(
+        "backend,build_parser", [("fsdp", build_fsdp_parser), ("torchtitan", build_torchtitan_parser)]
+    )
+    def test_native_disk_delta_validates_without_a_megatron_step_selector(
+        self, tmp_path: Path, backend: str, build_parser: Callable[..., argparse.ArgumentParser]
+    ) -> None:
+        """Native disk-delta validation preserves its namespace without a Megatron checkpoint selector."""
+        parser = build_parser(extra_args_provider=get_miles_extra_args_provider())
+        args = parser.parse_args(
+            [
+                "--train-backend",
+                backend,
+                "--num-rollout",
+                "1",
+                "--update-weight-transfer-mode",
+                "disk-delta",
+                "--update-weight-disk-dir",
+                str(tmp_path / "shared"),
+                "--update-weight-local-checkpoint-dir",
+                str(tmp_path / "local"),
+                "--hf-checkpoint",
+                str(tmp_path),
+            ]
+            + REQUIRED_ARGS
+        )
+
+        miles_validate_args(args)
+
+        assert args.requested_load is None
+        assert "ckpt_step" not in vars(args)
 
 
 class TestWeightUpdateDeadlines:

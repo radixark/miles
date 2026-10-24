@@ -37,7 +37,9 @@ def validate_score_centering_args(args: Namespace) -> None:
         "custom_convert_samples_to_train_data_path": "custom converters skip rollout top-k logprobs validation",
     }
     for option, reason in incompatible.items():
-        if getattr(args, option):
+        if getattr(
+            args, option
+        ):  # config-access-exempt: option is selected from the required compatibility field names
             raise ValueError(f"Score centering is incompatible with --{option.replace('_', '-')}: {reason}")
     if os.environ.get("SGLANG_RETURN_ORIGINAL_LOGPROB", "").lower() in ("1", "true"):
         raise ValueError("Score centering requires SGLANG_RETURN_ORIGINAL_LOGPROB=0 on rollout servers")

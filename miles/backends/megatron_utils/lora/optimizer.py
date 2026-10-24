@@ -37,7 +37,9 @@ def validate_multi_lora_optimizer_args(args: Namespace) -> None:
         f"multi-LoRA per-slot optimizers only implement Adam semantics; got optimizer={args.optimizer!r}"
     )
     for flag in ("optimizer_cpu_offload", "stream_optimizer_state_to_disk", "rematerialize_param_from_master_weight"):
-        assert not getattr(args, flag, False), f"--{flag.replace('_', '-')} is not supported with multi-LoRA slots"
+        assert not getattr(
+            args, flag, False
+        ), f"--{flag.replace('_', '-')} is not supported with multi-LoRA slots"  # config-access-exempt: attribute selected at runtime from flag
 
 
 def adapter_slot_parameters(model, slot: int) -> list[torch.nn.Parameter]:
@@ -93,7 +95,8 @@ def _build_slot_base_optimizers(config, model, slot_params, *, use_gloo_process_
     optimizers = [
         child.optimizer
         for child in chained.chained_optimizers
-        if getattr(child, "optimizer", None) is not None and child.get_parameters()
+        if getattr(child, "optimizer", None) is not None
+        and child.get_parameters()  # config-access-exempt: optimizer wrappers differ in optimizer support
     ]
     config.bf16 = True
     return optimizers
@@ -113,7 +116,9 @@ class SlotOptimizer:
         assert slot_params, f"adapter slot {slot} has no parameters; is this a multi-LoRA model?"
 
         config = OptimizerConfig(
-            **{f.name: getattr(args, f.name) for f in fields(OptimizerConfig) if hasattr(args, f.name)}
+            **{
+                f.name: getattr(args, f.name) for f in fields(OptimizerConfig) if hasattr(args, f.name)
+            }  # config-access-exempt: attribute selected at runtime from f.name
         )
         config.timers = None
         base_optimizers = _build_slot_base_optimizers(
@@ -179,17 +184,23 @@ class SlotOptimizer:
         """Zero the slot's gradients everywhere they live: the DDP ``main_grad``
         buffer views and any lingering ``grad``/``main_param.grad`` references."""
         for param in adapter_slot_parameters(self._model, self.slot):
-            if (main_grad := getattr(param, "main_grad", None)) is not None:
+            if (
+                main_grad := getattr(param, "main_grad", None)
+            ) is not None:  # config-access-exempt: main_grad is optional backend-attached tensor metadata
                 main_grad.zero_()
             param.grad = None
-            if (main_param := getattr(param, "main_param", None)) is not None:
+            if (
+                main_param := getattr(param, "main_param", None)
+            ) is not None:  # config-access-exempt: main_param is optional backend-attached tensor metadata
                 main_param.grad = None
 
 
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
     """Reset DDP bookkeeping while retaining each slot's gradient accumulation window."""
     for model_chunk in model_chunks:
-        if getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine":
+        if (
+            getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine"
+        ):  # config-access-exempt: third-party providers differ in cuda_graph_impl support
             for param in model_chunk.params_with_grad:
                 param.grad_added_to_main_grad = False
         for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:

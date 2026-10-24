@@ -130,7 +130,9 @@ def convert_samples_to_train_data(
     if k := args.rollout_top_logprobs_num:
         for sample in samples:
             for field in ("rollout_topk_token_ids", "rollout_topk_log_probs", "rollout_log_probs"):
-                if getattr(sample, field) is None:
+                if (
+                    getattr(sample, field) is None
+                ):  # config-access-exempt: sample field name is selected from the explicit rollout probability fields
                     raise ValueError(
                         f"Rollout top-k logprobs collection requires {field}; "
                         f"sample_index={sample.index}. Custom rollout producers must record probabilities during generation."

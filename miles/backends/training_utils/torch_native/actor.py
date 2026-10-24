@@ -103,7 +103,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
             model,
             weights_getter=lambda: None,
             model_name=model_name,
-            quantization_config=getattr(self.hf_config, "quantization_config", None),
+            quantization_config=getattr(
+                self.hf_config, "quantization_config", None
+            ),  # config-access-exempt: unquantized HF checkpoints omit quantization_config
             iterator_factory=iterator_factory,
             parallel_state=get_parallel_state(),
             is_lora=False,

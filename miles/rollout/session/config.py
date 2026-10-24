@@ -53,7 +53,9 @@ def compute_session_server_config(
         use_sampling_support_replay=args.use_sampling_support_replay,
         sglang_speculative_algorithm=args.sglang.common_value("speculative_algorithm"),
         num_layers=args.num_layers,
-        moe_router_topk=getattr(args, "moe_router_topk", None),
+        moe_router_topk=getattr(
+            args, "moe_router_topk", None
+        ),  # config-access-exempt: non-Megatron backends do not supply the MoE router option
         save_debug_trajectory_data=args.save_debug_trajectory_data,
         lora_rank=args.lora_rank,
         lora_adapter_path=args.lora_adapter_path,
@@ -65,5 +67,7 @@ def compute_session_server_config(
         session_sample_postprocessor_path=args.session_sample_postprocessor_path,
         rollout_top_logprobs_num=args.rollout_top_logprobs_num,
         rollout_sampling_logprobs_mode=args.rollout_sampling_logprobs_mode,
-        rollout_temperature=getattr(args, "rollout_temperature", 1.0),
+        rollout_temperature=getattr(
+            args, "rollout_temperature", 1.0
+        ),  # config-access-exempt: legacy session inputs omit rollout_temperature
     )

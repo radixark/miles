@@ -80,11 +80,21 @@ class DeepseekV41Bridge(DeepseekV4Bridge):
     def _build_config(self):
         hf = self.hf_config
         hf.n_hash_layers = 0
-        hf.first_k_dense_replace = getattr(hf, "first_k_dense_replace", 0)
-        hf.intermediate_size = getattr(hf, "intermediate_size", hf.moe_intermediate_size)
-        hf.kv_lora_rank = getattr(hf, "kv_lora_rank", hf.head_dim)
-        hf.qk_nope_head_dim = getattr(hf, "qk_nope_head_dim", hf.head_dim - hf.qk_rope_head_dim)
-        hf.v_head_dim = getattr(hf, "v_head_dim", hf.head_dim)
+        hf.first_k_dense_replace = getattr(
+            hf, "first_k_dense_replace", 0
+        )  # config-access-exempt: HF V4.1 checkpoints may omit the inherited dense-layer count
+        hf.intermediate_size = getattr(
+            hf, "intermediate_size", hf.moe_intermediate_size
+        )  # config-access-exempt: HF V4.1 checkpoints may supply only the MoE intermediate size
+        hf.kv_lora_rank = getattr(
+            hf, "kv_lora_rank", hf.head_dim
+        )  # config-access-exempt: HF V4.1 checkpoints may omit the inherited KV LoRA rank
+        hf.qk_nope_head_dim = getattr(
+            hf, "qk_nope_head_dim", hf.head_dim - hf.qk_rope_head_dim
+        )  # config-access-exempt: HF V4.1 checkpoints may supply only total and rotary head dimensions
+        hf.v_head_dim = getattr(
+            hf, "v_head_dim", hf.head_dim
+        )  # config-access-exempt: HF V4.1 checkpoints may supply only the shared head dimension
         if hf.rope_scaling is not None and "rope_theta" not in hf.rope_scaling:
             hf.rope_scaling = dict(hf.rope_scaling, rope_theta=hf.rope_theta)
         config = super()._build_config()
