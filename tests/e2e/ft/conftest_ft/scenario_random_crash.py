@@ -145,9 +145,10 @@ def _build_train_args(
         + get_fully_async_args(fully_async=fully_async)
         + "--mini-ft-controller-enable "
     )
+    if "train" in ft_mode.ft_components and config.cluster_backend is ClusterBackend.RAY:
+        train_args += "--trainer-heartbeat-checker-first-wait 0 "
     if fully_async and config.cluster_backend is ClusterBackend.RAY:
         train_args += (
-            "--trainer-heartbeat-checker-first-wait 0 "
             f"--eval-interval {num_steps} --skip-eval-before-train "
             f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "
             "--n-samples-per-eval-prompt 1 --eval-max-response-len 200 --eval-top-k 1 "

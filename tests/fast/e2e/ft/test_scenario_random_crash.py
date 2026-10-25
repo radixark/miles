@@ -141,7 +141,10 @@ class TestTheLaunchedTrainArguments:
             expected_components.append("weight_update")
         assert parsed.ft_components == expected_components
         assert parsed.mini_ft_controller_enable
-        assert "--trainer-heartbeat-checker-first-wait" not in launch.argv
+        if "train" in mode.ft_components:
+            assert launch.value_of("--trainer-heartbeat-checker-first-wait") == "0"
+        else:
+            assert "--trainer-heartbeat-checker-first-wait" not in launch.argv
         assert "--eval-interval" not in launch.argv
         assert not parsed.namespace.colocate
         assert "rollout" not in parsed.ft_components or parsed.partial_target_weight_update
