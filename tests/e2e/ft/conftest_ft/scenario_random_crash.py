@@ -147,7 +147,7 @@ def _build_train_args(
     )
     if "train" in ft_mode.ft_components and config.cluster_backend is ClusterBackend.RAY:
         train_args += "--trainer-heartbeat-checker-first-wait 0 "
-    if fully_async and config.cluster_backend is ClusterBackend.RAY:
+    if ft_mode.has_real_rollout and config.cluster_backend is ClusterBackend.RAY:
         train_args += (
             f"--eval-interval {num_steps} --skip-eval-before-train "
             f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "

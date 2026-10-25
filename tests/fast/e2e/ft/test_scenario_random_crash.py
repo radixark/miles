@@ -145,7 +145,15 @@ class TestTheLaunchedTrainArguments:
             assert launch.value_of("--trainer-heartbeat-checker-first-wait") == "0"
         else:
             assert "--trainer-heartbeat-checker-first-wait" not in launch.argv
-        assert "--eval-interval" not in launch.argv
+        if mode.has_real_rollout:
+            assert launch.value_of("--eval-interval") == "9"
+            assert "--skip-eval-before-train" in launch.argv
+            assert launch.value_of("--eval-prompt-data") == "gsm8k"
+            assert launch.value_of("--n-samples-per-eval-prompt") == "1"
+            assert launch.value_of("--eval-max-response-len") == "200"
+            assert launch.value_of("--eval-top-k") == "1"
+        else:
+            assert "--eval-interval" not in launch.argv
         assert not parsed.namespace.colocate
         assert "rollout" not in parsed.ft_components or parsed.partial_target_weight_update
         _assert_the_gpu_layout_is_the_modes(launch.request.num_gpus_per_node, parsed.namespace, mode=mode)
