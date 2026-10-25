@@ -28,6 +28,9 @@ CASE = CaseConfig(
     tp_size=2,
     ep_size=4,
     rollout_num_gpus_per_engine=4,
+    # Reduce the TP-replicated router and norm gradients in several buckets, so the metric
+    # gates above cover the bucketed path; the other TP2 cases keep the single flatten.
+    extra_args="--non-tensor-parallel-grad-bucket-size 1048576 ",
 )
 
 
