@@ -535,6 +535,9 @@ def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Calla
     def routed(self, *args, **kwargs):
         return method(self, *args, **kwargs)
 
+    # Ray inspect.unwrap()s actor methods before reading __ray_concurrency_group__, which would
+    # route the call through the original, unannotated method into the default group.
+    del routed.__wrapped__
     return ray.method(concurrency_group=group)(routed)
 
 

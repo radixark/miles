@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from ray import cloudpickle
+from ray.actor import _ActorClassMethodMetadata
 from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_KILL, FakeRayCluster
 from tests.fast.utils.workers.fake_specs import FakeServeSpec
@@ -281,7 +282,10 @@ class TestServeSchedulingOptions:
 
         actor_class = _actor_classes(fake_ray_cluster)[0]
         assert actor_class is not bootstrapped_worker_class(_GROUPED_WORKER_CLASS_PATH)
-        assert actor_class.isolated.__ray_concurrency_group__ == "kill_self"
+        # Ray reads the group from the unwrapped method, so assert on what Ray itself resolves.
+        _ActorClassMethodMetadata.reset_cache()
+        method_meta = _ActorClassMethodMetadata.create(actor_class, None)
+        assert method_meta.concurrency_group_for_methods["isolated"] == "kill_self"
 
     async def test_a_worker_without_groups_reaches_ray_unannotated(self, fake_ray_cluster: FakeRayCluster):
         """Ray refuses to build an actor whose method names a group the class never declares."""
