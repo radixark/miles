@@ -73,11 +73,18 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
 def cleanup():
     """Kill old Ray jobs and stale processes to free GPU resources."""
+    if command_utils.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"):
+        print("Cleanup skipped: MILES_SCRIPT_EXTERNAL_RAY is set.")
+        return
     my_pid = os.getpid()
     ppid = os.getppid()
     exclude = f"grep -v '^{my_pid}$' | grep -v '^{ppid}$'"
     for t in ["sglang", "train.py", "MegatronTrain"]:
-        subprocess.run(f"pgrep -f '{t}' | {exclude} | xargs -r kill 2>/dev/null || true", shell=True)
+        pattern = f"[{t[0]}]{t[1:]}"
+        subprocess.run(
+            f"pgrep -f '{pattern}' | {exclude} | xargs -r kill 2>/dev/null || true",
+            shell=True,
+        )
     time.sleep(5)
 
 
