@@ -398,6 +398,8 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                         client.update_weights_from_disk(
                             model_path=self.args.update_weight_local_checkpoint_dir,
                             weight_version=str(weight_version),
+                            # in_place leaves the paused requests running, so the engine would refuse this flush too
+                            **({"flush_cache": False} if mode == "in_place" else {}),
                         )
                     )
                     for client in self.rollout_engines
