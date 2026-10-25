@@ -34,6 +34,7 @@ On the **host**:
 docker pull radixark/miles:latest
 docker run --rm \
   --gpus all \
+  --cap-add SYS_PTRACE \
   --ipc=host \
   --shm-size=32g \
   --ulimit memlock=-1 \
