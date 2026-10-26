@@ -8,12 +8,12 @@ results to the format expected by miles's training pipeline.
 
 import logging
 import os
-from typing import Any
 
 from tau_bench.envs import get_env
 from tau_bench.types import RunConfig
 from trainable_agents import InteractionResult, Status, agent_factory
 
+from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.utils.types import Sample
 
 # Set up logger for this module
@@ -79,7 +79,7 @@ def res_to_sample(res: InteractionResult, task_index: int) -> Sample:
     # Debug logging for response tracking
     logger.debug(
         f"res_to_sample: response_length="
-        f"{res.response_length if hasattr(res, 'response_length') else 'None'}, "
+        f"{res.response_length if hasattr(res, 'response_length') else 'None'}, "  # config-access-exempt: Tau agents attach response_length only when final token accounting is available
         f"loss_mask_len={len(res.loss_mask) if res.loss_mask else 'None'}, "
         f"tokens_len={len(res.tokens) if res.tokens else 'None'}"
     )
@@ -97,7 +97,9 @@ def res_to_sample(res: InteractionResult, task_index: int) -> Sample:
     )
 
     # Ensure response_length is set correctly
-    if hasattr(res, "response_length"):
+    if hasattr(
+        res, "response_length"
+    ):  # config-access-exempt: Tau agents attach response_length only when final token accounting is available
         sample.response_length = res.response_length
     else:
         # Fallback: calculate from loss_mask if available
@@ -114,7 +116,7 @@ def res_to_sample(res: InteractionResult, task_index: int) -> Sample:
     return sample
 
 
-async def generate(args: dict[str, Any], sample: Sample, sampling_params: dict) -> Sample:
+async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """
     Generate a complete agent-environment interaction trajectory for tau-bench.
 
@@ -123,16 +125,16 @@ async def generate(args: dict[str, Any], sample: Sample, sampling_params: dict) 
     trajectory. The result is converted to miles's Sample format for training.
 
     Args:
-        args: Rollout arguments from miles training pipeline
-        sample: Sample containing task index in prompt field
-        sampling_params: LLM sampling parameters
+        input: Rollout state, sample containing the task index, and sampling parameters
 
     Returns:
-        Sample object containing the complete interaction trajectory
+        GenerateFnOutput containing the complete interaction trajectory
 
     Raises:
         AssertionError: If partial rollout is requested (not supported)
     """
+    args, sample, sampling_params = input.args, input.sample, input.sampling_params
+
     # Validate arguments
     assert not args.partial_rollout, "Partial rollout is not supported for tau-bench interactions."
 
@@ -161,10 +163,12 @@ async def generate(args: dict[str, Any], sample: Sample, sampling_params: dict) 
 
     # Execute agent-environment interaction
     # Note: The sample.prompt field contains the task index for repeatability
-    interaction_result = await agent.asolve(env, agent.rollout_args, agent.sampling_params, task_index)
+    interaction_result = await agent.asolve(
+        env, agent.rollout_args, agent.sampling_params, task_index, state=input.state
+    )
 
     # Convert to miles Sample format
     result_sample = res_to_sample(interaction_result, task_index)
 
     logger.info(f"Finished agent-environment interaction for task {task_index}")
-    return result_sample
+    return GenerateFnOutput(samples=result_sample)

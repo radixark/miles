@@ -1,6 +1,6 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, prepare
 
@@ -11,6 +11,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     num_gpus=4,
 )
+register_rocm_ci(est_time=1600, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "weight-update", "replay"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")

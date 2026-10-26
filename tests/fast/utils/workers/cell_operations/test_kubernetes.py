@@ -68,6 +68,7 @@ class FakeProvider:
         self.watches = 0
         self.commands: list[tuple[str, FaultHookCommand]] = []
         self.boot_pins: list[str | None] = []
+        self.cell_id_queries: list[tuple[list[str] | None, str | None]] = []
 
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         return [self._worker_infos_of_cell(cell_id) for cell_id in cell_ids]
@@ -88,8 +89,9 @@ class FakeProvider:
         await asyncio.sleep(self._start_delay)
         return _stop_watching
 
-    def cell_ids(self) -> list[str]:
-        return sorted(self._infos)
+    def cell_ids(self, *, pool_ids: list[str] | None = None, category: str | None = None) -> list[str]:
+        self.cell_id_queries.append((pool_ids, category))
+        return sorted(cell_id for cell_id, info in self._infos.items() if pool_ids is None or info.pool_id in pool_ids)
 
     def cell_info(self, cell_id: str) -> CellInfo | None:
         return self._infos.get(cell_id)
@@ -154,13 +156,22 @@ class TestCellInfos:
         infos = {"trainer-engine-actor-0": _info(), "engine-0": _info(cell_id="engine-0", pool_id="engine")}
         operations = _operations(infos)
 
-        listed = asyncio.run(operations.cell_infos(pool_ids=["trainer-engine-actor"]))
+        listed = asyncio.run(operations.cell_infos(pool_ids=["trainer-engine-actor"], category=None))
 
         assert list(listed) == ["trainer-engine-actor-0"]
 
+    def test_forwards_the_category_to_the_watched_view(self):
+        """The fault tolerance server selects rollout cells by category, which only the provider can match."""
+        provider = FakeProvider({"engine-0": _info(cell_id="engine-0", pool_id="engine")})
+        operations = KubernetesCellOperations(provider=provider, namespace="rl")
+
+        asyncio.run(operations.cell_infos(pool_ids=None, category="inference-engine"))
+
+        assert provider.cell_id_queries == [(None, "inference-engine")]
+
     def test_reports_nothing_when_no_cell_exists_yet(self):
         """A run whose pods are still being scheduled has no cells, which is not an error."""
-        assert asyncio.run(_operations({}).cell_infos(pool_ids=["trainer-engine-actor"])) == {}
+        assert asyncio.run(_operations({}).cell_infos(pool_ids=["trainer-engine-actor"], category=None)) == {}
 
 
 class TestWatching:
@@ -168,7 +179,7 @@ class TestWatching:
         """Nothing else starts it, and reading the store before the reflector filled it reports an empty run."""
         operations = _operations({"trainer-engine-actor-0": _info()})
 
-        asyncio.run(operations.cell_infos(pool_ids=["trainer-engine-actor"]))
+        asyncio.run(operations.cell_infos(pool_ids=["trainer-engine-actor"], category=None))
 
         assert operations._provider.watches == 1
 
@@ -177,8 +188,8 @@ class TestWatching:
         operations = _operations({"trainer-engine-actor-0": _info()})
 
         async def scenario():
-            await operations.cell_infos(pool_ids=["trainer-engine-actor"])
-            await operations.cell_infos(pool_ids=["trainer-engine-actor"])
+            await operations.cell_infos(pool_ids=["trainer-engine-actor"], category=None)
+            await operations.cell_infos(pool_ids=["trainer-engine-actor"], category=None)
             await operations.suspend(cell_id="trainer-engine-actor-0")
 
         asyncio.run(scenario())
@@ -190,7 +201,9 @@ class TestWatching:
         operations = _operations({"trainer-engine-actor-0": _info()}, start_delay=0.05)
 
         async def scenario():
-            await asyncio.gather(*[operations.cell_infos(pool_ids=["trainer-engine-actor"]) for _ in range(3)])
+            await asyncio.gather(
+                *[operations.cell_infos(pool_ids=["trainer-engine-actor"], category=None) for _ in range(3)]
+            )
 
         asyncio.run(scenario())
 
@@ -210,9 +223,9 @@ class TestWatching:
         operations = KubernetesCellOperations(provider=provider, namespace="rl")
 
         with pytest.raises(RuntimeError, match="watch failed"):
-            await operations.cell_infos(pool_ids=["trainer-engine-actor"])
+            await operations.cell_infos(pool_ids=["trainer-engine-actor"], category=None)
 
-        listed = await operations.cell_infos(pool_ids=["trainer-engine-actor"])
+        listed = await operations.cell_infos(pool_ids=["trainer-engine-actor"], category=None)
 
         assert list(listed) == ["trainer-engine-actor-0"]
         assert provider.watches == 2
@@ -233,7 +246,7 @@ class TestWatching:
 
         provider = CancellationAwareProvider({"trainer-engine-actor-0": _info()})
         operations = KubernetesCellOperations(provider=provider, namespace="rl")
-        waiter = asyncio.create_task(operations.cell_infos(pool_ids=["trainer-engine-actor"]))
+        waiter = asyncio.create_task(operations.cell_infos(pool_ids=["trainer-engine-actor"], category=None))
         await watch_started.wait()
 
         waiter.cancel()

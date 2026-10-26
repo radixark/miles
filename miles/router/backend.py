@@ -79,9 +79,7 @@ class MilesRouterBackend(RouterBackend):
         self, ctx: LaunchCommandContext, *, model_cfg: ModelConfig, interpreter_prefix: list[str]
     ) -> list[str]:
         primary = ctx.self_addrs["primary"]
-        router_config = compute_miles_router_config(
-            self.args, host=primary.host, port=primary.port, num_engines=model_cfg.num_server_cells
-        )
+        router_config = compute_miles_router_config(self.args, host=primary.host, port=primary.port)
         return [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
 
 

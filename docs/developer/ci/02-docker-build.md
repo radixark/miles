@@ -21,7 +21,7 @@ CUDA 12 image builds are retired, following [SGLang v0.5.20](https://github.com/
 
 The Dockerfile is the build recipe: it provides the cu13 defaults and emits one image. `build.py` owns the variant → build-arg overrides (see Build script), including the ROCm base and wheels releases.
 
-The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang-miles`. `SGLANG_COMMIT` remains empty unless the caller pins a revision. ROCm variants keep their separate base and wheels pins in `docker/build.py`.
+The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang-miles`. `SGLANG_COMMIT` remains empty unless the caller pins a revision. From that checkout it installs `python/` and `radix_transfer_plugins/`, the output store package SGLang imports, both editable, and the build fails unless that package imports; its Mooncake backend is left out because `mooncake.store` needs the GPU driver. ROCm variants keep their separate base and wheels pins in `docker/build.py`.
 
 **Inputs (build-args)**
 

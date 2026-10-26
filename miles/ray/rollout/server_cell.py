@@ -21,6 +21,7 @@ from miles.ray.rollout.cell_state import (
     StateUninitialized,
 )
 from miles.ray.rollout.engine_env_reporter import EngineEnvReporter
+from miles.ray.rollout.serving_registry import ServingRegistry, SGLangServingRegistry
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.ft_utils.health_checker import (
     ActiveAndEpoch,
@@ -62,6 +63,7 @@ class ServerCell:
     router_api_client: SGLangRouterApiClient
     provider: BaseWorkerProvider
     health_checker_activeness: Callable[[], ActiveAndEpoch] = lambda: ActiveAndEpoch(active=True, epoch=0)
+    serving_registry: ServingRegistry | None = None
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
     _env_reporter: EngineEnvReporter = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
@@ -234,11 +236,17 @@ class ServerCell:
         self._mark_serving()
 
     async def _register_with_router(self, addr_info: CellAddrInfo) -> None:
-        await self.router_api_client.add_worker(
+        await self._registry.register(
             worker_url=addr_info.server_url,
             worker_type=self.meta.worker_type,
             bootstrap_port=addr_info.bootstrap_port,
         )
+
+    @property
+    def _registry(self) -> ServingRegistry:
+        if self.serving_registry is None:
+            self.serving_registry = SGLangServingRegistry(client=self.router_api_client)
+        return self.serving_registry
 
     async def mark_errored(self) -> None:
         if isinstance(self._state, (StateErrored, StateDisposed)):
@@ -269,7 +277,7 @@ class ServerCell:
 
     async def _unregister_from_router(self) -> None:
         await retry_until_deadline(
-            lambda _: self.router_api_client.remove_worker(worker_url=self.server_url),
+            lambda _: self._registry.unregister(worker_url=self.server_url),
             total_seconds=UNREGISTER_FROM_ROUTER_TIMEOUT,
             attempt_seconds=SHUTDOWN_TIMEOUT,
             retry_on=Exception,

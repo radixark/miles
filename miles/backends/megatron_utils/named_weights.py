@@ -7,7 +7,6 @@ ranks; witness params are skipped.
 
 import inspect
 import re
-from argparse import Namespace
 from collections.abc import Iterator, Sequence
 
 import torch
@@ -16,10 +15,11 @@ from megatron.core.transformer.transformer_layer import get_transformer_layer_of
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.args.runtime import TrainerConfig
 
 
 def named_params_and_buffers(
-    args: Namespace,
+    args: TrainerConfig,
     model: Sequence[torch.nn.Module],
     convert_to_global_name: bool = True,
     translate_gpu_to_cpu: bool = False,
@@ -60,7 +60,9 @@ def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Itera
             return f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}"
 
         for name, param in model_module.named_parameters():
-            if getattr(param, "_is_witness_param", False):
+            if getattr(
+                param, "_is_witness_param", False
+            ):  # config-access-exempt: _is_witness_param is optional backend-attached tensor metadata
                 continue
             yield _compute_fqn(name), param
 
@@ -72,7 +74,7 @@ def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Itera
 
 
 def _named_params_and_buffers_global(
-    args: Namespace, model: Sequence[torch.nn.Module]
+    args: TrainerConfig, model: Sequence[torch.nn.Module]
 ) -> Iterator[tuple[str, torch.Tensor]]:
     """
     Yield (global_name, param/buffer) with consistent names across PP/EP. Adjusts indices for
@@ -80,8 +82,8 @@ def _named_params_and_buffers_global(
     """
     ep_size = get_parallel_state().ep.size
     ep_rank = get_parallel_state().ep.rank
-    if args.num_experts:
-        expert_offset = ep_rank * args.num_experts // ep_size
+    if args.backend.num_experts:
+        expert_offset = ep_rank * args.backend.num_experts // ep_size
 
     sig = inspect.signature(get_transformer_layer_offset)
     need_vp_stage = "vp_stage" in sig.parameters
@@ -92,7 +94,9 @@ def _named_params_and_buffers_global(
         else:
             layer_offset = get_transformer_layer_offset(model_module.config)
         for name, param in model_module.named_parameters():
-            if getattr(param, "_is_witness_param", False):
+            if getattr(
+                param, "_is_witness_param", False
+            ):  # config-access-exempt: _is_witness_param is optional backend-attached tensor metadata
                 continue
             # for model without ddp wrap
             if not name.startswith("module.module."):
