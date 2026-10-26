@@ -1,4 +1,4 @@
-"""Per-token log-prob and entropy over vocab-parallel logits, without a vocab-sized buffer.
+"""Log-probs of target tokens and entropy over vocab-parallel logits, without a vocab-sized buffer.
 
 Each selected row keeps a few fp32 numbers measured from its max ``m``, with ``d = (x - m) / T``:
 ``log S`` for ``S = sum exp(d)``, the target's ``d_y`` and, for entropy, the softmax mean ``mu`` of
@@ -15,6 +15,7 @@ import torch
 import torch.distributed as dist
 from torch import Tensor
 
+from miles.backends.training_utils.loss.hub.math_utils import true_vocab_size
 from miles.kernels.softmax import token_log_softmax as kernels
 
 
@@ -30,26 +31,31 @@ def fused_log_probs_and_entropy(
     entropy_requires_grad: bool = True,
     inplace_backward: bool = False,
 ) -> tuple[Tensor, Tensor | None]:
-    """Fp32 ``[R]`` log-probs of ``targets`` (and entropies) at ``rows`` of CUDA ``logits / temperature``.
+    """Fp32 log-probs of ``targets`` (and ``[R]`` entropies) at ``rows`` of CUDA ``logits / temperature``.
 
-    ``logits`` is ``[N, V / TP]``, split over ``tp_group``; ``rows`` are unique and ``targets`` are
-    below ``vocab_size``, past which columns are vocab padding outside the softmax. ``inplace_backward``
-    writes the gradient into ``logits``, so nothing may read them after this op's backward.
+    ``logits`` is ``[N, V / TP]``, split over ``tp_group``; ``rows`` are unique. ``targets`` is ``[R]``
+    or ``[R, K]`` and the log-probs take its shape; a ``-1`` target is padding, with log-prob 0 and no
+    gradient, and the rest are below ``vocab_size``, past which columns are vocab padding outside the
+    softmax. ``inplace_backward`` writes the gradient into ``logits``, so nothing may read them after
+    this op's backward.
     """
     if not logits.is_cuda:
         raise ValueError(f"the fused log-prob op needs CUDA logits, got {logits.device}")
     assert logits.dim() == 2 and logits.stride(-1) == 1, f"need [N, V] logits, got {tuple(logits.shape)}"
-    assert rows.shape == targets.shape, f"{tuple(rows.shape)} rows vs {tuple(targets.shape)} targets"
+    assert rows.dim() == 1 and targets.shape[:1] == rows.shape, f"{tuple(rows.shape)} rows vs {tuple(targets.shape)}"
+    assert temperature > 0, f"temperature {temperature}: resolve greedy (0) with math_utils.scaling_temperature"
     options = _FusedOptions(
         tp_group=tp_group,
         vocab=_vocab_range(logits, tp_group, vocab_size),
-        temperature=float(temperature) if temperature > 0 else 1.0,
+        temperature=float(temperature),
         with_entropy=with_entropy,
         entropy_requires_grad=with_entropy and entropy_requires_grad,
         inplace_backward=inplace_backward,
     )
-    log_probs, entropy = _FusedLogProbsAndEntropy.apply(logits, rows.long(), targets.long(), options)
-    return log_probs, (entropy if with_entropy else None)
+    _check_ids_in_vocabulary(targets, min_id=-1, vocab=options.vocab)  # -1 is a padding target
+    targets_2d = (targets if targets.dim() == 2 else targets.unsqueeze(1)).long()
+    log_probs, entropy = _FusedLogProbsAndEntropy.apply(logits, rows.long(), targets_2d, options)
+    return log_probs.view(targets.shape), (entropy if with_entropy else None)
 
 
 @dataclass(frozen=True)
@@ -68,7 +74,7 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
     @staticmethod
     def forward(ctx, logits, rows, targets, options: _FusedOptions):
         stats = _softmax_stats(logits, rows, targets, options)
-        log_probs = stats.target_logit - stats.log_sum_exp
+        log_probs = torch.where(targets >= 0, stats.target_logit - stats.log_sum_exp.unsqueeze(1), 0.0)
         entropy = stats.log_sum_exp - stats.expected_mean_logit if options.with_entropy else log_probs.new_empty(0)
         if not options.entropy_requires_grad:
             ctx.mark_non_differentiable(entropy)
@@ -82,13 +88,15 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
         logits, rows, targets, *stats = ctx.saved_tensors
         options = ctx.options
         grad = logits if options.inplace_backward else torch.empty_like(logits)
+        if grad_log_probs is not None:
+            grad_log_probs = grad_log_probs.reshape(targets.shape).masked_fill(targets < 0, 0.0).contiguous()
         kernels.write_logits_grad(
             grad,
             logits,
             rows=rows,
             targets=targets,
             stats=kernels.SoftmaxStats(*stats),
-            grad_log_probs=_contiguous_or_none(grad_log_probs),
+            grad_log_probs=grad_log_probs,
             grad_entropy=_contiguous_or_none(grad_entropy) if options.entropy_requires_grad else None,
             vocab=options.vocab,
             temperature=options.temperature,
@@ -103,20 +111,23 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
 
 def _softmax_stats(logits, rows, targets, options: _FusedOptions) -> kernels.SoftmaxStats:
     """Stats of the selected rows over the whole true vocabulary, combined over the vocab-parallel group."""
-    shard = kernels.row_statistics(
+    logit_max, sum_exp, sum_exp_logit = kernels.row_statistics(
         logits,
         rows,
-        targets,
         vocab=options.vocab,
         temperature=options.temperature,
         with_entropy=options.with_entropy,
     )
-    in_shard = (targets >= options.vocab.start) & (targets < options.vocab.start + options.vocab.n_unpadded)
+    local_cols = targets - options.vocab.start
+    in_shard = options.vocab.holds(targets)
+    raw_target_logits = logits[rows.unsqueeze(1), local_cols.clamp(0, logits.size(1) - 1)].float()
+    target_logit = torch.where(in_shard, (raw_target_logits - logit_max.unsqueeze(1)) / options.temperature, 0.0)
+    shard = kernels.ShardStats(logit_max, sum_exp, sum_exp_logit, target_logit)
     return _combine_over_tp(shard, in_shard, options.tp_group, options.temperature).as_softmax_stats()
 
 
 def _combine_over_tp(shard: kernels.ShardStats, in_shard, tp_group, temperature) -> kernels.ShardStats:
-    """Re-measure each shard's sums from the global max and add them; only the target's shard adds ``d_y``."""
+    """Re-measure each shard's sums from the global max and add them; only a target's shard adds its ``d``."""
     if tp_group is None or dist.get_world_size(tp_group) == 1:
         return shard
     global_logit_max = shard.logit_max.clone()
@@ -125,22 +136,33 @@ def _combine_over_tp(shard: kernels.ShardStats, in_shard, tp_group, temperature)
     shift = torch.where(shard.sum_exp > 0, (shard.logit_max - global_logit_max) / temperature, 0.0)
     rescale = torch.exp(shift)
     columns = [
-        shard.sum_exp * rescale,
-        torch.where(in_shard, shard.target_logit + shift, torch.zeros_like(shard.target_logit)),
+        (shard.sum_exp * rescale).unsqueeze(1),
+        torch.where(in_shard, shard.target_logit + shift.unsqueeze(1), 0.0),
     ]
     if shard.sum_exp_logit is not None:
-        columns.append((shard.sum_exp_logit + shift * shard.sum_exp) * rescale)
-    sums = torch.stack(columns, dim=1)
+        columns.append(((shard.sum_exp_logit + shift * shard.sum_exp) * rescale).unsqueeze(1))
+    sums = torch.cat(columns, dim=1)
     dist.all_reduce(sums, group=tp_group)
-    sum_exp_logit = sums[:, 2] if shard.sum_exp_logit is not None else None
-    return kernels.ShardStats(global_logit_max, sums[:, 0], sum_exp_logit, sums[:, 1])
+    n_targets = shard.target_logit.size(1)
+    sum_exp_logit = sums[:, 1 + n_targets] if shard.sum_exp_logit is not None else None
+    return kernels.ShardStats(global_logit_max, sums[:, 0], sum_exp_logit, sums[:, 1 : 1 + n_targets])
+
+
+def _check_ids_in_vocabulary(ids: Tensor, *, min_id: int, vocab: kernels.VocabRange) -> None:
+    """No shard holds an id past the vocabulary, so it would score a plausible wrong value instead of failing."""
+    if not ids.numel():  # a rank with no response rows has nothing to check, and aminmax no identity
+        return
+    # the extremes, not a mask the size of ids; asserted on device, as a host check would sync the stream
+    low, high = torch.aminmax(ids)
+    torch._assert_async((low >= min_id) & (high < vocab.size), "fused log-prob token id outside the vocabulary")
 
 
 def _vocab_range(logits: Tensor, tp_group: dist.ProcessGroup | None, vocab_size: int | None) -> kernels.VocabRange:
     """This rank's shard of the vocabulary: Megatron splits the padded vocab into equal shards."""
-    start = dist.get_rank(tp_group) * logits.size(1) if tp_group is not None else 0
-    n_unpadded = logits.size(1) if vocab_size is None else min(max(vocab_size - start, 0), logits.size(1))
-    return kernels.VocabRange(start, n_unpadded)
+    tp_rank, tp_size = (dist.get_rank(tp_group), dist.get_world_size(tp_group)) if tp_group is not None else (0, 1)
+    start = tp_rank * logits.size(1)
+    size = true_vocab_size(vocab_size, logits.size(1), tp_size)
+    return kernels.VocabRange(start, min(max(size - start, 0), logits.size(1)), size)
 
 
 def _contiguous_or_none(tensor: Tensor | None) -> Tensor | None:

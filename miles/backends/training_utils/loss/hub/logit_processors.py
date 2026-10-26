@@ -1,5 +1,5 @@
 from argparse import Namespace
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 import torch
 import torch.distributed as dist
@@ -16,6 +16,7 @@ from miles.backends.training_utils.data.sampling_mask import (
 )
 from miles.backends.training_utils.loss.hub.math_utils import (
     calculate_log_probs_and_entropy,
+    scaling_temperature,
     true_on_policy_full_log_probs,
 )
 from miles.backends.training_utils.loss.hub.score_centering import selected_log_probs_and_entropy
@@ -104,8 +105,9 @@ def _iter_response_chunks(
     )
 
     if args.true_on_policy_mode:
-        if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
-            logits = logits.div(args.rollout_temperature)
+        temperature = scaling_temperature(args.rollout_temperature)
+        if logits.size(-1) > 1 and temperature != 1.0:
+            logits = logits.div(temperature)
         if args.backend.bf16:
             logits = logits.to(torch.bfloat16)
         elif args.backend.fp16:
@@ -391,7 +393,7 @@ def _torch_log_probs_and_entropy(
                 true_on_policy=args.true_on_policy_mode,
                 vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
                 sampling_mask=sampling_mask,
-                temperature=1.0 if args.true_on_policy_mode else args.rollout_temperature,
+                temperature=1.0 if args.true_on_policy_mode else scaling_temperature(args.rollout_temperature),
                 debug_unified_grad_fused_logprob=args.debug_unified_grad_fused_logprob,
             )
 
@@ -418,7 +420,49 @@ def _fused_log_probs_and_entropy(
     entropy_requires_grad: bool,
     max_seq_lens: list[int] | None,
 ) -> dict[str, list[torch.Tensor]]:
-    """All samples' response rows through one ``fused_log_probs_and_entropy`` call."""
+    """Each response row's next token through ``fused_response_log_probs``."""
+    log_probs, entropy = fused_response_log_probs(
+        logits,
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        with_entropy=with_entropy,
+        entropy_requires_grad=entropy_requires_grad,
+    )
+    res = {"log_probs": log_probs}
+    if with_entropy:
+        res["entropy"] = entropy
+    return res
+
+
+def to_device_without_sync(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """``tensor`` on ``device``; a CPU tensor is copied from pinned memory, so the copy queues behind
+    the model forward instead of waiting for it to finish, as a blocking copy from pageable memory does."""
+    if not tensor.is_cpu:
+        return tensor.to(device)
+    return tensor.pin_memory().to(device, non_blocking=True)
+
+
+def fused_response_log_probs(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None,
+    with_entropy: bool,
+    entropy_requires_grad: bool = True,
+    sample_candidates: Callable[[int, LocalResponseRows], torch.Tensor] | None = None,
+) -> tuple[list[torch.Tensor], list[torch.Tensor] | None]:
+    """Per sample, the log-probs of each response row's next token and the entropy at this rank's
+    response rows, all samples in one ``fused_log_probs_and_entropy`` call.
+
+    ``sample_candidates`` gives ``[R_i, K]`` CPU ids scored after each row's own token, so that sample's
+    log-probs are ``[R_i, 1 + K]``; all samples' candidates reach the GPU in one copy.
+    """
     # imported here: the op needs triton, which not every host that imports the losses has
     from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy
 
@@ -429,36 +473,37 @@ def _fused_log_probs_and_entropy(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
-        include_response_indices=False,
+        include_response_indices=sample_candidates is not None,
     )
-    row_ranges, targets, lengths = [], [], []
-    for sample_ranges, tokens_chunk, _ in layout:
-        row_ranges.extend(sample_ranges)
-        targets.append(tokens_chunk)
-        lengths.append(tokens_chunk.size(0))
     device = flat_logits.device
-    # built on the CPU and copied once: one arange kernel per run would be hundreds of tiny launches;
-    # from pinned memory the copy queues behind the model forward instead of waiting for it to finish
-    rows = torch.cat([torch.arange(row_start, row_end) for row_start, row_end in row_ranges])
-    rows = rows.pin_memory().to(device, non_blocking=True)
+    row_ranges, targets, candidates = [], [], []
+    for i, sample_rows in enumerate(layout):
+        row_ranges.extend(sample_rows.row_ranges)
+        targets.append(sample_rows.tokens)
+        if sample_candidates is not None:
+            candidates.append(sample_candidates(i, sample_rows))
+    # built on the CPU and copied once: one arange kernel per run would be hundreds of tiny launches
+    rows = to_device_without_sync(torch.cat([torch.arange(start, end) for start, end in row_ranges]), device)
+    all_targets = to_device_without_sync(torch.cat(targets), device)
+    if sample_candidates is not None:
+        all_candidates = to_device_without_sync(torch.cat(candidates), device)
+        all_targets = torch.cat((all_targets.unsqueeze(-1), all_candidates), dim=-1)
     log_probs, entropy = fused_log_probs_and_entropy(
         flat_logits,
         rows,
-        torch.cat(targets).to(device),
+        all_targets,
         tp_group=get_parallel_state().tp.group,
         vocab_size=(
             args.backend.vocab_size if args.train_backend == "megatron" else None
         ),  # a Megatron flag; other backends' logits are unpadded
-        temperature=args.rollout_temperature,
+        temperature=scaling_temperature(args.rollout_temperature),
         with_entropy=with_entropy,
         entropy_requires_grad=entropy_requires_grad,
         # the checkpointed loss replays its forward on these logits during backward
         inplace_backward=not args.recompute_loss_function,
     )
-    res = {"log_probs": list(log_probs.split(lengths))}
-    if with_entropy:
-        res["entropy"] = list(entropy.split(lengths))
-    return res
+    lengths = [sample.size(0) for sample in targets]
+    return list(log_probs.split(lengths)), (list(entropy.split(lengths)) if with_entropy else None)
 
 
 def get_values(
