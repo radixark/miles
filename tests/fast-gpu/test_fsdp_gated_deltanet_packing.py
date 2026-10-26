@@ -116,6 +116,7 @@ def _packed_batch(docs, padded_length):
         cu_seqlens=torch.tensor(cu_seqlens_host, dtype=torch.int32, device="cuda"),
         cu_seqlens_host=cu_seqlens_host,
         max_seqlen=max(end - start for start, end in itertools.pairwise(cu_seqlens_host)),
+        unconcat_tokens=docs,
     )
 
 

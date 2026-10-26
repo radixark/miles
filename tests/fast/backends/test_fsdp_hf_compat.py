@@ -349,6 +349,14 @@ def test_hf_packing_kwargs_match_the_padding_free_collator():
             assert value == expected, name
 
 
+def test_real_max_seqlen_leaves_out_the_pad_segment():
+    """A 7-token pad tail must not become the max: HF never counts it, and the kernel plan follows it."""
+    from miles.backends.fsdp_utils.adaptations.packing import real_max_seqlen
+
+    assert real_max_seqlen((0, 3, 5, 12), num_documents=2) == 3
+    assert real_max_seqlen((0, 3, 5), num_documents=2) == 3  # no pad segment
+
+
 def test_each_arch_passes_the_packing_kwargs_its_modeling_reads():
     boundaries = _packed_boundaries(2, 3)
     for model_type in ("qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen3_next"):

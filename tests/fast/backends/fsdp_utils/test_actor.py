@@ -101,6 +101,7 @@ class TestFSDPModelInputs:
             "cu_seqlens": torch.tensor(cu_seqlens_host, dtype=torch.int32),
             "cu_seqlens_host": cu_seqlens_host,
             "max_seqlen": 3,
+            "unconcat_tokens": [torch.zeros(3, dtype=torch.long), torch.zeros(2, dtype=torch.long)],
         }
 
         model_args = actor._get_model_inputs_args(batch)

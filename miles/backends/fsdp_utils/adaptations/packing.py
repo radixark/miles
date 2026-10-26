@@ -8,6 +8,7 @@ to HF modeling. NemotronH's patch only sees ``position_ids`` inside the model fo
 """
 
 import functools
+import itertools
 from dataclasses import dataclass
 
 import torch
@@ -38,6 +39,13 @@ def packed_seq_context(position_ids: torch.Tensor | None) -> PackedSeqContext | 
 
 
 HF_PACKING_KWARG_NAMES = frozenset({"cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k", "seq_idx"})
+
+
+def real_max_seqlen(cu_seqlens_host: tuple[int, ...], num_documents: int) -> int:
+    """The longest real document; ``get_batch``'s ``max_seqlen`` also counts the trailing pad segment, which
+    HF never does (each pad token is its own document there) and which changes the kernel's launch plan."""
+    real = cu_seqlens_host[: num_documents + 1]
+    return max(end - start for start, end in itertools.pairwise(real))
 
 
 def hf_attention_packing_kwargs(*, cu_seqlens: torch.Tensor, max_seqlen: int) -> dict[str, object]:
