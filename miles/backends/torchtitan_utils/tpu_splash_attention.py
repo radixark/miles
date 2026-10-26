@@ -191,5 +191,7 @@ def splash_document_attention(
         block_q_dkv=block_dkv,
         block_kv_dkv=block_dkv,
     )
-    out, _ = getattr(torch.ops.pallas, fwd_name)(q, k, v, segment_ids)
+    out, _ = getattr(torch.ops.pallas, fwd_name)(  # config-access-exempt: op registered under a per-shape name
+        q, k, v, segment_ids
+    )
     return out
