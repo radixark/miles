@@ -132,9 +132,7 @@ class TestComputeSessionServerConfig:
             _make_args(), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://x:1"
         )
 
-        assert config.output_store_backend_config == output_store_backend_config(
-            _make_args(**store_args), deletes_only=True
-        )
+        assert config.output_store_backend_config == output_store_backend_config(_make_args(**store_args))
         assert config.output_store_backend_config["local_buffer_size"] == 0
         assert config.output_store_backend_config["local_hostname"] is None
         assert off.output_store_backend_config is None

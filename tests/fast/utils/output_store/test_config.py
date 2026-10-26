@@ -115,7 +115,7 @@ class TestStoreClients:
         expected = {
             "master_server_address": "10.0.0.1:50051",
             "local_hostname": None,
-            "local_buffer_size": "64mb",
+            "local_buffer_size": 0,
             "key_prefix": "miles-output-store/abcd",
             "protocol": "tcp",
             "metadata_server": "P2PHANDSHAKE",
@@ -124,7 +124,7 @@ class TestStoreClients:
         }
 
         assert output_store_backend_config(args) == expected
-        assert output_store_backend_config(args, deletes_only=True) == {**expected, "local_buffer_size": 0}
+        assert output_store_backend_config(args, puts=True) == {**expected, "local_buffer_size": "64mb"}
 
     def test_an_engine_writes_with_its_own_host(self):
         args = make_args()
@@ -133,7 +133,7 @@ class TestStoreClients:
 
         assert server_args["output_store_backend"] == "mooncake"
         extra = json.loads(server_args["output_store_backend_extra_config"])
-        assert extra == {**output_store_backend_config(args), "local_hostname": "10.0.0.7"}
+        assert extra == {**output_store_backend_config(args, puts=True), "local_hostname": "10.0.0.7"}
 
     def test_an_engine_names_no_device_without_an_init_kwarg(self, monkeypatch):
         """SGLang reads no MOONCAKE_* variable, and the building process's MOONCAKE_DEVICE may be another node's."""

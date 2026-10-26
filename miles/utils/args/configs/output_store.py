@@ -17,10 +17,11 @@ class OutputStoreConfig(BaseConfig):
         str,
         Arg(
             help=(
-                "Local buffer of every SGLang engine and train worker writing or reading the output store, in "
-                "bytes or as a string such as '16gb'. An engine puts all stored arrays of a response through it at "
-                "once, so it must hold one response's routed experts, indexer top-k and sampling mask together. "
-                "With RDMA, each of these clients pins the whole buffer in host memory when it starts."
+                "Local buffer of every SGLang engine writing the output store, in bytes or as a string such as "
+                "'16gb'. An engine puts all stored arrays of a response through it at once, so it must hold one "
+                "response's routed experts, indexer top-k and sampling mask together. With RDMA, each engine pins "
+                "the whole buffer in host memory when it starts. Train workers read straight into their own arrays "
+                "and register none."
             )
         ),
     ] = "16gb"

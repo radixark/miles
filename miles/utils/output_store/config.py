@@ -121,21 +121,21 @@ def check_output_store_args(args: argparse.Namespace) -> None:
 
 
 def output_store_backend_config(
-    args: argparse.Namespace, *, local_hostname: str | None = None, deletes_only: bool = False
+    args: argparse.Namespace, *, local_hostname: str | None = None, puts: bool = False
 ) -> dict[str, Any]:
     """The radix_transfer_plugins ``MooncakeConfig`` of a client of this run's output store.
 
     The connection comes from Miles' own Mooncake config. ``local_hostname`` and ``device_name`` belong
     to the client's node, which may not be the node building the config: an engine passes its host, and
-    None leaves either to ``connect_output_store`` in the process that connects. A client that only
-    deletes moves no data, so it registers no local buffer.
+    None leaves either to ``connect_output_store`` in the process that connects. Only a client that
+    ``puts`` (an engine) registers a local buffer: readers read straight into their own memory.
     """
     init_kwargs = args.mooncake_store_init_kwargs or {}
     mooncake = compute_mooncake_store_config(init_kwargs, contribute_segment=False)
     return {
         "master_server_address": mooncake["master_server_addr"],
         "local_hostname": local_hostname,
-        "local_buffer_size": 0 if deletes_only else args.output_store_local_buffer_size,
+        "local_buffer_size": args.output_store_local_buffer_size if puts else 0,
         # Writers only: one prefix per launch, so a later sweep can find this run's objects.
         "key_prefix": f"{_KEY_PREFIX_BASE}/{args.run_uuid}",
         "protocol": mooncake["protocol"],
@@ -148,7 +148,7 @@ def output_store_backend_config(
 
 def sglang_output_store_server_args(args: argparse.Namespace, *, local_hostname: str) -> dict[str, str]:
     """The ``ServerArgs`` fields that make an engine write to the run's output store."""
-    config = output_store_backend_config(args, local_hostname=local_hostname)
+    config = output_store_backend_config(args, local_hostname=local_hostname, puts=True)
     if config["device_name"] is None:
         # SGLang reads no MOONCAKE_* variable: without an init kwarg, the engine names Mooncake no device,
         # as Miles' own client does without MOONCAKE_DEVICE.
@@ -174,15 +174,10 @@ def output_store_reader(args: argparse.Namespace) -> Callable | None:
     """This train worker's ``read`` for ``materialize_store_columns``, or None without the switch."""
     if not args.use_output_store:
         return None
-    from radix_transfer_plugins.backends.mooncake import parse_size
     from radix_transfer_plugins.stashes.token_output import TokenOutputStash
 
     store = connect_output_store(output_store_backend_config(args))
-    return functools.partial(
-        store.read_many,
-        stash_type=TokenOutputStash,
-        buffer_bytes=parse_size(args.output_store_local_buffer_size),
-    )
+    return functools.partial(store.read_many, stash_type=TokenOutputStash)
 
 
 def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:

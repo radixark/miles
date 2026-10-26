@@ -277,13 +277,14 @@ Requirements:
   `sgl-router` wheel from `radixark/sgl-router-for-miles` with that fix. A router that
   drops it fails the rollout instead of falling back to inline arrays.
 - `--output-store-local-buffer-size` (default 16gb) sets the local buffer of every
-  engine and train worker that writes or reads the store; the rollout executor and the
-  session server only delete and register none. An engine puts all stored arrays of a
-  response through it at once, so it must hold one response's routed experts, indexer
-  top-k and sampling mask together. Indexer top-k dominates: `index_topk` int32 ids per
+  engine, the only clients that write the store; train workers read straight into their
+  own arrays, and the rollout executor and the session server only delete, so none of
+  them registers one. An engine puts all stored arrays of a response through it at once,
+  so it must hold one response's routed experts, indexer top-k and sampling mask
+  together. Indexer top-k dominates: `index_topk` int32 ids per
   DSA layer and token, about 0.5 MB per token on DeepSeek-V3.2, so the default fits a
   32k-token response. With `--rollout-max-context-len`, a buffer that cannot hold the
-  indexer top-k of a sequence that long is rejected at launch. With RDMA, each client
+  indexer top-k of a sequence that long is rejected at launch. With RDMA, each engine
   pins its whole buffer in host memory when it starts; with TCP, pages are committed as
   transfers first touch them.
 - An RDMA device for engines through `device_name` in `--mooncake-store-init-kwargs`
