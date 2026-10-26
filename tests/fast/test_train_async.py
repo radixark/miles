@@ -225,6 +225,110 @@ class TestPipelinedGeneration:
         assert components.actor_model.trained == [0, 1, 2]
 
 
+class TestSaveTriggerSentinel:
+    @staticmethod
+    async def _wait_until(predicate: Any) -> None:
+        async def poll() -> None:
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(poll(), timeout=10)
+
+    async def test_sentinel_seen_while_waiting_saves_the_last_trained_step(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        """A slow rollout must not hold back a requested save of the weights already trained."""
+        monkeypatch.setattr(train_async_driver, "_SAVE_TRIGGER_POLL_INTERVAL_S", 0.01)
+        events: list[str] = []
+        sentinel = tmp_path / "save_now"
+        args = _make_args(fully_async=True, num_rollout=3, save="/ckpt", save_trigger_sentinel=str(sentinel))
+        components = _install_driver_fakes(monkeypatch, args, events)
+        held_generation = asyncio.Event()
+        components.rollout_executor.generation_gates[2] = held_generation
+
+        driver = asyncio.create_task(with_disposer(train_async_driver.train, args))
+        await self._wait_until(lambda: "generate_start:2" in events and components.actor_model.trained == [0, 1])
+        sentinel.touch()
+        await self._wait_until(lambda: not sentinel.exists())
+
+        assert components.actor_model.saved == [1]
+        assert "executor_save:1" in events
+        assert "generate_done:2" not in events
+
+        held_generation.set()
+        await asyncio.wait_for(driver, timeout=10)
+        assert components.actor_model.trained == [0, 1, 2]
+        assert components.actor_model.saved == [1]
+
+    @pytest.mark.parametrize("async_save", [False, True])
+    async def test_step_saved_synchronously_is_not_saved_again(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path, async_save: bool
+    ):
+        """A periodic save written in the background is not durable yet, so the request saves again."""
+        monkeypatch.setattr(train_async_driver, "_SAVE_TRIGGER_POLL_INTERVAL_S", 0.01)
+        events: list[str] = []
+        sentinel = tmp_path / "save_now"
+        args = _make_args(
+            fully_async=True,
+            num_rollout=3,
+            save="/ckpt",
+            save_interval=2,
+            save_trigger_sentinel=str(sentinel),
+            async_save=async_save,
+        )
+        components = _install_driver_fakes(monkeypatch, args, events)
+        held_generation = asyncio.Event()
+        components.rollout_executor.generation_gates[2] = held_generation
+
+        driver = asyncio.create_task(with_disposer(train_async_driver.train, args))
+        await self._wait_until(lambda: "generate_start:2" in events and components.actor_model.saved == [1])
+        sentinel.touch()
+        await self._wait_until(lambda: not sentinel.exists())
+
+        expected = [1, 1] if async_save else [1]
+        assert components.actor_model.saved == expected
+        assert events.count("executor_save:1") == len(expected)
+
+        held_generation.set()
+        await asyncio.wait_for(driver, timeout=10)
+        assert components.actor_model.saved == [*expected, 2]
+
+    @pytest.mark.parametrize(("fully_async", "held_rollout_id"), [(True, 0), (False, 1)])
+    async def test_sentinel_not_served_while_waiting_stays_until_the_end_of_step_save(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path, fully_async: bool, held_rollout_id: int
+    ):
+        """Before any trained step, or without --fully-async, the file must stay until the end-of-step save."""
+        monkeypatch.setattr(train_async_driver, "_SAVE_TRIGGER_POLL_INTERVAL_S", 0.01)
+        events: list[str] = []
+        sentinel = tmp_path / "save_now"
+        args = _make_args(
+            fully_async=fully_async,
+            update_weights_interval=2,
+            num_rollout=held_rollout_id + 1,
+            save="/ckpt",
+            save_trigger_sentinel=str(sentinel),
+        )
+        components = _install_driver_fakes(monkeypatch, args, events)
+        held_generation = asyncio.Event()
+        components.rollout_executor.generation_gates[held_rollout_id] = held_generation
+
+        driver = asyncio.create_task(with_disposer(train_async_driver.train, args))
+        await self._wait_until(
+            lambda: f"generate_start:{held_rollout_id}" in events
+            and components.actor_model.trained == list(range(held_rollout_id))
+        )
+        sentinel.touch()
+        await asyncio.sleep(0.1)
+
+        assert sentinel.exists()
+        assert components.actor_model.saved == []
+
+        held_generation.set()
+        await asyncio.wait_for(driver, timeout=10)
+        assert components.actor_model.saved == [held_rollout_id]
+        assert not sentinel.exists()
+
+
 class TestCriticValuesHandoff:
     async def test_async_critic_outputs_reach_the_actor_and_are_released_after_training(
         self, monkeypatch: pytest.MonkeyPatch

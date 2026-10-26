@@ -280,10 +280,12 @@ touch /path/to/save_now && until [ ! -e /path/to/save_now ]; do sleep 5; done
 ```
 
 A request fired at any moment during an iteration is consumed at that iteration's save
-point. The checkpoint is written with `force_sync=True` (so async saves finalize first), and
-only then is the sentinel deleted, which is why "file gone" means "checkpoint durable on
-disk". If the job crashes mid-save the sentinel survives, so the request stays pending for
-the next run. Requires `--save`.
+point. `train_async.py --fully-async` (unless colocated) also checks for the file every few
+seconds while it waits for the next rollout and then saves the iteration it trained last, so
+a slow rollout does not hold the save back. The checkpoint is written with `force_sync=True` (so
+async saves finalize first), and only then is the sentinel deleted, which is why "file gone"
+means "checkpoint durable on disk". If the job crashes mid-save the sentinel survives, so
+the request stays pending for the next run. Requires `--save`.
 
 ### 6. Hooking into the loop
 
