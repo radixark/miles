@@ -8,7 +8,10 @@ import torch.nn.functional as F
 
 from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
-from miles.backends.training_utils.data.token_space_media_process import compute_multimodal_train_inputs
+from miles.backends.training_utils.data.token_space_media_process import (
+    resolve_train_inputs,
+    start_multimodal_train_inputs,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -68,7 +71,8 @@ def get_rollout_data(
         ]
 
     if "multimodal_inputs" in rollout_data:
-        rollout_data["multimodal_train_inputs"] = compute_multimodal_train_inputs(
+        # Rebuilt in the background; get_batch waits only for the samples of its micro-batch.
+        rollout_data["multimodal_train_inputs"] = start_multimodal_train_inputs(
             args.hf_checkpoint,
             args.sglang.common_value("mm_process_config"),
             rollout_data.pop("multimodal_inputs"),
@@ -224,6 +228,9 @@ def get_batch(
     for unit_key in ("loss_fn", "loss_fn_config"):
         if unit_key in data_iterator.rollout_data:
             batch[unit_key] = data_iterator.rollout_data[unit_key]
+
+    if batch.get("multimodal_train_inputs") is not None:
+        batch["multimodal_train_inputs"] = [resolve_train_inputs(mm) for mm in batch["multimodal_train_inputs"]]
 
     # No-op safety net if batches reach get_batch without rollout-level preprocessing.
     expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)

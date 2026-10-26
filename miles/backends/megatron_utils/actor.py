@@ -23,6 +23,7 @@ from miles.backends.training_utils.data.rollout import (
     get_num_rollouts,
     get_rollout_data,
 )
+from miles.backends.training_utils.data.token_space_media_process import prewarm_token_space_processor
 from miles.backends.training_utils.loss.objective import (
     compute_advantages_and_returns,
     get_log_probs_and_entropy,
@@ -41,6 +42,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.dashboard import hooks as dashboard_hooks
+from miles.platforms import current_platform
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
@@ -183,6 +185,13 @@ class MegatronTrainRayActor(TrainRayActor):
         self.prof = TrainProfiler(args)
 
         self.load_hf_assets()
+        if args.multimodal_token_space_processing:
+            # Overlaps the processor builds with model initialization.
+            prewarm_token_space_processor(
+                args.hf_checkpoint,
+                args.sglang.common_value("mm_process_config"),
+                device=current_platform.current_device(),
+            )
 
         self.train_parallel_config = (
             None if args.indep_dp else get_parallel_state().train_parallel_config(supports_precomputed_schedule=True)

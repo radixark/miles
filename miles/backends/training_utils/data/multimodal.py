@@ -14,6 +14,7 @@ from collections.abc import Sequence
 import torch
 
 from miles.backends.training_utils.data.context_parallel import all_gather_with_cp, slice_log_prob_with_cp
+from miles.backends.training_utils.data.token_space_media_process import PendingTrainInputs
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import RolloutBatch
 
@@ -206,6 +207,11 @@ def expand_multimodal_rollout_data_in_place(
     qkv_format: str = "thd",
 ) -> None:
     multimodal_train_inputs = rollout_data.get("multimodal_train_inputs", None)
+    # Token-space inputs are still being rebuilt, and their tokens already carry the expansion.
+    if multimodal_train_inputs is not None and any(
+        isinstance(mm, PendingTrainInputs) for mm in multimodal_train_inputs
+    ):
+        return
     if multimodal_train_inputs is not None and any(
         mm is not None and ("mm_vision_num_patches" in mm or "mm_audio_num_tokens" in mm)
         for mm in multimodal_train_inputs
