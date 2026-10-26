@@ -398,3 +398,28 @@ def test_a_pipeline_stage_without_mla_layers_streams_past_the_q_lora_group(gathe
             list(assemble_atomic_update_groups(kda_only_stage, groups))
     else:
         assert list(assemble_atomic_update_groups(kda_only_stage, groups)) == kda_only_stage
+
+
+@pytest.mark.parametrize("cpu_offload", [False, True])
+def test_sleep_and_wake_leave_cpu_offloaded_training_state_on_the_host(monkeypatch, cpu_offload):
+    """Under --optimizer-cpu-offload the shards and moments already live on the host; moving them on wake would pull
+    every one onto the GPU."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import actor as titan_actor
+    from miles.backends.training_utils.torch_native import actor as native_actor
+
+    moved: list[bool] = []
+    monkeypatch.setattr(native_actor, "move_train_state", lambda *_args, to_host: moved.append(to_host))
+    monkeypatch.setattr(titan_actor.dist, "barrier", lambda **_kwargs: None)
+    for module in (titan_actor, native_actor):
+        monkeypatch.setattr(module, "clear_memory", lambda: None)
+        monkeypatch.setattr(module, "print_memory", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(module, "get_gloo_group", lambda: None)
+    actor = titan_actor.TorchtitanTrainRayActor.__new__(titan_actor.TorchtitanTrainRayActor)
+    actor.args = SimpleNamespace(offload_train=True, backend=SimpleNamespace(optimizer_cpu_offload=cpu_offload))
+    actor.model_parts, actor.optimizers = [], []
+
+    actor.sleep()
+    actor.wake_up()
+
+    assert moved == ([] if cpu_offload else [True, False])

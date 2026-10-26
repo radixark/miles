@@ -109,15 +109,16 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         self.prof.on_init_end()
         return args.start_rollout_id if args.start_rollout_id is not None else start_rollout_id
 
-    def _move_to(self, device: str) -> None:
-        if self.args.backend.optimizer_cpu_offload:
-            # the training state already lives on the host; moving it would pull it all onto the GPU on wake
-            print_memory(f"before releasing the GPU cache for {device}")
-            clear_memory()
-            dist.barrier(group=get_gloo_group())
-            print_memory(f"after releasing the GPU cache for {device}")
+    def _move_train_state(self, *, to_host: bool) -> None:
+        if not self.args.backend.optimizer_cpu_offload:
+            super()._move_train_state(to_host=to_host)
             return
-        super()._move_to(device)
+        # the training state already lives on the host; moving it would pull it all onto the GPU on wake
+        where = "host" if to_host else "device"
+        print_memory(f"before releasing the GPU cache for {where}")
+        clear_memory()
+        dist.barrier(group=get_gloo_group())
+        print_memory(f"after releasing the GPU cache for {where}")
 
     def _step_runner(self):
         return self.trainer.step_runner()
