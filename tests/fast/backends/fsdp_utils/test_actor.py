@@ -93,21 +93,22 @@ class TestFSDPModelInputs:
         """Pad tokens carry position 0; boundaries derived from `position_ids` would make each one a document."""
         actor = object.__new__(actor_module.FSDPTrainRayActor)
         actor.arch_adapter = resolve_arch_adapter(SimpleNamespace(model_type="qwen3_5_text"))
-        cu_seqlens_host = (0, 3, 5, 8)  # two documents, then the 3-token pad segment get_batch appends
+        cu_seqlens_host = (0, 3, 5, 9)  # two documents, then the 4-token pad segment get_batch appends
         batch = {
-            "tokens": torch.zeros(1, 8, dtype=torch.long),
-            "position_ids": torch.tensor([[0, 1, 2, 0, 1, 0, 0, 0]]),
+            "tokens": torch.zeros(1, 9, dtype=torch.long),
+            "position_ids": torch.tensor([[0, 1, 2, 0, 1, 0, 0, 0, 0]]),
             "cu_seqlens": torch.tensor(cu_seqlens_host, dtype=torch.int32),
             "cu_seqlens_host": cu_seqlens_host,
-            "max_seqlen": 3,
+            "max_seqlen": 4,  # get_batch's, which counts the pad segment
             "unconcat_tokens": [torch.zeros(3, dtype=torch.long), torch.zeros(2, dtype=torch.long)],
         }
 
         model_args = actor._get_model_inputs_args(batch)
 
         assert model_args["cu_seq_lens_q"] is batch["cu_seqlens"]
+        # the longest real document: the pad segment changes FlashAttention's launch plan
         assert model_args["max_length_q"] == 3
-        assert model_args["seq_idx"].tolist() == [[0, 0, 0, 1, 1, 2, 2, 2]]
+        assert model_args["seq_idx"].tolist() == [[0, 0, 0, 1, 1, 2, 2, 2, 2]]
 
 
 class TestFSDPTrainParallelConfigWiring:

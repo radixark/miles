@@ -26,7 +26,7 @@ class ArchAdapter:
     verified: bool = False
     # None means the architecture has no MoE router to replay.
     routing_replay: RoutingReplayAdapter | None = None
-    # stock HF attention reads the varlen boundaries; remote code may not accept them
+    # stock HF modeling takes the packed boundaries (FlashAttention-4 needs them); remote code may not
     passes_attention_packing_kwargs: bool = False
 
     def resolve_precision(self, base: PrecisionPolicy, args: Namespace) -> PrecisionPolicy:
