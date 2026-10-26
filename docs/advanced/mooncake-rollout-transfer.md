@@ -296,7 +296,9 @@ Requirements:
   rollout data, max staleness + 1 batches of stored arrays: the batch in training and
   the ones generated ahead of it, where max staleness is how many rollout batches the
   run can generate ahead of the one in training. Multiply by `--mooncake-replica-num`.
-  Otherwise the store fills up and Mooncake evicts objects to make room.
+  Output store objects are hard-pinned, so Mooncake never evicts them: a full store can
+  evict only Miles' own rollout data, which is not pinned, and puts fail once only
+  pinned objects are left.
 
 Not supported, rejected at launch: a launch that replays none of these three arrays,
 `--cluster-backend kubernetes`, PD disaggregation, external rollout engines, the legacy
