@@ -68,6 +68,15 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
     provider.fp32_residual_connection = args.backend.fp32_residual_connection
     provider.deterministic_mode = args.backend.deterministic_mode
 
+    # The provider freezes inside provide(), before DDP wrapping, so frozen params get no grad buffer or optimizer state.
+    if args.freeze_vision_model:
+        if not hasattr(
+            provider, "freeze_vision_model"
+        ):  # config-access-exempt: only bridge providers of VL models have a vision tower to freeze
+            raise ValueError(f"--freeze-vision-model: {type(provider).__name__} has no vision tower to freeze")
+        provider.freeze_vision_model = True
+        provider.freeze_vision_projection = True
+
     # activation recompute (silently dropped before -> no checkpointing -> OOM at long context)
     provider.recompute_granularity = args.backend.recompute_granularity
     provider.recompute_method = args.backend.recompute_method

@@ -280,6 +280,20 @@ def _reassemble_full_row(gathered, cu, cp_size):
     return full
 
 
+def _num_videos_in_segment(frames_per_video: list[int], first_video: int, num_frames: int) -> int:
+    """Number of videos in a packed segment holding ``num_frames`` frames,
+    whose first video is grid row ``first_video``."""
+    count = total = 0
+    while total < num_frames:
+        if first_video + count >= len(frames_per_video):
+            raise ValueError(f"{num_frames} video frames exceed the remaining video_grid_thw rows")
+        total += frames_per_video[first_video + count]
+        count += 1
+    if total != num_frames:
+        raise ValueError(f"{num_frames} video frames do not end on a video boundary")
+    return count
+
+
 def _segment_positions(model, flat, cu, cu_t, kwargs, orig_get_rope_index):
     """Per-segment MRoPE positions for a full (unsharded) packed row `flat` with boundaries `cu`.
 
@@ -294,14 +308,18 @@ def _segment_positions(model, flat, cu, cu_t, kwargs, orig_get_rope_index):
     # Vectorized media count per segment (one GPU->host copy total, no per-segment .item()).
     num_segments = len(cu) - 1
     img_counts = [0] * num_segments
-    vid_counts = [0] * num_segments
+    frame_counts = [0] * num_segments
     starts = torch.nonzero(flat == vstart, as_tuple=False).flatten()
     starts = starts[starts + 1 < flat.numel()]
     if starts.numel() > 0:
         toks = flat[starts + 1]
         seg_idx = torch.bucketize(starts, cu_t, right=True) - 1  # [start,end) -> segment index
         img_counts = torch.bincount(seg_idx[toks == img_id], minlength=num_segments).cpu().tolist()
-        vid_counts = torch.bincount(seg_idx[toks == vid_id], minlength=num_segments).cpu().tolist()
+        # Each <vision_start> directly followed by <video_pad> opens one video frame.
+        frame_counts = torch.bincount(seg_idx[toks == vid_id], minlength=num_segments).cpu().tolist()
+
+    # A video expands to grid_t frames, each <vision_start><video_pad>...<vision_end>, but has one grid row.
+    frames_per_video = video_grid_thw[:, 0].tolist() if video_grid_thw is not None else []
 
     img_off = vid_off = 0
     segments = []
@@ -309,7 +327,7 @@ def _segment_positions(model, flat, cu, cu_t, kwargs, orig_get_rope_index):
         if end <= start:
             continue
         seg = flat[start:end]
-        ic, vc = img_counts[i], vid_counts[i]
+        ic, vc = img_counts[i], _num_videos_in_segment(frames_per_video, vid_off, frame_counts[i])
         if ic == 0 and vc == 0:
             pos = torch.arange(seg.numel(), dtype=seg.dtype, device=seg.device).view(1, 1, -1).expand(3, 1, -1)
         else:

@@ -1,17 +1,31 @@
-"""CPU unit test for the Qwen3-VL CP+THD packed mRoPE reconstruction (issue #1296).
+"""CPU unit tests for the Qwen3-VL THD packed mRoPE fix.
 
-Under context parallelism each rank's THD row holds only its zigzag chunks of every packed
-segment. `_reassemble_full_row` de-interleaves the all-gathered per-rank rows back to the
-full natural-order row so per-segment MRoPE positions can be rebuilt and re-sliced. This
-test checks that reconstruction is the exact inverse of `slice_with_cp` (the function miles
-uses to shard the tokens), and that re-slicing with `_natural_to_zigzag_slice` round-trips.
+CP reconstruction (issue #1296): under context parallelism each rank's THD row holds only its
+zigzag chunks of every packed segment. `_reassemble_full_row` de-interleaves the all-gathered
+per-rank rows back to the full natural-order row so per-segment MRoPE positions can be rebuilt
+and re-sliced. These tests check that reconstruction is the exact inverse of `slice_with_cp`
+(the function miles uses to shard the tokens), and that re-slicing with
+`_natural_to_zigzag_slice` round-trips.
+
+Video grid rows: a video expands to grid_t frames, each <vision_start><video_pad>...<vision_end>,
+but has one `video_grid_thw` row, so each packed segment must get the rows of its own videos:
+
+    segment 0: [S V V][S V V][S V]  video A (grid_t=2) + video C (grid_t=1)  ->  rows [A, C]
+    segment 1: [S V]                video B (grid_t=1)                       ->  rows [B]
 """
+
+from types import SimpleNamespace
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from miles_plugins.models.qwen3_vl import _natural_to_zigzag_slice, _reassemble_full_row
+from miles_plugins.models.qwen3_vl import (
+    _natural_to_zigzag_slice,
+    _num_videos_in_segment,
+    _reassemble_full_row,
+    _segment_positions,
+)
 
 
 def _slice_with_cp(tokens, cp_size, cp_rank, pad_value=0):
@@ -78,3 +92,39 @@ def test_reassemble_bails_on_indivisible_segment():
     cu = [0, 6]  # 6 not divisible by 2*cp=4
     gathered = [torch.zeros(3, dtype=torch.long), torch.zeros(3, dtype=torch.long)]
     assert _reassemble_full_row(gathered, cu, cp_size=2) is None
+
+
+VISION_START, IMAGE_PAD, VIDEO_PAD, TEXT = 7, 8, 9, 0
+
+
+def test_packed_videos_get_their_own_grid_rows():
+    """Counting frames as videos would hand video B's row to segment 0 and none to segment 1."""
+    video_a = [VISION_START, VIDEO_PAD, VIDEO_PAD, VISION_START, VIDEO_PAD, VIDEO_PAD]
+    video_c = [VISION_START, VIDEO_PAD]
+    segment_a = [TEXT, *video_a, TEXT, *video_c, TEXT]
+    segment_b = [TEXT, VISION_START, VIDEO_PAD, TEXT]
+    flat = torch.tensor(segment_a + segment_b)
+    cu = [0, len(segment_a), len(segment_a) + len(segment_b)]
+    video_grid_thw = torch.tensor([[2, 2, 4], [1, 2, 2], [1, 2, 2]])
+    model = SimpleNamespace(
+        config=SimpleNamespace(spatial_merge_size=2),
+        image_token_id=IMAGE_PAD,
+        video_token_id=VIDEO_PAD,
+        vision_start_token_id=VISION_START,
+    )
+    grids_per_segment = []
+
+    def recording_get_rope_index(merge, image_id, video_id, start_id, input_ids, video_grid_thw=None, **_):
+        grids_per_segment.append(video_grid_thw.tolist())
+        return torch.zeros(3, 1, input_ids.shape[1], dtype=torch.long), None
+
+    _segment_positions(model, flat, cu, torch.tensor(cu), {"video_grid_thw": video_grid_thw}, recording_get_rope_index)
+
+    assert grids_per_segment == [[[2, 2, 4], [1, 2, 2]], [[1, 2, 2]]]
+
+
+@pytest.mark.parametrize("first_video, num_frames", [(0, 4), (1, 7)])
+def test_segment_off_a_video_boundary_is_rejected(first_video, num_frames):
+    """A segment must hold whole videos; a partial one would read another video's grid."""
+    with pytest.raises(ValueError):
+        _num_videos_in_segment([3, 2, 4], first_video=first_video, num_frames=num_frames)
