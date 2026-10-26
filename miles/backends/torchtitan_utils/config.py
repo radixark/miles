@@ -119,7 +119,7 @@ def build_trainer_config(
     config.training.max_norm = args.backend.clip_grad
     config.training.disable_cuda_graphs = True
     # a static-shape platform (TPU) always compiles, whatever --titan-compile says: eager runs every op separately
-    if args.titan_compile or not platforms.current_platform.dynamic_shapes:
+    if args.backend.titan_compile or not platforms.current_platform.dynamic_shapes:
         config.compile.enable = True
         config.compile.components = ["model"]
         config.compile.backend = platforms.current_platform.compile_backend
