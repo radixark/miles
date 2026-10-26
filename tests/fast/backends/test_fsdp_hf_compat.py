@@ -352,15 +352,20 @@ def test_hf_packing_kwargs_match_the_padding_free_collator():
 def test_each_arch_passes_the_packing_kwargs_its_modeling_reads():
     boundaries = _packed_boundaries(2, 3)
     for model_type in ("qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen3_next"):
-        assert "seq_idx" in _adapter(model_type).packing_kwargs(**boundaries), model_type
-    # stock HF attention: varlen boundaries, max_length an int
+        kwargs = _adapter(model_type).packing_kwargs(**boundaries, attn_implementation="flash_attention_2")
+        assert "seq_idx" in kwargs, model_type
+    # stock HF attention: varlen boundaries for FlashAttention-4 only, max_length an int; other kernels
+    # keep HF's position_ids path, which true-on-policy matches bit for bit
     for model_type in ("glm4_moe_lite", "qwen3", "qwen3_moe", "qwen3_vl"):
-        kwargs = _adapter(model_type).packing_kwargs(**boundaries)
+        adapter = _adapter(model_type)
+        kwargs = adapter.packing_kwargs(**boundaries, attn_implementation="flash_attention_4")
         assert set(kwargs) == {"cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k"}, model_type
         assert type(kwargs["max_length_q"]) is int and kwargs["max_length_q"] == 3, model_type
+        for other in ("flash_attention_2", "flash_attention_3", "sdpa"):
+            assert adapter.packing_kwargs(**boundaries, attn_implementation=other) == {}, (model_type, other)
     # NemotronH resets through its own patch; other archs (including remote code) keep their stock inputs.
     for model_type in ("nemotron_h", "some_remote_lm"):
-        assert _adapter(model_type).packing_kwargs(**boundaries) == {}, model_type
+        assert _adapter(model_type).packing_kwargs(**boundaries, attn_implementation="flash_attention_4") == {}
 
 
 def test_qwen3_attention_receives_the_packed_boundaries(monkeypatch):
@@ -393,7 +398,7 @@ def test_qwen3_attention_receives_the_packed_boundaries(monkeypatch):
         model(
             input_ids=torch.arange(5).view(1, 5),
             position_ids=torch.tensor([[0, 1, 2, 0, 1]]),
-            **_adapter("qwen3").packing_kwargs(**_packed_boundaries(3, 2)),
+            **_adapter("qwen3").packing_kwargs(**_packed_boundaries(3, 2), attn_implementation="flash_attention_4"),
         )
 
     assert len(seen) == cfg.num_hidden_layers
@@ -419,7 +424,8 @@ def test_qwen3_vl_keeps_packing_kwargs_out_of_its_vision_tower():
     adapter.patch_model(model, None)
     assert model.model.visual.forward is wrapped  # idempotent across the actor and ref model
 
-    model.model.visual(None, grid_thw=1, **adapter.packing_kwargs(**_packed_boundaries(3, 2)))
+    packing_kwargs = adapter.packing_kwargs(**_packed_boundaries(3, 2), attn_implementation="flash_attention_4")
+    model.model.visual(None, grid_thw=1, **packing_kwargs)
     assert calls == [{"grid_thw": 1}]
 
 
@@ -466,7 +472,7 @@ def test_gated_deltanet_kernels_receive_packed_boundaries(monkeypatch):
     monkeypatch.setattr(modeling_qwen3_5, "causal_conv1d_fn", conv)
     monkeypatch.setattr(modeling_qwen3_5, "torch_chunk_gated_delta_rule", chunk_rule)
 
-    packing_kwargs = _adapter("qwen3_5_text").packing_kwargs(**_packed_boundaries(3, 2))
+    packing_kwargs = _adapter("qwen3_5_text").packing_kwargs(**_packed_boundaries(3, 2), attn_implementation="eager")
     with torch.no_grad():
         model(input_ids=torch.arange(5).view(1, 5), position_ids=torch.tensor([[0, 1, 2, 0, 1]]), **packing_kwargs)
 
@@ -519,7 +525,7 @@ def test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs(monkeypat
         position_ids=torch.tensor([[0, 1, 2, 0, 1, 2, 3]]),
         pixel_values=torch.randn(4, 3 * 2 * 2 * 2),
         image_grid_thw=torch.tensor([[1, 2, 2]]),
-        **adapter.packing_kwargs(**_packed_boundaries(3, 4)),
+        **adapter.packing_kwargs(**_packed_boundaries(3, 4), attn_implementation="eager"),
     )
     with torch.no_grad():
         model(**inputs)

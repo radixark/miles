@@ -93,6 +93,7 @@ class TestFSDPModelInputs:
         """Pad tokens carry position 0; boundaries derived from `position_ids` would make each one a document."""
         actor = object.__new__(actor_module.FSDPTrainRayActor)
         actor.arch_adapter = resolve_arch_adapter(SimpleNamespace(model_type="qwen3_5_text"))
+        actor.args = SimpleNamespace(attn_implementation="flash_attention_2")
         cu_seqlens_host = (0, 3, 5, 8)  # two documents, then the 3-token pad segment get_batch appends
         batch = {
             "tokens": torch.zeros(1, 8, dtype=torch.long),
