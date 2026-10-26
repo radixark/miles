@@ -25,8 +25,8 @@ def _normalize_text(text: str) -> str:
 _LETTER = r"\(?([A-Z])\)?(?![A-Za-z0-9])"
 _FILLER = r"(?:(?!(?:not|never|no)\b)[a-z]+\s+)?"
 _LETTER_PATTERNS = [
-    r"(?i:final\s*(?:answer|option))\s*(?i:is)?\s*[:\-]?\s*" + _FILLER + _LETTER,
-    r"(?i:answer|option|choice)\s*(?i:is)?\s*[:\-]?\s*" + _FILLER + _LETTER,
+    r"(?i:final\s*(?:answer|option))\b\s*(?i:is)?\s*[:\-]?\s*" + _FILLER + _LETTER,
+    r"(?i:answer|option|choice)\b\s*(?i:is)?\s*[:\-]?\s*" + _FILLER + _LETTER,
     r"\b([A-Z])\)?\s*(?i:is\s*(?:the\s*)?correct)",
 ]
 # An option label at the start of the answer, e.g. "C. 42 eV" or "(C) 42 eV" inside a box.
@@ -40,12 +40,12 @@ _NOT_COMMITTED_TAIL = r"(?:\b[A-Z]\)?\s*(?:[,./;]|\bor\b|\band\b)?|(?i:\b(?:not|
 
 
 def _unwrap_markup(text: str) -> str:
-    """Drop markdown emphasis, `$` and LaTeX wrappers such as `\boxed{C}` or `\text{C}`, keeping their contents."""
+    """Drop markdown emphasis, code ticks, math delimiters and LaTeX wrappers such as `\boxed{C}` or `\text{C}`, keeping their contents."""
     previous = None
     while previous != text:
         previous = text
         text = re.sub(r"\\(?:boxed|text|textbf|mathrm|mathbf)\s*\{([^{}]*)\}", r"\1", text)
-    return re.sub(r"\*\*|__|\$", "", text)
+    return re.sub(r"\\[()\[\]]|[*_`$]", "", text)
 
 
 def _extract_letter_from_response(response: str, valid_letters: Iterable[str]) -> str | None:
@@ -62,13 +62,15 @@ def _extract_letter_from_response(response: str, valid_letters: Iterable[str]) -
         if match and match.group(1) in valid_letters:
             return match.group(1)
 
-    match = re.fullmatch(_LEADING_LABEL, text, flags=re.DOTALL)
-    if match and match.group(1) in valid_letters:
-        return match.group(1)
-
     last_line = text.splitlines()[-1] if text else ""
     match = re.search(_TRAILING_LETTER, last_line)
     if match and match.group(1) in valid_letters and not re.search(_NOT_COMMITTED_TAIL, last_line[: match.start(1)]):
+        return match.group(1)
+
+    # Only a single-line answer may be read by its leading label; a multi-line walkthrough that
+    # opens with "A. Incorrect because ..." has not chosen A.
+    match = re.fullmatch(_LEADING_LABEL, text) if "\n" not in text else None
+    if match and match.group(1) in valid_letters:
         return match.group(1)
 
     return None
