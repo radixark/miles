@@ -71,6 +71,7 @@ class TestLaunchChecks:
             ({"custom_convert_samples_to_train_data_path": "my.convert"}, "custom convert function"),
             ({"deploy_component": "trainer"}, "--deploy-component all"),
             ({"debug_rollout_only": True}, "--debug-rollout-only"),
+            ({"multimodal_keys": {"image": "images"}}, "--multimodal-keys"),
             ({"save_debug_rollout_data": "/tmp/{rollout_id}.pt"}, "--save-debug-rollout-data"),
             ({"load_debug_rollout_data": "/tmp/{rollout_id}.pt"}, "--load-debug-rollout-data"),
             ({"ci_inject_rollout_data_path": "/tmp/{rollout_id}.pt"}, "--ci-inject-rollout-data-path"),

@@ -100,6 +100,11 @@ def check_output_store_args(args: argparse.Namespace) -> None:
             ),
             (args.debug_rollout_only, "--debug-rollout-only has no train worker to hold the stored objects"),
             (
+                bool(args.multimodal_keys),
+                "--multimodal-keys is not supported: a media prompt's routed experts have one row per expanded "
+                "media token, not per prompt token",
+            ),
+            (
                 indexer_topk_bytes is not None and indexer_topk_bytes > buffer_bytes,
                 f"--output-store-local-buffer-size {args.output_store_local_buffer_size} cannot hold the "
                 f"{indexer_topk_bytes} bytes of indexer top-k that one --rollout-max-context-len sequence stores",
