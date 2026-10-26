@@ -266,6 +266,22 @@ def test_every_row_scored_matches_log_softmax():
     torch.testing.assert_close(leaf.grad, ref_leaf.grad, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("inplace_backward", [True, False])
+def test_the_op_never_syncs_with_the_host(inplace_backward):
+    """Forward and backward stay queued behind the model; a host sync would stall the stream."""
+    logits, rows, targets = _inputs(64, 50_001, torch.bfloat16, "cuda")  # some rows unscored
+    leaf = logits.clone().requires_grad_(True)
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        log_probs, entropy = fused_log_probs_and_entropy(
+            leaf * 1, rows, targets, tp_group=None, with_entropy=True, inplace_backward=inplace_backward
+        )
+        (log_probs.sum() + entropy.sum()).backward()
+    finally:
+        torch.cuda.set_sync_debug_mode(0)
+
+
 def test_no_rows_still_gives_the_logits_a_gradient():
     """A rank that scores nothing must still backprop through the model, or CP collectives hang."""
     leaf = torch.randn(5, 50_001, device="cuda", requires_grad=True)

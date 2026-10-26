@@ -300,7 +300,7 @@ def zero_unscored_rows(grad: torch.Tensor, rows: torch.Tensor, *, launch: Launch
     launch = launch or kernel_configs(grad.device).zero
     n_rows = grad.size(0)
     scored = torch.zeros(n_rows, dtype=torch.uint8, device=grad.device)
-    scored[rows] = 1
+    scored.index_fill_(0, rows, 1)  # a scalar fill: indexed assignment would copy the 1 from the host
     _zero_unscored_rows_kernel[(n_rows,)](
         grad, scored, grad.stride(0), grad.size(1), BLOCK_V=launch.block_v, num_warps=launch.num_warps
     )
