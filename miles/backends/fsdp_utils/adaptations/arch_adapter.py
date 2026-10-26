@@ -41,13 +41,11 @@ class ArchAdapter:
         and the ref model, so it must be idempotent."""
 
     def packing_kwargs(
-        self, *, cu_seqlens: torch.Tensor, cu_seqlens_host: tuple[int, ...], max_seqlen: int, attn_implementation: str
+        self, *, cu_seqlens: torch.Tensor, cu_seqlens_host: tuple[int, ...], max_seqlen: int
     ) -> dict[str, object]:
         """Extra forward kwargs that tell this architecture's modeling where the packed documents that
         ``get_batch`` recorded start."""
-        # only FlashAttention-4 rejects the boundaries HF re-derives; other kernels keep that path, which
-        # true-on-policy matches bit for bit
-        if not (self.passes_attention_packing_kwargs and attn_implementation == "flash_attention_4"):
+        if not self.passes_attention_packing_kwargs:
             return {}
         return hf_attention_packing_kwargs(cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
 

@@ -123,7 +123,6 @@ def _packed_batch(docs, padded_length):
 def _actor_for(model):
     actor = object.__new__(FSDPTrainRayActor)
     actor.arch_adapter = resolve_arch_adapter(model.config)
-    actor.args = SimpleNamespace(attn_implementation=model.config._attn_implementation)
     return actor
 
 
@@ -284,7 +283,6 @@ def test_building_packing_kwargs_never_syncs_the_device():
     """A host-device sync on every micro-batch from sizing `seq_idx` with a device-side length."""
     actor = object.__new__(FSDPTrainRayActor)
     actor.arch_adapter = resolve_arch_adapter(SimpleNamespace(model_type="qwen3_5"))
-    actor.args = SimpleNamespace(attn_implementation="flash_attention_2")
     docs = [_random_tokens(length, seed) for seed, length in enumerate((37, 64, 129))]
     batch = _packed_batch(docs, padded_length=256)
 

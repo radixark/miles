@@ -531,7 +531,7 @@ def test_hub_kernels_serve_qwen3_5_gated_deltanet_with_the_packed_document_bound
     inputs = dict(
         input_ids=torch.arange(5).view(1, 5),
         position_ids=torch.tensor([[0, 1, 2, 0, 1]]),
-        **_adapter("qwen3_5_text").packing_kwargs(**_packed_boundaries(3, 2), attn_implementation="eager"),
+        **_adapter("qwen3_5_text").packing_kwargs(**_packed_boundaries(3, 2)),
     )
     with torch.no_grad():
         native_logits = model(**inputs).logits
