@@ -19,6 +19,7 @@ from sglang.srt.state_capturer.base import BaseDeviceCache, BaseTopkCapturer  # 
 
 from miles.backends.sglang_utils import arguments as sglang_arguments  # noqa: E402
 from miles.backends.sglang_utils import sglang_api_client  # noqa: E402
+from miles.utils.args.runtime import AllConfig  # noqa: E402
 
 _MILES_ROOT = pathlib.Path(__file__).resolve().parents[4] / "miles"
 # fields miles sends that sglang-torchtpu does not take; each is LoRA-only, and TPU weight sync rejects LoRA
@@ -166,5 +167,7 @@ def test_every_server_arg_miles_reads_is_registered():
         for path in _MILES_ROOT.rglob("*.py")
         for name in re.findall(r"args\.sglang_([a-z0-9_]+)", re.sub(r"#.*", "", path.read_text()))
     }
-    missing = read - registered - _SGLANG_MILES_ONLY_ARGS
+    # miles' own config fields named sglang_* (router, scaling, ...) are not engine server args
+    miles_owned = {name.removeprefix("sglang_") for name in AllConfig.model_fields if name.startswith("sglang_")}
+    missing = read - registered - miles_owned - _SGLANG_MILES_ONLY_ARGS
     assert not missing, f"miles reads --sglang-* args sglang-torchtpu does not register: {sorted(missing)}"
