@@ -133,7 +133,7 @@ def test_policy_loss_matches(overrides):
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
+        args.backend.calculate_per_token_loss,
         args.qkv_format,
         None,
     )
