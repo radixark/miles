@@ -1,12 +1,13 @@
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["rollout"])
 
 import asyncio
 from argparse import Namespace
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 import miles.rollout.inference_rollout.inference_rollout_train as train
@@ -24,6 +25,9 @@ GROUP_SIZE = 4
 
 def make_args(**overrides) -> Namespace:
     defaults = dict(
+        **parser_defaults(),
+    )
+    defaults.update(
         rollout_global_dataset=True,
         rollout_batch_size=2,
         n_samples_per_prompt=GROUP_SIZE,
@@ -38,7 +42,7 @@ def make_args(**overrides) -> Namespace:
         sglang_router_port=30000,
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return resolve_parse_boundary_configs(Namespace(**defaults))
 
 
 def make_group(group_index: int) -> list[Sample]:

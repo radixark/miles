@@ -106,7 +106,7 @@ def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
     U = command_utils.default_config().create_backend()
     full_dump_dir: str = f"{dump_dir}/{dump_subdir}"
 
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "

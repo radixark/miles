@@ -15,6 +15,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_group
 from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import (
     iter_checkpoint_tower_units,
 )
+from miles.platforms import current_platform
 from miles.utils.hf_utils.config import load_hf_config
 
 
@@ -25,8 +26,14 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         super().__init__(*args, **kwargs)
         self._engine_dtypes = _checkpoint_dtypes(self.args.hf_checkpoint)
         hf_config = load_hf_config(self.args.hf_checkpoint)
-        text_config = getattr(hf_config, "text_config", None) or hf_config
-        self._q_lora_rank = getattr(text_config, "q_lora_rank", None) or None
+        text_config = (
+            getattr(hf_config, "text_config", None)
+            or hf_config  # config-access-exempt: only multimodal checkpoints nest the decoder under text_config
+        )
+        self._q_lora_rank = (
+            getattr(text_config, "q_lora_rank", None)
+            or None  # config-access-exempt: HF models without query LoRA omit q_lora_rank
+        )
 
     def _iter_hf_param_units(self, weights, *, materialize):
         for name, tensor in hf_weights(self.model, complete_across_pp=self.placement.gather_pp):
@@ -51,14 +58,14 @@ def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[st
     offloaded = next(trainer.model_parts[0].parameters()).device.type == "cpu"
     if offloaded:
         for part in trainer.model_parts:
-            part.cuda()
+            part.to(current_platform.current_device())
     try:
         yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp)
     finally:
         if offloaded:
             for part in trainer.model_parts:
                 part.cpu()
-            torch.cuda.empty_cache()
+            torch.accelerator.empty_cache()
 
 
 @functools.cache
@@ -70,7 +77,9 @@ _GROUPED_EXPERTS = "moe.routed_experts.inner_experts"
 
 
 def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
-    sd_adapter = getattr(trainer.checkpointer, "sd_adapter", None)
+    sd_adapter = getattr(
+        trainer.checkpointer, "sd_adapter", None
+    )  # config-access-exempt: TorchTitan checkpointer versions may omit the state-dict adapter
     if sd_adapter is None:
         sd_adapter = trainer.config.model_spec.state_dict_adapter(trainer.model_config, trainer.config.hf_assets_path)
     state = {k: v for part in trainer.model_parts for k, v in part.state_dict().items()}
@@ -144,7 +153,11 @@ class _StageLayout:
             if self.my_rank in holders:
                 tensor = gather_full_param(local[name]).contiguous()
             else:
-                tensor = torch.empty(shape, dtype=getattr(torch, dtype.split(".")[-1]), device=self.device)
+                tensor = torch.empty(
+                    shape,
+                    dtype=getattr(torch, dtype.split(".")[-1]),
+                    device=self.device,  # config-access-exempt: torch dtype name comes from the broadcast tensor metadata
+                )
             dist.broadcast(tensor, src=holders[0], group=self.broadcast_group)
             yield name, tensor
             del tensor

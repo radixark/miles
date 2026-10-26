@@ -5,7 +5,6 @@ import re
 from enum import Enum
 from typing import Any
 
-from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.single_turn import generate as single_turn_generate
 from miles.utils.iter_utils import group_by
@@ -37,7 +36,7 @@ class _Verdict(Enum):
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     args = input.args
-    model_ids = resolve_megatron_config(args).model_ids
+    model_ids = args.raw_megatron.model_ids
     assert len(model_ids) == 2, (
         f"examples/multi_policy/solver_verifier.py pairs one solver policy with one verifier policy, but "
         f"--megatron-config names {model_ids}"
@@ -132,6 +131,7 @@ def _build_verifier_sample(solver_sample: Sample) -> Sample:
         label=solver_sample.label,
         metadata=dict(solver_sample.metadata or {}),
         routing_key=solver_sample.routing_key,
+        kv_cache_namespace=solver_sample.kv_cache_namespace,
     )
 
 

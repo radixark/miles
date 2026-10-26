@@ -8,6 +8,7 @@ import time
 
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.utils.workers.real_ray.conftest import (
     is_process_running,
     kill_quietly,
@@ -23,6 +24,8 @@ from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort, PortInfo
+
+register_cpu_ci(est_time=70, suite="stage-b-cpu", labels=["rpc-comm"])
 
 
 class TestLaunchOnRealRay:

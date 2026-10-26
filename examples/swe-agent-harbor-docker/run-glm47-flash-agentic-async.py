@@ -55,11 +55,18 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     hf_checkpoint: str = "/models/zai-org/GLM-4.7-Flash"
     ref_load: str = "/models/zai-org/GLM-4.7-Flash_torch_dist"
     save_dir: str = "/root/GLM-4.7-Flash_agentic_async/"
+    load_dir: str = ""  # empty: resume from save_dir
     # Directory to dump rollout + training traces (per-rollout .pt files). Empty
     # means default to ``<save_dir>/traces``; set to ``"disabled"`` to skip.
     save_traces_dir: str = ""
     prompt_data: str = "/root/swe_train.jsonl"
     max_seq_len: int = 16384
+    # Engine-side hard cap on prompt + generation per request. Without it sglang serves up to the
+    # model's own context window, so a runaway trajectory can hold a 100k+ token KV footprint and
+    # starve every other request. Defaults to max_seq_len + rollout_max_response_len: a session at
+    # the max_seq_len budget can still take one more turn, so the trial ends on max_seq_len
+    # rather than on an engine-side context error.
+    sglang_context_length: int | None = None
     rollout_max_response_len: int = 8192
     save_interval: int = 5
 
@@ -142,6 +149,12 @@ def prepare(args: ScriptArgs):
     )
 
 
+def _sglang_context_length(args: ScriptArgs) -> int:
+    if args.sglang_context_length is not None:
+        return args.sglang_context_length
+    return args.max_seq_len + args.rollout_max_response_len
+
+
 def execute(args: ScriptArgs):
     U = args.create_backend()
     if args.pause_generation_mode == "in_place" and args.update_weight_transfer_mode == "p2p":
@@ -153,6 +166,8 @@ def execute(args: ScriptArgs):
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
+        # Resume from save_dir when it holds a checkpoint; miles falls back to ref_load otherwise.
+        f"--load {args.load_dir or args.save_dir} "
         f"--save {args.save_dir} "
         f"--save-interval {args.save_interval} "
     )
@@ -261,6 +276,7 @@ def execute(args: ScriptArgs):
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         "--sglang-mem-fraction-static 0.80 "
+        f"--sglang-context-length {_sglang_context_length(args)} "
         f"--sglang-tp-size {sglang_world_size} "
         f"--sglang-ep-size {sglang_world_size} "
         "--sglang-enable-dp-attention "
@@ -306,7 +322,6 @@ def execute(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         f"--rollout-num-gpus {rollout_gpus} "
         "--grad-reduce-in-bf16 "
-        "--use-fault-tolerance "
         f"--rollout-health-check-first-wait {args.rollout_health_check_first_wait} "
     )
     if args.accumulate_allreduce_grads_in_fp32:

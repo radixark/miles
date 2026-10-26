@@ -16,15 +16,22 @@ tilelang = pytest.importorskip("tilelang")
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 from miles.kernels.attention.dsa import causal_ranges, indexer_logits, sparse_attention  # noqa: E402
-from miles.kernels.attention.dsa.sparse_attention import SparseAttentionConfig, flash_mla_sparse_fwd  # noqa: E402
+from miles.kernels.attention.dsa.sparse_attention import (  # noqa: E402
+    SparseAttentionConfig,
+    cudnn_dsa,
+    flash_mla_sparse_fwd,
+)
 from miles.kernels.attention.dsa.topk import torch_dsa_topk  # noqa: E402
 
 BACKENDS = ["tilelang"] + (["flash_mla"] if flash_mla_sparse_fwd is not None else [])
 CONFIGS = ["default", *BACKENDS]
+BACKWARD_BACKENDS = ["tilelang"] + (["cudnn"] if cudnn_dsa is not None else [])
 
 
-def _config(backend):
-    return None if backend == "default" else SparseAttentionConfig(forward_backend=backend)
+def _config(backend, backward_backend="tilelang"):
+    if backend == "default":
+        return None
+    return SparseAttentionConfig(forward_backend=backend, backward_backend=backward_backend)
 
 
 _spec = importlib.util.spec_from_file_location("dsa_reference", pathlib.Path(__file__).with_name("dsa_reference.py"))
@@ -91,9 +98,12 @@ def test_forward_matches_reference(case, backend):
 BACKWARD_CASES = MQA_CASES[:4] + MQA_CASES[-1:] + MLA_CASES[:3] + MLA_CASES[-1:]
 
 
+@pytest.mark.parametrize("backward_backend", BACKWARD_BACKENDS)
 @pytest.mark.parametrize("backend", CONFIGS)
 @pytest.mark.parametrize("case", BACKWARD_CASES, ids=IDS(BACKWARD_CASES))
-def test_backward_matches_autograd(case, backend):
+def test_backward_matches_autograd(case, backend, backward_backend):
+    if backend == "default" and backward_backend != "tilelang":
+        pytest.skip("the default config picks its own backward")
     torch.manual_seed(0)
     batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink = case
     q, kv, indices, attn_sink = _inputs(batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink)
@@ -114,7 +124,7 @@ def test_backward_matches_autograd(case, backend):
         sm_scale,
         d_v=d_v,
         attn_sink=sink_tl,
-        config=_config(backend),
+        config=_config(backend, backward_backend),
     )
     (out.float() * grad_out).sum().backward()
 
@@ -149,6 +159,36 @@ def test_forward_backends_agree(case):
             assert reference.rel_diff(a, b) < 1e-5
 
 
+@pytest.mark.skipif(len(BACKWARD_BACKENDS) < 2, reason="cuDNN frontend not installed")
+@pytest.mark.parametrize("sink_shift", [0.0, 20.0], ids=["sink", "dominant_sink"])
+@pytest.mark.parametrize("case", BACKWARD_CASES + MQA_CASES[4:5], ids=IDS(BACKWARD_CASES + MQA_CASES[4:5]))
+def test_backward_backends_agree(case, sink_shift):
+    """cuDNN takes the sink-excluded natural-log LSE recovered from the saved one, so its gradients (d_sink included)
+    must match the TileLang backward's to bf16 noise, also when the sink takes almost all the probability."""
+    torch.manual_seed(0)
+    batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink = case
+    if sink_shift and not sink:
+        pytest.skip("no sink")
+    q, kv, indices, attn_sink = _inputs(batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink)
+    if sink:
+        attn_sink += sink_shift
+    indices[:, ::5] = -1
+    sm_scale = (d_v + d_tail) ** -0.5
+    grad_out = torch.randn(batch, seq_len, heads, d_v, device="cuda", dtype=torch.float32)
+    grads = {}
+    for backward_backend in BACKWARD_BACKENDS:
+        q_, kv_ = q.clone().requires_grad_(), kv.clone().requires_grad_()
+        sink_ = attn_sink.clone().requires_grad_() if sink else None
+        config = SparseAttentionConfig(forward_backend="tilelang", backward_backend=backward_backend)
+        out = sparse_attention(q_, kv_, indices, sm_scale, d_v=d_v, attn_sink=sink_, config=config)
+        (out.float() * grad_out).sum().backward()
+        grads[backward_backend] = (q_.grad, kv_.grad, sink_.grad if sink else None)
+    for a, b in zip(grads["tilelang"], grads["cudnn"], strict=True):
+        if a is not None:
+            assert torch.isfinite(b).all()
+            assert reference.rel_diff(a, b) < 1e-2
+
+
 def test_sink_changes_output():
     torch.manual_seed(0)
     q, kv, indices, _ = _inputs(1, 128, 8, 1, 512, 0, 160, 64, sink=False)
@@ -167,9 +207,10 @@ def test_query_with_no_valid_key_returns_zero():
     assert torch.all(out[0, 0] == 0)
 
 
+@pytest.mark.parametrize("backward_backend", BACKWARD_BACKENDS)
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("sink", [False, True], ids=["nosink", "sink"])
-def test_rows_with_no_selected_keys(backend, sink):
+def test_rows_with_no_selected_keys(backend, sink, backward_backend):
     """Rows whose indices are all -1 attend to nothing (or only the sink): zero output, finite gradients."""
     torch.manual_seed(0)
     batch, seq_len, heads, d_v, seq_len_kv, topk = 1, 128, 64, 512, 160, 64
@@ -192,7 +233,7 @@ def test_rows_with_no_selected_keys(backend, sink):
         sm_scale,
         d_v=d_v,
         attn_sink=sink_tl,
-        config=SparseAttentionConfig(forward_backend=backend),
+        config=_config(backend, backward_backend),
     )
     (out.float() * grad_out).sum().backward()
 
@@ -206,13 +247,16 @@ def test_rows_with_no_selected_keys(backend, sink):
         assert reference.rel_diff(sink_ref.grad, sink_tl.grad) < 0.05
 
 
+@pytest.mark.parametrize("backward_backend", BACKWARD_BACKENDS)
 @pytest.mark.parametrize("backend", CONFIGS)
 @pytest.mark.parametrize("segments", [[1, 7, 93, 3, 160], [1, 1, 1, 255]], ids=["mixed", "one_token_segments"])
 @pytest.mark.parametrize(
     "heads, d_tail, topk, sink", [(16, 64, 128, False), (32, 0, 64, True)], ids=["glm5", "deepseek_v4"]
 )
-def test_packed_sequences_end_to_end(segments, heads, d_tail, topk, sink, backend):
+def test_packed_sequences_end_to_end(segments, heads, d_tail, topk, sink, backend, backward_backend):
     """The packed path: causal_ranges -> indexer -> top-k (-1 past a short segment) -> sparse attention."""
+    if backend == "default" and backward_backend != "tilelang":
+        pytest.skip("the default config picks its own backward")
     torch.manual_seed(0)
     cu_seqlens = torch.tensor([0, *itertools.accumulate(segments)], device="cuda", dtype=torch.int32)
     total = int(cu_seqlens[-1])
@@ -240,7 +284,9 @@ def test_packed_sequences_end_to_end(segments, heads, d_tail, topk, sink, backen
 
     q_tl, kv_tl = q.clone().requires_grad_(), kv.clone().requires_grad_()
     sink_tl = attn_sink.clone().requires_grad_() if sink else None
-    out = sparse_attention(q_tl, kv_tl, indices, sm_scale, d_v=d_v, attn_sink=sink_tl, config=_config(backend))
+    out = sparse_attention(
+        q_tl, kv_tl, indices, sm_scale, d_v=d_v, attn_sink=sink_tl, config=_config(backend, backward_backend)
+    )
     (out.float() * grad_out).sum().backward()
 
     for actual in (out, q_tl.grad, kv_tl.grad) + ((sink_tl.grad,) if sink else ()):

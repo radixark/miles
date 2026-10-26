@@ -1,6 +1,7 @@
 from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 
+from miles.ray.rollout.rollout_executor import _compute_rollout_function_config
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
@@ -9,12 +10,17 @@ from miles.rollout.base_types import (
 )
 from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
-from miles.utils.types import Sample, WeightVersionsPerCall
+from miles.utils.types import Sample, SampleLineage, WeightVersionsPerCall
 
 
 def expected_sample(*, group_index: int | None) -> Sample:
     return Sample(
         group_index=group_index,
+        lineage=(
+            None
+            if group_index is None
+            else SampleLineage(source_sample_index=group_index, output_index=0, output_count=1)
+        ),
         index=0,
         prompt="What is 1+7?",
         tokens=[3838, 374, 220, 16, 10, 22, 30, 59, 79075, 90, 23, 92],
@@ -25,7 +31,7 @@ def expected_sample(*, group_index: int | None) -> Sample:
         label="8",
         reward=1,
         loss_mask=None,
-        weight_versions=[WeightVersionsPerCall(spans=[])],
+        weight_versions=[WeightVersionsPerCall(spans=[], output_start=7, prompt_tokens=7)],
         rollout_log_probs=[-0.0, -0.0078125, -0.015625, -0.0234375, -0.03125],
         rollout_routed_experts=None,
         remove_sample=False,
@@ -69,7 +75,7 @@ def integration_env_config(
 def load_and_call_rollout(args, data_source, mode: str = "train") -> RolloutFnOutput:
     function_path = args.rollout_function_path if mode == "train" else args.eval_function_path
     fn = load_rollout_function(
-        RolloutFnConstructorInput(args=args, data_source=data_source),
+        RolloutFnConstructorInput(args=_compute_rollout_function_config(args, function_path), data_source=data_source),
         function_path,
     )
     if mode == "train":

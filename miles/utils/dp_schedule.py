@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from argparse import Namespace
+from typing import NamedTuple
 
+from miles.utils.args.runtime import RolloutConfig, TrainerConfig
 from miles.utils.flops_utils import calculate_fwd_flops
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.seqlen_balancing import (
     expand_bins_by_splitting,
     first_fit_decreasing_pack,
@@ -14,34 +17,48 @@ from miles.utils.seqlen_balancing import (
 
 logger = logging.getLogger(__name__)
 
-SCHEDULE_CONFIG_KEYS = ("dp_size", "cp_size", "vpp_size", "microbatch_group_size_per_vp_stage")
+
+class TrainParallelConfig(FrozenStrictBaseModel):
+    dp_size: int
+    cp_size: int
+    vpp_size: int | None
+    microbatch_group_size_per_vp_stage: int | None
+    independent_dp: bool
+    supports_precomputed_schedule: bool
 
 
-def has_full_schedule_config(train_parallel_config: dict | None) -> bool:
-    """True when the backend advertised every field build_dp_schedule needs."""
-    if not train_parallel_config:
-        return False
-    return all(key in train_parallel_config for key in SCHEDULE_CONFIG_KEYS)
+class DPSchedule(NamedTuple):
+    partitions: list[list[int]]  # (num_ranks, num_local_samples): global sample indices
+    # (num_ranks, num_local_microbatches, num_samples_in_microbatch): indices into partitions[rank]
+    micro_batch_indices: list[list[list[int]]]
+    num_microbatches: list[int]  # (num_steps,): shared micro-batch counts for every rank
+    num_rollouts: list[int]  # (num_steps,): distinct rollout counts
 
 
-def _calculate_workloads(step_lengths, args):
-    return [calculate_fwd_flops([sl], args) for sl in step_lengths]
+def _calculate_workloads(step_lengths: list[int], args: TrainerConfig | RolloutConfig) -> list[float]:
+    if isinstance(args, TrainerConfig):
+        backend_values = vars(args.backend)
+    else:
+        assert isinstance(args, RolloutConfig)
+        backend_values = args.raw_megatron.base_args if args.train_backend == "megatron" else vars(args.raw_fsdp)
+    flops_args = Namespace(**(dict(args) | backend_values))
+    return [calculate_fwd_flops([sl], flops_args) for sl in step_lengths]
 
 
 def build_dp_schedule(
-    args: Any,
-    train_parallel_config: dict,
+    args: TrainerConfig | RolloutConfig,
+    train_parallel_config: TrainParallelConfig,
     total_lengths: list[int],
     *,
     global_batch_size: int,
     rollout_indices: list[int],
-) -> tuple[list[list[int]], list[list[list[int]]], list[int], list[int]]:
-    """Compute per-rank ``(partitions, micro_batch_indices, num_microbatches, num_rollouts)``;
+) -> DPSchedule:
+    """Compute ``DPSchedule``;
     ``global_batch_size`` counts rollouts, not training samples."""
-    dp_size = train_parallel_config["dp_size"]
-    cp_size = train_parallel_config["cp_size"]
-    vpp_size = train_parallel_config["vpp_size"] or 1
-    mb_group = train_parallel_config["microbatch_group_size_per_vp_stage"]
+    dp_size = train_parallel_config.dp_size
+    cp_size = train_parallel_config.cp_size
+    vpp_size = train_parallel_config.vpp_size or 1
+    mb_group = train_parallel_config.microbatch_group_size_per_vp_stage
 
     # micro-batch size per step must divide evenly across dp and vpp
     align_to = dp_size * (mb_group if vpp_size > 1 else 1)
@@ -68,7 +85,7 @@ def build_dp_schedule(
     )
     num_rollouts = [global_batch_size] * num_full_steps
     leftover = len(rollout_ids) - num_full_steps * global_batch_size
-    if leftover and getattr(args, "allow_partial_train_step", False) and args.use_dynamic_batch_size:
+    if leftover and args.allow_partial_train_step and args.use_dynamic_batch_size:
         leftover_samples = sum(len(rollout_id_to_sample_index[rid]) for rid in rollout_ids[-leftover:])
         if leftover_samples >= dp_size:
             num_rollouts.append(leftover)
@@ -90,7 +107,7 @@ def build_dp_schedule(
             f"each step needs at least one sample per rank."
         )
 
-        balance_by_flops = getattr(args, "balance_by_flops", False)
+        balance_by_flops = args.balance_by_flops
         # Shared by FLOPs-balanced packing and FLOPs-balanced distribution below.
         workloads = _calculate_workloads(step_lengths, args) if balance_by_flops else None
         if args.use_dynamic_batch_size:
@@ -152,4 +169,9 @@ def build_dp_schedule(
                 partitions[rank].extend(sample_indices[i] for i in micro_batch)
                 micro_batch_indices[rank].append(list(range(local_start, local_start + len(micro_batch))))
 
-    return partitions, micro_batch_indices, num_microbatches, num_rollouts
+    return DPSchedule(
+        partitions=partitions,
+        micro_batch_indices=micro_batch_indices,
+        num_microbatches=num_microbatches,
+        num_rollouts=num_rollouts,
+    )

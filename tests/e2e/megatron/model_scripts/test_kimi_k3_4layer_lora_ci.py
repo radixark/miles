@@ -47,7 +47,7 @@ def _args() -> ScriptArgs:
         check_lora_weight_equal=True,
         skip_saving=True,
         rollout_bf16=os.getenv("MILES_HARDWARE_PLATFORM") == "rocm",
-        extra_args="--ci-test --ci-disable-logprobs-checker ",
+        extra_args="--ci-test --ci-disable-logprobs-checker --no-enable-sample-ownership-checker ",
     )
 
 

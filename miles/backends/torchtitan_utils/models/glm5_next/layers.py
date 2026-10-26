@@ -258,23 +258,20 @@ class KimiDeltaAttention(Module):
         super().__init__()
         self.num_heads = config.num_heads
         self.head_dim = config.head_dim
-        for name in (
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "q_conv1d",
-            "k_conv1d",
-            "v_conv1d",
-            "b_proj",
-            "f_a_proj",
-            "f_b_proj",
-            "g_a_proj",
-            "g_b_proj",
-            "gate",
-            "o_norm",
-            "o_proj",
-        ):
-            setattr(self, name, getattr(config, name).build())
+        self.q_proj = config.q_proj.build()
+        self.k_proj = config.k_proj.build()
+        self.v_proj = config.v_proj.build()
+        self.q_conv1d = config.q_conv1d.build()
+        self.k_conv1d = config.k_conv1d.build()
+        self.v_conv1d = config.v_conv1d.build()
+        self.b_proj = config.b_proj.build()
+        self.f_a_proj = config.f_a_proj.build()
+        self.f_b_proj = config.f_b_proj.build()
+        self.g_a_proj = config.g_a_proj.build()
+        self.g_b_proj = config.g_b_proj.build()
+        self.gate = config.gate.build()
+        self.o_norm = config.o_norm.build()
+        self.o_proj = config.o_proj.build()
 
     def forward(self, x_BLD: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
         if sequence.cp_layout is None:

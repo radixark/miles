@@ -5,11 +5,13 @@
   * `--kernel-backend native` (the default) resolves nothing and never imports `kernels`;
   * the numerics guard that keeps hub kernels out of --true-on-policy-mode / --deterministic-mode;
   * strict vs. fallback when a repo or a function is missing from the build;
-  * and, the reason this feature exists, that a Hub-bound `causal_conv1d_fn` still receives the
-    packed-document `seq_idx` that `models/qwen3_5.py` injects -- i.e. the binder composes with the
-    packing wrapper rather than defeating it.
+  * and, the reason this feature exists, that transformers' own Qwen3.5 GatedDeltaNet calls the
+    Hub-bound kernels and still hands them the packed-document `seq_idx` / `cu_seqlens` from the
+    arch adapter's packing kwargs.
 """
 
+import importlib
+import itertools
 import sys
 import types
 from argparse import Namespace
@@ -17,9 +19,11 @@ from argparse import Namespace
 import pytest
 import torch
 import torch.nn as nn
+from tests.fast.fixtures.args_fixtures import make_trainer_config
 
 from miles.backends.fsdp_utils.arguments import validate_kernel_backend_args
 from miles.backends.fsdp_utils.plugins.hf_kernels import HubKernels, HubKernelSpec
+from miles.backends.fsdp_utils.plugins.hf_kernels.binders import _GDN_KERNEL_SLOTS
 from miles.backends.fsdp_utils.plugins.hf_kernels.loader import load_mapping
 from miles.backends.fsdp_utils.plugins.hf_kernels.presets import (
     CAUSAL_CONV1D,
@@ -29,7 +33,7 @@ from miles.backends.fsdp_utils.plugins.hf_kernels.presets import (
 )
 
 
-def _make_args(**overrides) -> Namespace:
+def _make_raw_args(**overrides) -> Namespace:
     base = dict(
         kernel_backend="hub",
         kernel_mapping_path="",
@@ -39,6 +43,11 @@ def _make_args(**overrides) -> Namespace:
     )
     base.update(overrides)
     return Namespace(**base)
+
+
+def _make_args(**overrides: object) -> Namespace:
+    values = vars(_make_raw_args(**overrides))
+    return Namespace(true_on_policy_mode=values.pop("true_on_policy_mode"), backend=Namespace(**values))
 
 
 def _stub_kernels(monkeypatch, *, module=None, modules=None, raises=None, calls=None):
@@ -87,12 +96,25 @@ def _noop(*args, **kwargs):
     return None
 
 
+def _hub_function(name):
+    """A distinct no-op per name, so a check can tell which Hub function landed where."""
+
+    def function(*args, **kwargs):
+        return None
+
+    function.__name__ = name
+    return function
+
+
 def _all_hub_modules(**overrides):
     """One stub module per repo in the shipped mapping, with every advertised function present."""
     modules = {
-        "kernels-community/fla": _kernel_module(chunk_gated_delta_rule=_noop, fused_recurrent_gated_delta_rule=_noop),
-        "kernels-community/causal-conv1d": _kernel_module(causal_conv1d_fn=_noop, causal_conv1d_update=_noop),
-        "kernels-community/flash-attn2": _kernel_module(flash_attn_varlen_func=_noop),
+        repo: _kernel_module(**{name: _hub_function(name) for name in names})
+        for repo, names in (
+            ("kernels-community/fla", ("chunk_gated_delta_rule", "fused_recurrent_gated_delta_rule")),
+            ("kernels-community/causal-conv1d", ("causal_conv1d_fn", "causal_conv1d_update")),
+            ("kernels-community/flash-attn2", ("flash_attn_varlen_func",)),
+        )
     }
     modules.update(overrides)
     return modules
@@ -102,7 +124,8 @@ def _all_hub_modules(**overrides):
 
 
 def test_native_is_the_default_and_stays_inert(monkeypatch):
-    args = _make_args(kernel_backend="native")
+    """A typed FSDP trainer config keeps native kernels independent of Hub dependencies."""
+    args = make_trainer_config(train_backend="fsdp", kernel_backend="native")
     monkeypatch.delitem(sys.modules, "kernels", raising=False)
 
     hub = HubKernels.prepare(args)
@@ -116,7 +139,7 @@ def test_native_is_the_default_and_stays_inert(monkeypatch):
 @pytest.mark.parametrize("mode", ["true_on_policy_mode", "deterministic_mode"])
 def test_hub_backend_is_rejected_in_the_bit_exact_modes(mode):
     with pytest.raises(ValueError, match="incompatible with --true-on-policy-mode"):
-        validate_kernel_backend_args(_make_args(**{mode: True}))
+        validate_kernel_backend_args(_make_raw_args(**{mode: True}))
 
 
 @pytest.mark.parametrize("mode", ["true_on_policy_mode", "deterministic_mode"])
@@ -127,7 +150,7 @@ def test_default_mapping_is_empty_in_the_bit_exact_modes(mode):
 
 def test_unknown_backend_is_rejected():
     with pytest.raises(ValueError, match="--kernel-backend must be one of"):
-        validate_kernel_backend_args(_make_args(kernel_backend="hubb"))
+        validate_kernel_backend_args(_make_raw_args(kernel_backend="hubb"))
 
 
 @pytest.mark.parametrize(
@@ -139,12 +162,12 @@ def test_unknown_backend_is_rejected():
 )
 def test_hub_only_flags_are_rejected_under_native(overrides, message):
     with pytest.raises(ValueError, match=message):
-        validate_kernel_backend_args(_make_args(kernel_backend="native", **overrides))
+        validate_kernel_backend_args(_make_raw_args(kernel_backend="native", **overrides))
 
 
 def test_native_and_hub_both_validate_clean():
-    validate_kernel_backend_args(_make_args(kernel_backend="native"))
-    validate_kernel_backend_args(_make_args(kernel_backend="hub", kernel_strict=True))
+    validate_kernel_backend_args(_make_raw_args(kernel_backend="native"))
+    validate_kernel_backend_args(_make_raw_args(kernel_backend="hub", kernel_strict=True))
 
 
 # ------------------------------------------------------------------------------------ presets
@@ -305,61 +328,68 @@ def test_binding_uses_the_mapping_agreed_in_prepare(monkeypatch):
     _stub_kernels(monkeypatch, modules=_all_hub_modules())
     hub = HubKernels.prepare(_make_args(kernel_mapping_path=f"{__name__}._counting_mapping"))
 
-    assert hub.bind(_build_gdn_model()) == {"gated_deltanet": 2}
+    assert hub.bind(_build_gdn_model(monkeypatch)) == {"gated_deltanet": 2}
     assert hub.resolve_slot(SLOT_CAUSAL_CONV1D) is not None
     assert len(_mapping_provider_calls) == 1
 
 
 # ------------------------------------------------------------------------------ GatedDeltaNet
 
-
-class FakeGatedDeltaNet(nn.Module):
-    """Mirrors the parts of Qwen3NextGatedDeltaNet the binder and the packing wrapper touch.
-
-    `native_chunk` defaults to a stand-in for transformers' `torch_chunk_gated_delta_rule`: it
-    accepts `cu_seqlens` into `**kwargs` and ignores it, which is exactly the silent degradation
-    the `fla` slot exists to remove.
-    """
-
-    def __init__(self, native_conv=None, native_chunk=None):
-        super().__init__()
-        self.causal_conv1d_fn = native_conv
-        self.causal_conv1d_update = None
-        self.chunk_gated_delta_rule = native_chunk or _torch_chunk_stand_in
-        self.recurrent_gated_delta_rule = native_chunk or _torch_chunk_stand_in
-
-    def forward(self, x):
-        self.chunk_gated_delta_rule(x, g=None, beta=None, cu_seqlens=None)
-        if self.causal_conv1d_fn is None:
-            # transformers' fallback: no seq_idx, so packed documents bleed into each other.
-            return x
-        return self.causal_conv1d_fn(x=x, weight=None, bias=None, activation="silu", seq_idx=None)
+_fake_modeling_ids = itertools.count()
 
 
-def _torch_chunk_stand_in(query, g=None, beta=None, **kwargs):
-    """transformers' pure-torch GDN fallback: swallows cu_seqlens and never resets per document."""
+def _torch_conv_stand_in(x, weight, bias=None, activation=None, **kwargs):
+    """transformers' torch `causal_conv1d_fn`: takes no seq_idx, so packed documents bleed into each other."""
+    return x
+
+
+def _torch_chunk_stand_in(query, key=None, value=None, g=None, beta=None, **kwargs):
+    """transformers' torch GDN fallback: swallows cu_seqlens and never resets per document."""
     return query
 
 
-def _build_gdn_model(native_conv=None, native_chunk=None, n_layers=2):
+def _build_gdn_model(monkeypatch, native_conv=_torch_conv_stand_in, native_chunk=_torch_chunk_stand_in, n_layers=2):
+    """GatedDeltaNet layers that call the kernels of their modeling module, as transformers' forward does.
+
+    Each model gets its own stand-in modeling module in `sys.modules`, where the binder rebinds the
+    kernels, so a binding never outlives the test.
+    """
+    modeling = types.ModuleType(f"fake_modeling_gated_deltanet_{next(_fake_modeling_ids)}")
+    modeling.torch_chunk_gated_delta_rule = native_chunk
+    modeling.torch_recurrent_gated_delta_rule = native_chunk
+    modeling.causal_conv1d_fn = native_conv
+    modeling.causal_conv1d_update = native_conv
+    monkeypatch.setitem(sys.modules, modeling.__name__, modeling)
+
+    class FakeGatedDeltaNet(nn.Module):
+        def forward(self, x, **kwargs):
+            x = modeling.causal_conv1d_fn(x, None, None, activation="silu", **kwargs)
+            cu_seqlens = kwargs.pop("cu_seq_lens_q", None)
+            return modeling.torch_chunk_gated_delta_rule(x, x, x, g=None, beta=None, cu_seqlens=cu_seqlens, **kwargs)
+
+    FakeGatedDeltaNet.__module__ = modeling.__name__
     model = nn.Module()
-    model.layers = nn.ModuleList([FakeGatedDeltaNet(native_conv, native_chunk) for _ in range(n_layers)])
+    model.layers = nn.ModuleList([FakeGatedDeltaNet() for _ in range(n_layers)])
     return model
 
 
-def test_binder_rebinds_every_gated_deltanet(monkeypatch):
+def _modeling(model):
+    return sys.modules[type(model.layers[0]).__module__]
+
+
+def test_binder_rebinds_the_kernels_every_gated_deltanet_calls(monkeypatch):
     _stub_kernels(monkeypatch, modules=_all_hub_modules())
-    model = _build_gdn_model()
+    model = _build_gdn_model(monkeypatch)
 
     assert HubKernels.prepare(_make_args()).bind(model) == {"gated_deltanet": 2}
     fla = sys.modules["kernels"].get_kernel("kernels-community/fla")
     conv = sys.modules["kernels"].get_kernel("kernels-community/causal-conv1d")
-    for layer in model.layers:
-        assert layer.chunk_gated_delta_rule is fla.chunk_gated_delta_rule
-        # transformers stores the recurrent kernel without the `fused_` prefix; the slot maps across.
-        assert layer.recurrent_gated_delta_rule is fla.fused_recurrent_gated_delta_rule
-        assert layer.causal_conv1d_fn is conv.causal_conv1d_fn
-        assert layer.causal_conv1d_update is conv.causal_conv1d_update
+    modeling = _modeling(model)
+    # transformers names the delta-rule kernels after their torch fallbacks; the slot maps across.
+    assert modeling.torch_chunk_gated_delta_rule.__wrapped__ is fla.chunk_gated_delta_rule
+    assert modeling.torch_recurrent_gated_delta_rule.__wrapped__ is fla.fused_recurrent_gated_delta_rule
+    assert modeling.causal_conv1d_fn.__wrapped__ is conv.causal_conv1d_fn
+    assert modeling.causal_conv1d_update.__wrapped__ is conv.causal_conv1d_update
 
 
 def test_gated_deltanet_slots_resolve_independently(monkeypatch):
@@ -367,21 +397,21 @@ def test_gated_deltanet_slots_resolve_independently(monkeypatch):
     modules = _all_hub_modules()
     del modules["kernels-community/causal-conv1d"]
     _stub_kernels(monkeypatch, modules=modules)
-    model = _build_gdn_model(native_conv=None)
+    model = _build_gdn_model(monkeypatch)
 
     assert HubKernels.prepare(_make_args()).bind(model) == {"gated_deltanet": 2}
     fla = sys.modules["kernels"].get_kernel("kernels-community/fla")
-    assert model.layers[0].chunk_gated_delta_rule is fla.chunk_gated_delta_rule
-    assert model.layers[0].causal_conv1d_fn is None  # untouched: no build to bind
+    assert _modeling(model).torch_chunk_gated_delta_rule.__wrapped__ is fla.chunk_gated_delta_rule
+    assert _modeling(model).causal_conv1d_fn is _torch_conv_stand_in  # untouched: no build to bind
 
 
 def test_binder_is_inert_under_native(monkeypatch):
     _stub_kernels(monkeypatch, modules=_all_hub_modules())
-    model = _build_gdn_model(native_conv=None)
+    model = _build_gdn_model(monkeypatch)
 
     assert HubKernels.prepare(_make_args(kernel_backend="native")).bind(model) == {}
-    assert model.layers[0].causal_conv1d_fn is None
-    assert model.layers[0].chunk_gated_delta_rule is _torch_chunk_stand_in
+    assert _modeling(model).causal_conv1d_fn is _torch_conv_stand_in
+    assert _modeling(model).torch_chunk_gated_delta_rule is _torch_chunk_stand_in
 
 
 def test_binder_leaves_the_native_kernels_when_every_hub_repo_fails(monkeypatch):
@@ -389,32 +419,97 @@ def test_binder_leaves_the_native_kernels_when_every_hub_repo_fails(monkeypatch)
         return None
 
     _stub_kernels(monkeypatch, raises=FileNotFoundError("nope"))
-    model = _build_gdn_model(native_conv=native)
+    model = _build_gdn_model(monkeypatch, native_conv=native)
 
     assert HubKernels.prepare(_make_args()).bind(model) == {}
-    assert model.layers[0].causal_conv1d_fn is native
-    assert model.layers[0].chunk_gated_delta_rule is _torch_chunk_stand_in
+    assert _modeling(model).causal_conv1d_fn is native
+    assert _modeling(model).torch_chunk_gated_delta_rule is _torch_chunk_stand_in
 
 
-def test_hub_kernels_still_receive_the_packed_document_boundaries(monkeypatch):
-    """The reason this feature exists.
+@pytest.mark.parametrize("strict", [False, True])
+def test_a_slot_whose_kernels_the_modeling_module_lacks_is_never_reported_bound(monkeypatch, caplog, strict):
+    """transformers moving these kernels once turned this binder into a no-op that still logged success."""
+    _stub_kernels(monkeypatch, modules=_all_hub_modules())
+    model = _build_gdn_model(monkeypatch)
+    del _modeling(model).causal_conv1d_update
+    hub = HubKernels.prepare(_make_args(kernel_strict=strict))
 
-    `_patch_gdn_forward` injects `cu_seqlens` into the recurrence and `seq_idx` into the conv. The
-    native fallbacks defeat that -- the torch GDN kernel swallows `cu_seqlens` into `**kwargs`, and
-    a missing conv wheel leaves nothing to wrap. Bind both from the Hub and the boundaries must
-    arrive at the kernels unchanged.
+    if strict:
+        with pytest.raises(RuntimeError, match="no module-level GatedDeltaNet kernel"):
+            hub.bind(model)
+        return
+    with caplog.at_level("INFO"):
+        assert hub.bind(model) == {"gated_deltanet": 2}  # the delta-rule slot still binds
+    assert "causal_conv1d_update'] to rebind; keeping the native kernel" in caplog.text
+    assert "GatedDeltaNet gated_delta_rule served from the Hub" in caplog.text
+    assert _modeling(model).causal_conv1d_fn is _torch_conv_stand_in  # never half-bound
+
+
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe", "qwen3_next", "qwen4_exp", "olmo_hybrid"])
+def test_transformers_gated_deltanet_modeling_modules_expose_the_kernels_the_binder_rebinds(model_type):
+    modeling = importlib.import_module(f"transformers.models.{model_type}.modeling_{model_type}")
+    for _, name_to_function in _GDN_KERNEL_SLOTS:
+        for name in name_to_function:
+            assert callable(getattr(modeling, name, None)), f"{modeling.__name__}.{name}"
+
+
+def test_hub_kernels_serve_qwen3_5_gated_deltanet_with_the_packed_document_boundaries(monkeypatch, caplog):
+    """The reason this feature exists, on transformers' own Qwen3.5.
+
+    Its GatedDeltaNet hands the actor's padding-free kwargs to the module-level kernels of
+    `modeling_qwen3_5`; the torch fallbacks drop `cu_seqlens` and `seq_idx`. Bound from the Hub, the
+    kernels must be the ones called, receive both boundaries, and keep the arguments they compute on.
     """
-    from miles.backends.fsdp_utils.models.qwen3_5 import _patch_gdn_forward
+    import torch.nn.functional as F
+    from tests.fast.backends.test_fsdp_hf_compat import _TINY_QWEN3_5_TEXT, _adapter, _packed_boundaries
+    from transformers import Qwen3_5TextConfig
+    from transformers.models.qwen3_5 import modeling_qwen3_5
 
+    # Binding is process-wide; restore the originals once the test is done.
+    for _, name_to_function in _GDN_KERNEL_SLOTS:
+        for name in name_to_function:
+            monkeypatch.setattr(modeling_qwen3_5, name, getattr(modeling_qwen3_5, name))
+    native_chunk = modeling_qwen3_5.torch_chunk_gated_delta_rule
     seen = {}
 
-    def hub_chunk(query, g=None, beta=None, **kwargs):
-        seen["cu_seqlens"] = kwargs.get("cu_seqlens")
-        return query
+    # Signatures of the Hub builds, which declare no **kwargs.
+    def hub_chunk(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        scale=None,
+        initial_state=None,
+        output_final_state=False,
+        use_qk_l2norm_in_kernel=False,
+        cu_seqlens=None,
+    ):
+        seen["cu_seqlens"] = cu_seqlens
+        return native_chunk(
+            q,
+            k,
+            v,
+            g=g,
+            beta=beta,
+            initial_state=initial_state,
+            output_final_state=output_final_state,
+            use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+        )
 
-    def hub_conv(**kwargs):
-        seen["seq_idx"] = kwargs.get("seq_idx")
-        return kwargs["x"]
+    def hub_conv(
+        x,
+        weight,
+        bias=None,
+        seq_idx=None,
+        initial_states=None,
+        return_final_states=False,
+        final_states_out=None,
+        activation=None,
+    ):
+        seen["seq_idx"] = seq_idx
+        out = F.conv1d(F.pad(x, (weight.shape[-1] - 1, 0)), weight.unsqueeze(1), bias, groups=x.shape[1])
+        return F.silu(out) if activation in ("silu", "swish") else out
 
     _stub_kernels(
         monkeypatch,
@@ -430,27 +525,26 @@ def test_hub_kernels_still_receive_the_packed_document_boundaries(monkeypatch):
         ),
     )
 
-    # Patch a throwaway subclass: _patch_gdn_forward rewrites the class forward permanently.
-    gdn_cls = type("PackedGatedDeltaNet", (FakeGatedDeltaNet,), {})
-    _patch_gdn_forward(gdn_cls)
+    cfg = Qwen3_5TextConfig(**_TINY_QWEN3_5_TEXT)
+    cfg._attn_implementation = "eager"
+    model = modeling_qwen3_5.Qwen3_5ForCausalLM(cfg).eval()
+    inputs = dict(
+        input_ids=torch.arange(5).view(1, 5),
+        position_ids=torch.tensor([[0, 1, 2, 0, 1]]),
+        **_adapter("qwen3_5_text").packing_kwargs(**_packed_boundaries(3, 2)),
+    )
+    with torch.no_grad():
+        native_logits = model(**inputs).logits
+        assert seen == {}
+        with caplog.at_level("INFO"):
+            assert HubKernels.prepare(_make_args()).bind(model) == {"gated_deltanet": 1}
+        hub_logits = model(**inputs).logits
 
-    model = nn.Module()
-    model.layers = nn.ModuleList([gdn_cls()])
-    assert HubKernels.prepare(_make_args()).bind(model) == {"gated_deltanet": 1}
-
-    layer = model.layers[0]
-    cu_seqlens = torch.tensor([0, 2, 4], dtype=torch.int32)
-    seq_idx = torch.tensor([[0, 0, 1, 1]], dtype=torch.int32)
-    layer._gdn_cu_seqlens = cu_seqlens
-    layer._gdn_seq_idx = seq_idx
-    layer(torch.zeros(1, 4))
-
-    assert torch.equal(seen["cu_seqlens"], cu_seqlens)
-    assert torch.equal(seen["seq_idx"], seq_idx)
-    # The wrapper restores the handles it swapped, so the next forward starts from the Hub kernels
-    # again rather than from a stack of boundary-injecting wrappers.
-    assert layer.chunk_gated_delta_rule is hub_chunk
-    assert layer.causal_conv1d_fn is hub_conv
+    assert seen["cu_seqlens"].tolist() == [0, 3, 5]
+    assert seen["seq_idx"].tolist() == [[0, 0, 0, 1, 1]]
+    # The stand-ins compute what the fallbacks do, so equal logits mean no argument was lost on the way.
+    torch.testing.assert_close(hub_logits, native_logits)
+    assert "served from the Hub in transformers.models.qwen3_5.modeling_qwen3_5 (1 module(s))" in caplog.text
 
 
 # --------------------------------------------------------------------------------- NemotronH
@@ -577,7 +671,7 @@ def test_nemotron_attention_falls_back_to_dense_when_no_varlen_kernel_exists(mon
 
 
 def _incomplete_mapping(args):
-    return {args.test_slot: HubKernelSpec(repo_id="me/custom", version=1, functions=("causal_conv1d_fn",))}
+    return {args.backend.test_slot: HubKernelSpec(repo_id="me/custom", version=1, functions=("causal_conv1d_fn",))}
 
 
 @pytest.mark.parametrize("strict", [False, True])
@@ -606,14 +700,13 @@ def test_complete_custom_mapping_binds_policy_and_reference_without_changing_wei
     hub = HubKernels.prepare(_make_args(kernel_mapping_path=f"{__name__}._custom_mapping"))
 
     for _ in range(2):
-        model = _build_gdn_model()
+        model = _build_gdn_model(monkeypatch)
         model.proj = nn.Linear(4, 4)
         before = {key: value.clone() for key, value in model.state_dict().items()}
         assert hub.bind(model) == {"gated_deltanet": 2}
-        for layer in model.layers:
-            assert layer.causal_conv1d_fn is conv
-            assert layer.causal_conv1d_update is update
-            assert layer.chunk_gated_delta_rule is _torch_chunk_stand_in
+        assert _modeling(model).causal_conv1d_fn.__wrapped__ is conv
+        assert _modeling(model).causal_conv1d_update.__wrapped__ is update
+        assert _modeling(model).torch_chunk_gated_delta_rule is _torch_chunk_stand_in
         assert model.state_dict().keys() == before.keys()
         for key, expected in before.items():
             torch.testing.assert_close(model.state_dict()[key], expected, rtol=0, atol=0)
@@ -630,4 +723,4 @@ def test_prepare_rejects_kernels_without_hub_provenance(monkeypatch, strict):
             HubKernels.prepare(args)
     else:
         hub = HubKernels.prepare(args)
-        assert hub.bind(_build_gdn_model()) == {}
+        assert hub.bind(_build_gdn_model(monkeypatch)) == {}

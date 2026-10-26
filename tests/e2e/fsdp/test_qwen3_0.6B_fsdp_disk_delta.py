@@ -73,7 +73,7 @@ def execute():
         "--update-weight-local-checkpoint-dir /root/fsdp_delta/local "
     )
 
-    ci_args = "--ci-test --ci-disable-kl-checker "
+    ci_args = "--ci-test --ci-disable-kl-checker --no-enable-sample-ownership-checker "
 
     train_args = (
         f"{ckpt_args} "

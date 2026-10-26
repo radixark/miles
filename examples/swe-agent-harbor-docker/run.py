@@ -37,10 +37,18 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     hf_checkpoint: str = "zai-org/GLM-4.7-Flash"
     ref_load: str = "/root/GLM-4.7-Flash_torch_dist"
     save_dir: str = "/root/GLM-4.7-Flash_agent_v2/"
+    load_dir: str = ""  # empty: resume from save_dir
     prompt_data: str = "/root/swe_train.jsonl"
 
     # Training settings
     max_seq_len: int = 65536
+    rollout_max_response_len: int = 8192
+    # Engine-side hard cap on prompt + generation per request. Without it sglang serves up to the
+    # model's own context window, so a runaway trajectory can hold a 100k+ token KV footprint and
+    # starve every other request. Defaults to max_seq_len + rollout_max_response_len: a session at
+    # the max_seq_len budget can still take one more turn, so the trial ends on max_seq_len
+    # rather than on an engine-side context error.
+    sglang_context_length: int | None = None
     num_rollout: int = 3000
     rollout_batch_size: int = 4
     n_samples_per_prompt: int = 8
@@ -100,11 +108,19 @@ def prepare(args: ScriptArgs):
     )
 
 
+def _sglang_context_length(args: ScriptArgs) -> int:
+    if args.sglang_context_length is not None:
+        return args.sglang_context_length
+    return args.max_seq_len + args.rollout_max_response_len
+
+
 def execute(args: ScriptArgs):
     U = args.create_backend()
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
+        # Resume from save_dir when it holds a checkpoint; miles falls back to ref_load otherwise.
+        f"--load {args.load_dir or args.save_dir} "
         f"--save {args.save_dir} "
         f"--save-interval {args.save_interval} "
     )
@@ -118,7 +134,7 @@ def execute(args: ScriptArgs):
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
-        "--rollout-max-response-len 8192 "
+        f"--rollout-max-response-len {args.rollout_max_response_len} "
         f"--max-seq-len {args.max_seq_len} "
         f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
@@ -163,6 +179,7 @@ def execute(args: ScriptArgs):
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-mem-fraction-static 0.7 "
+        f"--sglang-context-length {_sglang_context_length(args)} "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
         "--sglang-router-port 31000 "

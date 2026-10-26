@@ -3,7 +3,10 @@
 from argparse import Namespace
 
 import numpy as np
+import pybase64
 
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
+from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.rollout.generate_utils.rollout_topk_logprobs import append_rollout_topk_logprobs
 from miles.utils.types import Sample
 
@@ -16,10 +19,22 @@ class _Tokenizer:
 def _args(**overrides: object) -> Namespace:
     values = dict(
         ci_test=False,
+        enable_sample_ownership_checker=False,
         loss_type="score_centering",
         rollout_top_logprobs_num=3,
         rollout_sampling_logprobs_mode="selected",
         use_opd=False,
+        use_tis=False,
+        custom_tis_function_path=None,
+        use_opsm=False,
+        recompute_logprobs_via_prefill=False,
+        sglang_speculative_algorithm=None,
+        custom_pg_loss_reducer_function_path=None,
+        multi_lora=False,
+        lora_rank=0,
+        lora_adapter_path=None,
+        lora_train_only=False,
+        custom_convert_samples_to_train_data_path=None,
         opd_log_prob_top_k=0,
         opd_top_k_strategy="only-student",
         score_centering_is="none",
@@ -30,6 +45,8 @@ def _args(**overrides: object) -> Namespace:
         rollout_top_p=1.0,
         rollout_top_k=-1,
         use_sampling_support_replay=False,
+        use_rollout_routing_replay=False,
+        use_rollout_indexer_replay=False,
         advantage_estimator="grpo",
         rewards_normalization=False,
         reward_key=None,
@@ -40,11 +57,18 @@ def _args(**overrides: object) -> Namespace:
         allgather_cp=False,
         log_probs_chunk_size=2,
         vocab_size=8,
+        calculate_per_token_loss=False,
+        global_batch_size=1,
         entropy_coef=0,
         observe_training_entropy=False,
         use_kl_loss=False,
     )
-    return Namespace(**(values | overrides))
+    values.update(overrides)
+    backend = MegatronArgsNamespace(
+        **{name: values.pop(name) for name in ("vocab_size", "calculate_per_token_loss", "global_batch_size")}
+    )
+    sglang = SglangConfig(models=[], base_args={"speculative_algorithm": values["sglang_speculative_algorithm"]})
+    return Namespace(**values, train_backend="megatron", backend=backend, sglang=sglang)
 
 
 def _turn(prompt: list[int], output: list[int], probabilities: list[float]) -> Sample:
@@ -78,4 +102,27 @@ def _meta(output: list[int], probabilities: list[float]) -> dict:
         "output_token_logprobs": entries,
         "output_top_logprobs": [entries] * len(output),
         "finish_reason": {"type": "stop"},
+    }
+
+
+def _flat_meta(output: list[int], probabilities: list[float]) -> dict:
+    """``_meta`` with the candidates in SGLang's flat base64 format, padded to the 3 columns SGLang returns
+    for ``top_logprobs=3`` with a low-probability filler token."""
+    meta = _meta(output, probabilities)
+    rows = [[*row, (-20.0, 7, None)] for row in meta.pop("output_top_logprobs")]
+    return meta | _flat_output_top_logprobs(rows)
+
+
+def _flat_output_top_logprobs(rows: list, *, null_prefix: int = 0) -> dict:
+    """Encode nested [logprob, token_id, text] rows the way SGLang's return_flat_raw_output_top_logprobs does."""
+    shape = [len(rows), len(rows[0]) if rows else 0]
+    val = np.asarray([[entry[0] for entry in row] for row in rows], dtype="<f4").reshape(shape)
+    idx = np.asarray([[entry[1] for entry in row] for row in rows], dtype="<i4").reshape(shape)
+    return {
+        "output_top_logprobs_shape": shape,
+        "output_top_logprobs_null_prefix": null_prefix,
+        "output_top_logprobs_val_flat_b64": pybase64.b64encode(val.tobytes()).decode("ascii"),
+        "output_top_logprobs_idx_flat_b64": pybase64.b64encode(idx.tobytes()).decode("ascii"),
+        "output_top_logprobs_val_flat_b64_dtype": "float32",
+        "output_top_logprobs_idx_flat_b64_dtype": "int32",
     }

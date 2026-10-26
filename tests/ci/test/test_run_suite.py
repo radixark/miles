@@ -7,7 +7,8 @@ These cover the Python-side policy and label pipeline:
 * `resolve_policy`: explicit cadence + raw labels -> selection and fast-fail.
 * The PR workflow seams: one adapter resolves trigger facts and every CUDA/ROCm stage consumes its outputs.
 * `filter_tests`: include-set selection, including CPU always-on coverage and
-  GPU domain labels; a scope subtraction is not a per-test veto.
+  GPU domain labels; a scope subtraction is not a per-test veto; `perf` selects nothing.
+* `run_cpu_tests`: one pytest per CPU suite, each `perf` file alone within its timeout.
 * `CI_SUITES`: locked to the current hardware taxonomy.
 
 We build `CIRegistry` instances directly via a small factory rather than
@@ -35,7 +36,7 @@ from tests.ci.ci_policy import (
     resolve_policy,
     strip_run_ci_prefix,
 )
-from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
+from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files, register_cpu_ci
 from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import CI_SUITES, build_cpu_pytest_cmd, filter_tests
 from tests.ci.stage_selection import PR_GPU_STAGES
@@ -107,6 +108,51 @@ class TestBuildCpuPytestCmd:
 
         directories = [name.rsplit("/", 1)[0] for name in cmd if name.endswith(".py")]
         assert len(set(directories)) == len(list(itertools.groupby(directories)))
+
+
+# --- run_cpu_tests: each perf file runs alone within its timeout ------------
+
+
+def _bench(filename: str, *, labels: list[str]) -> CIRegistry:
+    return _make(filename, backend=HWBackend.CPU, suite="stage-b-cpu", labels=labels, est_time=400)
+
+
+class TestRunCpuTests:
+    BENCH = "tests/fast/rollout/test_bench.py"
+    OTHER = "tests/fast/rollout/test_other.py"
+    BOUNDED_BENCH = ["timeout", "--signal=TERM", "--kill-after=30s", "500s", "pytest", BENCH, "-v", "-x"]
+
+    @staticmethod
+    def _record_calls(monkeypatch, returncodes):
+        calls = []
+
+        def fake_call(cmd):
+            calls.append(cmd)
+            return returncodes[len(calls) - 1]
+
+        monkeypatch.setattr(run_suite_module.subprocess, "call", fake_call)
+        return calls
+
+    def _tests(self):
+        return [_bench(self.BENCH, labels=["rollout", "perf"]), _bench(self.OTHER, labels=["rollout"])]
+
+    def test_perf_file_runs_alone_within_its_estimate(self, monkeypatch):
+        calls = self._record_calls(monkeypatch, [0, 0])
+        assert run_suite_module.run_cpu_tests(self._tests(), 1800, continue_on_error=False) == 0
+        assert calls == [["pytest", self.OTHER, "-v", "-x"], self.BOUNDED_BENCH]
+
+    @pytest.mark.parametrize(("continue_on_error", "runs"), [(False, 1), (True, 2)])
+    def test_earlier_failure_keeps_fast_fail(self, monkeypatch, continue_on_error, runs):
+        calls = self._record_calls(monkeypatch, [1, 0])
+        assert run_suite_module.run_cpu_tests(self._tests(), 1800, continue_on_error) == 1
+        assert len(calls) == runs
+
+    def test_expired_estimate_fails_the_suite(self, monkeypatch, capsys):
+        calls = self._record_calls(monkeypatch, [124])
+        tests = [_bench(self.BENCH, labels=["rollout", "perf"])]
+        assert run_suite_module.run_cpu_tests(tests, 1800, continue_on_error=False) == 124
+        assert calls == [self.BOUNDED_BENCH]
+        assert f"TIMEOUT: {self.BENCH} after 500 seconds" in capsys.readouterr().out
 
 
 # --- CI_SUITES locked to the stage taxonomy ---------------------------------
@@ -476,20 +522,42 @@ class TestWorkflowScopeSeam:
         assert "    - cron: '0 15 * * 6'" in workflow
         assert "timezone:" not in workflow
 
-    def test_weekly_limits_shared_hopper_runners(self):
+    def test_hopper_shards_are_not_throttled_before_runner_queue(self):
+        assert "max-parallel:" not in self._workflow()
+
+    @pytest.mark.parametrize("cadence", [REGULAR_CADENCE, NIGHTLY_CADENCE])
+    @pytest.mark.parametrize("suite", ["stage-c-8-gpu-h100", "stage-c-8-gpu-h200"])
+    def test_eight_gpu_hopper_shards_fit_runtime_budget(self, cadence, suite):
         workflow = self._workflow()
-        normal_parallelism = {
-            "stage-c-8-gpu-h200": 2,
-            "stage-c-4-gpu-h200": 3,
-            "stage-c-2-gpu-h200": 2,
-        }
-        for job, default in normal_parallelism.items():
-            block = workflow.split(f"  {job}:", 1)[1]
-            block = re.split(r"^  [A-Za-z_][A-Za-z0-9_-]*:\s*$", block, maxsplit=1, flags=re.MULTILINE)[0]
-            expected = (
-                "max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' " f"&& 1 || {default} }}}}"
-            )
-            assert expected in block
+        job = workflow.split(f"\n  {suite}:", 1)[1].split("\n  stage-", 1)[0]
+        if suite == "stage-c-8-gpu-h100":
+            assert (
+                "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' "
+                "&& '[0,1]' || '[0,1,2]') }}"
+            ) in job
+            shard_count = 2 if cadence == REGULAR_CADENCE else 3
+        else:
+            assert (
+                "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' "
+                "&& '[0,1,2,3]' || '[0,1,2,3,4]') }}"
+            ) in job
+            shard_count = 4 if cadence == REGULAR_CADENCE else 5
+        policy = resolve_policy(cadence, {"run-ci-image"} if cadence == REGULAR_CADENCE else set())
+        tests, _ = filter_tests(
+            collect_tests(discover_ci_files()),
+            HWBackend.CUDA,
+            suite,
+            policy.admit_nightly_tests,
+            labels=set(policy.include_labels),
+            dispatch_arches=policy.dispatch_arches,
+            absorb=policy.absorb,
+        )
+        loads = [
+            sum(test.est_time for test in run_suite_module.auto_partition(tests, rank, shard_count))
+            for rank in range(shard_count)
+        ]
+        assert all(load > 0 for load in loads)
+        assert max(loads) <= 7200 if cadence == REGULAR_CADENCE else max(loads) < 7200
 
     def test_b200_jobs_share_one_cross_pr_host_lease(self):
         workflow = self._workflow()
@@ -628,7 +696,7 @@ class TestRocmWorkflowScopeSeam:
         assert "needs: [resolve-ci-policy, resolve-ci-image, resolve-ci-deps]" in stage
         assert "allow_self_hosted" not in stage
         assert "partition_id: [0, 1]" in stage
-        assert "max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}" in stage
+        assert "max-parallel:" not in stage
         assert "--auto-partition-size 2" in command
         assert "checkout_ref:" not in stage
         assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in command
@@ -887,6 +955,13 @@ def _names(tests: list[CIRegistry]) -> set[str]:
 
 
 class TestFilterTestsLabels:
+    def test_perf_label_selects_nothing(self):
+        bench = _bench("tests/fast/rollout/test_bench.py", labels=["rollout", "perf"])
+        fast = _make("tests/fast/test_fast.py", backend=HWBackend.CPU, suite="stage-a-cpu", labels=["perf"])
+        assert filter_tests([bench], HWBackend.CPU, "stage-b-cpu", labels=set())[0] == []
+        assert filter_tests([bench], HWBackend.CPU, "stage-b-cpu", labels={"rollout"})[0] == [bench]
+        assert filter_tests([fast], HWBackend.CPU, "stage-a-cpu", labels=set())[0] == [fast]
+
     def test_case1_no_labels_selects_no_gpu_tests(self, cuda_h100_tests):
         # Every GPU registration has a domain, so an empty include set selects
         # no GPU tests.
@@ -1158,3 +1233,57 @@ class TestFilterTestsBaseDimensions:
             labels={"precision"},
         )
         assert _names(enabled) == {"tests/fast/q.py"}
+
+
+@pytest.mark.skip(reason="Snapshot testing is disabled by op48-277")
+class TestSnapshotHardware:
+    def test_blackwell_dispatch_does_not_use_the_test_home_hardware(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A Hopper registration dispatched to Blackwell selects the executing hardware baseline."""
+        registration = _make(
+            "tests/e2e/test_dispatch.py", suite="stage-c-2-gpu-h200", hardware=["hopper", "blackwell"]
+        )
+        TestRunSuitePolicyIntegration._stub_collection(monkeypatch, [registration])
+        observed = {}
+
+        def run_files(files: list[CIRegistry], **kwargs) -> int:
+            observed.update(kwargs)
+            assert files == [registration]
+            return 0
+
+        monkeypatch.setattr(run_suite_module, "run_unittest_files", run_files)
+        result = run_suite_module.run_a_suite(
+            _run_args(
+                hw="cuda",
+                suite="stage-c-4-gpu-b200",
+                cadence=REGULAR_CADENCE,
+                labels=["run-ci-megatron", "run-on-blackwell"],
+            )
+        )
+
+        assert result == 0
+        assert observed["snapshot_hardware"] == "b200"
+
+    @pytest.mark.parametrize(
+        ("suite", "hardware"),
+        [
+            ("stage-a-cpu", "cpu"),
+            ("stage-b-cpu", "cpu"),
+            ("stage-c-8-gpu-h100", "h100"),
+            ("stage-c-2-gpu-h200", "h200"),
+            ("stage-c-4-gpu-b200", "b200"),
+            ("nightly-stage-c-2-gpu-mi350", "mi350"),
+        ],
+    )
+    def test_execution_suite_selects_the_snapshot_hardware(self, suite: str, hardware: str) -> None:
+        """Snapshot selection distinguishes GPU SKUs even within one architecture."""
+        from tests.ci.run_suite import snapshot_hardware
+
+        assert snapshot_hardware(suite) == hardware
+
+    @pytest.mark.parametrize("suite", ["", "stage-c-4-gpu-unknown", "unknown-h200"])
+    def test_unknown_suite_cannot_guess_a_snapshot_hardware(self, suite: str) -> None:
+        """Only registered execution suites can select runtime baselines."""
+        from tests.ci.run_suite import snapshot_hardware
+
+        with pytest.raises(ValueError, match="Unknown snapshot execution suite"):
+            snapshot_hardware(suite)

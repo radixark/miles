@@ -1,26 +1,27 @@
-import asyncio
 import dataclasses
 import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, probe_server_healthy
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, probe_server_healthy
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     CellState,
     StateDisposed,
+    StateErrored,
     StateInitializing,
     StatePendingWeights,
     StateServing,
     StateUninitialized,
 )
 from miles.ray.rollout.engine_env_reporter import EngineEnvReporter
+from miles.ray.rollout.serving_registry import ServingRegistry, SGLangServingRegistry
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.ft_utils.health_checker import (
     ActiveAndEpoch,
@@ -30,19 +31,21 @@ from miles.utils.ft_utils.health_checker import (
     SimpleHealthCheckerConfig,
 )
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.launch_gate import GATE_PORT_NAME, activate_launch_gate
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 logger = logging.getLogger(__name__)
 
 SHUTDOWN_TIMEOUT = 30
+UNREGISTER_FROM_ROUTER_TIMEOUT = 120
 INITIALIZING_TIMEOUT_SECONDS = 1800.0
 ABORT_REQUEST_TIMEOUT_SECONDS = 30.0
 
 
 class ServerCellMetadata(FrozenStrictBaseModel):
     model_id: str
-    worker_type: Literal["regular", "prefill", "decode"]
+    worker_type: WorkerType
     cell_id: str
     num_gpus_per_engine: int
     gpu_offset: int
@@ -60,6 +63,7 @@ class ServerCell:
     router_api_client: SGLangRouterApiClient
     provider: BaseWorkerProvider
     health_checker_activeness: Callable[[], ActiveAndEpoch] = lambda: ActiveAndEpoch(active=True, epoch=0)
+    serving_registry: ServingRegistry | None = None
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
     _env_reporter: EngineEnvReporter = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
@@ -105,6 +109,17 @@ class ServerCell:
                     workers_hash=self.meta.workers_hash,
                 )
 
+            case StateErrored():
+                return CellStatus(
+                    phase="Running",
+                    conditions=[
+                        CellCondition.allocated(TriState.TRUE),
+                        CellCondition.healthy(TriState.FALSE, reason="CellErrored"),
+                        CellCondition.serving(TriState.FALSE),
+                    ],
+                    workers_hash=self.meta.workers_hash,
+                )
+
             case StateDisposed():
                 return CellStatus(
                     phase="Suspended",
@@ -134,6 +149,10 @@ class ServerCell:
     @property
     def is_serving(self) -> bool:
         return isinstance(self._state, StateServing)
+
+    @property
+    def is_errored(self) -> bool:
+        return isinstance(self._state, StateErrored)
 
     @property
     def is_initializing_past_deadline(self) -> bool:
@@ -170,7 +189,10 @@ class ServerCell:
         if not self.is_pending_weights_or_serving:
             return
         await self._env_reporter.report_if_due(
-            cell_id=self.meta.cell_id, server_url=self.server_url, api_client=self.api_client
+            cell_id=self.meta.cell_id,
+            workers_hash=self.meta.workers_hash,
+            server_url=self.server_url,
+            api_client=self.api_client,
         )
 
     async def _tick_when_initializing(self) -> None:
@@ -179,7 +201,12 @@ class ServerCell:
             return
 
         if self.args.check_weight_update_equal and self.meta.update_weights:
-            await self.check_weights(action="snapshot", allow_quant_error=False, selector="all", skip_list=None)
+            await self.check_weights(
+                action="snapshot",
+                allow_quant_error=False,
+                selector=self.args.check_weight_update_selector,
+                skip_list=None,
+            )
 
         if self.meta.needs_offload:
             api_client = SGLangApiClient(server_url=addr_info.server_url)
@@ -191,7 +218,7 @@ class ServerCell:
             await self.check_weights(
                 action="reset_tensors",
                 allow_quant_error=False,
-                selector="all",
+                selector=self.args.check_weight_update_selector,
                 skip_list=self.args.check_weight_update_skip_list,
             )
 
@@ -209,41 +236,57 @@ class ServerCell:
         self._mark_serving()
 
     async def _register_with_router(self, addr_info: CellAddrInfo) -> None:
-        await self.router_api_client.add_worker(
+        await self._registry.register(
             worker_url=addr_info.server_url,
             worker_type=self.meta.worker_type,
-            use_legacy_api=use_legacy_router_api(self.args),
             bootstrap_port=addr_info.bootstrap_port,
         )
 
+    @property
+    def _registry(self) -> ServingRegistry:
+        if self.serving_registry is None:
+            self.serving_registry = SGLangServingRegistry(
+                client=self.router_api_client, use_legacy_api=use_legacy_router_api(self.args)
+            )
+        return self.serving_registry
+
+    async def mark_errored(self) -> None:
+        if isinstance(self._state, (StateErrored, StateDisposed)):
+            return
+        await self._leave_service()
+        self._change_state(
+            "mark_errored", (StatePendingWeights, StateServing), StateErrored(addr_info=self._state.addr_info)
+        )
+
     async def dispose(self) -> None:
-        self._health_checker.stop()
-
-        match self._state:
-            case StateServing():
-                await self._unregister_from_router()
-            case StateUninitialized() | StateInitializing() | StatePendingWeights() | StateDisposed():
-                pass
-            case _:
-                raise ValueError(f"{self._state=}")
-
+        try:
+            await self._leave_service()
+        except Exception:
+            logger.warning(
+                f"Unregistering cell {self.meta.cell_id} from the router failed, disposing anyway", exc_info=True
+            )
+            self._health_checker.stop()
         self._change_state(
             "dispose",
-            (StateUninitialized, StateInitializing, StatePendingWeights, StateServing, StateDisposed),
+            (StateUninitialized, StateInitializing, StatePendingWeights, StateServing, StateErrored, StateDisposed),
             StateDisposed(),
         )
 
+    async def _leave_service(self) -> None:
+        if self.is_serving:
+            await self._unregister_from_router()
+        self._health_checker.stop()
+
     async def _unregister_from_router(self) -> None:
-        try:
-            await asyncio.wait_for(
-                self.router_api_client.remove_worker(
-                    worker_url=self.server_url,
-                    use_legacy_api=use_legacy_router_api(self.args),
-                ),
-                timeout=SHUTDOWN_TIMEOUT,
-            )
-        except Exception as e:
-            logger.warning(f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})")
+        await retry_until_deadline(
+            lambda _: self._registry.unregister(
+                worker_url=self.server_url,
+            ),
+            total_seconds=UNREGISTER_FROM_ROUTER_TIMEOUT,
+            attempt_seconds=SHUTDOWN_TIMEOUT,
+            retry_on=Exception,
+            log_fields={"cell": self.meta.cell_id},
+        )
 
     async def _compute_addr_info(self) -> CellAddrInfo:
         master_addrs = await self.provider.get_addrs(worker_name=self.meta.worker_name)
@@ -275,6 +318,15 @@ class ServerCell:
 
     async def onload(self, tags: list[str] | None):
         return await self.api_client.resume_memory_occupation(tags=tags)
+
+    async def pause_generation(self, mode: str):
+        return await self.api_client.pause_generation(mode=mode)
+
+    async def continue_generation(self):
+        return await self.api_client.continue_generation()
+
+    async def flush_cache(self):
+        return await self.api_client.flush_cache()
 
     async def abort_all(self):
         return await self.api_client.abort_all_requests(timeout=ABORT_REQUEST_TIMEOUT_SECONDS)

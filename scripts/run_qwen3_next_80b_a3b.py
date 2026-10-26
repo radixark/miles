@@ -219,7 +219,11 @@ def execute(args: ScriptArgs):
             "--sglang-max-running-requests 512 "
         )
 
+    # train the model script's MTP layer only when it serves as the EAGLE draft
+    mtp_args = "--enable-mtp-training " if args.recipe.enable_spec else ""
+
     misc_args = (
+        f"{mtp_args}"
         # default dropout in megatron is 0.1
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "

@@ -46,3 +46,8 @@ KNOWN_LABELS: dict[str, str] = {
     "amd": "AMD MI350 ROCm tests (stage-c-4-gpu-mi350)",
     "rpc-comm": "Ray cluster backend driving its workers over the rpc worker comm backend",
 }
+
+# Not a domain label: it selects no test and has no `run-ci-` trigger. A file
+# carrying it times out at 1.25 x est_time without the per-file default floor,
+# so its est_time is also its wall-time performance budget.
+PERF_LABEL = "perf"

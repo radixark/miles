@@ -177,7 +177,6 @@ jobs:
     # shard's failure does not cancel the other mid-run.
     strategy:
       fail-fast: false
-      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
       matrix:
         partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci-rocm.yml

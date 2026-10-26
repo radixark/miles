@@ -106,6 +106,7 @@ are workflows rather than style rules:
 | `doc-dev` | Keeping a file and its governing document in sync (see below) |
 | `ci-fetch-log` | Pulling complete GitHub Actions logs and diagnosing a failed run from saved evidence |
 | `ci-e2e-time-tune` | Recalibrating `register_cuda_ci(est_time=...)` from real run times |
+| `pr-ci-targeted` | Running only the GPU test files a PR's diff reaches, with per-file `/rerun-test`, and iterating fixes until they pass |
 | `mechanical-refactor-verify` | Reviewing a file split or move by requiring a reproducible transform script |
 | `setup-ci-host`, `manage-gh-runners` | Provisioning a CI host and its self-hosted runners |
 

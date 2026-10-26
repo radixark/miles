@@ -1,8 +1,7 @@
 import asyncio
 import logging
 import uuid
-from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
@@ -70,7 +69,9 @@ class LinearTrajectory:
     but the agent may retry from an earlier point (e.g. re-running a tool call),
     in which case the session is rolled back at most one assistant step.
 
-    ``turn_args_history`` stores each successful generation's full resolved request.
+    ``turn_args_history`` stores each successful generation's full resolved request
+    by reference: every turn builds a fresh request and nothing mutates it once
+    the turn is committed, so no per-turn copy of its ``input_ids`` and ``messages``.
     Rollback slices it with the token checkpoints. Model rules decide which of
     these fields a continuation inherits or must keep unchanged.
 
@@ -91,6 +92,17 @@ class LinearTrajectory:
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
+
+    def snapshot(self) -> "LinearTrajectory":
+        """Copy the mutable containers, sharing committed payloads read-only. Caller holds the lock."""
+        return replace(
+            self,
+            messages=list(self.messages),
+            records=list(self.records),
+            trajectory_token_ids=list(self.trajectory_token_ids),
+            generated_checkpoint_message_ends=list(self.generated_checkpoint_message_ends),
+            turn_args_history=list(self.turn_args_history),
+        )
 
     @property
     def turn_args(self) -> dict[str, Any]:
@@ -235,7 +247,7 @@ class LinearTrajectory:
         # no longer match its own session.
         self.messages = self.messages + request_messages[len(self.messages) :] + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
-        self.turn_args_history.append(deepcopy(turn_args or {}))
+        self.turn_args_history.append(turn_args or {})
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
@@ -390,7 +402,12 @@ class SessionRegistry:
         evaluation: bool = False,
         sampling_defaults: dict[str, Any] | None = None,
         sampling_support_replay: bool = False,
+        extra_key: str | None = None,
     ) -> str:
+        assert extra_key is None, (
+            f"session server v1 does not support the KV cache namespace {extra_key!r}; "
+            f"run with --use-session-server v2"
+        )
         session_id = uuid.uuid4().hex
         self.sessions[session_id] = LinearTrajectory(
             evaluation=evaluation,

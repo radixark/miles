@@ -12,7 +12,7 @@ import re
 import sys
 from pathlib import Path
 
-from tests.ci.ci_register import HWBackend, collect_tests
+from tests.ci.ci_register import HWBackend, collect_tests, file_timeout
 from tests.ci.hardware import CUDA_STAGES
 
 CPU_SUITES = frozenset({"stage-a-cpu", "stage-b-cpu"})
@@ -95,7 +95,7 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
         "suite": registration.suite,
         "runs_on": runs_on_json,
         "container_image": f"radixark/miles:{image_tag}",
-        "timeout_seconds": str(max(1800, int(registration.est_time * 1.25))),
+        "timeout_seconds": str(file_timeout(registration.est_time, registration.labels, 1800)),
     }
 
 

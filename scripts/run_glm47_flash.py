@@ -149,6 +149,8 @@ def execute(args: ScriptArgs):
         sglang_args += "--sglang-flashinfer-mla-disable-ragged "
 
     misc_args = (
+        # train the model script's MTP layer, which serves as the EAGLE draft
+        "--enable-mtp-training "
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
@@ -158,7 +160,6 @@ def execute(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        "--use-fault-tolerance "
         # "--ci-test "
     )
 

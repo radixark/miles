@@ -68,10 +68,15 @@ class _Architecture:
 
     @classmethod
     def from_hf_config(cls, hf_config) -> "_Architecture":
-        text = getattr(hf_config, "text_config", None) or hf_config
+        text = (
+            getattr(hf_config, "text_config", None)
+            or hf_config  # config-access-exempt: only multimodal checkpoints nest the decoder under text_config
+        )
         _require_supported(text)
-        # an optional HF key: only checkpoints with linear-attention layers carry it
-        linear = getattr(text, "linear_attn_config", None) or {}
+        linear = (
+            getattr(text, "linear_attn_config", None)
+            or {}  # config-access-exempt: only checkpoints with linear-attention layers carry linear_attn_config
+        )
         return cls(
             dim=text.hidden_size,
             vocab_size=text.vocab_size,
@@ -120,6 +125,7 @@ def _require_supported(text) -> None:
         <= {"linear_attention", "deepseek_sparse_attention"},
         "mlp_layer_types must be dense / sparse": not set(text.mlp_layer_types) <= {"dense", "sparse"},
         "linear_attention layers need linear_attn_config": "linear_attention" in text.layer_types
+        # config-access-exempt: linear_attn_config is optional; this check is what makes it required for KDA
         and not getattr(text, "linear_attn_config", None),
     }
     failed = [reason for reason, is_unsupported in unsupported.items() if is_unsupported]

@@ -410,6 +410,7 @@ class MetricStore:
         self._buffers: dict[Stream, list[Record]] = {s: [] for s in Stream}
         self._offsets: dict[Stream, int] = {s: 0 for s in Stream if s not in self.PARTITIONED_STREAMS}
         self._readers: dict[Stream, _PartitionReader] = {s: self._make_reader(s) for s in self.PARTITIONED_STREAMS}
+        self.unserializable_dropped = 0
         self._catalog: dict[str, dict] | None = None  # write-side lane catalog accumulator
         # full-window engine query cache, versioned by partition file sizes so
         # appended scrapes invalidate it; the lock is load-bearing because sync
@@ -476,6 +477,17 @@ class MetricStore:
         self.dir.mkdir(parents=True, exist_ok=True)
         (self.dir / Meta.FILENAME).write_text(json.dumps(asdict(meta), indent=1))
 
+    def _encode(self, records: list[Record]) -> str:
+        """JSON lines for ``records``, dropping (and counting in
+        ``unserializable_dropped``) any a JSON encoder rejects."""
+        lines = []
+        for record in records:
+            try:
+                lines.append(json.dumps(record.to_dict(), separators=(",", ":")) + "\n")
+            except (TypeError, ValueError):
+                self.unserializable_dropped += 1
+        return "".join(lines)
+
     def flush(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._merge_catalog()
@@ -497,10 +509,10 @@ class MetricStore:
                     groups.setdefault(_hour_key(ts), []).append(record)
                 for key, group in sorted(groups.items()):
                     with open(subdir / f"{key}.jsonl", "a") as f:
-                        f.write("".join(json.dumps(r.to_dict(), separators=(",", ":")) + "\n" for r in group))
+                        f.write(self._encode(group))
             else:
                 with open(self.dir / stream.filename, "a") as f:
-                    f.write("".join(json.dumps(r.to_dict(), separators=(",", ":")) + "\n" for r in buffer))
+                    f.write(self._encode(buffer))
             buffer.clear()
 
     def _merge_catalog(self) -> None:

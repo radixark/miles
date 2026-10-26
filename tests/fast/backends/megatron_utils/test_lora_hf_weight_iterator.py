@@ -3,7 +3,7 @@ placement resolution against each implementation's forced placement."""
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["lora", "weight-update"])
 
 
 from argparse import Namespace
@@ -54,7 +54,7 @@ class TestHfWeightIteratorFactory:
 
         iterator = object.__new__(HfWeightIteratorBridge)
         iterator.model_name = "deepseekv4"
-        iterator.args = Namespace(q_lora_rank=None)
+        iterator.args = Namespace(backend=Namespace(q_lora_rank=None))
 
         groups = {group.key: group.suffixes for group in iterator._hf_atomic_update_groups()}
         assert groups["wqkv_a"] == (".self_attn.wq_a.weight", ".self_attn.wkv.weight")

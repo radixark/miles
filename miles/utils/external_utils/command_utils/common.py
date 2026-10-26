@@ -13,6 +13,9 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
+from miles.utils.env_report.redaction import redact_arg
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.object_store_config import (
@@ -20,6 +23,7 @@ from miles.utils.object_store_config import (
     MOONCAKE_MASTER_PORT,
     compute_mooncake_init_kwargs_vanilla,
 )
+from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR, SNAPSHOT_UPDATE_ENV_VAR
 from miles.utils.workers.argv_utils import parse_declared_args
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
 
@@ -50,7 +54,7 @@ def rsync_cmd(path_src: str, path_dst: str) -> str:
 def train_env_vars(
     request: ExecuteTrainRequest, backend_env_vars: dict[str, str], *, config: ExecuteTrainConfig
 ) -> dict[str, str]:
-    return {
+    env = {
         # exported for the submitting client too, but only the runtime env reaches the ray workers
         "PYTHONUNBUFFERED": "1",
         # If setting this in FSDP, the computation communication overlapping may have issues
@@ -76,6 +80,12 @@ def train_env_vars(
         **_parse_extra_env_vars(config.extra_env_vars),
     }
 
+    if SNAPSHOT_TESTING_ENABLED:
+        env[SNAPSHOT_UPDATE_ENV_VAR] = os.environ.get(SNAPSHOT_UPDATE_ENV_VAR, "")
+        env[SNAPSHOT_RECORD_DIR_ENV_VAR] = os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR, "")
+        env.update(generated_value_registry.to_env())
+    return env
+
 
 def _parse_extra_env_vars(text: str):
     try:
@@ -88,7 +98,7 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
     from miles.utils.logging_utils import configure_logger_raw
 
     configure_logger_raw("launcher")
-    if not os.environ.get("WANDB_API_KEY"):
+    if not (wandb_key := os.environ.get("WANDB_API_KEY")):
         logger.info("Skip wandb configuration since WANDB_API_KEY is not found")
         return ""
 
@@ -99,12 +109,17 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
 
     wandb_run_name = run_id or create_run_id()
     if (x := os.environ.get("GITHUB_COMMIT_NAME")) is not None:
+        if SNAPSHOT_TESTING_ENABLED:
+            generated_value_registry.register(kind="ci_commit_name", value=x, name="github")
         wandb_run_name += f"_{x}"
     if (x := run_name_prefix) is not None:
         wandb_run_name = f"{x}_{wandb_run_name}"
 
     # Use the actual key value from environment to avoid shell expansion issues
-    wandb_key = os.environ.get("WANDB_API_KEY")
+    if SNAPSHOT_TESTING_ENABLED:
+        generated_value_registry.register(
+            kind="wandb_key", name="environment", value=redact_arg("wandb_key", wandb_key)
+        )
     return (
         "--use-wandb "
         f"--wandb-project miles-{test_name} "
@@ -115,7 +130,10 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
 
 
 def create_run_id() -> str:
-    return datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
+    value = datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
+    if SNAPSHOT_TESTING_ENABLED:
+        generated_value_registry.register(kind="run_id", value=value)
+    return value
 
 
 _warned_bool_env_var_keys = set()

@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.backends.training_utils.data.context_parallel import (
     get_sum_of_sample_mean,
@@ -25,6 +26,8 @@ from miles.backends.training_utils.loss.hub.score_centering import (
 from miles.backends.training_utils.loss.hub.score_centering_loss import score_centering_loss_function
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 from miles.utils.sampling_mask import RolloutSamplingMask
+
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["precision"])
 
 
 def _layout(parts: list[torch.Tensor], args: Namespace, cp_rank: int) -> torch.Tensor:
@@ -74,13 +77,15 @@ def _check_loss(
     use_kl: bool = True,
 ) -> None:
     args = Namespace(
+        log_probs_backend="torch",
         loss_type="score_centering",
         qkv_format="bshd" if layout in ("bshd", "bshd_allgather") else "thd",
         allgather_cp=layout in ("allgather", "bshd_allgather"),
         true_on_policy_mode=False,
         rollout_temperature=0.7,
         log_probs_chunk_size=2,
-        vocab_size=7,
+        train_backend="megatron",
+        backend=Namespace(vocab_size=7),
         score_centering_is=mode,
         score_centering_tis_clip=2.0,
         score_centering_mis_low=0.5,

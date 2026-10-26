@@ -16,7 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
+from miles.utils.args.runtime import RolloutConfig, TrainerConfig
+from miles.utils.dp_schedule import TrainParallelConfig, _calculate_workloads, build_dp_schedule
 
 
 def make_args(
@@ -26,37 +28,46 @@ def make_args(
     max_tokens_per_gpu=None,
     balance_data=False,
     balance_by_flops=False,
+    allow_partial_train_step=False,
 ):
-    return SimpleNamespace(
+    return RolloutConfig.model_construct(
         micro_batch_size=micro_batch_size,
         use_dynamic_batch_size=use_dynamic_batch_size,
         max_tokens_per_gpu=max_tokens_per_gpu,
         balance_data=balance_data,
         balance_by_flops=balance_by_flops,
+        allow_partial_train_step=allow_partial_train_step,
+        train_backend="megatron",
         # Minimal model config for calculate_fwd_flops (balance_by_flops path).
-        hidden_size=16,
-        num_attention_heads=2,
-        num_query_groups=2,
-        vocab_size=32,
-        ffn_hidden_size=64,
-        num_experts=None,
-        num_layers=2,
-        kv_channels=8,
-        q_lora_rank=None,  # no MLA in the stub config
-        kv_lora_rank=None,
-        qk_pos_emb_head_dim=0,
-        qk_head_dim=8,
-        v_head_dim=8,
+        raw_megatron=SimpleNamespace(
+            base_args=dict(
+                hidden_size=16,
+                num_attention_heads=2,
+                num_query_groups=2,
+                vocab_size=32,
+                ffn_hidden_size=64,
+                num_experts=None,
+                num_layers=2,
+                kv_channels=8,
+                q_lora_rank=None,  # no MLA in the stub config
+                kv_lora_rank=None,
+                qk_pos_emb_head_dim=0,
+                qk_head_dim=8,
+                v_head_dim=8,
+            )
+        ),
     )
 
 
 def make_tp(dp_size=1, cp_size=1, vpp_size=1, microbatch_group_size_per_vp_stage=None):
-    return {
-        "dp_size": dp_size,
-        "cp_size": cp_size,
-        "vpp_size": vpp_size,
-        "microbatch_group_size_per_vp_stage": microbatch_group_size_per_vp_stage,
-    }
+    return TrainParallelConfig(
+        dp_size=dp_size,
+        cp_size=cp_size,
+        vpp_size=vpp_size,
+        microbatch_group_size_per_vp_stage=microbatch_group_size_per_vp_stage,
+        independent_dp=False,
+        supports_precomputed_schedule=True,
+    )
 
 
 def assert_invariants(
@@ -301,8 +312,7 @@ def test_partial_final_step_opt_in():
     step of the trailing rollout, covering every sample."""
     rollout_indices = [0, 0, 1, 2, 2, 3, 4, 4]
     total_lengths = [3] * 8
-    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
-    args.allow_partial_train_step = True
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12, allow_partial_train_step=True)
     tp = make_tp(dp_size=1)
 
     partitions, mbi, nmb, num_rollouts_per_step = build_dp_schedule(
@@ -326,8 +336,7 @@ def test_partial_final_step_skipped_when_below_dp_size():
     """A trailing rollout with fewer samples than dp_size cannot form a step."""
     rollout_indices = [0, 0, 1, 1, 2]
     total_lengths = [3] * 5
-    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
-    args.allow_partial_train_step = True
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12, allow_partial_train_step=True)
     tp = make_tp(dp_size=2)
 
     _, _, nmb, num_rollouts_per_step = build_dp_schedule(
@@ -429,12 +438,39 @@ def test_balance_by_flops_singleton_fallback():
             assert len(micro_batch) == 1
 
 
-def test_has_full_schedule_config():
-    assert has_full_schedule_config(make_tp())
-    assert not has_full_schedule_config({})
-    assert not has_full_schedule_config(None)
-    assert not has_full_schedule_config({"dp_size": 4})  # fsdp/torchtitan shape
+def test_train_parallel_config_declares_schedule_support() -> None:
+    """The model carries an explicit backend scheduling capability."""
+    assert make_tp().supports_precomputed_schedule
+    assert (
+        not make_tp(dp_size=4)
+        .model_copy(update={"supports_precomputed_schedule": False})
+        .supports_precomputed_schedule
+    )  # fsdp/torchtitan shape
 
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+def test_trainer_flops_workloads_read_backend_model_dimensions() -> None:
+    """Delayed trainer scheduling computes actual FLOPs using its backend-owned model dimensions."""
+    backend = MegatronArgsNamespace(
+        hidden_size=2,
+        num_attention_heads=1,
+        num_query_groups=1,
+        vocab_size=3,
+        ffn_hidden_size=4,
+        num_experts=None,
+        num_layers=1,
+        kv_channels=2,
+        q_lora_rank=None,
+        kv_lora_rank=None,
+        qk_pos_emb_head_dim=0,
+        qk_head_dim=2,
+        v_head_dim=2,
+    )
+    config = TrainerConfig.model_construct(train_backend="megatron", backend=backend)
+    before = vars(backend).copy()
+
+    assert _calculate_workloads([0, 1, 3], config) == [0, 96, 312]
+    assert vars(backend) == before

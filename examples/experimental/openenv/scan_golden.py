@@ -110,7 +110,9 @@ async def golden_one(task_id: str, capture_logs: bool = False) -> tuple[str, flo
                 # server-side scoring failure or a non-canonical harness is
                 # reported as ERR, not as a fake 0.0 that would misattribute
                 # an infra problem to the task.
-                raw_reward = getattr(res, "reward", None)
+                raw_reward = getattr(
+                    res, "reward", None
+                )  # config-access-exempt: OpenEnv grading responses may omit reward when evaluation fails
                 eval_error = oaf._obs_field(res, "error")
                 harness = str(oaf._obs_info(res).get("harness", ""))
                 if raw_reward is None or eval_error or harness != "tests/test.sh":

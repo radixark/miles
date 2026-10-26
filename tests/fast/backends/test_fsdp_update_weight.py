@@ -61,17 +61,19 @@ def test_non_materializing_ranks_join_every_gather_but_yield_nothing():
     assert gather.call_count == 2
 
 
-def test_batched_experts_are_unfused_through_the_registered_transform():
+def test_batched_experts_are_unfused_through_the_arch_adapter_transform():
     """qwen3_moe keeps experts batched as [E, ...]; the engine wants one tensor per expert."""
     gate_up = torch.arange(2 * 4 * 2, dtype=torch.float32).reshape(2, 2, 4)
     state = {"model.layers.0.mlp.experts.gate_up_proj": gate_up}
     model = _model(state, model_type="qwen3_moe")
+    adapter = SimpleNamespace(
+        param_transform=lambda name, param: lambda name, full, model: (
+            (f"expert.{i}", full[i]) for i in range(full.shape[0])
+        )
+    )
     with (
         patch(f"{_ITERATOR_MODULE}.gather_full_param", side_effect=lambda p, async_op=False: p),
-        patch(
-            f"{_ITERATOR_MODULE}.get_param_transform",
-            return_value=lambda name, full, model: ((f"expert.{i}", full[i]) for i in range(full.shape[0])),
-        ),
+        patch(f"{_ITERATOR_MODULE}.resolve_arch_adapter", return_value=adapter),
     ):
         buckets = list(_iterator(model).iter_hf_weights(None))
     names = [name for bucket in buckets for name, _ in bucket]
