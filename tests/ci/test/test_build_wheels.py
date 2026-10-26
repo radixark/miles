@@ -30,7 +30,9 @@ SOURCES = {
 }
 
 
-def run_check(tmp_path, wheels, selected, *, force="true", failure=None, built=None, missing_release=False):
+def run_check(
+    tmp_path, wheels, selected, *, force="true", failure=None, built=None, missing_release=False, sglang_built=()
+):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -38,7 +40,7 @@ def run_check(tmp_path, wheels, selected, *, force="true", failure=None, built=N
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
         "args = sys.argv[1:]\n"
-        "endpoint = args[3] if args[1] == '-H' else args[1]\n"
+        "endpoint = args[{'-H': 3, '--paginate': 2}.get(args[1], 1)]\n"
         "sources = json.loads(os.environ['SOURCES'])\n"
         "if endpoint == os.environ['FAILURE']:\n"
         "    sys.exit('selected lookup unavailable')\n"
@@ -46,6 +48,8 @@ def run_check(tmp_path, wheels, selected, *, force="true", failure=None, built=N
         "    sys.exit('gh: Not Found (HTTP 404)')\n"
         "if endpoint in sources:\n"
         "    print(sources[endpoint])\n"
+        "elif endpoint.startswith('repos/radixark/miles-wheels/releases?'):\n"
+        "    print(os.environ['SGLANG_BUILT'])\n"
         "elif '/releases/tags/' in endpoint:\n"
         "    print('https://example.test/manifest' if os.environ['MOCK_RELEASE_COMMIT'] else '')\n"
         "elif endpoint == 'https://example.test/manifest':\n"
@@ -74,6 +78,8 @@ def run_check(tmp_path, wheels, selected, *, force="true", failure=None, built=N
             "FAILURE": failure or "",
             "MOCK_RELEASE_COMMIT": built or "",
             "MISSING_RELEASE": "1" if missing_release else "",
+            # the published wheels of the resolved commit, as gh's --jq filter returns them
+            "SGLANG_BUILT": "\n".join(sglang_built),
         },
         capture_output=True,
         text=True,
@@ -107,34 +113,63 @@ def test_router_builds_only_when_manifest_is_missing_or_stale(tmp_path, built):
     assert len(json.loads(outputs["publish_matrix"])) == (0 if built == "a" * 40 else 2)
 
 
-@pytest.mark.parametrize("built", [None, "d" * 40, "e" * 40])
-def test_sglang_builds_both_arches_on_github_runners_only_when_stale(tmp_path, built):
-    result, outputs = run_check(tmp_path, "sglang", ["sglang"], force="false", built=built)
+def _sglang_wheel(python, arch):
+    return f"sglang-0.5.22.post57+miles.geeeeeeeeee-cp{python}-cp{python}-manylinux_2_35_{arch}.whl"
+
+
+_EVERY_SGLANG_WHEEL = [_sglang_wheel(py, arch) for py in ("311", "312", "313") for arch in ("x86_64", "aarch64")]
+
+
+@pytest.mark.parametrize(
+    "built,force,expected",
+    [
+        ([], "false", {(arch, py) for arch in ("x86_64", "aarch64") for py in ("3.11", "3.12", "3.13")}),
+        (
+            [_sglang_wheel(py, "x86_64") for py in ("311", "312", "313")] + [_sglang_wheel("311", "aarch64")],
+            "false",
+            {("aarch64", "3.12"), ("aarch64", "3.13")},
+        ),
+        # a published wheel is never rebuilt, even when forced: pinned hashes must keep matching
+        (_EVERY_SGLANG_WHEEL, "true", set()),
+    ],
+    ids=["nothing-built", "retry-missing-pythons", "all-built-even-forced"],
+)
+def test_sglang_builds_only_the_wheels_no_history_release_holds(tmp_path, built, force, expected):
+    result, outputs = run_check(tmp_path, "sglang", ["sglang"], force=force, sglang_built=built)
     assert result.returncode == 0, result.stderr
-    matrix = json.loads(outputs["sglang_matrix"])
     build_matrix = json.loads(outputs["sglang_build_matrix"])
+    assert {(entry["arch"], entry["python"]) for entry in build_matrix} == expected
+    runners = {"x86_64": "ubuntu-22.04", "aarch64": "ubuntu-22.04-arm"}
+    assert all(entry["runner"] == runners[entry["arch"]] for entry in build_matrix)
+    # one publish per arch with anything to build
+    assert {entry["arch"] for entry in json.loads(outputs["sglang_matrix"])} == {arch for arch, _ in expected}
     # one history release per ISO week keeps each under GitHub's 1000-asset cap
     assert outputs["sglang_release"] == SGLANG_RELEASE
-    if built == "e" * 40:
-        assert matrix == build_matrix == []
-        return
-    assert {(entry["arch"], entry["runner"]) for entry in matrix} == {
-        ("x86_64", "ubuntu-22.04"),
-        ("aarch64", "ubuntu-22.04-arm"),
-    }
-    # one build per arch and Python version, each on its arch's runner
-    pythons = json.loads(WORKFLOW["env"]["SGLANG_PYTHONS"])
-    assert sorted((entry["arch"], entry["runner"], entry["python"]) for entry in build_matrix) == sorted(
-        (entry["arch"], entry["runner"], python) for entry in matrix for python in pythons
-    )
-    # sglang publishes through its own job, never into the rolling releases.
+    # sglang publishes through its own job, never into the rolling releases
     assert json.loads(outputs["publish_matrix"]) == []
 
 
-def test_a_history_release_that_does_not_exist_yet_reads_as_never_built(tmp_path):
-    result, outputs = run_check(tmp_path, "sglang", ["sglang"], force="false", missing_release=True)
+@pytest.mark.parametrize("wheels", ["all", "sglang"])
+def test_an_unresolvable_sglang_ref_stops_only_an_sglang_dispatch(tmp_path, wheels):
+    """With wheels=all the image's wheel sets must still build when sglang cannot be resolved."""
+    result, outputs = run_check(tmp_path, wheels, list(SOURCES), force="false", failure=SOURCES["sglang"][0])
+    if wheels == "sglang":
+        assert result.returncode != 0
+        assert not outputs
+        return
     assert result.returncode == 0, result.stderr
-    assert len(json.loads(outputs["sglang_matrix"])) == 2
+    assert "skipping sglang" in result.stdout
+    assert json.loads(outputs["sglang_build_matrix"]) == []
+    assert len(json.loads(outputs["router_matrix"])) == 2
+
+
+def test_an_unlistable_history_stops_the_run(tmp_path):
+    """Without the published list every wheel would read as unbuilt and be built again."""
+    failure = "repos/radixark/miles-wheels/releases?per_page=100"
+    result, outputs = run_check(tmp_path, "sglang", ["sglang"], force="false", failure=failure)
+    assert result.returncode != 0
+    assert "cannot list the sglang-miles releases" in result.stdout
+    assert not outputs
 
 
 def test_a_missing_rolling_release_still_stops_the_run(tmp_path):
@@ -158,15 +193,10 @@ def test_each_sglang_arch_publishes_whatever_built():
 
 @pytest.mark.parametrize(
     "failure",
-    [
-        SOURCES["sgl-router"][0],
-        f"repos/radixark/miles-wheels/releases/tags/{WHEELS_TAG_X86}",
-        f"repos/radixark/miles-wheels/releases/tags/{SGLANG_RELEASE}-x86_64",
-    ],
+    [SOURCES["sgl-router"][0], f"repos/radixark/miles-wheels/releases/tags/{WHEELS_TAG_X86}"],
 )
 def test_selected_lookup_failure_stops_the_run(tmp_path, failure):
-    wheels = "sglang" if "sglang-miles" in failure else "sgl-router"
-    result, outputs = run_check(tmp_path, wheels, [wheels], force="false", failure=failure)
+    result, outputs = run_check(tmp_path, "sgl-router", ["sgl-router"], force="false", failure=failure)
     assert result.returncode != 0
     assert "selected lookup unavailable" in result.stderr
     assert not outputs
