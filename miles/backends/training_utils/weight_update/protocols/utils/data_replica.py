@@ -21,7 +21,8 @@ def get_data_replica_rank_and_size(parallel_state: ParallelState, placement: Wei
 
 
 class OwnedBuckets:
-    """The buckets one rank publishes: the ranks holding identical gathered data take them round-robin."""
+    """The buckets one rank publishes, copied to the host: the ranks holding identical gathered data take them
+    round-robin."""
 
     def __init__(self, *, replica_rank: int, replica_size: int) -> None:
         self._replica_rank = replica_rank
@@ -35,10 +36,15 @@ class OwnedBuckets:
 
     def offer(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         if self._next_index % self._replica_size == self._replica_rank:
-            self._owned.append((self._next_index, bucket))
+            # kept on the device until the stream ends, the owned buckets would add model/replica_size to each
+            # rank's peak device memory; non-blocking, so the copy overlaps the next bucket's gather
+            host_bucket = [(name, tensor.to("cpu", non_blocking=True)) for name, tensor in bucket]
+            self._owned.append((self._next_index, host_bucket))
         self._next_index += 1
 
     def take(self) -> list[tuple[int, list[tuple[str, torch.Tensor]]]]:
-        """The owned buckets with their stream index, handed over so none stays alive after the sync."""
+        """The owned host buckets with their stream index, handed over so none stays alive after the sync."""
+        if torch.accelerator.is_available():
+            torch.accelerator.synchronize()  # the non-blocking host copies have landed
         owned, self._owned = self._owned, []
         return owned

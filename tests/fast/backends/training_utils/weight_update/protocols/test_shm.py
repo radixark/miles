@@ -4,11 +4,14 @@ import sys
 from argparse import Namespace
 from concurrent.futures import Future
 
+import pytest
 import torch
 import torch.multiprocessing
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.weight_update.protocols import shm
 from miles.backends.training_utils.weight_update.protocols.shm import UpdateWeightFromSharedMemory
+from miles.backends.training_utils.weight_update.protocols.utils import rank_errors
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import OwnedBuckets
 
 _BUCKETS = [
@@ -39,6 +42,20 @@ for serialized in json.load(sys.stdin):
     gc.collect()
 json.dump(rebuilt, sys.stdout)
 """
+
+
+class _SingleRankDist:
+    def get_world_size(self) -> int:
+        return 1
+
+    def all_gather_object(self, output: list, value, group=None) -> None:
+        output[:] = [value]
+
+
+@pytest.fixture(autouse=True)
+def _single_rank(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rank_errors, "dist", _SingleRankDist())
+    monkeypatch.setattr(rank_errors, "get_gloo_group", lambda: None)
 
 
 class _RecordingCellUpdater:
@@ -172,3 +189,8 @@ def test_an_errored_cell_gets_no_payload(monkeypatch):
 
     assert len(healthy.calls) == len(_BUCKETS) and not errored.calls
     assert len(serialize_calls) == len(_BUCKETS)
+
+
+def test_only_engines_on_this_host_can_open_the_buckets():
+    engines = [SGLangApiClient(f"http://{host}:30000") for host in ("127.0.0.1", "localhost", "10.0.0.5", "10.0.0.6")]
+    assert shm._engines_off_this_host(engines, node_ip="10.0.0.5") == ["http://10.0.0.6:30000"]

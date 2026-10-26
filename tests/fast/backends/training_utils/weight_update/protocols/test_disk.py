@@ -10,6 +10,7 @@ import torch
 
 from miles.backends.training_utils.weight_update.protocols import disk
 from miles.backends.training_utils.weight_update.protocols.disk import UpdateWeightFromDisk
+from miles.backends.training_utils.weight_update.protocols.utils import rank_errors
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import OwnedBuckets
 
 _BUCKETS = [
@@ -76,8 +77,13 @@ def _protocol(tmp_path: Path, *, replica_rank: int, replica_size: int, calls: li
     return protocol
 
 
+def _use_dist(monkeypatch: pytest.MonkeyPatch, fake_dist: _FakeDist) -> None:
+    monkeypatch.setattr(disk, "dist", fake_dist)
+    monkeypatch.setattr(rank_errors, "dist", fake_dist)
+
+
 def _write(protocol: UpdateWeightFromDisk, monkeypatch: pytest.MonkeyPatch, *, rank: int, weight_version: int) -> None:
-    monkeypatch.setattr(disk, "dist", _FakeDist(rank, world_size=2))
+    _use_dist(monkeypatch, _FakeDist(rank, world_size=2))
     protocol.begin_sync(weight_version, iter_buckets=None)
     for bucket in _BUCKETS:
         protocol.send_bucket(bucket)
@@ -87,6 +93,7 @@ def _write(protocol: UpdateWeightFromDisk, monkeypatch: pytest.MonkeyPatch, *, r
 @pytest.fixture(autouse=True)
 def _no_gloo(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(disk, "get_gloo_group", lambda: None)
+    monkeypatch.setattr(rank_errors, "get_gloo_group", lambda: None)
 
 
 def test_the_replica_ranks_write_every_tensor_once_and_the_index_finds_it(tmp_path, monkeypatch):
@@ -96,8 +103,8 @@ def test_the_replica_ranks_write_every_tensor_once_and_the_index_finds_it(tmp_pa
     for rank, protocol in enumerate(ranks):
         _write(protocol, monkeypatch, rank=rank, weight_version=3)
 
-    monkeypatch.setattr(disk, "dist", _FakeDist(0, world_size=2, gathered=[p._weight_map for p in ranks]))
-    ranks[0]._write_index()
+    _use_dist(monkeypatch, _FakeDist(0, world_size=2, gathered=[p._weight_map for p in ranks]))
+    ranks[0]._write_index({name: shard for p in ranks for name, shard in p._weight_map.items()})
 
     version_dir = Path(ranks[0]._version_dir)
     weight_map = json.loads((version_dir / "model.safetensors.index.json").read_text())["weight_map"]
@@ -115,7 +122,7 @@ def test_the_engines_reload_the_new_version_between_pause_and_resume(tmp_path, m
     calls: list = []
     protocol = _protocol(tmp_path, replica_rank=0, replica_size=1, calls=calls)
     _write(protocol, monkeypatch, rank=0, weight_version=3)
-    monkeypatch.setattr(disk, "dist", _FakeDist(0, world_size=1))
+    _use_dist(monkeypatch, _FakeDist(0, world_size=1))
     protocol.finalize(weight_version=3)
 
     assert [name for name, _ in calls] == [
@@ -133,7 +140,7 @@ def test_a_sync_deletes_the_version_before_it(tmp_path, monkeypatch):
     versions = []
     for weight_version in (1, 2):
         _write(protocol, monkeypatch, rank=0, weight_version=weight_version)
-        monkeypatch.setattr(disk, "dist", _FakeDist(0, world_size=1))
+        _use_dist(monkeypatch, _FakeDist(0, world_size=1))
         protocol.finalize(weight_version=weight_version)
         versions.append(Path(protocol._version_dir))
 
@@ -153,6 +160,19 @@ def test_a_failed_engine_reload_raises(tmp_path, monkeypatch):
         "cell-0": SimpleNamespace(submit_client_call=_reject, submit_unbounded_client_call=_reject)
     }
     _write(protocol, monkeypatch, rank=0, weight_version=1)
-    monkeypatch.setattr(disk, "dist", _FakeDist(0, world_size=1))
+    _use_dist(monkeypatch, _FakeDist(0, world_size=1))
     with pytest.raises(RuntimeError, match="bad shard"):
         protocol.finalize(weight_version=1)
+
+
+def test_the_first_sync_clears_the_versions_a_crashed_run_left(tmp_path, monkeypatch):
+    """Each version is a full checkpoint, and a resumed run rewrites its version over the crashed attempt's shards."""
+    sync_dir = tmp_path / "sync"
+    (sync_dir / "weight_v000001").mkdir(parents=True)
+    (sync_dir / "weight_v000003").mkdir()
+    (sync_dir / "weight_v000003" / "rank007-shard00000.safetensors").write_text("partial")
+    protocol = _protocol(tmp_path, replica_rank=0, replica_size=1, calls=[])
+    _write(protocol, monkeypatch, rank=0, weight_version=3)
+
+    assert sorted(path.name for path in sync_dir.iterdir()) == ["weight_v000003"]
+    assert not (sync_dir / "weight_v000003" / "rank007-shard00000.safetensors").exists()
