@@ -58,6 +58,7 @@ def execute():
         "--input-key problem "
         "--label-key answer "
         '--multimodal-keys \'{"image": "images"}\' '
+        f"--shared-media-dir {DATA_ROOT}/media "
         "--rm-type math "
         "--apply-chat-template "
         "--custom-generate-function-path examples.geo3k_vlm.multi_turn.rollout.generate "

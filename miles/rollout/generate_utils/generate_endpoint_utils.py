@@ -14,7 +14,8 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 )
 from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata, should_return_sampling_mask
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
-from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
+from miles.utils.media_refs import has_media, load_media_for_processor, rollout_media_payload
+from miles.utils.processing_utils import extract_multimodal_train_inputs
 from miles.utils.types import Sample
 
 
@@ -22,8 +23,8 @@ from miles.utils.types import Sample
 def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
 
-    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
-        processor_output = state.processor(text=prompt, **sample.multimodal_inputs)
+    if state.processor and has_media(sample.multimodal_inputs):
+        processor_output = state.processor(text=prompt, **load_media_for_processor(sample.multimodal_inputs))
         prompt_ids = processor_output["input_ids"][0]
 
         # TODO shall we move it to other places? then can make this function immutable
@@ -83,8 +84,7 @@ def compute_request_payload(
         payload["return_sampling_mask"] = True
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
-    if image_data := (multimodal_inputs or {}).get("images"):
-        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+    payload.update(rollout_media_payload(multimodal_inputs))
     if kv_cache_namespace is not None:
         payload["extra_key"] = kv_cache_namespace
 

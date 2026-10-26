@@ -11,6 +11,10 @@ def atomic_write_text(path: str | Path, text: str) -> None:
     _atomic_write(Path(path), mode="w", write=lambda file: file.write(text))
 
 
+def atomic_write_bytes(path: str | Path, data: bytes) -> None:
+    _atomic_write(Path(path), mode="wb", write=lambda file: file.write(data))
+
+
 def atomic_torch_save(path: str | Path, obj: Any) -> None:
     import torch
 
