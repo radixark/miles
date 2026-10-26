@@ -70,6 +70,7 @@ env:
   INT4_QAT_PATH: miles/kernels/quant/int4_fake
   TE_REPO: radixark/TransformerEngine
   SGLANG_REPO: sgl-project/sglang
+  # one history release per ISO week (sglang-miles-2026w43-<arch>): GitHub caps a release at 1000 assets
   SGLANG_HISTORY_RELEASE: sglang-miles
   # the Python versions sglang supports; its wheel is per interpreter (Rust extensions)
   SGLANG_PYTHONS: '["3.11", "3.12", "3.13"]'
@@ -88,6 +89,7 @@ jobs:
       int4_sha: ${{ steps.check.outputs.int4_sha }}
       te_sha: ${{ steps.check.outputs.te_sha }}
       sglang_sha: ${{ steps.check.outputs.sglang_sha }}
+      sglang_release: ${{ steps.check.outputs.sglang_release }}
       cuda: ${{ steps.check.outputs.cuda }}
       torch: ${{ steps.check.outputs.torch }}
       sglang_image: ${{ steps.check.outputs.sglang_image }}
@@ -172,8 +174,10 @@ jobs:
           if wanted sglang; then
             SGLANG_SHA=$(gh api "repos/${SGLANG_REPO}/commits/${SGLANG_REF}" --jq .sha)
             is_sha "$SGLANG_SHA" || fail "cannot resolve ${SGLANG_REPO}@${SGLANG_REF}"
-            if stale "$SGLANG_SHA" "${SGLANG_HISTORY_RELEASE}-x86_64" sglang-source.json allow-missing; then SGLANG_X86=true; fi
-            if stale "$SGLANG_SHA" "${SGLANG_HISTORY_RELEASE}-aarch64" sglang-source.json allow-missing; then SGLANG_ARM64=true; fi
+            # picked once here, so a run that crosses midnight Sunday publishes where it checked
+            SGLANG_RELEASE="${SGLANG_HISTORY_RELEASE}-$(date -u +%Gw%V)"
+            if stale "$SGLANG_SHA" "${SGLANG_RELEASE}-x86_64" sglang-source.json allow-missing; then SGLANG_X86=true; fi
+            if stale "$SGLANG_SHA" "${SGLANG_RELEASE}-aarch64" sglang-source.json allow-missing; then SGLANG_ARM64=true; fi
           fi
 
           ROUTER_MATRIX=$(jq -cn --argjson x "$ROUTER_X86" --argjson a "$ROUTER_ARM64" '[
@@ -210,6 +214,7 @@ jobs:
             echo "int4_sha=${INT4_SHA}"
             echo "te_sha=${TE_SHA}"
             echo "sglang_sha=${SGLANG_SHA}"
+            echo "sglang_release=${SGLANG_RELEASE:-}"
             echo "cuda=${CUDA}"
             echo "torch=${TORCH}"
             echo "sglang_image=${SGLANG_IMAGE}"
@@ -406,6 +411,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CUDA: ${{ needs.check.outputs.cuda }}
+      SGLANG_RELEASE: ${{ needs.check.outputs.sglang_release }}
     steps:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         id: token
@@ -442,7 +448,7 @@ jobs:
           fi
           pip install packaging
           WHEEL_DIR="${RUNNER_TEMP}/wheels" python miles-wheels/build_wheels.py upload \
-            --cuda "$CUDA" --arch "$BUILD_ARCH" --history-release "$SGLANG_HISTORY_RELEASE"
+            --cuda "$CUDA" --arch "$BUILD_ARCH" --history-release "$SGLANG_RELEASE"
 
   # Publishes from a GitHub-hosted runner, so the miles-wheels write token never
   # reaches the shared self-hosted build hosts. Nothing is published when any

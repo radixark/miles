@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import re
@@ -12,6 +13,9 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=2, suite="stage-a-cpu", labels=[])
 
 ROOT = Path(__file__).resolve().parents[3]
+# the week's history release check reads, as `date -u +%Gw%V` names it
+_YEAR, _WEEK, _ = datetime.datetime.now(datetime.timezone.utc).isocalendar()
+SGLANG_RELEASE = f"sglang-miles-{_YEAR}w{_WEEK:02d}"
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/build-wheels.yml").read_text())
 # The check job reads its release tags from the Dockerfile.
 WHEELS_TAG_X86 = re.search(r"^ARG WHEELS_TAG_X86=(\S+)$", (ROOT / "docker/Dockerfile").read_text(), re.M).group(1)
@@ -109,6 +113,8 @@ def test_sglang_builds_both_arches_on_github_runners_only_when_stale(tmp_path, b
     assert result.returncode == 0, result.stderr
     matrix = json.loads(outputs["sglang_matrix"])
     build_matrix = json.loads(outputs["sglang_build_matrix"])
+    # one history release per ISO week keeps each under GitHub's 1000-asset cap
+    assert outputs["sglang_release"] == SGLANG_RELEASE
     if built == "e" * 40:
         assert matrix == build_matrix == []
         return
@@ -155,7 +161,7 @@ def test_each_sglang_arch_publishes_whatever_built():
     [
         SOURCES["sgl-router"][0],
         f"repos/radixark/miles-wheels/releases/tags/{WHEELS_TAG_X86}",
-        "repos/radixark/miles-wheels/releases/tags/sglang-miles-x86_64",
+        f"repos/radixark/miles-wheels/releases/tags/{SGLANG_RELEASE}-x86_64",
     ],
 )
 def test_selected_lookup_failure_stops_the_run(tmp_path, failure):
@@ -273,6 +279,7 @@ def test_sglang_publish_uploads_into_the_history_release(tmp_path, arch, build_a
             "UPLOAD_LOG": str(log),
             "BUILD_ARCH": build_arch,
             "CUDA": "130",
+            "SGLANG_RELEASE": SGLANG_RELEASE,
         },
         capture_output=True,
         text=True,
@@ -283,7 +290,7 @@ def test_sglang_publish_uploads_into_the_history_release(tmp_path, arch, build_a
         return
     upload = json.loads(log.read_text())
     assert upload["wheel_dir"] == f"{tmp_path}/wheels"
-    assert upload["args"] == ["upload", "--cuda", "130", "--arch", build_arch, "--history-release", "sglang-miles"]
+    assert upload["args"] == ["upload", "--cuda", "130", "--arch", build_arch, "--history-release", SGLANG_RELEASE]
 
 
 @pytest.mark.parametrize("job", ["publish", "publish-sglang"])
