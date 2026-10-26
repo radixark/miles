@@ -1300,6 +1300,9 @@ def miles_validate_args(args):
     if args.update_weight_transfer_mode == "shm":
         # the engines open the shared-memory tensors by /dev/shm file name, so they must share the trainer's host
         assert args.actor_num_nodes == 1, "--update-weight-transfer-mode shm needs the trainer on one node"
+        assert (
+            args.rollout_num_gpus_per_engine <= args.num_gpus_per_node
+        ), "--update-weight-transfer-mode shm needs each rollout engine on one node"
         # each engine rank opens the payload at its TP rank; PP stages share TP ranks, so one payload would be
         # opened by several processes and its /dev/shm file unlinked while another stage still needs it
         assert args.sglang_pp_size == 1, "--update-weight-transfer-mode shm does not support --sglang-pp-size > 1"
