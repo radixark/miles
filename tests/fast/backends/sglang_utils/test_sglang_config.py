@@ -143,6 +143,37 @@ class TestModelPathConsistency:
                 rollout_num_gpus=8,
             )
 
+    def test_multi_lora_engines_may_serve_a_quantized_copy_of_the_base(self, tmp_path):
+        """Tinker engines never receive base weights, so they may load another copy of the base than the trainer."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: default\n"
+            "    model_path: /ckpt/actor-fp8\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=8,
+            rollout_num_gpus_per_engine=2,
+            multi_lora=True,
+        )
+        assert cfg.models[0].server_groups[0].model_path == "/ckpt/actor-fp8"
+        assert cfg.models[0].update_weights is False
+
+    def test_multi_lora_rejects_weight_updates(self, tmp_path):
+        with pytest.raises(AssertionError, match="frozen base"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: default\n"
+                "    update_weights: true\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n",
+                rollout_num_gpus=8,
+                multi_lora=True,
+            )
+
 
 class TestResolvedServerGroupValidation:
     def test_a_resolved_group_with_zero_gpus_is_rejected(self):

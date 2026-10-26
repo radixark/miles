@@ -6,13 +6,10 @@ import socket
 import pytest
 import torch
 import torch.distributed as dist
-from tests.ci.ci_register import register_cpu_ci
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import DTensor, Shard, distribute_tensor
 
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
-
-register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 
 _MOMENTS = ("exp_avg", "exp_avg_sq")
 
