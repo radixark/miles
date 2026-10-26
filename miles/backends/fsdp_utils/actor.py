@@ -26,7 +26,6 @@ from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.workers.rpc.common.wire_types import Pickled
 
 from .adaptations.config_checks import validate_hf_config
-from .adaptations.packing import real_max_seqlen
 from .adaptations.precision import apply_fp32_master, default_precision_policy, precision_forward_context
 from .adaptations.specs import resolve_arch_adapter
 from .hf_weight_iterator import FSDPHfWeightIterator
@@ -430,7 +429,8 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             self.arch_adapter.packing_kwargs(
                 cu_seqlens=batch["cu_seqlens"],
                 cu_seqlens_host=batch["cu_seqlens_host"],
-                max_seqlen=real_max_seqlen(batch["cu_seqlens_host"], len(batch["unconcat_tokens"])),
+                max_seqlen=batch["max_seqlen"],
+                num_documents=len(batch["unconcat_tokens"]),
             )
         )
 

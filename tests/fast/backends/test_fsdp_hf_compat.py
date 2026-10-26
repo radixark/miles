@@ -26,13 +26,14 @@ def _adapter(model_type):
     return resolve_arch_adapter(SimpleNamespace(model_type=model_type))
 
 
-def _packed_boundaries(*lengths):
-    """The boundary fields `get_batch` records for documents of these lengths."""
-    cu_seqlens_host = tuple(itertools.accumulate(lengths, initial=0))
+def _packed_boundaries(*lengths, pad=0):
+    """The boundary fields `get_batch` records for documents of these lengths, then its pad segment."""
+    cu_seqlens_host = tuple(itertools.accumulate([*lengths, *([pad] if pad else [])], initial=0))
     return dict(
         cu_seqlens=torch.tensor(cu_seqlens_host, dtype=torch.int32),
         cu_seqlens_host=cu_seqlens_host,
-        max_seqlen=max(lengths),
+        max_seqlen=max(lengths + (pad,)),
+        num_documents=len(lengths),
     )
 
 
@@ -338,7 +339,9 @@ def test_hf_packing_kwargs_match_the_padding_free_collator():
 
     collator = DataCollatorWithFlattening(return_tensors="pt", return_flash_attn_kwargs=True, return_seq_idx=True)
     flattened = collator([{"input_ids": [1, 2, 3]}, {"input_ids": [4, 5]}, {"input_ids": [6, 7, 8, 9]}])
-    kwargs = hf_packing_kwargs(**_packed_boundaries(3, 2, 4))
+    boundaries = _packed_boundaries(3, 2, 4)
+    del boundaries["num_documents"]
+    kwargs = hf_packing_kwargs(**boundaries)
 
     assert set(kwargs) == HF_PACKING_KWARG_NAMES
     for name, value in kwargs.items():
@@ -349,12 +352,22 @@ def test_hf_packing_kwargs_match_the_padding_free_collator():
             assert value == expected, name
 
 
-def test_real_max_seqlen_leaves_out_the_pad_segment():
-    """A 7-token pad tail must not become the max: HF never counts it, and the kernel plan follows it."""
-    from miles.backends.fsdp_utils.adaptations.packing import real_max_seqlen
+@pytest.mark.parametrize("pad", [0, 1, 7])
+def test_attention_boundaries_are_the_ones_hf_derives_from_position_ids(pad):
+    """True-on-policy's bitwise match relies on HF's own boundaries; a max_length below a segment's length
+    would leave its rows unwritten, as a 7-token pad tail kept as one segment would."""
+    from transformers.modeling_flash_attention_utils import prepare_fa_kwargs_from_position_ids
 
-    assert real_max_seqlen((0, 3, 5, 12), num_documents=2) == 3
-    assert real_max_seqlen((0, 3, 5), num_documents=2) == 3  # no pad segment
+    from miles.backends.fsdp_utils.adaptations.packing import hf_attention_packing_kwargs
+
+    boundaries = _packed_boundaries(3, 2, pad=pad)
+    del boundaries["max_seqlen"]
+    kwargs = hf_attention_packing_kwargs(**boundaries)
+    position_ids = torch.tensor([[0, 1, 2, 0, 1, *([0] * pad)]])
+    (hf_cu_seqlens, _), (hf_max_length, _) = prepare_fa_kwargs_from_position_ids(position_ids)
+
+    assert kwargs["cu_seq_lens_q"].tolist() == hf_cu_seqlens.tolist()
+    assert type(kwargs["max_length_q"]) is int and kwargs["max_length_q"] == int(hf_max_length) == 3
 
 
 def test_each_arch_passes_the_packing_kwargs_its_modeling_reads():

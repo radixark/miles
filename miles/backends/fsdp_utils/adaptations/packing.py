@@ -41,20 +41,25 @@ def packed_seq_context(position_ids: torch.Tensor | None) -> PackedSeqContext | 
 HF_PACKING_KWARG_NAMES = frozenset({"cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k", "seq_idx"})
 
 
-def real_max_seqlen(cu_seqlens_host: tuple[int, ...], num_documents: int) -> int:
-    """The longest real document; ``get_batch``'s ``max_seqlen`` also counts the trailing pad segment, which
-    HF never does (each pad token is its own document there) and which changes the kernel's launch plan."""
-    real = cu_seqlens_host[: num_documents + 1]
-    return max(end - start for start, end in itertools.pairwise(real))
+def hf_attention_packing_kwargs(
+    *, cu_seqlens: torch.Tensor, cu_seqlens_host: tuple[int, ...], num_documents: int
+) -> dict[str, object]:
+    """The boundaries HF derives from ``position_ids``: the documents, then each pad token on its own.
 
-
-def hf_attention_packing_kwargs(*, cu_seqlens: torch.Tensor, max_seqlen: int) -> dict[str, object]:
-    """The varlen boundaries HF attention reads; ``max_length`` stays an int, which FlashAttention-4 needs."""
+    ``max_length`` is an int, since FlashAttention-4 rejects HF's tensor, and it covers every segment, since
+    the kernel leaves rows past it unwritten. Keeping the pad tail as one segment would raise it, and the
+    kernel's launch plan with it, away from what HF (and true-on-policy's bitwise match) uses.
+    """
+    pad = cu_seqlens_host[-1] - cu_seqlens_host[num_documents]
+    # on the device from host lengths, so building it never syncs
+    pad_ends = cu_seqlens[num_documents] + torch.arange(1, pad + 1, dtype=cu_seqlens.dtype, device=cu_seqlens.device)
+    boundaries = torch.cat([cu_seqlens[: num_documents + 1], pad_ends])
+    max_length = max(end - start for start, end in itertools.pairwise(cu_seqlens_host[: num_documents + 1]))
     return {
-        "cu_seq_lens_q": cu_seqlens,
-        "cu_seq_lens_k": cu_seqlens,
-        "max_length_q": max_seqlen,
-        "max_length_k": max_seqlen,
+        "cu_seq_lens_q": boundaries,
+        "cu_seq_lens_k": boundaries,
+        "max_length_q": max_length,
+        "max_length_k": max_length,
     }
 
 
@@ -73,7 +78,10 @@ def hf_packing_kwargs(
         output_size=cu_seqlens_host[-1],
     )
     return {
-        **hf_attention_packing_kwargs(cu_seqlens=cu_seqlens, max_seqlen=max_seqlen),
+        "cu_seq_lens_q": cu_seqlens,
+        "cu_seq_lens_k": cu_seqlens,
+        "max_length_q": max_seqlen,
+        "max_length_k": max_seqlen,
         "seq_idx": seq_idx.unsqueeze(0),
     }
 

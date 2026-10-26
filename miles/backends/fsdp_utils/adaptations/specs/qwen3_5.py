@@ -10,7 +10,7 @@ from miles.backends.fsdp_utils.models.replay_routers import install_qwen3_router
 class Qwen35Adapter(ArchAdapter):
     model_types = frozenset({"qwen3_5", "qwen3_5_text", "qwen3_next"})
 
-    def packing_kwargs(self, *, cu_seqlens, cu_seqlens_host, max_seqlen):
+    def packing_kwargs(self, *, cu_seqlens, cu_seqlens_host, max_seqlen, num_documents):
         # GatedDeltaNet reads seq_idx (causal conv) and cu_seq_lens_q (FLA chunk rule) from **kwargs.
         return hf_packing_kwargs(cu_seqlens=cu_seqlens, cu_seqlens_host=cu_seqlens_host, max_seqlen=max_seqlen)
 
