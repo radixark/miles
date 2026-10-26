@@ -1,19 +1,25 @@
 import copy
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 import transformer_engine.pytorch as te
+from megatron.core.models.gpt import GPTModel
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+from megatron.training.arguments import core_transformer_config_from_args
 from transformers import AutoConfig
 from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextRMSNorm
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import gdn_heads
 from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer
+
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import TrainerConfig
 
 
 def _get_text_config(hf_config):
@@ -117,3 +123,48 @@ def get_qwen3_5_spec(args, config, vp_stage):
             )
             transformer_layer_spec.layer_specs[layer_id] = layer_specs
     return transformer_layer_spec
+
+
+def qwen3_5_mm_model_provider(
+    pre_process: bool = True, post_process: bool = True, vp_stage: int | None = None, *, args: "TrainerConfig"
+) -> GPTModel:
+    """Multimodal provider: the plugin Qwen3.5 text model with mRoPE plus the frozen vision tower.
+
+    A separate entry point instead of a CLI switch: launch with
+    ``--custom-model-provider-path miles_plugins.models.qwen3_5.qwen3_5_mm_model_provider`` and
+    ``--multimodal-token-space-processing``. The text parameters keep this module's names, so checkpoints,
+    conversion and weight sync are the text model's; the tower is loaded from the HF checkpoint by
+    ``mm_towers`` and never trained; every weight sync re-sends it from the checkpoint.
+    """
+    from miles_plugins.models.qwen3_5.mm_towers import wire_mm_towers
+
+    backend = args.backend
+    if backend.context_parallel_size > 1:
+        raise ValueError("the Qwen3.5 multimodal model does not support context parallelism yet")
+    if backend.mtp_num_layers:
+        raise ValueError("the Qwen3.5 multimodal model is built without MTP layers")
+    if backend.fp8_param_gather:
+        raise ValueError("the Qwen3.5 multimodal model does not support --fp8-param-gather")
+
+    config = core_transformer_config_from_args(backend)
+    rope_parameters = load_hf_config(args.hf_checkpoint).text_config.rope_parameters
+    config.mrope_section = rope_parameters["mrope_section"]
+    config.mrope_interleaved = rope_parameters["mrope_interleaved"]
+    model = GPTModel(
+        config=config,
+        transformer_layer_spec=get_qwen3_5_spec(args, config, vp_stage),
+        vocab_size=backend.padded_vocab_size,
+        max_sequence_length=backend.max_position_embeddings,
+        pre_process=pre_process,
+        post_process=post_process,
+        fp16_lm_cross_entropy=backend.fp16_lm_cross_entropy,
+        parallel_output=True,
+        share_embeddings_and_output_weights=not backend.untie_embeddings_and_output_weights,
+        position_embedding_type="mrope",
+        rotary_percent=backend.rotary_percent,
+        rotary_base=backend.rotary_base,
+        rope_scaling=backend.use_rope_scaling,
+        vp_stage=vp_stage,
+    )
+    wire_mm_towers(model, args.hf_checkpoint)
+    return model

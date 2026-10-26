@@ -3,6 +3,7 @@ import torch
 from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig as HFVisionConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
 
+from miles_plugins.models.qwen3_5.mm_towers import _mrope_position_ids, _scatter_rows
 from miles_plugins.models.qwen3_5.vision import Qwen3_5VisionConfig, Qwen3_5VisionTower, _PatchEmbed, _rot_pos_ids
 
 _VISION_CONFIG = dict(
@@ -45,3 +46,22 @@ def test_patch_embed_gemm_matches_conv3d():
 def test_rotary_positions_follow_the_spatial_merge_block_order():
     # A 2x4 grid arrives as two 2x2 merge blocks, each read row by row.
     assert _rot_pos_ids(2, 4, 2).tolist() == [[0, 0], [0, 1], [1, 0], [1, 1], [0, 2], [0, 3], [1, 2], [1, 3]]
+
+
+def test_rows_land_only_in_this_sequence_parallel_window():
+    decoder_input = torch.zeros(4, 1, 2)
+    rows = torch.tensor([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+
+    # Rank 1 holds packed tokens 4..7.
+    merged = _scatter_rows(decoder_input, rows, torch.tensor([3, 4, 6]), sp_rank=1)
+
+    assert merged[:, 0, 0].tolist() == [2.0, 0.0, 3.0, 0.0]
+
+
+def test_mrope_positions_continue_over_the_padding():
+    positions = torch.tensor([[0, 0, 0], [1, 1, 1], [1, 2, 3], [5, 5, 5]])
+
+    position_ids = _mrope_position_ids(positions, torch.zeros(1, 6, dtype=torch.long))
+
+    assert position_ids.shape == (3, 1, 6)
+    assert position_ids[:, 0].tolist() == [[0, 1, 1, 5, 6, 7], [0, 1, 2, 5, 6, 7], [0, 1, 3, 5, 6, 7]]
