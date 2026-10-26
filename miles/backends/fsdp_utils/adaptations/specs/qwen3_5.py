@@ -1,44 +1,27 @@
-"""Qwen3.5/3.6/Qwen3-Next (GatedDeltaNet) adaptation: a config-time packed-doc reset that feeds
-cu_seqlens to fla chunk/recurrent_gated_delta_rule and seq_idx to causal_conv1d_fn per packed document.
-Patches the DecoderLayer/GatedDeltaNet class forwards; kernel logic lives in ``models/qwen3_5.py``."""
+"""Qwen3.5/3.6 and Qwen3-Next (GatedDeltaNet hybrids): per-document resets under packing come from HF's
+own padding-free kwargs, which the vision tower must not see; Qwen3.5-MoE adds the routing-replay hook."""
 
+from miles.backends.fsdp_utils.adaptations.arch_adapter import ArchAdapter
+from miles.backends.fsdp_utils.adaptations.packing import hf_packing_kwargs
+from miles.backends.fsdp_utils.adaptations.routing_replay import RoutingReplayAdapter
 from miles.backends.fsdp_utils.models.replay_routers import install_qwen3_router_replay
-from ..packing.registry import PackingPatch, register_packing_patch
-from ..routing_replay import RoutingReplayAdapter, register_routing_replay_adapter
 
 
-def _applies(hf_config) -> bool:
-    """True for GatedDeltaNet archs (Qwen3.5/3.6, Qwen3-Next): a linear_attention layer type or qwen3_5."""
-    if hf_config is None:
-        return False
-    model_type = str(getattr(hf_config, "model_type", "") or "")
-    tc = getattr(hf_config, "get_text_config", lambda: hf_config)()
-    layer_types = getattr(tc, "layer_types", None) or getattr(hf_config, "layer_types", None)
-    return (layer_types is not None and "linear_attention" in layer_types) or "qwen3_5" in model_type
+class Qwen35Adapter(ArchAdapter):
+    model_types = frozenset({"qwen3_5", "qwen3_5_text", "qwen3_next"})
+
+    def packing_kwargs(self, *, cu_seqlens, cu_seqlens_host, max_seqlen):
+        # GatedDeltaNet reads seq_idx (causal conv) and cu_seq_lens_q (FLA chunk rule) from **kwargs.
+        return hf_packing_kwargs(cu_seqlens=cu_seqlens, cu_seqlens_host=cu_seqlens_host, max_seqlen=max_seqlen)
+
+    def patch_model(self, model, args):
+        from miles.backends.fsdp_utils.models.qwen3_5 import keep_packing_kwargs_out_of_vision
+
+        keep_packing_kwargs_out_of_vision(model)
 
 
-def _apply():
-    from ...models.qwen3_5 import apply_gateddeltanet_packing_patch
-
-    return apply_gateddeltanet_packing_patch()
-
-
-register_packing_patch(PackingPatch("gated_deltanet_packing", _applies, "config", _apply))
-
-
-def _is_qwen3_5_moe(hf_config) -> bool:
-    """Qwen3.5 MoE; the text-only checkpoint reports model_type qwen3_5_moe_text."""
-    if hf_config is None:
-        return False
-    model_type = str(getattr(hf_config, "model_type", "") or "")
-    return "qwen3_5" in model_type and "moe" in model_type
-
-
-register_routing_replay_adapter(
-    RoutingReplayAdapter(
-        name="qwen3_5_moe",
-        applies_to=_is_qwen3_5_moe,
-        module_cls_name="Qwen3_5MoeTopKRouter",
-        install=install_qwen3_router_replay,
+class Qwen35MoeAdapter(Qwen35Adapter):
+    model_types = frozenset({"qwen3_5_moe", "qwen3_5_moe_text"})
+    routing_replay = RoutingReplayAdapter(
+        name="qwen3_5_moe", module_cls_name="Qwen3_5MoeTopKRouter", install=install_qwen3_router_replay
     )
-)

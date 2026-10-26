@@ -2,10 +2,12 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from miles.backends.megatron_utils.megatron_config import MegatronConfig, compute_trainer_args, resolve_megatron_config
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
-from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
+from miles.backends.megatron_utils.megatron_config import MegatronConfig
+from miles.ray.placement_group import create_training_model, take_over_trainers
+from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.ray.specs.train import compute_trainer_configs
+from miles.ray.train.init_request import TrainerControllerInitRequest
+from miles.utils.args.runtime import OrchestratorConfig
 from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
 from miles.utils.tracking_utils.tracking import define_step_key_metric_group
@@ -21,9 +23,10 @@ class TrainerInfo:
     handle: BaseWorkerHandle
 
 
-async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[str, TrainerInfo]:
+async def create_trainers(
+    args: OrchestratorConfig, *, rollout_executor: BaseWorkerHandle, handles: dict[str, BaseWorkerHandle]
+) -> dict[str, TrainerInfo]:
     trainer_configs = compute_trainer_configs(args)
-    handles = create_trainer_handles(args, trainer_configs=trainer_configs)
     resumed = await take_over_trainers(args, handles=handles)
 
     trainers: dict[str, TrainerInfo] = {}
@@ -31,9 +34,10 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         model_id = trainer_config.model_id
         assert model_id is not None, f"{trainer_config} carries no policy model id"
         created = await create_training_model(
-            compute_trainer_args(args, trainer_config),
             handle=handles[trainer_config.trainer_id],
             trainer_id=trainer_config.trainer_id,
+            request=TrainerControllerInitRequest.from_args(args, trainer=trainer_config),
+            requested_start_rollout_id=args.start_rollout_id,
             resumed=resumed,
         )
         assert model_id not in trainers, f"{trainer_config} shares its model id with an already created trainer"
@@ -45,21 +49,26 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         await rollout_executor.set_train_parallel_config(
             await trainer.handle.get_train_parallel_config(), trainer_model_id=model_id
         )
-    leader_model_id = resolve_megatron_config(args).leader_model_id
+    leader_model_id = args.raw_megatron.leader_model_id
     leader_rollout_id = trainers[leader_model_id].start_rollout_id - 1
-    _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
-    await rollout_executor.load(leader_rollout_id)
+    if leader_rollout_id >= 0:
+        _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
+        await rollout_executor.load(
+            leader_rollout_id,
+            load=args.load,
+            completed_rollout_ids={model_id: trainer.start_rollout_id - 1 for model_id, trainer in trainers.items()},
+        )
 
     return trainers
 
 
 def _assert_global_rollout_state_exists(args, *, leader_rollout_id: int) -> None:
-    if leader_rollout_id < 0 or not args.rollout_global_dataset or args.load is None:
+    if not args.rollout_global_dataset or args.load is None:
         return
 
-    path = Path(args.load) / "rollout" / f"global_dataset_state_dict_{leader_rollout_id}.pt"
-    assert path.exists(), (
-        f"the policies restored a checkpoint of rollout {leader_rollout_id}, but {path} is missing; the data "
+    directory = compute_rollout_checkpoint_dir(args.load, rollout_id=leader_rollout_id)
+    assert directory.is_dir(), (
+        f"the policies restored a checkpoint of rollout {leader_rollout_id}, but {directory} is missing; the data "
         f"source would silently restart from the first prompt and retrain what the checkpoint already saw"
     )
 
@@ -129,11 +138,7 @@ def validate_multi_policy_args(args, *, megatron_config: MegatronConfig) -> None
         "(--eval-num-gpus or a CheckpointEvalFn --eval-function-path) exports the checkpoint of one trainer, "
         "which cannot represent a run of several policies"
     )
-    assert args.sglang_config is not None, (
-        "multi policy training needs --sglang-config to deploy one inference model per policy, so that a "
-        "weight update reaches exactly the engines of its own policy"
-    )
-    trainable = [model.name for model in resolve_sglang_config(args).models if model.update_weights]
+    trainable = [model.name for model in args.sglang.models if model.update_weights]
     missing = [model_id for model_id in megatron_config.model_ids if model_id not in trainable]
     assert not missing, (
         f"--megatron-config models {missing} have no matching --sglang-config model with "

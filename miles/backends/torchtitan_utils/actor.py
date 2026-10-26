@@ -1,11 +1,12 @@
 import logging
-from argparse import Namespace
 from contextlib import contextmanager
 
 import torch
 import torch.distributed as dist
 
+from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.torchtitan_utils import compat
+from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
@@ -15,6 +16,9 @@ from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.replay.routing_replay import enable as enable_routing_replay
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
+from miles.backends.training_utils.torch_native.step_runner import StepRunner
+from miles.platforms import current_platform
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.context_utils import with_defer
 from miles.utils.disk_backed_tensor import optimizer_state_dir_root
 from miles.utils.distributed_utils import get_gloo_group
@@ -28,7 +32,7 @@ from miles.utils.workers.rpc.common.wire_types import Pickled
 logger = logging.getLogger(__name__)
 
 
-def _steps_per_rollout(args: Namespace) -> int:
+def _steps_per_rollout(args: TrainerConfig) -> int:
     return max(args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size, 1)
 
 
@@ -41,12 +45,15 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         args: Pickled,
         role: str,
         *,
+        ckpt_load_config: MegatronCkptLoadConfig | None = None,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
+        assert ckpt_load_config is None, "torchtitan backend does not support checkpoint healing"
+        assert isinstance(args.backend, TorchtitanArgsNamespace)
         compat.install()
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
         assert indep_dp_info.quorum_id == 0
@@ -103,7 +110,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         return args.start_rollout_id if args.start_rollout_id is not None else start_rollout_id
 
     def _move_to(self, device: str) -> None:
-        if self.args.optimizer_cpu_offload:
+        if self.args.backend.optimizer_cpu_offload:
             # the training state already lives on the host; moving it would pull it all onto the GPU on wake
             print_memory(f"before releasing the GPU cache for {device}")
             clear_memory()
@@ -115,7 +122,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
     def _step_runner(self):
         return self.trainer.step_runner()
 
-    def _build_ref_runner(self, args: Namespace):
+    def _build_ref_runner(self, args: TrainerConfig) -> StepRunner:
         if not args.ref_load:
             raise ValueError("--ref-load is required to build a torchtitan reference model")
         ref_config = build_trainer_config(args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref")
@@ -126,7 +133,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             part.eval()
             part.requires_grad_(False)
             part.cpu()
-        torch.cuda.empty_cache()
+        torch.accelerator.empty_cache()
         self._ref_parts = ref_trainer.model_parts
         logger.info(f"Built a torchtitan reference trainer from {args.ref_load}; it lives on the host between passes")
         return ref_trainer.step_runner()
@@ -134,13 +141,13 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
     @contextmanager
     def _ref_context(self):
         for part in self._ref_parts:
-            part.cuda()
+            part.to(current_platform.current_device())
         try:
             yield
         finally:
             for part in self._ref_parts:
                 part.cpu()
-            torch.cuda.empty_cache()
+            torch.accelerator.empty_cache()
 
     def _save_checkpoint(self, rollout_id: int) -> None:
         self.trainer.checkpointer.save(self.trainer.step, last_step=True)

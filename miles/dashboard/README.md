@@ -61,6 +61,48 @@ Views:
   first generated token, + a selectable metric-vs-position chart, loss-masked
   regions dimmed).
 
+- **Sandboxes** — shown once an agent function reports a sandbox (see
+  below): how many sandboxes are healthy, erroring or stale, and a table of
+  them with their last error and when they last ran a command. A healthy
+  sandbox is stale when it has not reported for longer than a configurable
+  number of minutes (also settable as `#/sandboxes?stale_min=N`; for a
+  finished run, measured from the last snapshot).
+
+## Report sandbox health
+
+Agentic rollouts that run each trial in a sandbox can make its health
+visible by calling `report_sandbox` from the agent / custom generate
+function: when the sandbox starts, after each command it runs, on an error,
+and on teardown. The call is cheap, never raises, and is a no-op when the
+dashboard is disabled. It works with any sandbox backend: `provider` and
+`sandbox_id` are free-form labels, and miles never talks to the provider.
+Under `--custom-agent-function-mode subproc` the agent process sends each
+report to the rollout process as it is made, so a hung call still shows up.
+
+```python
+from miles.dashboard.hooks import report_sandbox
+
+
+async def run_trial(trial_id: str, task: str, env) -> float:
+    report_sandbox(trial_id, task=task, provider=env.name, sandbox_id=env.id)
+    try:
+        for command in commands_for(task):
+            await env.exec(command)
+            report_sandbox(trial_id)  # heartbeat: sets "last executed"
+        return await verify(env)
+    except Exception as e:
+        report_sandbox(trial_id, status="error", error=f"{type(e).__name__}: {e}")
+        raise
+    finally:
+        await env.close()
+        report_sandbox(trial_id, status="finished")
+```
+
+Only the latest state of each sandbox is kept; finished sandboxes drop out
+after 10 minutes. The collector overwrites
+`{dump-details}/dashboard/sandboxes.json` on every flush, and
+`/api/sandboxes?stale_after_s=N` serves the counts and rows.
+
 ## Develop
 
 ```bash

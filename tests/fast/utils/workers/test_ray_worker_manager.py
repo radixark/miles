@@ -8,14 +8,19 @@ from unittest.mock import patch
 import pytest
 from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayCluster
+from tests.fast.utils.workers.fake_specs import FakeCommandSpec
 
 from miles.ray.placement_group import PlacementGroupInfo
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
 from miles.utils.workers import ray_worker_manager
+from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, _BaseActorManager, _CommandActorManager
 from miles.utils.workers.types import WorkerCommBackend
-from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec, LaunchCommandContext, PortInfo, SchedulingSpec, StaticMeta
 
 
 @dataclass
@@ -49,14 +54,14 @@ def _make_spec(
     pg_name: str | None = None,
     pg_slot_offset: int = 0,
     pin_to_head: bool = False,
-) -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+) -> BaseCommandSpec:
+    return FakeCommandSpec(
         name=name,
         port_infos=(
             port_infos if port_infos is not None else [PortInfo(name="primary", static_port=8000, allow_dynamic=True)]
         ),
-        env_var=lambda _ctx: dict(env_var or {}),
-        scheduling=SchedulingSpec(
+        env_vars=lambda _ctx: dict(env_var or {}),
+        fixed_scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=num_workers_per_cell,
             num_gpus_per_worker=num_gpus_per_worker,
@@ -65,7 +70,7 @@ def _make_spec(
             pg_slot_offset=pg_slot_offset,
             pin_to_head=pin_to_head,
         ),
-        launch_command=launch_command if launch_command is not None else (lambda ctx: "sleep 600"),
+        command=launch_command if launch_command is not None else (lambda ctx: "sleep 600"),
     )
 
 
@@ -79,9 +84,7 @@ def _make_pgs(*, num_slots: int = 8, first_gpu_id: int = 0) -> dict[str, Placeme
     }
 
 
-async def _launch(
-    specs: list[CommandWorkerSpec], pgs: dict[str, PlacementGroupInfo] | None = None
-) -> RayWorkerManager:
+async def _launch(specs: list[BaseCommandSpec], pgs: dict[str, PlacementGroupInfo] | None = None) -> RayWorkerManager:
     manager = RayWorkerManager()
     await manager.init(
         worker_manager_args(), specs, pgs if pgs is not None else {}, comm_backend=WorkerCommBackend.RAY
@@ -529,12 +532,12 @@ class TestSpecEnvVars:
             calls.append(len(calls))
             return {"CALL_INDEX": str(len(calls))}
 
-        spec = CommandWorkerSpec(
+        spec = FakeCommandSpec(
             name="engine",
             port_infos=[PortInfo(name="primary", static_port=8000, allow_dynamic=True)],
-            env_var=_env,
-            scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=1, num_gpus_per_worker=0),
-            launch_command=lambda ctx: "sleep 600",
+            env_vars=_env,
+            fixed_scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=1, num_gpus_per_worker=0),
+            command=lambda ctx: "sleep 600",
         )
         await _launch([spec])
 
@@ -1509,7 +1512,7 @@ class TestGetCellInfos:
     async def test_each_cell_meta_is_computed_from_its_own_cell_index(self, fake_ray_cluster: FakeRayCluster):
         """Meta carries per-cell placement facts, so a shared index would mislabel every cell but one."""
         spec = _make_spec("engine", num_cells=3).model_copy(
-            update={"meta": lambda ctx: {"gpu_offset": ctx.cell_index * 2}}
+            update={"partial_static_meta": StaticMeta(gpu_offset_base=0, gpu_offset_stride_per_cell=2)}
         )
         manager = await _launch([spec])
 
@@ -1856,7 +1859,9 @@ class TestSuspendedCellInfos:
 
     async def test_the_meta_of_a_suspended_cell_is_still_known(self, fake_ray_cluster: FakeRayCluster):
         """Meta comes from the spec, so suspending a cell must not make it unidentifiable."""
-        spec = _make_spec("engine").model_copy(update={"meta": lambda ctx: {"model_id": "default"}})
+        spec = _make_spec("engine").model_copy(
+            update={"partial_static_meta": StaticMeta(values={"model_id": "default"})}
+        )
         manager = await _launch([spec])
         await manager.stop_cells(["engine-00000"])
 
@@ -1870,49 +1875,79 @@ class TestSuspendedCellInfos:
         assert manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].worker_names == []
 
 
-class TestInjectFault:
+class TestControlFaultHook:
     async def test_the_fault_reaches_the_selected_worker(self, fake_ray_cluster: FakeRayCluster):
         """A multi-node engine is crashed by crashing one of its node ranks."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        target = manager.observe_fault_target("engine-00000", rank=1)
+        command = _fault_command(target)
 
-        manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1)
+        await manager.control_fault_hook(command)
 
-        calls = fake_ray_cluster.calls_of("inject_fault")
-        assert [call.args for call in calls] == [("sigkill",)]
+        calls = fake_ray_cluster.calls_of("control_fault_hook")
+        assert [call.kwargs for call in calls] == [{"command": command}]
         assert calls[0].handle is fake_ray_cluster.handles[1]
 
-    async def test_injection_does_not_wait_for_the_worker_to_answer(self, fake_ray_cluster: FakeRayCluster):
-        """The worker is about to die, so waiting for its reply would hang the caller."""
+    async def test_a_worker_failure_leaves_the_fault_outcome_unknown(self, fake_ray_cluster: FakeRayCluster) -> None:
+        """A missing worker reply must not be reported as a confirmed fault."""
         manager = await _launch([_make_spec("engine")])
-        fake_ray_cluster.handles[0].failing_methods["inject_fault"] = RuntimeError("actor died")
+        fake_ray_cluster.handles[0].failing_methods["control_fault_hook"] = RuntimeError("actor died")
+        command = _fault_command(manager.observe_fault_target("engine-00000", rank=0))
 
-        manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0)
+        with pytest.raises(RuntimeError, match="actor died"):
+            await manager.control_fault_hook(command)
 
     async def test_injecting_into_a_suspended_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """A suspended cell has no worker to crash."""
         manager = await _launch([_make_spec("engine")])
+        command = _fault_command(manager.observe_fault_target("engine-00000", rank=0))
         await manager.stop_cells(["engine-00000"])
 
-        with pytest.raises(RuntimeError, match="not alive"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0)
+        with pytest.raises(StaleFaultTargetError, match="no live worker"):
+            await manager.control_fault_hook(command)
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
 
     async def test_a_worker_index_beyond_the_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """Injecting into a neighbouring cell by accident would corrupt the test's premise."""
         manager = await _launch([_make_spec("engine", num_cells=2, num_workers_per_cell=1)])
 
-        with pytest.raises(IndexError, match="out of range"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1)
+        with pytest.raises(StaleFaultTargetError, match="no live worker at index 1"):
+            manager.observe_fault_target("engine-00000", rank=1)
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
 
     async def test_a_negative_worker_index_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """Negative indexing would silently select the last worker instead of failing."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
 
-        with pytest.raises(IndexError, match="out of range"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=-1)
+        with pytest.raises(StaleFaultTargetError, match="no live worker at index -1"):
+            manager.observe_fault_target("engine-00000", rank=-1)
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
 
     async def test_an_unknown_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """A typo must not silently inject nothing."""
         manager = await _launch([_make_spec("engine")])
+        command = _fault_command(ObservedFaultHookTarget(cell_id="engine-00007", rank=0, workers_hash="missing"))
 
         with pytest.raises(AssertionError):
-            manager.inject_fault("engine-00007", mode="sigkill", worker_in_cell_index=0)
+            await manager.control_fault_hook(command)
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
+
+    async def test_a_replaced_worker_rejects_the_previous_observed_target(
+        self, fake_ray_cluster: FakeRayCluster
+    ) -> None:
+        """A fault observed before a restart must not crash the replacement worker."""
+        manager = await _launch([_make_spec("engine")])
+        command = _fault_command(manager.observe_fault_target("engine-00000", rank=0))
+        await manager.stop_cells(["engine-00000"])
+        await manager.start_cells(["engine-00000"])
+
+        with pytest.raises(StaleFaultTargetError, match="no longer matches"):
+            await manager.control_fault_hook(command)
+        assert fake_ray_cluster.calls_of("control_fault_hook") == []
+
+
+def _fault_command(target: ObservedFaultHookTarget) -> FaultHookCommand:
+    return FaultHookCommand(
+        operation=FaultHookOperation.SET,
+        request=FaultHookRequest(request_id="test", action=KillProcessAction(), target=target),
+    )

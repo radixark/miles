@@ -7,7 +7,7 @@ draft layer included, so the equality check allows quantization error.
 
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, prepare
 
@@ -17,6 +17,9 @@ register_cuda_ci(
     labels=["megatron", "weight-update", "fully-async"],
     hardware=["hopper"],
     num_gpus=8,
+)
+register_rocm_ci(
+    est_time=1400, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "weight-update", "fully-async"]
 )
 
 register_ci_gate(metric_key="train/grad_norm")

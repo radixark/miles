@@ -34,22 +34,53 @@ def _agent_trial_timeout_s() -> int:
     return int(os.environ.get("AGENT_TRIAL_TIMEOUT", _DEFAULT_AGENT_TRIAL_TIMEOUT_S))
 
 
+def _agent_server_limits() -> httpx.Limits:
+    """Connection pool limits for the agent-server client, overridable via AGENT_SERVER_MAX_CONNECTIONS.
+
+    Unset means no cap: a fixed cap below the rollout concurrency silently queues trials.
+    An invalid value is ignored with a warning rather than failing or stalling every trial.
+    """
+    max_connections = None
+    raw = os.environ.get("AGENT_SERVER_MAX_CONNECTIONS")
+    if raw:
+        try:
+            max_connections = int(raw)
+        except ValueError:
+            pass
+        if max_connections is None or max_connections <= 0:
+            # A pool of 0 admits no connection, so every trial would wait out its timeout.
+            logger.warning(f"Ignoring AGENT_SERVER_MAX_CONNECTIONS={raw!r}: not a positive integer; using no cap")
+            max_connections = None
+    return httpx.Limits(max_connections=max_connections, max_keepalive_connections=32)
+
+
 def _get_agent_server_client() -> httpx.AsyncClient:
     """Return a client whose long-running requests survive idle network paths."""
     global _agent_server_client
     if _agent_server_client is None:
         socket_options = [
             (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPIDLE", 4), 60),
-            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPINTVL", 5), 30),
-            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPCNT", 6), 5),
+            (
+                socket.IPPROTO_TCP,
+                getattr(socket, "TCP_KEEPIDLE", 4),
+                60,
+            ),  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
+            (
+                socket.IPPROTO_TCP,
+                getattr(socket, "TCP_KEEPINTVL", 5),
+                30,
+            ),  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
+            (
+                socket.IPPROTO_TCP,
+                getattr(socket, "TCP_KEEPCNT", 6),
+                5,
+            ),  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
         ]
-        transport = httpx.AsyncHTTPTransport(socket_options=socket_options)
-        _agent_server_client = httpx.AsyncClient(
-            transport=transport,
-            limits=httpx.Limits(max_connections=64, max_keepalive_connections=32),
-            timeout=None,
-        )
+        # httpx ignores AsyncClient(limits=...) when transport= is given, so the pool
+        # limits must live on the transport. Each in-flight trial holds one connection
+        # for its whole run; miles already bounds how many trials are in flight.
+        transport = httpx.AsyncHTTPTransport(socket_options=socket_options, limits=_agent_server_limits())
+        _agent_server_client = httpx.AsyncClient(transport=transport, timeout=None)
     return _agent_server_client
 
 
@@ -136,9 +167,13 @@ async def abort(args) -> None:
     """
     agent_server_url = os.getenv("AGENT_SERVER_URL", os.getenv("SWE_AGENT_URL"))
 
-    instances = getattr(args, "session_server_instances", None) or []
+    instances = (
+        getattr(args, "session_server_instances", None) or []
+    )  # config-access-exempt: abort accepts parent configs with instance lists and legacy child configs with only a singular id
     instance_ids = {instance.instance_id for instance in instances if instance.instance_id}
-    singular = getattr(args, "session_server_instance_id", None)  # back-compat / child path
+    singular = getattr(
+        args, "session_server_instance_id", None
+    )  # back-compat / child path  # config-access-exempt: legacy child configs carry a singular id absent from the parent SessionConfig
     if singular:
         instance_ids.add(singular)
 

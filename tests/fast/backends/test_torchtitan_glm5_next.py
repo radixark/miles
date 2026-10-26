@@ -124,7 +124,8 @@ def _spec(tmp_path, **text_overrides):
 
     checkpoint = _write_checkpoint_config(tmp_path, **text_overrides)
     return resolve_model_spec(
-        Namespace(titan_model_name="glm5_next", titan_model_flavor="4layer", hf_checkpoint=checkpoint)
+        Namespace(backend=Namespace(titan_model_name="glm5_next", titan_model_flavor="4layer")),
+        hf_assets_path=checkpoint,
     )
 
 

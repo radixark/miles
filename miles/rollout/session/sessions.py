@@ -73,7 +73,9 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         tokenizer_type=config.tito_model,
         chat_template_kwargs=config.apply_chat_template_kwargs,
     )
-    merge_inline_system = not detect_inline_system_support(getattr(tokenizer, "chat_template", None))
+    merge_inline_system = not detect_inline_system_support(
+        getattr(tokenizer, "chat_template", None)
+    )  # config-access-exempt: custom tokenizers may omit a chat template
 
     use_v2 = config.use_session_server == "v2"
     if use_v2:
@@ -109,7 +111,8 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
             return JSONResponse(status_code=400, content={"error": str(exc)})
         return await core.create_session(
             evaluation=params.evaluation,
-            sampling_defaults=params.model_dump(exclude={"evaluation"}, exclude_none=True),
+            sampling_defaults=params.model_dump(exclude={"evaluation", "extra_key"}, exclude_none=True),
+            extra_key=params.extra_key,
         )
 
     @app.get("/sessions/{session_id}")
@@ -245,3 +248,5 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
             headers=dict(request.headers),
             body=body,
         )
+
+    return core

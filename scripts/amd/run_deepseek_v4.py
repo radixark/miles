@@ -84,7 +84,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     actor_num_gpus_per_node: int = field(init=False)
     rollout_num_gpus: int = field(init=False)
     optimizer_offload: bool = True
-    use_fault_tolerance: bool = True
+    use_fault_tolerance: bool = False
 
     # debug configs
     dump_details: bool = False
@@ -461,7 +461,14 @@ def _train(args: ScriptArgs):
     if args.enable_mis:
         misc_args += (
             "--use-tis "
-            "--custom-config-path examples/infra_features/train_infer_mismatch_helper/mis.yaml "
+            "--use-rs "
+            "--tis-level token "
+            "--rs-level token "
+            "--tis-mode truncate "
+            "--tis-lower-bound 0.5 "
+            "--tis-upper-bound 2.0 "
+            "--rs-veto-threshold 1.0e-4 "
+            "--tis-batch-normalize "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 

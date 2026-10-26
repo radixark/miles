@@ -78,8 +78,8 @@ class TestWithObservability:
 
         pod_calls = [kwargs for kind, kwargs in calls if kind == "pods"]
         assert pod_calls == [
-            {"return_type": PodList, "namespace": "rl", "selector": "app=x"},
-            {"return_type": PodList, "namespace": "rl", "selector": "app=x"},
+            {"return_type": PodList, "namespace": "rl", "selector": "app=x", "timeout": None},
+            {"return_type": PodList, "namespace": "rl", "selector": "app=x", "timeout": None},
         ]
         assert (
             "events",

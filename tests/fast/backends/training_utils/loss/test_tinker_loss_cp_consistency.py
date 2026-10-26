@@ -11,6 +11,7 @@ from functools import partial
 import pytest
 import torch
 import torch.distributed as dist
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.data.context_parallel import (
@@ -23,6 +24,8 @@ from miles.backends.training_utils.loss.objective import loss_function
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 
 from .loss_test_utils import make_args
+
+register_cpu_ci(est_time=290, suite="stage-b-cpu", labels=["multi-lora"])
 
 VOCAB_SIZE = 64
 

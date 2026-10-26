@@ -13,20 +13,26 @@ from tests.fast.charts.utils import (
     sole_container_of,
     with_object_names,
 )
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import (
+    SCALING,
+    build_values_as_launched,
+)
+from tests.fast.utils.workers.fake_specs import FakeServeSpec
 
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
-from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT_INFO, SchedulingSpec
 
 
-def _rollout_executor() -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def _rollout_executor() -> FakeServeSpec:
+    return FakeServeSpec(
         name="rollout-executor",
-        port_infos=[],
-        env_var=lambda context: {},
-        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0, num_cpus_per_worker=1),
+        port_infos=[DEFAULT_RPC_PORT_INFO],
+        fixed_scheduling=SchedulingSpec(
+            num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0, num_cpus_per_worker=1
+        ),
+        args=BaseLeafConfig(),
         worker_class="miles.ray.rollout.rollout_executor.RolloutExecutor",
-        ctor_kwargs=lambda context: {},
     )
 
 
@@ -159,7 +165,7 @@ class TestStaticWorkers:
 class TestGeneratedStaticWorkerShape:
     def test_accepts_the_pool_the_launcher_writes_on_every_entry(self):
         """The values builder stamps pool_id on all three sections, so a schema without it rejects every run."""
-        generated = build_values(
+        generated = build_values_as_launched(
             [_rollout_executor()],
             LaunchPlan(
                 run_id=RUN_ID,
@@ -169,6 +175,7 @@ class TestGeneratedStaticWorkerShape:
                 orchestrator_command=["python", "train.py"],
                 worker_argv=["--cluster-backend", "kubernetes"],
             ),
+            scaling=SCALING,
         ).as_values()
         entries = generated["run"]["staticWorkers"]
 

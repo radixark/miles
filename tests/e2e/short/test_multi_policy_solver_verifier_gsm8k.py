@@ -8,21 +8,26 @@ from tests.e2e.conftest_multi_policy import execute
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=3000,
+    est_time=8000,
     suite="stage-c-4-gpu-h200",
-    labels=["short", "multi-policy", "fully-async"],
+    labels=["long", "multi-policy", "fully-async"],
     hardware=["hopper", "blackwell"],
     num_gpus=4,
 )
 register_rocm_ci(est_time=1700, suite="nightly-stage-c-4-gpu-mi350", labels=["short", "multi-policy", "fully-async"])
 
-NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "5"))
+NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "15"))
 SAVE_INTERVAL = 2
 
 
 if __name__ == "__main__":
+    config = command_utils.default_config(ScriptArgs)
     args = dataclasses.replace(
-        command_utils.default_config(ScriptArgs), num_rollout=NUM_ROLLOUT, save_interval=SAVE_INTERVAL
+        config,
+        num_rollout=NUM_ROLLOUT,
+        save_interval=SAVE_INTERVAL,
+        # The final eval already reports both policies; the pre-train one only adds about 7 min.
+        extra_args=f"{config.extra_args} --skip-eval-before-train",
     )
     prepare(args)
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):

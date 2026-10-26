@@ -215,8 +215,12 @@ async def test_assembled_samples_golden_merged(core):
     assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
     assert m.status == Sample.Status.COMPLETED
     assert m.weight_versions == [
-        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)]),
-        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)]),
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)], output_start=3, prompt_tokens=3
+        ),
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)], output_start=7, prompt_tokens=7
+        ),
     ]
     assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
     assert m.prefix_cache_info.to_dict() == {"cached_tokens": 5, "total_prompt_tokens": 10}
@@ -270,6 +274,42 @@ async def test_session_rollout_metrics_are_absent_when_spec_is_disabled(core):
 
     assert sample.spec_info == Sample.SpecInfo()
     assert SESSION_ROLLOUT_METRICS_KEY not in reply.session_metadata
+
+
+async def test_assembled_sample_carries_prefill_spans_per_turn(core):
+    """Each turn's prompt KV versions land on that turn's call in absolute coordinates, starting at token 0."""
+    records = _two_turn_records()
+    records[0].response["choices"][0]["meta_info"]["prefill_weight_versions"] = [
+        {"version": "w1", "start": 0, "end": 3}
+    ]
+    records[1].response["choices"][0]["meta_info"]["prefill_weight_versions"] = [
+        {"version": "w1", "start": 0, "end": 5},
+        {"version": "w2", "start": 5, "end": 7},
+    ]
+    sid = await _make_session(core, records, _ACCUMULATED)
+    status, payload = await _collect_via_op(core, sid, agent_metadata=_AGENT_METADATA)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+    (m,) = samples
+
+    assert m.weight_versions == [
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)],
+            prefill_spans=[WeightVersionSpan(version="w1", abs_start=0, abs_end=3)],
+            output_start=3,
+            prompt_tokens=3,
+        ),
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)],
+            prefill_spans=[
+                WeightVersionSpan(version="w1", abs_start=0, abs_end=5),
+                WeightVersionSpan(version="w2", abs_start=5, abs_end=7),
+            ],
+            output_start=7,
+            prompt_tokens=7,
+        ),
+    ]
+    m.validate()
 
 
 async def test_truncation_golden(core):
@@ -770,6 +810,27 @@ async def test_two_roots_yield_two_samples(core):
     assert [first.reward, second.reward] == [None, None]
 
 
+async def test_each_leaf_path_mismatch_is_computed_once(core, monkeypatch):
+    """The latest generation is a leaf, so its sample reuses the session metadata's mismatch
+    instead of re-rendering and re-tokenizing the same path."""
+    sid, state = await _fresh_state(core)
+    _fabricate_node(state, None, _single_turn_record([1, 2, 3], [10, 11]), [1, 2, 3, 10, 11], completion_span=(3, 5))
+    _fabricate_node(state, None, _single_turn_record([7, 8], [70, 71]), [7, 8, 70, 71], completion_span=(2, 4))
+    rendered_paths = []
+    compute_mismatch = core.registry.compute_mismatch
+
+    def recording_compute_mismatch(messages, token_ids, *, turn_args):
+        rendered_paths.append(list(token_ids))
+        return compute_mismatch(messages, token_ids, turn_args=turn_args)
+
+    monkeypatch.setattr(core.registry, "compute_mismatch", recording_compute_mismatch)
+
+    status, _ = await _collect_via_op(core, sid)
+
+    assert status == 200
+    assert sorted(rendered_paths) == [[1, 2, 3, 10, 11], [7, 8, 70, 71]]
+
+
 @pytest.mark.parametrize("core_name", ["core", "same_prompt_core"])
 async def test_resent_first_turn_root_is_trimmed(core_name, request):
     """A re-sent first turn opens a root with the same prompt; both pickers trim the abandoned root."""
@@ -1007,6 +1068,26 @@ def _exploding_postprocessor(picked_samples, session_metadata):
     raise RuntimeError("postprocess bug")
 
 
+def _clear_session_mismatch(picked_samples, session_metadata):
+    session_metadata["tito_session_mismatch"].clear()
+    return picked_samples
+
+
+async def test_postprocessor_editing_session_mismatch_keeps_the_latest_sample_mismatch(monkeypatch):
+    """The latest leaf reuses the session's mismatch; a hook editing the session's must not change the sample's."""
+    with function_registry.temporary("test_hooks.clear_mismatch", _clear_session_mismatch):
+        hooked = _build_core_with_hooks(session_sample_postprocessor_path="test_hooks.clear_mismatch")
+        monkeypatch.setattr(hooked.registry, "compute_mismatch", lambda *args, **kwargs: [{"type": "planted"}])
+        sid = await _rolled_back_session(hooked)
+
+        response = await hooked.collect_samples(sid, max_seq_len=None)
+
+        assert response.status_code == 200
+        reply = decode_samples_and_merge_input_sample(bytes(response.body), Sample(), fields=COMPUTED_FIELDS_V2)
+        (sample,) = reply.samples
+        assert sample.metadata["tito_session_mismatch"] == [{"type": "planted"}]
+
+
 class TestConfiguredPostprocessor:
     async def test_configured_postprocessor_failure_maps_to_422_with_identity(self):
         """A configured postprocessor is loaded and invoked, and its failure is a 422 naming that postprocessor."""
@@ -1091,8 +1172,9 @@ def test_samples_route_registered_before_catch_all_proxy(app_client):
 
 
 @pytest.mark.asyncio
-async def test_hooks_cannot_mutate_committed_turn_args():
+async def test_hooks_cannot_mutate_committed_state():
     def mutate_metadata(samples, metadata):
+        metadata["accumulated_token_ids"].append(-1)
         metadata["turn_args"]["chat_template_kwargs"]["nested"].append("session-hook")
         for node in metadata["tree"]["nodes"]:
             node["turn_args"]["chat_template_kwargs"]["nested"].append("tree-hook")
@@ -1107,9 +1189,11 @@ async def test_hooks_cannot_mutate_committed_turn_args():
         for node in nodes:
             node.turn_args = {"temperature": 0.7, "chat_template_kwargs": {"nested": [node.seq]}}
         before = [deepcopy(node.turn_args) for node in nodes]
+        tokens_before = [list(node.token_ids) for node in nodes]
         response = await hooked.collect_samples(sid, max_seq_len=None)
         assert response.status_code == 200, response.body
         assert [node.turn_args for node in nodes] == before
+        assert [node.token_ids for node in nodes] == tokens_before
 
 
 @pytest.mark.asyncio

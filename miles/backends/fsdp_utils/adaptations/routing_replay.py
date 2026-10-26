@@ -14,7 +14,6 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import torch.nn as nn
 
@@ -47,23 +46,8 @@ class RoutingReplayAdapter:
     """
 
     name: str
-    applies_to: Callable[[Any], bool]
     module_cls_name: str
     install: Callable[[nn.Module], None]
-
-
-_ADAPTERS: list[RoutingReplayAdapter] = []
-
-
-def register_routing_replay_adapter(adapter: RoutingReplayAdapter) -> None:
-    _ADAPTERS.append(adapter)
-
-
-def resolve_routing_replay_adapter(hf_config) -> RoutingReplayAdapter | None:
-    for adapter in _ADAPTERS:
-        if adapter.applies_to(hf_config):
-            return adapter
-    return None
 
 
 def discover_moe_modules(model: nn.Module, module_cls_name: str) -> list[tuple[int, nn.Module]]:
@@ -83,8 +67,9 @@ def discover_moe_modules(model: nn.Module, module_cls_name: str) -> list[tuple[i
     return sorted(found, key=lambda pair: pair[0])
 
 
-def install(model: nn.Module, hf_config) -> int:
-    """Install R3 hooks on ``model`` and return the number of registered streams.
+def install(model: nn.Module, adapter: RoutingReplayAdapter | None) -> int:
+    """Install R3 hooks on ``model`` through its architecture's ``adapter`` and return the number of
+    registered streams.
 
     Returns 0 without touching the model when R3 is off. Call for the actor only: a second
     registration would double ``manager.replays`` and invalidate every ``stream_idx``.
@@ -92,11 +77,10 @@ def install(model: nn.Module, hf_config) -> int:
     if not routing_replay_manager.enabled:
         return 0
 
-    adapter = resolve_routing_replay_adapter(hf_config)
     if adapter is None:
         raise ValueError(
-            f"no routing-replay adapter for model_type={getattr(hf_config, 'model_type', None)!r}; "
-            f"rollout routing replay on the FSDP backend requires a registered adapter"
+            f"no routing-replay adapter for {type(model).__name__}; rollout routing replay on the FSDP "
+            f"backend requires the architecture's ArchAdapter to declare one"
         )
 
     layers = discover_moe_modules(model, adapter.module_cls_name)

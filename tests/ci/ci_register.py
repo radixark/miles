@@ -5,13 +5,14 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from tests.ci.hardware import CUDA_STAGES, KNOWN_ARCHES, auto_arch
-from tests.ci.labels import KNOWN_LABELS
+from tests.ci.labels import KNOWN_LABELS, PERF_LABEL
 
 __all__ = [
     "HWBackend",
     "CIRegistry",
     "collect_tests",
     "discover_ci_files",
+    "file_timeout",
     "register_cpu_ci",
     "register_cuda_ci",
     "register_rocm_ci",
@@ -61,6 +62,12 @@ class CIRegistry:
         return self.num_gpus if self.num_gpus is not None else CUDA_STAGES[self.suite].num_gpus
 
 
+def file_timeout(est_time: float, labels, timeout_per_file: float):
+    """Time limit of one test file: 1.25 x est_time, at least `timeout_per_file` unless labeled `perf`."""
+    estimate_limit = int(est_time * 1.25)
+    return estimate_limit if PERF_LABEL in labels else max(timeout_per_file, estimate_limit)
+
+
 def register_cpu_ci(
     est_time: float,
     suite: str,
@@ -71,9 +78,10 @@ def register_cpu_ci(
 ):
     """Marker for CPU CI registration (parsed via AST; runtime no-op).
 
-    `labels=None` and `labels=[]` are equivalent for CPU tests: the test is
-    always-on within every cadence that admits it. A non-empty `labels` list
-    gates the test on the resolved domain scope; a PR can include `<x>` with
+    Estimates above 30 seconds require `stage-b-cpu` and at least one domain
+    label; `perf` is not one. A shorter test without a domain label is
+    always-on within every cadence that admits it. A domain label gates the
+    test on the resolved domain scope; a PR can include `<x>` with
     `run-ci-<x>`, while broad scopes include many domain labels at once.
     `nightly=True` adds a cadence gate: regular runs exclude the test, while
     nightly and weekly runs include it alongside regular registrations.
@@ -217,13 +225,15 @@ class RegistryVisitor(ast.NodeVisitor):
         if not isinstance(parsed["suite"], str):
             raise ValueError(f"{self.filename}: suite must be a string in {func_name}()")
 
-        # CPU labels remain optional; GPU registrations require an explicit
-        # non-empty domain so they cannot consume runners on every PR.
         labels = parsed.get("labels", [])
         if not isinstance(labels, list):
             raise ValueError(f"{self.filename}: labels must be a list or None in {func_name}()")
         backend = _REGISTER_BACKEND_MAP[func_name]
-        if backend != HWBackend.CPU and not labels:
+        slow_cpu = backend == HWBackend.CPU and parsed["est_time"] > 30
+        if slow_cpu and parsed["suite"] != "stage-b-cpu":
+            raise ValueError(f"{self.filename}: CPU est_time > 30 seconds requires suite='stage-b-cpu'")
+        domain_labels = [label for label in labels if label != PERF_LABEL]
+        if (backend != HWBackend.CPU or slow_cpu) and not domain_labels:
             raise ValueError(f"{self.filename}: labels in {func_name}() must contain at least one domain label")
 
         nightly = parsed.get("nightly", False)
@@ -252,7 +262,7 @@ class RegistryVisitor(ast.NodeVisitor):
             if num_gpus > CUDA_STAGES[parsed["suite"]].num_gpus:
                 raise ValueError(f"{self.filename}: num_gpus exceeds the home suite's capacity")
 
-        unknown = [label for label in labels if label not in self.known_labels]
+        unknown = [label for label in domain_labels if label not in self.known_labels]
         if unknown:
             valid_list = ", ".join(sorted(self.known_labels))
             raise ValueError(

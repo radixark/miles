@@ -3,7 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 from miles.utils.ft_utils.api_server import server
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
@@ -17,8 +18,11 @@ class FakeCellOperations:
     async def resume(self, *, cell_id: str) -> None:
         pass
 
-    async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None:
-        pass
+    async def observe_fault_target(self, *, cell_id: str, rank: int) -> ObservedFaultHookTarget:
+        raise NotImplementedError
+
+    async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
+        raise NotImplementedError
 
 
 class TestStartApiServer:

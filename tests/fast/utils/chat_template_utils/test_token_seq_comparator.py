@@ -203,6 +203,16 @@ class TestCompareIdentical:
     def test_both_empty(self, env: TokenizerEnv):
         assert env.comparator.compare_sequences([], []) == []
 
+    def test_equal_segments_are_not_decoded(self, env: TokenizerEnv, monkeypatch):
+        """Equal token IDs decode to equal text, so only differing segments are decoded."""
+        sp = env.token_id(env.config.known_special_tokens[0])
+        ids = [sp] + env.encode("Hello world") + [sp]
+        decoded = []
+        monkeypatch.setattr(env.comparator, "_decode", lambda token_ids: decoded.append(token_ids) or "")
+
+        assert env.comparator.compare_sequences(ids, list(ids)) == []
+        assert decoded == []
+
 
 # ---------------------------------------------------------------------------
 # TestStructuralMismatch — segment count or special token identity differs

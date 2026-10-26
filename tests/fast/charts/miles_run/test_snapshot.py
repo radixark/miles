@@ -10,15 +10,25 @@ from typing import Any
 import pytest
 import yaml
 from megatron.training import arguments as megatron_arguments
-from tests.fast.charts.utils import NAMESPACE, RUN_CHART_DIR, RUN_ID, RUN_RELEASE_NAME, requires_helm
+from tests.fast.charts.utils import (
+    NAMESPACE,
+    RUN_CHART_DIR,
+    RUN_ID,
+    RUN_RELEASE_NAME,
+    documents_of,
+    objects_of_kind,
+    requires_helm,
+)
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER, assert_matches_snapshot
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import build_values_as_launched
 
 from miles.ray.specs.entrypoint import compute_specs
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.arguments import parse_args
 from miles.utils.external_utils.command_utils.common import rsync_cmd
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.external_utils.model_args_utils import load_model_args
+from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.serving.utils import override_argv
 
 SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "charts" / "miles-run"
@@ -157,6 +167,8 @@ SCENARIO_ARGV = [
 
 @pytest.fixture(autouse=True)
 def parser_process_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-m", "pytest"])
+    monkeypatch.delenv(RECORD_DIR_ENV, raising=False)
     for name, value in PARSER_ENV.items():
         monkeypatch.setenv(name, value)
     tuning_env_name = "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"
@@ -185,14 +197,11 @@ def _dump_values(values: dict[str, Any]) -> str:
 _NO_WRAP = 1 << 30
 
 
-def synthetic_specs() -> list[Any]:
-    with override_argv(SCENARIO_ARGV):
-        return compute_specs(parse_args())
-
-
 def synthetic_run_values() -> dict[str, Any]:
-    return build_values(
-        synthetic_specs(),
+    with override_argv(SCENARIO_ARGV):
+        args = parse_args()
+    return build_values_as_launched(
+        compute_specs(args),
         LaunchPlan(
             run_id=RUN_ID,
             release=RUN_RELEASE_NAME,
@@ -204,6 +213,7 @@ def synthetic_run_values() -> dict[str, Any]:
             colocate=True,
             prepare_cmd=PREPARE_CMD,
         ),
+        scaling=ScalingConfig.slice_from(args),
     ).as_values()
 
 
@@ -251,6 +261,20 @@ def mask_random_seeds(text: str) -> str:
 
 def _yaml_scalar(line: str) -> str:
     return line.strip().removeprefix("- ").strip("'\"")
+
+
+def _worker_pod_specs(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stateful = [o["spec"]["template"] for o in objects_of_kind(objects, "StatefulSet")]
+    grouped = [
+        template
+        for o in objects_of_kind(objects, "LeaderWorkerSet")
+        for key in ("leaderTemplate", "workerTemplate")
+        if (template := o["spec"]["leaderWorkerTemplate"].get(key)) is not None
+    ]
+    return [t["spec"] for t in stateful + grouped if _POOL_LABEL in t["metadata"]["labels"]]
+
+
+_POOL_LABEL = "miles.radixark.io/pool"
 
 
 @requires_helm
@@ -301,3 +325,18 @@ class TestSnapshotFiles:
         recorded = {path.stem for path in SNAPSHOT_DIR.glob("*.yaml")}
 
         assert recorded == set(SCENARIOS)
+
+
+@requires_helm
+class TestPodUidEnv:
+    def test_every_worker_container_reads_its_pod_uid_from_the_pod_metadata(self, tmp_path: Path) -> None:
+        """Each worker learns its own pod uid through the downward api, so a replaced pod reports a new one."""
+        values_file = tmp_path / "run-values.yaml"
+        values_file.write_text(_dump_values(synthetic_run_values()))
+        pod_specs = _worker_pod_specs(documents_of(render_from(values_file)))
+
+        assert pod_specs
+        for pod_spec in pod_specs:
+            for container in pod_spec["containers"]:
+                entries = [item for item in container["env"] if item["name"] == "MILES_POD_UID"]
+                assert entries == [{"name": "MILES_POD_UID", "valueFrom": {"fieldRef": {"fieldPath": "metadata.uid"}}}]

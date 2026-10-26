@@ -4,8 +4,68 @@ from argparse import Namespace
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 
 from miles.rollout import sglang_rollout
+from miles.utils.lora.utils import LORA_ADAPTER_NAME
+from miles.utils.types import Sample
+
+
+def _make_generate_args() -> Namespace:
+    values = parser_defaults() | dict(
+        ci_test=False,
+        sglang_router_ip="router",
+        sglang_router_port=30000,
+        rollout_top_logprobs_num=0,
+    )
+    return resolve_parse_boundary_configs(Namespace(**values))
+
+
+class TestGenerateExtraKey:
+    def _patch(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+        payloads: list[dict] = []
+        tokenizer = SimpleNamespace(encode=lambda prompt, add_special_tokens: [1, 2, 3])
+        state = SimpleNamespace(tokenizer=tokenizer, processor=None)
+
+        async def fake_post(url: str, payload: dict, headers: dict | None = None) -> dict:
+            payloads.append(payload)
+            return {"text": "", "meta_info": {"finish_reason": {"type": "stop"}}}
+
+        monkeypatch.setattr(sglang_rollout, "GenerateState", lambda state_args: state)
+        monkeypatch.setattr(sglang_rollout, "post", fake_post)
+        return payloads
+
+    async def test_a_started_sample_partitions_the_cache_by_its_kv_cache_namespace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default generate path sends extra_key the namespace itself for a started sample."""
+        payloads = self._patch(monkeypatch)
+        sample = Sample(prompt="p", kv_cache_namespace="train:-:7")
+
+        await sglang_rollout.generate(_make_generate_args(), sample, {"max_new_tokens": 4})
+
+        assert [payload["extra_key"] for payload in payloads] == ["train:-:7"]
+
+    async def test_an_unstarted_sample_sends_no_extra_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without a kv_cache_namespace the payload is not partitioned."""
+        payloads = self._patch(monkeypatch)
+
+        await sglang_rollout.generate(_make_generate_args(), Sample(prompt="p"), {"max_new_tokens": 4})
+
+        assert len(payloads) == 1
+        assert "extra_key" not in payloads[0]
+
+    async def test_lora_routing_preserves_the_kv_cache_namespace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LoRA routing keeps the rollout namespace alongside the adapter path."""
+        payloads = self._patch(monkeypatch)
+        args = _make_generate_args()
+        args.lora_rank = 8
+        sample = Sample(prompt="p", kv_cache_namespace="train:-:7")
+
+        await sglang_rollout.generate(args, sample, {"max_new_tokens": 4})
+
+        assert [payload["extra_key"] for payload in payloads] == ["train:-:7"]
+        assert [payload["lora_path"] for payload in payloads] == [LORA_ADAPTER_NAME]
 
 
 class TestAbort:
@@ -56,3 +116,26 @@ class TestAbort:
         assert aborted_groups == [[sample]]
         assert sample.metadata["start_rollout_id"] == 23
         assert "Failed to abort worker at http://unresponsive: worker cannot answer" in caplog.text
+
+
+class TestGenerationStateReuse:
+    def test_changed_configuration_is_rejected_without_replacing_the_active_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reused generation singleton cannot silently serve a new configuration with stale state."""
+        monkeypatch.setattr(sglang_rollout.SingletonMeta, "_instances", {})
+        monkeypatch.setattr(sglang_rollout, "load_tokenizer", lambda *args, **kwargs: object())
+        monkeypatch.setattr(sglang_rollout, "load_processor", lambda *args, **kwargs: None)
+        args = _make_generate_args()
+        state = sglang_rollout.GenerateState(args)
+        state.remaining_batch_size = 7
+        equal_args = Namespace(**vars(args))
+        changed_args = Namespace(**(vars(args) | {"rollout_temperature": args.rollout_temperature + 1}))
+
+        assert sglang_rollout.GenerateState(equal_args) is state
+        with pytest.raises(AssertionError):
+            sglang_rollout.GenerateState(changed_args)
+
+        assert sglang_rollout.GenerateState(args) is state
+        assert state.remaining_batch_size == 7
+        assert state.sampling_params["temperature"] == args.rollout_temperature

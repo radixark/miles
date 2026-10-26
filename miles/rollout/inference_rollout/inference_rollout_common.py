@@ -16,14 +16,16 @@ from miles.rollout.base_types import (
     RolloutFnOutput,
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
+    compute_kv_cache_namespace,
 )
 from miles.rollout.generate_hub.single_turn import generate
 from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
+from miles.utils.async_utils import DynamicLimitSemaphore
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.processing_utils import load_processor, load_tokenizer
-from miles.utils.types import Sample
+from miles.utils.types import Sample, SampleLineage
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +39,8 @@ class GenerateState:
         )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
-        self.generate_fn_semaphore = asyncio.Semaphore(
-            args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+        self.generate_fn_semaphore = DynamicLimitSemaphore(
+            lambda: args.sglang_server_concurrency * max(args.inference_runtime_mut_state.engine_count, 1)
         )
         self.sampling_params: dict[str, Any] = compute_sampling_params(
             args,
@@ -63,6 +65,7 @@ async def generate_and_rm(
     evaluation: bool = False,
 ) -> Sample | list[Sample]:
     args = state.args
+    input_sample_index = sample.index
 
     # mask previous off-policy generation for partial rollout
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and sample.response_length > 0:
@@ -81,7 +84,7 @@ async def generate_and_rm(
         sink.attempt_start(sample)
 
     # generate
-    log_prefix = f"[sample={getattr(sample, 'index', '?')}]"
+    log_prefix = f"[sample={sample.index}]"
     logger.debug(f"{log_prefix} Waiting for semaphore...")
     try:
         async with state.generate_fn_semaphore:
@@ -103,6 +106,8 @@ async def generate_and_rm(
                 )
             )
             sample = output.samples
+            if not evaluation:
+                stamp_sample_lineage(sample, source_sample_index=input_sample_index)
             logger.debug(f"{log_prefix} generate_function returned")
     finally:
         if sink is not None:
@@ -152,12 +157,12 @@ async def generate_and_rm_group(
             if sample.routing_key is None:
                 sample.routing_key = str(uuid.uuid4())
 
-    log_prefix = f"[group indices={[getattr(s, 'index', '?') for s in group]}]"
+    log_prefix = f"[group indices={[s.index for s in group]}]"
     logger.debug(f"{log_prefix} Starting group with {len(group)} samples")
     tasks = []
     for idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()
-        if getattr(args, "sglang_enable_deterministic_inference", False):
+        if args.sglang.common_value("enable_deterministic_inference"):
             current_sampling_params["sampling_seed"] = args.rollout_seed + idx
         task = asyncio.create_task(generate_and_rm(state, sample, current_sampling_params, evaluation=evaluation))
         if sample_done_callback is not None:
@@ -222,9 +227,13 @@ class InferenceRolloutFn(BaseRolloutFn):
         from miles.rollout.inference_rollout.inference_rollout_train import generate_rollout_async
 
         output, aborted_samples = await generate_rollout_async(
-            self.state, input.rollout_id, self.data_source.get_samples
+            self.state,
+            input.rollout_id,
+            self.data_source.get_samples,
+            kv_cache_namespace=compute_kv_cache_namespace(self.state.args, input),
         )
-        self.data_source.add_samples(aborted_samples)
+        if aborted_samples:
+            self.data_source.add_samples(aborted_samples)
         return output
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
@@ -232,5 +241,18 @@ class InferenceRolloutFn(BaseRolloutFn):
         from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 
         state = input.generate_state or self.state
-        results = await run_eval_datasets(state, self.eval_prompt_dataset_cache)
+        results = await run_eval_datasets(
+            state,
+            self.eval_prompt_dataset_cache,
+            kv_cache_namespace=compute_kv_cache_namespace(state.args, input),
+        )
         return RolloutFnEvalOutput(data=results)
+
+
+def stamp_sample_lineage(output: Sample | list[Sample], *, source_sample_index: int) -> None:
+    samples = output if isinstance(output, list) else [output]
+    assert source_sample_index is not None, "Sample lineage requires a source sample index"
+    for output_index, sample in enumerate(samples):
+        sample.lineage = SampleLineage(
+            source_sample_index=source_sample_index, output_index=output_index, output_count=len(samples)
+        )

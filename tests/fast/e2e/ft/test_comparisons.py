@@ -5,12 +5,16 @@ import pytest
 from tests.e2e.ft.conftest_ft import comparisons
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
 
+from tests.fast.e2e.ft.event_fakes import _reconfigure, _write_events
+from tests.utils.soak.ft.checkers.reconfigure import ReconfigureInfo
+
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.test_utils.comparisons.dumps import INPUT_TENSORS_ALLOW_FAILED_PATTERN, INPUT_TENSORS_SKIP_PATTERN
 
 _BASELINE_DIR = "/dumps/baseline"
 _TARGET_DIR = "/dumps/target"
 _MIN_TRAINED_ROLLOUTS = 2
+_HEAL_AT_2 = ReconfigureInfo(rollout_id=2, src_cell_index=0, healed_cell_indices=[1], alive_cell_indices_after=[0, 1])
 
 _PRIMITIVES: tuple[str, ...] = (
     "assert_reconfigure_events",
@@ -39,12 +43,24 @@ def recorded_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, 
     return calls
 
 
-def _compare(*, exclude_keys: list[str] | None = None) -> None:
+def _compare(
+    *, exclude_keys: list[str] | None = None, expected_target_reconfigures: list[ReconfigureInfo] | None = None
+) -> None:
     comparisons.compare_deterministic_sides(
         baseline_dir=_BASELINE_DIR,
         target_dir=_TARGET_DIR,
         min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+        expected_target_reconfigures=expected_target_reconfigures or [],
         exclude_keys=exclude_keys,
+    )
+
+
+def _compare_dirs(root: Path, *, expected: list[ReconfigureInfo]) -> None:
+    comparisons.compare_deterministic_sides(
+        baseline_dir=str(root / "baseline"),
+        target_dir=str(root / "target"),
+        min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+        expected_target_reconfigures=expected,
     )
 
 
@@ -149,6 +165,65 @@ class TestCompareDeterministicSides:
         assert [call["kwargs"] for call in recorded_calls["compare_inference_engine_checksums"]] == [
             dict(baseline_dir=_BASELINE_DIR, target_dir=_TARGET_DIR)
         ]
+
+
+class TestTargetReconfigures:
+    def test_a_declared_target_sequence_is_checked_on_the_target_while_the_baseline_stays_quiet(
+        self, recorded_calls: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        """A faulted target must heal exactly as declared while the baseline must still never reconfigure."""
+        _compare(expected_target_reconfigures=[_HEAL_AT_2])
+
+        assert [(call["args"], call["kwargs"]) for call in recorded_calls["assert_reconfigure_events"]] == [
+            ((Path(_BASELINE_DIR) / EVENTS_DIRNAME,), dict(expected=[])),
+            ((Path(_TARGET_DIR) / EVENTS_DIRNAME,), dict(expected=[_HEAL_AT_2])),
+        ]
+
+    def test_the_declared_healing_passes_against_real_event_logs(
+        self, comparison_primitives_but_reconfigure: list[str], tmp_path: Path
+    ) -> None:
+        """A target log with exactly the declared healing and a silent baseline must pass every check."""
+        _write_events(tmp_path / "baseline" / EVENTS_DIRNAME, [])
+        _write_events(tmp_path / "target" / EVENTS_DIRNAME, [_reconfigure(rollout_id=2, healed=[1], alive=[0, 1])])
+
+        _compare_dirs(tmp_path, expected=[_HEAL_AT_2])
+
+        assert "assert_gradients_nonzero" in comparison_primitives_but_reconfigure
+
+    @pytest.mark.parametrize(
+        "baseline_events,target_events",
+        [
+            (
+                [_reconfigure(rollout_id=2, healed=[1], alive=[0, 1])],
+                [_reconfigure(rollout_id=2, healed=[1], alive=[0, 1])],
+            ),
+            ([], []),
+            ([], [_reconfigure(rollout_id=3, healed=[1], alive=[0, 1])]),
+            ([], [_reconfigure(rollout_id=2, healed=[0], alive=[0, 1], src=1)]),
+            (
+                [],
+                [
+                    _reconfigure(rollout_id=2, healed=[1], alive=[0, 1]),
+                    _reconfigure(rollout_id=4, healed=[1], alive=[0, 1]),
+                ],
+            ),
+        ],
+    )
+    def test_any_other_reconfigure_history_fails_before_the_bitwise_comparison(
+        self,
+        comparison_primitives_but_reconfigure: list[str],
+        tmp_path: Path,
+        baseline_events: list[Any],
+        target_events: list[Any],
+    ) -> None:
+        """A healing baseline, a missing, late, misplaced or extra healing must each fail the comparison."""
+        _write_events(tmp_path / "baseline" / EVENTS_DIRNAME, baseline_events)
+        _write_events(tmp_path / "target" / EVENTS_DIRNAME, target_events)
+
+        with pytest.raises(AssertionError, match="CellReconfigureEvent sequence mismatch"):
+            _compare_dirs(tmp_path, expected=[_HEAL_AT_2])
+
+        assert comparison_primitives_but_reconfigure == []
 
 
 class TestMetricPrefixPartition:

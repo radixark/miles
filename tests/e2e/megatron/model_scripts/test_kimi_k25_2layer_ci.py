@@ -6,16 +6,16 @@ from tests.ci.metric_history import register_ci_gate
 
 
 # Smoke test for the Kimi-K2.5 (MoE + MLA, INT4 rollout + BF16 Megatron bridge) training
-# script. It runs the 2-layer pruned model on a single 4-GPU H200 node and only verifies that
+# script. It runs the 2-layer pruned model on 2 GPUs of a single H200 node and only verifies that
 # the training script is functional, not model accuracy.
 
 
 register_cuda_ci(
     est_time=1000,
-    suite="stage-c-4-gpu-h200",
+    suite="stage-c-2-gpu-h200",
     labels=["megatron", "model-scripts"],
     hardware=["hopper", "blackwell"],
-    num_gpus=4,
+    num_gpus=2,
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -30,7 +30,7 @@ def _args() -> ScriptArgs:
         hardware="H200",
         model_name="Kimi-K2.5-2layer",
         num_nodes=1,
-        num_gpus_per_node=4,
+        num_gpus_per_node=2,
         num_rollout=2,
         rollout_batch_size=4,
         n_samples_per_prompt=4,

@@ -33,7 +33,7 @@ def prepare():
 
 def execute():
     U = command_utils.default_config().create_backend()
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -101,7 +101,7 @@ def execute():
         "--sglang-enable-metrics "
     )
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --no-enable-sample-ownership-checker "
 
     misc_args = (
         # default dropout in megatron is 0.1
