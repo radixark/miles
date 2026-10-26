@@ -1,3 +1,4 @@
+import glob
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ from miles.backends.training_utils.weight_update.protocols.utils.data_replica im
     OwnedBuckets,
     get_data_replica_rank_and_size,
 )
+from miles.backends.training_utils.weight_update.protocols.utils.rank_errors import fail_on_every_rank
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import (
     check_weight_sync_results,
@@ -69,51 +71,56 @@ class UpdateWeightFromDisk(WeightTransferProtocol):
         self._version_dir = os.path.join(self.root_dir, f"weight_v{weight_version:06d}")
         self._weight_map = {}
         self._owned_buckets.reset()
-        os.makedirs(self._version_dir, exist_ok=True)
+        # the other ranks write only after the updater's barrier, so rank 0 alone prepares the directory
+        if dist.get_rank() == 0:
+            if self._previous_version_dir is None:
+                # a crashed run leaves full checkpoints behind, and partial shards in the version a resume rewrites
+                for stale_dir in glob.glob(os.path.join(self.root_dir, "weight_v*")):
+                    shutil.rmtree(stale_dir, ignore_errors=True)
+            os.makedirs(self._version_dir, exist_ok=True)
         return True
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         self._owned_buckets.offer(bucket)
 
     def after_base_weights(self) -> None:
-        # written only after the collective gathers finish, so the ranks' host copies run in parallel
-        for bucket_index, bucket in self._owned_buckets.take():
-            tensors = {name: tensor.detach().to("cpu").contiguous() for name, tensor in bucket}
-            shard = f"rank{dist.get_rank():03d}-shard{bucket_index:05d}.safetensors"
-            safetensors.torch.save_file(tensors, os.path.join(self._version_dir, shard))
-            self._weight_map.update({name: shard for name in tensors})
+        # written only after the collective gathers finish, so the ranks' file writes run in parallel
+        with fail_on_every_rank("[disk] shard write"):
+            for bucket_index, bucket in self._owned_buckets.take():
+                tensors = {name: tensor.contiguous() for name, tensor in bucket}
+                shard = f"rank{dist.get_rank():03d}-shard{bucket_index:05d}.safetensors"
+                safetensors.torch.save_file(tensors, os.path.join(self._version_dir, shard))
+                self._weight_map.update({name: shard for name in tensors})
 
     def finalize(self, weight_version: int) -> None:
-        self._write_index()
-        self._reload_engines(weight_version)
-        self._drop_previous_version()
-
-    def _write_index(self) -> None:
         weight_maps: list = [None] * dist.get_world_size()
         dist.all_gather_object(weight_maps, self._weight_map, group=get_gloo_group())
-        if dist.get_rank() == 0:
-            weight_map = {name: shard for rank_map in weight_maps for name, shard in rank_map.items()}
-            index = {"metadata": {}, "weight_map": weight_map}
-            with open(os.path.join(self._version_dir, "model.safetensors.index.json"), "w") as f:
-                json.dump(index, f)
-            copy_hf_metadata_files(self.args.hf_checkpoint, self._version_dir)
-            logger.info("[disk] wrote %d tensors to %s", len(weight_map), self._version_dir)
+        with fail_on_every_rank("[disk] engine reload"):
+            if dist.get_rank() == 0:
+                self._write_index({name: shard for rank_map in weight_maps for name, shard in rank_map.items()})
+                self._reload_engines(weight_version)
+        self._drop_previous_version()
+
+    def _write_index(self, weight_map: dict[str, str]) -> None:
+        with open(os.path.join(self._version_dir, "model.safetensors.index.json"), "w") as f:
+            json.dump({"metadata": {}, "weight_map": weight_map}, f)
+        copy_hf_metadata_files(self.args.hf_checkpoint, self._version_dir)
+        logger.info("[disk] wrote %d tensors to %s", len(weight_map), self._version_dir)
 
     def _reload_engines(self, weight_version: int) -> None:
-        if dist.get_rank() == 0:
-            cell_updaters = list(self.cell_updaters_of_cell_id.values())
-            maybe_pause_engines(self.args, cell_updaters)
-            results = async_utils.wait_futures(
-                [
-                    # one call reloads the whole model, so --update-weight-engine-request-timeout does not bound it
-                    updater.submit_unbounded_client_call(
-                        "update_weights_from_disk", model_path=self._version_dir, weight_version=str(weight_version)
-                    )
-                    for updater in cell_updaters
-                ]
-            )
-            check_weight_sync_results(results, is_lora=False)
-            maybe_resume_engines(self.args, cell_updaters)
+        cell_updaters = list(self.cell_updaters_of_cell_id.values())
+        maybe_pause_engines(self.args, cell_updaters)
+        results = async_utils.wait_futures(
+            [
+                # one call reloads the whole model, so --update-weight-engine-request-timeout does not bound it
+                updater.submit_unbounded_client_call(
+                    "update_weights_from_disk", model_path=self._version_dir, weight_version=str(weight_version)
+                )
+                for updater in cell_updaters
+            ]
+        )
+        check_weight_sync_results(results, is_lora=False)
+        maybe_resume_engines(self.args, cell_updaters)
 
     def _drop_previous_version(self) -> None:
         if dist.get_rank() == 0 and self._previous_version_dir not in (None, self._version_dir):
