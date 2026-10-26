@@ -271,7 +271,7 @@ def _score_rows(
         with_entropy=with_entropy,
         entropy_requires_grad=entropy_requires_grad,
         chunk_size=chunk_size,
-        vocab_size=getattr(args, "vocab_size", None),  # a Megatron flag; other backends' logits are unpadded
+        vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
         temperature=args.rollout_temperature,
         debug_unified_grad_fused_logprob=args.debug_unified_grad_fused_logprob,
     )
