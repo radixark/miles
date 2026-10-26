@@ -378,3 +378,23 @@ def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
 
     adapter = spec.state_dict_adapter(model, None)
     assert set(_GLM47_FLASH_CHECKPOINT_KEYS) <= set(adapter.from_hf_map)
+
+
+@pytest.mark.parametrize("gather_pp", [True, False])
+def test_a_pipeline_stage_without_mla_layers_streams_past_the_q_lora_group(gather_pp):
+    """A stage that streams only its own layers may hold none of a group's members (an all-KDA GLM-5.3 stage)."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
+    from miles.backends.training_utils.weight_update.hf_weight_iterator.bucketing import assemble_atomic_update_groups
+
+    iterator = SimpleNamespace(
+        placement=SimpleNamespace(gather_pp=gather_pp), model_name="glm5_next", _q_lora_rank=1536
+    )
+    groups = TitanHfWeightIterator._hf_atomic_update_groups(iterator)
+    kda_only_stage = [[("model.language_model.layers.0.self_attn.q_proj.weight", torch.zeros(1))]]
+
+    if gather_pp:
+        with pytest.raises(AssertionError, match="matched no params"):
+            list(assemble_atomic_update_groups(kda_only_stage, groups))
+    else:
+        assert list(assemble_atomic_update_groups(kda_only_stage, groups)) == kda_only_stage

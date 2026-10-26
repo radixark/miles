@@ -3,7 +3,7 @@ import glob
 import json
 import os
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import safetensors
 import torch
@@ -48,7 +48,10 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         return tensor.to(target)
 
     def _hf_atomic_update_groups(self):
-        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self._q_lora_rank)
+        groups = get_hf_atomic_update_groups(self.model_name, q_lora_rank=self._q_lora_rank)
+        if self.placement.gather_pp:
+            return groups
+        return [replace(group, optional=True) for group in groups]
 
     def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
         raise NotImplementedError("the torchtitan backend has no LoRA")
