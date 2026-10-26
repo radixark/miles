@@ -49,7 +49,7 @@ def run_check(
         "if endpoint in sources:\n"
         "    print(sources[endpoint])\n"
         "elif endpoint.startswith('repos/radixark/miles-wheels/releases?'):\n"
-        "    print(os.environ['SGLANG_BUILT'])\n"
+        "    print(os.environ['MOCK_SGLANG_BUILT'])\n"
         "elif '/releases/tags/' in endpoint:\n"
         "    print('https://example.test/manifest' if os.environ['MOCK_RELEASE_COMMIT'] else '')\n"
         "elif endpoint == 'https://example.test/manifest':\n"
@@ -79,7 +79,7 @@ def run_check(
             "MOCK_RELEASE_COMMIT": built or "",
             "MISSING_RELEASE": "1" if missing_release else "",
             # the published wheels of the resolved commit, as gh's --jq filter returns them
-            "SGLANG_BUILT": "\n".join(sglang_built),
+            "MOCK_SGLANG_BUILT": "\n".join(sglang_built),
         },
         capture_output=True,
         text=True,
