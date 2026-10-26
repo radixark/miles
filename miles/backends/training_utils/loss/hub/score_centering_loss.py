@@ -174,6 +174,7 @@ def score_centering_loss_function(
             tis_clip=args.score_centering_tis_clip,
             mis_low=args.score_centering_mis_low,
             mis_high=args.score_centering_mis_high,
+            complete_support=getattr(args, "use_sampling_support_replay", False),
         ),
     )
     pg_loss = sum_of_sample_mean(token_loss)
