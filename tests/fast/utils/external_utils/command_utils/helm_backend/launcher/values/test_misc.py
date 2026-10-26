@@ -1,4 +1,3 @@
-import json
 from argparse import Namespace
 
 import pytest
@@ -164,24 +163,6 @@ def _mooncake_args(*, object_store_backend: str = "mooncake", **overrides: objec
     )
 
 
-def _mooncake_argv(**overrides: object) -> list[str]:
-    kwargs = {**MOONCAKE_INIT_KWARGS, **overrides}
-    return [
-        "python",
-        "train.py",
-        "--object-store-backend",
-        "mooncake",
-        "--mooncake-store-init-kwargs",
-        json.dumps(kwargs),
-        "--lr",
-        "1e-6",
-    ]
-
-
-def _rewritten_kwargs(argv: list[str]) -> dict[str, object]:
-    return json.loads(argv[argv.index("--mooncake-store-init-kwargs") + 1])
-
-
 class TestMooncakePlanOfArgs:
     def test_reads_the_backend_and_the_port_the_run_configured(self):
         """The chart publishes this port, so reading it wrong points every client at a closed socket."""
@@ -212,61 +193,26 @@ class TestMooncakePlanOfArgs:
             MooncakeInfo.plan_of_args(args)
 
 
-class TestMooncakeWithClusterMaster:
+class TestMooncakeClusterInitKwargs:
     def test_points_the_master_address_at_the_in_cluster_service(self):
         """The launcher's own loopback address means nothing inside a pod, which would hang every client."""
-        rewritten = MooncakeInfo.with_cluster_master(
-            _mooncake_argv(),
-            plan=MooncakeInfo.plan_of_args(_mooncake_args()),
-            host="mooncake.myns.svc.cluster.local",
+        kwargs = MooncakeInfo.cluster_init_kwargs(
+            MooncakeInfo.plan_of_args(_mooncake_args()), host="mooncake.myns.svc.cluster.local"
         )
 
-        assert _rewritten_kwargs(rewritten)["master_server_address"] == "mooncake.myns.svc.cluster.local:50051"
-
-    def test_a_run_that_never_named_the_flag_is_given_it(self):
-        """The backend moves a run onto this store without being asked, so the flag is missing exactly
-        when the run did not choose mooncake. Every pod parses this argv on its own, so omitting it
-        leaves each of them looking for a master on its own loopback."""
-        plan = MooncakeInfo.plan_of_args(_mooncake_args())
-        argv = ["python", "train.py", "--num-rollout", "1"]
-
-        rewritten = MooncakeInfo.with_cluster_master(argv, plan=plan, host="mooncake.myns.svc.cluster.local")
-
-        assert _rewritten_kwargs(rewritten)["master_server_address"] == "mooncake.myns.svc.cluster.local:50051"
-        assert rewritten[: len(argv)] == argv
+        assert kwargs["master_server_address"] == "mooncake.myns.svc.cluster.local:50051"
 
     def test_keeps_the_port_the_run_configured(self):
         """The Service publishes the port the values carry, so rewriting the host must not move the port."""
         plan = MooncakeInfo.plan_of_args(_mooncake_args(master_server_address="1.2.3.4:60000"))
 
-        rewritten = MooncakeInfo.with_cluster_master(
-            _mooncake_argv(master_server_address="1.2.3.4:60000"), plan=plan, host="host"
-        )
-
-        assert _rewritten_kwargs(rewritten)["master_server_address"] == "host:60000"
+        assert MooncakeInfo.cluster_init_kwargs(plan, host="host")["master_server_address"] == "host:60000"
 
     def test_keeps_every_other_init_kwarg(self):
         """The kwargs are rewritten as a whole, and a dropped one changes how the store is built."""
-        rewritten = MooncakeInfo.with_cluster_master(
-            _mooncake_argv(), plan=MooncakeInfo.plan_of_args(_mooncake_args()), host="host"
-        )
+        kwargs = MooncakeInfo.cluster_init_kwargs(MooncakeInfo.plan_of_args(_mooncake_args()), host="host")
 
-        assert _rewritten_kwargs(rewritten)["local_hostname"] == "localhost"
-
-    def test_leaves_the_rest_of_the_argv_untouched(self):
-        """Only the address is cluster-specific; every other argument is the experiment itself."""
-        rewritten = MooncakeInfo.with_cluster_master(
-            _mooncake_argv(), plan=MooncakeInfo.plan_of_args(_mooncake_args()), host="host"
-        )
-
-        assert rewritten[:5] == _mooncake_argv()[:5]
-        assert rewritten[-2:] == ["--lr", "1e-6"]
-
-    def test_passes_a_non_mooncake_run_through_unchanged(self):
-        """A run that never asked for mooncake has no address to rewrite, and no kwargs to invent."""
-        argv = ["python", "train.py", "--lr", "1e-6"]
-
-        assert MooncakeInfo.with_cluster_master(argv, plan=None, host="host") == argv
+        assert kwargs["local_hostname"] == "localhost"
 
 
 @requires_helm

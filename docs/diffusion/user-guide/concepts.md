@@ -23,8 +23,8 @@ flowchart LR
 | -------------------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | **Prompt dataset**                     | Source of prompts (plus optional metadata)                     | JSONL on disk (`--prompt-data`, `--input-key`)                                                      |
 | **Rollout (sglang-diffusion engines)** | Denoises prompts into images/videos and records the trajectory | One engine per `--rollout-num-gpus-per-engine` GPUs; shipped diffusion recipes explicitly enable the miles router with `--use-miles-router` |
-| **Reward workers**                     | Map `(prompt, generated output) → score`                       | Built-in `rm_hub` (`--rm-type ocr / pickscore`) or custom (`--custom-rm-path`) — Ray actor pools    |
-| **Actor (FSDP2 + diffusers)**          | The DiT being trained, usually via LoRA                        | HF checkpoint (`--hf-checkpoint`), family resolved by `TrainPipelineConfig`                         |
+| **Reward workers**                     | Map `(prompt, generated output) → score`                       | Built-in `rm_hub` (`--rm-type ocr / pickscore / hps / ...`) or custom (`--custom-rm-path`) — Ray actor pools    |
+| **Actor (FSDP2 + diffusers or a native package)** | The DiT being trained, usually via LoRA                        | HF checkpoint (`--hf-checkpoint`), family resolved by `TrainPipelineConfig`                         |
 
 
 
@@ -35,11 +35,11 @@ The whole of `train_diffusion.py` is three calls per iteration:
 
 ```python
 for rollout_id in range(start_rollout_id, num_rollout):
-    # 1. Sample + 2. Score: prompts -> scored denoising trajectories
+    # 1. Sample + 2. Score: prompts -> scored denoising trajectories,
+    #    expanded to (x_t -> x_{t+1}) train pairs and sharded per DP rank
     rollout_data = rollout_manager.generate(rollout_id)
 
-    # 3. Optimize: expand trajectories to (x_t -> x_{t+1}) pairs,
-    #    micro-batch, and step the loss plugin (--loss-type)
+    # 3. Optimize: micro-batch the pairs and step the loss plugin (--loss-type)
     actor_model.async_train(rollout_id, rollout_data)
 
     # 4. Sync: push updated weights (or LoRA pairs) to rollout engines
@@ -48,14 +48,22 @@ for rollout_id in range(start_rollout_id, num_rollout):
 
 Every flag in miles-diffusion configures one of these four phases.
 
+`train_sft.py` is the train-only variant of this loop, and the SFT recipes launch it. Its rollout
+data does not depend on the trained weights, so it generates rollout `i+1` while rollout `i`
+trains; only the first rollout is waited for. Encoders colocated with training hold their encode
+burst until the in-flight train step finishes, so a cold cache stalls on encoding while a warm one
+hides the cache load and dp split entirely. Reserving encoder GPUs with `--rollout-num-gpus` overlaps the encoding too.
+
 ## The batch-knob invariant
 
 In miles-diffusion a sample is a whole denoising **trajectory**, and the fan-out continues below it: a step strategy
-picks the trained timesteps, and micro-batching counts **(x_t → x_{t+1}) pairs**. One equation per level.
+picks the trained timesteps, and micro-batching counts **(`x_t → x_{t+1}`) pairs**. One equation per level.
 
-**Trajectory level** — the four-knob invariant, enforced in `miles/utils/arguments.py`. `rollout_batch_size` is
-required and `n_samples_per_prompt` defaults to 1; of the right-hand pair, set one and the other is derived
-(passing both with contradicting values aborts):
+**Trajectory level** — the four-knob invariant, resolved in `miles/utils/arguments.py`. `rollout_batch_size` is
+required and `n_samples_per_prompt` defaults to 1; of the right-hand pair, set one and the other is derived by
+integer division (set neither and `global_batch_size` defaults to `dp_size`; passing both with contradicting values
+aborts). When the left side does not divide evenly, each rollout's samples are trimmed to a multiple of
+`global_batch_size` before training:
 
 ```bash
 rollout_batch_size × n_samples_per_prompt
@@ -79,9 +87,10 @@ Two independent knobs control physical batching, one per side of the loop:
 | `--rollout-microgroup-size` | rollout  | Samples per engine **request**  |
 | `--micro-batch-size`          | training | Train pairs per DiT **forward** |
 
-And one knob controls the trajectory→pair fan-out itself: `--diffusion-step-strategy-path` picks the SDE step subset per
-rollout (`sde_window`, `epoch_global_random_choice`, or your own function in `miles/rollout/step_strategy_hub.py`).
-Training the full 10-step schedule would multiply the pair count by 10× in the example below.
+And one knob controls the trajectory→pair fan-out itself: `--diffusion-step-strategy-path` picks the SDE step subset for
+each engine request (the built-in `sde_window` or `epoch_global_random_choice` in `miles/rollout/step_strategy_hub.py`,
+or your own function). Training the full 10-step schedule would multiply the pair count by 10× in the example below.
+NFT (`--loss-type nft`) instead trains `(x0, t)` pairs at the steps `--diffusion-nft-timestep-strategy-path` picks per sample.
 
 Here is a full example with the numbers:
 

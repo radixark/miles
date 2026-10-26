@@ -24,7 +24,7 @@ from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction a
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
-from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, lighting_indexer, sparse_attention
+from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, indexer_logits, sparse_attention
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.normalization import rms_norm
@@ -161,8 +161,6 @@ class DSAMultiLatentAttention(Attention):
         )
 
         self.index_topk = 2048
-        if topk_backend not in ("torch", "flashinfer"):
-            raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
         self.topk_backend = topk_backend
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
@@ -172,8 +170,12 @@ class DSAMultiLatentAttention(Attention):
         # "skip" layers reuse the most recent computing layer's ``topk_indices``.
         # When those attrs are absent (``freq`` defaults to 1) every layer computes
         # its own top-k and ``skip_topk`` is always False -- i.e. the plain DSA path.
-        self.index_topk_freq = getattr(self.config, "index_topk_freq", 1) or 1
-        self.skip_topk_offset = getattr(self.config, "index_skip_topk_offset", 0) or 0
+        self.index_topk_freq = (
+            getattr(self.config, "index_topk_freq", 1) or 1
+        )  # config-access-exempt: index sharing is an optional model-specific TransformerConfig extension
+        self.skip_topk_offset = (
+            getattr(self.config, "index_skip_topk_offset", 0) or 0
+        )  # config-access-exempt: index sharing offsets are optional TransformerConfig extensions
         self.index_share = self.index_topk_freq > 1
         self.skip_topk = self.index_share and is_skip_topk_layer(
             self.layer_number, self.skip_topk_offset, self.index_topk_freq
@@ -236,31 +238,22 @@ class DSAMultiLatentAttention(Attention):
             # replay records one topk tensor per layer-forward; don't split it
             if indexer_replay_manager.enabled:
                 block_size = seq_len
-            indexer_topk_scores = []
+            topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
             topk_indices = []
-
             for start in range(0, seq_len, block_size):
                 end = min(start + block_size, seq_len)
-                index_q_block = index_q[start:end]
-                w_block = w[start:end]
-                starts_block = starts[start:end]
-                ends_block = ends[start:end]
-                starts_block = starts_block.to(torch.int32)
-                ends_block = ends_block.to(torch.int32)
-                indexer_topk_scores_block, topk_indices_block = lighting_indexer(
-                    index_q_block,
+                starts_block = starts[start:end].to(torch.int32)
+                ends_block = ends[start:end].to(torch.int32)
+                logits = indexer_logits(
+                    index_q[start:end],
                     index_k,
-                    w_block,
+                    w[start:end],
                     starts_block,
                     ends_block,
-                    self.index_topk,
-                    topk_fn=indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False),
+                    clean_logits=self.topk_backend != "canonical",
                 )
-
-                indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)
-                indexer_topk_scores.append(indexer_topk_scores_block)
-                topk_indices.append(topk_indices_block)
-            return torch.cat(indexer_topk_scores, dim=0), torch.cat(topk_indices, dim=0).unsqueeze(1)
+                topk_indices.append(topk_fn(logits, self.index_topk, starts_block, ends_block))
+            return torch.cat(topk_indices, dim=0).unsqueeze(1)
 
         if self.index_share:
             # Cross-layer index sharing. The top-k holder lives on the per-microbatch
@@ -270,7 +263,9 @@ class DSAMultiLatentAttention(Attention):
             # clobber under PP 1F1B) AND recompute safety. A stage always starts on a
             # computing layer (asserted in ``get_glm5_spec``), so a skip layer's source is
             # always in-stage.
-            holder = getattr(packed_seq_params, self._HOLDER_ATTR, None)
+            holder = getattr(
+                packed_seq_params, self._HOLDER_ATTR, None
+            )  # config-access-exempt: the packed-sequence cache is attached lazily under a dynamic key
             if holder is None:
                 holder = {}
                 setattr(packed_seq_params, self._HOLDER_ATTR, holder)
@@ -293,14 +288,14 @@ class DSAMultiLatentAttention(Attention):
                 index_key = index_key.squeeze(1)
                 starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
                 ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
-                _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
+                topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
                 holder[self.layer_number] = topk_indices
         else:
             starts, ends = causal_ranges(packed_seq_params.cu_seqlens_q)
             index_key = index_key.squeeze(1)
             starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
             ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
-            _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
+            topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
         core_attn_out = sparse_attention(
             q.unsqueeze(0),
@@ -508,7 +503,9 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         # weights on computing layers) and weight export to HF omits them on skip layers.
         if self.skip_topk:
             for name in _INDEXER_SUBMODULE_NAMES:
-                if hasattr(self, name):
+                if hasattr(
+                    self, name
+                ):  # config-access-exempt: skip layers delete optional submodules by registered names
                     delattr(self, name)
 
     def get_absorb_query_key_value_tensors(
@@ -724,19 +721,25 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
     def set_for_recompute_input_layernorm(self):
         """Set the attention layer for recompute input_layernorm. Only needed for fp8."""
         if self.config.q_lora_rank is not None:
-            if hasattr(self.linear_q_down_proj, "save_original_input"):
+            if hasattr(
+                self.linear_q_down_proj, "save_original_input"
+            ):  # config-access-exempt: only compatible projection implementations support input replay
                 self.linear_q_down_proj.save_original_input = True
             else:
                 raise ValueError(
                     "layernorm recompute for fp8 with MLASelfAttention needs " "transformer-engine>=2.6.0dev0."
                 )
-        if hasattr(self.linear_kv_down_proj, "save_original_input"):
+        if hasattr(
+            self.linear_kv_down_proj, "save_original_input"
+        ):  # config-access-exempt: only compatible projection implementations support input replay
             self.linear_kv_down_proj.save_original_input = True
         else:
             raise ValueError(
                 "layernorm recompute for fp8 with MLASelfAttention needs " "transformer-engine>=2.6.0dev0."
             )
-        if hasattr(self.linear_proj, "save_original_input"):
+        if hasattr(
+            self.linear_proj, "save_original_input"
+        ):  # config-access-exempt: only compatible projection implementations support input replay
             self.linear_proj.save_original_input = True
         else:
             raise ValueError(
@@ -748,13 +751,19 @@ def get_glm5_spec(args, config, vp_stage):
     hf_config = load_hf_config(args.hf_checkpoint)
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
-    config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
+    config.indexer_rope_interleave = bool(
+        getattr(hf_config, "indexer_rope_interleave", False)
+    )  # config-access-exempt: HF checkpoints may omit indexer rotary interleaving
     # Optional cross-layer index-sharing schedule. Present on DSA checkpoints that only
     # store indexer weights on a subset of "computing" layers (e.g. GLM-5.2). When absent,
     # every layer computes its own top-k (plain DSA) and DSAMLASelfAttention runs the
     # non-shared path.
-    config.index_topk_freq = getattr(hf_config, "index_topk_freq", 1) or 1
-    config.index_skip_topk_offset = getattr(hf_config, "index_skip_topk_offset", 0) or 0
+    config.index_topk_freq = (
+        getattr(hf_config, "index_topk_freq", 1) or 1
+    )  # config-access-exempt: HF checkpoints may omit index sharing frequency
+    config.index_skip_topk_offset = (
+        getattr(hf_config, "index_skip_topk_offset", 0) or 0
+    )  # config-access-exempt: HF checkpoints may omit index sharing offsets
     # Define the decoder block spec
     kwargs = {
         "use_transformer_engine": True,

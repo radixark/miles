@@ -41,6 +41,11 @@ The current path:
   per response.
 - **A pool, round-robin dispatched.** `--rollout-parser-num-workers N` spins up N parser actors so multiple microgroups
   deserialize in parallel.
+- **Optionally, the parser fetches too.** With `--rollout-fetch-in-parser` (requires `--use-miles-router`; six shipped
+  recipes set it, the LTX-2.3 one included) the parser actor also makes the request: it asks the router for the
+  least-loaded engine, posts `/rollout/generate` itself, and parses the response in place (`fetch_and_apply`), so the
+  response never passes through the rollout process. A parser then stays busy for the whole generation, so
+  `perf/parser_max_queue_depth` counts queued generations, not just queued unpacks.
 
 Measured on the LTX-2.3 recipe (H200, same config, averaged over two consecutive RL steps, base64/JSON vs the current
 path):
@@ -69,19 +74,28 @@ overlaps with generation and deserialization of the others.
 
 ## 4. Diagnosing the pipeline
 
-The miles dashboard visualizes the lifetime of every request — the generate / deserialize / reward spans of each
-microgroup on one timeline, so overlap (or the lack of it) is visible directly. Launch with `--use-miles-dashboard`
-(telemetry lands under `--miles-dashboard-workspace`), then render:
+Both actor pools report how deep their backlog was, which is what tells you whether a stage is keeping up. When a
+microgroup is dispatched, the pool records how many calls that worker already had in flight and keeps the largest value
+seen over the rollout. A reward pool keeps counting a scoring call's batches until the last of them returns:
 
-```bash
-python -m miles.dashboard.viewer --workspace ./miles_dashboard --out dash.html
-```
+| Metric | Meaning |
+|---|---|
+| `perf/parser_max_queue_depth` | Deepest backlog on a parser actor when a response was handed to it |
+| `perf/reward_max_queue_depth_<pool>` | Deepest backlog on that reward pool's actors when a batch was handed to them, one metric per pool (`hps`, `pickscore`, `ocr`, `openai_api`, `custom_api`) |
 
-For quick triage from `perf/*` metrics alone:
+`0` means every dispatch found its worker idle — that stage never made anything wait. A number that climbs with the
+number of concurrent microgroups means the stage is saturated and requests are lining up behind it. The API pools
+(`openai_api`, `custom_api`) are one actor that runs `max_concurrency` requests at once, so for them a depth below
+`max_concurrency` means nothing waited; at or above it, requests may have waited.
 
-| Symptom                                                 | Look at                  | Likely fix                                                                 |
-| ------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------- |
-| `perf/rollout_time` high, engines idle between requests | `deserialize` stage time | Raise `--rollout-parser-num-workers`                                       |
-| Rollout stalls at the end of each iteration             | `reward` stage time      | More reward workers, or a dedicated reward GPU                             |
-| Event loop warnings / slow heartbeat                    | main-process CPU         | Confirm parsing is going through the actor pool (it always does on `main`) |
+Read them together with `perf/rollout_time`:
+
+| Symptom | Look at | Likely fix |
+|---|---|---|
+| `perf/rollout_time` high | `perf/parser_max_queue_depth` > 0 | Responses are queuing on the parsers (deserialization, or with `--rollout-fetch-in-parser` whole generations); raise `--rollout-parser-num-workers` |
+| `perf/rollout_time` high | `perf/reward_max_queue_depth_<pool>` > 0 (API pools: ≥ `max_concurrency`) | That pool's scoring is the bottleneck; add its workers (API pools: raise `max_concurrency`), or give it a dedicated GPU |
+| `perf/rollout_time` high, both depths `0` | Nothing queued at dispatch | Usually the engines — check `--rollout-microgroup-size` and `--sglang-server-concurrency`. Parsing also runs inside a `--sglang-server-concurrency` slot, so a slow parse can hold back generation without a parser backlog |
+
+Both metrics are emitted only when the corresponding pool ran, so a reward with no actor pool leaves
+its `perf/reward_max_queue_depth_<pool>` absent rather than zero.
 

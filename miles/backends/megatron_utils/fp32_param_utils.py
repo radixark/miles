@@ -35,7 +35,9 @@ def enforce_marked_param_dtypes(model_chunks: Sequence[torch.nn.Module]) -> list
     updated_names: list[str] = []
     for chunk in model_chunks:
         for name, param in chunk.named_parameters():
-            target_dtype = getattr(param, FORCED_PARAM_DTYPE_ATTR, None)
+            target_dtype = getattr(
+                param, FORCED_PARAM_DTYPE_ATTR, None
+            )  # config-access-exempt: attribute selected at runtime from FORCED_PARAM_DTYPE_ATTR
             if target_dtype is None:
                 continue
 

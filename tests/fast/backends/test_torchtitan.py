@@ -8,6 +8,7 @@ import torch
 from tests.ci.ci_register import register_cpu_ci
 
 from miles.backends.torchtitan_utils import parallel as tp
+from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
 
 register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
@@ -24,6 +25,9 @@ def _args(**overrides) -> Namespace:
         rollout_max_response_len=4096,
         ref_update_interval=None,
         save_debug_train_data=None,
+        optimizer_cpu_offload=False,
+        stream_optimizer_state_to_disk=False,
+        stream_optimizer_state_moment_dtype="fp32",
         fp16=False,
         lr_decay_style="constant",
         lr_warmup_fraction=None,
@@ -64,7 +68,7 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
         validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
 
 
-def _config_args(**overrides) -> Namespace:
+def _config_args(**overrides: object) -> Namespace:
     base = dict(
         optimizer="adam",
         titan_model_name="qwen3",
@@ -88,10 +92,11 @@ def _config_args(**overrides) -> Namespace:
         weight_decay=0.1,
         seed=1,
         gradient_checkpointing=False,
+        optimizer_cpu_offload=False,
         save=None,
         load=None,
     )
-    return Namespace(**{**base, **overrides})
+    return Namespace(backend=TorchtitanArgsNamespace(**{**base, **overrides}))
 
 
 def _checkpoint_dir(tmp_path, **config) -> str:
@@ -332,14 +337,14 @@ def test_unknown_model_names_name_both_package_roots():
     from miles.backends.torchtitan_utils.config import resolve_model_spec
 
     with pytest.raises(ValueError, match="miles.backends.torchtitan_utils.models.nope.*torchtitan.models.nope"):
-        resolve_model_spec(_args(titan_model_name="nope", titan_model_flavor="x"))
+        resolve_model_spec(_config_args(titan_model_name="nope", titan_model_flavor="x"))
 
 
 def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.config import resolve_model_spec
 
-    spec = resolve_model_spec(_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"))
+    spec = resolve_model_spec(_config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"))
     hf = _GLM47_FLASH_HF_CONFIG
     model = spec.model
     assert (model.dim, model.vocab_size, len(model.layers)) == (
@@ -373,3 +378,48 @@ def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
 
     adapter = spec.state_dict_adapter(model, None)
     assert set(_GLM47_FLASH_CHECKPOINT_KEYS) <= set(adapter.from_hf_map)
+
+
+@pytest.mark.parametrize("gather_pp", [True, False])
+def test_a_pipeline_stage_without_mla_layers_streams_past_the_q_lora_group(gather_pp):
+    """A stage that streams only its own layers may hold none of a group's members (an all-KDA GLM-5.3 stage)."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
+    from miles.backends.training_utils.weight_update.hf_weight_iterator.bucketing import assemble_atomic_update_groups
+
+    iterator = SimpleNamespace(
+        placement=SimpleNamespace(gather_pp=gather_pp), model_name="glm5_next", _q_lora_rank=1536
+    )
+    groups = TitanHfWeightIterator._hf_atomic_update_groups(iterator)
+    kda_only_stage = [[("model.language_model.layers.0.self_attn.q_proj.weight", torch.zeros(1))]]
+
+    if gather_pp:
+        with pytest.raises(AssertionError, match="matched no params"):
+            list(assemble_atomic_update_groups(kda_only_stage, groups))
+    else:
+        assert list(assemble_atomic_update_groups(kda_only_stage, groups)) == kda_only_stage
+
+
+@pytest.mark.parametrize("cpu_offload", [False, True])
+def test_sleep_and_wake_leave_cpu_offloaded_training_state_on_the_host(monkeypatch, cpu_offload):
+    """Under --optimizer-cpu-offload the shards and moments already live on the host; moving them on wake would pull
+    every one onto the GPU."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import actor as titan_actor
+    from miles.backends.training_utils.torch_native import actor as native_actor
+
+    moved: list[bool] = []
+    monkeypatch.setattr(native_actor, "move_train_state", lambda *_args, to_host: moved.append(to_host))
+    monkeypatch.setattr(titan_actor.dist, "barrier", lambda **_kwargs: None)
+    for module in (titan_actor, native_actor):
+        monkeypatch.setattr(module, "clear_memory", lambda: None)
+        monkeypatch.setattr(module, "print_memory", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(module, "get_gloo_group", lambda: None)
+    actor = titan_actor.TorchtitanTrainRayActor.__new__(titan_actor.TorchtitanTrainRayActor)
+    actor.args = SimpleNamespace(offload_train=True, backend=SimpleNamespace(optimizer_cpu_offload=cpu_offload))
+    actor.model_parts, actor.optimizers = [], []
+
+    actor.sleep()
+    actor.wake_up()
+
+    assert moved == ([] if cpu_offload else [True, False])

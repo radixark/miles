@@ -62,7 +62,12 @@ def test_fill_replay_bshd_token_alignment(
     # Each token has unique expert IDs in both streams and top-k slots.
     expert_offsets = torch.arange(4).reshape(2, 2)
     routes = [token_ids[:-1, None, None] * 10 + expert_offsets for token_ids in tokens]
-    args = SimpleNamespace(qkv_format="bshd", allgather_cp=allgather_cp, sequence_parallel=sequence_parallel)
+    args = SimpleNamespace(
+        qkv_format="bshd",
+        allgather_cp=allgather_cp,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=sequence_parallel),
+    )
 
     for cp_rank in range(cp_size):
         positions = list(range(max_seqlen))
@@ -128,7 +133,11 @@ def test_fill_replay_bshd_token_alignment(
 @pytest.mark.parametrize("tp_size,sequence_parallel", [(1, False), (2, True)])
 def test_fill_replay_thd_preserves_packed_order(monkeypatch, sequence_first, tp_size, sequence_parallel):
     args = SimpleNamespace(
-        qkv_format="thd", allgather_cp=False, sequence_parallel=sequence_parallel, data_pad_size_multiplier=2
+        qkv_format="thd",
+        allgather_cp=False,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=sequence_parallel),
+        data_pad_size_multiplier=2,
     )
     expected = torch.tensor([0, 1, -1, 2, 3, -1])
     if tp_size == 2:
@@ -156,3 +165,35 @@ def test_fill_replay_thd_preserves_packed_order(monkeypatch, sequence_first, tp_
         )
         local_expected = expected.chunk(tp_size)[tp_rank] if sequence_parallel else expected
         torch.testing.assert_close(replay.recorded[0][:, 0], local_expected)
+
+
+class TestNativeReplayOwnership:
+    def test_fsdp_replay_does_not_require_megatron_sequence_parallel_settings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Native replay preserves token routing and padding without reading Megatron-only sequence parallelism."""
+        state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
+        monkeypatch.setattr(parallel, "_parallel_state", state)
+        args = SimpleNamespace(qkv_format="bshd", allgather_cp=False, train_backend="fsdp", backend=SimpleNamespace())
+        batch = {
+            "routes": [torch.tensor([[[11]], [[12]]])],
+            "tokens": [torch.tensor([1, 2, 3])],
+            "max_seq_lens": [4],
+        }
+        iterator = SimpleNamespace(reset=lambda: None, get_next=lambda keys: batch)
+        replay = _Replay()
+
+        fill_replay_data(
+            args=args,
+            models=None,
+            data_iterator=[iterator],
+            num_microbatches=[1],
+            rollout_data=batch,
+            data_key="routes",
+            replay_list=[replay],
+            register_replay_list_func=register_replay_list_sequential,
+            if_sp_region=True,
+        )
+
+        assert len(replay.recorded) == 1
+        torch.testing.assert_close(replay.recorded[0], torch.tensor([[11], [12], [-1], [-1]]))

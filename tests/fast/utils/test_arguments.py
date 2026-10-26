@@ -1,20 +1,29 @@
 import argparse
+import copy
 import json
 import logging
 import os
 import re
 import sys
 import tempfile
+from collections.abc import Callable
 from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import torch
+from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 
+from miles.backends.fsdp_utils.arguments import build_fsdp_parser
+from miles.backends.megatron_utils.megatron_config import MegatronConfig, get_megatron_arg_parser
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
+from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
+from miles.utils.args.configs.router import RouterConfig
+from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import (
     FULLY_ASYNC_ROLLOUT_PATH,
     _compute_custom_inference_engine_provider_path,
@@ -30,6 +39,7 @@ from miles.utils.arguments import (
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
+    parse_args_and_get_parser,
     resolve_rollout_function_paths,
     supports_partial_target_weight_update,
     validate_async_off_policy_correction,
@@ -62,10 +72,15 @@ def _set_megatron_parallel_sizes(args: argparse.Namespace) -> None:
         setattr(args, name, size)
 
 
-def _parse_megatron_args(extra: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
+def _megatron_and_miles_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    MegatronConfig.add_arguments(parser)
     get_miles_extra_args_provider()(parser)
-    args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+    return parser
+
+
+def _parse_megatron_args(extra: list[str]) -> argparse.Namespace:
+    args = _megatron_and_miles_parser().parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
     _set_megatron_parallel_sizes(args)
     return args
 
@@ -255,8 +270,7 @@ EXTERNAL_ARGS = [
 
 class TestExternalRolloutValidation:
     def _parse(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(extra + REQUIRED_ARGS)
 
     def test_static_addrs_derive_both_external_and_the_discovery_provider(self):
@@ -349,8 +363,7 @@ class TestExternalRolloutValidation:
 class TestEventDirectoryDefaults:
     @staticmethod
     def _parse(extra: list[str]) -> argparse.Namespace:
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
 
     def test_save_defaults_events_but_preserves_an_explicit_directory(self) -> None:
@@ -371,6 +384,24 @@ class TestEventDirectoryDefaults:
         miles_validate_args(args)
 
         assert args.log_inference_engine_weight_checksums is True
+
+    def test_the_save_event_directory_fallback_does_not_ask_for_engine_weight_checksums(self) -> None:
+        """A checkpoint root alone must not make every weight update checksum all engine weights."""
+        args = self._parse(["--save", "/checkpoints/run"])
+
+        miles_validate_args(args)
+
+        assert args.save_debug_event_data == "/checkpoints/run/events"
+        assert args.log_inference_engine_weight_checksums is False
+
+    def test_the_dump_details_event_directory_does_not_ask_for_engine_weight_checksums(self) -> None:
+        """A dump root alone must not make every weight update checksum all engine weights."""
+        args = self._parse(["--dump-details", "/debug/run"])
+
+        miles_validate_args(args)
+
+        assert args.save_debug_event_data == "/debug/run/events"
+        assert args.log_inference_engine_weight_checksums is False
 
     def test_the_ci_event_directory_fallback_does_not_ask_for_engine_weight_checksums(self) -> None:
         """CI gets an event directory for sample ownership without the engine checksum allocation."""
@@ -416,8 +447,7 @@ class TestSampleOwnershipCheckArguments:
 
     @staticmethod
     def _parse(extra: list[str]) -> argparse.Namespace:
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
 
     def test_an_enabled_checker_without_an_event_directory_is_rejected(self) -> None:
@@ -567,7 +597,7 @@ class TestSampleOwnershipCheckArguments:
         """Several actor lineages cannot share the single-policy current-witness checker."""
         monkeypatch.setattr(
             "miles.utils.arguments.resolve_megatron_config",
-            lambda _args: SimpleNamespace(
+            lambda _args, *, base_args: SimpleNamespace(
                 trainers=[
                     SimpleNamespace(role="actor"),
                     SimpleNamespace(role="actor"),
@@ -600,8 +630,7 @@ class TestWeightTransferChecksumArguments:
     )
     def test_ci_enables_the_check_unless_the_flag_says_otherwise(self, extra: list[str], enabled: bool) -> None:
         """Every P2P write is checked in CI by default, and an explicit flag wins either way."""
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         args = parser.parse_args(["--num-rollout", "1", "--run-uuid", "0123456789abcdef", *extra, *REQUIRED_ARGS])
 
         miles_validate_args(args)
@@ -630,6 +659,7 @@ class TestMaybeApplyDumperOverrides:
     ) -> SimpleNamespace:
         return SimpleNamespace(
             dumper_enable=dumper_enable,
+            train_backend="megatron",
             use_fault_tolerance=use_fault_tolerance,
             ft_components=ft_components if ft_components is not None else [],
             mini_ft_controller_enable=None,
@@ -663,11 +693,10 @@ class TestMaybeApplyDumperOverrides:
 
     def test_disables_fault_tolerance_and_sglang_router_heartbeats(self) -> None:
         """Dumper mode turns off fault tolerance and the SGLang router health check."""
-        args = self._make_args(
-            dumper_enable=True,
-            use_fault_tolerance=True,
+        args = _parse_megatron_args(
+            ["--dumper-enable", "--use-fault-tolerance", "--update-weight-transfer-mode", "p2p"]
         )
-        _maybe_apply_dumper_overrides(args)
+        miles_validate_args(args)
 
         assert args.use_fault_tolerance is False
         assert args.router_disable_health_check is True
@@ -675,18 +704,40 @@ class TestMaybeApplyDumperOverrides:
     def test_no_healing_loop_survives_dumper_mode(self) -> None:
         """It is resolved from ft_components, which dumper mode clears, so resolving it first
         would leave the loop polling a registry with nothing in it for the whole run."""
-        args = self._make_args(dumper_enable=True, use_fault_tolerance=True, ft_components=["rollout"])
+        args = _parse_megatron_args(
+            [
+                "--dumper-enable",
+                "--use-fault-tolerance",
+                "--update-weight-transfer-mode",
+                "p2p",
+                "--ft-components",
+                "rollout",
+            ]
+        )
 
-        _maybe_apply_dumper_overrides(args)
+        miles_validate_args(args)
 
         assert _resolve_mini_ft_controller_enable(args) is False
 
     def test_the_selected_ft_components_go_with_the_flag(self) -> None:
         """ft_components is resolved from the flag long before this runs, so clearing the flag
         alone would leave every component selected and its probes still firing."""
-        args = self._make_args(dumper_enable=True, use_fault_tolerance=True, ft_components=["rollout", "train"])
+        args = _parse_megatron_args(
+            [
+                "--dumper-enable",
+                "--use-fault-tolerance",
+                "--update-weight-transfer-mode",
+                "p2p",
+                "--use-dynamic-batch-size",
+                "--max-tokens-per-gpu",
+                "1024",
+                "--ft-components",
+                "rollout",
+                "train",
+            ]
+        )
 
-        _maybe_apply_dumper_overrides(args)
+        miles_validate_args(args)
 
         assert args.ft_components == []
 
@@ -713,10 +764,12 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
     instance only when both paths match."""
     path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
     default = SimpleNamespace(rollout_function_path=None, eval_function_path=None, fully_async=True)
-    assert resolve_rollout_function_paths(default) == (path, path)
+    resolve_rollout_function_paths(default)
+    assert (default.rollout_function_path, default.eval_function_path) == (path, path)
 
     override = SimpleNamespace(rollout_function_path=None, eval_function_path="pkg.CustomEval", fully_async=True)
-    assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
+    resolve_rollout_function_paths(override)
+    assert (override.rollout_function_path, override.eval_function_path) == (path, "pkg.CustomEval")
 
 
 def _fully_async_candidate_args(**overrides) -> SimpleNamespace:
@@ -854,9 +907,7 @@ def test_fully_async_colocate_rejects_rollout_fault_tolerance():
 class TestClusterBackend:
 
     def _parse(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
-        return parser.parse_args(extra + REQUIRED_ARGS)
+        return _megatron_and_miles_parser().parse_args(extra + REQUIRED_ARGS)
 
     def test_defaults_to_ray(self):
         """Runs that do not mention the flag keep the ray-launched worker behaviour."""
@@ -880,15 +931,19 @@ class TestClusterBackend:
 
         assert args.cluster_backend == "kubernetes"
 
-    def test_the_custom_config_file_still_decides_the_backend(self, tmp_path):
+    def test_the_custom_config_file_still_decides_the_backend(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """The config file overwrites args after the flags are parsed, so its backend must be the one that survives."""
         config = tmp_path / "override.yaml"
         config.write_text("cluster_backend: kubernetes\n")
         args = self._parse(["--custom-config-path", str(config), "--num-rollout", "1"])
 
-        miles_validate_args(args)
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            miles_validate_args(args)
 
         assert args.cluster_backend == "kubernetes"
+        assert "--custom-config-path is deprecated" in caplog.text
 
     def test_a_kubernetes_run_is_moved_onto_the_mooncake_object_store(self):
         """A ray store reference can only be redeemed by a ray driver, and this run has none."""
@@ -1140,8 +1195,7 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     ],
 )
 def test_sampling_support_arguments_fail_closed(extra, message):
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
     with pytest.raises(ValueError, match=message):
@@ -1178,8 +1232,7 @@ def test_fused_log_probs_backend_rejects_what_it_does_not_cover(extra, vocab_siz
 )
 @pytest.mark.parametrize("candidate_count", [0, 64])
 def test_sampling_replay_and_logprobs_mode_are_derived_from_rollout_filters(sampling_args, expected, candidate_count):
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(
         sampling_args + ["--num-rollout", "1", "--rollout-top-logprobs-num", str(candidate_count)] + REQUIRED_ARGS
     )
@@ -1191,6 +1244,7 @@ def test_sampling_replay_and_logprobs_mode_are_derived_from_rollout_filters(samp
 
 def test_sglang_parallel_sizes_keep_server_args_destinations():
     parser = add_sglang_arguments(argparse.ArgumentParser())
+    RouterConfig.add_arguments(parser)
     args = parser.parse_args(
         [
             "--sglang-tp-size",
@@ -1208,7 +1262,9 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
     args.rollout_num_gpus_per_engine = 8
     args.true_on_policy_mode = False
     args.sglang_enable_dp_attention = True
+    args.loss_type = "policy_loss"
     args.use_session_server = False
+    args.recompute_logprobs_via_prefill = False
 
     validate_sglang_args(args)
 
@@ -1245,8 +1301,7 @@ _INFERENCE_ARGS = [
 
 
 def _parse_deploy_args(extra, *, use_critic: bool = False, resolve_fault_tolerance: bool = False):
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(["--cluster-backend", "kubernetes", *extra, *REQUIRED_ARGS, "--num-rollout", "1"])
     args.use_critic = use_critic
     if resolve_fault_tolerance:
@@ -1588,14 +1643,17 @@ class TestInitExpectedNumCells:
                 )
             )
 
-    def test_an_unsplit_run_is_refused_the_flag(self):
-        """It deploys every engine it waits for, so the fleet it starts on is not something to be told."""
-        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
-            _validate_deploy_component(_parse_deploy_args(["--init-expected-num-cells", "2"]))
+    def test_an_unsplit_run_takes_the_flag_to_keep_its_configs_unchanged_while_it_scales(self):
+        """Its derived default follows the engine count, so an elastic run pins it to keep every payload the same."""
+        args = _parse_deploy_args(["--init-expected-num-cells", "2"])
 
-    def test_the_refusal_names_the_deployment_that_does_take_the_flag(self):
-        """Whoever launched the wrong half has to be told which half to move the flag to."""
-        with pytest.raises(AssertionError, match="primary"):
+        _validate_deploy_component(args)
+
+        assert args.init_expected_num_cells == 2
+
+    def test_the_refusal_names_the_deployments_that_do_take_the_flag(self):
+        """Whoever launched the wrong half has to be told which deployments to move the flag to."""
+        with pytest.raises(AssertionError, match="needs --deploy-component all or primary"):
             _validate_deploy_component(
                 _parse_deploy_args(
                     ["--deploy-component", "trainer", *_SHARED_STORE_ARGS, "--init-expected-num-cells", "2"]
@@ -1778,8 +1836,7 @@ def test_custom_megatron_post_save_hook_path_is_parsed():
 
 
 def test_custom_megatron_post_save_hook_path_requires_save():
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(
         ["--custom-megatron-post-save-hook-path", "pkg.module.hook", "--num-rollout", "1"] + REQUIRED_ARGS
     )
@@ -1792,8 +1849,7 @@ def test_custom_megatron_post_save_hook_path_requires_save():
 
 
 def test_dynamic_global_batch_size_requires_dynamic_batch_size():
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(["--use-dynamic-global-batch-size", "--num-rollout", "1"] + REQUIRED_ARGS)
 
     with pytest.raises(AssertionError, match="requires --use-dynamic-batch-size"):
@@ -1838,8 +1894,7 @@ class TestIndepDpBatchSchedule:
 
 def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
     """The eval fleet pins engine addresses once, so a healed eval cell would be skipped silently."""
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(
         ["--use-fault-tolerance", "--ft-components", "rollout", "--eval-num-gpus", "8", "--num-rollout", "1"]
         + _P2P_ARGS
@@ -1902,8 +1957,7 @@ class TestCustomConfigAppliedBeforeDerivedArgs:
     def _parse(self, tmp_path: Path, extra: list[str], yaml_body: str) -> argparse.Namespace:
         config_path = tmp_path / "custom.yaml"
         config_path.write_text(yaml_body)
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(
             extra + ["--custom-config-path", str(config_path), "--num-rollout", "1"] + REQUIRED_ARGS
         )
@@ -1993,8 +2047,7 @@ def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
 )
 def test_stream_optimizer_state_to_disk_rejects_reading_grads_outside_the_step(megatron_args, match):
     """The streamed params have fp32 gradients only inside the optimizer step."""
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(["--stream-optimizer-state-to-disk", "--num-rollout", "1"] + REQUIRED_ARGS)
     args.optimizer = "adam"
     args.use_distributed_optimizer = True
@@ -2010,8 +2063,7 @@ class TestMtpTrainingValidation:
     """--mtp-num-layers describes the model; only --enable-mtp-training builds and trains the MTP layers."""
 
     def _validate(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
         _set_megatron_parallel_sizes(args)
         miles_validate_args(args)
@@ -2050,8 +2102,7 @@ class TestMtpTrainingValidation:
 
 class TestCriticSaveDerivation:
     def _validate(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
         miles_validate_args(args)
         return args
@@ -2077,23 +2128,26 @@ class TestCriticSaveDerivation:
 
 class TestCheckpointLoadFallbackWiring:
     def _validate(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
         miles_validate_args(args)
         return args
 
     def test_a_fresh_ppo_run_starts_the_actor_and_its_critic_from_the_reference_weights(self, tmp_path):
-        """The fallback has to run before critic_load is derived, or the critic resumes from a dir nobody wrote."""
+        """Each role resolves missing checkpoints at runtime without rewriting launch configuration."""
         ref_load = tmp_path / "ref"
         ref_load.mkdir()
 
-        args = self._validate(
-            ["--advantage-estimator", "ppo", "--load", str(tmp_path / "absent"), "--ref-load", str(ref_load)]
+        args = parse_megatron_test_config(
+            "--advantage-estimator", "ppo", "--load", str(tmp_path / "absent"), "--ref-load", str(ref_load)
         )
 
-        assert args.load == str(ref_load)
-        assert args.critic_load == str(ref_load)
+        assert args.load == str(tmp_path / "absent")
+        assert args.critic_load is None
+        assert [compute_trainer_ckpt_load_config(args, trainer).load for trainer in args.raw_megatron.trainers] == [
+            str(ref_load),
+            str(ref_load),
+        ]
 
     def test_an_existing_checkpoint_is_left_alone(self, tmp_path):
         """A real resume must keep --load, which is also what the critic inherits."""
@@ -2101,16 +2155,21 @@ class TestCheckpointLoadFallbackWiring:
         load.mkdir()
         (load / "latest_checkpointed_iteration.txt").write_text("10")
 
-        args = self._validate(["--advantage-estimator", "ppo", "--load", str(load), "--ref-load", str(tmp_path)])
+        args = parse_megatron_test_config(
+            "--advantage-estimator", "ppo", "--load", str(load), "--ref-load", str(tmp_path)
+        )
 
         assert args.load == str(load)
-        assert args.critic_load == str(load)
+        assert args.critic_load is None
+        assert [compute_trainer_ckpt_load_config(args, trainer).load for trainer in args.raw_megatron.trainers] == [
+            str(load),
+            str(load),
+        ]
 
 
 class TestSessionServerV2Validation:
     def _parse(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
     @pytest.mark.parametrize(
@@ -2181,8 +2240,7 @@ class TestSessionMessageMatcherArgument:
 
 class TestSessionServerPauseGenerationMode:
     def _parse(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
     @pytest.mark.parametrize("colocate", [False, True])
@@ -2248,8 +2306,7 @@ class TestSessionServerPauseGenerationMode:
 
 class TestSnapshotEvalValidation:
     def _parse(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
     def _snapshot_eval_args(self, tmp_path, *extra):
@@ -2294,8 +2351,7 @@ class TestSnapshotEvalValidation:
 
 class TestPartitionRadixCacheByRolloutCallResolution:
     def _parse(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
     def test_it_is_unset_before_validation(self):
@@ -2372,8 +2428,7 @@ class TestPartitionRadixCacheByRolloutCallResolution:
 
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
     def test_removed_role_flag_is_rejected(self):
@@ -2502,8 +2557,7 @@ class TestTitoFixedTemplateConfiguration:
 
 
 def test_bridge_mode_accepts_critic(tmp_path):
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(
         [
             "--advantage-estimator",
@@ -2524,8 +2578,7 @@ def test_bridge_mode_accepts_critic(tmp_path):
 
 def test_p2p_accepts_megatron_bridge(tmp_path):
     """Bridge gathers PP and p2p assigns senders over the gathered placement, so each rollout engine rank is written once."""
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(
         [
             "--update-weight-transfer-mode",
@@ -2545,8 +2598,7 @@ def test_p2p_accepts_megatron_bridge(tmp_path):
 
 def test_critic_is_accepted_on_the_only_trainer(tmp_path):
     """Shared actor/critic PPO used to be rejected on the cell based trainer, which is now the only one."""
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(
         ["--advantage-estimator", "ppo", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"] + REQUIRED_ARGS
     )
@@ -2557,8 +2609,7 @@ def test_critic_is_accepted_on_the_only_trainer(tmp_path):
 
 
 def test_critic_rejects_reward_level_kl(tmp_path):
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(
         [
             "--advantage-estimator",
@@ -2591,8 +2642,7 @@ class TestDataSourceSelection:
     )
     def test_validation_selects_the_source_for_the_rollout_mode(self, extra: list[str], expected: str) -> None:
         """Only partial rollout needs the built-in source to retain aborted groups."""
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         args = parser.parse_args([*REQUIRED_ARGS, "--num-rollout", "1", *extra])
 
         miles_validate_args(args)
@@ -2601,8 +2651,7 @@ class TestDataSourceSelection:
 
     def test_partial_rollout_logs_the_default_buffered_source(self, caplog) -> None:
         """Operators can see when partial rollout changes the default data source."""
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         args = parser.parse_args([*REQUIRED_ARGS, "--num-rollout", "1", "--partial-rollout"])
 
         with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
@@ -2628,9 +2677,7 @@ class TestMultiLoRAValidation:
         )
 
     def _parse(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
-        return parser.parse_args(
+        return _megatron_and_miles_parser().parse_args(
             [
                 "--multi-lora-n-adapters",
                 "2",
@@ -2721,6 +2768,18 @@ class TestMultiLoRAValidation:
         miles_validate_args(args)
 
         assert args.multi_lora is True
+
+    @pytest.mark.parametrize(
+        "attention_dp",
+        [["--sglang-attn-dp-size", "2"], ["--sglang-enable-dp-attention", "--sglang-dp-size", "2"]],
+        ids=["attn-dp-size", "deprecated-enable-dp-attention"],
+    )
+    def test_rejects_sglang_attention_dp(self, attention_dp):
+        """Attention DP serves only pinned adapters, which multi-LoRA could never swap out of its slots."""
+        args = self._parse(attention_dp)
+
+        with pytest.raises(AssertionError, match="Multi-LoRA cannot run on SGLang attention DP"):
+            miles_validate_args(args)
 
     def test_rejects_non_adam_optimizer(self):
         # Per-slot optimizer isolation (state init, retirement cleanup, step
@@ -2882,6 +2941,7 @@ class TestDebugUnifiedGradFusedLogprobArgument:
 def test_sglang_parallel_sizes_use_short_namespace_fields(parallel_args, expected):
     parser = argparse.ArgumentParser()
     add_sglang_arguments(parser)
+    RouterConfig.add_arguments(parser)
     args = parser.parse_args(parallel_args)
 
     assert (args.sglang_tp_size, args.sglang_dp_size, args.sglang_pp_size, args.sglang_ep_size) == expected
@@ -2894,6 +2954,7 @@ def test_sglang_parallel_sizes_use_short_namespace_fields(parallel_args, expecte
     args.true_on_policy_mode = False
     args.recompute_logprobs_via_prefill = False
     args.sglang_router_policy = None
+    args.loss_type = "policy_loss"
     args.use_session_server = False
 
     validate_sglang_args(args)
@@ -3052,8 +3113,7 @@ def test_skip_actor_forward_only_flag_is_parsed(extra_args, expected):
 
 
 def test_skip_actor_forward_only_is_gated_during_miles_validation():
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args(
         ["--skip-actor-forward-only", "--global-batch-size", "32", "--num-rollout", "1"] + REQUIRED_ARGS
     )
@@ -3221,8 +3281,7 @@ class TestValidateSkipActorForwardOnly:
 
 class TestRunUuidResolution:
     def _parse(self, extra: list[str]):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(["--num-rollout", "1"] + extra + REQUIRED_ARGS)
 
     def test_unset_run_uuid_is_generated(self):
@@ -3321,8 +3380,7 @@ class TestRolloutHealthCheckArguments:
 
 class TestMiniFtControllerArguments:
     def _validate(self, extra: list[str]):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
         miles_validate_args(args)
         return args
@@ -3339,8 +3397,7 @@ class TestMiniFtControllerArguments:
 
     def test_asking_for_the_loop_without_a_port_is_rejected_at_launch(self):
         """The loop drives cells over the api server port, so a disabled port would fail every poll instead."""
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         args = parser.parse_args(
             ["--mini-ft-controller-enable", "--api-server-port", "0", "--num-rollout", "1"] + REQUIRED_ARGS
         )
@@ -3422,24 +3479,20 @@ def test_the_megatron_config_flag_defaults_to_none(tmp_path):
 class TestMilesValidateArgsCheckpointResolution:
     @staticmethod
     def _parse(extra, tmp_path):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
-        # megatron owns --finetune and the fallback only ever turns it on, so the run that
-        # leaves it alone has to start from the default megatron would have given it
-        parser.set_defaults(finetune=False)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(
             ["--hf-checkpoint", str(tmp_path), "--ref-load", str(tmp_path), "--num-rollout", "1"]
             + extra
             + REQUIRED_ARGS
         )
 
-    def test_a_single_policy_run_still_resolves_its_checkpoint_fallback(self, tmp_path):
-        """The fallback is what lets a fresh run start from --ref-load, and it must survive the multi policy fork."""
+    def test_a_single_policy_run_defers_its_checkpoint_fallback_to_runtime(self, tmp_path):
+        """Saving a checkpoint must not change the arguments used to render a persistent trainer Pod."""
         args = self._parse([], tmp_path)
 
         miles_validate_args(args)
 
-        assert (args.load, args.finetune, args.start_rollout_id) == (str(tmp_path), True, 0)
+        assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
 
     def test_a_multi_policy_run_leaves_the_global_load_and_save_untouched(self, tmp_path):
         """Each trainer resolves its own fallback later; settling it globally would point every policy at one dir."""
@@ -3457,11 +3510,30 @@ class TestMilesValidateArgsCheckpointResolution:
 
         assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
 
+    @pytest.mark.parametrize(
+        "backend,build_parser", [("fsdp", build_fsdp_parser), ("torchtitan", build_torchtitan_parser)]
+    )
+    @pytest.mark.parametrize("resume", [False, True])
+    def test_other_backends_keep_their_checkpoint_selection(self, tmp_path, backend, build_parser, resume):
+        parser = build_parser(extra_args_provider=get_miles_extra_args_provider())
+        load = str(tmp_path / "resume") if resume else None
+        args = parser.parse_args(
+            ["--train-backend", backend, "--num-rollout", "1", "--ref-load", str(tmp_path / "reference")]
+            + (["--load", load] if resume else [])
+            + REQUIRED_ARGS
+        )
+
+        miles_validate_args(args)
+
+        assert args.requested_load == args.load == load
+        assert args.start_rollout_id is None
+        assert not hasattr(args, "ckpt_step")
+        assert not hasattr(args, "exit_on_missing_checkpoint")
+
 
 class TestWeightTransferModeSelection:
     def _parse(self, extra=()):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
 
     def test_broadcast_is_the_default_and_packed_is_an_explicit_choice(self):
@@ -3524,8 +3596,7 @@ class TestCheckWeightUpdateSelectorDefault:
     """reset_tensors scrambles every tensor the checker covers, so by default it covers what the sync rewrites."""
 
     def _validate(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
         _set_megatron_parallel_sizes(args)
         miles_validate_args(args)
@@ -3548,8 +3619,8 @@ class TestCheckWeightUpdateSelectorDefault:
 class TestMilesValidateArgsDiskDeltaResume:
     @staticmethod
     def _parse(load_dir, tmp_path):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        # the parser is shared across callers
+        parser = copy.deepcopy(get_megatron_arg_parser())
         parser.set_defaults(finetune=False)
         return parser.parse_args(
             [
@@ -3571,14 +3642,20 @@ class TestMilesValidateArgsDiskDeltaResume:
             + REQUIRED_ARGS
         )
 
-    def test_resuming_from_a_training_checkpoint_is_rejected(self, tmp_path):
+    @pytest.mark.parametrize("ckpt_step", [None, 0, 7])
+    def test_resuming_from_a_training_checkpoint_is_rejected(self, tmp_path, ckpt_step):
         """Initial synchronization does not enable checkpoint recovery."""
         load_dir = tmp_path / "ckpt"
         load_dir.mkdir()
-        (load_dir / "latest_checkpointed_iteration.txt").write_text("10")
+        if ckpt_step is None:
+            (load_dir / "latest_checkpointed_iteration.txt").write_text("10")
+        else:
+            (load_dir / f"iter_{ckpt_step:07d}").mkdir()
+        args = self._parse(load_dir, tmp_path)
+        args.ckpt_step = ckpt_step
 
         with pytest.raises(ValueError, match="cannot resume from a training checkpoint"):
-            miles_validate_args(self._parse(load_dir, tmp_path))
+            miles_validate_args(args)
 
     def test_a_load_directory_without_a_checkpoint_still_starts(self, tmp_path):
         """A fresh run points --load at a directory megatron has not written yet, and that is the supported shape."""
@@ -3587,11 +3664,41 @@ class TestMilesValidateArgsDiskDeltaResume:
 
         miles_validate_args(self._parse(load_dir, tmp_path))
 
+    @pytest.mark.parametrize(
+        "backend,build_parser", [("fsdp", build_fsdp_parser), ("torchtitan", build_torchtitan_parser)]
+    )
+    def test_native_disk_delta_validates_without_a_megatron_step_selector(
+        self, tmp_path: Path, backend: str, build_parser: Callable[..., argparse.ArgumentParser]
+    ) -> None:
+        """Native disk-delta validation preserves its namespace without a Megatron checkpoint selector."""
+        parser = build_parser(extra_args_provider=get_miles_extra_args_provider())
+        args = parser.parse_args(
+            [
+                "--train-backend",
+                backend,
+                "--num-rollout",
+                "1",
+                "--update-weight-transfer-mode",
+                "disk-delta",
+                "--update-weight-disk-dir",
+                str(tmp_path / "shared"),
+                "--update-weight-local-checkpoint-dir",
+                str(tmp_path / "local"),
+                "--hf-checkpoint",
+                str(tmp_path),
+            ]
+            + REQUIRED_ARGS
+        )
+
+        miles_validate_args(args)
+
+        assert args.requested_load is None
+        assert "ckpt_step" not in vars(args)
+
 
 class TestWeightUpdateDeadlines:
     def _parse(self, extra: list[str]) -> argparse.Namespace:
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(["--num-rollout", "1"] + extra + REQUIRED_ARGS)
 
     def test_every_weight_update_deadline_defaults_to_a_finite_value(self):
@@ -3632,8 +3739,7 @@ class TestSupportsPartialTargetWeightUpdate:
 
 class TestRolloutFaultToleranceNeedsAPartialTargetWeightUpdate:
     def _parse(self, extra: list[str]) -> argparse.Namespace:
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
     _MESSAGE = "rollout fault tolerance needs a partial-target weight update"
@@ -3753,3 +3859,54 @@ class TestWeightUpdateFaultToleranceSupport:
 
         with pytest.raises(AssertionError, match="weight_update FT requires Megatron"):
             miles_validate_args(args)
+
+
+@pytest.mark.parametrize("backend", ["megatron", "fsdp", "torchtitan"])
+def test_dumper_retention_override_is_only_added_for_megatron(backend: str) -> None:
+    """Dumper mode cannot introduce a Megatron-only checkpoint field into native backend arguments."""
+    args = TestMaybeApplyDumperOverrides()._make_args(dumper_enable=True)
+    args.train_backend = backend
+    del args.save_retain_interval
+
+    _maybe_apply_dumper_overrides(args)
+
+    assert args.save is None
+    assert args.save_interval is None
+    assert args.num_rollout == 1
+    assert ("save_retain_interval" in vars(args)) is (backend == "megatron")
+    if backend == "megatron":
+        assert args.save_retain_interval is None
+
+
+@pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
+@pytest.mark.parametrize("detach_heads", [True, False])
+def test_native_backends_own_the_mtp_detach_heads_argument(
+    monkeypatch: pytest.MonkeyPatch, backend: str, detach_heads: bool
+) -> None:
+    """Native backend parsing preserves the MTP option without an unowned argument error."""
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    argv = [
+        "test",
+        "--train-backend",
+        backend,
+        "--rollout-batch-size",
+        "2",
+        "--num-rollout",
+        "1",
+        "--actor-num-gpus-per-node",
+        "1",
+        "--micro-batch-size",
+        "1",
+        "--rollout-max-response-len",
+        "1024",
+    ]
+    if not detach_heads:
+        argv.append("--no-mtp-detach-heads")
+    monkeypatch.setattr(sys, "argv", argv)
+
+    args, _ = parse_args_and_get_parser()
+
+    native_args = args.raw_fsdp if backend == "fsdp" else args.raw_torchtitan
+    assert native_args is not None
+    assert native_args.mtp_detach_heads is detach_heads
+    assert "mtp_detach_heads" not in args.model_fields

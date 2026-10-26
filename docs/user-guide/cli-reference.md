@@ -230,7 +230,7 @@ Sections mirror the launch-script argument groups.
 | `--recompute-method` | enum | Megatron default | `uniform` or `block`. |
 | `--recompute-num-layers` | int | Megatron default | Recompute chunk size. |
 | `--gradient-checkpointing` | flag | off | FSDP equivalent of recompute flags. |
-| `--fsdp-cpu-offload` | flag | off | FSDP: offload params, grads, optimizer state to CPU. |
+| `--optimizer-cpu-offload` | flag | off | FSDP / torchtitan: offload params, grads, optimizer state to CPU (Megatron: its own HybridDeviceOptimizer). `--fsdp-cpu-offload` is the deprecated spelling. |
 | `--fsdp-cpu-backend` | str | `gloo` | FSDP: CPU backend for hybrid offload. |
 | `--dp-replicate-size` | int | `1` | FSDP2 hybrid-shard replica count. |
 | `--attn-implementation` | str | `flash_attention_2` | FSDP only: passed to `transformers`, e.g. `flash_attention_2`, `flash_attention_3`, `sdpa`, `eager`. |

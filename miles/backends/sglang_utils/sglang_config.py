@@ -1,13 +1,23 @@
 """Configuration models for SGLang engine deployment."""
 
+import argparse
 import logging
+from argparse import Namespace
 from dataclasses import dataclass
+from typing import Any
 
 import pydantic
 import yaml
 
-from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+from miles.backends.sglang_utils.arguments import (
+    _EVAL_SKIPPED_SERVER_ARGS,
+    _SKIPPED_SERVER_ARGS,
+    _add_prefixed_server_args,
+    collect_eval_sglang_overrides,
+)
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig, SglangScalingConfig
+from miles.utils.args.configs.sglang_client import SglangClientConfig
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -143,10 +153,7 @@ class _RawSglangConfig(FrozenStrictBaseModel):
 
 class ServerGroupConfig(FrozenStrictBaseModel):
     worker_type: WorkerType
-    num_gpus: int = pydantic.Field(gt=0)
     num_gpus_per_engine: int = pydantic.Field(gt=0)
-    gpu_offset: int = pydantic.Field(ge=0)
-    engine_offset: int = pydantic.Field(ge=0)
     overrides: dict = pydantic.Field(default_factory=dict)
     needs_offload: bool
 
@@ -162,7 +169,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         default_gpus_per_engine: int,
         default_model_path: str,
         offset_cursor: "_OffsetCursor",
-    ) -> "ServerGroupConfig":
+    ) -> tuple["ServerGroupConfig", "ServerGroupScalingConfig"]:
         assert not ({"host", "port", "gated_launch_port", "disaggregation_mode"} & set(raw.overrides)), (
             f"sglang_overrides must not override host/port/disaggregation_mode ({raw.overrides=}): the rollout "
             f"process derives each engine's url from the addr allocator and its disaggregation_mode from "
@@ -177,23 +184,26 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         group_abs_start = rollout_pg_offset + gpu_offset
         needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
 
-        ans = cls(
+        num_gpus_per_engine = x if (x := raw.num_gpus_per_engine) is not None else default_gpus_per_engine
+        overrides = {
+            "model_path": default_model_path,
+            **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
+            **raw.overrides,
+        }
+
+        config = cls(
             worker_type=raw.worker_type,
-            num_gpus=raw.num_gpus,
-            num_gpus_per_engine=x if (x := raw.num_gpus_per_engine) is not None else default_gpus_per_engine,
-            gpu_offset=gpu_offset,
-            engine_offset=offset_cursor.engine,
-            overrides={
-                "model_path": default_model_path,
-                **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
-                **raw.overrides,
-            },
+            num_gpus_per_engine=num_gpus_per_engine,
+            overrides=overrides,
             needs_offload=needs_offload,
+        )
+        scaling = ServerGroupScalingConfig(
+            num_gpus=raw.num_gpus, gpu_offset=gpu_offset, engine_offset=offset_cursor.engine
         )
 
         offset_cursor.gpu += raw.num_gpus
-        offset_cursor.engine += raw.num_gpus // min(ans.num_gpus_per_engine, args.num_gpus_per_node)
-        return ans
+        offset_cursor.engine += raw.num_gpus // min(num_gpus_per_engine, args.num_gpus_per_node)
+        return config, scaling
 
 
 class ModelConfig(FrozenStrictBaseModel):
@@ -203,11 +213,13 @@ class ModelConfig(FrozenStrictBaseModel):
     update_weights: bool
 
     @classmethod
-    def resolve(cls, raw: _RawModelConfig, args, offset_cursor: "_OffsetCursor") -> "ModelConfig":
+    def resolve(
+        cls, raw: _RawModelConfig, args, offset_cursor: "_OffsetCursor"
+    ) -> tuple["ModelConfig", list["ServerGroupScalingConfig"]]:
         """Resolve per-group defaults from model-level then args-level values."""
         default_model_path = p if (p := raw.model_path) is not None else args.hf_checkpoint
         default_gpus_per_engine = n if (n := raw.num_gpus_per_engine) is not None else args.rollout_num_gpus_per_engine
-        server_groups = [
+        resolved = [
             ServerGroupConfig.resolve(
                 g,
                 args,
@@ -217,6 +229,7 @@ class ModelConfig(FrozenStrictBaseModel):
             )
             for g in raw.server_groups
         ]
+        server_groups = [config for config, _ in resolved]
 
         if server_groups:
             model_paths = {g.overrides["model_path"] for g in server_groups}
@@ -244,52 +257,121 @@ class ModelConfig(FrozenStrictBaseModel):
             else:
                 update_weights = True
 
-        return cls(
+        config = cls(
             name=raw.name,
             model_path=raw.model_path,
             server_groups=server_groups,
             update_weights=update_weights,
         )
+        return config, [scaling for _, scaling in resolved]
 
     @property
     def has_pd_disaggregation(self) -> bool:
         return any(g.worker_type in (WorkerType.PREFILL, WorkerType.DECODE) for g in self.server_groups)
 
-    @property
-    def num_server_cells(self) -> int:
+    def num_server_cells(self, scaling: SglangScalingConfig) -> int:
         return sum(
-            group.num_gpus // group.num_gpus_per_engine
-            for group in self.server_groups
+            group_scaling.num_gpus // group.num_gpus_per_engine
+            for group, group_scaling in zip(self.server_groups, scaling.groups[self.name], strict=True)
             if group.worker_type != WorkerType.PLACEHOLDER
         )
 
 
 class SglangConfig(FrozenStrictBaseModel):
     models: list[ModelConfig]
+    base_args: dict[str, Any]
 
     @classmethod
-    def resolve(cls, raw: _RawSglangConfig, args) -> "SglangConfig":
+    def parse_args(cls, args: Namespace) -> tuple["SglangConfig", SglangScalingConfig]:
+        base_args = _extract_base_args(args)
+        if args.fp16:
+            base_args["dtype"] = "float16"
+        return cls.resolve(raw=_compute_raw_sglang_config(args), args=args, base_args=base_args)
+
+    def get_value(self, name: str, group: ServerGroupConfig) -> Any:
+        return group.overrides.get(name, self.base_args[name])
+
+    def common_value(self, name: str) -> Any:
+        values = [
+            self.base_args | group.overrides
+            for model in self.models
+            for group in model.server_groups
+            if group.worker_type != WorkerType.PLACEHOLDER
+        ]
+        return _list_of_dicts_get(values or [self.base_args], name)
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        SglangClientConfig.add_arguments(parser=parser)
+
+        _add_prefixed_primary_server_args(parser)
+        _add_prefixed_server_args(
+            parser,
+            flag_prefix="eval-sglang",
+            dest_prefix="eval_sglang_",
+            skipped_args=_EVAL_SKIPPED_SERVER_ARGS,
+            inherit=True,
+        )
+
+        parser.add_argument(
+            "--sglang-config",
+            type=str,
+            default=None,
+            help=(
+                "Path to a YAML config for SGLang engine deployment. "
+                "Defines server_groups with worker_type (regular/prefill/decode/placeholder), "
+                "num_gpus per group, and optional per-group 'overrides' dict of "
+                "ServerArgs field names that override the base --sglang-* CLI args. "
+                "Placeholder groups reserve GPU slots without creating engines. "
+                "A 'name: eval' model is filled in from the --eval-* args (model_path, "
+                "num_gpus_per_engine, --eval-sglang-* overrides) wherever the YAML leaves them unset. "
+                "Mutually exclusive with --prefill-num-servers."
+            ),
+        )
+
+    @classmethod
+    def resolve(
+        cls, raw: _RawSglangConfig, args: Namespace, *, base_args: dict[str, Any]
+    ) -> tuple["SglangConfig", SglangScalingConfig]:
         offset_cursor = _OffsetCursor(gpu=0, engine=0)
-        model_configs = [ModelConfig.resolve(m, args, offset_cursor) for m in raw.models]
+        resolved = [ModelConfig.resolve(m, args, offset_cursor) for m in raw.models]
 
         assert offset_cursor.gpu == raw.total_num_gpus
-        return cls(models=model_configs)
+        return (
+            cls(models=[config for config, _ in resolved], base_args=base_args),
+            SglangScalingConfig(groups={config.name: scalings for config, scalings in resolved}),
+        )
 
     @property
     def has_pd_disaggregation(self) -> bool:
         return any(m.has_pd_disaggregation for m in self.models)
 
 
+def _extract_base_args(args: Namespace) -> dict[str, Any]:
+    parser = argparse.ArgumentParser(add_help=False)
+    _add_prefixed_primary_server_args(parser)
+    values = vars(args)
+    return {action.dest.removeprefix("sglang_"): values[action.dest] for action in parser._actions}
+
+
+def _add_prefixed_primary_server_args(parser: argparse.ArgumentParser) -> None:
+    _add_prefixed_server_args(
+        parser, flag_prefix="sglang", dest_prefix="sglang_", skipped_args=_SKIPPED_SERVER_ARGS, inherit=False
+    )
+
+
+def _list_of_dicts_get(dicts: list[dict[str, Any]], key: str) -> Any:
+    if not dicts or any(key not in values for values in dicts):
+        raise AttributeError(f"No common field {key!r}")
+    value = dicts[0][key]
+    assert all(values[key] == value for values in dicts[1:]), f"Field {key!r} differs across configurations"
+    return value
+
+
 @dataclass
 class _OffsetCursor:
     gpu: int
     engine: int
-
-
-def resolve_sglang_config(args) -> SglangConfig:
-    """Build a SglangConfig from args, choosing the right source."""
-    raw = _compute_raw_sglang_config(args)
-    return SglangConfig.resolve(raw, args)
 
 
 def _compute_raw_sglang_config(args) -> _RawSglangConfig:
@@ -299,7 +381,7 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
     eval_num_gpus = args.eval_num_gpus
     rollout_num_gpus = args.rollout_num_gpus or 0
 
-    if getattr(args, "sglang_config", None) is not None:
+    if args.sglang_config is not None:
         config = _RawSglangConfig.from_file_arg(args.sglang_config)
         expected = rollout_num_gpus + eval_num_gpus
         actual = config.total_num_gpus
@@ -386,19 +468,21 @@ def _compute_eval_raw_model(raw: _RawModelConfig, args) -> _RawModelConfig:
 
 def _compute_rollout_offset(args) -> int:
     """Offset (in PG bundle slots) where rollout GPUs start."""
+    assert not hasattr(  # config-access-exempt: reject the removed critic_train_only field
+        args, "critic_train_only"
+    ), "critic_train_only is not supported"
     if args.debug_rollout_only or args.colocate or not args.starts_inference_engines:
         return 0
-    if getattr(args, "critic_train_only", False):
-        return args.critic_num_nodes * args.critic_num_gpus_per_node
     offset = args.actor_num_nodes * args.actor_num_gpus_per_node
     return offset
 
 
 def _compute_megatron_num_gpus(args) -> int:
     """Total number of megatron (actor + critic) GPU slots in the placement group."""
-    if getattr(args, "debug_rollout_only", False):
+    assert not hasattr(  # config-access-exempt: reject the removed critic_train_only field
+        args, "critic_train_only"
+    ), "critic_train_only is not supported"
+    if args.debug_rollout_only:
         return 0
-    if getattr(args, "critic_train_only", False):
-        return args.critic_num_nodes * args.critic_num_gpus_per_node
     num = args.actor_num_nodes * args.actor_num_gpus_per_node
     return num

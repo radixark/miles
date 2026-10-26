@@ -15,7 +15,7 @@ class Qwen3MoeAdapter(ArchAdapter):
     )
 
     def patch_classes(self, args):
-        if not getattr(args, "true_on_policy_mode", False):
+        if not args.true_on_policy_mode:
             return
         # Lazy: pulls sglang fused-MoE kernels that don't exist for every sglang build.
         from miles.backends.fsdp_utils.models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe

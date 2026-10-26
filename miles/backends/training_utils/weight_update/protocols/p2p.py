@@ -63,7 +63,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
-        if args.sglang_pp_size != 1:
+        if args.sglang.common_value("pp_size") != 1:
             raise NotImplementedError("Rollout pipeline parallelism is not tested yet.")
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._hf_tensor_specs: dict[str, HfTensorSpec] | None = None

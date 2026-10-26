@@ -2,17 +2,26 @@ from argparse import Namespace
 from collections.abc import Iterator, Sequence
 
 import torch
+import torch.distributed as dist
 
 from miles.backends.training_utils.data.context_parallel import (
     LocalResponseRows,
     allgather_cp_redistribute,
     iter_local_response_rows,
 )
-from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask
-from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
+from miles.backends.training_utils.data.sampling_mask import (
+    build_local_sampling_mask,
+    get_rollout_sampling_masks,
+    rollout_topk_candidate_ids,
+)
+from miles.backends.training_utils.loss.hub.math_utils import (
+    calculate_log_probs_and_entropy,
+    true_on_policy_full_log_probs,
+)
 from miles.backends.training_utils.loss.hub.score_centering import selected_log_probs_and_entropy
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.sampling_mask import RolloutSamplingMask
+from miles.utils.types import RolloutBatch
 
 
 def _flatten_logits(logits: torch.Tensor, qkv_format: str, max_seq_lens: list[int] | None) -> torch.Tensor:
@@ -97,9 +106,9 @@ def _iter_response_chunks(
     if args.true_on_policy_mode:
         if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
             logits = logits.div(args.rollout_temperature)
-        if getattr(args, "bf16", False):
+        if args.backend.bf16:
             logits = logits.to(torch.bfloat16)
-        elif getattr(args, "fp16", False):
+        elif args.backend.fp16:
             logits = logits.to(torch.float16)
 
     for row_ranges, tokens_chunk, response_indices in layout:
@@ -220,6 +229,95 @@ def get_log_probs_and_entropy(
     return res
 
 
+def get_rollout_topk_mismatch(
+    logits: torch.Tensor, *, args: Namespace, batch: RolloutBatch
+) -> dict[str, list[torch.Tensor]]:
+    """Compare the rollout's recorded top-k candidates with the trainer's distribution, per response row.
+
+    The trainer side is the true-on-policy scoring (full-vocabulary ``log_softmax`` of the same logits,
+    with the replayed sampling support applied), so on-policy candidates match it bitwise:
+
+    - ``topk_logprob_abs_diff``: max over recorded candidates of ``|trainer - rollout|`` log-prob.
+    - ``topk_set_mismatch``: 1 when the recorded candidate log-probs, sorted descending, differ from the
+      trainer's top-k values. Comparing values rather than ids keeps tie order out of it.
+
+    Rows outside the loss mask (multi-turn observations, which carry no candidates) are 0.
+    """
+    assert args.true_on_policy_mode, "the rollout top-k candidate check scores with the true-on-policy math"
+    parallel_state = get_parallel_state()
+    sampling_masks = get_rollout_sampling_masks(batch) if args.use_sampling_support_replay else None
+    result = {"topk_logprob_abs_diff": [], "topk_set_mismatch": []}
+    chunks = _iter_response_chunks(
+        logits,
+        args=args,
+        unconcat_tokens=batch["unconcat_tokens"],
+        total_lengths=batch["total_lengths"],
+        response_lengths=batch["response_lengths"],
+        max_seq_lens=batch.get("max_seq_lens"),
+        include_response_indices=True,
+    )
+    for i, (chunk, _, indices) in enumerate(chunks):
+        indices = torch.as_tensor(list(indices), dtype=torch.long)
+        sampling_mask = None
+        if sampling_masks is not None:
+            sampling_mask = build_local_sampling_mask(
+                chunk, sampling_masks[i], indices, tp_rank=parallel_state.tp.rank
+            )
+        ids = rollout_topk_candidate_ids(batch, i, indices).to(chunk.device)
+        rollout = torch.as_tensor(batch["rollout_topk_log_probs"][i])[indices].to(chunk.device)
+        active = torch.as_tensor(batch["loss_masks"][i])[indices].to(chunk.device).bool()
+        # Row chunks bound the [rows, V] log-softmax, split like the true-on-policy scoring splits its rows.
+        rows = args.log_probs_chunk_size if args.log_probs_chunk_size > 0 else max(len(indices), 1)
+        abs_diffs, set_mismatches = [], []
+        # At least one call: a rank with no local rows still joins the TP vocab gather.
+        for start in range(0, max(len(indices), 1), rows):
+            part = slice(start, start + rows)
+            abs_diff, set_mismatch = _rollout_topk_mismatch_rows(
+                chunk[part],
+                ids[part],
+                rollout[part],
+                tp_group=parallel_state.tp.group,
+                vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
+                sampling_mask=None if sampling_mask is None else sampling_mask[part],
+            )
+            abs_diffs.append(abs_diff)
+            set_mismatches.append(set_mismatch)
+        abs_diff, set_mismatch = torch.cat(abs_diffs), torch.cat(set_mismatches)
+        result["topk_logprob_abs_diff"].append(torch.where(active, abs_diff, 0.0))
+        result["topk_set_mismatch"].append(torch.where(active, set_mismatch, 0.0))
+
+    if args.allgather_cp:
+        allgather_cp_redistribute(
+            result,
+            logits=logits,
+            args=args,
+            total_lengths=batch["total_lengths"],
+            response_lengths=batch["response_lengths"],
+            max_seq_lens=batch.get("max_seq_lens"),
+        )
+    return result
+
+
+def _rollout_topk_mismatch_rows(
+    logits: torch.Tensor,
+    ids: torch.Tensor,
+    rollout: torch.Tensor,
+    *,
+    tp_group: dist.ProcessGroup | None,
+    vocab_size: int | None,
+    sampling_mask: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-row ``(abs_diff, set_mismatch)`` of rollout candidates against the trainer; see get_rollout_topk_mismatch."""
+    trainer = true_on_policy_full_log_probs(logits, tp_group, vocab_size=vocab_size, sampling_mask=sampling_mask)
+    candidates = trainer.gather(-1, ids.clamp_min(0)).float()
+    # equal infinities (a candidate outside the support) are a match, not a NaN
+    diff = torch.where(candidates == rollout, 0.0, (candidates - rollout).abs())
+    abs_diff = torch.where(ids >= 0, diff, 0.0).amax(dim=-1)
+    expected = trainer.topk(ids.size(-1), dim=-1).values.float()
+    set_mismatch = (rollout.sort(dim=-1, descending=True).values != expected).any(dim=-1).float()
+    return abs_diff, set_mismatch
+
+
 def _torch_log_probs_and_entropy(
     logits: torch.Tensor,
     *,
@@ -254,14 +352,14 @@ def _torch_log_probs_and_entropy(
                 response_indices,
                 tp_rank=parallel_state.tp.rank,
             )
-        if getattr(args, "loss_type", None) == "score_centering" and sampling_mask is None:
+        if args.loss_type == "score_centering" and sampling_mask is None:
             # Reference KL compares these with the score-centering actor score, which
             # normalizes over the true vocabulary instead of Megatron's padded one.
             log_prob, entropy = selected_log_probs_and_entropy(
                 logits_chunk,
                 tokens_chunk.unsqueeze(-1),
                 group=parallel_state.tp.group if parallel_state.tp.size > 1 else None,
-                vocab_size=getattr(args, "vocab_size", None),
+                vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
                 temperature=args.rollout_temperature,
                 chunk_size=args.log_probs_chunk_size,
                 with_entropy=with_entropy,
@@ -277,7 +375,7 @@ def _torch_log_probs_and_entropy(
                 entropy_requires_grad=entropy_requires_grad,
                 chunk_size=args.log_probs_chunk_size,
                 true_on_policy=args.true_on_policy_mode,
-                vocab_size=getattr(args, "vocab_size", None),
+                vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
                 sampling_mask=sampling_mask,
                 temperature=1.0 if args.true_on_policy_mode else args.rollout_temperature,
                 debug_unified_grad_fused_logprob=args.debug_unified_grad_fused_logprob,
@@ -334,7 +432,9 @@ def _fused_log_probs_and_entropy(
         rows,
         torch.cat(targets).to(device),
         tp_group=get_parallel_state().tp.group,
-        vocab_size=getattr(args, "vocab_size", None),  # a Megatron flag; other backends' logits are unpadded
+        vocab_size=(
+            args.backend.vocab_size if args.train_backend == "megatron" else None
+        ),  # a Megatron flag; other backends' logits are unpadded
         temperature=args.rollout_temperature,
         with_entropy=with_entropy,
         entropy_requires_grad=entropy_requires_grad,

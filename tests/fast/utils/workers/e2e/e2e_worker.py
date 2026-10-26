@@ -12,14 +12,26 @@ import uuid
 from decimal import Decimal
 from pathlib import Path
 
+from typing import Any, ClassVar, Self
+
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.rpc.common.metadata import rpc
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import (
+    RPC_PORT_NAME,
+    BaseServeSpec,
+    PortInfo,
+    SchedulingSpec,
+    WorkerCtorContext,
+    WorkerLaunchContext,
+)
 
 POOL_ID = "e2e-pool"
 RPC_PORT_FLAG = "--rpc-port"
 
 _BLOCK_GUARD_SECONDS = 20.0
+_WORKER_ARGV_ENV_AT_IMPORT = os.environ.get("MILES_E2E_ARGV")
 
 
 class Item(StrictBaseModel):
@@ -57,6 +69,7 @@ class Event(StrictBaseModel):
 
 
 WORKER_FACTORY_ERROR = "e2e worker factory refuses to build a worker"
+ENV_VAR_FAILURE_MESSAGE = "env var hook refuses to run"
 
 
 class E2eWorker:
@@ -77,6 +90,9 @@ class E2eWorker:
 
     async def report_env(self, name: str) -> str | None:
         return os.environ.get(name)
+
+    async def report_argv_env_at_import(self) -> str | None:
+        return _WORKER_ARGV_ENV_AT_IMPORT
 
     async def report_counter(self, tag: str) -> int:
         with self._lock:
@@ -346,20 +362,37 @@ class E2eWorker:
             return self._async_gates.setdefault(tag, asyncio.Event())
 
 
-def compute_specs(worker_argv: list[str]) -> list[ServeWorkerSpec]:
-    return [spec_of(worker_argv, env_var=lambda context: {"MILES_E2E_ARGV": ",".join(worker_argv)})]
+class E2eWorkerConfig(BaseLeafConfig):
+    worker_argv: list[str]
 
 
-def spec_of(worker_argv: list[str], *, env_var) -> ServeWorkerSpec:
-    args = parse_run_args(worker_argv)
-    return ServeWorkerSpec(
-        name=POOL_ID,
-        port_infos=[PortInfo(name="rpc", static_port=args.rpc_port)],
-        env_var=env_var,
-        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
-        worker_class=f"{__name__}.E2eWorker",
-        ctor_kwargs=lambda context: dict(argv=worker_argv, state_dir=Path(args.state_dir)),
-    )
+class E2eServeSpec(BaseServeSpec):
+    worker_type: ClassVar[str] = "e2e"
+    config_class: ClassVar[type[BaseLeafConfig]] = E2eWorkerConfig
+    args: E2eWorkerConfig
+    name: str = POOL_ID
+    worker_class: str = f"{__name__}.E2eWorker"
+
+    @classmethod
+    def create(cls, config: E2eWorkerConfig) -> Self:
+        run_args = parse_run_args(config.worker_argv)
+        return cls(args=config, port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=run_args.rpc_port)])
+
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0)
+
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        return {"MILES_E2E_ARGV": ",".join(self.args.worker_argv)}
+
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
+        return dict(argv=self.args.worker_argv, state_dir=Path(parse_run_args(self.args.worker_argv).state_dir))
+
+
+class FailingEnvE2eServeSpec(E2eServeSpec):
+    worker_type: ClassVar[str] = "e2e-failing-env"
+
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        raise RuntimeError(ENV_VAR_FAILURE_MESSAGE)
 
 
 def parse_run_args(worker_argv: list[str]) -> argparse.Namespace:

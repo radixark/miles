@@ -6,12 +6,14 @@ from typing import Any
 
 import pytest
 from tests.fast.fixtures.driver_fakes import FakeObjectStore
+from tests.fast.ray.rollout.conftest import FakeInferenceTopologyProvider
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
 from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainInput
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.timer import Timer
 from miles.utils.weight_version import (
@@ -50,8 +52,14 @@ def _make_executor() -> RolloutExecutor:
         debug_train_only=False,
         debug_skip_weight_update=False,
         lora_rank=0,
+        lora_adapter_path=None,
         update_weights_interval=1,
         ci_inject_missing_prefetched_batch_bug=False,
+        starts_inference_engines=True,
+        inference_runtime_mut_state=InferenceRuntimeMutState(),
+    )
+    executor._inference_controller_provider = FakeInferenceTopologyProvider(
+        InferenceRuntimeImmutState(engine_count=2, gpu_count=2)
     )
     executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
     executor.data_source = Namespace()

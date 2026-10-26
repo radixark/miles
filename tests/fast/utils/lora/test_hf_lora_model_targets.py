@@ -32,8 +32,9 @@ _NATIVE_MODELS = (
     "deepseek_v3",
     "glm4_moe",
     "glm_moe_dsa",
+    "glm5_next",
 )
-_MULTIMODAL_MODELS = {"qwen3_5", "qwen3_5_moe"}
+_MULTIMODAL_MODELS = {"qwen3_5", "qwen3_5_moe", "glm5_next"}
 
 
 def _small_config(model_type, overrides):
@@ -63,7 +64,7 @@ def _small_config(model_type, overrides):
         )
     if model_type == "gpt_oss":
         text.update(num_local_experts=2, num_experts_per_tok=1)
-    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe", "glm_moe_dsa"}:
+    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe", "glm_moe_dsa", "glm5_next"}:
         text.update(
             first_k_dense_replace=1,
             n_routed_experts=2,
@@ -73,10 +74,20 @@ def _small_config(model_type, overrides):
             n_group=1,
             topk_group=1,
         )
-    if model_type in {"deepseek_v2", "deepseek_v3", "glm_moe_dsa"}:
+    if model_type in {"deepseek_v2", "deepseek_v3", "glm_moe_dsa", "glm5_next"}:
         text.update(q_lora_rank=8, kv_lora_rank=8, qk_nope_head_dim=4, qk_rope_head_dim=4, v_head_dim=8)
-    if model_type == "glm_moe_dsa":
+    if model_type in {"glm_moe_dsa", "glm5_next"}:
         text.update(mlp_layer_types=["dense", "sparse"], index_n_heads=2, index_head_dim=8, index_topk=4)
+    if model_type == "glm5_next":
+        text.update(
+            num_key_value_heads=4,
+            qk_rope_head_dim=0,
+            index_kpool=2,
+            layer_types=["linear_attention", "indexed_attention"],
+            linear_num_heads=2,
+            linear_head_dim=8,
+            pad_token_id=0,
+        )
     text.update(overrides)
     if model_type in _MULTIMODAL_MODELS:
         return AutoConfig.for_model(
@@ -136,6 +147,10 @@ def test_native_model_coverage():
     + [
         pytest.param("glm_moe_dsa", {"mlp_layer_types": [kind, kind]}, id=f"glm-dsa-{kind}")
         for kind in ("dense", "sparse")
+    ]
+    + [
+        pytest.param("glm5_next", {"layer_types": [kind, kind]}, id=f"glm5-next-{kind}")
+        for kind in ("linear_attention", "indexed_attention")
     ],
 )
 def test_targets_match_native_hf_model(model_type, overrides):
