@@ -77,5 +77,5 @@ The other recipes under `scripts/amd/` launch the same way.
 
 - [Quick Start](/getting-started/quick-start) — the same Qwen3-4B run, step by step.
 - [Hardware requirements](/getting-started/installation#hardware-requirements) — per-GPU status.
-- [Low Precision RL](/advanced/low-precision) — FP8 block-wise on MI350X / MI355X.
+- [Low Precision RL](/advanced/low-precision) — FP8 block-wise and MXFP8 on MI350X / MI355X.
 - [Docker build](/developer/ci/02-docker-build) — the ROCm Dockerfile, variants, and tags.

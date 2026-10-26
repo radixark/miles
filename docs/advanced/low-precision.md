@@ -19,7 +19,7 @@ up a new model architecture.
 |---|---|---|---|---|
 | **BF16** | — | All NVIDIA + AMD MI300X / MI325X / MI350X / MI355X | All | Baseline |
 | **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+), AMD MI350X / MI355X | Qwen3-4B, Qwen3-30B-A3B, DeepSeek-V4-Flash | Generally available |
-| **MXFP8** | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B, DeepSeek-V3.2 | Beta |
+| **MXFP8** | 1×32, UE8M0 scales | Blackwell (B200, B300, GB200, GB300), AMD MI350X / MI355X (dense models) | Qwen3-30B-A3B, DeepSeek-V3.2; Qwen3-4B on MI350X | Beta |
 | **NVFP4** (E2M1) | 1×16, two-level (FP8 + FP32) scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B | Beta |
 
 ## Rollout × training compatibility
@@ -31,7 +31,7 @@ forward precision. ✅ = supported; ✗ = not supported.
 |---|---|---|---|---|
 | **BF16**           | ✅ baseline | ✗ | ✗ | ✗ |
 | **FP8 block-wise** | ✅ | ✅ Hopper + Blackwell + MI350X / MI355X | ✗ | ✗ |
-| **MXFP8**          | ✅ | ✗ | ✅ Blackwell | ✗ |
+| **MXFP8**          | ✅ | ✗ | ✅ Blackwell + MI350X / MI355X (dense) | ✗ |
 | **NVFP4**          | ✗ | ✗ | ✗ | ✅ Blackwell |
 
 The reference script (`scripts/run_qwen3_30b_a3b.py`) allows only one rollout
@@ -115,7 +115,7 @@ Reference recipe:
 [`examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh)
 — two-node Qwen3-30B-A3B.
 
-### 3. Unified MXFP8 (Blackwell)
+### 3. Unified MXFP8 (Blackwell, MI350X / MI355X)
 
 MXFP8 uses one-dimensional microscaling blocks: 32 consecutive E4M3 values
 share one UE8M0 scale. The end-to-end recipe uses MXFP8 for rollout, forward
@@ -124,7 +124,9 @@ configured tensors in BF16.
 
 ![End-to-end MXFP8 RL recipe](/assets/images/low-precision/mxfp8-e2e.png)
 
-**Hardware:** B200, B300, GB200, or GB300.
+**Hardware:** B200, B300, GB200, or GB300; AMD MI350X / MI355X for dense
+models. SGLang's gfx950 MXFP8 MoE kernels do not yet cover SiLU-gated experts
+such as Qwen3-30B-A3B.
 
 The Qwen3-30B-A3B launcher prepares the MXFP8 Hugging Face checkpoint and
 configures both sides of the RL loop:
@@ -159,7 +161,14 @@ MXFP8 choices are:
 | Dense linear GEMM | `--sglang-fp8-gemm-backend` | `flashinfer_trtllm`, `flashinfer_cutlass`, `triton` |
 
 Choose the pair that matches the model, parallel layout, and installed SGLang
-stack. Convert a checkpoint outside the launcher with:
+stack. On MI350X / MI355X, SGLang picks its gfx950 `tl.dot_scaled` dense GEMM
+without a flag, and Miles enables ROCm TransformerEngine's MXFP8 support
+(`NVTE_ROCM_ENABLE_MXFP8`) in the trainer environment for `--fp8-recipe mxfp8`.
+The Qwen3-30B-A3B launcher above is NVIDIA-only; on AMD, convert the checkpoint
+and pass the training flags through `--extra-args`, for example
+`python scripts/amd/run_qwen3_4b.py --extra-args "--hf-checkpoint <MXFP8 dir> --transformer-impl transformer_engine --bf16 --fp8-format e4m3 --fp8-recipe mxfp8"`.
+
+Convert a checkpoint outside the launcher with:
 
 ```bash
 python tools/convert_hf_to_mxfp8.py \
@@ -323,7 +332,7 @@ whose contraction axis does not match a one-dimensional scaling layout.
 | NVIDIA H100 / H200 | ✅ | ✅ | ✗ | ✗ |
 | NVIDIA B200 / B300 / GB200 / GB300 | ✅ | ✅ | ✅ | ✅ |
 | NVIDIA A100 | ✅ | ✗ | ✗ | ✗ |
-| AMD MI350X / MI355X | ✅ | ✅ | ✗ | ✗ |
+| AMD MI350X / MI355X | ✅ | ✅ | ✅ (dense) | ✗ |
 | AMD MI300X / MI325X | ✅ | ✗ | ✗ | ✗ |
 
 ## When BF16 is enough

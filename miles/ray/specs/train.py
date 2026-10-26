@@ -218,6 +218,12 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
         # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
         "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
         "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": fp8_scales,
+        # ROCm TransformerEngine rejects the MXFP8 recipe unless this is set; CUDA builds ignore it.
+        **(
+            {"NVTE_ROCM_ENABLE_MXFP8": os.environ.get("NVTE_ROCM_ENABLE_MXFP8", "1")}
+            if getattr(args, "fp8_recipe", None) == "mxfp8"
+            else {}
+        ),
         **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
         **args.train_env_vars,
     }
