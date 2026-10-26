@@ -184,7 +184,7 @@ def fixed_shape_policy_loss_function(
     active = loss_masks.bool()
     denominators = layout.mean_denominators(
         batch["loss_masks"],
-        per_token=args.calculate_per_token_loss,
+        per_token=args.backend.calculate_per_token_loss,
         denominators=batch.get("rollout_mask_sums"),
     )
 
@@ -208,7 +208,7 @@ def fixed_shape_policy_loss_function(
     advantages = _masked(layout.scatter(batch["advantages"]), active)
     pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high, args.eps_clip_c)
     ess_ratio = _ess_ratio_contribution(
-        ppo_kl, loss_masks, layout, batch["loss_masks"], per_token=args.calculate_per_token_loss
+        ppo_kl, loss_masks, layout, batch["loss_masks"], per_token=args.backend.calculate_per_token_loss
     )
 
     pg_loss = sum_of_row_mean(pg_loss)
