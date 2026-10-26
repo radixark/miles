@@ -91,6 +91,12 @@ class DataConfig(BaseConfig):
             ),
         ),
     ] = None
+    multimodal_token_space_processing: A[
+        bool,
+        Arg(
+            help="SGLang expands media placeholders and the trainer builds the processor inputs (models with an SGLang token-space strategy)."
+        ),
+    ] = False
     shared_media_dir: A[
         str | None,
         Arg(help="Directory shared with every SGLang engine; media that is not a file path yet is written here."),

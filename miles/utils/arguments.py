@@ -1598,6 +1598,21 @@ def miles_validate_args(args):
     _resolve_event_logging(args)
     _resolve_sample_ownership_check(args)
 
+    if args.multimodal_token_space_processing:
+        # SGLang registers --sglang-enable-token-space-processor only in builds with the token-space processor.
+        if not hasattr(
+            args, "sglang_enable_token_space_processor"
+        ):  # config-access-exempt: SGLang builds without the token-space processor do not register this flag
+            raise ValueError(
+                "--multimodal-token-space-processing needs an SGLang build with the token-space processor; "
+                "update SGLang to a version that has --enable-token-space-processor."
+            )
+        if not args.sglang_enable_token_space_processor:
+            raise ValueError(
+                "--multimodal-token-space-processing needs the SGLang engines to expand media placeholders in token "
+                "space; set --sglang-enable-token-space-processor."
+            )
+
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
         assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
