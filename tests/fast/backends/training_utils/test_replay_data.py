@@ -130,11 +130,12 @@ def test_fill_replay_bshd_token_alignment(
                 torch.testing.assert_close(replay.recorded[0], expected[:, stream])
 
 
+@pytest.mark.parametrize("kept_in_train_dump", [False, True])
 @pytest.mark.parametrize("save_debug_train_data", [None, "/tmp/{rollout_id}_{rank}.pt"])
 @pytest.mark.parametrize("sequence_first", [False, True])
 @pytest.mark.parametrize("tp_size,sequence_parallel", [(1, False), (2, True)])
 def test_fill_replay_thd_preserves_packed_order(
-    monkeypatch, sequence_first, tp_size, sequence_parallel, save_debug_train_data
+    monkeypatch, sequence_first, tp_size, sequence_parallel, save_debug_train_data, kept_in_train_dump
 ):
     args = SimpleNamespace(
         qkv_format="thd",
@@ -167,11 +168,12 @@ def test_fill_replay_thd_preserves_packed_order(
             replay_list=[replay],
             register_replay_list_func=register_replay_list_sequential,
             sequence_first=sequence_first,
+            kept_in_train_dump=kept_in_train_dump,
         )
         local_expected = expected.chunk(tp_size)[tp_rank] if sequence_parallel else expected
         torch.testing.assert_close(replay.recorded[0][:, 0], local_expected)
-        # Only a train-data dump keeps the consumed column.
-        assert ("routes" in rollout_data) == (save_debug_train_data is not None)
+        # Only a train-data dump keeps the consumed column, and only for a replay kept in it (R3).
+        assert ("routes" in rollout_data) == (kept_in_train_dump and save_debug_train_data is not None)
 
 
 class TestNativeReplayOwnership:
