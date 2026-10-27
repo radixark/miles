@@ -112,6 +112,31 @@ the port uses PPO clip (0.2 / 0.28) around the rollout log-probs.
 
 ## Results
 
+### Pure OPD, `allenai/tmax-9b` into `hamishivi/Qwen3.5-9B`, 4 nodes
+
+`configs/prod_4node_gateway_opd_9b.yaml` on 4x 8 B300, run `tmax_prod4node_gateway_opd_9b_20261027_022952` (Beaker
+`01M5XK2NCJAPFZ5M8G01659VZ5`, commit `b131645fa6`): open-instruct's terminal OPD recipe with a Megatron-mode teacher.
+Stopped after step 124; resumable from `iter_0000119` (step 120) with `--exp-name`. About 3-5 minutes per step.
+Training against open-instruct's identical run (W&B `6kyg0v64`) and the early transient are in
+[INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md#2026-10-27-the-9b-pure-opd-runs-early-transient).
+
+Greedy evaluations of the HF snapshots (k=5, `max-model-len` 67584, tmax repo `c98902cc`; 2 GPUs or 1 GPU at the same
+trials per GPU, on Jupiter, Saturn and Holmes):
+
+| Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
+|---|---|---|
+| OPD, step 20 | 0.516 / 0.630 | pending |
+| OPD, step 40 | 0.576 / 0.730 | 0.270 / 0.416 |
+| OPD, step 60 | 0.542 / 0.710 | 0.261 / 0.382 |
+| OPD, step 80 | 0.584 / 0.770 (B300), 0.574 / 0.730 (A100) | 0.283 / 0.449 |
+| Teacher `allenai/tmax-9b` | 0.538 / 0.710 | 0.276 / 0.438 (sampled) |
+| GRPO run below, best (step 240) | 0.528 / 0.780 | 0.258 / 0.371 |
+| Open-instruct OPD, step 40 / 80 (sampled, k=1) | 0.58, 0.54 | 0.281, 0.236 |
+| Base `hamishivi/Qwen3.5-9B` (sampled) | 0.418 / 0.660 | 0.191 / 0.337 |
+
+The student reaches the teacher by step 40 and stays there, as open-instruct's run did, and passes the GRPO run's
+best checkpoint in a sixth of the steps.
+
 ### Gateway backend with open-instruct parity, 4 nodes
 
 `configs/prod_4node_gateway.yaml` on 4x 8 B300 (`ai2/holmes`), run `tmax_prod4node_gateway_qwen35_9b_20261020_092350`
