@@ -37,8 +37,12 @@ class OwnedBuckets:
     def offer(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         if self._next_index % self._replica_size == self._replica_rank:
             # kept on the device until the stream ends, the owned buckets would add model/replica_size to each
-            # rank's peak device memory; non-blocking, so the copy overlaps the next bucket's gather
-            host_bucket = [(name, tensor.to("cpu", non_blocking=True)) for name, tensor in bucket]
+            # rank's peak device memory. Non-blocking, so the copy overlaps the next gather; into unpinned host
+            # tensors, since `.to("cpu", non_blocking=True)` pins memory that CUDA's host allocator keeps cached
+            host_bucket = [
+                (name, torch.empty(tensor.shape, dtype=tensor.dtype).copy_(tensor, non_blocking=True))
+                for name, tensor in bucket
+            ]
             self._owned.append((self._next_index, host_bucket))
         self._next_index += 1
 

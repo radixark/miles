@@ -118,21 +118,19 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
 
 
 def _engines_off_this_host(rollout_engines: Sequence[SGLangApiClient]) -> list[str]:
-    return [
-        engine.server_url
-        for engine in rollout_engines
-        if not _is_local_address(socket.gethostbyname(urlparse(engine.server_url).hostname))
-    ]
+    return [engine.server_url for engine in rollout_engines if not _is_this_host(urlparse(engine.server_url).hostname)]
 
 
-def _is_local_address(ip: str) -> bool:
-    # only an address of one of this machine's interfaces can be bound
-    with socket.socket() as probe:
-        try:
-            probe.bind((ip, 0))
-        except OSError:
-            return False
-    return True
+def _is_this_host(host: str) -> bool:
+    # only an address of one of this machine's interfaces can be bound, IPv4 or IPv6
+    for family, _, _, _, address in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind((address[0], 0))
+            except OSError:
+                continue
+        return True
+    return False
 
 
 def _copy_to_shared_bucket(bucket: list[tuple[str, torch.Tensor]]) -> tuple[torch.Tensor, list]:
