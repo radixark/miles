@@ -27,6 +27,7 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.megatron_utils.te_fused_adam import install_fused_adam_chunking
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.loss.objective import loss_function
@@ -192,6 +193,7 @@ def setup_model_and_optimizer(
         return model, None, None
 
     # Optimizer
+    install_fused_adam_chunking()
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
         if hasattr(args.backend, f.name):  # config-access-exempt: attribute selected at runtime from f.name
