@@ -27,7 +27,7 @@ from miles.rollout.filter_hub.common_filters import (
 )
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
-from miles.utils.output_store.dropped import record_dropped_samples, store_refs_of
+from miles.utils.output_store.dropped import record_dropped_samples, regenerated_on_restore
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -290,7 +290,7 @@ class DefaultDataBuffer(DataBuffer):
     def load_state_dict(self, state: list[DataBufferInput]) -> None:
         assert not self._buffer
         for entry in state:
-            if store_refs_of(entry.group):
+            if regenerated_on_restore(entry.group, use_output_store=self._args.use_output_store):
                 record_dropped_samples([entry.prompt_group, entry.group])
                 self._unused_handler_fn(entry.prompt_group, UnusedReason.RESTORED)
             else:

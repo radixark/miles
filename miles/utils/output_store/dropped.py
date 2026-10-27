@@ -31,6 +31,28 @@ def store_refs_of(samples: Iterable[Any]) -> dict[str, StoreRef]:
     return refs
 
 
+def has_inline_replay(sample: Sample) -> bool:
+    return any(
+        replay is not None
+        for replay in (sample.rollout_routed_experts, sample.rollout_indexer_topk, sample.rollout_sampling_mask)
+    )
+
+
+def regenerated_on_restore(samples: Iterable[Any], *, use_output_store: bool) -> bool:
+    """Whether restored samples must be generated again instead of replayed.
+
+    Their output store refs may not outlive the run that wrote them, and under ``--use-output-store``
+    convert rejects inline replay arrays, which a checkpoint saved without the switch holds.
+    """
+    return bool(store_refs_of(samples)) or (use_output_store and _carries_inline_replay(samples))
+
+
+def _carries_inline_replay(samples: Iterable[Any]) -> bool:
+    return any(
+        has_inline_replay(item) if isinstance(item, Sample) else _carries_inline_replay(item) for item in samples
+    )
+
+
 def record_dropped_samples(samples: Iterable[Any]) -> None:
     """Hand the refs of samples that will never train to the rollout executor."""
     _dropped.update(store_refs_of(samples))

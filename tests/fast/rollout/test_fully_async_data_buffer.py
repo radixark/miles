@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 
+import numpy as np
 import pytest
 
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
@@ -103,6 +104,7 @@ def _make_args() -> Namespace:
             megatron_config=encode_megatron_config("solver", "verifier"),
             reward_key=None,
             rollout_batch_size=1,
+            use_output_store=False,
         )
     )
 
@@ -159,6 +161,7 @@ def _make_single_policy_args(**overrides) -> Namespace:
         max_weight_staleness=None,
         reward_key=None,
         rollout_batch_size=1,
+        use_output_store=False,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -643,6 +646,12 @@ from miles.utils.output_store.dropped import take_dropped_refs
 from miles.utils.output_store.plan import StorePlan
 
 
+def _with_inline_replay(group: list[Sample]) -> list[Sample]:
+    for sample in group:
+        sample.rollout_routed_experts = np.zeros((1, 1, 1), dtype=np.int32)
+    return group
+
+
 def _with_store_refs(group: list[Sample]) -> list[Sample]:
     for sample in group:
         sample.rollout_store_plan = StorePlan(fields={}, owned_refs=(ref(f"key-{sample.index}"),))
@@ -708,3 +717,16 @@ class TestDroppedGroupsHandOverTheirOutputStoreRefs:
         assert under_test.unused == [(restored, UnusedReason.RESTORED)]
         assert [entry.group for entry in under_test.buffer.state_dict()] == [inline]
         assert sorted(take_dropped_refs()) == ["key-10", "key-11"]
+
+    @pytest.mark.parametrize("use_output_store", [False, True])
+    def test_restored_inline_replay_groups_are_handed_back_under_the_store_switch(
+        self, use_output_store: bool
+    ) -> None:
+        """A run saved without --use-output-store holds inline replay arrays, which convert rejects under it."""
+        under_test = _make_buffer(use_output_store=use_output_store)
+        inline = _with_inline_replay(_make_finished_group(1))
+
+        under_test.buffer.load_state_dict([DataBufferInput(prompt_group=inline, group=inline)])
+
+        assert under_test.unused == ([(inline, UnusedReason.RESTORED)] if use_output_store else [])
+        assert [entry.group for entry in under_test.buffer.state_dict()] == ([] if use_output_store else [inline])
