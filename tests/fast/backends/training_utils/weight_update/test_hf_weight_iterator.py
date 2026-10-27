@@ -59,7 +59,7 @@ class _StubIterator(HfWeightIteratorBase):
         self._base = base
         self.export_calls = []
 
-    def _iter_hf_param_units(self, weights, *, materialize):
+    def _iter_hf_param_units(self, weights, *, materialize, route):
         for pair in self._base:
             yield [pair]
 

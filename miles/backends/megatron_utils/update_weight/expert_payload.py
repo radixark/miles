@@ -1,5 +1,6 @@
 """Encode a list of units of named tensors into one byte payload and decode it back as views."""
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -26,18 +27,28 @@ class PayloadLayout:
 
 
 def build_payload_layout(units):
+    return _lay_out_units([[(name, tuple(tensor.shape), tensor.dtype) for name, tensor in unit] for unit in units])
+
+
+def select_units(layout, unit_indices):
+    """The layout of a payload holding only the chosen units of `layout`, in the given order."""
+    return _lay_out_units(
+        [[(tensor.name, tensor.shape, tensor.dtype) for tensor in layout.units[index]] for index in unit_indices]
+    )
+
+
+def _lay_out_units(unit_specs):
     unit_layouts = []
     dtype_sizes = {}
     byte_offset = 0
-    for unit in units:
+    for unit_spec in unit_specs:
         unit_layout = []
-        for name, tensor in unit:
-            item_size = tensor.element_size()
-            dtype_sizes[tensor.dtype] = item_size
+        for name, shape, dtype in unit_spec:
+            item_size = dtype.itemsize
+            dtype_sizes[dtype] = item_size
             # Typed views require their storage offset to be dtype-aligned.
             byte_offset = (byte_offset + item_size - 1) // item_size * item_size
-            nbytes = tensor.numel() * item_size
-            shape = tuple(tensor.shape)
+            nbytes = math.prod(shape) * item_size
             strides = []
             stride = 1
             for dim in reversed(shape):
@@ -45,7 +56,7 @@ def build_payload_layout(units):
                 stride *= max(dim, 1)
             unit_layout.append(
                 TensorLayout(
-                    name, shape, tensor.dtype, byte_offset, nbytes, tuple(reversed(strides)), byte_offset // item_size
+                    name, shape, dtype, byte_offset, nbytes, tuple(reversed(strides)), byte_offset // item_size
                 )
             )
             byte_offset += nbytes

@@ -111,7 +111,7 @@ def test_bridge_canonicalizes_names_before_postprocessing(native_names, plain_ex
     monkeypatch.setattr(bridge_iterator.megatron_bridge_utils, "patch_megatron_model", lambda model: nullcontext())
     monkeypatch.setattr(bridge_iterator, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
 
-    assert list(iterator._iter_hf_param_units({}, materialize=True)) == [[(hf_name, weight)]]
+    assert list(iterator._iter_hf_param_units({}, materialize=True, route=None)) == [[(hf_name, weight)]]
     assert received == [(hf_name, weight, megatron_name)]
     iterator._remap_hf_name.assert_called_once_with(source_name)
 

@@ -35,7 +35,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
             or None  # config-access-exempt: HF models without query LoRA omit q_lora_rank
         )
 
-    def _iter_hf_param_units(self, weights, *, materialize):
+    def _iter_hf_param_units(self, weights, *, materialize, route):
         for name, tensor in hf_weights(self.model, complete_across_pp=self.placement.gather_pp):
             if materialize:
                 yield [(name, self._to_engine_dtype(name, tensor))]

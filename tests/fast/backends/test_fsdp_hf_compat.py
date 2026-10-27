@@ -160,7 +160,7 @@ def test_the_iterator_streams_params_without_a_transform_unchanged():
     iterator._sync_dtypes = {}
     iterator._arch_adapter = _adapter("qwen3_5_moe")
     with patch.object(hf_weight_iterator, "gather_full_param", lambda t, async_op=False: t):
-        units = list(iterator._iter_hf_param_units(None, materialize=True))
+        units = list(iterator._iter_hf_param_units(None, materialize=True, route=None))
     assert [[name for name, _ in unit] for unit in units] == [
         ["model.embed_tokens.weight"],
         ["model.layers.0.mlp.experts.gate_up_proj"],

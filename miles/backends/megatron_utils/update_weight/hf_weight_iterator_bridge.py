@@ -38,7 +38,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         self._remap_hf_name = _load_checkpoint_name_remap(bridge_checkpoint)
         self._export_dtypes = None
 
-    def _iter_hf_param_units(self, weights, *, materialize):
+    def _iter_hf_param_units(self, weights, *, materialize, route):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
         # Bridge mappings for the hyper-connection alphas and the hc head read
         # sibling parameters through the live module, which colocate sleep() has

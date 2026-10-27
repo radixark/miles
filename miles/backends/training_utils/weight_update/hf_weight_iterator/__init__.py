@@ -35,6 +35,14 @@ class WeightUpdatePlacement:
         return self.gather_pp and self.gather_tp and self.gather_ep
 
 
+@dataclasses.dataclass(frozen=True)
+class HfNameRoute:
+    """The HF names each training rank needs, indexed by global rank: what the rollout engine rank it sends to
+    loads. An iterator may then deliver a converted tensor only to the ranks that need it."""
+
+    hf_names_by_rank: tuple[frozenset[str], ...]
+
+
 def resolve_placement(required: WeightUpdatePlacement, forced: WeightUpdatePlacement | None) -> WeightUpdatePlacement:
     """Join of the protocol's required placement and the iterator's forced one:
     a dim is gathered if either side gathers it."""
@@ -98,6 +106,7 @@ class HfWeightIteratorBase(ABC):
         include_base: bool = True,
         adapters: Sequence[tuple[str, object]] = (),
         materialize: bool = True,
+        route: HfNameRoute | None = None,
     ) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """Model weights as size-bounded buckets of HF-named GPU tensors;
         atomic update groups are never split across buckets.
@@ -106,13 +115,17 @@ class HfWeightIteratorBase(ABC):
         model parameters. ``adapters``: ``(lora_name, adapter_or_None)`` pairs
         whose tensors join the stream under ``{lora_name}:{hf_key}`` names.
         ``materialize=False`` joins every collective but yields nothing.
+        ``route``: with it, a rank may receive only the tensors its route names;
+        None gives every rank every tensor.
         """
 
         def prefixed_units(lora_name, adapter):
             for unit in self._iter_hf_adapter_units(adapter, materialize=materialize):
                 yield [(f"{lora_name}:{name}", tensor) for name, tensor in unit]
 
-        hf_param_units = self._iter_hf_param_units(weights, materialize=materialize) if include_base else iter(())
+        hf_param_units = (
+            self._iter_hf_param_units(weights, materialize=materialize, route=route) if include_base else iter(())
+        )
         for lora_name, adapter in adapters:
             hf_param_units = itertools.chain(hf_param_units, prefixed_units(lora_name, adapter))
         atomic_update_groups = self._hf_atomic_update_groups() if include_base and materialize else []
@@ -125,11 +138,13 @@ class HfWeightIteratorBase(ABC):
         weights: Mapping[str, torch.Tensor] | None,
         *,
         materialize: bool,
+        route: HfNameRoute | None,
     ) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """Backend hook: one unit per training-side parameter, holding every HF
         tensor it converted into (a weight, or weight + quant scales), honoring
         ``self.placement``. Collectives must run lockstep on every rank;
-        ``materialize=False`` joins them but yields nothing."""
+        ``materialize=False`` joins them but yields nothing. An implementation
+        may ignore ``route`` and deliver every unit."""
 
     def _hf_atomic_update_groups(self) -> list[AtomicUpdateGroup]:
         """Backend hook: HF-namespace atomic groups for this model. Default none."""
