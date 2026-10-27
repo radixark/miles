@@ -244,7 +244,8 @@ class ModelConfig(FrozenStrictBaseModel):
         update_weights = raw.update_weights
         if is_multi_lora_enabled(args):
             assert update_weights is not True, "Tinker loads a frozen base; update_weights must be false"
-            assert effective_model_path == args.hf_checkpoint, "Tinker engines must load the trainer's base checkpoint"
+            # Adapters reach the engines from disk and the base is never synced, so model_path may name another
+            # copy of the trainer's base, such as a quantized one.
             update_weights = False
         elif update_weights is None:
             if effective_model_path != args.hf_checkpoint:

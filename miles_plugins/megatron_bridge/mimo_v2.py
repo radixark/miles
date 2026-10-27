@@ -17,6 +17,7 @@ SWA window reuse existing config fields (``rotary_base_per_layer``, ``window_siz
 
 The bridge reads the BF16 split-q/k/v layout written by ``tools/convert_mimo_v2_to_bf16.py``; the
 official checkpoint (FP8/MXFP4, fused kv-head-interleaved ``qkv_proj``) must be converted first.
+LoRA adapters of ``linear_qkv`` export through the same per-group q/k/v split as the attention.
 Only the text decoder is built: vision/audio towers and the MTP layers are not.
 """
 
@@ -42,6 +43,19 @@ from megatron.core.transformer.attention import SelfAttention
 
 
 logger = logging.getLogger(__name__)
+
+
+def _qkv_group_sizes(*, heads_per_group: int, qk_dim: int, v_dim: int) -> list[int]:
+    """Rows of one KV group in the fused ``linear_qkv`` output: its query heads, one key head, one value head."""
+    return [heads_per_group * qk_dim, qk_dim, v_dim]
+
+
+def _split_qkv(qkv: torch.Tensor, *, dim: int, groups: int, heads_per_group: int, qk_dim: int, v_dim: int):
+    """Split ``dim`` of a fused qkv into (query, key, value), each keeping a KV-group axis at ``dim``."""
+    sizes = _qkv_group_sizes(heads_per_group=heads_per_group, qk_dim=qk_dim, v_dim=v_dim)
+    dim %= qkv.dim()
+    grouped = qkv.view(*qkv.shape[:dim], groups, sum(sizes), *qkv.shape[dim + 1 :])
+    return torch.split(grouped, sizes, dim=dim + 1)
 
 
 def _sized_linear(build, *, input_size: int | None = None, output_size: int | None = None):
@@ -70,7 +84,10 @@ class MiMoV2SelfAttention(SelfAttention):
         # qk_clip reads linear_qkv as q + 2 * kv rows of kv_channels each, which does not hold for a narrower V.
         assert not config.qk_clip, "qk_clip does not support a V head narrower than Q/K"
         heads, groups = config.num_attention_heads, config.num_query_groups
-        qkv_out_dim = heads * config.kv_channels + groups * (config.kv_channels + config.v_head_dim)
+        group_sizes = _qkv_group_sizes(
+            heads_per_group=heads // groups, qk_dim=config.kv_channels, v_dim=config.v_head_dim
+        )
+        qkv_out_dim = groups * sum(group_sizes)
         submodules = dataclasses.replace(
             submodules,
             linear_qkv=_sized_linear(submodules.linear_qkv, output_size=qkv_out_dim),
@@ -89,9 +106,10 @@ class MiMoV2SelfAttention(SelfAttention):
         groups = self.num_query_groups_per_partition
         heads_per_group = self.num_attention_heads_per_partition // groups
         qk_dim, v_dim = self.hidden_size_per_attention_head, self.config.v_head_dim
-        # [sq, b, ng * (np/ng * hn + hn + hv)] -> [sq, b, ng, np/ng * hn + hn + hv]
-        mixed_qkv = mixed_qkv.view(*mixed_qkv.shape[:-1], groups, heads_per_group * qk_dim + qk_dim + v_dim)
-        query, key, value = torch.split(mixed_qkv, [heads_per_group * qk_dim, qk_dim, v_dim], dim=3)
+        # [sq, b, ng * (np/ng * hn + hn + hv)] -> [sq, b, ng, np/ng * hn], [sq, b, ng, hn], [sq, b, ng, hv]
+        query, key, value = _split_qkv(
+            mixed_qkv, dim=-1, groups=groups, heads_per_group=heads_per_group, qk_dim=qk_dim, v_dim=v_dim
+        )
         query = query.reshape(query.size(0), query.size(1), -1, qk_dim)
         return query, key, value
 
@@ -274,3 +292,26 @@ class MiMoV2Bridge(MegatronModelBridge):
             )
         )
         return MegatronMappingRegistry(*mappings)
+
+    def _split_qkv_linear_out_weight(self, megatron_model, linear_out_weight: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Split a TP-gathered ``linear_qkv`` LoRA B into the HF q/k/v rows for adapter export and merge.
+
+        The generic split sizes V like K and takes the KV heads from the model config; here each layer's KV
+        heads are the global or SWA count whose fused row count matches the tensor.
+        """
+        config = (megatron_model[0] if isinstance(megatron_model, list) else megatron_model).config
+        heads, qk_dim, v_dim = config.num_attention_heads, config.kv_channels, config.v_head_dim
+        rows = linear_out_weight.shape[0]
+        groups = next(
+            (
+                g
+                for g in (config.full_attn_num_query_groups, config.swa_num_query_groups)
+                if g * sum(_qkv_group_sizes(heads_per_group=heads // g, qk_dim=qk_dim, v_dim=v_dim)) == rows
+            ),
+            None,
+        )
+        assert groups is not None, f"linear_qkv LoRA B has {rows} rows, matching neither a global nor a SWA layer"
+        query, key, value = _split_qkv(
+            linear_out_weight, dim=0, groups=groups, heads_per_group=heads // groups, qk_dim=qk_dim, v_dim=v_dim
+        )
+        return {"q_proj": query.flatten(0, 1), "k_proj": key.flatten(0, 1), "v_proj": value.flatten(0, 1)}
