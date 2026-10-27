@@ -1,8 +1,22 @@
-"""Shared prompt and trajectory grouping for reward processing."""
+"""Prompt-group reward shaping before advantage normalization."""
 
+import math
 from argparse import Namespace
 
 from miles.utils.types import Sample
+
+
+def validate_length_penalty_args(args: Namespace) -> None:
+    coeff = getattr(args, "length_penalty_coeff", 0.0)
+    minimum = getattr(args, "length_penalty_min_tokens", 1)
+    if not math.isfinite(coeff) or coeff < 0:
+        raise ValueError("--length-penalty-coeff must be finite and non-negative")
+    if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 1:
+        raise ValueError("--length-penalty-min-tokens must be a positive integer")
+    if coeff > 0:
+        for field in ("custom_reward_post_process_path", "custom_convert_samples_to_train_data_path"):
+            if getattr(args, field, None):
+                raise ValueError(f"--length-penalty-coeff cannot be combined with --{field.replace('_', '-')}")
 
 
 def reward_group_segments(
@@ -41,3 +55,38 @@ def rollout_segments(samples: list[Sample], rows: list[int]) -> list[list[int]]:
         key = sample.rollout_id if sample.rollout_id is not None else sample.index
         by_rollout.setdefault(key if key is not None else ("row", row), []).append(row)
     return list(by_rollout.values())
+
+
+def apply_length_penalty(
+    args: Namespace,
+    samples: list[Sample],
+    rewards: list[float],
+    prompt_groups: list[list[int]],
+) -> list[float]:
+    """Shape correct rollout rewards without mutating samples or raw rewards."""
+    coeff = getattr(args, "length_penalty_coeff", 0.0)
+    if coeff == 0:
+        return rewards
+    minimum = getattr(args, "length_penalty_min_tokens", 1)
+    shaped = list(rewards)
+    for rows in prompt_groups:
+        correct: list[tuple[list[int], int]] = []
+        for siblings in rollout_segments(samples, rows):
+            reward = rewards[siblings[0]]
+            if any(rewards[row] != reward for row in siblings[1:]):
+                raise ValueError("all samples in a rollout must share one reward")
+            if reward == 1.0:
+                length = sum(
+                    sample.effective_response_length for row in siblings if not (sample := samples[row]).remove_sample
+                )
+                if length < 0:
+                    raise ValueError("generated token count must be non-negative")
+                correct.append((siblings, length))
+        if not correct:
+            continue
+        reference = max(minimum, min(length for _, length in correct))
+        for siblings, length in correct:
+            reward = max(1.0, length / reference) ** (-coeff)
+            for row in siblings:
+                shaped[row] = reward
+    return shaped
