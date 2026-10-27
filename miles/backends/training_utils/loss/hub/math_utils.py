@@ -315,7 +315,7 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup | None) -> torch.Tensor:
+    def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
         ctx.input_dtype = logits.dtype
         logits = logits.float()
         logits_max = logits.max(dim=-1)[0]
@@ -323,7 +323,8 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         logits.sub_(logits_max.unsqueeze(-1))
 
         partition_vocab_size = logits.size(-1)
-        vocab_start = dist.get_rank(group) * partition_vocab_size
+        # group.rank(), as Megatron: None or a rank outside the group fails here instead of reducing over the world
+        vocab_start = group.rank() * partition_vocab_size
         target_mask = (target < vocab_start) | (target >= vocab_start + partition_vocab_size)
         masked_target = (target - vocab_start).masked_fill(target_mask, 0)
         predicted_logits = logits.gather(-1, masked_target.unsqueeze(-1)).squeeze(-1).masked_fill(target_mask, 0.0)
@@ -347,7 +348,7 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         return grad_input.mul_(grad_output.unsqueeze(-1)).to(ctx.input_dtype), None, None
 
 
-def vocab_parallel_cross_entropy(logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup | None):
+def vocab_parallel_cross_entropy(logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup):
     return _VocabParallelCrossEntropy.apply(logits, target, group)
 
 
@@ -453,12 +454,10 @@ class _ReplicatedLossAllGatherLastDim(torch.autograd.Function):
         if world_size == 1:
             return input_.contiguous()
 
-        from megatron.core.tensor_parallel.mappings import dist_all_gather_func
-
         gather_shape = list(input_.shape)
         gather_shape[0] *= world_size
         gathered = torch.empty(gather_shape, dtype=input_.dtype, device=input_.device)
-        dist_all_gather_func(gathered, input_.contiguous(), group=group)
+        dist.all_gather_into_tensor(gathered, input_.contiguous(), group=group)
         return torch.cat(gathered.chunk(world_size, dim=0), dim=-1).contiguous()
 
     @staticmethod

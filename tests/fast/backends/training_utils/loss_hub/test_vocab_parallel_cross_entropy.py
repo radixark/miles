@@ -74,8 +74,6 @@ def _check_compute_log_probs(group: dist.ProcessGroup) -> None:
     expected = torch.log_softmax(logits, dim=-1).gather(-1, tokens.unsqueeze(-1))
 
     torch.testing.assert_close(compute_log_probs(logits.clone(), tokens, group), expected, atol=1e-6, rtol=1e-6)
-    # None: the default group
-    torch.testing.assert_close(compute_log_probs(logits.clone(), tokens, None), expected, atol=1e-6, rtol=1e-6)
 
 
 def _run_checks(rank: int, world_size: int, port: int) -> None:
