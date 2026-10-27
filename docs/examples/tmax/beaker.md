@@ -91,8 +91,8 @@ Before submitting:
 | `gateway_registry` | unset | With `sandbox_backend: gateway`: the podman fleet's head registry (`head+sqlite:///weka/…/head.sqlite3`); the head starts a gateway from it. See [Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend) |
 | `gateway_url` | unset | With `sandbox_backend: gateway`: a running gateway to use instead |
 | `gateway_min_replicas` | `1` | Podman replicas the gateway must list before training starts |
-| `literegistry_version` | `1.0.57` | The literegistry release the head's gateway runs (the fleet's) |
-| `literegistry_podman_client_version` | `0.1.4` | The `literegistry-podman-client` release the agents use |
+| `literegistry_version` | `1.0.63` | The literegistry release the head's gateway runs |
+| `literegistry_podman_client_version` | `0.1.7` | The `literegistry-podman-client` release the agents use |
 
 `submit.py` also sets `NUM_NODES`, `BEAKER_ALLOW_SUBCONTAINERS=1`, `BEAKER_SKIP_DOCKER_SOCKET=1`,
 `PYTORCH_ALLOC_CONF=expandable_segments:True`, `SANDBOX_SHARDS`, `MIRROR_URL`, `KEEP_LAST_N_CHECKPOINTS`,
@@ -211,7 +211,10 @@ beaker:
     `affinity_owner_lost`, `binding_lost`) leaves the reward missing, so the missing-reward filter drops the group
     rather than training on a false 0. As literegistry prescribes, the episode never continues in a replacement
     container; local podman instead recreates a vanished container once.
-  - Transient gateway answers (`408`, `5xx`, a dropped connection) are retried; every request is safe to repeat.
+  - Transient gateway answers (`408`, `5xx`, a dropped connection) are retried; every command is safe to repeat.
+    A handshake is retried too, up to 3 times per episode start: about 2% of them hang until the gateway's 300 s
+    admission deadline (`504 affinity_admission_timeout`, on both fleets in October 2026). A timed-out handshake
+    may still start a container nobody can name, which idles out after 2 h whether or not it is resent.
 - **The fleet** is shared and managed outside this job. Its roster is at `<gateway>/v1/models`: on 2026-10-16, 172
   podman replicas, 8 mirrors and the fleet's own gateway.
 - **Check it from a dev box.** Start a gateway from the same registry with `python -m literegistry.gateway

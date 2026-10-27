@@ -27,8 +27,8 @@
 #   GATEWAY_REGISTRY          the fleet's head registry, e.g. head+sqlite:///weka/.../head.sqlite3 (gateway started here)
 #   GATEWAY_URL               or an already running gateway to use as is
 #   GATEWAY_MIN_REPLICAS      podman replicas the gateway must list before training starts (default: 1)
-#   LITEREGISTRY_VERSION      the gateway's literegistry release (default: 1.0.57, the fleet's)
-#   LITEREGISTRY_PODMAN_CLIENT_VERSION   the sandboxes' client, literegistry-podman-client (default: 0.1.4)
+#   LITEREGISTRY_VERSION      the gateway's literegistry release (default: 1.0.63)
+#   LITEREGISTRY_PODMAN_CLIENT_VERSION   the sandboxes' client, literegistry-podman-client (default: 0.1.7)
 set -euxo pipefail
 
 REPO=$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)
@@ -123,14 +123,14 @@ fi
 # from the head registry on weka, so it follows a Redis restart, and it is restarted if it exits.
 if [ "$SANDBOX_BACKEND" = gateway ] && [ "$RANK" = 0 ]; then
     # literegistry's own client: the agent processes reach the gateway through it (small: aiohttp + fire).
-    pip install -q "literegistry-podman-client==${LITEREGISTRY_PODMAN_CLIENT_VERSION:-0.1.4}"
+    pip install -q "literegistry-podman-client==${LITEREGISTRY_PODMAN_CLIENT_VERSION:-0.1.7}"
     if [ -n "${GATEWAY_REGISTRY:-}" ]; then
         # literegistry pins starlette and pulls streamlit/pandas, which the training env cannot take: its own venv.
         LR_VENV=/opt/literegistry-venv
         if command -v uv >/dev/null; then
-            uv venv -q --python "$(command -v python3)" "$LR_VENV" && uv pip install -q --python "$LR_VENV/bin/python" "literegistry==${LITEREGISTRY_VERSION:-1.0.57}"
+            uv venv -q --python "$(command -v python3)" "$LR_VENV" && uv pip install -q --python "$LR_VENV/bin/python" "literegistry==${LITEREGISTRY_VERSION:-1.0.63}"
         else
-            python3 -m venv "$LR_VENV" && "$LR_VENV/bin/pip" install -q "literegistry==${LITEREGISTRY_VERSION:-1.0.57}"
+            python3 -m venv "$LR_VENV" && "$LR_VENV/bin/pip" install -q "literegistry==${LITEREGISTRY_VERSION:-1.0.63}"
         fi
         GATEWAY_PORT=${GATEWAY_PORT:-24750}
         # On weka next to the run's checkpoints, one file per attempt, so it outlives the job (2026-10-17's stayed in
