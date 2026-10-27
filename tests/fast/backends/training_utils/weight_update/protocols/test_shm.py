@@ -192,6 +192,7 @@ def test_an_errored_cell_gets_no_payload(monkeypatch):
 
 
 def test_only_engines_on_this_host_can_open_the_buckets():
-    # 192.0.2.1 is reserved for documentation (RFC 5737), so no machine's interface holds it
-    engines = [SGLangApiClient(f"http://{host}:30000") for host in ("127.0.0.1", "localhost", "192.0.2.1")]
-    assert shm._engines_off_this_host(engines) == ["http://192.0.2.1:30000"]
+    # 192.0.2.1 and 2001:db8::1 are reserved for documentation (RFC 5737, RFC 3849): no interface holds them
+    hosts = ("127.0.0.1", "localhost", "192.0.2.1", "[2001:db8::1]")
+    engines = [SGLangApiClient(f"http://{host}:30000") for host in hosts]
+    assert shm._engines_off_this_host(engines) == ["http://192.0.2.1:30000", "http://[2001:db8::1]:30000"]
