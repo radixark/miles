@@ -236,6 +236,7 @@
        "advanced/fault-tolerance",
        "advanced/pd-disaggregation",
        "advanced/p2p-weight-transfer",
+       "advanced/weightbridge-weight-transfer",
        "advanced/mooncake-rollout-transfer",
        "advanced/disaggregated-rollout",
        "advanced/disk-offload"

@@ -36,6 +36,8 @@ from miles.utils.workers.worker_spec import (
     WorkerLaunchContext,
 )
 
+WEIGHTBRIDGE_HUB_PORT_NAME = "weightbridge_hub"
+
 POOL_CATEGORY_INFERENCE_ENGINE = "inference_engine"
 
 ENGINE_POOL_ID_PREFIX = "inference-engine"
@@ -354,6 +356,9 @@ class InferenceEngineSpec(BaseCommandSpec):
             disaggregation_bootstrap_port=d.port if (d := ctx.self_addrs.get("disaggregation_bootstrap")) else None,
             engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,
             gated_launch_port=ctx.self_addrs[GATE_PORT_NAME].port,
+            weightbridge_hub_addr=(
+                f"tcp://{hub.host}:{hub.port}" if (hub := ctx.self_addrs.get(WEIGHTBRIDGE_HUB_PORT_NAME)) else None
+            ),
             random_seed=random_seed,
         )
 
@@ -424,6 +429,12 @@ def _compute_spec_inference_engine(
             ),
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
             PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
+            *(
+                # Rank 0's WeightBridge control hub, reached from every node of a multi-node engine.
+                [PortInfo(name=WEIGHTBRIDGE_HUB_PORT_NAME, static_port=14000, mode="master", allow_dynamic=True)]
+                if args.update_weight_transfer_mode == "weightbridge"
+                else []
+            ),
         ],
         # TODO: reduce complexity around passing around configs later during arguments refactor
         partial_static_meta=StaticMeta(

@@ -29,6 +29,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         check_weight_update_selector=None,
         check_weight_update_skip_list=None,
         colocate_memory_peak_device="cpu",
+        debug_exit_after_first_weight_update=False,
         debug_exit_after_rollout=None,
         eval_interval=None,
         eval_uses_snapshots=False,
@@ -232,6 +233,17 @@ class TestWeightEqualityCheck:
         await with_disposer(train_driver.train, _startup_info(args))
 
         assert components.inference_controller.check_weights_calls == []
+
+    async def test_debug_exit_stops_after_the_initial_update_and_its_check(self, monkeypatch: pytest.MonkeyPatch):
+        """--debug-exit-after-first-weight-update validates one transfer and must not start a rollout or train."""
+        events: list[str] = []
+        args = _make_args(check_weight_update_equal=True, debug_exit_after_first_weight_update=True, num_rollout=2)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert len(components.inference_controller.check_weights_calls) == 1
+        assert not any(e.startswith("actor_train") for e in events)
 
 
 class TestCriticValuesHandoff:

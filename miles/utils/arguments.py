@@ -857,7 +857,7 @@ def miles_validate_args(args):
             setattr(args, k, v)
 
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "weightbridge"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1271,6 +1271,19 @@ def miles_validate_args(args):
         )
         assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
+
+    if args.update_weight_transfer_mode == "weightbridge":
+        assert not args.colocate, "WeightBridge weight transfer needs disaggregated trainer and rollout GPUs."
+        assert args.train_backend == "megatron", "WeightBridge weight transfer is implemented for Megatron trainers."
+        assert args.lora_rank <= 0, "LoRA weight sync is not supported for WeightBridge weight transfer."
+        assert (
+            not args.fully_async
+        ), "--fully-async keeps generation in flight, while a WeightBridge update retracts or aborts every request"
+        assert args.pause_generation_mode in ("retract", "abort"), (
+            "WeightBridge updates clear in-flight requests before writing weights, so in_place pausing, which keeps "
+            "KV computed under the old weights, does not apply"
+        )
+        assert args.prefill_num_servers is None, "WeightBridge weight transfer does not support PD disaggregation."
 
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (

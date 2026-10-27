@@ -53,6 +53,7 @@ def compute_engine_launch_cmd(
     engine_info_bootstrap_port: int,
     gated_launch_port: int,
     random_seed: int,
+    weightbridge_hub_addr: str | None = None,
 ) -> str:
     _assert_launch_gate_served()
 
@@ -71,6 +72,7 @@ def compute_engine_launch_cmd(
         num_gpus_per_engine=num_gpus_per_engine,
         gated_launch_port=gated_launch_port,
         random_seed=random_seed,
+        weightbridge_hub_addr=weightbridge_hub_addr,
     )
 
     launch_args = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
@@ -93,6 +95,7 @@ def _compute_server_args(
     num_gpus_per_engine: int | None,
     gated_launch_port: int,
     random_seed: int,
+    weightbridge_hub_addr: str | None = None,
 ):
     base_args = args.sglang.base_args
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
@@ -139,6 +142,13 @@ def _compute_server_args(
     elif worker_type == WorkerType.DECODE:
         kwargs["disaggregation_mode"] = WorkerType.DECODE.value
         kwargs["prefill_round_robin_balance"] = True
+
+    if args.update_weight_transfer_mode == "weightbridge":
+        # The engine receives updates through WeightBridge and applies miles' pause mode itself.
+        kwargs["enable_weightbridge_receiver"] = True
+        kwargs["weightbridge_pause_mode"] = args.pause_generation_mode
+        if nnodes > 1:
+            kwargs["weightbridge_hub_addr"] = weightbridge_hub_addr
 
     if args.use_rollout_routing_replay:
         kwargs["enable_return_routed_experts"] = True

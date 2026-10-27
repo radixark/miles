@@ -235,6 +235,14 @@ Sections mirror the launch-script argument groups.
 | `--dp-replicate-size` | int | `1` | FSDP2 hybrid-shard replica count. |
 | `--attn-implementation` | str | `flash_attention_2` | FSDP only: passed to `transformers`, e.g. `flash_attention_2`, `flash_attention_3`, `sdpa`, `eager`. |
 
+### Weight transfer
+
+| Flag | Type | Default | Notes |
+|---|---|---|---|
+| `--update-weight-transfer-mode` | enum | `broadcast` | `broadcast`, `broadcast_packed`, `p2p`, `disk-delta` or `weightbridge`. See [Disaggregated rollout](/advanced/disaggregated-rollout#weight-synchronization). |
+| `--weightbridge-protocol` | enum | `efa` | `weightbridge` mode: `efa`, `rdma`, `tcp` or `monarch` transport. See [WeightBridge Weight Transfer](/advanced/weightbridge-weight-transfer). |
+| `--weightbridge-async-delivery` | flag | off | `weightbridge` mode: return once the weights are packed instead of after every engine has loaded them. |
+
 ### RL algorithm
 
 | Flag | Type | Default | Notes |
@@ -384,6 +392,7 @@ contract, session behavior, and model-family selection.
 | `--save-debug-rollout-data` | path | – | Pickle every rollout to disk. The template must contain `{rollout_id}`. |
 | `--load-debug-rollout-data` | path | – | Replay rollouts from disk (implies `--debug-train-only`). |
 | `--deterministic-mode` | flag | off | Megatron deterministic mode. |
+| `--debug-exit-after-first-weight-update` | flag | off | Exit right after the initial weight update and its `--check-weight-update-equal` comparison, before any rollout. |
 
 ### Customization
 

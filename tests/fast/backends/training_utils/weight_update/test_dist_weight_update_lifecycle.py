@@ -90,6 +90,8 @@ def _make_updater(
 
     protocol = SimpleNamespace(
         use_weight_update_session=True,
+        streams_buckets=True,
+        bind_trainer_model=MagicMock(),
         needs_base_resync_for_lora=False,
         is_sender=True,
         group_name="test",

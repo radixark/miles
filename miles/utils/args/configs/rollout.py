@@ -228,15 +228,40 @@ class RolloutRelatedConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
+            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "weightbridge"],
             help=(
                 "The method to transfer weights to remote rollout engines during update weight. "
                 "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                 "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                "them into a host-local checkpoint that the engine reloads from."
+                "them into a host-local checkpoint that the engine reloads from. "
+                "'weightbridge' hands the whole update to WeightBridge: every trainer rank writes its live "
+                "shards into the engines with one-sided RDMA, and each engine's scheduler polls for the update "
+                "and pauses, loads and resumes itself, so an update sends no Ray or HTTP request to the engines. "
+                "Requires the wbridge package and an SGLang build with --enable-weightbridge-receiver."
             ),
         ),
     ] = "broadcast"
+    weightbridge_protocol: A[
+        str,
+        Arg(
+            choices=["efa", "rdma", "tcp", "monarch"],
+            help=(
+                "WeightBridge data-plane transport (SenderArgs.protocol): 'efa' is Mooncake over AWS EFA, "
+                "'rdma' is Mooncake's native RC-QP RDMA (InfiniBand/RoCE), 'tcp' is Mooncake over TCP for "
+                "fabric-less tests, and 'monarch' needs Monarch-actor workers."
+            ),
+        ),
+    ] = "efa"
+    weightbridge_async_delivery: A[
+        bool,
+        Arg(
+            help=(
+                "Return from a WeightBridge update once the trainer's weights are packed, letting delivery "
+                "overlap the next training step; engines apply it whenever it lands. By default the update "
+                "returns only after every engine rank has loaded it, so the next rollout runs on the new weights."
+            )
+        ),
+    ] = False
     update_weight_disk_dir: A[
         str | None,
         Arg(
