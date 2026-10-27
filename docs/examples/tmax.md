@@ -125,7 +125,7 @@ trials per GPU, on Jupiter, Saturn and Holmes):
 
 | Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
 |---|---|---|
-| OPD, step 20 | 0.516 / 0.630 | pending |
+| OPD, step 20 | 0.516 / 0.630 | 0.247 / 0.360 |
 | OPD, step 40 | 0.576 / 0.730 | 0.270 / 0.416 |
 | OPD, step 60 | 0.542 / 0.710 | 0.261 / 0.382 |
 | OPD, step 80 | 0.584 / 0.770 (B300), 0.574 / 0.730 (A100) | 0.283 / 0.449 |
