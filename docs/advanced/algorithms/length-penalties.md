@@ -36,6 +36,13 @@ Mask initialization and removal happen before reward shaping. Retained sibling
 samples share one rollout length and shaped reward; custom generators only need
 to supply the same loss masks that training should use.
 
+When length shaping is enabled, training-data conversion emits one `Length penalty:` INFO log per session/rollout,
+before advantage normalization. It includes `session_id`, `rollout_id`, the total
+`generated_tokens` counted toward shaping (the training loss-mask sum),
+`multiplier` (`1` means no penalty), `reward_reduction`, `raw_reward`, and
+`shaped_reward`. Incorrect sessions report multiplier `1`. Disabled shaping emits no penalty logs and skips length counting.
+Candidate filtering does not emit applied-penalty logs.
+
 Nonzero length shaping cannot be combined with custom reward postprocessing or
 custom train-data conversion, since those hooks replace the built-in pipeline.
 Custom filters must account for shaped rewards themselves if they discard groups
