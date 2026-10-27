@@ -660,7 +660,7 @@ class TestOneDirectoryPerRolloutCheckpoint:
         executor._delete_store_refs = (
             (lambda refs: deleted.append([ref.key for ref in refs])) if has_store_client else None
         )
-        await executor.load(5)
+        await executor.load(5, load=str(tmp_path))
 
         assert deleted == ([["stored"]] if has_store_client else [])
         assert take_dropped_refs() == {}
