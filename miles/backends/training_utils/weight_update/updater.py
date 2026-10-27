@@ -175,6 +175,7 @@ class WeightUpdater:
                 include_base=sync_base,
                 adapters=adapters,
                 materialize=protocol.is_sender,
+                route=protocol.hf_name_route,
             ):
                 if protocol.is_sender:
                     if driver and checksums is not None:

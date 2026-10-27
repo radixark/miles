@@ -1265,10 +1265,13 @@ def miles_validate_args(args):
         args.update_weights_timeout > 0
     ), f"--update-weights-timeout must be positive, got {args.update_weights_timeout!r}"
     if args.update_weight_transfer_mode == "p2p":
-        assert not args.colocate, (
-            "P2P weight transfer mode is not compatible with --colocate. "
-            "Please use broadcast mode or disable colocate."
-        )
+        if args.colocate:
+            # each engine rank publishes its weight locations and parallelism to the bootstrap server at startup
+            args.sglang_enable_engine_info_bootstrap = True
+            assert args.eval_num_gpus == 0, (
+                "colocated p2p pulls from the trainer rank on the engine's own GPU; "
+                "eval engines on extra GPUs have none"
+            )
         assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
 

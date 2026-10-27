@@ -53,6 +53,7 @@ class _ReplicaTarget(NamedTuple):
 class _RunnerSender:
     """Per-connection write targets and per-sync staging for one runner role, backed by cached replicas."""
 
+    runner_role: str
     model_replicas: ModelReplicas
     replica_targets: list[_ReplicaTarget]
     model_param_stager: ModelParamStager | None = None
@@ -83,7 +84,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
     ) -> bool:
         """Map new replicas, reset staging and grow the transfer buffers if a param group no longer fits; all ranks
         must join the first iterator pass's collectives."""
-        if self._hf_tensor_specs is None:
+        first_sync = self._hf_tensor_specs is None
+        if first_sync:
             self._hf_tensor_specs = {
                 hf_name: HfTensorSpec(tuple(tensor.shape), tensor.dtype)
                 for bucket in iter_buckets(materialize=True)
@@ -94,8 +96,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 runner_sender.model_replicas.map_hf_names(self._hf_tensor_specs)
                 runner_sender.model_param_stager = ModelParamStager(runner_sender.model_replicas.hf_name_mapping)
             buffer_nbytes = self._compute_transfer_buffer_nbytes()
-            if self._transfer_buffers is None:
+            if first_sync:
                 self._log_hf_names_no_runner_loads()
+            if self._transfer_buffers is None:
                 self._transfer_buffers = self._create_transfer_buffers(buffer_nbytes)
             elif self._transfer_buffers.buffer_nbytes < buffer_nbytes:
                 self._transfer_buffers.release()
@@ -275,7 +278,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     ),
                 )
             replica_targets.append(_ReplicaTarget(model_replica, remote_shards))
-        return _RunnerSender(model_replicas, replica_targets) if replica_targets else None
+        return _RunnerSender(runner_role, model_replicas, replica_targets) if replica_targets else None
 
     def _log_hf_names_no_runner_loads(self) -> None:
         hf_names_no_runner_loads = sorted(

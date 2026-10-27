@@ -103,23 +103,34 @@ class P2PTransport:
 
         Allocations must stay registered while native writes may still read them. Healthy receivers require
         unchanged bytes until their futures finish. Raises before writing anything if a shard lacks one of the
-        weights or holds it in a different number of bytes.
+        weights or holds it in a different number of bytes. Tensors in GPU memory may still be filling on the
+        caller's current stream; no native write starts before that work is done.
         """
         for remote_shard in remote_shards:
             assert_tensors_fit(remote_shard, tensors_by_name)
         context = fault_hook_controller.current_context()
+        loaded = _record_loaded(self.transfer_buffer_device)
         return [
             self._get_or_create_executor(remote_shard.rollout_engine_ind).submit(
-                run_write, remote_shard, partial(self._write_shard, remote_shard, tensors_by_name, context=context)
+                run_write,
+                remote_shard,
+                partial(self._write_shard, remote_shard, tensors_by_name, loaded=loaded, context=context),
             )
             for remote_shard in remote_shards
         ]
 
     def _write_shard(
-        self, remote_shard: RemoteShard, tensors_by_name: dict[str, torch.Tensor], *, context: FaultHookContext
+        self,
+        remote_shard: RemoteShard,
+        tensors_by_name: dict[str, torch.Tensor],
+        *,
+        loaded: torch.cuda.Event | None,
+        context: FaultHookContext,
     ) -> None:
         if not tensors_by_name:
             return
+        if loaded is not None:
+            loaded.synchronize()
         reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
         started_at = datetime.now(timezone.utc)
         try:
@@ -150,3 +161,13 @@ class P2PTransport:
                 thread_name_prefix=f"{self._native_transport.name}-write-rollout-engine-{rollout_engine_ind}",
             )
         return self._executors_by_rollout_engine_ind[rollout_engine_ind]
+
+
+def _record_loaded(device: torch.device) -> torch.cuda.Event | None:
+    """Marks the end of the work queued on the current stream; None for host memory, which the caller's copies
+    filled before returning."""
+    if device.type != "cuda":
+        return None
+    loaded = torch.cuda.Event()
+    loaded.record()
+    return loaded

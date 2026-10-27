@@ -13,6 +13,16 @@ To enable P2P weight transfer, add the following flag to your training command:
 --update-weight-transfer-mode p2p
 ```
 
+## Colocated engines
+
+With `--colocate`, `--update-weight-transfer-mode p2p` replaces the default CUDA-IPC hand-off. Each trainer rank
+loads, through its model replica, the param bytes of the engine rank on its own GPU into transfer buffers, and that
+engine rank copies them into its weights over CUDA IPC (`update_weights_from_colocated_param_bytes`). Engine weights
+in torch_memory_saver memory cannot be mapped by another process, so the engine pulls instead of the trainer writing.
+Per sync each engine gets one control request, and each trainer rank receives only the expert tensors its engine rank
+loads. miles enables `--sglang-enable-engine-info-bootstrap` for it; LoRA, PD, eval engines
+on GPUs of their own (`--eval-num-gpus`) and rollout fault tolerance are not supported.
+
 ## How It Works
 
 The default weight transfer mode in miles is `broadcast`: after training, updated weights are broadcast via NCCL to all rollout engine ranks. This works but does not fully utilize the available bandwidth, as redundant copies of the same weights are transferred to multiple ranks.
