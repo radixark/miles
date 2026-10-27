@@ -237,6 +237,11 @@ def get_mooncake_object_store_args(
     )
 
 
+def get_output_store_args(global_segment_size: str | None = None) -> str:
+    """--use-output-store with the Mooncake object store it lives in."""
+    return f"{get_mooncake_object_store_args(global_segment_size=global_segment_size)}--use-output-store "
+
+
 def _is_tcp_server_ready(host: str, port: int) -> bool:
     try:
         with socket.create_connection((host, port), timeout=1):

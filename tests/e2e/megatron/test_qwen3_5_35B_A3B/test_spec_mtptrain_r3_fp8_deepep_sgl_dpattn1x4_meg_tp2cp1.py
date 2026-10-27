@@ -40,6 +40,7 @@ CASE = CaseConfig(
     sglang_ep_size=4,
     enable_mtp_training=True,
     use_r3=True,
+    use_output_store=True,
     use_deepep=True,
     use_fp8_rollout=True,
     # miles has no VLM/vision implementation on the training side, so vision weights are

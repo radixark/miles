@@ -30,6 +30,7 @@ CASE = CaseConfig(
     seq_len=8192,
     max_response_len=4096,
     use_r3=True,
+    use_output_store=True,
     mem_fraction_static=0.55,
     num_rollout=4,
     extra_args="--sglang-moe-runner-backend triton ",
