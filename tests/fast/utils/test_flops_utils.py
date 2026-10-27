@@ -262,7 +262,7 @@ def test_compressed_attention_layers_read_window_plus_compressed_history():
     assert per_layer(flops, 1).key_terms == (
         KeyTerm(per_key, cap=128),
         KeyTerm(per_key, pool=4, cap=512),
-        KeyTerm(2 * 64 * 128, pool=4),
+        KeyTerm(2 * 64 * 128, pool=4, indexer=True),
     )
     assert per_layer(flops, 2).key_terms == (KeyTerm(per_key, cap=128), KeyTerm(per_key, pool=128))
     assert len(flops.layers) == 3
@@ -360,13 +360,15 @@ def test_deepseek_v4_1_shares_compressed_kv_and_index_scores_from_source_layers(
     flops = released_model_flops("deepseek-ai/DeepSeek-V4.1-Flash")
     window = KeyTerm(4 * 64 * 512, cap=128)
     top_k = KeyTerm(4 * 64 * 512, pool=2, cap=512)
-    index_scores = KeyTerm(2 * 32 * 128, pool=2)
+    index_scores = KeyTerm(2 * 32 * 128, pool=2, indexer=True)
     assert per_layer(flops, 0).key_terms == (window,)
     assert per_layer(flops, 2).key_terms == (window, top_k, index_scores)
     assert per_layer(flops, 3).key_terms == (window, top_k)
     compressor = 2 * 5120 * 512 * 2
     indexer = 2 * 1280 * 32 * 128 + 2 * 5120 * 32 + 2 * 512 * 128 / 2
     assert per_layer(flops, 2).per_token - per_layer(flops, 3).per_token == pytest.approx(compressor + indexer)
+    assert per_layer(flops, 2).indexer_per_token == pytest.approx(indexer)
+    assert per_layer(flops, 3).indexer_per_token == 0
     engram = 2 * 3 * 8 * 256 * 5120 * 5
     assert per_layer(flops, 1).per_token - per_layer(flops, 0).per_token == pytest.approx(engram)
 
@@ -380,7 +382,10 @@ def test_inkling_windows_local_layers():
 def test_qwen3_8_next_full_attention_layers_are_sparse_when_the_config_has_an_indexer_budget():
     flops = released_model_flops("Qwen/Qwen3.8-Flash-Next")
     assert per_layer(flops, 0).key_terms == ()
-    assert per_layer(flops, 3).key_terms == (KeyTerm(4 * 24 * 256, cap=2048), KeyTerm(2 * 4 * 128, pool=4))
+    assert per_layer(flops, 3).key_terms == (
+        KeyTerm(4 * 24 * 256, cap=2048),
+        KeyTerm(2 * 4 * 128, pool=4, indexer=True),
+    )
 
 
 def test_deepseek_v4_sizes_the_same_from_transformers_per_type_compress_rates():

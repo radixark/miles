@@ -306,7 +306,7 @@ def _qsa_indexer(config: Any) -> LayerFlops:
     heads, kv_heads, head_dim = config.indexer_n_heads, config.indexer_kv_heads, config.indexer_head_dim
     pool = config.indexer_compress_ratio
     projections = 2 * config.hidden_size * (heads + kv_heads) * head_dim
-    return LayerFlops(projections, (KeyTerm(2 * heads * head_dim, pool=pool),))
+    return _indexer(LayerFlops(projections, (KeyTerm(2 * heads * head_dim, pool=pool),)))
 
 
 def _compressed_attention(config: Any, layer: int) -> LayerFlops:
@@ -327,10 +327,8 @@ def _compressed_attention(config: Any, layer: int) -> LayerFlops:
         return attention + LayerFlops(4 * hidden * head_dim, (KeyTerm(per_key, pool=ratio),))
     index_heads, index_dim = config.index_n_heads, config.index_head_dim
     indexer = 2 * q_lora * index_heads * index_dim + 2 * hidden * index_heads + 8 * hidden * index_dim
-    return attention + LayerFlops(
-        8 * hidden * head_dim + indexer,
-        (KeyTerm(per_key, pool=ratio, cap=config.index_topk), KeyTerm(2 * index_heads * index_dim, pool=ratio)),
-    )
+    compressed = LayerFlops(8 * hidden * head_dim, (KeyTerm(per_key, pool=ratio, cap=config.index_topk),))
+    return attention + compressed + _indexer(LayerFlops(indexer, (KeyTerm(2 * index_heads * index_dim, pool=ratio),)))
 
 
 def _compress_ratio(config: Any, layer: int) -> int:
@@ -346,16 +344,14 @@ def _shared_compressed_attention(config: Any, layer: int, ratio: int) -> LayerFl
     hidden, heads, head_dim = config.hidden_size, config.num_attention_heads, config.head_dim
     index_heads, index_dim = config.index_n_heads, config.index_head_dim
     is_kv_source, is_index_source = layer in config.kv_source_layer_ids, layer in config.index_source_layer_ids
-    per_token = 0.0
-    key_terms = [KeyTerm(4 * heads * head_dim, pool=ratio, cap=config.index_topk)]
+    compressor = 2 * hidden * head_dim * (2 if ratio > 1 else 1) if is_kv_source else 0.0
+    attention = LayerFlops(compressor, (KeyTerm(4 * heads * head_dim, pool=ratio, cap=config.index_topk),))
+    if not is_index_source:
+        return attention
+    indexer = 2 * config.q_lora_rank * index_heads * index_dim + 2 * hidden * index_heads
     if is_kv_source:
-        per_token += 2 * hidden * head_dim * (2 if ratio > 1 else 1)
-        if is_index_source:
-            per_token += 2 * head_dim * index_dim / ratio
-    if is_index_source:
-        per_token += 2 * config.q_lora_rank * index_heads * index_dim + 2 * hidden * index_heads
-        key_terms.append(KeyTerm(2 * index_heads * index_dim, pool=ratio))
-    return LayerFlops(per_token, tuple(key_terms))
+        indexer += 2 * head_dim * index_dim / ratio
+    return attention + _indexer(LayerFlops(indexer, (KeyTerm(2 * index_heads * index_dim, pool=ratio),)))
 
 
 def _ngram_embedding(config: Any, layer: int) -> LayerFlops:
