@@ -3,7 +3,7 @@ import glob
 import json
 import os
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import safetensors
 import torch
@@ -25,8 +25,13 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._engine_dtypes = _checkpoint_dtypes(self.args.hf_checkpoint)
+        hf_config = load_hf_config(self.args.hf_checkpoint)
+        text_config = (
+            getattr(hf_config, "text_config", None)
+            or hf_config  # config-access-exempt: only multimodal checkpoints nest the decoder under text_config
+        )
         self._q_lora_rank = (
-            getattr(load_hf_config(self.args.hf_checkpoint), "q_lora_rank", None)
+            getattr(text_config, "q_lora_rank", None)
             or None  # config-access-exempt: HF models without query LoRA omit q_lora_rank
         )
 
@@ -43,14 +48,21 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         return tensor.to(target)
 
     def _hf_atomic_update_groups(self):
-        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self._q_lora_rank)
+        groups = get_hf_atomic_update_groups(self.model_name, q_lora_rank=self._q_lora_rank)
+        if self.placement.gather_pp:
+            return groups
+        return [replace(group, optional=True) for group in groups]
 
     def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
         raise NotImplementedError("the torchtitan backend has no LoRA")
 
 
 def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[str, torch.Tensor]]:
-    offloaded = next(trainer.model_parts[0].parameters()).device.type == "cpu"
+    # FSDP2 CPU offload keeps the shards on the host; gather_full_param moves one tensor at a time
+    offloaded = (
+        not trainer.config.training.enable_cpu_offload
+        and next(trainer.model_parts[0].parameters()).device.type == "cpu"
+    )
     if offloaded:
         for part in trainer.model_parts:
             part.to(current_platform.current_device())
