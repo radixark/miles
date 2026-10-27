@@ -207,7 +207,9 @@ def test_mla_with_dsa_caps_keys_at_topk_and_charges_the_indexer_only_where_it_ru
     assert per_layer(flops, 1).key_terms == (KeyTerm(attention_per_key, cap=2048),)
     indexer = 2 * 2048 * 32 * 128 + 2 * 6144 * 128 + 2 * 6144 * 32
     assert per_layer(flops, 0).per_token - per_layer(flops, 1).per_token == indexer
-    assert per_layer(flops, 0).key_terms[-1] == KeyTerm(2 * 32 * 128)
+    assert per_layer(flops, 0).key_terms[-1] == KeyTerm(2 * 32 * 128, indexer=True)
+    assert per_layer(flops, 0).indexer_per_token == indexer
+    assert per_layer(flops, 1).indexer_per_token == 0
 
 
 def test_kda_layers_are_one_indexed_and_mla_fills_the_rest():
@@ -260,7 +262,7 @@ def test_compressed_attention_layers_read_window_plus_compressed_history():
     assert per_layer(flops, 1).key_terms == (
         KeyTerm(per_key, cap=128),
         KeyTerm(per_key, pool=4, cap=512),
-        KeyTerm(2 * 64 * 128, pool=4),
+        KeyTerm(2 * 64 * 128, pool=4, indexer=True),
     )
     assert per_layer(flops, 2).key_terms == (KeyTerm(per_key, cap=128), KeyTerm(per_key, pool=128))
     assert len(flops.layers) == 3
@@ -395,13 +397,15 @@ def test_deepseek_v4_1_shares_compressed_kv_and_index_scores_from_source_layers(
     flops = released_model_flops("deepseek-ai/DeepSeek-V4.1-Flash")
     window = KeyTerm(4 * 64 * 512, cap=128)
     top_k = KeyTerm(4 * 64 * 512, pool=2, cap=512)
-    index_scores = KeyTerm(2 * 32 * 128, pool=2)
+    index_scores = KeyTerm(2 * 32 * 128, pool=2, indexer=True)
     assert per_layer(flops, 0).key_terms == (window,)
     assert per_layer(flops, 2).key_terms == (window, top_k, index_scores)
     assert per_layer(flops, 3).key_terms == (window, top_k)
     compressor = 2 * 5120 * 512 * 2
     indexer = 2 * 1280 * 32 * 128 + 2 * 5120 * 32 + 2 * 512 * 128 / 2
     assert per_layer(flops, 2).per_token - per_layer(flops, 3).per_token == pytest.approx(compressor + indexer)
+    assert per_layer(flops, 2).indexer_per_token == pytest.approx(indexer)
+    assert per_layer(flops, 3).indexer_per_token == 0
     engram = 2 * 3 * 8 * 256 * 5120 * 5
     assert per_layer(flops, 1).per_token - per_layer(flops, 0).per_token == pytest.approx(engram)
 
@@ -415,7 +419,10 @@ def test_inkling_windows_local_layers():
 def test_qwen3_8_next_full_attention_layers_are_sparse_when_the_config_has_an_indexer_budget():
     flops = released_model_flops("Qwen/Qwen3.8-Flash-Next")
     assert per_layer(flops, 0).key_terms == ()
-    assert per_layer(flops, 3).key_terms == (KeyTerm(4 * 24 * 256, cap=2048), KeyTerm(2 * 4 * 128, pool=4))
+    assert per_layer(flops, 3).key_terms == (
+        KeyTerm(4 * 24 * 256, cap=2048),
+        KeyTerm(2 * 4 * 128, pool=4, indexer=True),
+    )
 
 
 def test_deepseek_v4_sizes_the_same_from_transformers_per_type_compress_rates():
@@ -444,3 +451,16 @@ def test_deepseek_v4_config_objects_size_like_their_checkpoint_configs(repo_id):
 def test_unknown_layer_structure_has_no_flops_definition(unknown_structure):
     with pytest.raises(ValueError, match="no FLOPs definition"):
         model_flops_from_hf_config(config(**(LLAMA_8B | {"num_hidden_layers": 1} | unknown_structure)))
+
+
+def test_training_runs_a_frozen_indexer_forward_only():
+    flops = released_model_flops("deepseek-ai/DeepSeek-V3.2-Exp")
+    forward = flops.fwd_flops([131072])
+    assert forward / 131072 == pytest.approx(150.61e9, rel=1e-4)
+    assert flops.train_flops([131072], trains_indexers=True) == pytest.approx(3 * forward)
+    assert flops.train_flops([131072]) / 131072 == pytest.approx(317.41e9, rel=1e-4)
+
+
+def test_a_model_without_an_indexer_trains_at_three_forwards():
+    flops = released_model_flops("Qwen/Qwen3-8B")
+    assert flops.train_flops([4096, 8192]) == pytest.approx(3 * flops.fwd_flops([4096, 8192]))

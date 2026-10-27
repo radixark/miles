@@ -118,6 +118,10 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
 
 
 class MegatronTrainRayActor(TrainRayActor):
+    @property
+    def _trains_indexers(self) -> bool:
+        return (self.args.dsa_indexer_loss_coeff or 0) > 0
+
     @with_logs
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
@@ -849,6 +853,7 @@ class MegatronTrainRayActor(TrainRayActor):
             rollout_id,
             self.args,
             compute_total_fwd_flops=self._fwd_tflops,
+            compute_total_train_flops=self._train_tflops,
             extra_metrics=self.weight_updater.pop_metrics() if self.weight_updater is not None else {},
         )
 

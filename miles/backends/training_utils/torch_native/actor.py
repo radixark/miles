@@ -170,6 +170,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,
             compute_total_fwd_flops=self._fwd_tflops,
+            compute_total_train_flops=self._train_tflops,
         )
         self._heartbeat.bump()
         return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
