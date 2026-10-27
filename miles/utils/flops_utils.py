@@ -10,11 +10,14 @@ lm_head always is, tied or not.
 A layer's cost per token is a fixed part plus, per group of keys it reads, a cost per key.
 Keys are counted per query position p (0-based) as min((p + 1) // pool, cap): pool > 1 for
 attention over compressed KV, cap for sliding windows and top-k selection.
+
+Indexer work is part of the forward but marked apart: it only picks which keys attention reads,
+so no gradient flows back through it unless the indexer has its own training loss.
 """
 
 import functools
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 _GATED_QUERY_MODEL_TYPES = (
@@ -45,15 +48,23 @@ class KeyTerm:
     flops_per_key: float
     pool: int = 1
     cap: int | None = None
+    indexer: bool = False
 
 
 @dataclass(frozen=True)
 class LayerFlops:
+    """Forward FLOPs per token plus per-key terms; indexer_per_token is the indexer's share of per_token."""
+
     per_token: float
     key_terms: tuple[KeyTerm, ...] = ()
+    indexer_per_token: float = 0.0
 
     def __add__(self, other: "LayerFlops") -> "LayerFlops":
-        return LayerFlops(self.per_token + other.per_token, self.key_terms + other.key_terms)
+        return LayerFlops(
+            self.per_token + other.per_token,
+            self.key_terms + other.key_terms,
+            self.indexer_per_token + other.indexer_per_token,
+        )
 
 
 @dataclass(frozen=True)
@@ -67,23 +78,43 @@ class ModelFlops:
 
     @functools.cached_property
     def key_terms(self) -> dict[tuple[int, int | None], float]:
-        merged: dict[tuple[int, int | None], float] = {}
-        for term in (term for layer in self.layers for term in layer.key_terms):
-            merged[term.pool, term.cap] = merged.get((term.pool, term.cap), 0.0) + term.flops_per_key
-        return merged
+        return _merge_key_terms(term for layer in self.layers for term in layer.key_terms)
+
+    @functools.cached_property
+    def indexer_key_terms(self) -> dict[tuple[int, int | None], float]:
+        return _merge_key_terms(term for layer in self.layers for term in layer.key_terms if term.indexer)
 
     def fwd_flops(self, seq_lens: Iterable[int]) -> float:
         """Forward FLOPs of packed sequences of these lengths (causal attention within each)."""
-        total = 0.0
-        for seq_len in seq_lens:
-            total += seq_len * self.per_token
-            for (pool, cap), flops_per_key in self.key_terms.items():
-                total += flops_per_key * _total_keys(seq_len, pool, cap)
-        return total
+        return _sequence_flops(seq_lens, self.per_token, self.key_terms)
+
+    def train_flops(self, seq_lens: Iterable[int], trains_indexers: bool = False) -> float:
+        """Forward plus backward FLOPs: backward is twice the forward, except for an indexer
+        that has no training loss of its own, which runs forward only."""
+        seq_lens = list(seq_lens)
+        total = 3 * self.fwd_flops(seq_lens)
+        if trains_indexers:
+            return total
+        indexer_per_token = sum(layer.indexer_per_token for layer in self.layers)
+        return total - 2 * _sequence_flops(seq_lens, indexer_per_token, self.indexer_key_terms)
 
 
-def fwd_tflops_per_gpu(seq_lens: Iterable[int], model_flops: ModelFlops, world_size: int) -> float:
-    return model_flops.fwd_flops(seq_lens) / world_size / 1e12
+def _merge_key_terms(terms: Iterable[KeyTerm]) -> dict[tuple[int, int | None], float]:
+    merged: dict[tuple[int, int | None], float] = {}
+    for term in terms:
+        merged[term.pool, term.cap] = merged.get((term.pool, term.cap), 0.0) + term.flops_per_key
+    return merged
+
+
+def _sequence_flops(
+    seq_lens: Iterable[int], per_token: float, key_terms: dict[tuple[int, int | None], float]
+) -> float:
+    total = 0.0
+    for seq_len in seq_lens:
+        total += seq_len * per_token
+        for (pool, cap), flops_per_key in key_terms.items():
+            total += flops_per_key * _total_keys(seq_len, pool, cap)
+    return total
 
 
 def _total_keys(seq_len: int, pool: int, cap: int | None) -> int:
@@ -264,14 +295,18 @@ def _dsa_indexer(config: Any) -> LayerFlops:
     projections = 2 * config.q_lora_rank * heads * head_dim + 2 * hidden * head_dim + 2 * hidden * heads
     if pool > 1:
         projections += 2 * hidden * head_dim
-    return LayerFlops(projections, (KeyTerm(2 * heads * head_dim, pool=pool),))
+    return _indexer(LayerFlops(projections, (KeyTerm(2 * heads * head_dim, pool=pool),)))
+
+
+def _indexer(work: LayerFlops) -> LayerFlops:
+    return LayerFlops(work.per_token, tuple(replace(term, indexer=True) for term in work.key_terms), work.per_token)
 
 
 def _qsa_indexer(config: Any) -> LayerFlops:
     heads, kv_heads, head_dim = config.indexer_n_heads, config.indexer_kv_heads, config.indexer_head_dim
     pool = config.indexer_compress_ratio
     projections = 2 * config.hidden_size * (heads + kv_heads) * head_dim
-    return LayerFlops(projections, (KeyTerm(2 * heads * head_dim, pool=pool),))
+    return _indexer(LayerFlops(projections, (KeyTerm(2 * heads * head_dim, pool=pool),)))
 
 
 def _compressed_attention(config: Any, layer: int) -> LayerFlops:
@@ -292,10 +327,8 @@ def _compressed_attention(config: Any, layer: int) -> LayerFlops:
         return attention + LayerFlops(4 * hidden * head_dim, (KeyTerm(per_key, pool=ratio),))
     index_heads, index_dim = config.index_n_heads, config.index_head_dim
     indexer = 2 * q_lora * index_heads * index_dim + 2 * hidden * index_heads + 8 * hidden * index_dim
-    return attention + LayerFlops(
-        8 * hidden * head_dim + indexer,
-        (KeyTerm(per_key, pool=ratio, cap=config.index_topk), KeyTerm(2 * index_heads * index_dim, pool=ratio)),
-    )
+    compressed = LayerFlops(8 * hidden * head_dim, (KeyTerm(per_key, pool=ratio, cap=config.index_topk),))
+    return attention + compressed + _indexer(LayerFlops(indexer, (KeyTerm(2 * index_heads * index_dim, pool=ratio),)))
 
 
 def _compress_ratio(config: Any, layer: int) -> int:
@@ -311,16 +344,14 @@ def _shared_compressed_attention(config: Any, layer: int, ratio: int) -> LayerFl
     hidden, heads, head_dim = config.hidden_size, config.num_attention_heads, config.head_dim
     index_heads, index_dim = config.index_n_heads, config.index_head_dim
     is_kv_source, is_index_source = layer in config.kv_source_layer_ids, layer in config.index_source_layer_ids
-    per_token = 0.0
-    key_terms = [KeyTerm(4 * heads * head_dim, pool=ratio, cap=config.index_topk)]
+    compressor = 2 * hidden * head_dim * (2 if ratio > 1 else 1) if is_kv_source else 0.0
+    attention = LayerFlops(compressor, (KeyTerm(4 * heads * head_dim, pool=ratio, cap=config.index_topk),))
+    if not is_index_source:
+        return attention
+    indexer = 2 * config.q_lora_rank * index_heads * index_dim + 2 * hidden * index_heads
     if is_kv_source:
-        per_token += 2 * hidden * head_dim * (2 if ratio > 1 else 1)
-        if is_index_source:
-            per_token += 2 * head_dim * index_dim / ratio
-    if is_index_source:
-        per_token += 2 * config.q_lora_rank * index_heads * index_dim + 2 * hidden * index_heads
-        key_terms.append(KeyTerm(2 * index_heads * index_dim, pool=ratio))
-    return LayerFlops(per_token, tuple(key_terms))
+        indexer += 2 * head_dim * index_dim / ratio
+    return attention + _indexer(LayerFlops(indexer, (KeyTerm(2 * index_heads * index_dim, pool=ratio),)))
 
 
 def _ngram_embedding(config: Any, layer: int) -> LayerFlops:
