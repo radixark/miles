@@ -49,7 +49,7 @@ The options below are the ones presented during the investigations; none is impl
 | N | Keep the 9B OPD run's recipe (lr 1e-6, OPD term from the rollout log-probs) and decide at about step 30 ([2026-10-27 entry](#2026-10-27-the-9b-pure-opd-runs-early-transient)) | open-instruct's identical run settled by itself by steps 25 to 30 | None | Current choice |
 | O | OPD term from the trainer's recompute: drop `--use-rollout-logprobs` | Removes the stale student term behind the transient | One flag, but the rollout log-probs then stop anchoring DPPO's ratio, so stale samples lose their correction | No: P keeps the correction |
 | P | Prime-RL's split: OPD term from the trainer's log-probs, DPPO still anchored on the rollout log-probs ([OPD across frameworks](../../docs/deep-dive/opd-across-frameworks.md)) | The stale student term, keeping the staleness correction | Small Miles core change (`apply_opd_kl_to_advantages` / `loss/objective.py`); check upstream first | First choice if N fails |
-| Q | Per-token clip on the OPD advantage (open-instruct `mopd`'s `opd_adv_clip`) | Bounds the -36 advantages of teacher-rejected tokens and the KL-to-base spikes | Miles core change; changes the objective relative to open-instruct's `opd` runs | If P is not enough |
+| Q | Per-token clip on the OPD advantage (open-instruct `mopd`'s `opd_adv_clip`) | Bounds the -36 advantages of teacher-rejected tokens and the KL-to-base spikes | Miles core change; changes the objective relative to open-instruct's `opd` runs | Low value: the outliers are a format preamble the student drops by step 10, so a clip only changes steps 0–10 |
 | R | lr 5e-7 (open-instruct tried it for a 4B student, run `zjfcsx10`) | Slows everything, the transient included | A config | Last resort: it does not target the cause |
 
 Suggested next restart: A + B + F + H (and G once the trainer side exists), validated on a 4-GPU smoke, then
@@ -93,6 +93,20 @@ Larger directions to evaluate against the evidence below. Add yours here.
 - **Likely driver:** the OPD term uses the rollout's student log-prob, so with up to 4 versions of staleness a
   teacher-rejected token keeps its full negative advantage after earlier updates have lowered it. Prime-RL computes
   the term from the trainer's live log-prob instead ([OPD across frameworks](../../docs/deep-dive/opd-across-frameworks.md)).
+- **Dump analysis (steps 0 to 89, every 5th; the CP shards rejoined per sample):**
+  - The extreme OPD advantages are a format difference. At step 0, 412 of the 501 tokens below -10 open a visible
+    preamble after `</think>` ("THOUGHT: Let me", "Now", "I", "The"), which 36% of the base student's turns have and
+    which tmax-9b never writes (log-prob about -36; the student samples them at a median of -0.8). The preamble fell to
+    6% of turns by step 5 and 0% from step 10; tokens below -10 fell from 501 (step 0) to 17 (step 10) and 0 (step 60).
+    A clip at ±5 would touch 0.22% of tokens at step 0 and none after step 20.
+  - Solved and failed trajectories carry the same per-token signal (mean reverse KL 0.011 vs 0.009 at step 89, 0.019
+    vs 0.012 at step 40), so gating OPD on success would scale down 60–78% of the signal without selecting anything.
+  - The signal is in the reasoning: `<think>` holds 60–78% of the |advantage| mass on 35–55% of the tokens, tool calls
+    20–37% on 42–64%.
+  - The grad-norm and masking bursts (steps 47, 69–72, 75) are not outliers (none below -10), not staler batches
+    (mean lag 1.3–2.4 versions vs 1.8–3.0 at quiet steps) and not one trajectory (the largest carries 1–2% of the
+    signal). Unexplained.
+  - Scripts: `opd_dump_analysis/analyze.py` in the session scratchpad.
 - **Options:** N to R in [Open decisions](#open-decisions). Open: whether the run settles by step 30 as
   open-instruct's did.
 
