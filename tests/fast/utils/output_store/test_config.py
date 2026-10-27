@@ -7,8 +7,6 @@ from types import SimpleNamespace
 import pytest
 from tests.fast.fixtures.args_fixtures import parser_defaults
 
-from miles.backends.megatron_utils import megatron_config
-from miles.backends.sglang_utils import sglang_config
 from miles.utils.output_store import config as output_store_config
 from miles.utils.output_store.config import (
     check_output_store_args,
@@ -27,7 +25,7 @@ def make_args(**overrides) -> Namespace:
             **parser_defaults(),
             "use_output_store": True,
             "use_rollout_routing_replay": True,
-            # Derived by miles_validate_args before it runs these checks; not a parser flag.
+            # Derived by miles_validate_args, which runs before these checks; not a parser flag.
             "use_sampling_support_replay": False,
             "object_store_backend": "mooncake",
             "mooncake_store_init_kwargs": dict(MOONCAKE),
@@ -41,11 +39,10 @@ def make_args(**overrides) -> Namespace:
 def launch(monkeypatch):
     """What the checks read from the SGLang and Megatron configs, settable per test."""
     state = SimpleNamespace(pd=False, multi_policy=False, sglang_has_store=True)
-    monkeypatch.setattr(
-        sglang_config, "resolve_sglang_config", lambda args: SimpleNamespace(has_pd_disaggregation=state.pd)
-    )
-    monkeypatch.setattr(
-        megatron_config, "resolve_megatron_config", lambda args: SimpleNamespace(is_multi_policy=state.multi_policy)
+    state.check = lambda args: check_output_store_args(
+        args,
+        sglang=SimpleNamespace(has_pd_disaggregation=state.pd),
+        megatron=SimpleNamespace(is_multi_policy=state.multi_policy),
     )
     monkeypatch.setattr(output_store_config, "_sglang_has_output_store", lambda: state.sglang_has_store)
     return state
@@ -53,13 +50,13 @@ def launch(monkeypatch):
 
 class TestLaunchChecks:
     def test_a_supported_launch_passes(self, launch):
-        check_output_store_args(make_args())
-        check_output_store_args(make_args(save_debug_train_data="/tmp/{rollout_id}.pt"))
-        check_output_store_args(make_args(use_rollout_routing_replay=False, use_sampling_support_replay=True))
+        launch.check(make_args())
+        launch.check(make_args(save_debug_train_data="/tmp/{rollout_id}.pt"))
+        launch.check(make_args(use_rollout_routing_replay=False, use_sampling_support_replay=True))
 
     def test_without_the_switch_nothing_is_checked(self, launch):
         launch.pd = True
-        check_output_store_args(make_args(use_output_store=False, object_store_backend="ray"))
+        launch.check(make_args(use_output_store=False, object_store_backend="ray"))
 
     @pytest.mark.parametrize(
         ("overrides", "message"),
@@ -79,7 +76,7 @@ class TestLaunchChecks:
     )
     def test_an_unsupported_launch_setting_is_rejected(self, launch, overrides, message):
         with pytest.raises(ValueError, match=message):
-            check_output_store_args(make_args(**overrides))
+            launch.check(make_args(**overrides))
 
     def test_a_buffer_that_cannot_hold_the_indexer_top_k_of_a_full_context_is_rejected(self, launch):
         dsa = {
@@ -89,12 +86,10 @@ class TestLaunchChecks:
             "rollout_max_context_len": 32769,
         }
         # 32768 rows x 61 streams x 2048 ids x 4 bytes: under the 16gb default, over 15gb
-        check_output_store_args(make_args(**dsa))
+        launch.check(make_args(**dsa))
         with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
-            check_output_store_args(make_args(**dsa, output_store_local_buffer_size="15gb"))
-        check_output_store_args(
-            make_args(**{**dsa, "rollout_max_context_len": None}, output_store_local_buffer_size="15gb")
-        )
+            launch.check(make_args(**dsa, output_store_local_buffer_size="15gb"))
+        launch.check(make_args(**{**dsa, "rollout_max_context_len": None}, output_store_local_buffer_size="15gb"))
 
     def test_the_launch_facts_owned_elsewhere_are_checked_and_reported_together(self, launch, monkeypatch):
         launch.pd = launch.multi_policy = True
@@ -102,7 +97,7 @@ class TestLaunchChecks:
         monkeypatch.setenv("MILES_USE_LEGACY_ROLLOUT_V1", "1")
 
         with pytest.raises(ValueError) as error:
-            check_output_store_args(make_args())
+            launch.check(make_args())
 
         for reason in ("PD disaggregation", "multi-policy", "ServerArgs lacks output_store_backend", "legacy"):
             assert reason in str(error.value)

@@ -383,8 +383,10 @@ def parse_args_and_get_parser(
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     _validate_argument_ownership(args, parser=parser, training_backend_arg_names=training_backend_arg_names)
     sglang, sglang_scaling = SglangConfig.parse_args(args)
+    raw_megatron = resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {})
+    check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
-        "raw_megatron": resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {}),
+        "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
         "raw_torchtitan": TorchtitanArgsNamespace(**backend_values) if backend == "torchtitan" else None,
         "sglang": sglang,
@@ -1682,7 +1684,6 @@ def miles_validate_args(args):
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
 
     _validate_deploy_component(args)
-    check_output_store_args(args)
 
 
 def validate_skip_actor_forward_only(args) -> None:

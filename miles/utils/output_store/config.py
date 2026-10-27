@@ -27,6 +27,9 @@ from miles.utils.workers.types import DeployComponent
 if TYPE_CHECKING:
     from radix_transfer_plugins import OutputStore
 
+    from miles.backends.megatron_utils.megatron_config import MegatronConfig
+    from miles.backends.sglang_utils.sglang_config import SglangConfig
+
 # SGLang's own fields for the store: Miles sets them on every engine it launches, so it exposes no
 # --sglang-* flag or per-group override for them.
 SGLANG_OUTPUT_STORE_FIELDS = ("output_store_backend", "output_store_backend_extra_config")
@@ -35,13 +38,10 @@ _BACKEND = "mooncake"
 _KEY_PREFIX_BASE = "miles-output-store"
 
 
-def check_output_store_args(args: argparse.Namespace) -> None:
+def check_output_store_args(args: argparse.Namespace, *, sglang: SglangConfig, megatron: MegatronConfig) -> None:
     """Reject, all at once, launch settings the output store does not serve."""
     if not args.use_output_store:
         return
-    # Imported here: sglang_config imports this module, and the megatron_utils package patches deep_ep on import.
-    from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
-    from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 
     buffer_bytes = _parse_size(args.output_store_local_buffer_size)
     indexer_topk_bytes = _max_indexer_topk_bytes(args)
@@ -83,7 +83,7 @@ def check_output_store_args(args: argparse.Namespace) -> None:
                 "external rollout engines are not supported: Miles configures the store of the engines it launches",
             ),
             (
-                resolve_sglang_config(args).has_pd_disaggregation or args.rollout_external_router_pd,
+                sglang.has_pd_disaggregation or args.rollout_external_router_pd,
                 "PD disaggregation is not supported: SGLang rejects the output store there",
             ),
             (
@@ -91,7 +91,7 @@ def check_output_store_args(args: argparse.Namespace) -> None:
                 "a custom convert function would bypass the output store plan column",
             ),
             (
-                resolve_megatron_config(args).is_multi_policy,
+                megatron.is_multi_policy,
                 "multi-policy training is not supported: stored objects are released per rollout id",
             ),
             (
