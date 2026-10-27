@@ -155,3 +155,31 @@ def test_loss_mask_distill_rejects_sample_without_plain_assistant_answer():
     ]
     with pytest.raises(ValueError, match="assistant message without tool_calls"):
         mask_generator.get_loss_mask(messages)
+
+
+def test_loss_mask_distill_skips_masked_answers():
+    mask_generator = _distill_mask_generator()
+    tokenizer = mask_generator.tokenizer
+    tool_call = {"function": {"name": "ls", "arguments": "{}"}, "id": "call_0", "type": "function"}
+    tail = [
+        {"role": "user", "content": "Q2"},
+        {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+        {"role": "tool", "content": "OUT"},
+    ]
+
+    # The masked answer is trimmed like any other untrainable tail; the earlier answer is trained.
+    messages = [
+        {"role": "user", "content": "Q"},
+        {"role": "assistant", "content": "KEEP"},
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "OLD", "step_loss_mask": 0},
+        *tail,
+    ]
+    token_ids, loss_mask = mask_generator.get_loss_mask(messages)
+    trained_ids = [t for t, m in zip(token_ids, loss_mask, strict=True) if m == 1]
+    assert tokenizer.decode(trained_ids) == "KEEP" + tokenizer.eos_token
+
+    # With no unmasked answer left, the row is rejected instead of yielding an all-zero mask.
+    messages = [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "OLD", "step_loss_mask": 0}, *tail]
+    with pytest.raises(ValueError, match="step_loss_mask=1"):
+        mask_generator.get_loss_mask(messages)
