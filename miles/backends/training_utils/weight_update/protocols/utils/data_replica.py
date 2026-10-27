@@ -21,21 +21,24 @@ def get_data_replica_rank_and_size(parallel_state: ParallelState, placement: Wei
 
 
 class OwnedBuckets:
-    """The buckets one rank publishes, copied to the host: the ranks holding identical gathered data take them
-    round-robin."""
+    """The buckets one rank publishes, copied to the host: each bucket goes to the replica rank with the fewest
+    bytes so far, so the ranks holding identical gathered data share the writes evenly."""
 
     def __init__(self, *, replica_rank: int, replica_size: int) -> None:
         self._replica_rank = replica_rank
         self._replica_size = replica_size
-        self._next_index = 0
-        self._owned: list[tuple[int, list[tuple[str, torch.Tensor]]]] = []
+        self.reset()
 
     def reset(self) -> None:
         self._next_index = 0
-        self._owned = []
+        self._bytes_per_rank = [0] * self._replica_size
+        self._owned: list[tuple[int, list[tuple[str, torch.Tensor]]]] = []
 
     def offer(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
-        if self._next_index % self._replica_size == self._replica_rank:
+        # every rank sees the same buckets in the same order, so every rank picks the same owner
+        owner = min(range(self._replica_size), key=lambda rank: (self._bytes_per_rank[rank], rank))
+        self._bytes_per_rank[owner] += sum(tensor.nbytes for _, tensor in bucket)
+        if owner == self._replica_rank:
             # kept on the device until the stream ends, the owned buckets would add model/replica_size to each
             # rank's peak device memory. Non-blocking, so the copy overlaps the next gather; into unpinned host
             # tensors, since `.to("cpu", non_blocking=True)` pins memory that CUDA's host allocator keeps cached
