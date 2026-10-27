@@ -117,17 +117,17 @@ def _sglang_wheel(python, arch):
     return f"sglang-0.5.22.post57+miles.geeeeeeeeee-cp{python}-cp{python}-manylinux_2_35_{arch}.whl"
 
 
-_EVERY_SGLANG_WHEEL = [_sglang_wheel(py, arch) for py in ("311", "312", "313") for arch in ("x86_64", "aarch64")]
+_EVERY_SGLANG_WHEEL = [_sglang_wheel(py, arch) for py in ("311", "312") for arch in ("x86_64", "aarch64")]
 
 
 @pytest.mark.parametrize(
     "built,force,expected",
     [
-        ([], "false", {(arch, py) for arch in ("x86_64", "aarch64") for py in ("3.11", "3.12", "3.13")}),
+        ([], "false", {(arch, py) for arch in ("x86_64", "aarch64") for py in ("3.11", "3.12")}),
         (
-            [_sglang_wheel(py, "x86_64") for py in ("311", "312", "313")] + [_sglang_wheel("311", "aarch64")],
+            [_sglang_wheel(py, "x86_64") for py in ("311", "312")] + [_sglang_wheel("311", "aarch64")],
             "false",
-            {("aarch64", "3.12"), ("aarch64", "3.13")},
+            {("aarch64", "3.12")},
         ),
         # a published wheel is never rebuilt, even when forced: pinned hashes must keep matching
         (_EVERY_SGLANG_WHEEL, "true", set()),

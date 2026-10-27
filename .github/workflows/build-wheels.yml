@@ -73,8 +73,9 @@ env:
   SGLANG_REPO: sgl-project/sglang
   # one history release per ISO week (sglang-miles-2026w43-<arch>): GitHub caps a release at 1000 assets
   SGLANG_HISTORY_RELEASE: sglang-miles
-  # the Python versions sglang supports; its wheel is per interpreter (Rust extensions)
-  SGLANG_PYTHONS: '["3.11", "3.12", "3.13"]'
+  # the Python versions Miles installs on (setup.py python_requires; no 3.13 until
+  # nvidia-resiliency-ext ships it); the wheel is per interpreter (Rust extensions)
+  SGLANG_PYTHONS: '["3.11", "3.12"]'
 
 jobs:
   check:
