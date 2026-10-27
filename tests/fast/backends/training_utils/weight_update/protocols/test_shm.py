@@ -111,14 +111,18 @@ def test_another_process_rebuilds_every_tp_rank_bucket():
     protocol.finalize(weight_version=1)
 
 
-def test_a_replica_rank_publishes_only_its_own_buckets():
-    protocol = _protocol(replica_rank=1, replica_size=2, tp_sizes=[1])
-    _publish(protocol)
+def test_the_replica_ranks_publish_every_bucket_exactly_once():
+    published = []
+    for replica_rank in range(2):
+        protocol = _protocol(replica_rank=replica_rank, replica_size=2, tp_sizes=[1])
+        _publish(protocol)
+        (updater,) = protocol.cell_updaters_of_cell_id.values()
+        payloads = [kwargs["serialized_named_tensors"][0] for _, kwargs in updater.calls]
+        assert payloads, f"replica rank {replica_rank} published nothing"
+        published += [[name for name, _, _ in bucket] for bucket in _rebuild_in_another_process(payloads)]
+        protocol.finalize(weight_version=1)
 
-    (updater,) = protocol.cell_updaters_of_cell_id.values()
-    (payload,) = updater.calls[0][1]["serialized_named_tensors"]
-    assert len(updater.calls) == 1
-    assert [name for name, _, _ in _rebuild_in_another_process([payload])[0]] == ["layers.1.w"]
+    assert sorted(published) == sorted([name for name, _ in bucket] for bucket in _BUCKETS)
 
 
 def test_a_sync_keeps_at_most_the_window_of_host_copies_alive(monkeypatch):
