@@ -45,7 +45,9 @@ in our math/Adam setup; the task, reward, optimizer, learning rate, precision
 and sampler/KL schedule can all affect it.
 
 Add `--sampler-kl-coef 0.03` to optimize `KL(q_sampler || p_trainer)` alongside
-SFC. The coefficient defaults to zero and is constant when enabled, including
+score function centering (SFC). Here q is the distribution that generated the
+token, and p is the current trainer distribution. The coefficient defaults to
+zero and is constant when enabled, including
 fresh rollouts. Sampler probabilities are detached; the trainer remains
 differentiable. KL is independent of reward advantages, TIS/MIS and reference
 KL, and uses the existing token or equal-response reduction.
@@ -108,14 +110,45 @@ The [reference proposal](https://huggingface.co/blog/NormalUhr/sfc-kl) motivates
 the feature; these task/Adam/fresh-sampler results do not establish that its
 empirical conclusions transfer unchanged, or that TIS must always be removed.
 
-These are single-seed observations from E011 F/G/L/M/K, with independent
-responses and different baseline scores. F/G use the first 32 updates of
-128-update runs; K uses the first 32 of 96; k1/k3 stopped at 32. The experiments
-used the historical experiment fork, not this rebased demo. [Aggregate records,
-entropy windows and terminal-receipt hashes](sampler_kl_32_updates.json) preserve
-the reported points. [Per-update metrics](https://github.com/radixark/miles/blob/main/examples/infra_features/score_centering/sampler_kl_32_updates.csv) include all
-32 normal updates per arm: raw/weighted KL, PG/total loss, entropy, mismatch and
-gradient norm. Missing KL fields in the control are blank.
+### Longer runs: 96 updates and one full epoch
+
+SFC + TIS and SFC + sampler KL (top-k) each completed 128 updates: one epoch
+of 4,096 distinct training prompts and 32,768 responses. The combined
+SFC + TIS + sampler KL (top-k) run completed 96 updates: 3,072 training prompts
+and 24,576 responses. All use the same settings described above. The sampled
+k1/k3 runs ended at 32 updates.
+
+| Recipe | Update 96 | Update 128 (one epoch) |
+| --- | ---: | ---: |
+| SFC + TIS | 92/128 (71.88%) | 102/128 (79.69%) |
+| SFC + sampler KL (top-k) | 93/128 (72.66%) | 101/128 (78.91%) |
+| SFC + TIS + sampler KL (top-k) | 98/128 (76.56%) | Ended at update 96 |
+
+The entropy pattern persists over the longer runs. The table compares the mean
+of updates 1-8 with the final eight updates at each stated horizon:
+
+| Recipe | Through update | First eight | Last eight | Relative change |
+| --- | ---: | ---: | ---: | ---: |
+| SFC + TIS | 96 | 0.12993 | 0.10200 | -21.5% |
+| SFC + TIS | 128 | 0.12993 | 0.09085 | -30.1% |
+| SFC + sampler KL (top-k) | 96 | 0.13115 | 0.15019 | +14.5% |
+| SFC + sampler KL (top-k) | 128 | 0.13115 | 0.13642 | +4.0% |
+| SFC + TIS + sampler KL (top-k) | 96 | 0.13275 | 0.13684 | +3.1% |
+
+In the one-epoch runs, entropy stays higher with sampler KL, while held-out
+accuracy differs by one question. At the matched 96-update point, the combined run scores
+98/128, compared with 92/128 for SFC + TIS and 93/128 for SFC + sampler KL.
+These results support investigating entropy preservation; they do not establish
+a reliable accuracy ranking or transfer across tasks and optimizers.
+
+All runs use one seed and independently generated responses, with different
+baseline scores. They used a separate experiment implementation; validation of
+this PR on the complete training runtime remains pending. [Evaluation results,
+entropy summaries and source-receipt hashes](sampler_kl_results.json) preserve
+all reported points. [Per-update metrics for the first 32 updates](https://github.com/radixark/miles/blob/main/examples/infra_features/score_centering/sampler_kl_32_updates.csv)
+cover all five recipes: raw/weighted KL, policy-gradient/total loss, entropy,
+sampler/trainer mismatch and gradient norm. Missing KL fields in the control
+are blank.
 
 ## How it works
 

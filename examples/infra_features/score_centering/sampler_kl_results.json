@@ -8,7 +8,6 @@
       "importance_weighting": "tis",
       "tis_upper_clip": 2,
       "sampler_kl_coefficient": 0.0,
-      "experiment": "i007-grpo-sfc-tis-one-epoch",
       "run_updates": 128,
       "terminal_receipt_sha256": "a0d8dab05a06e56e18f7e16ff5abacc90dd23d3c3ec9acdbb0d9d2cddbfdd3af",
       "evaluations": [
@@ -25,6 +24,36 @@
         {
           "update": 32,
           "correct": 84,
+          "count": 128
+        },
+        {
+          "update": 48,
+          "correct": 89,
+          "count": 128
+        },
+        {
+          "update": 64,
+          "correct": 94,
+          "count": 128
+        },
+        {
+          "update": 80,
+          "correct": 95,
+          "count": 128
+        },
+        {
+          "update": 96,
+          "correct": 92,
+          "count": 128
+        },
+        {
+          "update": 112,
+          "correct": 99,
+          "count": 128
+        },
+        {
+          "update": 128,
+          "correct": 102,
           "count": 128
         }
       ],
@@ -62,8 +91,23 @@
             ],
             "mean": 0.11728404555469751
           }
-        ]
-      }
+        ],
+        "through_update": 32
+      },
+      "longer_horizon_entropy": [
+        {
+          "through_update": 96,
+          "first_8_updates_mean": 0.12993303034454584,
+          "last_8_updates_mean": 0.10199520085006952,
+          "relative_change_percent": -21.501714706717035
+        },
+        {
+          "through_update": 128,
+          "first_8_updates_mean": 0.12993303034454584,
+          "last_8_updates_mean": 0.09084867592900991,
+          "relative_change_percent": -30.080383957716695
+        }
+      ]
     },
     {
       "recipe": "SFC + sampler KL (top-k)",
@@ -71,7 +115,6 @@
       "importance_weighting": "none",
       "tis_upper_clip": null,
       "sampler_kl_coefficient": 0.03,
-      "experiment": "i008-sfc-sampler-kl-one-epoch",
       "run_updates": 128,
       "terminal_receipt_sha256": "5cee2fe45405ce87add9263eaf800703c2d7bf764662178c6615763ee9dcb4d9",
       "evaluations": [
@@ -88,6 +131,36 @@
         {
           "update": 32,
           "correct": 91,
+          "count": 128
+        },
+        {
+          "update": 48,
+          "correct": 94,
+          "count": 128
+        },
+        {
+          "update": 64,
+          "correct": 97,
+          "count": 128
+        },
+        {
+          "update": 80,
+          "correct": 95,
+          "count": 128
+        },
+        {
+          "update": 96,
+          "correct": 93,
+          "count": 128
+        },
+        {
+          "update": 112,
+          "correct": 99,
+          "count": 128
+        },
+        {
+          "update": 128,
+          "correct": 101,
           "count": 128
         }
       ],
@@ -125,8 +198,23 @@
             ],
             "mean": 0.12766437511891127
           }
-        ]
-      }
+        ],
+        "through_update": 32
+      },
+      "longer_horizon_entropy": [
+        {
+          "through_update": 96,
+          "first_8_updates_mean": 0.13115291483700275,
+          "last_8_updates_mean": 0.15018592774868011,
+          "relative_change_percent": 14.512077703596326
+        },
+        {
+          "through_update": 128,
+          "first_8_updates_mean": 0.13115291483700275,
+          "last_8_updates_mean": 0.13641878869384527,
+          "relative_change_percent": 4.01506429604479
+        }
+      ]
     },
     {
       "recipe": "SFC + sampler KL (k1)",
@@ -134,7 +222,6 @@
       "importance_weighting": "none",
       "tis_upper_clip": null,
       "sampler_kl_coefficient": 0.03,
-      "experiment": "i013-sfc-sampler-kl-k1-32",
       "run_updates": 32,
       "terminal_receipt_sha256": "14ea275ece72bfda48d0693437457213e416ef9224dbfc7ce5211fc6bbc3aed7",
       "evaluations": [
@@ -188,8 +275,10 @@
             ],
             "mean": 0.13221100252121687
           }
-        ]
-      }
+        ],
+        "through_update": 32
+      },
+      "longer_horizon_entropy": []
     },
     {
       "recipe": "SFC + sampler KL (k3)",
@@ -197,7 +286,6 @@
       "importance_weighting": "none",
       "tis_upper_clip": null,
       "sampler_kl_coefficient": 0.03,
-      "experiment": "i014-sfc-sampler-kl-k3-32",
       "run_updates": 32,
       "terminal_receipt_sha256": "164f48f1d9ea53790a3a1620eadec57281f8ca7b5467e78bf2faf4949bbe189f",
       "evaluations": [
@@ -251,8 +339,10 @@
             ],
             "mean": 0.13301788363605738
           }
-        ]
-      }
+        ],
+        "through_update": 32
+      },
+      "longer_horizon_entropy": []
     },
     {
       "recipe": "SFC + TIS + sampler KL (top-k)",
@@ -260,7 +350,6 @@
       "importance_weighting": "tis",
       "tis_upper_clip": 2,
       "sampler_kl_coefficient": 0.03,
-      "experiment": "i012-sfc-tis-sampler-kl-96",
       "run_updates": 96,
       "terminal_receipt_sha256": "52b2f802e48fd0022a6e184cdcc1b0d3ce18eea64d2634381738797c03d57acb",
       "evaluations": [
@@ -277,6 +366,26 @@
         {
           "update": 32,
           "correct": 87,
+          "count": 128
+        },
+        {
+          "update": 48,
+          "correct": 92,
+          "count": 128
+        },
+        {
+          "update": 64,
+          "correct": 102,
+          "count": 128
+        },
+        {
+          "update": 80,
+          "correct": 100,
+          "count": 128
+        },
+        {
+          "update": 96,
+          "correct": 98,
           "count": 128
         }
       ],
@@ -314,8 +423,17 @@
             ],
             "mean": 0.12636709306389093
           }
-        ]
-      }
+        ],
+        "through_update": 32
+      },
+      "longer_horizon_entropy": [
+        {
+          "through_update": 96,
+          "first_8_updates_mean": 0.13275489769876003,
+          "last_8_updates_mean": 0.13684157747775316,
+          "relative_change_percent": 3.078364602612549
+        }
+      ]
     }
   ],
   "metrics_csv": "sampler_kl_32_updates.csv"
