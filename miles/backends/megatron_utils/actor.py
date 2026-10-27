@@ -119,7 +119,8 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
 class MegatronTrainRayActor(TrainRayActor):
     @property
     def _trains_indexers(self) -> bool:
-        return (self.args.dsa_indexer_loss_coeff or 0) > 0
+        # Megatron leaves --dsa-indexer-loss-coeff None unless set, which like 0 means no indexer loss
+        return (self.args.backend.dsa_indexer_loss_coeff or 0) > 0
 
     @with_logs
     @with_defer(lambda: Timer().start("train_wait"))
