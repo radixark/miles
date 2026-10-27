@@ -52,7 +52,7 @@ class TestInitBackendOwnership:
             debug_rollout_only=False,
             offload_train=False,
             seed=173,
-            fsdp_cpu_offload=cpu_offload,
+            optimizer_cpu_offload=cpu_offload,
             gradient_checkpointing=gradient_checkpointing,
             optimizer="adam",
             lr=0.007,
@@ -74,7 +74,7 @@ class TestInitBackendOwnership:
         assert group["eps"] == 0.00002
         assert group["weight_decay"] == 0.23
         assert fsdp_debug_actor.model.is_gradient_checkpointing is gradient_checkpointing
-        assert fsdp_debug_actor.fsdp_cpu_offload is cpu_offload
+        assert fsdp_debug_actor.optimizer_cpu_offload is cpu_offload
         assert init_backend_capture.shard_options
         for options in init_backend_capture.shard_options:
             assert (options["offload_policy"] is not None) is cpu_offload
@@ -109,13 +109,13 @@ class TestInitBackendOwnership:
             dumper_enable=False,
             debug_rollout_only=False,
             offload_train=True,
-            fsdp_cpu_offload=True,
+            optimizer_cpu_offload=True,
         )
 
         with pytest.raises(AssertionError):
             fsdp_debug_actor.init(args, "actor", indep_dp_info=IndepDPInfo.create_trivial(), indep_dp_store_addr=None)
 
-        assert fsdp_debug_actor.fsdp_cpu_offload is True
+        assert fsdp_debug_actor.optimizer_cpu_offload is True
 
     @pytest.mark.parametrize("fp16,expected", [(False, torch.bfloat16), (True, torch.float16)])
     def test_default_fsdp_wrapping_uses_backend_compute_precision(

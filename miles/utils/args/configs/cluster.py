@@ -196,7 +196,9 @@ class ClusterConfig(BaseConfig):
                 "dist_muon: the disk backend for --chunked-optimizer-state-offload, so pass that "
                 "plus a non-zero --optimizer-state-offload-fraction. --optimizer-cpu-offload is "
                 "Adam-only. This bounds host residency, not the GPU restore window -- for that "
-                "set --optimizer-state-offload-chunk-size-mb, which Megatron warns about at 0."
+                "set --optimizer-state-offload-chunk-size-mb, which Megatron warns about at 0.\n"
+                "torchtitan: with --optimizer-cpu-offload, the host-resident Adam moments live in "
+                "unlinked files instead of anonymous RAM; the step still runs on the CPU."
             )
         ),
     ] = False

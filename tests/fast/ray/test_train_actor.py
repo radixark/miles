@@ -459,6 +459,7 @@ class TestBackendProcessGroupSdk:
             ("fsdp", True, "gloo", "cpu:gloo,cuda:nccl"),
             ("fsdp", False, "gloo", "nccl"),
             ("fsdp", True, None, "nccl"),
+            ("torchtitan", True, "gloo", "cpu:gloo,cuda:nccl"),
         ],
     )
     def test_backend_and_timeout_reach_real_common_initialization_sdk(
@@ -469,7 +470,7 @@ class TestBackendProcessGroupSdk:
             train_backend=backend,
             distributed_backend="nccl",
             distributed_timeout_minutes=17,
-            fsdp_cpu_offload=offload,
+            optimizer_cpu_offload=offload,
             fsdp_cpu_backend=cpu_backend,
             debug_deterministic_collective=False,
         )

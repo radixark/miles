@@ -367,7 +367,7 @@ def parse_args_and_get_parser(
 
     sglang_validate_args(args)
 
-    if backend == "fsdp" and args.fsdp_cpu_offload:
+    if backend == "fsdp" and args.optimizer_cpu_offload:
         args.offload_train = False
 
     vars(args).setdefault("ckpt_step", None)
@@ -1370,6 +1370,11 @@ def miles_validate_args(args):
         )
 
     if args.stream_optimizer_state_to_disk:
+        assert args.train_backend in (
+            "megatron",
+            "torchtitan",
+        ), f"--stream-optimizer-state-to-disk supports the megatron and torchtitan backends, got {args.train_backend}"
+    if args.stream_optimizer_state_to_disk and args.train_backend == "megatron":
         assert args.offload_train_target == "disk" or not args.offload_train, (
             "--stream-optimizer-state-to-disk with --offload-train requires "
             "--offload-train-target=disk: a run that cannot hold the optimizer state on GPU for "
