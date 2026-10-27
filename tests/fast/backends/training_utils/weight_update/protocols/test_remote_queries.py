@@ -29,10 +29,8 @@ class TestQueriesGiveUpOnBrokenCells:
         "query_name",
         [
             "get_server_info",
-            "get_parallelism_info target",
-            "get_remote_instance_transfer_engine_info target",
-            "get_parallelism_info draft",
-            "get_remote_instance_transfer_engine_info draft",
+            "get_rank_info target",
+            "get_rank_info draft",
         ],
     )
     @pytest.mark.parametrize("failure", ["error", "timeout"])

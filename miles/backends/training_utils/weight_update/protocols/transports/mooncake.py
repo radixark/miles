@@ -19,8 +19,8 @@ class MooncakeTransport:
         # a failed write does not prove Mooncake stopped reading its source
         self._has_failed_writes = False
 
-    def connect_peer(self, transfer_engine_info: tuple[str, dict]) -> str:
-        session_id, _ = transfer_engine_info
+    def connect_peer(self, rank_info: dict) -> str:
+        session_id = rank_info["transfer_session_id"]
         assert session_id is not None, "a rollout engine rank published its weights without a Mooncake session"
         return session_id
 

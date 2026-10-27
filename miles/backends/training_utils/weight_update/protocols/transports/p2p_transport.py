@@ -31,8 +31,8 @@ class NativeTransport(Protocol):
     name: ClassVar[str]
     transfer_buffer_device: ClassVar[torch.device]
 
-    def connect_peer(self, transfer_engine_info: Any) -> str:
-        """Returns the transport peer of the runner that published `transfer_engine_info`."""
+    def connect_peer(self, rank_info: dict) -> str:
+        """Returns the transport peer of the runner that published `rank_info`."""
 
     def register_tensor(self, tensor: torch.Tensor) -> Any:
         """Registers the tensor's memory with the library; returns what `unregister_tensor` takes."""

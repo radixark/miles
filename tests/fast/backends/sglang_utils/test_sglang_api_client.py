@@ -124,12 +124,12 @@ async def test_get_methods_hit_the_documented_endpoints(client, recorder):
     """GET-based methods keep their (non-uniform) endpoint names."""
     await client.health_generate()
     await client.get_server_info()
-    await client.get_parallelism_info(rank=3, role="draft")
+    await client.get_rank_info(rank=3, role="draft")
 
     assert [(verb, url) for verb, url, _ in recorder.calls] == [
         ("get", f"{SERVER_URL}/health_generate"),
         ("get", f"{SERVER_URL}/server_info"),
-        ("get", f"{SERVER_URL}/parallelism_config"),
+        ("get", f"{SERVER_URL}/rank_info"),
     ]
     assert recorder.calls[2][2]["params"] == {"rank": 3, "role": "draft"}
 
@@ -309,15 +309,6 @@ async def test_every_remaining_post_method_wire_contract(client, recorder, call,
     verb, url, kwargs = recorder.calls[0]
     assert (verb, url, kwargs["json"]) == ("post", f"{SERVER_URL}/{endpoint}", expected_payload)
     assert len(recorder.calls) == 1
-
-
-async def test_get_remote_instance_transfer_engine_info_unwraps_the_response(client, monkeypatch):
-    """The method returns the inner field, not the whole JSON body."""
-    rec = _Recorder()
-    rec.install(monkeypatch, responses=[_FakeResponse(payload={"remote_instance_transfer_engine_info": {"a": 1}})])
-
-    assert await client.get_remote_instance_transfer_engine_info(rank=2, role="target") == {"a": 1}
-    assert rec.calls[0][2]["params"] == {"rank": 2, "role": "target"}
 
 
 async def test_every_public_method_is_a_coroutine_function():
@@ -500,26 +491,23 @@ class TestHealthGenerate:
 
 
 class TestInformationGetters:
-    """The three read-only GET methods each carry their own endpoint, params and bound."""
+    """The read-only GET methods each carry their own endpoint, params and bound."""
 
-    async def test_remote_instance_transfer_engine_info_targets_its_endpoint_with_a_bound(self, client, monkeypatch):
-        """Endpoint name and the 5-second bound are part of this method's wire contract."""
+    async def test_rank_info_returns_the_whole_record_with_a_bound(self, client, monkeypatch):
+        """Endpoint name, rank params and the 5-second bound are part of this method's wire contract."""
         rec = _Recorder()
-        rec.install(monkeypatch, responses=[_FakeResponse(payload={"remote_instance_transfer_engine_info": {"a": 1}})])
+        record = {
+            "parallelism_config": {"tp_rank": 2},
+            "weight_locations": {"w": [1, 2, 4]},
+            "transfer_session_id": "s",
+        }
+        rec.install(monkeypatch, responses=[_FakeResponse(payload=record)])
 
-        await client.get_remote_instance_transfer_engine_info(rank=2, role="target")
+        assert await client.get_rank_info(rank=2, role="target") == record
 
         verb, url, kwargs = rec.calls[0]
-        assert (verb, url) == ("get", f"{SERVER_URL}/get_remote_instance_transfer_engine_info")
+        assert (verb, url) == ("get", f"{SERVER_URL}/rank_info")
         assert (kwargs["params"], kwargs["timeout"]) == ({"rank": 2, "role": "target"}, 5.0)
-
-    async def test_parallelism_info_returns_the_whole_json_body(self, client, monkeypatch):
-        """Unlike the transfer-engine getter, this one does not unwrap a field."""
-        rec = _Recorder()
-        rec.install(monkeypatch, responses=[_FakeResponse(payload={"tp_size": 4, "dp_size": 2})])
-
-        assert await client.get_parallelism_info(rank=1, role="target") == {"tp_size": 4, "dp_size": 2}
-        assert (rec.calls[0][2]["params"], rec.calls[0][2]["timeout"]) == ({"rank": 1, "role": "target"}, 5.0)
 
     async def test_server_info_returns_the_whole_json_body_without_params(self, client, monkeypatch):
         """``/server_info`` is rank-independent, so it must not send a rank parameter."""
@@ -544,11 +532,7 @@ class TestInformationGetters:
 
 
 _DIRECT_HTTP_METHODS = [
-    (
-        "get_remote_instance_transfer_engine_info",
-        lambda c: c.get_remote_instance_transfer_engine_info(rank=0, role="target"),
-    ),
-    ("get_parallelism_info", lambda c: c.get_parallelism_info(rank=0, role="target")),
+    ("get_rank_info", lambda c: c.get_rank_info(rank=0, role="target")),
     ("get_server_info", lambda c: c.get_server_info()),
     ("pause_generation", lambda c: c.pause_generation()),
     ("continue_generation", lambda c: c.continue_generation()),
@@ -560,11 +544,7 @@ _AUTHENTICATED_CALLS = [
     ("abort_all_requests", lambda c: c.abort_all_requests()),
     ("health_generate", lambda c: c.health_generate()),
     ("get_server_info", lambda c: c.get_server_info()),
-    ("get_parallelism_info", lambda c: c.get_parallelism_info(rank=0, role="target")),
-    (
-        "get_remote_instance_transfer_engine_info",
-        lambda c: c.get_remote_instance_transfer_engine_info(rank=0, role="target"),
-    ),
+    ("get_rank_info", lambda c: c.get_rank_info(rank=0, role="target")),
     ("get_weight_version", lambda c: c.get_weight_version()),
     ("flush_cache", lambda c: c.flush_cache()),
     ("pause_generation", lambda c: c.pause_generation()),
@@ -583,7 +563,7 @@ class TestEveryRequestIsAuthenticated:
         rec = _Recorder()
         rec.install(
             monkeypatch,
-            responses=[_FakeResponse(payload={"weight_version": "v1", "remote_instance_transfer_engine_info": {}})],
+            responses=[_FakeResponse(payload={"weight_version": "v1"})],
         )
 
         await call(SGLangApiClient(server_url=SERVER_URL, api_key="secret"))

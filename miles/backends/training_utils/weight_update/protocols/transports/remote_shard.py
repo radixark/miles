@@ -1,6 +1,6 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 import torch
 
@@ -40,7 +40,7 @@ def query_remote_shards(
     engine_cell_ids: Sequence[str],
     assignments: Sequence[RolloutEngineRankAssignment],
     runner_roles: Sequence[str],
-    connect_peer: Callable[[Any], str],
+    connect_peer: Callable[[dict], str],
 ) -> dict[str, dict[int, list[RemoteShard]]]:
     """Return assigned shards by runner role and rollout rank, built from the transfer engine info each rollout engine
     rank published; `connect_peer` turns that info into the shard's transport peer. A rank whose cell returned no info
@@ -87,19 +87,18 @@ def _query_remote_shard(
     rollout_engine_ind: int,
     rollout_engine_rank: int,
     runner_role: str,
-    connect_peer: Callable[[Any], str],
+    connect_peer: Callable[[dict], str],
 ) -> RemoteShard | None:
-    transfer_engine_info = cell_updater.submit_client_call(
-        "get_remote_instance_transfer_engine_info", rank=rollout_engine_rank, role=runner_role
-    ).result()
-    if transfer_engine_info is None:
+    rank_info = cell_updater.submit_client_call("get_rank_info", rank=rollout_engine_rank, role=runner_role).result()
+    if rank_info is None:
         return None
-    _, weights_info = transfer_engine_info
     return RemoteShard(
         cell_id=cell_updater.cell_id,
         rollout_engine_ind=rollout_engine_ind,
         rollout_engine_rank=rollout_engine_rank,
         runner_role=runner_role,
-        transport_peer=connect_peer(transfer_engine_info),
-        weight_locations_by_name={name: RemoteWeightLocation(*location) for name, location in weights_info.items()},
+        transport_peer=connect_peer(rank_info),
+        weight_locations_by_name={
+            name: RemoteWeightLocation(*location) for name, location in rank_info["weight_locations"].items()
+        },
     )
