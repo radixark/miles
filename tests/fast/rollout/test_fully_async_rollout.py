@@ -121,6 +121,7 @@ def make_args(**overrides) -> Namespace:
         eval_num_gpus=0,
         namespaced_radix_cache=True,
         use_critic=False,
+        use_output_store=False,
         sglang=make_sglang_config(enable_deterministic_inference=False),
     )
     defaults.update(overrides)
