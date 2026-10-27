@@ -71,6 +71,8 @@ def rollout(seed: int):
         ci_test=True,
         use_rollout_routing_replay=routed_experts,
         num_layers=LAYERS,
+        # The trainer's TrainerConfig keeps the indexer stream count under backend.
+        backend=SimpleNamespace(rollout_indexer_topk_num_streams=None),
     )
     return args, inline, store, objects, mode
 

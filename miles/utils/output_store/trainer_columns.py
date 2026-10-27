@@ -34,7 +34,7 @@ def materialize_store_columns(args: Namespace, rollout_data: dict, *, read: Call
             objects,
             response_tokens=np.asarray(tokens)[len(tokens) - int(response_length) :],
             support_topk=support_topk,
-            indexer_streams=args.rollout_indexer_topk_num_streams,
+            indexer_streams=args.backend.rollout_indexer_topk_num_streams,
         )
         for plan, tokens, response_length in zip(
             plans, rollout_data["tokens"], rollout_data["response_lengths"], strict=True
