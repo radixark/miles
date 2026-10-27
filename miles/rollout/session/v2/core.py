@@ -92,6 +92,8 @@ class SessionCoreV2(SessionCore):
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            if session.store_refs.contract_error is not None:
+                raise OutputStoreContractError(session.store_refs.contract_error)
             snapshot = session.snapshot()
         return await asyncio.get_running_loop().run_in_executor(
             self._sample_executor,

@@ -18,13 +18,13 @@ from tests.fast.utils.output_store.test_plan import R3, Ref, Spec, fake_store_re
 
 from miles.rollout.session import sessions
 from miles.rollout.session.core import SessionCore
-from miles.rollout.session.errors import UpstreamGenerationAbortedError
+from miles.rollout.session.errors import OutputStoreContractError, UpstreamGenerationAbortedError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.store_refs import SessionStoreRefs, response_store_ref
 from miles.rollout.session.v2.core import SessionCoreV2
 from miles.rollout.session.v2.session_state import SessionRegistryV2
 from miles.utils.chat_template_utils import get_tito_tokenizer
-from miles.utils.output_store.plan import OUTPUT_STORE_REF_KEY, OUTPUT_STORE_REQUEST_KEY
+from miles.utils.output_store.plan import OUTPUT_STORE_REF_KEY, OUTPUT_STORE_REQUEST_KEY, StorePlanError
 from miles.utils.processing_utils import load_tokenizer
 
 HF_CHECKPOINT = "Qwen/Qwen3-0.6B"
@@ -49,6 +49,8 @@ class _Backend:
         self.finish_reasons = list(finish_reasons)
         self.num_calls = 0
         self.during_proxy = None
+        # Answer like SGLang behind a router that does not forward the opt-in.
+        self.drop_opt_in = False
 
     async def do_proxy(self, request, path, *, body, headers) -> dict:
         self.num_calls += 1
@@ -57,7 +59,7 @@ class _Backend:
             "output_token_logprobs": [(-0.1, token_id) for token_id in self.output_ids],
             "completion_tokens": len(self.output_ids),
         }
-        if payload.get(OUTPUT_STORE_REQUEST_KEY):
+        if payload.get(OUTPUT_STORE_REQUEST_KEY) and not self.drop_opt_in:
             rows = len(payload["input_ids"]) + len(self.output_ids) - 1
             meta_info[OUTPUT_STORE_REF_KEY] = Ref(
                 f"key-{self.num_calls}", (Spec(R3, "int32", (rows, LAYERS, TOPK)),)
@@ -218,6 +220,33 @@ def test_only_opted_in_successful_responses_carry_a_ref(monkeypatch):
     assert response_store_ref({}, {"status_code": 200, "response_body": body}) is None
     assert response_store_ref(opted_in, {"status_code": 503, "response_body": body}) is None
     assert response_store_ref(opted_in, {"status_code": 200, "response_body": b"not json"}) is None
+
+
+def test_an_opted_in_response_without_a_ref_breaks_the_store_contract(monkeypatch):
+    fake_store_refs(monkeypatch)
+    opted_in = {OUTPUT_STORE_REQUEST_KEY: True}
+
+    def answered(finish_reason: str) -> dict:
+        body = orjson.dumps({"choices": [{"finish_reason": finish_reason, "meta_info": {}}]})
+        return {"status_code": 200, "response_body": body}
+
+    with pytest.raises(StorePlanError, match="dropped the opt-in"):
+        response_store_ref(opted_in, answered("stop"))
+    # Aborted in SGLang's waiting queue: nothing was written, so there is no ref to take.
+    assert response_store_ref(opted_in, answered("abort")) is None
+
+
+@pytest.mark.parametrize("v2", [False, True], ids=["v1", "v2"])
+async def test_a_dropped_opt_in_fails_the_turn_and_the_sessions_samples(monkeypatch, tokenizer, v2):
+    core, backend, _ = build_core(monkeypatch, tokenizer, v2=v2, finish_reasons=["stop"])
+    backend.drop_opt_in = True
+    session_id = await new_session(core)
+
+    with pytest.raises(OutputStoreContractError, match="dropped the opt-in"):
+        await chat(core, session_id)
+    # The agent may swallow the turn's error; /samples still fails with it although no record holds the turn.
+    with pytest.raises(OutputStoreContractError, match="dropped the opt-in"):
+        await core.collect_samples(session_id, max_seq_len=None)
 
 
 def test_replies_hand_over_cumulatively():

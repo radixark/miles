@@ -227,7 +227,13 @@ class SessionCore:
 
     async def _take_store_ref(self, session, request_body: dict, result: dict) -> None:
         """Record the output store ref of a proxied response before anything can drop the response."""
-        if (ref := response_store_ref(request_body, result)) is None:
+        try:
+            ref = response_store_ref(request_body, result)
+        except StorePlanError as exc:
+            # The agent may swallow this turn's error, so the session's /samples fails with it too.
+            session.store_refs.contract_error = str(exc)
+            raise OutputStoreContractError(str(exc)) from exc
+        if ref is None:
             return
         if session.closing:
             # DELETE has taken, or is taking, this session's refs; nobody else will see this one.
@@ -323,6 +329,8 @@ class SessionCore:
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            if session.store_refs.contract_error is not None:
+                raise OutputStoreContractError(session.store_refs.contract_error)
             snapshot = session.snapshot()
         return await asyncio.get_running_loop().run_in_executor(
             self._sample_executor, partial(self._collect_samples, session_id, snapshot, max_seq_len=max_seq_len)
