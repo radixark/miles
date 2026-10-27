@@ -186,9 +186,10 @@ def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
     Only this field is sized at launch: on DeepSeek-V3.2 it takes about 0.5 MB per token, routed experts take
     about 2 KB, and a sampling mask row holds the sampled support, which only sampling knows.
     """
-    streams = getattr(args, "rollout_indexer_topk_num_streams", None)
-    width = getattr(args, "rollout_indexer_topk_width", None)
-    if not args.use_rollout_indexer_replay or args.rollout_max_context_len is None or not (streams and width):
+    if not args.use_rollout_indexer_replay or args.rollout_max_context_len is None:
+        return None
+    streams, width = args.rollout_indexer_topk_num_streams, args.rollout_indexer_topk_width
+    if not (streams and width):
         return None
     # One int32 row per forward step; no object outgrows the sequence it stores.
     return (args.rollout_max_context_len - 1) * streams * width * 4
