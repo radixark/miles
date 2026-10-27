@@ -6,7 +6,6 @@ from collections.abc import Iterator, Sequence
 from concurrent.futures import Future
 from urllib.parse import urlparse
 
-import ray
 import torch
 import torch.multiprocessing
 from sglang.srt.utils import MultiprocessingSerializer
@@ -56,7 +55,7 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
-        engines_elsewhere = _engines_off_this_host(rollout_engines, ray.util.get_node_ip_address())
+        engines_elsewhere = _engines_off_this_host(rollout_engines)
         if engines_elsewhere:
             raise ValueError(
                 "--update-weight-transfer-mode shm needs every rollout engine on the trainer's host, which they "
@@ -118,13 +117,22 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
         check_weight_sync_results(async_utils.wait_futures(futures), is_lora=False)
 
 
-def _engines_off_this_host(rollout_engines: Sequence[SGLangApiClient], node_ip: str) -> list[str]:
-    here = {"127.0.0.1", node_ip}
+def _engines_off_this_host(rollout_engines: Sequence[SGLangApiClient]) -> list[str]:
     return [
         engine.server_url
         for engine in rollout_engines
-        if socket.gethostbyname(urlparse(engine.server_url).hostname) not in here
+        if not _is_local_address(socket.gethostbyname(urlparse(engine.server_url).hostname))
     ]
+
+
+def _is_local_address(ip: str) -> bool:
+    # only an address of one of this machine's interfaces can be bound
+    with socket.socket() as probe:
+        try:
+            probe.bind((ip, 0))
+        except OSError:
+            return False
+    return True
 
 
 def _copy_to_shared_bucket(bucket: list[tuple[str, torch.Tensor]]) -> tuple[torch.Tensor, list]:
