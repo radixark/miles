@@ -34,7 +34,7 @@ def materialize_store_columns(args: Namespace, rollout_data: dict, *, read: Call
             objects,
             response_tokens=np.asarray(tokens)[len(tokens) - int(response_length) :],
             support_topk=support_topk,
-            indexer_streams=getattr(args, "rollout_indexer_topk_num_streams", None),
+            indexer_streams=args.rollout_indexer_topk_num_streams,
         )
         for plan, tokens, response_length in zip(
             plans, rollout_data["tokens"], rollout_data["response_lengths"], strict=True
@@ -58,7 +58,9 @@ def _read_objects(plans: Sequence[StorePlan], read: Callable, *, support_topk: i
         # A missing object or array, or an array larger than the buffer: no retry can fix it.
         raise StorePlanError(f"cannot read this shard's output store objects: {e}") from e
     return {
-        key: {name: getattr(stash, name) for name in names}
+        key: {
+            name: getattr(stash, name) for name in names
+        }  # config-access-exempt: names lists the stash arrays the plan reads
         for (key, (_, names)), stash in zip(requests.items(), stashes, strict=True)
     }
 
