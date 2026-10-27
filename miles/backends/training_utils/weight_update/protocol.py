@@ -60,6 +60,9 @@ class WeightTransferProtocol(ABC):
         The return value must be identical on every rank."""
         return True
 
+    def after_session_open(self) -> None:  # noqa: B027 — optional hook
+        """Hook on every rank once the engines' weight-update session is open, before the bucket stream."""
+
     @abstractmethod
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None: ...
 

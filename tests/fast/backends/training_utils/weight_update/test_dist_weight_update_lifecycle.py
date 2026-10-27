@@ -105,6 +105,7 @@ def _make_updater(
         supports_lora=False,
         begin_sync=begin_sync,
         begin_sync_versions=begin_sync_versions,
+        after_session_open=MagicMock(),
         send_bucket=MagicMock(),
         after_base_weights=MagicMock(),
         finalize=MagicMock(),
@@ -229,6 +230,18 @@ class TestWeightUpdateSessionFrame:
         assert _phases(calls) == ["pause_generation", "begin_weight_update"] + _FINALIZE_PHASES
         assert _kwargs_of(calls, "pause_generation") == [{"mode": "in_place"}] * _ENGINE_COUNT
 
+    @pytest.mark.parametrize("rank", [0, 1])
+    def test_every_rank_hears_the_session_open_before_the_stream(self, rank):
+        """A protocol whose engine op is legal only inside the session must not start it while begin is in flight."""
+        calls: list[tuple[int, str, dict]] = []
+        updater = _make_updater(_make_engines(calls))
+        phases_at_open: list[list[str]] = []
+        updater.protocol.after_session_open.side_effect = lambda: phases_at_open.append(_phases(calls))
+
+        _run(updater, rank=rank)
+
+        assert phases_at_open == [_PREPARE_PHASES if rank == 0 else []]
+
     @pytest.mark.parametrize("failed_method", _PREPARE_PHASES + _FINALIZE_PHASES[:-1])
     @pytest.mark.parametrize("failed_engine_index", [0, 1])
     def test_a_failed_cell_stops_while_healthy_cells_complete_the_frame(
@@ -331,6 +344,7 @@ class TestPreparationFailure:
         with pytest.raises(RuntimeError, match=f"{failed_method} failed"):
             _run(updater)
 
+        updater.protocol.after_session_open.assert_not_called()
         updater.protocol.send_bucket.assert_not_called()
         updater.protocol.finalize.assert_not_called()
 
