@@ -149,6 +149,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     n_adapters: int = 4
     lora_rank: int | None = None
     lora_alpha: int = 64
+    lora_type: str = "canonical_lora"
     target_modules: str = "attn,mlp,unembed"
     tinker_port: int = 10613
     max_tokens_per_gpu: int = 9216
@@ -207,7 +208,7 @@ def serve(args: ScriptArgs):
     ckpt_args = f"--hf-checkpoint {args.model_dir}/{args.model_name} --megatron-to-hf-mode bridge "
 
     lora_args = (
-        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout 0.0 "
+        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-type {args.lora_type} --lora-dropout 0.0 "
         "--no-gradient-accumulation-fusion "
         f"--multi-lora-n-adapters {args.n_adapters} "
         f'--target-modules "{args.target_modules}" '

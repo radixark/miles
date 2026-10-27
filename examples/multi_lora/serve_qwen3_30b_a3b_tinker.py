@@ -28,6 +28,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # LoRA slot pool; per-client rank comes from the SDK, capped by lora_rank.
     lora_rank: int = 32
     lora_alpha: int = 64
+    lora_type: str = "canonical_lora"
     n_adapters: int = 4
     target_modules: str = "attn,mlp,unembed"
 
@@ -65,7 +66,7 @@ def serve(args: ScriptArgs):
     ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
 
     lora_args = (
-        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout 0.0 "
+        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-type {args.lora_type} --lora-dropout 0.0 "
         "--no-gradient-accumulation-fusion "
         f"--multi-lora-n-adapters {args.n_adapters} "
         f'--target-modules "{args.target_modules}"'
