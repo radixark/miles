@@ -286,8 +286,11 @@ Requirements:
   so puts fail once only they are left.
 
 Known defect: an object stored by a request attempt that was then retried, or whose delete
-failed (Miles logs it), leaks and stays until the run ends. A periodic sweep of the run's
-unreferenced objects is planned (TODO).
+failed (Miles logs it), leaks and stays until the run ends. When the run ends, Miles removes
+every object left under the run's key prefix and logs how many keys it removed; under
+`--ci-test`, a synchronous run that left any fails. A fully-async run ends with requests in
+flight, and an engine can still store an object for one after that. A periodic sweep during the
+run is planned (TODO).
 
 Rejected at launch: no replay array enabled, `--cluster-backend kubernetes`, PD
 disaggregation, external rollout engines, the legacy rollout, a custom convert function,

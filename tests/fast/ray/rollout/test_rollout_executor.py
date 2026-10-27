@@ -108,6 +108,7 @@ class TestDispose:
             enable_event_analyzer=False,
         )
         executor._metric_checker = None
+        executor._delete_store_refs = None
         executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=_make_runtime_args())
         executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=6, data=[Sample(index=10)], metadata={})
         event_logger = EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor"))
@@ -161,6 +162,7 @@ class TestDispose:
         executor.data_source = object()
         executor.args = Namespace()
         executor._metric_checker = None
+        executor._delete_store_refs = None
         monkeypatch.setattr(rollout_executor_module, "CheckpointEvalFn", _SynchronousDisposable)
         monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
         monkeypatch.setattr(
@@ -183,6 +185,7 @@ class TestDispose:
         executor.data_source = object()
         executor.args = Namespace()
         executor._metric_checker = None
+        executor._delete_store_refs = None
         monkeypatch.setattr(rollout_executor_module, "CheckpointEvalFn", _SynchronousDisposable)
         monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
         monkeypatch.setattr(

@@ -14,6 +14,7 @@ from miles.utils.output_store.config import (
     output_store_backend_config,
     output_store_reader,
     sglang_output_store_server_args,
+    sweep_output_store,
 )
 
 MOONCAKE = {"master_server_address": "10.0.0.1:50051", "protocol": "tcp", "device_name": "mlx5_0"}
@@ -181,3 +182,49 @@ class TestStoreClients:
 
     def test_no_reader_without_the_switch(self):
         assert output_store_reader(make_args(use_output_store=False)) is None
+
+
+class TestRunEndSweep:
+    @staticmethod
+    def fake_mooncake(monkeypatch, *, removed: int) -> list[tuple]:
+        calls: list[tuple] = []
+
+        class Store:
+            def setup(self, config):
+                calls.append(("setup", config))
+                return 0
+
+            def remove_by_regex(self, pattern, force):
+                calls.append(("remove", pattern, force))
+                return removed
+
+            def close(self):
+                calls.append(("close",))
+
+        store_module = types.ModuleType("mooncake.store")
+        store_module.MooncakeDistributedStore = Store
+        package = types.ModuleType("mooncake")
+        package.store = store_module
+        monkeypatch.setitem(sys.modules, "mooncake", package)
+        monkeypatch.setitem(sys.modules, "mooncake.store", store_module)
+        return calls
+
+    def test_the_sweep_force_removes_the_run_prefix_through_a_remove_only_client(self, monkeypatch):
+        """A read leaves a lease on its keys, and a remove without force skips them."""
+        calls = self.fake_mooncake(monkeypatch, removed=6)
+
+        assert sweep_output_store(make_args(run_uuid="0123456789abcdef")) == 6
+
+        (_, config), remove, close = calls
+        assert config["master_server_addr"] == "10.0.0.1:50051"
+        assert config["global_segment_size"] == 0 and config["local_buffer_size"] == 0
+        assert remove == ("remove", "^miles-output-store/0123456789abcdef/", True)
+        assert close == ("close",)
+
+    def test_a_failed_sweep_raises_and_still_closes_its_client(self, monkeypatch):
+        calls = self.fake_mooncake(monkeypatch, removed=-1)
+
+        with pytest.raises(RuntimeError, match="remove_by_regex failed: -1"):
+            sweep_output_store(make_args(run_uuid="0123456789abcdef"))
+
+        assert calls[-1] == ("close",)

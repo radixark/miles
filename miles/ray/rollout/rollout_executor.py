@@ -48,7 +48,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
-from miles.utils.output_store.config import connect_output_store, output_store_backend_config
+from miles.utils.output_store.config import connect_output_store, output_store_backend_config, sweep_output_store
 from miles.utils.output_store.dropped import store_refs_of, take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
 from miles.utils.simple_checkpointer import atomic_save_folder
@@ -183,6 +183,19 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             self._metric_checker.dispose()
         if isinstance(self.eval_generate_rollout, CheckpointEvalFn):
             await maybe_await(self.eval_generate_rollout.dispose())
+        # Last, so a failed CI check raises after the rest of this dispose; only once init reached the store.
+        if self._delete_store_refs is not None:
+            await asyncio.to_thread(self._sweep_output_store)
+
+    def _sweep_output_store(self) -> None:
+        """Remove what the run left in the output store, which nothing reads once it ends."""
+        if not (left := sweep_output_store(self.args)):
+            return
+        message = f"Swept {left} output store keys the run left behind"
+        # A fully-async run ends with groups buffered or in flight; a synchronous one has released every rollout.
+        if self.args.ci_test and not self.args.fully_async:
+            raise AssertionError(f"{message}: a retried request, a failed delete or a missed release")
+        logger.warning(message)
 
     # -------------------------- data generation -----------------------------
 

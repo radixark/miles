@@ -6,7 +6,8 @@ With the switch, training requests that ask for routed experts, indexer top-k or
 also ask SGLang to put those arrays in the run's Mooncake (``radix_transfer_plugins``) and return a
 ref. Every client Miles creates for it (SGLang engines, train workers, the rollout executor, the
 session server) takes its config from ``output_store_backend_config``, which derives the connection
-from Miles' own Mooncake config: one master for Miles' object store and the output store.
+from Miles' own Mooncake config: one master for Miles' object store and the output store. At the end
+of the run, ``sweep_output_store`` removes what is left under the run's key prefix.
 """
 
 from __future__ import annotations
@@ -137,8 +138,8 @@ def output_store_backend_config(
         "master_server_address": mooncake["master_server_addr"],
         "local_hostname": local_hostname,
         "local_buffer_size": args.output_store_local_buffer_size if puts else 0,
-        # Writers only: one prefix per launch, so a later sweep can find this run's objects.
-        "key_prefix": f"{_KEY_PREFIX_BASE}/{args.run_uuid}",
+        # Writers only: one prefix per launch, so the run-end sweep finds exactly this run's objects.
+        "key_prefix": _run_key_prefix(args),
         "protocol": mooncake["protocol"],
         "metadata_server": mooncake["metadata_server"],
         # MOONCAKE_DEVICE may differ by node, so only an init kwarg names the device for every client.
@@ -155,6 +156,30 @@ def sglang_output_store_server_args(args: argparse.Namespace, *, local_hostname:
         # as Miles' own client does without MOONCAKE_DEVICE.
         del config["device_name"]
     return {"output_store_backend": _BACKEND, "output_store_backend_extra_config": json.dumps(config)}
+
+
+def sweep_output_store(args: argparse.Namespace) -> int:
+    """Remove every object of this run still in the store; returns how many keys it removed.
+
+    Only for the end of the run: ``force`` removes keys under a read's lease too, which no reader holds by
+    then. Each field of an object is its own key.
+    """
+    # mooncake ships with SGLang and the Mooncake object store backend; it is not a Miles dependency.
+    from mooncake.store import MooncakeDistributedStore
+
+    store = MooncakeDistributedStore()
+    # A remove-only client: no segment, no local buffer.
+    config = compute_mooncake_store_config(args.mooncake_store_init_kwargs or {}, contribute_segment=False)
+    if error := store.setup({**config, "local_buffer_size": 0}):
+        raise RuntimeError(f"Mooncake store setup failed: {error}")
+    try:
+        # run_uuid is lowercase hex, so the prefix holds no regex metacharacter.
+        removed = store.remove_by_regex(f"^{_run_key_prefix(args)}/", True)
+    finally:
+        store.close()
+    if removed < 0:
+        raise RuntimeError(f"Mooncake remove_by_regex failed: {removed}")
+    return removed
 
 
 def connect_output_store(config: dict[str, Any]) -> OutputStore:
@@ -202,6 +227,10 @@ def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
         return None
     # One int32 row per forward step; no object outgrows the sequence it stores.
     return (num_tokens - 1) * streams * width * 4
+
+
+def _run_key_prefix(args: argparse.Namespace) -> str:
+    return f"{_KEY_PREFIX_BASE}/{args.run_uuid}"
 
 
 def _sglang_has_output_store() -> bool:

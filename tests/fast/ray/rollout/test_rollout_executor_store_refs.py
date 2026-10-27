@@ -108,3 +108,31 @@ async def test_refs_without_a_store_client_fail_loudly():
 
     with pytest.raises(StorePlanError, match="no store client"):
         await executor.release(5)
+
+
+@pytest.mark.parametrize(
+    ("ci_test", "fully_async", "fails"),
+    [(True, False, True), (True, True, False), (False, False, False)],
+)
+def test_keys_left_at_the_end_fail_only_a_synchronous_ci_run(monkeypatch, caplog, ci_test, fully_async, fails):
+    """A fully-async run ends with groups buffered or in flight, so only a synchronous one must leave none."""
+    executor, _ = make_executor({})
+    executor.args = make_args(ci_test=ci_test, fully_async=fully_async)
+    monkeypatch.setattr(rollout_executor_module, "sweep_output_store", lambda args: 4)
+
+    if fails:
+        with pytest.raises(AssertionError, match="Swept 4 output store keys"):
+            executor._sweep_output_store()
+    else:
+        executor._sweep_output_store()
+        assert "Swept 4 output store keys" in caplog.text
+
+
+def test_a_run_that_left_nothing_logs_nothing(monkeypatch, caplog):
+    executor, _ = make_executor({})
+    executor.args = make_args(ci_test=True, fully_async=False)
+    monkeypatch.setattr(rollout_executor_module, "sweep_output_store", lambda args: 0)
+
+    executor._sweep_output_store()
+
+    assert "Swept" not in caplog.text
