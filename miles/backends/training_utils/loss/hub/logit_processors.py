@@ -111,6 +111,20 @@ def _iter_response_chunks(
         elif args.backend.fp16:
             logits = logits.to(torch.float16)
 
+    if get_parallel_state().cp.size == 1 and args.qkv_format == "thd":
+        layout = list(layout)
+        split_sizes = []
+        previous_end = 0
+        for row_ranges, _, _ in layout:
+            [(start, end)] = row_ranges
+            split_sizes.extend((start - previous_end, end - start))
+            previous_end = end
+        split_sizes.append(logits.size(0) - previous_end)
+        response_logits = logits.split(split_sizes)[1::2]
+        for logits_chunk, (_, tokens_chunk, response_indices) in zip(response_logits, layout, strict=True):
+            yield logits_chunk, tokens_chunk, response_indices
+        return
+
     for row_ranges, tokens_chunk, response_indices in layout:
         pieces = [logits[row_start:row_end] for row_start, row_end in row_ranges]
         logits_chunk = pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=0)

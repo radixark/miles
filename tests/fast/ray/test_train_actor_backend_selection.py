@@ -11,13 +11,20 @@ from miles.utils.init_once import InitOnce
 class TestTrainProcessGroupBackendSelection:
     @pytest.mark.parametrize(
         "backend,offload,expected",
-        [("megatron", False, "nccl"), ("fsdp", False, "nccl"), ("fsdp", True, "cpu:gloo,cuda:nccl")],
+        [
+            ("megatron", False, "nccl"),
+            ("fsdp", False, "nccl"),
+            ("fsdp", True, "cpu:gloo,cuda:nccl"),
+            ("torchtitan", True, "cpu:gloo,cuda:nccl"),
+        ],
     )
-    def test_only_fsdp_cpu_offload_selects_a_hybrid_process_group(
+    def test_only_fsdp2_cpu_offload_selects_a_hybrid_process_group(
         self, monkeypatch: pytest.MonkeyPatch, backend: str, offload: bool, expected: str
     ) -> None:
-        """Megatron initialization never reads FSDP-only settings while FSDP offload enables both transports."""
-        overrides = {"fsdp_cpu_offload": offload, "fsdp_cpu_backend": "gloo"} if backend == "fsdp" else {}
+        """Megatron initialization never reads FSDP2 settings while FSDP / torchtitan offload enables both transports."""
+        overrides = (
+            {"optimizer_cpu_offload": offload, "fsdp_cpu_backend": "gloo"} if backend in ("fsdp", "torchtitan") else {}
+        )
         args = make_trainer_config(
             train_backend=backend,
             distributed_backend="nccl",
