@@ -138,6 +138,7 @@ _MODEL_NAMES = Literal[
     "tmax-2b",
     "tmax-4b",
     "tmax-9b",
+    "tmax-27b",
 ]
 
 
@@ -161,6 +162,7 @@ _RECIPES: dict[str, _Recipe] = {
     "tmax-2b": _Recipe("allenai/tmax-2b", "qwen3.5-2B", enable_thinking=False),
     "tmax-4b": _Recipe("allenai/tmax-4b", "qwen3.5-4B", enable_thinking=True),
     "tmax-9b": _Recipe("allenai/tmax-9b", "qwen3.5-9B", enable_thinking=True),
+    "tmax-27b": _Recipe("allenai/tmax-27b", "qwen3.5-27B", enable_thinking=True),
 }
 
 app = typer.Typer()
