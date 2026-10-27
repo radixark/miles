@@ -1,8 +1,76 @@
 {
   "comparison_updates": 32,
+  "entropy_metric": "Native masked equal-response full-vocabulary trainer entropy in nats; entropy regularization coefficient is zero.",
   "arms": [
     {
+      "recipe": "SFC + TIS",
+      "estimator": null,
+      "importance_weighting": "tis",
+      "tis_upper_clip": 2,
+      "sampler_kl_coefficient": 0.0,
+      "experiment": "i007-grpo-sfc-tis-one-epoch",
+      "run_updates": 128,
+      "terminal_receipt_sha256": "a0d8dab05a06e56e18f7e16ff5abacc90dd23d3c3ec9acdbb0d9d2cddbfdd3af",
+      "evaluations": [
+        {
+          "update": 0,
+          "correct": 75,
+          "count": 128
+        },
+        {
+          "update": 16,
+          "correct": 75,
+          "count": 128
+        },
+        {
+          "update": 32,
+          "correct": 84,
+          "count": 128
+        }
+      ],
+      "cumulative_metrics_receipt_sha256": "d17e0a243acda3d91e094434e6e4a0e896bc2659ec9980875017f1caa614d171",
+      "entropy_nats": {
+        "first_8_updates_mean": 0.12993303034454584,
+        "last_8_updates_mean": 0.11728404555469751,
+        "relative_change_percent": -9.735003298473666,
+        "eight_update_windows": [
+          {
+            "completed_updates": [
+              1,
+              8
+            ],
+            "mean": 0.12993303034454584
+          },
+          {
+            "completed_updates": [
+              9,
+              16
+            ],
+            "mean": 0.11819697264581919
+          },
+          {
+            "completed_updates": [
+              17,
+              24
+            ],
+            "mean": 0.11208489164710045
+          },
+          {
+            "completed_updates": [
+              25,
+              32
+            ],
+            "mean": 0.11728404555469751
+          }
+        ]
+      }
+    },
+    {
+      "recipe": "SFC + sampler KL (top-k)",
       "estimator": "head_tail",
+      "importance_weighting": "none",
+      "tis_upper_clip": null,
+      "sampler_kl_coefficient": 0.03,
       "experiment": "i008-sfc-sampler-kl-one-epoch",
       "run_updates": 128,
       "terminal_receipt_sha256": "5cee2fe45405ce87add9263eaf800703c2d7bf764662178c6615763ee9dcb4d9",
@@ -23,10 +91,49 @@
           "count": 128
         }
       ],
-      "cumulative_metrics_receipt_sha256": "4f3b008b4b013fcd880849b98e3483dc1eda411d7986ec83069a87c86ef60812"
+      "cumulative_metrics_receipt_sha256": "4f3b008b4b013fcd880849b98e3483dc1eda411d7986ec83069a87c86ef60812",
+      "entropy_nats": {
+        "first_8_updates_mean": 0.13115291483700275,
+        "last_8_updates_mean": 0.12766437511891127,
+        "relative_change_percent": -2.6599025438565738,
+        "eight_update_windows": [
+          {
+            "completed_updates": [
+              1,
+              8
+            ],
+            "mean": 0.13115291483700275
+          },
+          {
+            "completed_updates": [
+              9,
+              16
+            ],
+            "mean": 0.12117234244942665
+          },
+          {
+            "completed_updates": [
+              17,
+              24
+            ],
+            "mean": 0.11875380016863346
+          },
+          {
+            "completed_updates": [
+              25,
+              32
+            ],
+            "mean": 0.12766437511891127
+          }
+        ]
+      }
     },
     {
+      "recipe": "SFC + sampler KL (k1)",
       "estimator": "sampled_k1",
+      "importance_weighting": "none",
+      "tis_upper_clip": null,
+      "sampler_kl_coefficient": 0.03,
       "experiment": "i013-sfc-sampler-kl-k1-32",
       "run_updates": 32,
       "terminal_receipt_sha256": "14ea275ece72bfda48d0693437457213e416ef9224dbfc7ce5211fc6bbc3aed7",
@@ -47,10 +154,49 @@
           "count": 128
         }
       ],
-      "cumulative_metrics_receipt_sha256": "5f8a1909e59c118c205ab71520839288b1a1c92f3a401a52380ba070f636dd9d"
+      "cumulative_metrics_receipt_sha256": "5f8a1909e59c118c205ab71520839288b1a1c92f3a401a52380ba070f636dd9d",
+      "entropy_nats": {
+        "first_8_updates_mean": 0.1321362229064107,
+        "last_8_updates_mean": 0.13221100252121687,
+        "relative_change_percent": 0.056592820016621026,
+        "eight_update_windows": [
+          {
+            "completed_updates": [
+              1,
+              8
+            ],
+            "mean": 0.1321362229064107
+          },
+          {
+            "completed_updates": [
+              9,
+              16
+            ],
+            "mean": 0.1198292225599289
+          },
+          {
+            "completed_updates": [
+              17,
+              24
+            ],
+            "mean": 0.11887639947235584
+          },
+          {
+            "completed_updates": [
+              25,
+              32
+            ],
+            "mean": 0.13221100252121687
+          }
+        ]
+      }
     },
     {
+      "recipe": "SFC + sampler KL (k3)",
       "estimator": "sampled_k3",
+      "importance_weighting": "none",
+      "tis_upper_clip": null,
+      "sampler_kl_coefficient": 0.03,
       "experiment": "i014-sfc-sampler-kl-k3-32",
       "run_updates": 32,
       "terminal_receipt_sha256": "164f48f1d9ea53790a3a1620eadec57281f8ca7b5467e78bf2faf4949bbe189f",
@@ -71,7 +217,105 @@
           "count": 128
         }
       ],
-      "cumulative_metrics_receipt_sha256": "68112f37d18ee78594c237f9d425a4cbf495c91f5a058d6007668c7a09310f34"
+      "cumulative_metrics_receipt_sha256": "68112f37d18ee78594c237f9d425a4cbf495c91f5a058d6007668c7a09310f34",
+      "entropy_nats": {
+        "first_8_updates_mean": 0.13089915364980698,
+        "last_8_updates_mean": 0.13301788363605738,
+        "relative_change_percent": 1.6185971621471396,
+        "eight_update_windows": [
+          {
+            "completed_updates": [
+              1,
+              8
+            ],
+            "mean": 0.13089915364980698
+          },
+          {
+            "completed_updates": [
+              9,
+              16
+            ],
+            "mean": 0.121740129776299
+          },
+          {
+            "completed_updates": [
+              17,
+              24
+            ],
+            "mean": 0.12148405518382788
+          },
+          {
+            "completed_updates": [
+              25,
+              32
+            ],
+            "mean": 0.13301788363605738
+          }
+        ]
+      }
+    },
+    {
+      "recipe": "SFC + TIS + sampler KL (top-k)",
+      "estimator": "head_tail",
+      "importance_weighting": "tis",
+      "tis_upper_clip": 2,
+      "sampler_kl_coefficient": 0.03,
+      "experiment": "i012-sfc-tis-sampler-kl-96",
+      "run_updates": 96,
+      "terminal_receipt_sha256": "52b2f802e48fd0022a6e184cdcc1b0d3ce18eea64d2634381738797c03d57acb",
+      "evaluations": [
+        {
+          "update": 0,
+          "correct": 77,
+          "count": 128
+        },
+        {
+          "update": 16,
+          "correct": 83,
+          "count": 128
+        },
+        {
+          "update": 32,
+          "correct": 87,
+          "count": 128
+        }
+      ],
+      "cumulative_metrics_receipt_sha256": "74e248f44e3e640415b0ebcaa4dac27ae549546373bb9c7489cf994dcf19a042",
+      "entropy_nats": {
+        "first_8_updates_mean": 0.13275489769876003,
+        "last_8_updates_mean": 0.12636709306389093,
+        "relative_change_percent": -4.811728038361296,
+        "eight_update_windows": [
+          {
+            "completed_updates": [
+              1,
+              8
+            ],
+            "mean": 0.13275489769876003
+          },
+          {
+            "completed_updates": [
+              9,
+              16
+            ],
+            "mean": 0.12151766195893288
+          },
+          {
+            "completed_updates": [
+              17,
+              24
+            ],
+            "mean": 0.11815736722201109
+          },
+          {
+            "completed_updates": [
+              25,
+              32
+            ],
+            "mean": 0.12636709306389093
+          }
+        ]
+      }
     }
   ],
   "metrics_csv": "sampler_kl_32_updates.csv"

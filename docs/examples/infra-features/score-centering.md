@@ -39,6 +39,11 @@ Training logs include `train/train_rollout_logprob_abs_diff` and `train/train_ro
 
 ## Sampler KL (demo)
 
+A main motivation is to help maintain policy entropy while limiting drift from
+the generating policy. The preliminary observations below suggest this effect
+in our math/Adam setup; the task, reward, optimizer, learning rate, precision
+and sampler/KL schedule can all affect it.
+
 Add `--sampler-kl-coef 0.03` to optimize `KL(q_sampler || p_trainer)` alongside
 SFC. The coefficient defaults to zero and is constant when enabled, including
 fresh rollouts. Sampler probabilities are detached; the trainer remains
@@ -67,25 +72,50 @@ this demo uses constant beta rather than the proposal's age-dependent schedule.
 ### Preliminary 32-update experiments
 
 Qwen3.6-35B-A3B (BF16 trainer / FP8 sampler), INTELLECT-2 verifiable math,
-SFC K128, TIS off, beta 0.03 including age zero, equal-response reduction,
-GBS256 (32 prompts x 8 responses), LR 1e-6, seed 1234. Each arm starts fresh and
-uses the same first 1,024 training prompts once (8,192 responses). Greedy
-held-out evaluation uses 128 questions at updates 0/16/32.
+SFC K128, equal-response reduction, GBS256 (32 prompts x 8 responses),
+Adam (LR 1e-6, betas 0.9/0.98, weight decay 0.1), seed 1234. Each arm starts
+fresh and uses the same first 1,024 training prompts once (8,192 responses).
+Greedy held-out evaluation uses 128 questions at updates 0/16/32. Where enabled,
+TIS is detached min(p/q, 2), and sampler KL has constant beta 0.03 including
+age zero. The combined arm adds KL independently of the TIS-weighted SFC term.
 
-| Sampler-KL estimator | Update 0 | Update 16 | Update 32 |
+| Recipe | Update 0 | Update 16 | Update 32 |
 | --- | ---: | ---: | ---: |
-| Top-k / `head_tail` | 80/128 (62.50%) | 86/128 (67.19%) | 91/128 (71.09%) |
-| `sampled_k1` | 76/128 (59.38%) | 79/128 (61.72%) | 91/128 (71.09%) |
-| `sampled_k3` | 75/128 (58.59%) | 85/128 (66.41%) | 90/128 (70.31%) |
+| SFC + TIS | 75/128 (58.59%) | 75/128 (58.59%) | 84/128 (65.62%) |
+| SFC + sampler KL (top-k) | 80/128 (62.50%) | 86/128 (67.19%) | 91/128 (71.09%) |
+| SFC + sampler KL (k1) | 76/128 (59.38%) | 79/128 (61.72%) | 91/128 (71.09%) |
+| SFC + sampler KL (k3) | 75/128 (58.59%) | 85/128 (66.41%) | 90/128 (70.31%) |
+| SFC + TIS + sampler KL (top-k) | 77/128 (60.16%) | 83/128 (64.84%) | 87/128 (67.97%) |
 
-These are single-seed observations from E011 G/L/M, with independently generated
-responses and different baseline scores. Top-k uses the first 32 updates of its
-128-update run; k1/k3 stopped at 32. These results do not establish a method
-ranking or improvement over an SFC-only control. The experiments used the
-historical experiment fork, not this rebased demo. [Aggregate records and
-terminal-receipt hashes](sampler_kl_32_updates.json) preserve the reported points.
-[Per-update metrics](https://github.com/radixark/miles/blob/main/examples/infra_features/score_centering/sampler_kl_32_updates.csv) include all 32 normal updates per
-arm: raw/weighted KL, PG/total loss, entropy, mismatch and gradient norm.
+Entropy is the native masked equal-response trainer entropy in nats. The
+entropy regularization coefficient is zero in every arm. Compare nonoverlapping
+eight-update means to reduce batch noise:
+
+| Recipe | Updates 1-8 | Updates 25-32 | Relative change |
+| --- | ---: | ---: | ---: |
+| SFC + TIS | 0.12993 | 0.11728 | -9.7% |
+| SFC + sampler KL (top-k) | 0.13115 | 0.12766 | -2.7% |
+| SFC + sampler KL (k1) | 0.13214 | 0.13221 | +0.1% |
+| SFC + sampler KL (k3) | 0.13090 | 0.13302 | +1.6% |
+| SFC + TIS + sampler KL (top-k) | 0.13275 | 0.12637 | -4.8% |
+
+Sampler KL appears to help maintain entropy here: its arms show smaller drops
+or nearly flat entropy over this horizon compared with SFC + TIS. The combined
+SFC + TIS + top-k KL arm has a smaller drop than SFC + TIS and reaches 87/128
+at update 32 versus 84/128. This is a preliminary observation with differing
+generated histories, not evidence of a universal improvement or causal proof.
+The [reference proposal](https://huggingface.co/blog/NormalUhr/sfc-kl) motivates
+the feature; these task/Adam/fresh-sampler results do not establish that its
+empirical conclusions transfer unchanged, or that TIS must always be removed.
+
+These are single-seed observations from E011 F/G/L/M/K, with independent
+responses and different baseline scores. F/G use the first 32 updates of
+128-update runs; K uses the first 32 of 96; k1/k3 stopped at 32. The experiments
+used the historical experiment fork, not this rebased demo. [Aggregate records,
+entropy windows and terminal-receipt hashes](sampler_kl_32_updates.json) preserve
+the reported points. [Per-update metrics](https://github.com/radixark/miles/blob/main/examples/infra_features/score_centering/sampler_kl_32_updates.csv) include all
+32 normal updates per arm: raw/weighted KL, PG/total loss, entropy, mismatch and
+gradient norm. Missing KL fields in the control are blank.
 
 ## How it works
 
