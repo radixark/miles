@@ -285,13 +285,21 @@ class LoRAGroupedColumnLinear(LoRALinear):
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         x = apply_lora_dropout(x, self.context, base_module.training)
-        down = F.linear(x, getattr(self, f"{self.param_prefix}_A"))
-        return grouped_matmul(down, getattr(self, f"{self.param_prefix}_B"))
+        down = F.linear(
+            x, getattr(self, f"{self.param_prefix}_A")
+        )  # config-access-exempt: the projection prefix selects its registered A parameter
+        return grouped_matmul(
+            down, getattr(self, f"{self.param_prefix}_B")
+        )  # config-access-exempt: the projection prefix selects its registered B parameter
 
     def weight_deltas(self):
         (weight,) = self._host_weight
-        a = getattr(self, f"{self.param_prefix}_A")
-        b = getattr(self, f"{self.param_prefix}_B")
+        a = getattr(
+            self, f"{self.param_prefix}_A"
+        )  # config-access-exempt: the projection prefix selects its registered A parameter
+        b = getattr(
+            self, f"{self.param_prefix}_B"
+        )  # config-access-exempt: the projection prefix selects its registered B parameter
         yield weight, lambda: self.context.lora.scale * (b.float() @ a.float())
 
 
