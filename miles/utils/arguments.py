@@ -761,12 +761,6 @@ def validate_log_probs_backend_args(args) -> None:
             "--log-probs-backend fused does not support --true-on-policy-mode, which needs bitwise "
             "parity with the rollout engine's own log-softmax; use --log-probs-backend torch."
         )
-    if args.use_sampling_support_replay:
-        raise ValueError(
-            "--log-probs-backend fused does not support sampling-support replay "
-            f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
-            "use --log-probs-backend torch."
-        )
     # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
     if args.train_backend == "megatron" and args.vocab_size is None:
         raise ValueError(

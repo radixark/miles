@@ -249,6 +249,28 @@ def _target_grads_kernel(
     tl.store(grad_ptr + row * grad_stride_row + col, (dd * inv_temperature).to(grad_ptr.dtype.element_ty), mask=owned)
 
 
+@triton.jit
+def _write_row_columns_kernel(
+    grad_ptr,
+    rows_ptr,
+    ids_ptr,
+    values_ptr,
+    grad_stride_row,
+    n_ids,
+    n_unpadded_cols,
+    vocab_start,
+    BLOCK_K: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    row = tl.load(rows_ptr + pid).to(tl.int64)
+    lanes = tl.arange(0, BLOCK_K)
+    offs = pid * n_ids + lanes
+    col = tl.load(ids_ptr + offs, mask=lanes < n_ids, other=-1) - vocab_start
+    owned = (lanes < n_ids) & (col >= 0) & (col < n_unpadded_cols)
+    value = tl.load(values_ptr + offs, mask=owned, other=0.0)
+    tl.store(grad_ptr + row * grad_stride_row + col, value.to(grad_ptr.dtype.element_ty), mask=owned)
+
+
 def row_statistics(
     logits: torch.Tensor,
     rows: torch.Tensor,
@@ -288,7 +310,7 @@ def write_logits_grad(
     logits: torch.Tensor,
     *,
     rows: torch.Tensor,
-    targets: torch.Tensor,
+    targets: torch.Tensor | None,
     stats: SoftmaxStats,
     grad_log_probs: torch.Tensor | None,
     grad_entropy: torch.Tensor | None,
@@ -299,15 +321,14 @@ def write_logits_grad(
     """Write the gradient of the selected rows into ``grad``; ``grad`` may be ``logits`` itself.
 
     ``targets`` and ``grad_log_probs`` are ``[R, K]``; a ``-1`` target is padding. Every column of a
-    selected row is written, the vocab padding from ``vocab.n_unpadded`` on with zero.
+    selected row is written, the vocab padding from ``vocab.n_unpadded`` on with zero. With ``targets``
+    None only the dense pass runs: the entropy term, or zeros, everywhere.
     """
     assert grad_entropy is None or stats.expected_mean_logit is not None, "the entropy gradient needs its mean"
     launch = launch or kernel_configs(logits.device).grad
-    n_rows, n_targets = targets.shape
+    n_rows = rows.numel()
     if not n_rows:
         return
-    log_probs = stats.target_logit - stats.log_sum_exp.unsqueeze(1)  # read only at real targets
-    one_minus_p = -torch.expm1(log_probs)  # 1 - p at each target, exact even when p is close to 1
     target_grad_sum = grad_log_probs.sum(dim=1) if grad_log_probs is not None else None
     placeholder = stats.log_sum_exp  # a pointer for a tensor the kernel's flags say it never reads
     expected_mean_logit = stats.expected_mean_logit if stats.expected_mean_logit is not None else placeholder
@@ -330,6 +351,11 @@ def write_logits_grad(
         BLOCK_V=launch.block_v,
         num_warps=launch.num_warps,
     )
+    if targets is None:
+        return
+    n_targets = targets.size(1)
+    log_probs = stats.target_logit - stats.log_sum_exp.unsqueeze(1)  # read only at real targets
+    one_minus_p = -torch.expm1(log_probs)  # 1 - p at each target, exact even when p is close to 1
     # stream order puts this after the dense pass, so these values replace its target columns
     _target_grads_kernel[(n_rows,)](
         grad,
@@ -362,4 +388,28 @@ def zero_unscored_rows(grad: torch.Tensor, rows: torch.Tensor, *, launch: Launch
     scored.index_fill_(0, rows, 1)  # a scalar fill: indexed assignment would copy the 1 from the host
     _zero_unscored_rows_kernel[(n_rows,)](
         grad, scored, grad.stride(0), grad.size(1), BLOCK_V=launch.block_v, num_warps=launch.num_warps
+    )
+
+
+def write_row_columns(
+    grad: torch.Tensor, rows: torch.Tensor, ids: torch.Tensor, values: torch.Tensor, *, vocab: VocabRange
+) -> None:
+    """Write ``values[r, k]`` at row ``rows[r]``, column of token ``ids[r, k]``, where this shard holds it.
+
+    A masked store: indexing ``grad`` with the ownership mask would sync on its count.
+    """
+    n_rows, n_ids = ids.shape
+    if not n_rows * n_ids:
+        return
+    _write_row_columns_kernel[(n_rows,)](
+        grad,
+        rows,
+        ids.contiguous(),
+        values.contiguous(),
+        grad.stride(0),
+        n_ids,
+        vocab.n_unpadded,
+        vocab.start,
+        BLOCK_K=max(triton.next_power_of_2(n_ids), 16),
+        num_warps=1,
     )

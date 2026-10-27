@@ -155,8 +155,8 @@ class TrainConfig(BaseConfig):
                 "Not only an implementation choice: 'fused' normalizes over the true vocabulary (--vocab-size),"
                 " as the rollout engine does, while 'torch' normalizes over Megatron's padded vocabulary "
                 "(except for --loss-type score_centering), so with vocab padding (TP > 1) the two give slightly"
-                " different log-probs, ratios and KL. 'fused' does not support --true-on-policy-mode or "
-                "sampling-support replay (--rollout-top-p below 1 or a positive --rollout-top-k)."
+                " different log-probs, ratios and KL. Under sampling-support replay 'fused' normalizes the "
+                "log-probs over each token's support instead. 'fused' does not support --true-on-policy-mode."
             ),
         ),
     ] = "torch"

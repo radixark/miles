@@ -17,7 +17,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from tests.fast.dist_utils import find_free_port
 
-from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy, fused_support_log_probs
 from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
 
 _WORLD_SIZE = 2
@@ -162,6 +162,101 @@ def test_k_targets_per_row_match_log_softmax(inplace_backward):
     torch.testing.assert_close(log_probs, ref_log_probs.detach(), rtol=1e-5, atol=2e-5)
     torch.testing.assert_close(entropy, ref_entropy.detach(), rtol=1e-5, atol=5e-5)
     torch.testing.assert_close(leaf.grad.float(), ref_leaf.grad.float(), rtol=1e-2, atol=1e-3)
+
+
+def _support_inputs(n_rows, vocab, max_support, seed):
+    """Rows, a sampled target per row and a ``[R, S]`` support holding it: unique ids, ``-1`` padding,
+    and one row with no support at all."""
+    logits, rows, _ = _inputs(n_rows, vocab, torch.bfloat16, "cuda", seed=seed)
+    gen = torch.Generator(device="cuda").manual_seed(seed + 1)
+    sizes = torch.randint(1, max_support + 1, (rows.numel(),), device="cuda", generator=gen)
+    sizes[0] = 0
+    support = torch.full((rows.numel(), max_support), -1, device="cuda", dtype=torch.long)
+    targets = torch.zeros(rows.numel(), device="cuda", dtype=torch.long)
+    for r in range(rows.numel()):
+        ids = torch.randperm(vocab, device="cuda", generator=gen)[: sizes[r]]
+        support[r, : sizes[r]] = ids
+        if sizes[r] > 0:
+            targets[r] = ids[torch.randint(0, int(sizes[r]), (1,), device="cuda", generator=gen)]
+    return logits, rows, targets, support
+
+
+def _support_reference(logits, rows, targets, support, temperature, entropy_over_support):
+    """Log-probs over each row's support; entropy over the support or the vocabulary."""
+    scaled = logits.index_select(0, rows).float() / temperature
+    valid = support >= 0
+    support_logits = torch.where(valid, scaled.gather(1, support.clamp(min=0)), -torch.inf)
+    log_normalizer = torch.logsumexp(support_logits, dim=1, keepdim=True)
+    target_log_probs = (scaled.gather(1, targets.unsqueeze(1)) - log_normalizer).squeeze(1)
+    support_log_probs = torch.where(valid, support_logits - log_normalizer, 0.0)
+    if entropy_over_support:
+        entropy = -(support_log_probs.exp().masked_fill(~valid, 0.0) * support_log_probs).sum(dim=-1)
+    else:
+        log_vocab = torch.log_softmax(scaled, dim=-1)
+        entropy = -(log_vocab.exp() * log_vocab).sum(dim=-1)
+    return target_log_probs, support_log_probs, entropy
+
+
+@pytest.mark.parametrize("entropy_over_support", [False, True], ids=["vocab_entropy", "support_entropy"])
+@pytest.mark.parametrize("inplace_backward", [True, False])
+def test_support_mode_matches_masked_log_softmax(entropy_over_support, inplace_backward):
+    """Log-probs normalized over each row's support, as the torch path's sampling mask does; the
+    entropy over the vocabulary (policy loss) or the support (score centering)."""
+    logits, rows, targets, support = _support_inputs(200, 50_001, 48, seed=30)
+    gen = torch.Generator(device="cuda").manual_seed(32)
+    g_target = torch.randn(rows.numel(), device="cuda", generator=gen)
+    g_support = torch.randn(support.shape, device="cuda", generator=gen)
+    c = torch.randn(rows.numel(), device="cuda", generator=gen)
+    scored = slice(1, None)  # row 0 has no support
+
+    ref_leaf = logits.clone().requires_grad_(True)
+    ref = _support_reference(ref_leaf, rows[scored], targets[scored], support[scored], 0.8, entropy_over_support)
+    ((ref[0] * g_target[scored]).sum() + (ref[1] * g_support[scored]).sum() + (ref[2] * c[scored]).sum()).backward()
+
+    leaf = logits.clone().requires_grad_(True)
+    target_log_probs, support_log_probs, entropy = fused_support_log_probs(
+        leaf * 1,
+        rows,
+        targets,
+        support,
+        tp_group=None,
+        temperature=0.8,
+        with_entropy=True,
+        entropy_over_support=entropy_over_support,
+        inplace_backward=inplace_backward,
+    )
+    scored_entropy = entropy if entropy_over_support else entropy * (torch.arange(rows.numel(), device="cuda") > 0)
+    (
+        (target_log_probs * g_target).sum() + (support_log_probs * g_support).sum() + (scored_entropy * c).sum()
+    ).backward()
+
+    torch.testing.assert_close(target_log_probs[scored], ref[0].detach(), rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(support_log_probs[scored], ref[1].detach(), rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(entropy[scored], ref[2].detach(), rtol=1e-5, atol=5e-5)
+    assert target_log_probs[0] == 0 and (support_log_probs[0] == 0).all()
+    torch.testing.assert_close(leaf.grad.float(), ref_leaf.grad.float(), rtol=1e-2, atol=1e-3)
+
+
+@pytest.mark.parametrize("entropy_over_support", [False, True], ids=["vocab_entropy", "support_entropy"])
+def test_support_mode_never_syncs_with_the_host(entropy_over_support):
+    """Forward and backward stay queued behind the model; a host sync would stall the stream."""
+    logits, rows, targets, support = _support_inputs(64, 50_001, 16, seed=40)
+    leaf = logits.clone().requires_grad_(True)
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        target_log_probs, support_log_probs, entropy = fused_support_log_probs(
+            leaf * 1,
+            rows,
+            targets,
+            support,
+            tp_group=None,
+            with_entropy=True,
+            entropy_over_support=entropy_over_support,
+        )
+        (target_log_probs.sum() + support_log_probs.sum() + entropy.sum()).backward()
+    finally:
+        torch.cuda.set_sync_debug_mode(0)
 
 
 @pytest.fixture
@@ -416,6 +511,19 @@ def test_the_op_holds_no_vocab_sized_buffer(nccl_world):
     assert extra["torch"] > 2 * logits_bytes
 
 
+def test_support_mode_on_a_rank_with_no_rows():
+    """A CP rank that scores no response row pads its supports to width 0; it must return empty
+    outputs that still give the logits a (zero) gradient."""
+    leaf = torch.randn(5, 4096, device="cuda", requires_grad=True)
+    empty = torch.empty(0, dtype=torch.long, device="cuda")
+    target_log_probs, support_log_probs, entropy = fused_support_log_probs(
+        leaf * 1, empty, empty, empty.view(0, 0), tp_group=None, with_entropy=True, inplace_backward=True
+    )
+    assert target_log_probs.numel() == 0 and support_log_probs.shape == (0, 0) and entropy.numel() == 0
+    (target_log_probs.sum() + entropy.sum()).backward()
+    assert leaf.grad is not None and (leaf.grad == 0).all()
+
+
 def _tp_worker(rank: int, world_size: int, port: int, padding: int, n_targets: int) -> None:
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(port)
@@ -467,6 +575,57 @@ def test_vocab_shards_over_nccl_combine_like_the_full_vocab(padding, n_targets):
     if torch.cuda.device_count() < _WORLD_SIZE:
         raise RuntimeError(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
     mp.spawn(_tp_worker, args=(_WORLD_SIZE, find_free_port(), padding, n_targets), nprocs=_WORLD_SIZE, join=True)
+
+
+def _tp_support_worker(rank: int, world_size: int, port: int, entropy_over_support: bool) -> None:
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = str(port)
+    torch.cuda.set_device(rank)
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    try:
+        vocab = 50_002
+        logits, rows, targets, support = _support_inputs(120, vocab, 32, seed=37)
+        scored = slice(1, None)
+        gen = torch.Generator(device="cuda").manual_seed(38)
+        g = torch.randn(support.shape, device="cuda", generator=gen)
+        c = torch.randn(rows.numel(), device="cuda", generator=gen)
+        c[0] = 0.0  # row 0 has no support
+        full = logits.clone().requires_grad_(True)
+        ref = _support_reference(full, rows[scored], targets[scored], support[scored], 0.9, entropy_over_support)
+        ((ref[0]).sum() + (ref[1] * g[scored]).sum() + (ref[2] * c[scored]).sum()).backward()
+
+        width = vocab // world_size
+        shard = logits[:, rank * width : (rank + 1) * width].clone().requires_grad_(True)
+        target_log_probs, support_log_probs, entropy = fused_support_log_probs(
+            shard * 1,
+            rows,
+            targets,
+            support,
+            tp_group=dist.group.WORLD,
+            temperature=0.9,
+            with_entropy=True,
+            entropy_over_support=entropy_over_support,
+            inplace_backward=True,
+        )
+        (target_log_probs.sum() + (support_log_probs * g).sum() + (entropy * c).sum()).backward()
+
+        torch.testing.assert_close(target_log_probs[scored], ref[0].detach(), rtol=1e-5, atol=2e-5)
+        torch.testing.assert_close(support_log_probs[scored], ref[1].detach(), rtol=1e-5, atol=2e-5)
+        torch.testing.assert_close(entropy[scored], ref[2].detach(), rtol=1e-5, atol=5e-5)
+        torch.testing.assert_close(
+            shard.grad.float(), full.grad[:, rank * width : (rank + 1) * width].float(), rtol=1e-2, atol=1e-3
+        )
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("entropy_over_support", [False, True], ids=["vocab_entropy", "support_entropy"])
+def test_support_shards_over_nccl_combine_like_the_full_vocab(entropy_over_support):
+    if torch.cuda.device_count() < _WORLD_SIZE:
+        raise RuntimeError(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
+    mp.spawn(
+        _tp_support_worker, args=(_WORLD_SIZE, find_free_port(), entropy_over_support), nprocs=_WORLD_SIZE, join=True
+    )
 
 
 if __name__ == "__main__":
