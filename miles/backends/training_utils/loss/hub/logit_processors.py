@@ -5,9 +5,11 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.data.context_parallel import (
+    CPLayout,
     LocalResponseRows,
     allgather_cp_redistribute,
     iter_local_response_rows,
+    sample_spans,
 )
 from miles.backends.training_utils.data.sampling_mask import (
     build_local_sampling_mask,
@@ -38,23 +40,16 @@ def _local_response_layout(
     logits: torch.Tensor,
     *,
     args: Namespace,
-    unconcat_tokens: list[torch.Tensor],
     total_lengths: list[int],
     response_lengths: list[int],
     max_seq_lens: list[int] | None,
-    include_response_indices: bool,
 ) -> tuple[torch.Tensor, Iterator[LocalResponseRows]]:
     """This rank's logits as ``[rows, V]``, and per sample the rows of them that score its response."""
     flat_logits = _flatten_logits(logits, args.qkv_format, max_seq_lens)
     layout = iter_local_response_rows(
         flat_logits.size(0),
-        qkv_format=args.qkv_format,
-        allgather_cp=args.allgather_cp,
-        unconcat_tokens=unconcat_tokens,
-        total_lengths=total_lengths,
-        response_lengths=response_lengths,
-        max_seq_lens=max_seq_lens,
-        include_response_indices=include_response_indices,
+        sample_spans(total_lengths, response_lengths, max_seq_lens),
+        CPLayout.current(args.qkv_format, allgather_cp=args.allgather_cp),
     )
     return flat_logits, layout
 
@@ -96,11 +91,9 @@ def _iter_response_chunks(
     logits, layout = _local_response_layout(
         logits,
         args=args,
-        unconcat_tokens=unconcat_tokens,
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
-        include_response_indices=include_response_indices,
     )
 
     if args.true_on_policy_mode:
@@ -111,24 +104,29 @@ def _iter_response_chunks(
         elif args.backend.fp16:
             logits = logits.to(torch.float16)
 
+    samples = zip(layout, unconcat_tokens, total_lengths, response_lengths, strict=True)
     if get_parallel_state().cp.size == 1 and args.qkv_format == "thd":
-        layout = list(layout)
+        samples = list(samples)
         split_sizes = []
         previous_end = 0
-        for row_ranges, _, _ in layout:
-            [(start, end)] = row_ranges
+        for sample_rows, *_ in samples:
+            [(start, end)] = sample_rows.row_ranges
             split_sizes.extend((start - previous_end, end - start))
             previous_end = end
         split_sizes.append(logits.size(0) - previous_end)
         response_logits = logits.split(split_sizes)[1::2]
-        for logits_chunk, (_, tokens_chunk, response_indices) in zip(response_logits, layout, strict=True):
-            yield logits_chunk, tokens_chunk, response_indices
+        for logits_chunk, (sample_rows, tokens, total_length, response_length) in zip(
+            response_logits, samples, strict=True
+        ):
+            tokens_chunk = sample_rows.tokens(tokens, total_length - response_length)
+            yield logits_chunk, tokens_chunk, (sample_rows.response_indices() if include_response_indices else ())
         return
 
-    for row_ranges, tokens_chunk, response_indices in layout:
-        pieces = [logits[row_start:row_end] for row_start, row_end in row_ranges]
+    for sample_rows, tokens, total_length, response_length in samples:
+        pieces = [logits[row_start:row_end] for row_start, row_end in sample_rows.row_ranges]
         logits_chunk = pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=0)
-        yield logits_chunk, tokens_chunk, response_indices
+        tokens_chunk = sample_rows.tokens(tokens, total_length - response_length)
+        yield logits_chunk, tokens_chunk, (sample_rows.response_indices() if include_response_indices else ())
 
 
 def get_responses(
@@ -425,15 +423,16 @@ def _fused_log_probs_and_entropy(
     flat_logits, layout = _local_response_layout(
         logits,
         args=args,
-        unconcat_tokens=unconcat_tokens,
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
-        include_response_indices=False,
     )
     row_ranges, targets, lengths = [], [], []
-    for sample_ranges, tokens_chunk, _ in layout:
-        row_ranges.extend(sample_ranges)
+    for sample_rows, tokens, total_length, response_length in zip(
+        layout, unconcat_tokens, total_lengths, response_lengths, strict=False
+    ):
+        tokens_chunk = sample_rows.tokens(tokens, total_length - response_length)
+        row_ranges.extend(sample_rows.row_ranges)
         targets.append(tokens_chunk)
         lengths.append(tokens_chunk.size(0))
     device = flat_logits.device

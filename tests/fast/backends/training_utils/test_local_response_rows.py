@@ -1,7 +1,6 @@
 """``iter_local_response_rows`` must name the rows that score each response, tiling it once over all ranks."""
 
 import random
-from types import SimpleNamespace
 
 import pytest
 import torch
@@ -58,7 +57,7 @@ class _Layout:
         return row - sum(self.total_lengths[:sample])
 
 
-def _check_layout(monkeypatch, *, mode, cp_size, prompt_lengths, response_lengths, qkv_format="thd"):
+def _check_layout(*, mode, cp_size, prompt_lengths, response_lengths, qkv_format="thd"):
     total_lengths = [p + r for p, r in zip(prompt_lengths, response_lengths, strict=True)]
     max_seq_len = max(total_lengths) + 3 if qkv_format == "bshd" else None
     if max_seq_len and mode == "allgather":
@@ -66,8 +65,6 @@ def _check_layout(monkeypatch, *, mode, cp_size, prompt_lengths, response_length
     tokens = _tokens(total_lengths)
     covered = [[] for _ in total_lengths]
     for cp_rank in range(cp_size):
-        parallel_state = SimpleNamespace(cp=SimpleNamespace(rank=cp_rank, size=cp_size))
-        monkeypatch.setattr(context_parallel, "get_parallel_state", lambda state=parallel_state: state)
         layout = _Layout(
             mode=mode,
             cp_rank=cp_rank,
@@ -78,29 +75,28 @@ def _check_layout(monkeypatch, *, mode, cp_size, prompt_lengths, response_length
         )
         samples = context_parallel.iter_local_response_rows(
             layout.num_rows,
-            unconcat_tokens=tokens,
-            total_lengths=total_lengths,
-            response_lengths=response_lengths,
-            qkv_format=qkv_format,
-            allgather_cp=mode == "allgather",
-            max_seq_lens=[max_seq_len] * len(total_lengths) if max_seq_len else None,
-            include_response_indices=True,
+            context_parallel.sample_spans(
+                total_lengths, response_lengths, [max_seq_len] * len(total_lengths) if max_seq_len else None
+            ),
+            context_parallel.CPLayout(qkv_format, cp_rank, cp_size, allgather_cp=mode == "allgather"),
         )
-        for sample, (row_ranges, sample_tokens, response_indices) in enumerate(samples):
-            rows = [row for start, end in row_ranges for row in range(start, end)]
-            assert all(0 <= start <= end <= layout.num_rows for start, end in row_ranges), row_ranges
-            assert sample_tokens.tolist() == [sample * _SAMPLE_STRIDE + layout.position(sample, r) + 1 for r in rows]
+        for sample, sample_rows in enumerate(samples):
+            rows = [row for start, end in sample_rows.row_ranges for row in range(start, end)]
+            assert all(0 <= start <= end <= layout.num_rows for start, end in sample_rows.row_ranges), sample_rows
             prompt_length = prompt_lengths[sample]
-            assert list(response_indices) == [layout.position(sample, r) + 1 - prompt_length for r in rows]
+            sample_tokens = sample_rows.tokens(tokens[sample], prompt_length)
+            assert sample_tokens.tolist() == [sample * _SAMPLE_STRIDE + layout.position(sample, r) + 1 for r in rows]
+            response_indices = sample_rows.response_indices()
+            assert response_indices == [layout.position(sample, r) + 1 - prompt_length for r in rows]
             covered[sample].extend(response_indices)
     for sample, response_length in enumerate(response_lengths):
         assert sorted(covered[sample]) == list(range(response_length)), f"sample {sample} not tiled once"
 
 
-def test_zigzag_half_without_response_rows_stays_in_bounds(monkeypatch):
+def test_zigzag_half_without_response_rows_stays_in_bounds():
     """Rank 1 holds chunks 1 and 2 of the first sample (tokens 25-74 of 100), all prompt: both of
     its halves are empty, and must stay empty at their own start rather than map to a negative row."""
-    _check_layout(monkeypatch, mode="zigzag", cp_size=2, prompt_lengths=[90, 10], response_lengths=[10, 30])
+    _check_layout(mode="zigzag", cp_size=2, prompt_lengths=[90, 10], response_lengths=[10, 30])
 
 
 def _random_lengths(rng, n_samples, cp_size, divisible_total):
@@ -126,12 +122,11 @@ def _random_lengths(rng, n_samples, cp_size, divisible_total):
         ("zigzag", 2, "bshd"),
     ],
 )
-def test_random_layouts(monkeypatch, seed, mode, cp_size, qkv_format):
+def test_random_layouts(seed, mode, cp_size, qkv_format):
     rng = random.Random(seed)
     divisible_total = mode == "allgather" and qkv_format == "thd"
     prompts, responses = _random_lengths(rng, rng.randint(1, 5), cp_size, divisible_total=divisible_total)
     _check_layout(
-        monkeypatch,
         mode=mode,
         cp_size=cp_size,
         prompt_lengths=prompts,
