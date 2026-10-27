@@ -275,8 +275,9 @@ Requirements:
   forwards `return_outputs_via_store`; a router that drops it fails the rollout.
 - An engine buffer (`--output-store-local-buffer-size`, default 16gb) that holds one
   response's arrays. Indexer top-k dominates, about 0.5 MB per token on DeepSeek-V3.2, so
-  16gb fits a 32k-token response; with `--rollout-max-context-len` set, a buffer too small
-  for that length is rejected at launch. Under RDMA, each engine pins its whole buffer in
+  16gb fits a 32k-token response. A buffer too small for the longest sequence that
+  `--rollout-max-context-len`, or else `--rollout-max-response-len`, allows is rejected at
+  launch. Under RDMA, each engine pins its whole buffer in
   host memory when it starts.
 - For RDMA engines, `device_name` in `--mooncake-store-init-kwargs`: SGLang reads no
   `MOONCAKE_*` variable.

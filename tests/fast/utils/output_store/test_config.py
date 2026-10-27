@@ -91,6 +91,21 @@ class TestLaunchChecks:
             launch.check(make_args(**dsa, output_store_local_buffer_size="15gb"))
         launch.check(make_args(**{**dsa, "rollout_max_context_len": None}, output_store_local_buffer_size="15gb"))
 
+    def test_without_a_context_length_the_response_length_bounds_the_indexer_top_k(self, launch):
+        dsa = {
+            "use_rollout_indexer_replay": True,
+            "rollout_indexer_topk_num_streams": 61,
+            "rollout_indexer_topk_width": 2048,
+            "rollout_max_response_len": 32768,
+        }
+        # A response cut at 32768 tokens stores at least 32768 rows, as a 32769-token context does.
+        launch.check(make_args(**dsa))
+        with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
+            launch.check(make_args(**dsa, output_store_local_buffer_size="15gb"))
+        # A 2048-token prompt bound adds its rows: 34815 rows no longer fit the 16gb default.
+        with pytest.raises(ValueError, match="cannot hold the 17397473280 bytes of indexer top-k"):
+            launch.check(make_args(**dsa, rollout_max_prompt_len=2048))
+
     def test_the_launch_facts_owned_elsewhere_are_checked_and_reported_together(self, launch, monkeypatch):
         launch.pd = launch.multi_policy = True
         launch.sglang_has_store = False
