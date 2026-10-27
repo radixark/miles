@@ -710,7 +710,7 @@ async def test_session_rollout_metrics_include_node_excluded_by_max_seq_len(spec
     (sample,) = reply.samples
 
     assert sample.tokens == [1, 2, 3, 10, 11]
-    assert sample.status == Sample.Status.COMPLETED
+    assert sample.status == Sample.Status.TRUNCATED  # turn 2 was dropped, so the session was cut short
     assert sample.spec_info.to_dict() == {
         "spec_num_correct_drafts": 1,
         "spec_num_proposed_drafts": 2,
