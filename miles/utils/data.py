@@ -327,9 +327,14 @@ def process_rollout_data(
         get_result = store.get(rollout_data_ref[dp_rank])
         rollout_data = dict(get_result.value)
 
-    # In place on this shard's own dict: get_result.value stays as stored.
-    materialize_store_columns(args, rollout_data, read=output_store_read)
-    return process_rollout_data_shard(args, rollout_data), get_result
+    try:
+        # In place on this shard's own dict: get_result.value stays as stored.
+        materialize_store_columns(args, rollout_data, read=output_store_read)
+        return process_rollout_data_shard(args, rollout_data), get_result
+    except BaseException as e:
+        # The caller releases get_result only once it is returned: an FT retry would leak a buffer per attempt.
+        get_result.__exit__(type(e), e, e.__traceback__)
+        raise
 
 
 def _assert_witness_rows(*, total_rows: int, shards: list[dict[str, Any]]) -> None:

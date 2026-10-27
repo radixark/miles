@@ -25,6 +25,7 @@ from miles.ray.rollout.train_data_conversion import (
 from miles.rollout.generate_utils import tool_call_utils
 from miles.utils import object_store
 from miles.utils.data import process_rollout_data
+from miles.utils.object_store import ObjectStoreGetResult
 from miles.utils.output_store.plan import MASK_SUPPORT_LOGPROBS, StorePlanError
 from miles.utils.output_store.trainer_columns import materialize_store_columns
 
@@ -170,3 +171,26 @@ def test_every_rank_materializes_its_own_shard(monkeypatch, delay_split):
             assert_same_column(shard[name], column, name)
         # The stored value keeps its plans: an FT retry reads them again.
         assert "rollout_store_plan" in result.value and len(calls) == 1
+
+
+def test_a_failed_store_read_releases_the_shard(monkeypatch):
+    store = FakeObjectStore()
+    released = []
+    get = store.get
+    monkeypatch.setattr(store, "get", lambda ref: ObjectStoreGetResult(get(ref).value, release_fn=released.append))
+    monkeypatch.setattr(object_store, "_INSTANCE", store)
+    args, _, samples, _, _ = rollout(4)
+    args.delay_split_train_data_by_dp = False
+    config = make_train_parallel_config(dp_size=DP_SIZE)
+    data = convert_samples_to_train_data(args, samples, {}, None, None)
+    ref = [store.put(value=shard) for shard in split_train_data_by_dp(args, data, config)]
+
+    def read(requests):
+        raise TimeoutError("output store read timed out")
+
+    with pytest.raises(TimeoutError):
+        process_rollout_data(
+            args, ref, dp_rank=0, train_parallel_config=config, witness_info=None, output_store_read=read
+        )
+    # The caller never got the result to release: an FT retry would leak the shard's buffer.
+    assert len(released) == 1
