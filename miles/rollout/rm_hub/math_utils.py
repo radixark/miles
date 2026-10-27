@@ -328,6 +328,9 @@ def count_unknown_letters_in_expr(expr: str):
 
 
 def should_allow_eval(expr: str):
+    # `**` is the same power operator as `^` for the parser, so check both spellings (with any
+    # surrounding spaces) with the guards below.
+    expr = re.sub(r"\s*(?:\*\*|\^)\s*", "^", expr)
     # we don't want to try parsing unknown text or functions of more than two variables
     if count_unknown_letters_in_expr(expr) > 2:
         return False

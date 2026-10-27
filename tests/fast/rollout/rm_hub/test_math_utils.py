@@ -8,6 +8,7 @@ from miles.rollout.rm_hub.math_utils import (
     grade_answer_verl,
     last_boxed_only_string,
     remove_boxed,
+    should_allow_eval,
 )
 
 
@@ -108,6 +109,14 @@ class TestGradeAnswerSympy:
     )
     def test_grade_answer_sympy(self, given, ground_truth, expected):
         assert grade_answer_sympy(given, ground_truth) == expected
+
+    @pytest.mark.parametrize("expr", ["9^9^9", "9**9**9", "2**10", "(1)-(99 ** 99 ** 99)"])
+    def test_huge_powers_are_not_evaluated(self, expr):
+        # `**` must hit the same guard as `^`; otherwise sympy evaluates the power and stalls the reward worker.
+        assert not should_allow_eval(expr)
+
+    def test_huge_power_answer_is_graded_quickly(self):
+        assert grade_answer_verl(r"\boxed{9**9**9}", r"\frac{1}{3}") is False
 
 
 class TestGradeAnswerVerl:
