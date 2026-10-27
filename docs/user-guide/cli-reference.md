@@ -85,7 +85,7 @@ then push up until you OOM.
 | `--rollout-max-response-len` | `–` | Max tokens per response. |
 | `--rollout-stop-token-ids` | model default | Stop token IDs. Override when generations don't stop. |
 | `--apply-chat-template` | off | Apply the tokenizer's chat template. |
-| `--rollout-shuffle` | off | Shuffle prompts each rollout. |
+| `--rollout-shuffle` | on | Shuffle prompts once per epoch. `--no-rollout-shuffle` keeps file order. |
 
 ### Optimizer
 
@@ -174,7 +174,7 @@ Sections mirror the launch-script argument groups.
 | `--label-key` | str | `None` | JSONL key to `Sample.label`. |
 | `--metadata-key` | str | `metadata` | JSONL key to `Sample.metadata`. |
 | `--apply-chat-template` | flag | off | Apply tokenizer chat template. |
-| `--rollout-shuffle` | flag | off | Shuffle prompts each rollout. |
+| `--rollout-shuffle` | flag | on | Shuffle prompts once per epoch (seeded by `--rollout-seed`). `--no-rollout-shuffle` keeps file order. |
 | `--num-rollout` | int | – | Total rollout iterations. If unset, derived from dataset size. |
 | `--rollout-batch-size` | int | – | Prompts per rollout. |
 | `--n-samples-per-prompt` | int | `1` | Responses per prompt. |

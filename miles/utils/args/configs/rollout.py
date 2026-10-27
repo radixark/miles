@@ -379,8 +379,14 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
     ] = None
     rollout_shuffle: A[
         bool,
-        Arg(help="Whether to shuffle the prompts during rollout."),
-    ] = False
+        Arg(
+            action=argparse.BooleanOptionalAction,
+            help=(
+                "Whether to shuffle the prompts once per epoch during rollout (seeded by --rollout-seed). "
+                "Pass --no-rollout-shuffle to read the prompts in file order."
+            ),
+        ),
+    ] = True
     rollout_seed: A[
         int,
         Arg(
