@@ -81,7 +81,8 @@ def apply_length_penalty(
                 )
                 if length < 0:
                     raise ValueError("generated token count must be non-negative")
-                correct.append((siblings, length))
+                if length > 0:
+                    correct.append((siblings, length))
         if not correct:
             continue
         reference = max(minimum, min(length for _, length in correct))

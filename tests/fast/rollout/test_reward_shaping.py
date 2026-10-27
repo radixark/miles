@@ -40,7 +40,7 @@ def test_correct_only_and_configurable_exponent(coeff: float, expected: float) -
 def test_minimum_protects_zero_and_short_trajectories() -> None:
     samples = [Sample(group_index=0, response_length=length, reward=1.0) for length in [0, 20, 100, 200]]
     assert _shape(_args(length_penalty_min_tokens=100), samples) == [1, 1, 1, 0.5]
-    assert _shape(_args(), [samples[0], samples[3]]) == [1, 0.005]
+    assert _shape(_args(), [samples[0], samples[3]]) == [1, 1]
 
 
 def test_ties_single_correct_and_no_correct() -> None:
@@ -91,6 +91,17 @@ def test_removed_samples_contribute_no_tokens() -> None:
         Sample(group_index=0, rollout_id=2, response_length=200, reward=1),
     ]
     assert _shape(_args(), samples) == [1, 1, 0.5]
+
+
+@pytest.mark.parametrize("removed", [False, True])
+def test_zero_trainable_rollout_does_not_set_reference(removed: bool) -> None:
+    samples = [
+        Sample(group_index=0, rollout_id=1, response_length=100, loss_mask=[0] * 100, remove_sample=removed, reward=1),
+        Sample(group_index=0, rollout_id=2, response_length=100, reward=1),
+        Sample(group_index=0, rollout_id=3, response_length=200, reward=1),
+    ]
+    assert _shape(_args(), samples) == [1, 1, 0.5]
+    assert _shape(_args(), samples[:1]) == [1]
 
 
 def test_dict_reward_and_inconsistent_siblings() -> None:
