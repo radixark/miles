@@ -238,7 +238,9 @@ def _check_store_plans(args, samples: list[Sample]) -> None:
             )
     for field in FIELDS:
         # The fields are the same on every plan, so the first plan speaks for all.
-        if field.required_by and getattr(args, field.required_by, False) and field.name not in names:
+        if (
+            field.required_by and getattr(args, field.required_by, False) and field.name not in names
+        ):  # config-access-exempt: each replay field names the launch flag that requires it
             raise StorePlanError(
                 f"--{field.required_by.replace('_', '-')} is set but the samples' output store plans have no {field.name}."
             )
