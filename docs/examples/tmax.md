@@ -332,18 +332,23 @@ For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi
   every sample, so its advantage is 0, and keeps the task reward as `raw_reward` (`rollout/raw_reward`).
   `rollout/advantages` is then the mean OPD term, and `tmax_metrics` leaves out `rollout/trained/advantage_*`.
   The launcher requires `filter_zero_std: false` with it, since every group carries signal.
-- **Teacher on an SGLang server** (`opd_teacher_mode: sglang`; `auto`, the default, picks it when the teacher's
+- **Teacher on SGLang servers** (`opd_teacher_mode: sglang`; `auto`, the default, picks it when the teacher's
   architecture differs from the student's, as for `allenai/tmax-9b` into a 4B). Before submitting the job the launcher
-  starts `sglang.launch_server` on the node's last GPU, which Ray is started without, and waits up to 30 minutes for
-  it to answer, or the launch fails. `generate.generate_with_teacher` wraps Miles' agentic generate function: it sends
-  every collected sample with a task reward to the teacher (Miles' own teacher request, `--rm-url`) and stores the
-  response tokens' log-probs in `sample.teacher_log_probs`, which Miles trains on as the Megatron teacher's. (Not a
-  reward function: session server v2 returns samples with the agent's reward set, and Miles calls `--custom-rm-path`
-  only for samples without one, so Miles' SGLang-mode reward function never runs here.) The task reward stays the reward, so
+  starts `opd_teacher_gpus` SGLang servers of one GPU each (SGLang TP > 1 produces garbage for Qwen3.5), lists them in
+  `<output_dir>/<exp_name>/opd-teachers.json`, and waits up to 30 minutes for every one to answer, or the launch fails.
+  Each server is a detached Ray actor holding its GPU, placed on the last nodes in the order Miles' placement group
+  sorts nodes (by IP), round-robin: on several nodes those are the rollout nodes, so the placement group, created next
+  on the GPUs left, still gives training its whole nodes. The teacher GPUs come out of the rollout side's
+  (`prod_4node_gateway_opd_9b_to_4b.yaml`: 16 training + 14 rollout + 2 teacher GPUs). `generate.generate_with_teacher`
+  wraps Miles' agentic generate function: it sends every collected sample with a task reward to the least busy
+  teacher server (Miles' own teacher request, with that server as `--rm-url`) and stores the response tokens'
+  log-probs in `sample.teacher_log_probs`, which Miles trains on as the Megatron teacher's. (Not a reward function:
+  session server v2 returns samples with the agent's reward set, and Miles calls `--custom-rm-path` only for samples
+  without one, so Miles' SGLang-mode reward function never runs here.) The task reward stays the reward, so
   `opd_pure`, additive OPD, the filters and the metrics work as in Megatron mode; Miles' documented SGLang-mode reward
   function and post-process replace it with 0. A teacher request is retried after `opd_teacher_timeout_s` (1800) or an
-  error, and the third failure fails the rollout. One node and one teacher GPU only (SGLang TP > 1 produces garbage for
-  Qwen3.5).
+  error, and the third failure fails the rollout. Colocated (synchronous) training with an SGLang teacher is one node
+  only.
 - SGLang serves the tmax checkpoints, which have no vision tower or image-processor config, with `--language-only`
   and the student's directory as `--tokenizer-path`: SGLang loads Qwen3.5's image processor from there, the processor
   configs are identical across Qwen3.5 sizes, and the vocabulary is shared (the tmax tokenizers add seven unused audio

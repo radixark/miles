@@ -26,7 +26,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Fully-async throughput metrics | `perf/rollout_time` measures the buffer drain, so `perf/tokens_per_gpu_per_sec` is meaningless and some `perf/longest_*` go negative; `rollout/zero_std/*` is computed after the filter and is always 0. Fix upstream or hide |
 | open-instruct metrics worth porting | Max and std of the train/rollout log-prob gap (`debug/vllm_vs_local_logprob_diff_{max,std}`): a change in Miles's loss, where only the mean is reduced; cumulative token counter |
 | Podman 5.6.2 and crun 1.14.3 in the image | apt's podman 4.9 breaks exec framing under load (44 of 70 step failures in one 4-node run). Plan: a thin image derived from the official Miles image with podman, crun and docker-py baked in, launched with beaker-gantry |
-| OPD at production scale | open-instruct's terminal OPD runs are pure OPD on 4 nodes at 64k: 8 prompts x 32 samples, `--async_steps 4`, DPPO, lr 1e-6 (`scripts/general_agent/terminal/rl/opd/` on branch `opd`). Write the config, and run the 2B smoke (`smoke_opd_2b.yaml`), the only Beaker check of `scripts/models/qwen3.5-2B.py`. With an SGLang teacher (cross size) that also needs several teacher servers behind a router (one GPU each; prod scores about 512 x 30k tokens per step) and a teacher placement across nodes, since `opd_teacher_mode: sglang` is single-node today |
+| OPD at production scale | open-instruct's terminal OPD runs are pure OPD on 4 nodes at 64k: 8 prompts x 32 samples, `--async_steps 4`, DPPO, lr 1e-6 (`scripts/general_agent/terminal/rl/opd/` on branch `opd`). Same size: `prod_4node_gateway_opd_9b.yaml` (tmax-9b into the 9B, Megatron teacher) runs. Cross size: run `smoke_opd_9b_to_4b_sglang_2teachers_jupiter.yaml`, then `prod_4node_gateway_opd_9b_to_4b.yaml`, whose first steps are the first run of the teachers' cross-node placement; size `opd_teacher_gpus` from its teacher latency (2 is an estimate). `prod_4node_gateway_opd_27b_to_9b.yaml` is written, not run. Run the 2B smoke (`smoke_opd_2b.yaml`), the only Beaker check of `scripts/models/qwen3.5-2B.py` |
 | Agents near their sandboxes | Every agent process runs on the head node, which also trains; open-instruct spreads its environment actors over the nodes. Run agents on the node of their sandbox |
 
 ## P2
@@ -84,6 +84,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Pure on-policy distillation (`opd_pure`, open-instruct's `--opd_pure`), and recipes for `allenai/tmax-2b` and `hamishivi/Qwen3.5-2B` | `107a60581c`, `eb48263f8d`, `b7fdc6b939` |
 | CUDA 13 images on Jupiter's and Ceres' 570 drivers (forward compatibility) | `f5cd9bd69e` |
 | OPD with the teacher on an SGLang server (`opd_teacher_mode`), for teachers of another size: `allenai/tmax-9b` into a 4B | `db7fb3bbed`, `fd80e1e137`, `a2c533ba6b` |
+| Several SGLang teacher servers (`opd_teacher_gpus`), Ray actors on the rollout nodes, the least busy one per sample; the `tmax-27b` recipe | `ad411895fd`, `7dbeaf0fb2` |
 
 ## Decisions taken
 
