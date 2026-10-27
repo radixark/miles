@@ -38,6 +38,8 @@ def _args(**overrides: object) -> Namespace:
         opd_log_prob_top_k=0,
         opd_top_k_strategy="only-student",
         score_centering_is="none",
+        sampler_kl_coef=0.0,
+        sampler_kl_estimator="head_tail",
         score_centering_tis_clip=2.0,
         score_centering_mis_low=0.5,
         score_centering_mis_high=5.0,

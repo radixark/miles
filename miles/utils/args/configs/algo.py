@@ -98,6 +98,17 @@ class AlgoConfig(BaseConfig):
     score_centering_tis_clip: A[float, Arg()] = 2.0
     score_centering_mis_low: A[float, Arg()] = 0.5
     score_centering_mis_high: A[float, Arg()] = 5.0
+    sampler_kl_coef: A[
+        float,
+        Arg(help="Constant KL(sampler || trainer) coefficient for score centering, including fresh rollouts."),
+    ] = 0.0
+    sampler_kl_estimator: A[
+        str,
+        Arg(
+            choices=["head_tail", "sampled_k1", "sampled_k3"],
+            help="Sampler KL estimator: top-k head with modeled tail, or sampled-token k1/k3 (uncapped).",
+        ),
+    ] = "head_tail"
     custom_loss_function_path: A[
         CustomFunctionConfig | None,
         Arg(

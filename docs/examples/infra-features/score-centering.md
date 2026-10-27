@@ -37,6 +37,56 @@ Reference-KL tokens with non-finite probabilities or absolute log-probability ra
 
 Training logs include `train/train_rollout_logprob_abs_diff` and `train/train_rollout_kl`. The latter uses the same masked, sampled-token k3 estimator of KL(rollout || train) as the policy loss. It is a detached diagnostic and is emitted even when reference-KL regularization is disabled.
 
+## Sampler KL (demo)
+
+Add `--sampler-kl-coef 0.03` to optimize `KL(q_sampler || p_trainer)` alongside
+SFC. The coefficient defaults to zero and is constant when enabled, including
+fresh rollouts. Sampler probabilities are detached; the trainer remains
+differentiable. KL is independent of reward advantages, TIS/MIS and reference
+KL, and uses the existing token or equal-response reduction.
+
+Choose `--sampler-kl-estimator`:
+
+- `head_tail` (default): exact transported top-k head plus a sampler tail modeled
+  as proportional to the trainer tail. This approximates an arbitrary true tail.
+- `sampled_k1`: `-log_r`, where `log_r = log(p[token]) - stop_gradient(log(q[token]))`.
+- `sampled_k3`: `expm1(log_r) - log_r`, with gradients through the uncapped ratio.
+
+Both sampled choices use actual generated-token probabilities. Masked tokens are
+zeroed before arithmetic; active nonfinite sampled ratios or k3 overflow raise
+an error (including the companion k3 calculation in k1 mode). A single k1 value
+can be negative and its gradient need not vanish when p=q; both sampled
+estimators match fixed-history KL in expectation over q. k3 has zero per-token
+loss and gradient when p=q. SFC still needs its candidate head in all modes.
+
+`train/sampler_kl_loss` and `train/sampler_kl_weighted_loss` report the raw and
+weighted term. `train/train_rollout_kl` remains a separate detached diagnostic.
+Inspired by the [SFC + trainer-generator KL proposal](https://huggingface.co/blog/NormalUhr/sfc-kl);
+this demo uses constant beta rather than the proposal's age-dependent schedule.
+
+### Preliminary 32-update experiments
+
+Qwen3.6-35B-A3B (BF16 trainer / FP8 sampler), INTELLECT-2 verifiable math,
+SFC K128, TIS off, beta 0.03 including age zero, equal-response reduction,
+GBS256 (32 prompts x 8 responses), LR 1e-6, seed 1234. Each arm starts fresh and
+uses the same first 1,024 training prompts once (8,192 responses). Greedy
+held-out evaluation uses 128 questions at updates 0/16/32.
+
+| Sampler-KL estimator | Update 0 | Update 16 | Update 32 |
+| --- | ---: | ---: | ---: |
+| Top-k / `head_tail` | 80/128 (62.50%) | 86/128 (67.19%) | 91/128 (71.09%) |
+| `sampled_k1` | 76/128 (59.38%) | 79/128 (61.72%) | 91/128 (71.09%) |
+| `sampled_k3` | 75/128 (58.59%) | 85/128 (66.41%) | 90/128 (70.31%) |
+
+These are single-seed observations from E011 G/L/M, with independently generated
+responses and different baseline scores. Top-k uses the first 32 updates of its
+128-update run; k1/k3 stopped at 32. These results do not establish a method
+ranking or improvement over an SFC-only control. The experiments used the
+historical experiment fork, not this rebased demo. [Aggregate records and
+terminal-receipt hashes](sampler_kl_32_updates.json) preserve the reported points.
+[Per-update metrics](https://github.com/radixark/miles/blob/main/examples/infra_features/score_centering/sampler_kl_32_updates.csv) include all 32 normal updates per
+arm: raw/weighted KL, PG/total loss, entropy, mismatch and gradient norm.
+
 ## How it works
 
 When the rollout distribution differs from the current trainer, even a constant reward can produce an unwanted average policy update. Score centering subtracts the expected weighted score under the rollout distribution.
