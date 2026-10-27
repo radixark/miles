@@ -250,6 +250,14 @@ Trained reward 0 and advantage = minus the reverse KL in both, as with the Megat
 on bugs since fixed: the teacher was never called (`01M5MX4X615AD5ZGR0KF36DJPY`, see Findings) and the wrapper lacked
 the agentic generate's flags (`01M5MY8EV6WAHDYCSSZYGNF4YN`).
 
+With two teacher servers (`opd_teacher_gpus: 2`, Ray actors of one GPU each: 1 training + 1 rollout + 2 teacher GPUs,
+`smoke_opd_9b_to_4b_sglang_2teachers_jupiter.yaml`, `01M5XS754X4TP6GRTAXJHMWZH7`, commit `6f247ed426`), the same
+cross-size pair trained 3 steps: reverse KL 0.167 / 0.179 / 0.209, grad_norm 4.7 / 4.1 / 5.1, train/rollout gap
+0.009-0.013, trained reward 0. The launcher listed both servers (ports 30100 and 30101) and every one of the 67
+teacher requests was answered (64 by the first server, 3 by the second: at this smoke's concurrency requests rarely
+overlap, and the least-busy choice breaks ties toward the first server). The teachers' placement on other nodes
+than the head first runs on several nodes.
+
 For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi/Qwen3.5-2B`'s own trajectories
 (8 tasks x 2 at 16k, thinking off) with `allenai/tmax-2b` through vLLM gave 0.48 nats per assistant token (p90 1.75,
 15% of tokens above 1 nat). Each 2B model solved 1 of the 16 episodes.
