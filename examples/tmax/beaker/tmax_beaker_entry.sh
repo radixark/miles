@@ -146,10 +146,15 @@ PY
         mkdir -p "$(dirname "$GATEWAY_LOG")"
         echo "literegistry gateway log: $GATEWAY_LOG"
         (
+            # Under set -e a failed redirect ended this loop, so the gateway never started (2026-10-23: weka full,
+            # three attempts lost to the 30 min replica wait). Keep restarting, and log to /tmp while weka refuses.
+            set +e
             while true; do
+                log=$GATEWAY_LOG
+                { : >> "$log"; } 2> /dev/null || log=/tmp/$(basename "$GATEWAY_LOG")
                 "$LR_VENV/bin/python" -m literegistry.gateway --registry="$GATEWAY_REGISTRY" --host=127.0.0.1 \
-                    --port="$GATEWAY_PORT" --workers="${GATEWAY_WORKERS:-8}" --register=False >> "$GATEWAY_LOG" 2>&1
-                echo "literegistry gateway exited; restarting in 5 s (log: $GATEWAY_LOG)"
+                    --port="$GATEWAY_PORT" --workers="${GATEWAY_WORKERS:-8}" --register=False >> "$log" 2>&1
+                echo "literegistry gateway exited; restarting in 5 s (log: $log)"
                 sleep 5
             done
         ) &
