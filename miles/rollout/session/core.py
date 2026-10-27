@@ -5,7 +5,7 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 - `chat_completions` omits choice `meta_info` from client replies, and choice `logprobs` unless the client's request asked for them, without modifying the stored response; `SessionRecord` retains both for sample collection and `GET /sessions/{id}`.
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
-- ``collect_samples`` captures committed session state, then assembles and encodes it off the event loop; deterministic assembly failures return 422 with the assertion text.
+- ``collect_samples`` captures committed session state, then assembles and encodes it off the event loop; deterministic assembly failures return 422 with the assertion text, and a broken output store contract raises ``OutputStoreContractError`` (424).
 """
 
 import asyncio
@@ -22,6 +22,7 @@ from starlette.responses import Response
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
+    OutputStoreContractError,
     SessionNotFoundError,
     TokenizationError,
     UpstreamGenerationAbortedError,
@@ -37,6 +38,7 @@ from miles.rollout.session.samples.merge import (
     truncate_samples_by_total_tokens,
 )
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.utils.output_store.plan import StorePlanError
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +289,8 @@ class SessionCore:
     async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
         """Assemble training Samples from this session's records.
 
-        Validation failures return 422; unexpected errors propagate.
+        Validation failures return 422; a broken output store contract raises ``OutputStoreContractError``;
+        unexpected errors propagate.
         """
         session = self.registry.get_session(session_id)
         async with session.lock:
@@ -325,6 +328,9 @@ class SessionCore:
             else:
                 samples = [merge_samples(samples, tokenizer)]
             adopt_session_records(samples[0], session.records)
+        except StorePlanError as exc:
+            # Not a 422: the rollout raises it again and stops, as it does for one from /generate.
+            raise OutputStoreContractError(str(exc)) from exc
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
         return _samples_response(encode_samples(samples, metadata, fields=fields))

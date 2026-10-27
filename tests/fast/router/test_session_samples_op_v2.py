@@ -28,7 +28,7 @@ from tests.fast.fixtures.session_fixtures import make_session_server_config
 from tests.fast.rollout.session.test_samples import _make_record, _routed_experts, _store_record
 from tests.fast.utils.output_store.test_plan import fake_store_refs
 
-from miles.rollout.session.errors import TokenizationError
+from miles.rollout.session.errors import OutputStoreContractError, TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
@@ -36,6 +36,7 @@ from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.rollout.session.v2.session_state import SessionRegistryV2
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.function_registry import function_registry
+from miles.utils.output_store.plan import OUTPUT_STORE_REF_KEY
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
@@ -471,6 +472,16 @@ async def test_store_branched_tree_materializes_each_leaf(monkeypatch):
         assert sample.tokens == leaf.token_ids
         assert np.array_equal(_routed_experts(sample, objects), np.concatenate([shared, leaf_rows[name]]))
         assert [ref.key for ref in sample.rollout_store_plan.owned_refs] == ["root", name]
+
+
+async def test_missing_store_ref_is_an_output_store_contract_error(core, monkeypatch):
+    """A response that asked for the output store came back without a ref, as when the router drops the opt-in."""
+    fake_store_refs(monkeypatch)
+    record, _ = _store_record("turn1", [1, 2, 3], [10, 11])
+    del record.response["choices"][0]["meta_info"][OUTPUT_STORE_REF_KEY]
+    sid = await _make_session(core, [record], [1, 2, 3, 10, 11])
+    with pytest.raises(OutputStoreContractError, match="output store ref has none"):
+        await _collect_via_op(core, sid)
 
 
 async def test_addition_gap_returns_422(addition_core):

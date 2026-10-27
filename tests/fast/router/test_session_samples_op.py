@@ -27,6 +27,7 @@ from tests.fast.rollout.session.test_samples import _make_record, _routed_expert
 from tests.fast.utils.output_store.test_plan import fake_store_refs
 
 from miles.rollout.session.core import SessionCore
+from miles.rollout.session.errors import OutputStoreContractError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
@@ -447,13 +448,13 @@ async def test_store_assembled_sample_matches_full_reference(
     assert [ref.key for ref in m.rollout_store_plan.owned_refs] == ["turn1", "turn2"]
 
 
-async def test_store_gap_returns_422(addition_core, monkeypatch):
+async def test_store_gap_is_an_output_store_contract_error(addition_core, monkeypatch):
+    """Unlike the inline gap's 422, a StorePlanError reaches the client as 424, which stops the rollout."""
     fake_store_refs(monkeypatch)
     records, _ = _two_turn_store_records(turn2_start_len=5)
     sid = await _make_session(addition_core, records, _ACCUMULATED)
-    status, payload = await _collect_via_op(addition_core, sid)
-    assert status == 422
-    assert "continues from row 5, but only 4 rows precede it" in payload.decode()
+    with pytest.raises(OutputStoreContractError, match="continues from row 5, but only 4 rows precede it"):
+        await _collect_via_op(addition_core, sid)
 
 
 # ── empty_reason discriminator ──

@@ -8,6 +8,7 @@ import random
 from argparse import Namespace
 
 from miles.rollout.generate_utils.sampling_mask import should_return_sampling_mask
+from miles.rollout.session.errors import OutputStoreContractError
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
     COMPUTED_FIELDS_V2,
@@ -16,7 +17,8 @@ from miles.rollout.session.samples.codec import (
     decode_samples_and_merge_input_sample,
 )
 from miles.rollout.session.types import CreateSessionRequest
-from miles.utils.http_utils import post, post_buffer_no_retry
+from miles.utils.http_utils import PostStatusError, post, post_buffer_no_retry
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -101,6 +103,11 @@ class OpenAIEndpointTracer:
                 body,
                 timeout=_SESSION_REQUEST_TIMEOUT,
             )
+        except PostStatusError as exc:
+            if exc.status == OutputStoreContractError.status_code:
+                # Raised again here so the rollout stops, as for a StorePlanError on /generate.
+                raise StorePlanError(f"session {self.session_id}: {exc.body}") from exc
+            raise
         finally:
             try:
                 await asyncio.wait_for(
