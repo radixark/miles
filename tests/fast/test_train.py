@@ -418,6 +418,6 @@ class TestOutputStoreRelease:
 
         components.rollout_executor.release = FakeRemoteMethod(release)
 
-        await with_disposer(train_driver.train, args)
+        await with_disposer(train_driver.train, _startup_info(args))
 
         assert trained_at_release == [(0, [0]), (1, [0, 1]), (2, [0, 1, 2])]
