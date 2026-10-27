@@ -1,6 +1,6 @@
 """The ``--use-output-store`` switch: its launch checks and the run's store clients.
 
-``OutputStoreConfig`` (``miles/utils/args/configs/output_store.py``) declares its flags.
+``RolloutRelatedConfig`` (``miles/utils/args/configs/rollout.py``) declares its flags, next to the object store's.
 
 With the switch, training requests that ask for routed experts, indexer top-k or the sampling mask
 also ask SGLang to put those arrays in the run's Mooncake (``radix_transfer_plugins``) and return a
