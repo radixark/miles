@@ -18,7 +18,7 @@ def materialize_store_columns(args: Namespace, rollout_data: dict, *, read: Call
     """Replace the shard's rollout_store_plan column with the replay columns the inline path carries.
 
     ``read`` takes ``[(ref, names)]`` and returns one stash per entry, as ``OutputStore.read_many``
-    bound to its stash type and buffer size does. Reads again on every call, so an FT retry works.
+    bound to its stash type does. Reads again on every call, so an FT retry works.
     """
     entries = rollout_data.pop("rollout_store_plan", None)
     if entries is None:
