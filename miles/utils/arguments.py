@@ -26,6 +26,7 @@ from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespa
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
@@ -863,6 +864,7 @@ def miles_validate_args(args):
                 )  # config-access-exempt: attribute selected at runtime from k
             setattr(args, k, v)
 
+    validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode
     if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
