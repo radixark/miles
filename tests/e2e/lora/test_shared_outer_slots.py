@@ -138,7 +138,9 @@ def run_worker(directory, tp):
     ]
     for slot, rank in enumerate((8, 4, 8)):
         init_adapter_slot(model, slot, rank=rank, alpha=rank * 2, seed=100 + slot)
-    args = Namespace(optimizer="adam", bf16=True, use_gloo_process_groups=True, lr=ADAM["learning_rate"])
+    args = Namespace(
+        backend=Namespace(optimizer="adam", bf16=True, use_gloo_process_groups=True, lr=ADAM["learning_rate"])
+    )
     optimizers = {slot: SlotOptimizer(args, model, slot) for slot in range(3)}
     params = [p for slot in range(3) for p in adapter_slot_parameters(model, slot)]
     for layer in expert_model.layers:
