@@ -228,7 +228,7 @@ Bridge-only.
 | Topology | Adapter transport | Requirements |
 |---|---|---|
 | Colocated | Local tensor serialization / CUDA IPC | Add `--colocate`; large-model recipes generally also use `--lora-base-cpu-backup`. Pipeline parallel adapter shards are assembled before the load. |
-| Disaggregated, including multi-node | NCCL broadcast to remote SGLang engines | Use `--update-weight-transfer-mode broadcast`. Pipeline parallelism is validated with native LoRA; with Bridge, use `--pipeline-model-parallel-size 1`. |
+| Disaggregated, including multi-node | NCCL broadcast to remote SGLang engines | Use `--update-weight-transfer-mode broadcast`. |
 
 On SGLang attention DP (`--sglang-attn-dp-size N`, or the deprecated
 `--sglang-enable-dp-attention --sglang-dp-size N`), SGLang serves LoRA only from
