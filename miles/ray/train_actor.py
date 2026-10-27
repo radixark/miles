@@ -24,7 +24,7 @@ from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import init_gloo_group, one_rank_at_a_time
 from miles.utils.dp_schedule import TrainParallelConfig
-from miles.utils.flops_utils import fwd_tflops_per_gpu, model_flops_from_hf_config
+from miles.utils.flops_utils import ModelFlops, model_flops_from_hf_config
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_utils.config import load_hf_config
@@ -123,14 +123,33 @@ class TrainRayActor(NodeProbeMixin):
         object_store.init_instance(args)
 
     @functools.cached_property
-    def _fwd_tflops(self) -> Callable[[list[int]], float] | None:
-        """Per-GPU forward TFLOPs of a list of sequence lengths, for MFU; None when the config cannot be sized."""
+    def _model_flops(self) -> ModelFlops | None:
+        """The FLOPs model of the trained HF config, for MFU; None when the config cannot be sized."""
         try:
-            model_flops = model_flops_from_hf_config(self.hf_config)
+            return model_flops_from_hf_config(self.hf_config)
         except Exception as e:
             logger.warning(f"MFU will not be reported, the HF config could not be sized: {e!r}")
             return None
-        return lambda seq_lens: fwd_tflops_per_gpu(seq_lens, model_flops, dist.get_world_size())
+
+    @property
+    def _trains_indexers(self) -> bool:
+        return False
+
+    @property
+    def _fwd_tflops(self) -> Callable[[list[int]], float] | None:
+        """Per-GPU forward TFLOPs of a list of sequence lengths."""
+        model_flops = self._model_flops
+        if model_flops is None:
+            return None
+        return lambda seq_lens: model_flops.fwd_flops(seq_lens) / dist.get_world_size() / 1e12
+
+    @property
+    def _train_tflops(self) -> Callable[[list[int]], float] | None:
+        """Per-GPU forward-plus-backward TFLOPs of a list of sequence lengths."""
+        model_flops, trains_indexers = self._model_flops, self._trains_indexers
+        if model_flops is None:
+            return None
+        return lambda seq_lens: model_flops.train_flops(seq_lens, trains_indexers) / dist.get_world_size() / 1e12
 
     def load_hf_assets(self, *, with_processor: bool = False) -> None:
         with one_rank_at_a_time():

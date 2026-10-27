@@ -10,11 +10,14 @@ lm_head always is, tied or not.
 A layer's cost per token is a fixed part plus, per group of keys it reads, a cost per key.
 Keys are counted per query position p (0-based) as min((p + 1) // pool, cap): pool > 1 for
 attention over compressed KV, cap for sliding windows and top-k selection.
+
+Indexer work is part of the forward but marked apart: it only picks which keys attention reads,
+so no gradient flows back through it unless the indexer has its own training loss.
 """
 
 import functools
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 _GATED_QUERY_MODEL_TYPES = ("qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text")
@@ -34,15 +37,23 @@ class KeyTerm:
     flops_per_key: float
     pool: int = 1
     cap: int | None = None
+    indexer: bool = False
 
 
 @dataclass(frozen=True)
 class LayerFlops:
+    """Forward FLOPs per token plus per-key terms; indexer_per_token is the indexer's share of per_token."""
+
     per_token: float
     key_terms: tuple[KeyTerm, ...] = ()
+    indexer_per_token: float = 0.0
 
     def __add__(self, other: "LayerFlops") -> "LayerFlops":
-        return LayerFlops(self.per_token + other.per_token, self.key_terms + other.key_terms)
+        return LayerFlops(
+            self.per_token + other.per_token,
+            self.key_terms + other.key_terms,
+            self.indexer_per_token + other.indexer_per_token,
+        )
 
 
 @dataclass(frozen=True)
@@ -56,23 +67,43 @@ class ModelFlops:
 
     @functools.cached_property
     def key_terms(self) -> dict[tuple[int, int | None], float]:
-        merged: dict[tuple[int, int | None], float] = {}
-        for term in (term for layer in self.layers for term in layer.key_terms):
-            merged[term.pool, term.cap] = merged.get((term.pool, term.cap), 0.0) + term.flops_per_key
-        return merged
+        return _merge_key_terms(term for layer in self.layers for term in layer.key_terms)
+
+    @functools.cached_property
+    def indexer_key_terms(self) -> dict[tuple[int, int | None], float]:
+        return _merge_key_terms(term for layer in self.layers for term in layer.key_terms if term.indexer)
 
     def fwd_flops(self, seq_lens: Iterable[int]) -> float:
         """Forward FLOPs of packed sequences of these lengths (causal attention within each)."""
-        total = 0.0
-        for seq_len in seq_lens:
-            total += seq_len * self.per_token
-            for (pool, cap), flops_per_key in self.key_terms.items():
-                total += flops_per_key * _total_keys(seq_len, pool, cap)
-        return total
+        return _sequence_flops(seq_lens, self.per_token, self.key_terms)
+
+    def train_flops(self, seq_lens: Iterable[int], trains_indexers: bool = False) -> float:
+        """Forward plus backward FLOPs: backward is twice the forward, except for an indexer
+        that has no training loss of its own, which runs forward only."""
+        seq_lens = list(seq_lens)
+        total = 3 * self.fwd_flops(seq_lens)
+        if trains_indexers:
+            return total
+        indexer_per_token = sum(layer.indexer_per_token for layer in self.layers)
+        return total - 2 * _sequence_flops(seq_lens, indexer_per_token, self.indexer_key_terms)
 
 
-def fwd_tflops_per_gpu(seq_lens: Iterable[int], model_flops: ModelFlops, world_size: int) -> float:
-    return model_flops.fwd_flops(seq_lens) / world_size / 1e12
+def _merge_key_terms(terms: Iterable[KeyTerm]) -> dict[tuple[int, int | None], float]:
+    merged: dict[tuple[int, int | None], float] = {}
+    for term in terms:
+        merged[term.pool, term.cap] = merged.get((term.pool, term.cap), 0.0) + term.flops_per_key
+    return merged
+
+
+def _sequence_flops(
+    seq_lens: Iterable[int], per_token: float, key_terms: dict[tuple[int, int | None], float]
+) -> float:
+    total = 0.0
+    for seq_len in seq_lens:
+        total += seq_len * per_token
+        for (pool, cap), flops_per_key in key_terms.items():
+            total += flops_per_key * _total_keys(seq_len, pool, cap)
+    return total
 
 
 def _total_keys(seq_len: int, pool: int, cap: int | None) -> int:
@@ -221,7 +252,11 @@ def _dsa_indexer(config: Any) -> LayerFlops:
     projections = 2 * config.q_lora_rank * heads * head_dim + 2 * hidden * head_dim + 2 * hidden * heads
     if pool > 1:
         projections += 2 * hidden * head_dim
-    return LayerFlops(projections, (KeyTerm(2 * heads * head_dim, pool=pool),))
+    return _indexer(LayerFlops(projections, (KeyTerm(2 * heads * head_dim, pool=pool),)))
+
+
+def _indexer(work: LayerFlops) -> LayerFlops:
+    return LayerFlops(work.per_token, tuple(replace(term, indexer=True) for term in work.key_terms), work.per_token)
 
 
 def _gated_delta_net(config: Any) -> LayerFlops:

@@ -427,6 +427,7 @@ def log_perf_data(
     rollout_id: int,
     args: Namespace,
     compute_total_fwd_flops: Callable[[list[int]], float] | None,
+    compute_total_train_flops: Callable[[list[int]], float] | None = None,
     extra_metrics: dict | None = None,
 ) -> None:
     parallel_state = get_parallel_state()
@@ -439,6 +440,7 @@ def log_perf_data(
             and parallel_state.effective_dp_cp.rank == 0
         ),
         compute_total_fwd_flops=compute_total_fwd_flops,
+        compute_total_train_flops=compute_total_train_flops,
         extra_metrics=extra_metrics,
     )
 
