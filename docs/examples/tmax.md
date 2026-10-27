@@ -28,6 +28,7 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | [ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md) | Open work by priority, decisions taken |
 | [INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md) | Investigations from the production runs: evidence, options, open decisions |
 | [Miles vs open-instruct](/deep-dive/open-instruct-comparison) | Every framework, harness and infrastructure difference, and the flag-by-flag mapping of the production recipe |
+| [OPD across frameworks](/deep-dive/opd-across-frameworks) | How Miles, open-instruct and Prime-RL place the distillation teacher, handle teachers of another size and several teachers, and put the teacher signal into the loss |
 
 ## Files
 
@@ -322,7 +323,14 @@ For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi
   swaps it in for one forward pass per step, so teacher and student must share an architecture; the launcher
   asserts this. It leaves the task reward and the sandbox loop untouched, while SGLang mode replaces the
   reward function with OPD's own. With `--use-rollout-logprobs` the student term of the reverse-KL estimate
-  is the rollout log-prob, the behavior policy's.
+  is the rollout log-prob, the behavior policy's: under fully async staleness a token keeps the OPD advantage it was
+  sampled with across the updates it trains in. Prime-RL instead evaluates the KL against the trainer's live
+  log-prob; the designs are compared in [OPD across frameworks](/deep-dive/opd-across-frameworks).
+- **The KL to the base model (`train/kl_loss`) spikes under pure OPD** (22,571 at step 3 and about 1e6 at step 4 of
+  the 9B run, below 6 from step 7 on): k3 is unclamped, and the few tokens the teacher rejects outright get OPD
+  advantages down to -36, which push their log-probs down by many nats. open-instruct's 9B OPD run logged the same
+  (`objective/kl2_avg` 10,911 at step 6). The dumped reference and rollout log-probs agree (0.007 per token), so it
+  is not a weight-swap bug.
 - `allenai/tmax-4b` and `hamishivi/Qwen3.5-4B` have identical architecture, vocabulary and merges;
   `tmax-4b` only adds seven unused audio/TTS special tokens (ids 248070-248076). The same holds for
   `allenai/tmax-2b` and `hamishivi/Qwen3.5-2B` (both tokenizers have 248,077 entries; tied embeddings). Like

@@ -308,7 +308,8 @@
        "deep-dive/metrics-and-debugging",
        "deep-dive/async-and-off-policy",
        "deep-dive/agentic-rollout-internals",
-       "deep-dive/open-instruct-comparison"
+       "deep-dive/open-instruct-comparison",
+       "deep-dive/opd-across-frameworks"
       ]
      },
      {

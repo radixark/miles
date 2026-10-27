@@ -46,6 +46,11 @@ The options below are the ones presented during the investigations; none is impl
 | L | Sandboxes on a LiteRegistry podman fleet: `sandbox_backend: gateway`, open-instruct's `literegistry_podman` setup | Removes the sandboxes, and their CPU load, from the training and SGLang nodes altogether ([2026-10-16 entry](#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet)) | Implemented on branch `shashank/tmax-gateway`, 4-GPU smoke passed; depends on a fleet run outside the job | The 4-node run (fleet capacity first) |
 | M | Worker replicas' watch on the Ray head. (1) None: workers leave when the head marks the run done, or through Beaker's `propagateFailure` when the head's job fails. (2) open-instruct's: 6 failed `ray status` checks 5 s apart, with no timeout on a check. (3) A ~20-minute tolerance (`HEAD_MISS_LIMIT` 80, `aeb4f9ecd3`) | The ported check (6 misses with a 10 s timeout each, about 90 s) failed three podman attempts on 2026-10-17 while a starved head was slow to answer | (1) relies on Beaker noticing a failed head; a head that hangs without exiting would leave the workers waiting | **(1), taken 2026-10-19 by the user, after (2) ended resume 6 on a starved head that had recovered from 5 misses minutes before; (2) was used 2026-10-17 to 19** |
 | K | Make a dropped weight-sync reply non-fatal: treat it as "outcome unknown" after a completed broadcast and verify the engines' weight version | Survives the `ReadError` seen once in the old run | Miles core change; check upstream first | Only if it recurs |
+| N | Keep the 9B OPD run's recipe (lr 1e-6, OPD term from the rollout log-probs) and decide at about step 30 ([2026-10-27 entry](#2026-10-27-the-9b-pure-opd-runs-early-transient)) | open-instruct's identical run settled by itself by steps 25 to 30 | None | Current choice |
+| O | OPD term from the trainer's recompute: drop `--use-rollout-logprobs` | Removes the stale student term behind the transient | One flag, but the rollout log-probs then stop anchoring DPPO's ratio, so stale samples lose their correction | No: P keeps the correction |
+| P | Prime-RL's split: OPD term from the trainer's log-probs, DPPO still anchored on the rollout log-probs ([OPD across frameworks](../../docs/deep-dive/opd-across-frameworks.md)) | The stale student term, keeping the staleness correction | Small Miles core change (`apply_opd_kl_to_advantages` / `loss/objective.py`); check upstream first | First choice if N fails |
+| Q | Per-token clip on the OPD advantage (open-instruct `mopd`'s `opd_adv_clip`) | Bounds the -36 advantages of teacher-rejected tokens and the KL-to-base spikes | Miles core change; changes the objective relative to open-instruct's `opd` runs | If P is not enough |
+| R | lr 5e-7 (open-instruct tried it for a 4B student, run `zjfcsx10`) | Slows everything, the transient included | A config | Last resort: it does not target the cause |
 
 Suggested next restart: A + B + F + H (and G once the trainer side exists), validated on a 4-GPU smoke, then
 resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to continue from the latest checkpoint.
@@ -57,6 +62,39 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
   2. A hosted OpenSandbox service on GCP (branch `pd_open_sandbox_cuda13`, paid). Not explored yet.
 
 Larger directions to evaluate against the evidence below. Add yours here.
+
+## 2026-10-27: the 9B pure-OPD run's early transient
+
+- **Run:** `tmax_prod4node_gateway_opd_9b_20261027_022952` (Beaker `01M5XK2NCJAPFZ5M8G01659VZ5`, commit `b131645fa6`,
+  `configs/prod_4node_gateway_opd_9b.yaml`): pure OPD of `allenai/tmax-9b` into `hamishivi/Qwen3.5-9B`, Megatron-mode
+  teacher, 4× 8 B300, from 03:26 UTC on 2026-10-27. Compared with open-instruct's identical recipe,
+  `swerl_qwen35_9b_dppo_opd_4node_64k` (W&B `6kyg0v64`; lr 1e-6, grad clip 1, DPPO TV 0.1, 8 x 32, async 4).
+- **What happened:** the teacher KL fell (0.102 at step 0, 0.037 at step 13) and the raw task reward rose (0.42 to
+  0.81), but from step 9 the train/rollout gap, the DPPO mask and the training entropy rose:
+
+  | Step | Gap, Miles / open-instruct | DPPO-masked tokens, Miles / OI | Teacher log-prob on student samples, Miles / OI | Entropy, Miles | Grad norm, Miles / OI |
+  |---|---|---|---|---|---|
+  | 4 | 0.022 / 0.012 | 0.7% / 0.1% | -0.38 / -0.42 | 0.30 | 2.2 / 0.75 |
+  | 10 | 0.078 / 0.035 | 5.9% / 2.1% | -0.44 / -0.45 | 0.48 | 2.7 / 0.56 |
+  | 14 | 0.033 / 0.078 | 0.1% / 4.9% | -0.81 / -0.59 | 0.76 | 7.3 / 0.66 |
+  | 17 | 0.184 / 0.154 | 11.0% / 9.5% | -0.90 / -0.65 | 0.92 | 2.6 / 0.97 |
+  | 25–30 | – / 0.04 | – / 2–4% | – / -0.3 to -0.5 | – | – / 0.5–0.7 |
+
+  open-instruct logs no entropy. Its run peaked around steps 16 to 22 (gap 0.16, 10% masked, teacher log-prob -0.96)
+  and settled by steps 25 to 30; its teacher KL reached 0.018 at step 30 and 0.005 at step 100.
+- **Evidence it is not a bug:** the dumped batches' reference and rollout log-probs agree on generated tokens (mean
+  |difference| 0.007, k3 0.0003 at steps 0 to 2), so the teacher weights never leaked into the reference. The
+  episodes at step 14 read coherently and solve tasks. The KL-to-base spikes (22,571 at step 3) are k3 outliers from
+  about 100 tokens per step (0.01%) whose OPD advantage is below -20, down to -36.
+- **Grad norm:** Miles' is 3 to 5 times open-instruct's from step 0. Both report it before clipping at 1.0, so Miles
+  clips every step and open-instruct rarely; under Adam a constant gradient scale barely changes the update, and the
+  learning rate is the same. The spikes relative to each run's baseline match (7.3 on about 2, 1.9 on about 0.6). Not
+  a reason to lower the learning rate.
+- **Likely driver:** the OPD term uses the rollout's student log-prob, so with up to 4 versions of staleness a
+  teacher-rejected token keeps its full negative advantage after earlier updates have lowered it. Prime-RL computes
+  the term from the trainer's live log-prob instead ([OPD across frameworks](../../docs/deep-dive/opd-across-frameworks.md)).
+- **Options:** N to R in [Open decisions](#open-decisions). Open: whether the run settles by step 30 as
+  open-instruct's did.
 
 ## 2026-10-19: resume 5 dies at the first step after `iter_0000224`, three times
 
