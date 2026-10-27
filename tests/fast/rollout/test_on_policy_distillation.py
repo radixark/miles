@@ -167,7 +167,8 @@ class TestRewardFuncExtraKey:
 
         async def fake_post_json(url, payload, timeout_secs=None):
             posted.append((url, payload))
-            return {"meta_info": {"input_top_logprobs": [None, [_entry(0.5, 2)], [_entry(0.8, 4)]]}}
+            rows = [None, [_entry(0.5, 2)], [_entry(0.8, 4)]]
+            return {"meta_info": {"input_top_logprobs": rows, "input_token_ids_logprobs": rows}}
 
         monkeypatch.setattr(on_policy_distillation, "_post_json", fake_post_json)
         return posted

@@ -58,8 +58,8 @@ The teacher runs on an external SGLang server. Teacher log-probs are obtained du
 **How it works**:
 1. An external SGLang server runs the teacher model.
 2. During rollout, the custom reward function (`miles.rollout.on_policy_distillation.reward_func`) sends each sample to the teacher server to obtain token-level log-probs.
-3. With `--opd-log-prob-top-k=0`, the custom post-processing function trims sampled-token teacher log-probs to the response span and stores them in `sample.teacher_log_probs`.
-4. With `--opd-log-prob-top-k>0`, it computes the Rethinking OPD weighted top-k reverse-KL estimate and stores it in `sample.opd_reverse_kl`.
+3. When the teacher replies, `reward_func` keeps only what training reads and returns the scalar reward `0.0` (pure OPD has no task reward), so the teacher's per-position log-probs do not travel with the sample. With `--opd-log-prob-top-k=0` it stores the sampled-token teacher log-probs of the response span in `sample.teacher_log_probs`.
+4. With `--opd-log-prob-top-k>0`, it computes the Rethinking OPD weighted top-k reverse-KL estimate and stores it in `sample.opd_reverse_kl`. `post_process_rewards` then hands the estimator zero task rewards; it also accepts a custom reward function that returns the raw teacher reply and extracts the signal from it.
 5. During training, the stored OPD penalty is subtracted from the selected estimator's advantages.
 
 **Configuration**:

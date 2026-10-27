@@ -318,10 +318,8 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
 
     def _reward_bucket(reward: Any) -> str:
-        # A reward is not always a scalar here. With OPD the reward slot still holds
-        # the raw teacher response, because log_rollout_data() runs before
-        # --custom-reward-post-process-path rewrites it into the scalar used for
-        # advantages, and custom reward functions may return arbitrary objects.
+        # A custom reward function may return a non-scalar reward (e.g. a raw teacher reply for OPD) that
+        # only --custom-reward-post-process-path turns into a scalar, after log_rollout_data() runs.
         # Bucket those by type instead of calling round() on them.
         return str(round(reward, 1)) if isinstance(reward, Number) else f"non_scalar_{type(reward).__name__}"
 
@@ -415,6 +413,10 @@ def _compute_passrate_from_samples(args, all_samples: list[Sample]) -> dict[str,
         return {}
 
     flat_rewards = [sample.get_reward_value(args) for group in completed_groups for sample in group]
+    if not all(isinstance(reward, Number) for reward in flat_rewards):
+        # numpy would compare an object array to 1 elementwise and report pass@k = 0
+        logger.warning("pass@k: skipped, some rewards are not scalars (e.g. a custom reward function's dict).")
+        return {}
 
     return compute_pass_rate(
         flat_rewards=flat_rewards,

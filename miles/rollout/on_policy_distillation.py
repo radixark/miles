@@ -352,7 +352,19 @@ def _compute_topk_reverse_kl(
     return torch.tensor(reverse_kls, dtype=torch.float32)
 
 
-async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[str, Any]:
+async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> float:
+    """Score ``sample`` with its teacher and keep only the OPD signal training reads.
+
+    The teacher reply holds a log-prob row for every scored position (top-k entries too with
+    ``--opd-log-prob-top-k>0``). It is reduced on arrival to ``sample.teacher_log_probs`` or
+    ``sample.opd_reverse_kl`` so the reply does not ride on the sample through Ray, and the
+    reward slot gets the scalar task reward of pure OPD, 0.0, which every rollout metric can read.
+    """
+    _store_opd_signal(args, sample, await _query_teacher(args, sample))
+    return 0.0
+
+
+async def _query_teacher(args: Namespace, sample: Sample) -> dict[str, Any]:
     top_k = _get_opd_top_k(args)
     # Optional per-request timeout so a hung teacher/student scoring call cannot stall
     # the whole rollout (no-op when unset).
@@ -408,8 +420,8 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
     return reward_payload
 
 
-def post_process_rewards(args: Namespace, samples: list[Sample], **kwargs: Any) -> tuple[list[float], list[float]]:
-    """Extract OPD signals from teacher responses.
+def _store_opd_signal(args: Namespace, sample: Sample, reward_payload: dict[str, Any]) -> None:
+    """Reduce a teacher reply to the per-token OPD signal stored on ``sample``.
 
     ``--opd-log-prob-top-k=0`` preserves the original sampled-token OPD path:
     store teacher log-probs and let training compute ``student_logp - teacher_logp``.
@@ -418,22 +430,27 @@ def post_process_rewards(args: Namespace, samples: list[Sample], **kwargs: Any) 
     "Rethinking On-Policy Distillation" by forming a top-k token set per
     response position and storing a precomputed weighted reverse-KL estimate.
     """
-    raw_rewards = [sample.get_reward_value(args) for sample in samples]
-    response_lengths = [sample.response_length for sample in samples]
-
     if _get_opd_top_k(args) > 0:
-        for sample, reward in zip(samples, raw_rewards, strict=True):
-            sample.opd_reverse_kl = _compute_topk_reverse_kl(args, sample, reward)
-        scalar_rewards = [0.0] * len(samples)
-        return scalar_rewards, scalar_rewards
+        sample.opd_reverse_kl = _compute_topk_reverse_kl(args, sample, reward_payload)
+    else:
+        sample.teacher_log_probs = _teacher_sampled_log_probs(reward_payload, sample.response_length)
 
-    teacher_log_probs = [
-        _teacher_sampled_log_probs(reward, response_length)
-        for reward, response_length in zip(raw_rewards, response_lengths, strict=True)
-    ]
 
-    for sample, t_log_probs in zip(samples, teacher_log_probs, strict=True):
-        sample.teacher_log_probs = t_log_probs
+def post_process_rewards(args: Namespace, samples: list[Sample], **kwargs: Any) -> tuple[list[float], list[float]]:
+    """Hand the advantage estimator the zero task reward of pure on-policy distillation.
+
+    ``reward_func`` already stored each sample's OPD signal. A custom reward function may still
+    return the raw teacher reply, as ``reward_func`` used to; its signal is extracted here.
+    """
+    for sample in samples:
+        reward = sample.get_reward_value(args)
+        if isinstance(reward, dict):
+            _store_opd_signal(args, sample, reward)
+        elif (sample.opd_reverse_kl if _get_opd_top_k(args) > 0 else sample.teacher_log_probs) is None:
+            raise ValueError(
+                f"OPD sample {sample.index} has neither a teacher reply as its reward nor a stored OPD signal; "
+                "score it with miles.rollout.on_policy_distillation.reward_func."
+            )
 
     # Return scalar rewards for GRPO/PPO advantage estimator.
     # For pure on-policy distillation, we use 0.0 as the task reward.
