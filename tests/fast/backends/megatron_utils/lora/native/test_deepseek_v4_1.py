@@ -16,7 +16,7 @@ from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 from miles.utils.hf_utils.config import register_hf_config_aliases
-from miles.utils.lora.arguments import _resolve_lora_targets
+from miles.utils.lora.arguments import _native_serving_targets, _resolve_lora_targets
 from miles.utils.lora.utils import get_adapter_target_modules
 from miles_plugins.models.deepseek_v4.ops.grouped_matmul import GroupedMatmul, grouped_matmul
 
@@ -105,8 +105,9 @@ def launcher_targets(monkeypatch) -> list[str]:
     launch_args.multi_lora, launch_args.megatron_to_hf_mode = False, "raw"
     launch_args.lora_type, launch_args.experts_shared_outer_loras = "lora", False
     register_hf_config_aliases()
-    hf_targets, served_targets = _resolve_lora_targets(launch_args, AutoConfig.for_model("deepseek_v41"))
-    assert served_targets == hf_targets
+    hf_config = AutoConfig.for_model("deepseek_v41")
+    hf_targets = _resolve_lora_targets(launch_args, hf_config)
+    assert _native_serving_targets(launch_args, hf_config, hf_targets) == hf_targets
     return hf_targets
 
 
