@@ -73,7 +73,7 @@ def parser_defaults() -> dict[str, Any]:
 
     with _with_relaxed_parser_required_args(parser), patch.object(sys, "argv", ["test"]):
         parsed, _ = parser.parse_known_args([])
-    return {**_TRAIN_BACKEND_DEFAULTS, **vars(parsed), **_RESOLVED_AFTER_PARSING}
+    return {**_TRAIN_BACKEND_DEFAULTS, **vars(parsed), **RouterConfig.from_args(parsed), **_RESOLVED_AFTER_PARSING}
 
 
 def resolve_parse_boundary_configs(args: Namespace) -> Namespace:
@@ -181,3 +181,12 @@ def _replace_backend_values(config: AllConfig | TrainerConfig, **updates: Any) -
     if backend is None:
         return {field: config.raw_megatron.model_copy(update={"base_args": values | updates})}
     return {field: type(backend)(**(values | updates))}
+
+
+def sglang_router_args(policy: str | None = None) -> dict[str, Any]:
+    """Every arg the sgl-router backend reads, for an args fake built by hand."""
+    return dict(
+        use_miles_router=False,
+        sglang_router_policy=policy,
+        router_args=dict(policy=None, prefill_policy=None, decode_policy=None),
+    )
