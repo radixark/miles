@@ -14,6 +14,7 @@ from typing import NamedTuple
 import numpy as np
 import pytest
 import torch
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.rollout.generate_utils import tool_call_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import update_sample_from_response
@@ -90,7 +91,7 @@ def inline_response(sample: Sample, response: Response, *, mode: str, k: int) ->
     payload = {"input_ids": sample.tokens, "return_sampling_mask": True}
     if mode == "support":
         payload["sampling_logprobs_mode"] = "support"
-    args = Namespace(rollout_top_logprobs_num=k, sglang_speculative_algorithm=None)
+    args = Namespace(rollout_top_logprobs_num=k, sglang=make_sglang_config(speculative_algorithm=None))
     output = {"text": "", "meta_info": response.meta_info}
     asyncio.run(update_sample_from_response(args, sample, payload, output, update_loss_mask=True))
 
