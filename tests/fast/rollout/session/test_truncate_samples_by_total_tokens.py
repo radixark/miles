@@ -34,3 +34,13 @@ def test_first_turn_over_budget_drops_everything():
 
     assert truncate_samples_by_total_tokens([first], max_seq_len=5, tokenizer=None) == []
     assert first.status == Sample.Status.COMPLETED
+
+
+def test_dropping_later_turns_keeps_a_non_completed_status():
+    first, second = _turn(10, 3), _turn(20, 3)
+    first.status = Sample.Status.ABORTED
+
+    kept = truncate_samples_by_total_tokens([first, second], max_seq_len=15, tokenizer=None)
+
+    assert kept == [first]
+    assert first.status == Sample.Status.ABORTED
