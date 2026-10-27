@@ -337,3 +337,5 @@ def test_training_runs_a_frozen_indexer_forward_only():
 def test_a_model_without_an_indexer_trains_at_three_forwards():
     flops = released_model_flops("Qwen/Qwen3-8B")
     assert flops.train_flops([4096, 8192]) == pytest.approx(3 * flops.fwd_flops([4096, 8192]))
+    assert not flops.has_indexers
+    assert released_model_flops("deepseek-ai/DeepSeek-V3.2-Exp").has_indexers
