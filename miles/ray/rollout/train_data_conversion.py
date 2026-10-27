@@ -4,6 +4,7 @@ from typing import Any
 import torch
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
+from miles.rollout.reward_shaping import reward_group_segments, rollout_segments
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
@@ -318,37 +319,7 @@ def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int
 
 def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes: list[int] | None) -> list[list[int]]:
     """Return the flattened row indices for each prompt reward group."""
-    # Multi-LoRA records explicit prompt boundaries before flattening.
-    if prompt_group_sizes is not None:
-        assert sum(prompt_group_sizes) == len(
-            samples
-        ), f"prompt group sizes sum to {sum(prompt_group_sizes)}, but got {len(samples)} rewards"
-        groups: list[list[int]] = []
-        start = 0
-        for size in prompt_group_sizes:
-            end = start + size
-            if size > 0:
-                groups.append(list(range(start, end)))
-            start = end
-        return groups
-
-    # Standard rollout samples carry their prompt identity in `group_index`.
-    group_indices = [sample.group_index for sample in samples]
-    if all(group_index is not None for group_index in group_indices):
-        segments_by_group_index: dict[int, list[int]] = {}
-        for segment_index, group_index in enumerate(group_indices):
-            segments_by_group_index.setdefault(int(group_index), []).append(segment_index)
-        return list(segments_by_group_index.values())
-
-    # Legacy fixed-fanout batches store each prompt's segments contiguously.
-    expected_samples = args.n_samples_per_prompt * args.rollout_batch_size
-    if len(samples) == expected_samples:
-        return [
-            list(range(start, start + args.n_samples_per_prompt))
-            for start in range(0, len(samples), args.n_samples_per_prompt)
-        ]
-    # Without prompt identities or a complete fixed layout, use one reward group.
-    return [list(range(len(samples)))]
+    return reward_group_segments(args, samples, prompt_group_sizes)
 
 
 def _normalize_rewards_by_rollout(
@@ -363,25 +334,16 @@ def _normalize_rewards_by_rollout(
 
     normalized_rewards = torch.empty(len(raw_rewards), dtype=torch.float)
     for prompt_segments in _reward_group_segments(args, samples, prompt_group_sizes):
-        segments_by_rollout_key: dict[int | tuple[str, int], list[int]] = {}
-        for segment_index in prompt_segments:
-            sample = samples[segment_index]
-            if sample.rollout_id is not None:
-                rollout_key = sample.rollout_id
-            elif sample.index is not None:
-                rollout_key = sample.index
-            else:
-                rollout_key = ("row", segment_index)
-            segments_by_rollout_key.setdefault(rollout_key, []).append(segment_index)
-
-        rollout_segment_groups = list(segments_by_rollout_key.items())
+        rollout_segment_groups = rollout_segments(samples, prompt_segments)
         shared_rewards: list[float] = []
-        for rollout_key, rollout_segments in rollout_segment_groups:
-            sibling_rewards = [raw_rewards[segment_index] for segment_index in rollout_segments]
+        for sibling_rows in rollout_segment_groups:
+            sample = samples[sibling_rows[0]]
+            rollout_key = sample.rollout_id if sample.rollout_id is not None else sample.index
+            sibling_rewards = [raw_rewards[segment_index] for segment_index in sibling_rows]
             if any(reward != sibling_rewards[0] for reward in sibling_rewards[1:]):
                 raise ValueError(
                     f"all samples in rollout {rollout_key!r} must share one reward; "
-                    f"rows {rollout_segments} have rewards {sibling_rewards}"
+                    f"rows {sibling_rows} have rewards {sibling_rewards}"
                 )
             shared_rewards.append(sibling_rewards[0])
 
@@ -392,10 +354,10 @@ def _normalize_rewards_by_rollout(
             if rollout_std > 0:
                 normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
 
-        for (_, rollout_segments), normalized_reward in zip(
+        for sibling_rows, normalized_reward in zip(
             rollout_segment_groups, normalized_rollout_rewards.tolist(), strict=True
         ):
-            for segment_index in rollout_segments:
+            for segment_index in sibling_rows:
                 normalized_rewards[segment_index] = normalized_reward
 
     return normalized_rewards.tolist()
