@@ -270,8 +270,8 @@ without the option.
 Requirements:
 
 - An SGLang build with the output store (`ServerArgs.output_store_backend`) and the
-  `radix_transfer_plugins` package it ships, on every engine, trainer and the session
-  server. Miles configures the store of every engine it launches; do not pass
+  `radix_transfer_plugins` package it ships, including the direct reads of
+  sgl-project/sglang#46288, on every engine, trainer and the session server. Miles configures the store of every engine it launches; do not pass
   `output_store_backend` through `--sglang-*` flags or `sglang_overrides`.
 - A router that forwards `return_outputs_via_store`: `--use-miles-router`, or an
   `sgl-router` wheel from `radixark/sgl-router-for-miles` with that fix. A router that
@@ -298,15 +298,18 @@ Requirements:
   run can generate ahead of the one in training. Multiply by `--mooncake-replica-num`.
   Output store objects are hard-pinned, so Mooncake never evicts them: a full store can
   evict only Miles' own rollout data, which is not pinned, and puts fail once only
-  pinned objects are left.
+  pinned objects are left. Two kinds of objects stay until the run ends: one stored by a
+  request attempt that was then retried, and one whose delete failed (Miles logs it).
 
 Not supported, rejected at launch: a launch that replays none of these three arrays,
 `--cluster-backend kubernetes`, PD disaggregation, external rollout engines, the legacy
 rollout, a custom convert function, multi-policy training, split deployments,
-`--debug-rollout-only`, and saving (including through `--dump-details`), loading or
+`--debug-rollout-only`, `--multimodal-keys`, and saving (including through `--dump-details`), loading or
 injecting debug rollout data. The built-in generate functions reject multimodal prompts
 when they send them.
 
-Stored objects do not survive a restart. On resume, untrained rollout batches and
-fully-async buffer groups that were saved with refs are generated again instead of
-replayed.
+Stored objects may not survive a restart. On resume, untrained rollout batches and
+fully-async buffer groups that carry refs, or inline replay arrays from a launch without
+`--use-output-store`, are not replayed: the executor drops such a batch without handing
+its prompts back to the data source, and the buffer hands such a group to
+`--async-unused-samples-handler`.
