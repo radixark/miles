@@ -207,7 +207,9 @@ def test_mla_with_dsa_caps_keys_at_topk_and_charges_the_indexer_only_where_it_ru
     assert per_layer(flops, 1).key_terms == (KeyTerm(attention_per_key, cap=2048),)
     indexer = 2 * 2048 * 32 * 128 + 2 * 6144 * 128 + 2 * 6144 * 32
     assert per_layer(flops, 0).per_token - per_layer(flops, 1).per_token == indexer
-    assert per_layer(flops, 0).key_terms[-1] == KeyTerm(2 * 32 * 128)
+    assert per_layer(flops, 0).key_terms[-1] == KeyTerm(2 * 32 * 128, indexer=True)
+    assert per_layer(flops, 0).indexer_per_token == indexer
+    assert per_layer(flops, 1).indexer_per_token == 0
 
 
 def test_kda_layers_are_one_indexed_and_mla_fills_the_rest():
@@ -407,3 +409,16 @@ def test_deepseek_v4_config_objects_size_like_their_checkpoint_configs(repo_id):
 def test_unknown_layer_structure_has_no_flops_definition(unknown_structure):
     with pytest.raises(ValueError, match="no FLOPs definition"):
         model_flops_from_hf_config(config(**(LLAMA_8B | {"num_hidden_layers": 1} | unknown_structure)))
+
+
+def test_training_runs_a_frozen_indexer_forward_only():
+    flops = released_model_flops("deepseek-ai/DeepSeek-V3.2-Exp")
+    forward = flops.fwd_flops([131072])
+    assert forward / 131072 == pytest.approx(150.61e9, rel=1e-4)
+    assert flops.train_flops([131072], trains_indexers=True) == pytest.approx(3 * forward)
+    assert flops.train_flops([131072]) / 131072 == pytest.approx(317.41e9, rel=1e-4)
+
+
+def test_a_model_without_an_indexer_trains_at_three_forwards():
+    flops = released_model_flops("Qwen/Qwen3-8B")
+    assert flops.train_flops([4096, 8192]) == pytest.approx(3 * flops.fwd_flops([4096, 8192]))
