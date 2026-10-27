@@ -69,13 +69,15 @@ def append_rollout_topk_logprobs(
         flat_ids, flat_logps = _decode_flat_output_top_logprobs(meta)
         if len(flat_ids) != n:
             raise ValueError(f"Rollout top-k logprobs collection requires SGLang {field} for every generated token")
-        if flat_ids.shape[1] < k:
-            # e.g. a router capping top_logprobs; padding would silently shrink the candidate set
-            raise ValueError(
-                f"SGLang returned {flat_ids.shape[1]} {field} per token, fewer than --rollout-top-logprobs-num {k}"
-            )
-        ids[:] = flat_ids[:, :k]
-        logps[:] = flat_logps[:, :k]
+        # A zero-token turn keeps its empty [0, k] arrays whatever width SGLang reports.
+        if n:
+            if flat_ids.shape[1] < k:
+                # e.g. a router capping top_logprobs; padding would silently shrink the candidate set
+                raise ValueError(
+                    f"SGLang returned {flat_ids.shape[1]} {field} per token, fewer than --rollout-top-logprobs-num {k}"
+                )
+            ids[:] = flat_ids[:, :k]
+            logps[:] = flat_logps[:, :k]
     else:
         rows = meta.get(field)
         if n and (rows is None or len(rows) != n):
@@ -91,7 +93,9 @@ def append_rollout_topk_logprobs(
             ids[i, : len(token_ids)] = token_ids
             logps[i, : len(token_ids)] = probabilities
     for name, values in (("rollout_topk_token_ids", ids), ("rollout_topk_log_probs", logps)):
-        previous = getattr(sample, name)
+        previous = getattr(
+            sample, name
+        )  # config-access-exempt: sample field name is selected from the paired top-k array fields
         setattr(sample, name, values if previous is None else np.concatenate((previous, values)))
 
 
@@ -138,7 +142,9 @@ def _support_membership(ids: np.ndarray, support: RolloutSamplingMask) -> tuple[
 def pad_rollout_topk_logprobs(sample: Sample, count: int) -> None:
     """Pad non-trained tool/observation positions before extending the response."""
     for field, fill in (("rollout_topk_token_ids", -1), ("rollout_topk_log_probs", -np.inf)):
-        values = getattr(sample, field)
+        values = getattr(
+            sample, field
+        )  # config-access-exempt: sample field name is selected from the explicit rollout probability fields
         if values is not None:
             padding = np.full((count, values.shape[1]), fill, dtype=values.dtype)
             setattr(sample, field, np.concatenate((values, padding)))
@@ -177,7 +183,9 @@ def validate_rollout_topk_logprobs_sample(sample: Sample, k: int) -> None:
 
 
 def merge_rollout_topk_logprobs_field(first: Sample, second: Sample, field: str, gap: int) -> np.ndarray | None:
-    a, b = getattr(first, field), getattr(second, field)
+    a, b = getattr(first, field), getattr(
+        second, field
+    )  # config-access-exempt: sample field name is selected from the explicit rollout probability fields
     if a is None and b is None:
         return None
     if a is None or b is None or a.shape[1] != b.shape[1]:

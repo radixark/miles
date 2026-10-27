@@ -241,6 +241,9 @@ def truncate_samples_by_total_tokens(
         overshoot = total - max_seq_len
         allowed_output = sample.response_length - overshoot
         if allowed_output <= 0:
+            # Later turns are dropped, so mark a COMPLETED last kept turn as cut off.
+            if result and result[-1].status == Sample.Status.COMPLETED:
+                result[-1].status = Sample.Status.TRUNCATED
             break
 
         sample.strip_last_output_tokens(overshoot, tokenizer)

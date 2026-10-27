@@ -62,8 +62,8 @@ The rest follows from that split:
 | Architecture definition | `scripts/models/<megatron_model_type>.py` plus a Megatron spec for anything non-standard | HF `config.json`, plus an optional adaptation spec | a torchtitan model name + flavor |
 | Checkpoints written | Megatron `torch_dist` | PyTorch Distributed Checkpoint | torchtitan's own DCP checkpointer |
 | Activation recompute | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` | `--gradient-checkpointing` |
-| Optimizer on CPU | `--optimizer-cpu-offload` | `--fsdp-cpu-offload` | Not supported |
-| Offload beyond host RAM | `--offload-train-target disk`, `--stream-optimizer-state-to-disk` | Not supported | Not supported |
+| Optimizer on CPU | `--optimizer-cpu-offload` | `--optimizer-cpu-offload` | `--optimizer-cpu-offload` |
+| Offload beyond host RAM | `--offload-train-target disk`, `--stream-optimizer-state-to-disk` | Not supported | `--stream-optimizer-state-to-disk` (Adam moments) |
 | LoRA | Supported | Not supported | Not supported |
 
 ---
@@ -364,7 +364,7 @@ Memory, once the layout is set:
 | Flag | Effect |
 |---|---|
 | `--gradient-checkpointing` | Recompute activations. This backend's `--recompute-*`. |
-| `--fsdp-cpu-offload` | Offload parameters, gradients and optimizer state to CPU. The optimizer step runs there. |
+| `--optimizer-cpu-offload` | Offload parameters, gradients and optimizer state to CPU. The optimizer step runs there. Megatron's name for the same switch; `--fsdp-cpu-offload` is the deprecated spelling. |
 | `--fsdp-cpu-backend gloo` | CPU process-group backend used by the offload path. |
 
 Under `--colocate` this backend also implements `sleep` / `wake_up` by moving the model and
@@ -627,8 +627,14 @@ because that check compares the engine against the original HF checkpoint.
 `miles/backends/torchtitan_utils/models/`.** There is no per-architecture spec to write; a
 new model is a Python package that assembles torchtitan's own blocks.
 
-**No LoRA, no optimizer CPU offload, no disk offload, no on-policy distillation, and
+**No LoRA, no Muon (`--optimizer adam` only), no on-policy distillation, and
 `--ref-update-interval` is rejected** rather than silently ignored.
+
+**Host offload is FSDP2's, validated on `glm5_next` only.** `--optimizer-cpu-offload` keeps the
+weights, gradients and Adam state on the host and steps Adam on the CPU, and
+`--stream-optimizer-state-to-disk` then moves the Adam moments into files; other models pass the
+same policy through torchtitan's parallelize functions but have not been run that way.
+`--offload-train-target=disk` (the rollout-window backup) remains Megatron-only.
 
 </Warning>
 
@@ -663,6 +669,45 @@ When the architecture genuinely differs, the package grows in this order: a `mod
 the new block (subclassing torchtitan's `TransformerBlock` / `BaseAttention`), then a
 `state_dict_adapter.py` if the HF names differ, and only then a `parallelize.py` if the
 existing sharding plans do not apply. Two checks belong with every package: a fast test that pins the flavor's dimensions to the values recorded from the model's `config.json` and checks the adapter's map covers every key pattern recorded from `model.safetensors.index.json`, and an e2e case under `tests/e2e/torchtitan/` — SGLang has to implement the architecture too, since it is what consumes the streamed weights.
+
+`models/glm5_next/` (GLM-5.3-Flash) is the package grown all the way: KDA linear attention,
+kpool-indexed DSA sparse attention and mHC residual streams are new blocks in `layers.py`, the
+adapter maps the `model.language_model.*` names, and the package supports **FSDP, EP, PP and
+CP, but not TP yet**. Under CP, KDA runs fla's context-parallel kernels on a contiguous shard and
+DSA attends each rank's queries over the gathered latent KV, so both the attention compute and
+the activations split across the CP group. Like Megatron, the package sizes the model from the
+`--hf-checkpoint`'s `config.json` (layer types, MoE, mHC, KDA and indexer settings), so
+`--titan-model-flavor` only names the run; the four-layer slice is the validated checkpoint:
+
+```bash
+--train-backend torchtitan \
+--titan-model-name glm5_next \
+--titan-model-flavor 4layer \
+--pipeline-model-parallel-size 2 \
+--context-parallel-size 2 \
+--expert-model-parallel-size 4 \
+--hf-checkpoint /root/models/GLM-5.3-Flash-4layer
+```
+
+It needs an SGLang with GLM-5.3-Flash support (`docker.io/radixark/miles:glm53next`); the e2e
+cases `tests/e2e/torchtitan/test_glm53_flash_4layer_*.py` carry the SGLang flags.
+
+The full `flash` flavor (313B parameters) trains every parameter on **4 × 8 H200** with FSDP2 CPU
+offload: the fp32 weight, gradient and Adam state (16 bytes per parameter, 5.0 TB) does not fit on
+32 GPUs. The weight and gradient shards then fill most of a node's host RAM, so
+`--stream-optimizer-state-to-disk` keeps the Adam moments in files under
+`--offload-train-disk-dir` instead -- the same flags the Megatron backend uses for disk-resident
+optimizer state. The files are unlinked once mapped (they show in `df`, not `du`) and each rank's
+directory is cleared at startup, so a killed run leaves nothing behind:
+
+```bash
+--titan-model-flavor flash \
+--optimizer-cpu-offload \
+--stream-optimizer-state-to-disk \
+--offload-train-disk-dir /scratch/miles_train_offload \
+--expert-model-parallel-size 32 \
+--gradient-checkpointing
+```
 
 ### Try it
 

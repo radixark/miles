@@ -34,7 +34,7 @@ def generate_rollout(
 
 
 def _get_delegate_client(args) -> EvalDelegateClient | None:
-    config_path = getattr(args, "eval_config", None)
+    config_path = args.eval_config
     if not config_path:
         return None
 

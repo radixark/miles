@@ -81,7 +81,9 @@ class ExternalSglangEvalFn(CheckpointEvalFn):
         ip, _, srv_port = url.removeprefix("http://").rpartition(":")
         self._url = f"http://{ip}:{srv_port}"
         # Sizes the client-side concurrency semaphore (one engine behind the URL).
-        self._eval_args = retarget_args(args, ip, int(srv_port), num_gpus, num_gpus)
+        self._eval_args = retarget_args(
+            args=args, router_ip=ip, router_port=int(srv_port), engine_gpu_counts=[num_gpus]
+        )
         self._state: GenerateState | None = None
         self._cache: dict = {}
         self._ready = False  # health-wait deferred: server load must not block training start

@@ -291,17 +291,20 @@ class TestStaticInferenceEngineWorkerProvider:
         offsets = [info.meta["gpu_offset"] for info in provider.cell_infos]
         assert offsets == [0, 2, 4]
 
-    async def test_a_fleet_with_a_different_gpu_total_is_rejected(self, monkeypatch):
-        """--rollout-num-gpus sizes the placement group and the router, so a fleet that is smaller
-        than it claims must fail at startup instead of hanging in NCCL."""
+    async def test_a_fleet_whose_gpu_total_differs_from_the_arguments_is_described_as_observed(self, monkeypatch):
+        """The run sizes weight transfer from the observed layout, so each engine keeps the gpus it reported."""
         args = _make_args(["host1:8000", "host2:8000"], num_gpus_per_engine=4)
         payloads = {
             "http://host1:8000": _regular_payload(num_gpus=4),
             "http://host2:8000": _regular_payload(num_gpus=2),
         }
 
-        with pytest.raises(AssertionError, match="6 gpus in total"):
-            await self._make_provider(monkeypatch, args, payloads)
+        provider = await self._make_provider(monkeypatch, args, payloads)
+
+        assert [(info.meta["num_gpus_per_engine"], info.meta["gpu_offset"]) for info in provider.cell_infos] == [
+            (4, 0),
+            (2, 4),
+        ]
 
     async def test_a_pd_fleet_without_the_router_flag_is_rejected(self, monkeypatch):
         """The router was already launched non-PD, so serving a PD fleet behind it would misroute."""
@@ -445,16 +448,15 @@ def _engine(*, url: str, num_gpus: int) -> _ExternalEngineInfo:
 
 
 class TestARaggedExternalFleet:
-    def test_engines_that_do_not_each_report_the_per_engine_argument_are_refused(self):
-        """Engines of unequal size cannot each hold --rollout-num-gpus-per-engine gpus."""
+    def test_engines_of_unequal_size_pass_the_argument_check(self):
+        """The per-engine argument no longer describes the fleet, so engines of their own size are accepted."""
         args = _make_args(["host1:8000", "host2:8000"], num_gpus_per_engine=2, rollout_num_gpus=6)
         engines = [_engine(url="http://host1:8000", num_gpus=4), _engine(url="http://host2:8000", num_gpus=2)]
 
-        with pytest.raises(AssertionError, match="rollout-num-gpus-per-engine"):
-            _assert_engines_match_args(args, engines=engines)
+        _assert_engines_match_args(args, engines=engines)
 
-    async def test_a_fleet_of_unequal_engines_is_refused_before_the_run_is_handed_an_engine(self, monkeypatch):
-        """Discovery refuses the fleet, so nothing downstream ever sees it."""
+    async def test_a_fleet_of_unequal_engines_hands_the_run_each_engine_at_its_own_size(self, monkeypatch):
+        """Each discovered engine becomes a cell carrying the gpus it reported and the offset after the previous one."""
         args = _make_args(["host1:8000", "host2:8000"], num_gpus_per_engine=2, rollout_num_gpus=6)
         payloads = {
             "http://host1:8000": _regular_payload(num_gpus=4),
@@ -463,9 +465,12 @@ class TestARaggedExternalFleet:
 
         _install_payloads(monkeypatch, payloads)
         provider = StaticInferenceEngineWorkerProvider(args=args)
+        await provider.init()
 
-        with pytest.raises(AssertionError, match="rollout-num-gpus-per-engine"):
-            await provider.init()
+        assert [(info.meta["num_gpus_per_engine"], info.meta["gpu_offset"]) for info in provider.cell_infos] == [
+            (4, 0),
+            (2, 4),
+        ]
 
 
 class TestAPdFleetRoles:

@@ -62,3 +62,14 @@ def validate_torchtitan_args(args) -> None:
         )
     if args.save_debug_train_data is not None:
         raise ValueError("--save-debug-train-data is not wired up for the torchtitan backend")
+    if args.stream_optimizer_state_to_disk:
+        if not args.optimizer_cpu_offload:
+            raise ValueError(
+                "--stream-optimizer-state-to-disk on torchtitan backs the host-resident Adam moments; "
+                "it needs --optimizer-cpu-offload"
+            )
+        if args.stream_optimizer_state_moment_dtype != "fp32":
+            raise ValueError(
+                "torchtitan keeps the moments in the dtype AdamW steps them in; "
+                f"--stream-optimizer-state-moment-dtype {args.stream_optimizer_state_moment_dtype} is unsupported"
+            )

@@ -14,7 +14,7 @@ from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core import cell_view, pod_view
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import CellLabelKeys
-from miles.utils.workers.worker_spec import BaseWorkerSpec, NamedHostAndPorts
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +23,20 @@ class KubernetesRunInfo(FrozenStrictBaseModel):
     namespace: str
     label_selector: str
     label_keys: CellLabelKeys
-    specs: dict[str, BaseWorkerSpec]
 
 
 class KubernetesWorkerProvider(BaseWorkerProvider):
-    def __init__(self, *, run: KubernetesRunInfo, pool_ids: list[str], resync_period: float | None) -> None:
+    def __init__(
+        self,
+        *,
+        run: KubernetesRunInfo,
+        pool_ids: list[str] | None,
+        resync_period: float | None,
+        category: str | None = None,
+    ) -> None:
         self._run = run
         self._pool_ids = pool_ids
+        self._category = category
         self._resync_period = resync_period
         self._loop: ReconcileLoop | None = None
 
@@ -71,8 +78,12 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
             )
             return watching.pop_all().aclose
 
-    def cell_ids(self) -> list[str]:
-        return sorted(self._loop_or_fail().parent_keys())
+    def cell_ids(self, *, pool_ids: list[str] | None = None, category: str | None = None) -> list[str]:
+        return sorted(
+            cell_id
+            for cell_id in self._loop_or_fail().parent_keys()
+            if (pods := self._pods_of_cell(cell_id)) and _pod_matches(pods[0], pool_ids=pool_ids, category=category)
+        )
 
     def cell_info(self, cell_id: str) -> CellInfo | None:
         return cell_view.compute_cell_info(cell_id, pods=self._pods_of_cell(cell_id), run=self._run)
@@ -85,7 +96,9 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
 
     def _cell_id_of_pod(self, pod: Pod) -> str | None:
         parsed = pod_view.parse_pod(pod, self._run.label_keys)
-        if parsed is None or parsed.pool_id not in self._pool_ids:
+        if parsed is None or not parsed.worker_metadata.dynamic_pool:
+            return None
+        if not _pod_matches(parsed, pool_ids=self._pool_ids, category=self._category):
             return None
         return parsed.cell_id
 
@@ -106,7 +119,9 @@ async def _kubernetes_pod_api() -> AsyncIterator[KubernetesAsyncioPodApi]:
         yield KubernetesAsyncioPodApi(core_v1_api=api)
 
 
-def _watched_pods_selector(*, base_selector: str, pool_label_key: str, pool_ids: list[str]) -> str:
+def _watched_pods_selector(*, base_selector: str, pool_label_key: str, pool_ids: list[str] | None) -> str:
+    if pool_ids is None:
+        return base_selector
     if not pool_ids:
         return f"{base_selector},{_NO_POD_CARRIES_THIS_LABEL}"
     wanted = ",".join(sorted(pool_ids))
@@ -114,3 +129,11 @@ def _watched_pods_selector(*, base_selector: str, pool_label_key: str, pool_ids:
 
 
 _NO_POD_CARRIES_THIS_LABEL = "never-matches.invalid/watches-nothing"
+
+
+def _pod_matches(parsed: pod_view.ParsedPod, *, pool_ids: list[str] | None, category: str | None) -> bool:
+    if pool_ids is not None and parsed.pool_id not in pool_ids:
+        return False
+    if category is not None and parsed.worker_metadata.category != category:
+        return False
+    return True

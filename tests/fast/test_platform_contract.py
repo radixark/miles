@@ -46,6 +46,7 @@ UPPER_LAYER_NAMES = (
     "compute_specs",
     "launch_worker_manager",
     "get_backend_capability",
+    "compute_backend_capability",
     "create_worker_backend_capability",
 )
 
@@ -58,14 +59,17 @@ UPPER_LAYER_EXEMPTIONS = {
     "miles/utils/workers/worker_provider": "the infrastructure that owns every provider implementation",
     "miles/utils/workers/backend_capability": "the package that owns every capability implementation",
     "miles/utils/workers/cell_operations": "the package that owns every cell-operations implementation",
-    "miles/ray/placement_group.py": "the driver composition the orchestration scripts delegate their wiring to",
     "miles/utils/ft_utils/mini_ft_controller.py": "kubernetes is the only backend that resumes a cell without being asked",
     "miles/utils/workers/serving/serve_inner.py": "the composition root of a served worker process",
+    "miles/utils/workers/serving/serve.py": (
+        "the composition root of a served pod, which rebuilds its worker spec from the pod config"
+    ),
     "miles/utils/workers/ray_worker_manager.py": "the composition root of a worker process an actor wraps",
     "miles/utils/workers/deployment_entrypoint.py": "the composition root of a deployment that carries no orchestration script",
     "miles/utils/workers/backend_capability/factory.py": "the fork itself: it is the switch every composition root asks",
     "miles/utils/workers/reconcile/k8s_api.py": "the kubernetes client the observing provider is written against",
-    "miles/utils/arguments.py": "declares the --cluster-backend flag the composition roots read",
+    "miles/utils/arguments.py": "validates the other flags against the --cluster-backend the composition roots read",
+    "miles/utils/args/configs/cluster.py": "declares the --cluster-backend flag the composition roots read",
     "miles/utils/tracking_utils/base.py": "the prometheus collector is a ray actor and has no kubernetes form",
 }
 

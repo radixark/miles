@@ -216,6 +216,16 @@ def _inkling_targets(config):
     return attention, tuple(mlp)
 
 
+def _mimo_v2_targets(config):
+    # moe_layer_freq lists every layer's MLP: 1 for routed experts (per-expert modules), 0 for dense.
+    mlp = []
+    if not all(config["moe_layer_freq"]):
+        mlp.extend(_DENSE_MLP)
+    if any(config["moe_layer_freq"]):
+        mlp.extend(_ROUTED_EXPERTS)
+    return _QKVO_ATTENTION, tuple(mlp)
+
+
 _HF_LORA_MODELS = {
     "llama": _HfLoraModelSpec(_dense_targets),
     "qwen2": _HfLoraModelSpec(_dense_targets),
@@ -253,6 +263,7 @@ _HF_LORA_MODELS = {
     "glm5_next": _HfLoraModelSpec(
         _glm5_next_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
     ),
+    "mimo_v2": _HfLoraModelSpec(_mimo_v2_targets),
     "inkling_text": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_model": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_mm_model": _HfLoraModelSpec(

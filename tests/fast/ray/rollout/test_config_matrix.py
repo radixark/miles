@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pydantic
 import pytest
+from tests.fast.fixtures.sglang_config_fixtures import resolve_sglang_config, resolve_sglang_config_and_scaling
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 
 # ----------------------------- resolve_sglang_config matrix -----------------------------
 
@@ -16,14 +16,20 @@ def _resolve_yaml(tmp_path, yaml_text: str, **args_overrides):
     return resolve_sglang_config(make_args(sglang_config=str(cfg_path), **args_overrides))
 
 
+def _resolve_yaml_and_scaling(tmp_path, yaml_text: str, **args_overrides):
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml_text)
+    return resolve_sglang_config_and_scaling(make_args(sglang_config=str(cfg_path), **args_overrides))
+
+
 class TestResolveSglangConfigPaths:
     def test_default_path_when_no_yaml_or_prefill(self):
         args = make_args(rollout_num_gpus=8, sglang_config=None, prefill_num_servers=None)
-        cfg = resolve_sglang_config(args)
+        cfg, scaling = resolve_sglang_config_and_scaling(args)
         assert len(cfg.models) == 1
         assert cfg.models[0].name == "default"
         assert cfg.models[0].server_groups[0].worker_type == WorkerType.REGULAR
-        assert sum(g.num_gpus for m in cfg.models for g in m.server_groups) == 8
+        assert sum(g.num_gpus for groups in scaling.groups.values() for g in groups) == 8
 
     def test_prefill_num_servers_path(self):
         args = make_args(
@@ -49,7 +55,7 @@ class TestResolveSglangConfigPaths:
 
     def test_yaml_path_multi_model_actor_plus_reference(self, tmp_path):
         # 8 gpu actor + 4 gpu ref = 12 → must match args.rollout_num_gpus
-        cfg = _resolve_yaml(
+        cfg, scaling = _resolve_yaml_and_scaling(
             tmp_path,
             "sglang:\n"
             "  - name: actor\n"
@@ -68,7 +74,7 @@ class TestResolveSglangConfigPaths:
             rollout_num_gpus=12,
         )
         assert [m.name for m in cfg.models] == ["actor", "ref"]
-        assert sum(g.num_gpus for m in cfg.models for g in m.server_groups) == 12
+        assert sum(g.num_gpus for groups in scaling.groups.values() for g in groups) == 12
 
 
 # ----------------------------- server group validation matrix ---------------

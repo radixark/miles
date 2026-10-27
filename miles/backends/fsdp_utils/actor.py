@@ -8,10 +8,14 @@ import torch.distributed as dist
 
 from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.config import FsdpArgsNamespace
+from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.training_utils.metrics import train_dump
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
 from miles.backends.training_utils.torch_native.step_runner import LinearStepRunner, StepMetrics
+from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -41,12 +45,15 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         args: Pickled,
         role: str,
         *,
+        ckpt_load_config: MegatronCkptLoadConfig | None = None,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
         indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
+        assert ckpt_load_config is None
+        assert isinstance(args.backend, FsdpArgsNamespace)
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
@@ -62,20 +69,19 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         # Setup ParallelState for both CP and non-CP cases
         set_parallel_state(create_fsdp_parallel_state(args))
 
-        torch.manual_seed(args.seed)
+        torch.manual_seed(args.backend.seed)
 
         if self.args.debug_rollout_only:
             return 0
 
-        self.fsdp_cpu_offload = getattr(self.args, "fsdp_cpu_offload", False)
-        # Offload train and fsdp cpu offload cannot be used together, fsdp_cpu_offload is more aggressive
-        if self.args.offload_train and self.fsdp_cpu_offload:
-            self.args.offload_train = False
+        self.optimizer_cpu_offload = self.args.backend.optimizer_cpu_offload
+        # argument parsing turns offload-train off: CPU offload already keeps the state on the host
+        assert not (self.args.offload_train and self.optimizer_cpu_offload)
 
         if dist.get_rank() == 0:
             init_tracking(args, primary=False)
 
-        if getattr(self.args, "start_rollout_id", None) is None:
+        if self.args.start_rollout_id is None:
             self.args.start_rollout_id = 0
 
         self.prof = TrainProfiler(args)
@@ -106,7 +112,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         model = apply_fsdp2(
             model,
             mesh=get_parallel_state().get_mesh("fsdp"),
-            cpu_offload=self.fsdp_cpu_offload,
+            cpu_offload=self.optimizer_cpu_offload,
             args=self.args,
             param_dtype=self.precision_policy.param_dtype,
             reduce_dtype=self.precision_policy.reduce_dtype,
@@ -116,24 +122,24 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             model,
             full_state,
             get_parallel_state().get_mesh("fsdp"),
-            cpu_offload=True if self.fsdp_cpu_offload else None,
+            cpu_offload=True if self.optimizer_cpu_offload else None,
         )
 
         self.model = model
 
-        if args.gradient_checkpointing:
+        if args.backend.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
 
-        if args.optimizer == "adam":
+        if args.backend.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(),
-                lr=args.lr,
-                betas=(args.adam_beta1, args.adam_beta2),
-                eps=args.adam_eps,
-                weight_decay=args.weight_decay,
+                lr=args.backend.lr,
+                betas=(args.backend.adam_beta1, args.backend.adam_beta2),
+                eps=args.backend.adam_eps,
+                weight_decay=args.backend.weight_decay,
             )
         else:
-            raise ValueError(f"Unsupported optimizer: {args.optimizer}. Supported options: 'adam'")
+            raise ValueError(f"Unsupported optimizer: {args.backend.optimizer}. Supported options: 'adam'")
 
         # Initialize LR scheduler
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
@@ -162,12 +168,16 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         self.prof.on_init_end()
 
-        return int(getattr(self.args, "start_rollout_id", 0))
+        return int(self.args.start_rollout_id)
 
     def _has_image_text_to_text_impl(self) -> bool:
-        if not hasattr(self.hf_config, "vision_config"):
+        if not hasattr(
+            self.hf_config, "vision_config"
+        ):  # config-access-exempt: HF text-only configurations omit vision_config
             return False
-        auto_map = getattr(self.hf_config, "auto_map", None)
+        auto_map = getattr(
+            self.hf_config, "auto_map", None
+        )  # config-access-exempt: HF configurations without custom auto classes omit auto_map
         return not auto_map or "AutoModelForImageTextToText" in auto_map
 
     def _get_model_cls(self):
@@ -183,9 +193,13 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             # Resolve natively-supported archs by model_type string: AutoConfig/AutoModel registries can
             # be re-registered at runtime (sglang vendors a nemotron_h config whose hybrid_override_pattern
             # parsing mis-places the attention layers), which would silently train a mis-shaped model.
-            native_cls_name = MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.get(getattr(self.hf_config, "model_type", ""))
+            native_cls_name = MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.get(
+                getattr(self.hf_config, "model_type", "")
+            )  # config-access-exempt: model-family schemas differ in optional model_type metadata
             if native_cls_name is not None:
-                return getattr(transformers, native_cls_name)
+                return getattr(
+                    transformers, native_cls_name
+                )  # config-access-exempt: attribute selected at runtime from native_cls_name
             return AutoModelForCausalLM
 
     def _load_hf_model(self, checkpoint_path: str, *, keep_fp32_master: bool) -> torch.nn.Module:
@@ -204,10 +218,14 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
     def _build_model_with_attn_bridge(self, checkpoint_path: str, init_context):
         """Build HF model and optionally apply Triton attention bridge patch."""
+        if SNAPSHOT_TESTING_ENABLED:
+            ConfigSnapshotDumper.dump(
+                stage="checkpoint_load", config={"args": self.args, "load": checkpoint_path, "format": "hf"}
+            )
         # ROCm-only: on other platforms "triton" falls through to from_pretrained, which rejects
         # it exactly as it did before this path existed.
-        use_triton_bridge = self.args.attn_implementation == "triton" and torch.version.hip is not None
-        effective_attn = "eager" if use_triton_bridge else self.args.attn_implementation
+        use_triton_bridge = self.args.backend.attn_implementation == "triton" and torch.version.hip is not None
+        effective_attn = "eager" if use_triton_bridge else self.args.backend.attn_implementation
 
         with init_context():
             model = self._get_model_cls().from_pretrained(
@@ -295,7 +313,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             yield
             return
 
-        if not self.fsdp_cpu_offload:
+        if not self.optimizer_cpu_offload:
             self.model.cpu()
             torch.cuda.empty_cache()
             dist.barrier(group=get_gloo_group())
@@ -305,7 +323,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         finally:
             torch.cuda.empty_cache()
             dist.barrier(group=get_gloo_group())
-            if not self.fsdp_cpu_offload:
+            if not self.optimizer_cpu_offload:
                 self.model.cuda()
                 dist.barrier(group=get_gloo_group())
 
@@ -318,6 +336,11 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
     def _step_runner(self) -> LinearStepRunner:
         return LinearStepRunner(self._forward, self._zero_grad, self._apply_step)
+
+    def _before_train(self) -> None:
+        if SNAPSHOT_TESTING_ENABLED and not self._config_snapshot_train_recorded:
+            ConfigSnapshotDumper.dump(stage="train_first_step", config={"args": self.args, "role": self.role})
+            self._config_snapshot_train_recorded = True
 
     def _after_rollout(self, rollout_id: int, rollout_data) -> None:
         if self.args.save_debug_train_data is not None:
@@ -347,7 +370,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         self.optimizer.zero_grad(set_to_none=True)
 
     def _apply_step(self) -> StepMetrics:
-        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad).full_tensor()
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.backend.clip_grad).full_tensor()
         self.optimizer.step()
         self.lr_scheduler.step()
         return StepMetrics(
@@ -417,12 +440,12 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
 
 @torch.no_grad()
-def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None, reduce_dtype=None):
+def apply_fsdp2(model, mesh=None, cpu_offload=False, *, args, param_dtype=None, reduce_dtype=None):
     """Apply FSDP2 (fully_shard) to the model.
 
     ``cpu_offload`` offloads params/grads/optimizer to CPU (the optimizer step runs on CPU).
     ``param_dtype``/``reduce_dtype`` are the MixedPrecisionPolicy dtypes; None falls back to the
-    args-based default (bf16 / fp32, or fp16 param when args.fp16).
+    args-based default (bf16 / fp32, or fp16 param when args.backend.fp16).
 
     Ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py
     """
@@ -441,7 +464,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None
     ]
 
     if param_dtype is None:
-        param_dtype = torch.float16 if args.fp16 else torch.bfloat16
+        param_dtype = torch.float16 if args.backend.fp16 else torch.bfloat16
     if reduce_dtype is None:
         reduce_dtype = torch.float32
 

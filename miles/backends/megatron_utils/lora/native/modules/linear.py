@@ -98,7 +98,9 @@ class NativeLoRAAdapter(nn.Module):
 
     def _validate_projection_parameters(self) -> None:
         for projection in self._projection_specs:
-            assert hasattr(self, f"{projection.param_prefix}_A") and hasattr(
+            assert hasattr(
+                self, f"{projection.param_prefix}_A"
+            ) and hasattr(  # config-access-exempt: validate the A and B attributes named by each projection descriptor
                 self, f"{projection.param_prefix}_B"
             ), f"native LoRA projection {projection.hf_leaf!r} has no complete A/B parameter pair"
 
@@ -135,11 +137,15 @@ class NativeLoRAAdapter(nn.Module):
     def _export_projections(self) -> Iterator[ProjectionExport]:
         tp = self.context.tp_size
         for projection in self.projection_specs:
-            b = getattr(self, f"{projection.param_prefix}_B")
+            b = getattr(
+                self, f"{projection.param_prefix}_B"
+            )  # config-access-exempt: the projection descriptor selects its registered B parameter
             yield ProjectionExport(
                 hf_name=f"{self.hf_prefix}{projection.hf_leaf}",
                 layout=projection.layout,
-                a=getattr(self, f"{projection.param_prefix}_A"),
+                a=getattr(
+                    self, f"{projection.param_prefix}_A"
+                ),  # config-access-exempt: the projection descriptor selects its registered A parameter
                 b=b,
                 b_rows_full=b.shape[0] * (tp if projection.layout == ShardLayout.COLUMN else 1),
             )
@@ -197,8 +203,12 @@ class LoRALinear(NativeLoRAAdapter):
         self._validate_projection_parameters()
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
-        a = getattr(self, f"{self.param_prefix}_A")
-        b = getattr(self, f"{self.param_prefix}_B")
+        a = getattr(
+            self, f"{self.param_prefix}_A"
+        )  # config-access-exempt: the projection prefix selects its registered A parameter
+        b = getattr(
+            self, f"{self.param_prefix}_B"
+        )  # config-access-exempt: the projection prefix selects its registered B parameter
         if self.layout == ShardLayout.COLUMN:
             x = branch_input(x, base_module, self.context)
             return F.linear(F.linear(x, a), b)
@@ -215,8 +225,12 @@ class LoRALinear(NativeLoRAAdapter):
 
     def weight_deltas(self):
         (host,) = self._hosts
-        a = getattr(self, f"{self.param_prefix}_A")
-        b = getattr(self, f"{self.param_prefix}_B")
+        a = getattr(
+            self, f"{self.param_prefix}_A"
+        )  # config-access-exempt: the projection prefix selects its registered A parameter
+        b = getattr(
+            self, f"{self.param_prefix}_B"
+        )  # config-access-exempt: the projection prefix selects its registered B parameter
         yield host.weight, lambda: self.context.lora.scale * (b.float() @ a.float())
 
 
@@ -232,11 +246,15 @@ class LoRAUnreducedRowLinear(LoRALinear):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         assert self.layout == ShardLayout.ROW, f"{type(self).__name__} requires a row-parallel projection"
-        getattr(self, f"{self.param_prefix}_B")._lora_grad_sum_group = "tp"
+        getattr(self, f"{self.param_prefix}_B")._lora_grad_sum_group = (
+            "tp"  # config-access-exempt: the projection prefix selects its registered B parameter
+        )
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         x = apply_lora_dropout(x, self.context, base_module.training)
-        return F.linear(F.linear(x, getattr(self, f"{self.param_prefix}_A")), getattr(self, f"{self.param_prefix}_B"))
+        return F.linear(
+            F.linear(x, getattr(self, f"{self.param_prefix}_A")), getattr(self, f"{self.param_prefix}_B")
+        )  # config-access-exempt: the projection prefix selects its registered A and B parameters
 
 
 class LoRAReplicatedPlainLinear(LoRALinear):
@@ -348,7 +366,10 @@ class LoRASplitAdapter(NativeLoRAAdapter):
         def delta() -> torch.Tensor:
             slots = [
                 (
-                    getattr(self, f"{name}_B").float() @ getattr(self, f"{name}_A").float()
+                    getattr(self, f"{name}_B").float()
+                    @ getattr(
+                        self, f"{name}_A"
+                    ).float()  # config-access-exempt: the registered projection name selects its A and B parameters
                     if name in self._active
                     else host.weight.new_zeros(rows, host.weight.shape[1], dtype=torch.float32)
                 )
@@ -361,9 +382,13 @@ class LoRASplitAdapter(NativeLoRAAdapter):
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         x = branch_input(x, base_module, self.context)
         rank = self.context.lora.rank
-        down = F.linear(x, torch.cat([getattr(self, f"{name}_A") for name in self._active], dim=0))
+        down = F.linear(
+            x, torch.cat([getattr(self, f"{name}_A") for name in self._active], dim=0)
+        )  # config-access-exempt: the registered projection name selects its A parameter
         active_delta = {
-            name: F.linear(down[..., index * rank : (index + 1) * rank], getattr(self, f"{name}_B"))
+            name: F.linear(
+                down[..., index * rank : (index + 1) * rank], getattr(self, f"{name}_B")
+            )  # config-access-exempt: the registered projection name selects its B parameter
             for index, name in enumerate(self._active)
         }
         full_delta = [
@@ -441,7 +466,9 @@ def attach_delta_forward(
     """
     original = module.forward
 
-    if hasattr(module, "return_layernorm_output"):
+    if hasattr(
+        module, "return_layernorm_output"
+    ):  # config-access-exempt: only fused normalization hosts expose return_layernorm_output
         # the gathered variant drops the gradient flowing back through the returned norm output
         module.return_layernorm_output = True
         module.return_layernorm_output_gathered = False
@@ -499,7 +526,7 @@ def build_qkv_permutation(
 def iter_adapters(model_chunks: Sequence[nn.Module]):
     for chunk in model_chunks:
         module = chunk
-        while hasattr(module, "module"):
+        while hasattr(module, "module"):  # config-access-exempt: wrapper modules may expose an inner module
             module = module.module
         for child in module.modules():
             if isinstance(child, NativeLoRAAdapter):

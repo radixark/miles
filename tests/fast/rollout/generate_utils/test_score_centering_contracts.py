@@ -228,6 +228,16 @@ def test_zero_token_completion_accepts_missing_candidate_fields(mode: str) -> No
     assert sample.rollout_topk_log_probs.shape == (0, 3)
 
 
+@pytest.mark.parametrize("width", [0, 3], ids=["empty-width", "full-width"])
+def test_zero_token_completion_accepts_empty_flat_candidates(width: int) -> None:
+    # an empty flat response has no rows to be short of, whatever width it reports
+    flat = _flat_output_top_logprobs([]) | {"output_top_logprobs_shape": [0, width]}
+    sample = Sample(response_length=0)
+    append_rollout_topk_logprobs(sample, {"output_token_logprobs": [], **flat}, 3)
+    assert sample.rollout_topk_token_ids.shape == (0, 3)
+    assert sample.rollout_topk_log_probs.shape == (0, 3)
+
+
 @pytest.mark.parametrize("support", [False, True])
 @pytest.mark.parametrize("candidates", [[2, 2, -1], [-1, 3, 3], [2, 3, 2]])
 def test_duplicate_candidates_are_rejected(support: bool, candidates: list[int]) -> None:
@@ -253,3 +263,26 @@ def test_candidate_validation_preserves_order_and_allows_repeated_padding(candid
     validate_rollout_topk_logprobs_sample(sample, 3)
     np.testing.assert_array_equal(sample.rollout_topk_token_ids, original_ids)
     np.testing.assert_array_equal(sample.rollout_topk_log_probs, original_logps)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "use_tis",
+        "custom_tis_function_path",
+        "use_opsm",
+        "true_on_policy_mode",
+        "recompute_logprobs_via_prefill",
+        "sglang_speculative_algorithm",
+        "custom_pg_loss_reducer_function_path",
+        "multi_lora",
+        "use_opd",
+        "custom_convert_samples_to_train_data_path",
+    ],
+)
+def test_missing_declared_compatibility_field_is_rejected(field: str) -> None:
+    """Missing known compatibility fields cannot silently disable validation."""
+    args = _args()
+    delattr(args, field)
+    with pytest.raises(AttributeError, match=field):
+        validate_score_centering_args(args)

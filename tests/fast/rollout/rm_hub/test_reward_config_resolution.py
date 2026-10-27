@@ -6,6 +6,7 @@ must not disable the fallbacks."""
 from types import SimpleNamespace
 
 from miles.rollout.rm_hub import _resolve_reward_config
+from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.types import RewardSpec, Sample
 
 
@@ -16,7 +17,7 @@ def _args(**kwargs) -> SimpleNamespace:
 def test_spec_fields_win_over_args():
     sample = Sample(prompt="p", reward_spec=RewardSpec(rm_type="math", custom_rm_path="pkg.fn"))
     args = SimpleNamespace(rm_type="deepscaler", custom_rm_path="other.fn")
-    assert _resolve_reward_config(args, sample) == ("pkg.fn", "math")
+    assert _resolve_reward_config(args, sample) == (CustomFunctionConfig(path="pkg.fn"), "math")
 
 
 def test_empty_spec_falls_back_to_args():

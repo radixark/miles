@@ -15,8 +15,6 @@ import aiohttp
 import httpx
 import numpy as np
 
-from miles.utils.logging_utils import configure_logger_raw
-
 logger = logging.getLogger(__name__)
 
 MILES_HOST_IP_ENV = "MILES_HOST_IP"
@@ -142,6 +140,8 @@ def router_worker_base_urls(urls: list[str]) -> list[str]:
 
 
 def run_router(args):
+    from miles.utils.logging_utils import configure_logger_raw
+
     # Spawned as a fresh interpreter, so it inherits no logging config.
     configure_logger_raw("router")
     try:
@@ -222,9 +222,13 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
         try:
             if action in ("delete", "get"):
                 assert not payload
-                response = await getattr(client, action)(url, headers=headers)
+                response = await getattr(client, action)(
+                    url, headers=headers
+                )  # config-access-exempt: attribute selected at runtime from action
             else:
-                response = await getattr(client, action)(url, json=payload or {}, headers=headers)
+                response = await getattr(client, action)(
+                    url, json=payload or {}, headers=headers
+                )  # config-access-exempt: attribute selected at runtime from action
             response.raise_for_status()
             try:
                 output = response.json()
@@ -235,6 +239,8 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
 
             if isinstance(e, httpx.HTTPStatusError):
                 response_text = e.response.text
+                if 400 <= e.response.status_code < 500 and e.response.status_code not in (408, 429):
+                    raise
             else:
                 response_text = None
 
@@ -308,7 +314,11 @@ async def _post_buffer(url: str, payload: dict) -> np.ndarray:
                         mmap.mmap,
                         -1,
                         max(length, 1),
-                        flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | getattr(mmap, "MAP_POPULATE", 0),
+                        flags=mmap.MAP_PRIVATE
+                        | mmap.MAP_ANONYMOUS
+                        | getattr(
+                            mmap, "MAP_POPULATE", 0
+                        ),  # config-access-exempt: MAP_POPULATE is an optional platform mmap constant
                     )
                 except (OSError, OverflowError) as exc:
                     raise httpx.ReadError(f"cannot allocate reply buffer for Content-Length {length}") from exc
@@ -330,13 +340,13 @@ async def _post_buffer(url: str, payload: dict) -> np.ndarray:
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
     global _client_concurrency, _distributed_post_enabled
-    rollout_num_gpus = args.rollout_num_gpus or 0
-    if rollout_num_gpus == 0 and not args.eval_uses_snapshots:
+    if args.inference_runtime_mut_state.engine_count == 0 and not args.eval_uses_snapshots:
         return
 
-    _client_concurrency = args.sglang_server_concurrency * rollout_num_gpus // args.rollout_num_gpus_per_engine
-    if args.eval_num_gpus > 0:
-        _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
+    initial_engine_count = (
+        args.inference_runtime_mut_state.engine_count + args.inference_runtime_mut_state.eval_engine_count
+    )
+    _client_concurrency = args.sglang_server_concurrency * initial_engine_count
     _client_concurrency = max(_client_concurrency, args.sglang_server_concurrency)
 
     # Optionally initialize distributed POST via Ray without changing interfaces
