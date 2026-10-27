@@ -17,6 +17,9 @@ class TestTrainProcessGroupBackendSelection:
             ("fsdp", True, "cuda", "nccl", "cpu:gloo,cuda:nccl"),
             ("torchtitan", True, "cuda", "nccl", "cpu:gloo,cuda:nccl"),
             ("torchtitan", True, "tpu", "tpu_dist", "cpu:gloo,tpu:tpu_dist"),
+            ("fsdp", False, "xpu", None, "xccl"),
+            ("fsdp", True, "xpu", None, "cpu:gloo,xpu:xccl"),
+            ("fsdp", False, "xpu", "gloo", "gloo"),
         ],
     )
     def test_only_fsdp2_cpu_offload_selects_a_hybrid_process_group(
@@ -25,7 +28,7 @@ class TestTrainProcessGroupBackendSelection:
         backend: str,
         offload: bool,
         device_type: str,
-        distributed_backend: str,
+        distributed_backend: str | None,
         expected: str,
     ) -> None:
         """Megatron initialization never reads FSDP2 settings while FSDP / torchtitan offload enables both transports."""
@@ -51,6 +54,7 @@ class TestTrainProcessGroupBackendSelection:
                 bind_device_after_process_group=lambda: None,
                 nvml_numa_affinity=False,
                 device_type=device_type,
+                dist_backend={"cuda": "nccl", "tpu": "tpu_dist", "xpu": "xccl"}[device_type],
             ),
         )
         monkeypatch.setattr(
