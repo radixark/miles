@@ -106,6 +106,8 @@ def compute_request_payload(
         if "image_data" in payload:
             # A media prompt's routed experts have one row per expanded media token, not per prompt token.
             raise StorePlanError("--use-output-store does not serve multimodal prompts")
+        # TODO: sweep the run's unreferenced objects periodically; a retried request orphans the one an earlier
+        # attempt stored.
         payload[OUTPUT_STORE_REQUEST_KEY] = True
     return payload, None
 
