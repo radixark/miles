@@ -19,7 +19,7 @@ With --opd-teacher, adds on-policy distillation: the teacher scores every respon
 opd_kl_coef * (log p_student - log p_teacher) is subtracted from each token's GRPO advantage. With --opd-pure
 that term is the whole advantage (open-instruct's --opd_pure): the task reward is still computed and logged.
 The teacher scores in the training forward pass (--opd-teacher-mode megatron, a teacher of the student's
-architecture) or on an SGLang server this launcher starts on the node's last GPU (sglang, any teacher with the
+architecture) or on SGLang servers this launcher starts on the rollout side's GPUs (sglang, any teacher with the
 student's tokenizer, e.g. allenai/tmax-9b into a 4B student).
 
 `prepare` downloads the dataset, extracts the task directories, writes the prompt
@@ -31,8 +31,8 @@ the training job.
 Args:
   --model-name: student, a key of _RECIPES (default: Qwen3.5-9B).
   --opd-teacher: teacher, a key of _RECIPES (default: none, no OPD).
-  --opd-teacher-mode: megatron (in the trainer; same architecture only), sglang (an SGLang server on the node's last
-      --opd-teacher-gpus GPUs, which Ray does not get), or auto: megatron when the architectures match (default).
+  --opd-teacher-mode: megatron (in the trainer; same architecture only), sglang (--opd-teacher-gpus SGLang servers of
+      one GPU each, on the last nodes, the rollout side), or auto: megatron when the architectures match (default).
   --opd-kl-coef: weight of the per-token reverse-KL penalty (default: 1.0).
   --opd-pure: train on the OPD term alone, the task reward logged but not trained on (default: off, additive).
   --num-gpus-per-node: GPUs per node (default: 8).
@@ -109,7 +109,10 @@ import dataclasses
 import json
 import os
 import shlex
+import subprocess
 import sys
+import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -124,7 +127,7 @@ from miles.utils.external_utils import command_utils
 from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_OPD_TEACHER_PORT = 30100  # the SGLang teacher of --opd-teacher-mode sglang, on 127.0.0.1
+_OPD_TEACHER_PORT = 30100  # the first SGLang teacher on a node (--opd-teacher-mode sglang); the next ones count up
 _DATASET = "allenai/tmax-15k-open-instruct"
 
 _MODEL_NAMES = Literal[
@@ -172,10 +175,13 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # open-instruct's --opd_pure: the advantage is the OPD term alone; the task reward is logged, not trained on.
     opd_pure: bool = False
     # Where the teacher scores the rollouts. megatron: in the trainer, its weights a CPU copy swapped into the student's
-    # model for one forward pass per step, so it must share the student's architecture. sglang: an SGLang server this
-    # launcher starts on the node's last opd_teacher_gpus GPUs, called by generate.generate_with_teacher at rollout
-    # time; any teacher with the student's tokenizer. auto: megatron when the architectures match, else sglang.
+    # model for one forward pass per step, so it must share the student's architecture. sglang: SGLang servers this
+    # launcher starts, called by generate.generate_with_teacher at rollout time; any teacher with the student's
+    # tokenizer. auto: megatron when the architectures match, else sglang.
     opd_teacher_mode: Literal["auto", "megatron", "sglang"] = "auto"
+    # SGLang teacher servers, one GPU each (TP>1 breaks Qwen3.5 in SGLang, sgl-project/sglang#21039), spread over the
+    # last nodes, which on several nodes are the rollout side's: training keeps its whole nodes. They come out of
+    # the GPUs async_rollout_gpus does not take.
     opd_teacher_gpus: int = 1
     # A teacher request is retried after this long without an answer, and fails the rollout on the third try.
     opd_teacher_timeout_s: int = 1800
@@ -263,12 +269,11 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         assert not self.opd_pure or self.opd_teacher is not None, "opd_pure needs opd_teacher"
         assert self.opd_teacher_mode == "auto" or self.opd_teacher is not None, "opd_teacher_mode needs opd_teacher"
         if self.opd_mode == "sglang":
-            # The rollout manager, and so the reward function calling the teacher, runs on the head node.
-            assert (
-                self.num_nodes == 1
-            ), "the SGLang teacher serves on one node; multi-node OPD needs opd_teacher_mode megatron"
-            assert self.opd_teacher_gpus == 1, "SGLang TP>1 produces garbage for Qwen3.5 (sgl-project/sglang#21039)"
-            assert self.ray_gpus_per_node > 0, "opd_teacher_gpus leaves no GPU for training and rollout"
+            assert self.opd_teacher_gpus > 0, "an SGLang teacher needs opd_teacher_gpus >= 1"
+            assert self.fully_async or self.num_nodes == 1, (
+                "colocated training spans every node's GPUs: on several nodes an SGLang teacher needs fully async "
+                "(async_rollout_gpus > 0)"
+            )
         # open-instruct warns here: the filter drops uniform groups, which carry no reward signal but full OPD signal.
         assert not (
             self.opd_pure and self.filter_zero_std
@@ -290,9 +295,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         return "megatron" if same_architecture else "sglang"
 
     @property
-    def ray_gpus_per_node(self) -> int:
-        """The GPUs Ray schedules training and rollout on: all of them, less the SGLang teacher's (the node's last)."""
-        return self.num_gpus_per_node - (self.opd_teacher_gpus if self.opd_mode == "sglang" else 0)
+    def teacher_server_gpus(self) -> int:
+        """GPUs of the SGLang teacher servers, which Miles' placement group does not get."""
+        return self.opd_teacher_gpus if self.opd_mode == "sglang" else 0
 
     @property
     def sandbox_docker_host(self) -> str:
@@ -312,18 +317,28 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     @property
     def train_layout(self) -> tuple[int, int]:
-        """(actor nodes, actor GPUs per node). Fully async splits one node, or gives each side whole nodes."""
+        """(actor nodes, actor GPUs per node). Fully async splits one node, or gives each side whole nodes. The SGLang
+        teacher servers' GPUs are the rollout side's (on one node, the node's)."""
         if not self.fully_async:
-            return self.num_nodes, self.ray_gpus_per_node
-        train_gpus = self.num_nodes * self.ray_gpus_per_node - self.async_rollout_gpus
-        assert train_gpus > 0, f"async_rollout_gpus={self.async_rollout_gpus} leaves no GPU for training"
+            return self.num_nodes, self.num_gpus_per_node - self.teacher_server_gpus
+        train_gpus = self.num_nodes * self.num_gpus_per_node - self.async_rollout_gpus - self.teacher_server_gpus
+        assert train_gpus > 0, (
+            f"async_rollout_gpus={self.async_rollout_gpus} and {self.teacher_server_gpus} teacher GPUs leave no GPU "
+            "for training"
+        )
         if self.num_nodes == 1:
             return 1, train_gpus
         # Like open-instruct's learner and vLLM nodes: training first, then rollout, each on whole nodes.
-        assert (
-            train_gpus % self.ray_gpus_per_node == 0
-        ), f"on {self.num_nodes} nodes, async_rollout_gpus must be whole nodes of {self.ray_gpus_per_node} GPUs"
-        return train_gpus // self.ray_gpus_per_node, self.ray_gpus_per_node
+        assert train_gpus % self.num_gpus_per_node == 0, (
+            f"on {self.num_nodes} nodes, async_rollout_gpus + the teacher GPUs must be whole nodes of "
+            f"{self.num_gpus_per_node} GPUs"
+        )
+        return train_gpus // self.num_gpus_per_node, self.num_gpus_per_node
+
+    @property
+    def opd_teacher_urls_file(self) -> str:
+        """Where _start_opd_teachers lists the SGLang teacher servers for generate.generate_with_teacher."""
+        return f"{self.output_dir}/{self.exp_name or self.run_id}/opd-teachers.json"
 
     @property
     def trace_run_dir(self) -> str:
@@ -480,7 +495,8 @@ def execute(args: ScriptArgs):
         if args.opd_mode == "megatron":
             grpo_args += f"--opd-teacher-load {args.model_dir}/{args.opd_teacher}_torch_dist "
         else:
-            # Miles' teacher request goes to --rm-url; generate.generate_with_teacher sends it (see _start_opd_teacher).
+            # generate.generate_with_teacher sends Miles' teacher request to the servers _start_opd_teachers lists in
+            # opd_teacher_urls_file, in place of --rm-url, which Miles' request otherwise goes to.
             grpo_args += f"--rm-url http://127.0.0.1:{_OPD_TEACHER_PORT}/generate "
         if args.opd_pure:
             # The trained reward is 0 for every sample, so GRPO's advantage is 0 and the OPD term is all that is left;
@@ -519,7 +535,8 @@ def execute(args: ScriptArgs):
         "--attention-backend flash "
         f"--actor-num-nodes {args.train_layout[0]} "
         f"--actor-num-gpus-per-node {args.train_layout[1]} "
-        f"--num-gpus-per-node {args.ray_gpus_per_node} "
+        # On one node, the GPUs Miles gets: the teacher servers hold the rest.
+        f"--num-gpus-per-node {args.num_gpus_per_node - (args.teacher_server_gpus if args.num_nodes == 1 else 0)} "
     )
     if args.fully_async:
         # open-instruct --async_steps 4 --inflight_updates true: generation never stops, in-flight requests
@@ -564,7 +581,7 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=args.ray_gpus_per_node,
+        num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.recipe.megatron_model_type,
         megatron_path=args.megatron_path,
         train_script="train_async.py" if args.fully_async else "train.py",
@@ -583,33 +600,105 @@ def execute(args: ScriptArgs):
             "TMAX_TOOL_CALL_TIMEOUT_S": str(args.tool_call_timeout_s),
             "TMAX_TRACE_DIR": args.trace_run_dir,
             # read by generate.generate_with_teacher, in the rollout process
-            **({"TMAX_OPD_TEACHER_TIMEOUT_S": str(args.opd_teacher_timeout_s)} if args.opd_mode == "sglang" else {}),
+            **(
+                {
+                    "TMAX_OPD_TEACHER_TIMEOUT_S": str(args.opd_teacher_timeout_s),
+                    "TMAX_OPD_TEACHER_URLS_FILE": args.opd_teacher_urls_file,
+                }
+                if args.opd_mode == "sglang"
+                else {}
+            ),
         },
-        before_ray_job_submit=(lambda: _start_opd_teacher(U, args)) if args.opd_mode == "sglang" else None,
+        before_ray_job_submit=(lambda: _start_opd_teachers(args)) if args.opd_mode == "sglang" else None,
     )
 
 
-def _start_opd_teacher(U, args: ScriptArgs) -> None:
-    """Serve the OPD teacher with SGLang on the node's last opd_teacher_gpus GPUs, which Ray was started without
-    (ray start --num-gpus ray_gpus_per_node schedules on the first ones), and wait until it answers: up to 30 min,
-    after which the launch fails with the server log's tail. Runs after ray start, before the job is submitted."""
-    gpus = ",".join(str(gpu) for gpu in range(args.ray_gpus_per_node, args.num_gpus_per_node))
-    log = f"{args.output_dir}/{args.exp_name or args.run_id}/opd-teacher.log"
-    health = f"http://127.0.0.1:{_OPD_TEACHER_PORT}/health_generate"
-    U.exec_command_cpu(
-        f"mkdir -p {os.path.dirname(log)} && "
-        f"(CUDA_VISIBLE_DEVICES={gpus} setsid python3 -m sglang.launch_server "
-        f"--model-path {args.model_dir}/{args.opd_teacher} "
-        # --language-only: the tmax checkpoints ship no vision tower. SGLang still loads an image processor for
-        # Qwen3.5, from the tokenizer path; the tmax checkpoints ship none, so the student's stands in (the processor
-        # configs are identical across Qwen3.5 sizes, and the vocabulary is shared: requests carry token ids).
-        f"--tokenizer-path {args.model_dir}/{args.model_name} --language-only "
-        f"--host 127.0.0.1 --port {_OPD_TEACHER_PORT} --tp-size 1 --mem-fraction-static 0.8 "
-        f"--context-length {args.max_seq_len + 2048} > {log} 2>&1 &) && "
-        f"for _ in $(seq 360); do "
-        f"python3 -c \"import urllib.request; urllib.request.urlopen('{health}', timeout=30)\" 2>/dev/null && exit 0; "
-        f"sleep 5; done; tail -n 100 {log}; exit 1"
+def _start_opd_teachers(args: ScriptArgs) -> None:
+    """Serve the OPD teacher on opd_teacher_gpus SGLang servers of one GPU each, list them in opd_teacher_urls_file
+    and wait until every one answers: up to 30 min, after which the launch fails with the servers' log tails. Runs
+    after the Ray cluster is up, before the job is submitted.
+
+    Each server is a detached Ray actor that holds its GPU (Ray sets its CUDA_VISIBLE_DEVICES) and runs SGLang on it,
+    on the last nodes in the order Miles' placement group sorts them (node IP): there the rollout side is, so the
+    placement group, created next on the GPUs left, still gives training its whole nodes first.
+    """
+    import ray
+    from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+    from miles.ray.placement_group import sort_key
+
+    ray.init(address="auto", namespace="tmax_opd_teacher", logging_level="ERROR")
+    nodes = sorted(
+        (n for n in ray.nodes() if n["Alive"] and n["Resources"].get("GPU")),
+        key=lambda n: sort_key((0, n["NodeManagerAddress"], 0)),
     )
+    assert len(nodes) == args.num_nodes, f"expected {args.num_nodes} GPU nodes in the Ray cluster, found {len(nodes)}"
+    hosts = _opd_teacher_hosts(len(nodes), args.train_layout[0], args.opd_teacher_gpus)
+    run_dir = os.path.dirname(args.opd_teacher_urls_file)
+    os.makedirs(run_dir, exist_ok=True)
+    server = ray.remote(num_gpus=1, num_cpus=1)(_OpdTeacherServer)
+    urls, logs = [], []
+    for i, node in enumerate(hosts):
+        port = _OPD_TEACHER_PORT + hosts[:i].count(node)
+        logs.append(f"{run_dir}/opd-teacher-{i}.log")
+        actor = server.options(
+            name=f"opd-teacher-{i}",
+            lifetime="detached",
+            scheduling_strategy=NodeAffinitySchedulingStrategy(nodes[node]["NodeID"], soft=False),
+        ).remote()
+        command = [
+            "-m", "sglang.launch_server",
+            "--model-path", f"{args.model_dir}/{args.opd_teacher}",
+            # --language-only: the tmax checkpoints ship no vision tower. SGLang still loads an image processor for
+            # Qwen3.5, from the tokenizer path; the tmax checkpoints ship none, so the student's stands in (the
+            # processor configs are identical across Qwen3.5 sizes, and the vocabulary is shared: requests carry
+            # token ids).
+            "--tokenizer-path", f"{args.model_dir}/{args.model_name}", "--language-only",
+            "--port", str(port), "--tp-size", "1", "--mem-fraction-static", "0.8",
+            "--context-length", str(args.max_seq_len + 2048),
+        ]  # fmt: skip
+        host = ray.get(actor.start.remote(command, logs[-1]))
+        urls.append(f"http://{host}:{port}/generate")
+    with open(args.opd_teacher_urls_file, "w") as f:
+        json.dump(urls, f)
+    print(f"OPD teacher servers: {urls}", flush=True)
+    pending, deadline = set(urls), time.time() + 1800
+    while pending and time.time() < deadline:
+        for url in sorted(pending):
+            try:
+                urllib.request.urlopen(url.removesuffix("/generate") + "/health_generate", timeout=30)
+                pending.discard(url)
+            except OSError:
+                pass
+        if pending:
+            time.sleep(5)
+    if pending:
+        for log in logs:
+            print(f"==> {log}", Path(log).read_text()[-8000:], sep="\n", flush=True)
+        raise RuntimeError(f"OPD teacher servers not healthy after 30 min: {sorted(pending)}")
+
+
+def _opd_teacher_hosts(num_nodes: int, train_nodes: int, num_servers: int) -> list[int]:
+    """The node (index in Miles' placement order) of each teacher server: round-robin over the rollout nodes, the
+    last first; on one node, that node."""
+    rollout_nodes = list(range(train_nodes, num_nodes)) if num_nodes > 1 else [0]
+    return [rollout_nodes[-1 - i % len(rollout_nodes)] for i in range(num_servers)]
+
+
+class _OpdTeacherServer:
+    """A Ray actor holding one GPU, on which it runs an SGLang teacher server. The server is the actor's child, so Ray
+    stops it with the actor (detached: at ray stop, or when the node goes), and the GPU is never busy while Ray counts
+    it free."""
+
+    def start(self, command: list[str], log: str) -> str:
+        import ray
+
+        host = ray.util.get_node_ip_address()
+        with open(log, "w") as out:
+            self._server = subprocess.Popen(
+                [sys.executable, *command, "--host", host], stdout=out, stderr=subprocess.STDOUT
+            )
+        return host
 
 
 def _wandb_args(args: ScriptArgs) -> str:

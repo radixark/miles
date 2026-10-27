@@ -1,6 +1,7 @@
 """TMax's reward function and pure OPD's reward post-process (generate.py)."""
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +16,7 @@ from miles.rollout.base_types import GenerateFnOutput  # noqa: E402
 
 from miles.utils.types import Sample  # noqa: E402
 
-ARGS = SimpleNamespace(reward_key=None)
+ARGS = SimpleNamespace(reward_key=None, rm_url="http://teacher:30100/generate")
 
 
 def test_reward_is_the_sandbox_verdict():
@@ -51,6 +52,8 @@ def _teacher_scored(monkeypatch, answer, collected):
     async def fake_teacher(args, sample):
         calls.append(sample.index)
         return answer(sample)
+
+    monkeypatch.delenv("TMAX_OPD_TEACHER_URLS_FILE", raising=False)
 
     async def no_sleep(_):
         pass
@@ -111,3 +114,40 @@ def test_the_wrapper_registers_the_agentic_generate_flags():
     """Miles adds a generate function's own flags through its add_arguments; without them train.py rejects
     --custom-agent-function-path (2026-10-23, smoke 01M5MY8EV6WAHDYCSSZYGNF4YN)."""
     assert generate.generate_with_teacher.add_arguments is generate.agentic_tool_call.generate.add_arguments
+
+
+def test_teacher_requests_go_to_the_least_busy_listed_server(monkeypatch, tmp_path):
+    urls = ["http://10.0.0.3:30100/generate", "http://10.0.0.4:30100/generate"]
+    (tmp_path / "opd-teachers.json").write_text(json.dumps(urls))
+    samples = [
+        Sample(index=i, tokens=[1, 2, 3], response_length=1, metadata={"reward": 0.0}) for i in range(len(urls) * 2)
+    ]
+    _teacher_scored(monkeypatch, None, samples)
+    monkeypatch.setenv("TMAX_OPD_TEACHER_URLS_FILE", str(tmp_path / "opd-teachers.json"))
+    sent, all_sent = [], asyncio.Event()
+
+    async def held_teacher(args, sample):
+        sent.append(args.rm_url)
+        if len(sent) == len(samples):
+            all_sent.set()
+        await all_sent.wait()  # every request is in flight before any answers
+        return _teacher_response(sample.tokens, [-1.0, -1.0])
+
+    monkeypatch.setattr(generate.on_policy_distillation, "reward_func", held_teacher)
+    _generate()
+    assert sorted(sent) == sorted(urls * 2), "each server got its share"
+    assert ARGS.rm_url == "http://teacher:30100/generate", "the job's args are left as they were"
+
+
+def test_without_a_server_list_the_teacher_is_rm_url(monkeypatch):
+    sample = Sample(index=0, tokens=[1, 2, 3], response_length=1, metadata={"reward": 0.0})
+    _teacher_scored(monkeypatch, None, [sample])
+    sent = []
+
+    async def teacher(args, sample):
+        sent.append(args.rm_url)
+        return _teacher_response(sample.tokens, [-1.0, -1.0])
+
+    monkeypatch.setattr(generate.on_policy_distillation, "reward_func", teacher)
+    _generate()
+    assert sent == [ARGS.rm_url]

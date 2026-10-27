@@ -7,8 +7,12 @@ the group instead of training on a false 0.
 """
 
 import asyncio
+import copy
+import functools
+import json
 import logging
 import os
+from collections import Counter
 
 from miles.rollout import on_policy_distillation
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
@@ -36,9 +40,9 @@ async def generate_with_teacher(input: GenerateFnInput) -> GenerateFnOutput:
     Scoring happens here, not in a reward function: session server v2 returns the samples with the agent's reward set,
     so Miles never calls ``--custom-rm-path`` for them. The task reward stays the reward, so the missing-reward filter,
     the metrics, additive OPD and ``opd_pure_rewards`` work as with the Megatron teacher (Miles' own SGLang-mode reward
-    function and post-process replace it with 0). The teacher request is Miles' (``--rm-url``, or
-    ``--opd-teacher-urls`` routed by sample metadata). Aborted samples, samples without a task reward (their group is
-    dropped) and evaluation samples are not scored.
+    function and post-process replace it with 0). The teacher request is Miles', sent to the least busy of the servers
+    listed in ``TMAX_OPD_TEACHER_URLS_FILE`` (the launcher's), else to ``--rm-url``. Aborted samples, samples without
+    a task reward (their group is dropped) and evaluation samples are not scored.
     """
     output = await agentic_tool_call.generate(input)
     if not input.evaluation:
@@ -61,15 +65,42 @@ generate_with_teacher.add_arguments = agentic_tool_call.generate.add_arguments
 async def _score_with_teacher(args, sample: Sample) -> None:
     timeout_s = float(os.environ.get("TMAX_OPD_TEACHER_TIMEOUT_S", "1800"))
     for attempt in range(1, _TEACHER_ATTEMPTS + 1):
+        url = _pick_teacher(args)
+        _teacher_requests_in_flight[url] += 1
         try:
-            response = await asyncio.wait_for(on_policy_distillation.reward_func(args, sample), timeout=timeout_s)
+            teacher_args = copy.copy(args)
+            teacher_args.rm_url = url
+            response = await asyncio.wait_for(
+                on_policy_distillation.reward_func(teacher_args, sample), timeout=timeout_s
+            )
             break
         except Exception as e:  # an HTTP error, a dropped connection, the timeout
             if attempt == _TEACHER_ATTEMPTS:
                 raise RuntimeError(f"the OPD teacher failed {attempt} times on sample {sample.index}") from e
-            logger.warning(f"OPD teacher request for sample {sample.index} failed (attempt {attempt}): {e!r}")
+            logger.warning(f"OPD teacher request for sample {sample.index} to {url} failed (attempt {attempt}): {e!r}")
             await asyncio.sleep(10 * attempt)
+        finally:
+            _teacher_requests_in_flight[url] -= 1
     sample.teacher_log_probs = _response_log_probs(response, sample)
+
+
+# Teacher requests in flight per server, in this rollout process: the next request goes to the least busy server.
+_teacher_requests_in_flight: Counter[str] = Counter()
+
+
+def _pick_teacher(args) -> str:
+    """The least busy of the teacher servers the launcher started (its opd_teacher_urls_file), else --rm-url."""
+    path = os.environ.get("TMAX_OPD_TEACHER_URLS_FILE")
+    urls = _read_teacher_urls(path) if path else (args.rm_url,)
+    return min(urls, key=lambda url: _teacher_requests_in_flight[url])
+
+
+@functools.cache
+def _read_teacher_urls(path: str) -> tuple[str, ...]:
+    with open(path) as f:
+        urls = tuple(json.load(f))
+    assert urls, f"{path} lists no OPD teacher server"
+    return urls
 
 
 def _response_log_probs(response: dict, sample: Sample) -> list[float]:
