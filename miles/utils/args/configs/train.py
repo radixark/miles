@@ -176,7 +176,16 @@ class TrainConfig(BaseConfig):
             )
         ),
     ] = False
-    allgather_cp: A[bool, Arg()] = False
+    allgather_cp: A[
+        bool,
+        Arg(
+            help=(
+                "With context parallelism, give each CP rank one contiguous slice of the packed token stream "
+                "instead of Megatron's zigzag split. Only for models whose attention layers declare "
+                "supports_allgather_cp; others are rejected at startup."
+            )
+        ),
+    ] = False
     mfu_peak_tflops: A[
         float | None,
         Arg(

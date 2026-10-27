@@ -52,6 +52,9 @@ class _Sconv(nn.Module):
 
 
 class InklingSelfAttention(SelfAttention):
+    # Reads the contiguous token layout of --allgather-cp; see verify_allgather_cp_support.
+    supports_allgather_cp = True
+
     def __init__(self, config, submodules, layer_number, attn_mask_type=AttnMaskType.causal, **kw):
         super().__init__(config, submodules, layer_number, attn_mask_type=attn_mask_type, **kw)
         t = config.inkling

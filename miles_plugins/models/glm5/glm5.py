@@ -327,6 +327,9 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
     and returns output of the same size.
     """
 
+    # Reads the contiguous token layout of --allgather-cp; see verify_allgather_cp_support.
+    supports_allgather_cp = True
+
     def __init__(
         self,
         config: MLATransformerConfig,
