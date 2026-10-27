@@ -1687,7 +1687,6 @@ def validate_skip_actor_forward_only(args) -> None:
         for name, enabled in (
             ("--keep-old-actor", args.keep_old_actor),
             ("--kl-coef", args.kl_coef != 0),
-            ("--use-opd", args.use_opd),
             ("--hidden-dropout", args.hidden_dropout != 0),
             ("--attention-dropout", args.attention_dropout != 0),
             ("--lora-dropout", args.lora_dropout != 0),
@@ -1722,6 +1721,21 @@ def validate_skip_actor_forward_only(args) -> None:
         if enabled
     ]
     assert not incompatible_options, f"{option} is incompatible with: {', '.join(incompatible_options)}"
+
+    if args.use_opd and not args.use_rollout_logprobs:
+        # pi_old exists only in the training forward, so the policy loss adds the OPD term per micro-batch
+        assert args.opd_log_prob_top_k == 0, (
+            f"{option} with --use-opd supports sampled-token OPD (--opd-log-prob-top-k 0); "
+            "top-k OPD needs --use-rollout-logprobs"
+        )
+        assert not args.normalize_advantages, (
+            f"{option} with --use-opd cannot --normalize-advantages: the loss adds the OPD term after the "
+            "rollout-wide normalization would have run; drop one of them or pass --use-rollout-logprobs"
+        )
+        assert args.rollout_data_postprocess_path is None, (
+            f"{option} with --use-opd cannot run --rollout-data-postprocess-path: "
+            "it would see advantages without the OPD term"
+        )
 
     assert args.num_steps_per_rollout in (None, 1), (
         f"{option} requires exactly one optimizer step per rollout; "

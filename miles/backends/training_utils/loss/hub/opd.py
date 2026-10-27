@@ -5,6 +5,16 @@ import torch
 from miles.utils.types import RolloutBatch
 
 
+def is_opd_formed_in_policy_loss(args: Namespace) -> bool:
+    """Whether the policy loss, not ``compute_advantages_and_returns``, adds the OPD term to the advantages.
+
+    With ``--skip-actor-forward-only`` and no ``--use-rollout-logprobs`` there are no old-policy log-probs
+    before training. One optimizer step per rollout makes the detached training log-probs pi_old, so the loss
+    forms the sampled-token OPD advantage from them, as the two-pass path forms it from the forward-only pass.
+    """
+    return args.skip_actor_forward_only and args.use_opd and not args.use_rollout_logprobs
+
+
 def apply_opd_kl_to_advantages(
     args: Namespace,
     rollout_data: RolloutBatch,

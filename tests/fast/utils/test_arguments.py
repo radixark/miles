@@ -3223,8 +3223,11 @@ def _make_skip_actor_forward_only_args(**overrides) -> SimpleNamespace:
         moe_router_load_balancing_type="aux_loss",
         multi_lora=False,
         n_samples_per_prompt=8,
+        normalize_advantages=False,
         num_steps_per_rollout=None,
+        opd_log_prob_top_k=0,
         rollout_batch_size=8,
+        rollout_data_postprocess_path=None,
         save_debug_train_data=None,
         train_backend="megatron",
         true_on_policy_mode=False,
@@ -3298,7 +3301,9 @@ class TestValidateSkipActorForwardOnly:
             {"compute_advantages_and_returns": False},
             {"keep_old_actor": True},
             {"kl_coef": 0.1},
-            {"use_opd": True},
+            {"use_opd": True, "opd_log_prob_top_k": 4},
+            {"use_opd": True, "normalize_advantages": True},
+            {"use_opd": True, "rollout_data_postprocess_path": "pkg.hook"},
             {"hidden_dropout": 0.1},
             {"attention_dropout": 0.1},
             {"lora_dropout": 0.1},
@@ -3321,6 +3326,23 @@ class TestValidateSkipActorForwardOnly:
     def test_incompatible_configuration_is_rejected(self, overrides):
         with pytest.raises(AssertionError, match="--skip-actor-forward-only"):
             validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(**overrides))
+
+    def test_sampled_token_opd_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_opd=True))
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"opd_log_prob_top_k": 4},
+            {"normalize_advantages": True},
+            {"rollout_data_postprocess_path": "pkg.hook"},
+        ],
+    )
+    def test_opd_on_rollout_logprobs_passes(self, overrides):
+        """The OPD baseline is then the rollout log-probs, so the advantage needs no actor forward at all."""
+        validate_skip_actor_forward_only(
+            _make_skip_actor_forward_only_args(use_opd=True, use_rollout_logprobs=True, **overrides)
+        )
 
     @pytest.mark.parametrize(
         ("base_flag", "rollout_flag"),

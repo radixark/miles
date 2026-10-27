@@ -492,6 +492,7 @@ def run_forward_backward_pass(
                 "rollout_topk_log_probs",
                 "max_seq_lens",
                 "witness_ids",
+                "teacher_log_probs",
                 "opd_reverse_kl",
                 "rollout_mask_sums",
                 "loss_weights",
