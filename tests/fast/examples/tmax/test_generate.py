@@ -151,3 +151,11 @@ def test_without_a_server_list_the_teacher_is_rm_url(monkeypatch):
     monkeypatch.setattr(generate.on_policy_distillation, "reward_func", teacher)
     _generate()
     assert sent == [ARGS.rm_url]
+
+
+def test_idle_teacher_servers_take_turns(monkeypatch, tmp_path):
+    urls = ["http://10.0.0.3:30100/generate", "http://10.0.0.4:30100/generate"]
+    (tmp_path / "opd-teachers.json").write_text(json.dumps(urls))
+    monkeypatch.setenv("TMAX_OPD_TEACHER_URLS_FILE", str(tmp_path / "opd-teachers.json"))
+    picks = [generate._pick_teacher(ARGS) for _ in range(4)]  # nothing in flight: every pick is a tie
+    assert sorted(picks) == sorted(urls * 2), "ties alternate instead of always going to the first server"

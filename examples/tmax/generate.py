@@ -9,6 +9,7 @@ the group instead of training on a false 0.
 import asyncio
 import copy
 import functools
+import itertools
 import json
 import logging
 import os
@@ -84,15 +85,18 @@ async def _score_with_teacher(args, sample: Sample) -> None:
     sample.teacher_log_probs = _response_log_probs(response, sample)
 
 
-# Teacher requests in flight per server, in this rollout process: the next request goes to the least busy server.
+# Teacher requests in flight per server, in this rollout process: the next request goes to the least busy server,
+# ties going round-robin (at low concurrency every server is idle, and min() alone would always pick the first).
 _teacher_requests_in_flight: Counter[str] = Counter()
+_teacher_picks = itertools.count()
 
 
 def _pick_teacher(args) -> str:
     """The least busy of the teacher servers the launcher started (its opd_teacher_urls_file), else --rm-url."""
     path = os.environ.get("TMAX_OPD_TEACHER_URLS_FILE")
     urls = _read_teacher_urls(path) if path else (args.rm_url,)
-    return min(urls, key=lambda url: _teacher_requests_in_flight[url])
+    start = next(_teacher_picks) % len(urls)
+    return min(urls[start:] + urls[:start], key=lambda url: _teacher_requests_in_flight[url])
 
 
 @functools.cache
