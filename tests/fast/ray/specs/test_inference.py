@@ -824,11 +824,7 @@ class TestInferenceEnginePortSchema:
         assert ports["dist_init"].mode == "master"
         assert ports["dist_init"].allow_dynamic is True
         assert ports["dist_init"].num_consecutive == 33
-        assert {name for name, info in ports.items() if info.mode == "per_worker"} == {
-            "primary",
-            "nccl",
-            "engine_info_bootstrap",
-        }
+        assert {name for name, info in ports.items() if info.mode == "per_worker"} == {"primary", "nccl"}
 
     def test_the_gate_port_is_allocated_once_per_cell(self, tmp_path):
         """The out-of-band launch gate lives on the cell's rank-0 engine, like dist_init."""

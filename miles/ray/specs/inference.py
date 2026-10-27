@@ -422,7 +422,7 @@ def _compute_spec_inference_engine(
                 if server_group_config.worker_type == WorkerType.PREFILL
                 else []
             ),
-            PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
+            PortInfo(name="engine_info_bootstrap", static_port=12000, mode="master", allow_dynamic=True),
             PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
         ],
         # TODO: reduce complexity around passing around configs later during arguments refactor
