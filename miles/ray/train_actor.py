@@ -146,9 +146,10 @@ class TrainRayActor(NodeProbeMixin):
     @property
     def _train_tflops(self) -> Callable[[list[int]], float] | None:
         """Per-GPU forward-plus-backward TFLOPs of a list of sequence lengths."""
-        model_flops, trains_indexers = self._model_flops, self._trains_indexers
+        model_flops = self._model_flops
         if model_flops is None:
             return None
+        trains_indexers = model_flops.has_indexers and self._trains_indexers
         return lambda seq_lens: model_flops.train_flops(seq_lens, trains_indexers) / dist.get_world_size() / 1e12
 
     def load_hf_assets(self, *, with_processor: bool = False) -> None:

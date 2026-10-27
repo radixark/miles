@@ -81,6 +81,10 @@ class ModelFlops:
         return _merge_key_terms(term for layer in self.layers for term in layer.key_terms)
 
     @functools.cached_property
+    def has_indexers(self) -> bool:
+        return any(layer.indexer_per_token for layer in self.layers)
+
+    @functools.cached_property
     def indexer_key_terms(self) -> dict[tuple[int, int | None], float]:
         return _merge_key_terms(term for layer in self.layers for term in layer.key_terms if term.indexer)
 
