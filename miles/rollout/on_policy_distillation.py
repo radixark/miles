@@ -1,3 +1,4 @@
+import asyncio
 import math
 from argparse import Namespace
 from collections.abc import Iterable
@@ -98,6 +99,7 @@ def _score_payload(
     token_ids: list[int] | None = None,
     token_ids_positions: list[list[int]] | None = None,
     extra_key: str | None = None,
+    logprob_start_len: int = 0,
 ) -> dict[str, Any]:
     payload = {
         "input_ids": input_ids,
@@ -107,14 +109,15 @@ def _score_payload(
             "skip_special_tokens": False,
         },
         "return_logprob": True,
-        "logprob_start_len": 0,
+        "logprob_start_len": logprob_start_len,
     }
     if top_k > 0:
         payload["top_logprobs_num"] = top_k
     if token_ids_positions is not None:
         # Per-position scoring (patched sglang): one id-list per input position, so the
         # teacher returns each position's own ids (sparse) instead of the global union
-        # broadcast to every position (dense O(R^2)). Aligned to logprob_start_len=0.
+        # broadcast to every position (dense O(R^2)). The server indexes the list by
+        # absolute input position, so it is independent of logprob_start_len.
         payload["token_ids_logprob_positions"] = token_ids_positions
     elif token_ids:
         payload["token_ids_logprob"] = token_ids
@@ -126,11 +129,10 @@ def _score_payload(
 def _per_position_ids(top_logprobs: TopLogprobs, prompt_len: int) -> list[list[int]]:
     """Build one token-id list per scored input position for ``token_ids_logprob_positions``.
 
-    ``top_logprobs`` is per response position (length == response_length). Prompt
-    positions are padded with empty id-lists so the layout aligns with
-    ``logprob_start_len=0`` and the existing ``_trim_input_field`` extraction
-    (``values[1:][-response_length:]``) — i.e. response position r lands at index
-    ``prompt_len + r``.
+    ``top_logprobs`` is per response position (length == response_length). The server
+    reads the list by absolute input position (sgl-project/sglang#27421), so prompt
+    positions are padded with empty id-lists and response position r lands at index
+    ``prompt_len + r`` whatever ``logprob_start_len`` the payload asks for.
     """
     per_pos: list[list[int]] = [[] for _ in range(prompt_len)]
     for entries in top_logprobs:
@@ -138,16 +140,59 @@ def _per_position_ids(top_logprobs: TopLogprobs, prompt_len: int) -> list[list[i
     return per_pos
 
 
+def _response_logprob_start_len(sample: Sample) -> int:
+    """First position to score so SGLang returns ``[None, *response logprobs]``.
+
+    SGLang returns one input-logprob row per position from ``logprob_start_len`` with
+    the first row a ``None`` placeholder, and reuses a cached prefix only up to
+    ``logprob_start_len``. Starting at 0 made the teacher return (and recompute,
+    since no radix-cache prefix can match) a row for every prompt token that
+    ``_trim_input_field`` then discarded.
+    """
+    prompt_len = len(sample.tokens) - sample.response_length
+    return max(prompt_len - 1, 0)
+
+
 def _student_score_url(args: Namespace) -> str:
     return f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
 
+# One pooled session per event loop, reused by every teacher/student scoring call.
+_scoring_sessions: dict[asyncio.AbstractEventLoop, aiohttp.ClientSession] = {}
+
+
+def _scoring_session() -> aiohttp.ClientSession:
+    loop = asyncio.get_running_loop()
+    session = _scoring_sessions.get(loop)
+    if session is None or session.closed:
+        session = aiohttp.ClientSession(
+            # limit=0: rollout concurrency bounds the scoring calls, not the pool, as
+            # it did when every call opened its own session.
+            connector=aiohttp.TCPConnector(limit=0),
+            timeout=aiohttp.ClientTimeout(total=None),
+            cookie_jar=aiohttp.DummyCookieJar(),
+        )
+        _scoring_sessions[loop] = session
+    return session
+
+
+async def close_scoring_sessions() -> None:
+    """Close every pooled scoring session; called once when the rollout shuts down."""
+    current = asyncio.get_running_loop()
+    sessions = list(_scoring_sessions.items())
+    _scoring_sessions.clear()
+    for loop, session in sessions:
+        if loop is current:
+            await session.close()
+        elif loop.is_running():
+            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(session.close(), loop))
+
+
 async def _post_json(url: str, payload: dict[str, Any], timeout_secs: int | float | None = None) -> dict[str, Any]:
     timeout = aiohttp.ClientTimeout(total=timeout_secs)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, json=payload) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+    async with _scoring_session().post(url, json=payload, timeout=timeout) as resp:
+        resp.raise_for_status()
+        return await resp.json()
 
 
 def _top_entry_token_id(entry: list[Any]) -> int:
@@ -168,8 +213,16 @@ def _trim_input_field(meta_info: dict[str, Any], field: str, response_length: in
     values = meta_info.get(field)
     if values is None:
         raise ValueError(f"Teacher response is missing meta_info.{field}.")
-    # SGLang's first input logprob/top-logprob position is a placeholder.
-    return values[1:][-response_length:] if response_length > 0 else []
+    if response_length <= 0:
+        return []
+    # SGLang's first input logprob/top-logprob position is a placeholder; the response
+    # rows are the tail whatever logprob_start_len the request used.
+    response_values = values[1:][-response_length:]
+    if len(response_values) != response_length:
+        raise ValueError(
+            f"Teacher meta_info.{field} has {len(values)} rows, too few for a response of {response_length} tokens."
+        )
+    return response_values
 
 
 def _input_logprob_maps(response: dict[str, Any], field: str, response_length: int) -> LogprobMaps:
@@ -372,8 +425,14 @@ async def _query_teacher(args: Namespace, sample: Sample) -> dict[str, Any]:
     # Multi-teacher routing: pick this sample's teacher endpoint (falls back to
     # --rm-url when --opd-teacher-urls is unset).
     teacher_url = _teacher_url_for_sample(args, sample)
+    # the teacher is frozen, so reusing its cached prompt prefix cannot change its logprobs
+    logprob_start_len = _response_logprob_start_len(sample)
     if top_k == 0:
-        return await _post_json(teacher_url, _score_payload(sample.tokens), timeout_secs=request_timeout)
+        return await _post_json(
+            teacher_url,
+            _score_payload(sample.tokens, logprob_start_len=logprob_start_len),
+            timeout_secs=request_timeout,
+        )
 
     strategy = _get_top_k_strategy(args)
     # Per-position scoring requires a patched teacher/student server that understands
@@ -391,18 +450,26 @@ async def _query_teacher(args: Namespace, sample: Sample) -> dict[str, Any]:
 
     if student_top is not None and per_position:
         teacher_payload = _score_payload(
-            sample.tokens, top_k=teacher_top_k, token_ids_positions=_per_position_ids(student_top, prompt_len)
+            sample.tokens,
+            top_k=teacher_top_k,
+            token_ids_positions=_per_position_ids(student_top, prompt_len),
+            logprob_start_len=logprob_start_len,
         )
     elif teacher_token_ids is not None:
-        teacher_payload = _score_payload(sample.tokens, top_k=teacher_top_k, token_ids=teacher_token_ids)
+        teacher_payload = _score_payload(
+            sample.tokens, top_k=teacher_top_k, token_ids=teacher_token_ids, logprob_start_len=logprob_start_len
+        )
     else:
-        teacher_payload = _score_payload(sample.tokens, top_k=teacher_top_k)
+        teacher_payload = _score_payload(sample.tokens, top_k=teacher_top_k, logprob_start_len=logprob_start_len)
     teacher_response = await _post_json(teacher_url, teacher_payload, timeout_secs=request_timeout)
 
     reward_payload = {"teacher": teacher_response}
     if strategy in STUDENT_ON_TEACHER_STRATEGIES:
         teacher_top = _trim_input_field(teacher_response["meta_info"], "input_top_logprobs", sample.response_length)
         student_extra_key = sample.kv_cache_namespace
+        # The live student keeps scoring from position 0: a prefix match would reuse prompt
+        # KV cached under the weights the sample was generated with, so these logprobs
+        # would change once the weights moved. Only the frozen teacher starts at the response.
         if per_position:
             student_payload = _score_payload(
                 sample.tokens,

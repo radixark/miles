@@ -327,6 +327,70 @@ class TestStalenessFiltering:
         await _get_one(under_test.buffer, current_version=20)
         assert under_test.buffer.get_metrics()["rollout/fully_async/buffer_max_staleness"] == 12
 
+    async def test_a_group_already_stale_on_arrival_is_recycled_without_taking_a_slot(self) -> None:
+        """Staleness only grows, so a group past the limit when put can never be trained on."""
+        under_test = _make_buffer(max_weight_staleness=2)
+        await _put(under_test.buffer, _make_finished_group(1, weight_version=10))
+        await _get_one(under_test.buffer, current_version=10)
+
+        stale = _make_finished_group(2, weight_version=7)
+        await _put(under_test.buffer, stale)
+
+        assert under_test.unused == [(stale, UnusedReason.STALE)]
+        metrics = under_test.buffer.get_metrics()
+        assert metrics["rollout/fully_async/stale_groups_filtered"] == 1
+        assert metrics["rollout/fully_async/queue_size"] == 0
+
+
+# ========================== skipping stale rewards ==========================
+
+
+class TestSkippingTheRewardOfAStaleGroup:
+    async def test_nothing_is_skipped_before_a_get_names_the_weight_version(self) -> None:
+        """Without a current version there is no staleness, so every group still gets its reward."""
+        under_test = _make_buffer(max_weight_staleness=0)
+
+        assert not under_test.buffer.should_skip_reward(_make_finished_group(1, weight_version=1))
+
+    async def test_a_partial_group_past_the_limit_is_skipped_and_counted(self) -> None:
+        """The samples generated so far already fix the group as stale; one at the limit is still scored."""
+        under_test = _make_buffer(max_weight_staleness=2)
+        await _put(under_test.buffer, _make_finished_group(1, weight_version=10))
+        await _get_one(under_test.buffer, current_version=10)
+
+        assert under_test.buffer.should_skip_reward(_make_finished_group(2, weight_version=7)[:1])
+        assert not under_test.buffer.should_skip_reward(_make_finished_group(3, weight_version=8)[:1])
+        assert under_test.buffer.get_metrics()["rollout/fully_async/stale_reward_calls_skipped"] == 1
+        assert under_test.buffer.get_metrics()["rollout/fully_async/stale_reward_calls_skipped"] == 0
+
+    async def test_an_unset_max_staleness_never_skips(self) -> None:
+        under_test = _make_buffer(max_weight_staleness=None)
+        await _put(under_test.buffer, _make_finished_group(1, weight_version=10))
+        await _get_one(under_test.buffer, current_version=1000)
+
+        assert not under_test.buffer.should_skip_reward(_make_finished_group(2, weight_version=1))
+
+    async def test_a_group_whose_reward_was_skipped_goes_to_the_unused_handler_as_stale(self) -> None:
+        """Its rewards are unset, so the missing-reward filter would otherwise discard it without a retry."""
+        under_test = _make_buffer(max_weight_staleness=0)
+        await _put(under_test.buffer, _make_finished_group(1, weight_version=5))
+        await _get_one(under_test.buffer, current_version=5)
+        skipped = _make_finished_group(2, weight_version=4, reward=None)
+
+        assert under_test.buffer.should_skip_reward(skipped[:1])
+        await _put(under_test.buffer, skipped)
+
+        assert under_test.unused == [(skipped, UnusedReason.STALE)]
+        metrics = under_test.buffer.get_metrics()
+        assert metrics["rollout/fully_async/stale_groups_filtered"] == 1
+        assert metrics["rollout/fully_async/queue_size"] == 0
+
+    def test_a_custom_buffer_never_skips_unless_it_says_so(self) -> None:
+        """Only a buffer that rejects the skipped group on put may let the producer skip its reward."""
+        buffer = _RecordingBuffer(DataBufferConstructorInput(args=Namespace(), unused_handler_fn=_ignore_group))
+
+        assert not buffer.should_skip_reward(_make_finished_group(1, weight_version=0))
+
 
 # ============================== batched get ===============================
 

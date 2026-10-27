@@ -150,6 +150,7 @@ replaceable component with the following interface:
 | `put()` | The rollout worker, once per finished group | Store the group, or reject it |
 | `get(num_groups=...)` | The trainer, once per training batch | Return that many groups at once, waiting until the buffer holds them |
 | `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
+| `should_skip_reward(group)` | The rollout worker, before each reward call of a group still generating | Optional. Return `True` only for a group `put()` will reject whatever its rewards; the reward call is then skipped. The default never skips |
 | `state_dict()` | Checkpoint save | Return every accepted entry needed to resume without loss or duplication |
 | `load_state_dict(state)` | Checkpoint load | Replace the buffer state with a previously returned state |
 
@@ -164,6 +165,7 @@ flowchart LR
         direction LR
         PF{{"put-time filters"}}
         PF -->|aborted group| U["--async-unused-samples-handler"]
+        PF -->|"already staleness > --max-weight-staleness"| U
         PF -->|dynamic-sampling filter reject| X[Dropped]
         PF -->|kept| B[("Bounded store")]
         B --> GF{{"get-time filter"}}
@@ -179,8 +181,16 @@ Groups are filtered at two points, because the two decisions become available at
 different times. Whether a group was aborted, and whether
 `--dynamic-sampling-filter-path` keeps it, is fixed the moment generation finishes, so
 both are decided on `put()`. Staleness depends on how long the group then sits in the
-buffer, so it is decided on `get()`. Once the trainer has a full batch it sorts the
+buffer, so it is decided again on `get()`. Once the trainer has a full batch it sorts the
 groups by index and applies `--rollout-sample-filter-path` to the assembled batch.
+
+Staleness only grows: a group's oldest weight version cannot get newer, and the current
+version cannot go back. So a group already past `--max-weight-staleness` (measured at
+the version of the latest `get()`) is rejected on `put()`, before the reward filters, and
+the rollout worker asks `should_skip_reward` before each reward call of a group still
+generating. Once the samples generated so far put the group past the limit, its remaining
+reward calls (for example, OPD teacher scoring) are skipped, and the group still goes to
+`--async-unused-samples-handler` as stale.
 
 If a sample cancels itself (for example, a sandbox client raises `CancelledError`),
 its group is marked aborted after the sibling samples settle. The default buffer
@@ -338,6 +348,7 @@ standard rollout metrics:
 rollout/fully_async/queue_size
 rollout/fully_async/aborted_groups_filtered
 rollout/fully_async/stale_groups_filtered
+rollout/fully_async/stale_reward_calls_skipped
 rollout/fully_async/avg_staleness, rollout/fully_async/max_staleness
 rollout/fully_async/avg_post_generation_staleness, rollout/fully_async/max_post_generation_staleness
 rollout/fully_async/avg_generation_version_span, rollout/fully_async/max_generation_version_span
@@ -354,6 +365,8 @@ otherwise it does not. The metrics separate three parts of policy provenance:
 - `avg_staleness` and `max_staleness` are the gap from the current version to the
   oldest version in each selected group. `stale_groups_filtered` counts groups that
   exceeded `--max-weight-staleness`; rejected groups do not enter these averages.
+  `stale_reward_calls_skipped` counts the reward calls skipped because their group was
+  already past the limit: one per sample, or one per group with `--group-rm`.
 - `post_generation_staleness` is the gap from the current version to the newest version
   in each selected group. `generation_version_span` is the newest minus oldest version
   within the group. Together they distinguish aging after generation from updates that
