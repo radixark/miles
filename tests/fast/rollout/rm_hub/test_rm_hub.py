@@ -43,6 +43,14 @@ class TestAsyncRm:
             # A box only inside unfinished reasoning must not count for graders that need a closer.
             ("boxed_deepscaler", r"<think>so \boxed{5} maybe", "5", 0),
             ("boxed_gemma_math", r"\boxed{5} thinking<channel|>the answer is 5", "5", 0),
+            # `math` and the `boxed_` extraction only read the text after the reasoning.
+            ("math", r"<think>so \boxed{5}</think> I am not sure.", "5", 0),
+            ("math", r"<think>so \boxed{5} maybe", "5", 0),
+            ("math", r"so \boxed{5}</think> I am not sure.", "5", 0),
+            ("math", r"<think>maybe \boxed{6}</think> So the result is \boxed{5}.", "5", 1),
+            ("boxed_math", r"<think>so \boxed{5}</think> I am not sure.", "5", 0),
+            ("boxed_f1", r"<think>\boxed{hello world}</think> no idea", "hello world", 0),
+            ("boxed_dapo", r"<think>so \boxed{5} maybe", "5", {"score": -1.0}),
         ],
     )
     def test_rm_types(self, mock_args, rm_type, response, label, expected):
