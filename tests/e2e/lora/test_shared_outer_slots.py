@@ -34,7 +34,7 @@ from miles.backends.megatron_utils.lora.optimizer import (
 from miles.backends.megatron_utils.model import finalize_model_grads_with_empty_cache
 from miles.utils.distributed_utils import init_gloo_group
 
-register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora", "multi-lora"], hardware=["hopper"])
+register_cuda_ci(est_time=240, suite="stage-b-2-gpu-h200", labels=["lora", "multi-lora"], hardware=["hopper"])
 
 logger = logging.getLogger(__name__)
 
@@ -201,26 +201,28 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint-root", type=Path)
     parser.add_argument("--worker-dir", type=Path)
     parser.add_argument("--tp", type=int, default=1)
-    parser.add_argument("--canonical", action=argparse.BooleanOptionalAction, default=True)
+    # unset: run both the canonical and the fused gate/up layout
+    parser.add_argument("--canonical", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--gpus", type=int, default=2)
     options = parser.parse_args()
     if options.worker_dir is not None:
         run_worker(options.worker_dir, options.tp, options.canonical)
     else:
-        with tempfile.TemporaryDirectory(prefix="shared-outer-", dir=options.checkpoint_root) as directory:
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "torch.distributed.run",
-                    "--standalone",
-                    f"--nproc_per_node={options.gpus}",
-                    __file__,
-                    "--worker-dir",
-                    directory + "/checkpoint",
-                    "--tp",
-                    str(options.tp),
-                    "--canonical" if options.canonical else "--no-canonical",
-                ],
-                check=True,
-            )
+        for canonical in (True, False) if options.canonical is None else (options.canonical,):
+            with tempfile.TemporaryDirectory(prefix="shared-outer-", dir=options.checkpoint_root) as directory:
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "torch.distributed.run",
+                        "--standalone",
+                        f"--nproc_per_node={options.gpus}",
+                        __file__,
+                        "--worker-dir",
+                        directory + "/checkpoint",
+                        "--tp",
+                        str(options.tp),
+                        "--canonical" if canonical else "--no-canonical",
+                    ],
+                    check=True,
+                )
