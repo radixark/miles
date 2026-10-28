@@ -249,10 +249,11 @@ class RolloutRelatedConfig(BaseConfig):
                 "How http-lora hands the adapter to the engines. 'path': write a versioned PEFT "
                 "directory under --update-weight-disk-dir and POST its path to load_lora_adapter; "
                 "the directory must be visible to the engine hosts, or "
-                "--custom-update-weight-post-write-path copies it there. 'tensors': POST the "
-                "adapter weights in the request body (load_lora_adapter_from_tensors), so the "
-                "engines need nothing but an HTTP port; --update-weight-disk-dir is then optional "
-                "and only keeps versioned copies for auditing."
+                "--custom-update-weight-post-write-path copies it there. 'tensors': stream the "
+                "adapter through the engine's weight-update session (register_lora_adapter, "
+                "update_weights_from_tensor, end_weight_update), so the engines need nothing but "
+                "an HTTP port and each version is installed in place; --update-weight-disk-dir "
+                "is not used."
             ),
         ),
     ] = "path"
