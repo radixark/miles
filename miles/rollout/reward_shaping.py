@@ -7,11 +7,12 @@ from argparse import Namespace
 from miles.utils.types import Sample
 
 
+logger = logging.getLogger(__name__)
+
+
 def is_correct_reward(reward: float) -> bool:
     """Only an exact raw reward of one denotes a correct trajectory."""
     return reward == 1.0
-
-logger = logging.getLogger(__name__)
 
 
 def validate_length_penalty_args(args: Namespace) -> None:
@@ -81,13 +82,13 @@ def apply_length_penalty(
     if coeff == 0:
         return rewards
     minimum = args.length_penalty_min_tokens
-    shaped = list(rewards) if coeff else rewards
+    shaped = list(rewards)
     for rows in prompt_groups:
         rollouts: list[tuple[list[int], int]] = []
         correct: list[tuple[list[int], int]] = []
         for siblings in rollout_segments(samples, rows):
             reward = rewards[siblings[0]]
-            if coeff and any(rewards[row] != reward for row in siblings[1:]):
+            if any(rewards[row] != reward for row in siblings[1:]):
                 raise ValueError("all samples in a rollout must share one reward")
             length = sum(
                 0 if samples[row].remove_sample else samples[row].effective_response_length for row in siblings
