@@ -7,7 +7,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from miles.dashboard.store import EngineSample, Meta, MetricStore
+import miles.dashboard.store as store_module
+from miles.dashboard.store import EngineSample, Meta, MetricStore, _ThinnedEngineSeries
 
 
 def make_store(tmp_path: Path, samples: list[EngineSample]) -> MetricStore:
@@ -155,7 +156,6 @@ def test_engine_catalog_needs_no_stream_scan(tmp_path, monkeypatch):
 
 
 def test_long_run_keeps_bounded_scrapes_of_the_raw_values(tmp_path, monkeypatch):
-    from miles.dashboard.store import _ThinnedEngineSeries
 
     monkeypatch.setattr(_ThinnedEngineSeries, "SCRAPES_PER_ENGINE", 50)
     points = [(i * 2.0, float(i)) for i in range(1000)]  # 2 s scrapes, value = scrape index
@@ -172,7 +172,6 @@ def test_long_run_keeps_bounded_scrapes_of_the_raw_values(tmp_path, monkeypatch)
 
 
 def test_scrape_split_across_flushes_keeps_every_dp_rank(tmp_path, monkeypatch):
-    from miles.dashboard.store import _ThinnedEngineSeries
 
     monkeypatch.setattr(_ThinnedEngineSeries, "SCRAPES_PER_ENGINE", 5)
     writer = MetricStore(tmp_path / "dashboard")
@@ -212,7 +211,6 @@ def _engine_sample(metric: str, ts: float) -> EngineSample:
 def test_failed_catalog_rewrite_is_retried(tmp_path, monkeypatch):
     """The collector retries a flush that raised: the retry must still add the
     names whose catalog rewrite failed."""
-    import miles.dashboard.store as store_module
 
     writer = MetricStore(tmp_path)
     writer.write_meta(Meta(run_name="t", start_ts=0.0, args={}))
@@ -247,7 +245,6 @@ def test_resumed_dir_without_a_catalog_keeps_its_earlier_engine_metrics(tmp_path
 def test_kept_scrape_counts_track_the_view_across_split_scrapes(tmp_path, monkeypatch):
     """The bound check reads per-engine counts kept from each append; they must
     equal a recount of the view, a scrape split across two flushes included."""
-    from miles.dashboard.store import _ThinnedEngineSeries
 
     monkeypatch.setattr(_ThinnedEngineSeries, "SCRAPES_PER_ENGINE", 5)
     writer = MetricStore(tmp_path / "dashboard")
