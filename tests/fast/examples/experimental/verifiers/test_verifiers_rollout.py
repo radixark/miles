@@ -43,7 +43,7 @@ def _args(**overrides) -> Namespace:
         "lora_rank": 0,
         "reward_key": None,
         "num_rollout": None,
-        "use_miles_router": False,
+        "router": "sglang",
         "rollout_max_context_len": 64,
         "rollout_max_prompt_len": None,
         "rollout_max_response_len": 8,
