@@ -13,6 +13,8 @@ MILES_SCRIPT_CLUSTER_BACKEND=monarch python scripts/run_qwen3_4b.py train
   alive, exactly as under Ray.
 - **Gpu placement.** Monarch assigns no gpus, so Miles packs its gpu slots onto hosts in mesh order, as a
   Ray `PACK` placement group would, and every gpu worker selects the devices it was placed on.
+- **Worker calls.** The driver calls its workers through Monarch endpoints, and a trainer cell's ranks in
+  one mesh call; `--worker-comm-backend rpc` calls the http server every worker serves instead.
 - **Data plane.** There is no Ray object store, so `--object-store-backend` is forced to `mooncake`, as
   under Kubernetes; the launcher starts the Mooncake master.
 - **Hosts.** A run spawns everything on the driver's host.

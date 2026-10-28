@@ -81,10 +81,15 @@ class TestClusterBackendPredicates:
             backend.auto_resumes_cells(),
         ) == (ray_cluster, driver_launched, auto_resumed)
 
-    def test_monarch_speaks_rpc_by_default(self):
-        """Phase 1 of the monarch backend serves every worker over the rpc wire kubernetes already speaks."""
+    def test_monarch_calls_workers_through_its_endpoints_by_default(self):
         assert (
             resolve_worker_comm_backend(cluster_backend=ClusterBackend.MONARCH, requested=None)
+            is WorkerCommBackend.MONARCH
+        )
+
+    def test_monarch_serves_workers_over_rpc_on_request(self):
+        assert (
+            resolve_worker_comm_backend(cluster_backend=ClusterBackend.MONARCH, requested=WorkerCommBackend.RPC.value)
             is WorkerCommBackend.RPC
         )
 

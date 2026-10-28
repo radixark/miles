@@ -26,10 +26,11 @@ class ClusterBackend(Enum):
 class WorkerCommBackend(Enum):
     RAY = "ray"
     RPC = "rpc"
+    MONARCH = "monarch"
 
     def calls_workers_natively(self) -> bool:
         """Whether the driver calls a served worker through the cluster backend's own actor calls, not over rpc."""
-        return self is WorkerCommBackend.RAY
+        return self in (WorkerCommBackend.RAY, WorkerCommBackend.MONARCH)
 
 
 class DeployComponent(Enum):
@@ -89,7 +90,7 @@ class DeploymentIdentity(FrozenStrictBaseModel):
 _SUPPORTED_WORKER_COMM_BACKENDS = {
     ClusterBackend.RAY: (WorkerCommBackend.RAY, WorkerCommBackend.RPC),
     ClusterBackend.KUBERNETES: (WorkerCommBackend.RPC,),
-    ClusterBackend.MONARCH: (WorkerCommBackend.RPC,),
+    ClusterBackend.MONARCH: (WorkerCommBackend.MONARCH, WorkerCommBackend.RPC),
 }
 
 

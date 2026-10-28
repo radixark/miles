@@ -26,9 +26,11 @@ class ClusterConfig(BaseConfig):
         Arg(
             choices=tuple(backend.value for backend in WorkerCommBackend),
             help=(
-                "How the driver calls its workers: `ray` sends actor calls, `rpc` calls the http server "
+                "How the driver calls its workers: `ray` sends Ray actor calls, `monarch` sends Monarch "
+                "endpoint calls (a whole cell in one mesh call), `rpc` calls the http server "
                 "every worker serves. Unset picks the default of the cluster backend, today `ray` under "
-                "`--cluster-backend ray` and `rpc` under `--cluster-backend kubernetes` and `monarch`."
+                "`--cluster-backend ray`, `monarch` under `--cluster-backend monarch` and `rpc` under "
+                "`--cluster-backend kubernetes`."
             ),
         ),
     ] = None

@@ -24,7 +24,14 @@ from miles.utils.misc import VISIBLE_DEVICES_ENV_VARS, get_current_node_ip, visi
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.env_vars import WORKER_GPU_IDS_ENV_VAR
 from miles.utils.workers.monarch.base import MilesActor
-from miles.utils.workers.monarch.handles import call_endpoint, probe_cell_is_dead
+from miles.utils.workers.monarch.handles import (
+    MonarchCellHandle,
+    MonarchWorkerHandle,
+    call_endpoint,
+    probe_cell_is_dead,
+)
+from miles.utils.workers.rpc.common.metadata import canonicalize_method_arguments, collect_rpc_method_specs
+from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_manager.runtime import GpuSlotRef, WorkerLaunchRequest, WorkerProcess, WorkerRuntime
 
@@ -164,22 +171,43 @@ class MonarchWorkerActor(MilesActor):
         install_manager_handle(manager)
         target = launches[current_rank().rank]
         self._target = target.actor_class(**target.ctor_kwargs)
-        # the launcher's own verbs (node probes, run, shutdown, ...) run on one thread of their own
+        # A worker served natively runs each call where its rpc specs put it, exactly as the rpc server would;
+        # the launcher's own verbs (node probes, run, shutdown, ...) run on one thread of their own.
+        self._specs = collect_rpc_method_specs(target.actor_class) if target.served_natively else {}
+        self._rpc_executor: RpcCallExecutor | None = None
         self._launcher_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="monarch-launcher")
 
-    # Every call runs as a task of its own, so one still running blocks no liveness ping.
+    # Every call runs as a task of its own, so one still running blocks neither a call to another of the worker's
+    # concurrency groups nor a liveness ping, as with the rpc server.
     @concurrent_endpoint
     async def invoke(self, method: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         """Call ``method`` of the worker this actor hosts, and answer what it returned."""
         return await self._dispatch(method, args=args, kwargs=kwargs)
 
     @concurrent_endpoint
+    async def invoke_each(self, method: str, kwargs_per_worker: list[dict[str, Any]]) -> tuple[int, Any]:
+        """One mesh call reaching the whole cell; every rank takes its own arguments and answers with its rank."""
+        rank = current_rank().rank
+        return rank, await self._dispatch(method, args=(), kwargs=kwargs_per_worker[rank])
+
+    @concurrent_endpoint
     async def ping(self) -> bool:
         return True
 
     async def _dispatch(self, method: str, *, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        """Run a coroutine method on this actor's event loop, and a plain one on the launcher thread, so a blocking
-        method never stalls the loop the liveness pings are answered on."""
+        """Run one call of the worker this actor hosts.
+
+        A method the worker serves natively runs where its rpc specs put it (its concurrency group's thread, or the
+        event loop), through the same executor the rpc server uses. Any other method, i.e. the launcher's own verbs,
+        runs on this actor's event loop if it is a coroutine and on the launcher thread if not, so a blocking one
+        never stalls the loop the liveness pings are answered on.
+        """
+        if (spec := self._specs.get(method)) is not None:
+            if self._rpc_executor is None:
+                self._rpc_executor = RpcCallExecutor(worker=self._target, specs=self._specs)
+            canonical = canonicalize_method_arguments(spec=spec, args=args, kwargs=kwargs)
+            return await self._rpc_executor.call(spec=spec, kwargs=canonical)
+
         fn = getattr(self._target, method)  # config-access-exempt: attribute selected at runtime from method
         if inspect.iscoroutinefunction(fn):
             return await fn(*args, **kwargs)
@@ -211,6 +239,8 @@ class _CellMesh:
     proc_mesh: ProcMesh
     # one MonarchWorkerActor per process, each hosting its worker
     actor_mesh: MonarchWorkerActor
+    # the cell's workers, one per rank of the mesh
+    num_workers: int
 
 
 class MonarchWorkerRuntime(WorkerRuntime):
@@ -273,16 +303,18 @@ class MonarchWorkerRuntime(WorkerRuntime):
             # handling of a BaseException in an endpoint (it fails the actor) as it is.
             await _stop_proc_mesh(proc_mesh, mesh_name=mesh_name)
             raise
-        cell_mesh = _CellMesh(name=mesh_name, proc_mesh=proc_mesh, actor_mesh=actor_mesh)
+        cell_mesh = _CellMesh(name=mesh_name, proc_mesh=proc_mesh, actor_mesh=actor_mesh, num_workers=len(launches))
         return [
             _MonarchWorkerProcess(
                 cell_mesh=cell_mesh,
+                rank=index,
+                served_method_names=_served_method_names(launch),
                 actor=actor_mesh.slice(
                     **({} if host_dim is None else {host_dim: index // procs_per_host}),
                     **{_PROCS_DIM: index % procs_per_host},
                 ),
             )
-            for index in range(len(launches))
+            for index, launch in enumerate(launches)
         ]
 
     async def kill_worker(self, process: WorkerProcess) -> None:
@@ -367,13 +399,33 @@ def _host_dim_of(host_mesh: HostMesh) -> str | None:
     return labels[0] if labels else None
 
 
+def _served_method_names(launch: WorkerLaunchRequest) -> frozenset[str] | None:
+    """The methods a natively served worker declares in its rpc specs, or None for a worker served over rpc."""
+    if not launch.served_natively:
+        return None
+    return frozenset(collect_rpc_method_specs(launch.actor_class))
+
+
 class _MonarchWorkerProcess(WorkerProcess):
     """One worker of a cell's mesh, as the worker manager core sees it: calls go to its MonarchWorkerActor."""
 
-    def __init__(self, *, cell_mesh: _CellMesh, actor: MonarchWorkerActor) -> None:
+    def __init__(
+        self,
+        *,
+        cell_mesh: _CellMesh,
+        rank: int,
+        actor: MonarchWorkerActor,
+        served_method_names: frozenset[str] | None,
+    ) -> None:
         self.cell_mesh = cell_mesh
+        self._rank = rank
         self._actor = actor
+        self._served_method_names = served_method_names
         self._unawaited_calls: set[asyncio.Task] = set()
+
+    @property
+    def served_natively(self) -> bool:
+        return self._served_method_names is not None
 
     async def call(self, method: str, /, **kwargs: Any) -> Any:
         return await call_endpoint(self._actor.invoke.call_one(method, (), kwargs), describe=method)
@@ -389,7 +441,18 @@ class _MonarchWorkerProcess(WorkerProcess):
 
     @property
     def native_handle(self) -> Any:
-        return self._actor
+        """A MonarchWorkerHandle for a worker served natively; for one served over rpc, the bare actor, which only
+        the launcher's own verbs are called on."""
+        if self._served_method_names is None:
+            return self._actor
+        return MonarchWorkerHandle(
+            actor=self._actor,
+            cell=MonarchCellHandle(
+                name=self.cell_mesh.name, actor_mesh=self.cell_mesh.actor_mesh, num_workers=self.cell_mesh.num_workers
+            ),
+            rank=self._rank,
+            method_names=self._served_method_names,
+        )
 
 
 async def _log_if_failed(call: Awaitable[Any], *, describe: str) -> None:

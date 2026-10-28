@@ -46,6 +46,13 @@ class RpcCallExecutor:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+    async def call(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> Any:
+        """Run one call where the worker's spec puts it (its concurrency group's thread, the event loop, or the
+        dedicated loop) and answer its result, for a transport that carries the result back itself."""
+        if self._closed:
+            raise RuntimeError("The RPC executor is closed")
+        return await self._call_worker(spec=spec, kwargs=kwargs)
+
     async def close(self) -> None:
         if self._closed:
             return
