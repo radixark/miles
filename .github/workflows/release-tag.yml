@@ -1,7 +1,7 @@
 # doc-dev: docs/developer/ci/04-release.md
 name: Release Tag
 # Creates an annotated v<exact-version> tag, then explicitly dispatches
-# release-docker.yml. Use after release-branch-cut.yml is green.
+# release-docker.yml and release-wheel.yml. Use after release-branch-cut.yml is green.
 #
 # Unlike sglang's release-tag.yml, this one refuses to tag blind. It requires
 # a green `release-ci` commit status on the exact commit being tagged — the
@@ -107,7 +107,7 @@ jobs:
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
 
-      - name: Trigger release-docker build
+      - name: Trigger the release-docker and release-wheel builds
         # A tag pushed with GITHUB_TOKEN does not fire release-docker.yml's
         # tag trigger (GitHub suppresses workflow-triggering events from
         # GITHUB_TOKEN), so dispatch it explicitly. The tag trigger stays for
@@ -117,4 +117,5 @@ jobs:
           VERSION: ${{ github.event.inputs.version }}
         run: |
           gh workflow run release-docker.yml -f version="$VERSION" -f ref="v$VERSION"
-          echo "::notice::Dispatched release-docker.yml for v$VERSION"
+          gh workflow run release-wheel.yml -f version="$VERSION" -f ref="v$VERSION"
+          echo "::notice::Dispatched release-docker.yml and release-wheel.yml for v$VERSION"

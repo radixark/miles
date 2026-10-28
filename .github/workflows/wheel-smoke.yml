@@ -2,12 +2,20 @@ name: Wheel smoke
 
 # The built wheel, installed without Megatron, must import and parse args for FSDP and torchtitan.
 # SGLang stays a source tree on PYTHONPATH until a hosted sglang-miles wheel exists.
+# release-wheel.yml calls this on the tagged commit and publishes the dist it checked.
 
 on:
   push:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Commit to build (defaults to the triggering ref)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -19,6 +27,8 @@ jobs:
     steps:
       - name: Checkout miles
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Resolve dependency refs
         id: resolve-refs
@@ -45,6 +55,11 @@ jobs:
       - name: Build the sdist and the wheel from it
         shell: bash
         run: uv build --out-dir "$RUNNER_TEMP/dist" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: miles-dist
+          path: ${{ runner.temp }}/dist
 
       - name: Install the wheel into a clean environment
         shell: bash

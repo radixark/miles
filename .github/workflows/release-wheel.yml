@@ -1,0 +1,94 @@
+# doc-dev: docs/developer/ci/04-release.md
+name: Release Wheel
+# Builds the miles wheel at v<version>, runs the wheel smoke on it, and uploads the sdist and
+# wheel to the GitHub release, where the pip index on radixark/miles-wheels lists them.
+# release-tag.yml dispatches this; the tag trigger stays for manually pushed tags.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, without v prefix (e.g., 0.3.0)'
+        required: true
+        type: string
+      ref:
+        description: 'Tag or branch to build from (defaults to v{version})'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    if: github.repository == 'radixark/miles'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+      - id: resolve
+        uses: ./.github/actions/resolve-release-version
+        with:
+          version: ${{ github.event.inputs.version }}
+          ref: ${{ github.event.inputs.ref }}
+
+  smoke:
+    needs: resolve
+    uses: ./.github/workflows/wheel-smoke.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+
+  publish:
+    needs: [resolve, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: miles-dist
+          path: dist
+
+      - name: The dist carries the tagged version
+        shell: bash
+        run: |
+          ls dist
+          # rc/postN tags share setup.py's base version; the wheel is named after setup.py
+          BASE_VERSION=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+          [ -f "dist/miles-${BASE_VERSION}-py3-none-any.whl" ] \
+            || { echo "::error::no miles-${BASE_VERSION} wheel: setup.py at v${VERSION} carries another version"; exit 1; }
+
+      - name: Upload to the v${{ needs.resolve.outputs.version }} release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="v${VERSION}"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes
+          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+      # The index rebuilds hourly anyway; this makes the new release installable right away.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        id: token
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: radixark
+          repositories: miles-wheels
+          permission-actions: write
+
+      - name: Rebuild the pip index
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: gh workflow run pages.yml --repo radixark/miles-wheels
