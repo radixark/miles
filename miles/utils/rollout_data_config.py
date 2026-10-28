@@ -1,0 +1,100 @@
+"""Training datasets mixed in every rollout step, read from ``--rollout-data-yaml-config``.
+
+```yaml
+datasets:
+  math:
+    path: /data/math.jsonl
+    samples_per_step: 3
+  agentic:
+    path: /data/agentic.jsonl
+    sha256: 51b7...0c3d
+    samples_per_step: 5
+    max_prompt_len: 8192
+    max_response_len: 32768
+    generate_function: my_pkg.agent_generate
+    agent:
+      max_turns: 50
+```
+
+``samples_per_step`` values are weights: each request for N prompts is split across the datasets in
+proportion to them. Per-dataset length limits may only lower the run-wide ``--rollout-max-prompt-len`` /
+``--rollout-max-response-len``, which training memory and packing are sized from.
+"""
+
+import re
+from typing import Any
+
+from omegaconf import OmegaConf
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from miles.utils.file_arg_utils import resolve_file_arg
+
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+class RolloutDatasetConfig(BaseModel):
+    """One training dataset and its share of every rollout step."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    name: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    samples_per_step: int = Field(ge=1)
+    sha256: str | None = None
+    max_prompt_len: int | None = Field(default=None, ge=1)
+    max_response_len: int | None = Field(default=None, ge=1)
+    generate_function: str | None = Field(default=None, min_length=1)
+    # Free-form settings handed to this dataset's generate function, e.g. turn limits and timeouts.
+    agent: dict[str, Any] | None = None
+
+    @field_validator("sha256")
+    @classmethod
+    def _check_sha256(cls, value: str | None) -> str | None:
+        if value is not None and not _SHA256_PATTERN.fullmatch(value):
+            raise ValueError("must be 64 lowercase hex characters (the SHA-256 of the dataset file)")
+        return value
+
+
+def load_rollout_data_config(value: str) -> list[RolloutDatasetConfig]:
+    """Parse a ``--rollout-data-yaml-config`` file path or inline ``base64:`` payload."""
+    document = OmegaConf.to_container(OmegaConf.create(resolve_file_arg(value)), resolve=True)
+    return parse_rollout_datasets(document)
+
+
+def parse_rollout_datasets(document: Any) -> list[RolloutDatasetConfig]:
+    if not isinstance(document, dict) or set(document) != {"datasets"}:
+        raise ValueError("--rollout-data-yaml-config must be a mapping with exactly one key, `datasets`")
+    raw_datasets = document["datasets"]
+    if not isinstance(raw_datasets, dict) or not raw_datasets:
+        raise ValueError("--rollout-data-yaml-config `datasets` must be a non-empty mapping from name to dataset")
+
+    datasets = []
+    for name, fields in raw_datasets.items():
+        if not isinstance(fields, dict):
+            raise ValueError(f"--rollout-data-yaml-config dataset {name!r} must be a mapping")
+        if "name" in fields:
+            raise ValueError(f"--rollout-data-yaml-config dataset {name!r}: the name is the mapping key, drop `name`")
+        try:
+            datasets.append(RolloutDatasetConfig(name=str(name), **fields))
+        except ValidationError as e:
+            raise ValueError(f"--rollout-data-yaml-config dataset {name!r} is invalid:\n{e}") from e
+    return datasets
+
+
+def check_dataset_length_limits(
+    datasets: list[RolloutDatasetConfig],
+    *,
+    rollout_max_prompt_len: int | None,
+    rollout_max_response_len: int | None,
+) -> None:
+    """Reject a per-dataset limit above the run-wide one; an unset run-wide limit bounds nothing."""
+    for dataset in datasets:
+        for field_name, value, upper_bound, flag in (
+            ("max_prompt_len", dataset.max_prompt_len, rollout_max_prompt_len, "--rollout-max-prompt-len"),
+            ("max_response_len", dataset.max_response_len, rollout_max_response_len, "--rollout-max-response-len"),
+        ):
+            if value is not None and upper_bound is not None and value > upper_bound:
+                raise ValueError(
+                    f"--rollout-data-yaml-config dataset {dataset.name!r}: {field_name}={value} exceeds "
+                    f"{flag} {upper_bound}; a dataset limit may only lower the run-wide one"
+                )

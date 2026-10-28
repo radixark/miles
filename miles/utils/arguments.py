@@ -49,6 +49,7 @@ from miles.utils.object_store_config import (
     compute_mooncake_init_kwargs_from_env,
     compute_mooncake_init_kwargs_vanilla,
 )
+from miles.utils.rollout_data_config import check_dataset_length_limits, load_rollout_data_config
 from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_args
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.score_centering import validate_score_centering_args
@@ -462,6 +463,26 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
         args.eval_prompt_data = None
 
     return eval_datasets
+
+
+def _validate_rollout_data_yaml_config(args) -> None:
+    if args.rollout_data_yaml_config is None:
+        return
+    if args.prompt_data is not None:
+        raise ValueError("--rollout-data-yaml-config replaces --prompt-data; set only one of them")
+    if not args.rollout_global_dataset:
+        raise ValueError("--rollout-data-yaml-config cannot be combined with --disable-rollout-global-dataset")
+    datasets = load_rollout_data_config(args.rollout_data_yaml_config)
+    check_dataset_length_limits(
+        datasets,
+        rollout_max_prompt_len=args.rollout_max_prompt_len,
+        rollout_max_response_len=args.rollout_max_response_len,
+    )
+    # Refuse rather than run without the configured data: no data source reads these datasets yet.
+    raise NotImplementedError(
+        f"--rollout-data-yaml-config is valid ({len(datasets)} datasets), but no data source consumes it yet; "
+        "the mixing data source is tracked in https://github.com/radixark/miles/issues/3947"
+    )
 
 
 def _compute_init_expected_num_cells(
@@ -878,6 +899,7 @@ def miles_validate_args(args):
         "every later eval skip silently"
     )
     args.eval_datasets = _resolve_eval_datasets(args)
+    _validate_rollout_data_yaml_config(args)
 
     if "train" in args.ft_components:
         args.indep_dp = True
