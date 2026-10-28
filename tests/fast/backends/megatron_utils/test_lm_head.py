@@ -8,8 +8,8 @@ import torch
 from miles.backends.megatron_utils.lm_head import (
     LMHeadContext,
     check_model_takes_output_processor,
+    hidden_states_output_processor,
     lm_head_forward_kwargs,
-    lm_head_hidden_states,
 )
 
 
@@ -18,31 +18,61 @@ class _ModelWithHook(torch.nn.Module):
         raise NotImplementedError
 
 
+class _OutputLayer(torch.nn.Module):  # ColumnParallelLinear's call signature, on one rank
+    sequence_parallel = False
+
+    def __init__(self, hidden, vocab):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.randn(vocab, hidden))
+
+    def forward(self, x, weight=None, runtime_gather_output=None):
+        return x @ (self.weight if weight is None else weight).t(), None
+
+
 class _ModelWithoutHook(torch.nn.Module):  # stands for HybridModel, whose forward has no output_processor
     def forward(self, input_ids):
         raise NotImplementedError
 
 
-def test_without_lm_head_input_the_model_keeps_its_output():
-    assert lm_head_forward_kwargs(lm_head_input=False) == ({}, None)
+def _model(role):
+    chunk = _ModelWithHook()
+    chunk.role = role
+    return [chunk]
 
 
-def test_lm_head_input_passes_the_processor_and_its_context():
-    kwargs, context = lm_head_forward_kwargs(lm_head_input=True)
-    assert kwargs["output_processor"] is lm_head_hidden_states
+@pytest.mark.parametrize(
+    ("backend", "role"),
+    [("fused", "actor"), ("torch", "actor"), ("fused_lm_head", "critic")],
+    ids=["fused", "torch", "critic"],
+)
+def test_the_model_keeps_its_output_unless_fused_lm_head_on_the_actor(backend, role):
+    assert lm_head_forward_kwargs(SimpleNamespace(log_probs_backend=backend), _model(role)) == ({}, None)
+
+
+def test_other_backends_never_read_the_role():
+    assert lm_head_forward_kwargs(SimpleNamespace(log_probs_backend="fused"), [_ModelWithHook()]) == ({}, None)
+
+
+def test_fused_lm_head_on_the_actor_passes_the_processor_and_its_context():
+    kwargs, context = lm_head_forward_kwargs(SimpleNamespace(log_probs_backend="fused_lm_head"), _model("actor"))
+    assert kwargs["output_processor"] is hidden_states_output_processor
     assert kwargs["output_processor_context"] is context
     assert isinstance(context, LMHeadContext) and context.output_layer is None
 
 
-def test_the_processor_rejects_mup_which_scales_the_logits_after_the_output_layer():
-    with pytest.raises(ValueError, match="MuP"):
-        lm_head_hidden_states(
-            hidden_states=torch.zeros(4, 1, 8),
-            output_layer=torch.nn.Linear(8, 16),
-            output_weight=None,
-            context=LMHeadContext(),
-            config=SimpleNamespace(use_mup=True),
-        )
+@pytest.mark.parametrize("scale", [None, 0.5], ids=["megatron_without_mup", "mup"])
+def test_project_scales_the_logits_as_the_model_would(scale):
+    layer, context = _OutputLayer(hidden=8, vocab=16), LMHeadContext()
+    hidden = hidden_states_output_processor(
+        hidden_states=torch.randn(4, 1, 8),
+        output_layer=layer,
+        output_weight=None,
+        context=context,
+        **({} if scale is None else {"scale_logits": lambda logits: logits * scale}),
+    )
+    rows = hidden.squeeze(0)
+    logits = rows @ layer.weight.t()
+    torch.testing.assert_close(context.project(rows), logits if scale is None else logits * scale)
 
 
 def test_a_model_with_the_hook_is_accepted():

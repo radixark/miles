@@ -627,7 +627,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 store_prefix=store_prefix,
                 fp32_output=False,
                 use_rollout_sampling_mask=store_prefix == "" and self.args.use_sampling_support_replay,
-                lm_head_input=self.args.log_probs_backend == "fused_lm_head",
             )
 
     @with_logs
