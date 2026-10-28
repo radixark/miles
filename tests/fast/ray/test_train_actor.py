@@ -180,7 +180,7 @@ class TestInitRunsExactlyOnce:
         monkeypatch.setattr(train_actor.dist, "init_process_group", lambda **_kwargs: None)
         monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 3)
         monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 8)
-        monkeypatch.setattr(train_actor, "init_gloo_group", lambda: None)
+        monkeypatch.setattr(train_actor, "init_gloo_group", lambda **_kwargs: None)
         monkeypatch.setattr(train_actor, "rebind_env_reporting", rebound.append)
         monkeypatch.setattr(train_actor.torch.version, "hip", "test")
 
@@ -216,7 +216,9 @@ class TestInitRunsExactlyOnce:
         monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 0)
         monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 2)
         monkeypatch.setattr(
-            train_actor, "init_gloo_group", lambda: observed.append(os.environ.get("TORCH_NCCL_DUMP_ON_TIMEOUT"))
+            train_actor,
+            "init_gloo_group",
+            lambda **_kwargs: observed.append(os.environ.get("TORCH_NCCL_DUMP_ON_TIMEOUT")),
         )
         monkeypatch.setattr(train_actor, "rebind_env_reporting", lambda _args: None)
         monkeypatch.setattr(train_actor.torch.version, "hip", "test")
@@ -356,7 +358,7 @@ class TestNumaAffinity:
         monkeypatch.setattr(train_actor.dist, "init_process_group", lambda **_kwargs: None)
         monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 0)
         monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 4)
-        monkeypatch.setattr(train_actor, "init_gloo_group", lambda: None)
+        monkeypatch.setattr(train_actor, "init_gloo_group", lambda **_kwargs: None)
         monkeypatch.setattr(train_actor, "rebind_env_reporting", lambda _args: None)
 
         actor._init_common(args=args, role="actor")
@@ -462,14 +464,22 @@ class TestBackendProcessGroupSdk:
             ("torchtitan", True, "gloo", "cpu:gloo,cuda:nccl"),
         ],
     )
+    @pytest.mark.parametrize(("timeout_minutes", "gloo_timeout_minutes"), [(17, 30), (45, 45)])
     def test_backend_and_timeout_reach_real_common_initialization_sdk(
-        self, monkeypatch: pytest.MonkeyPatch, backend: str, offload: bool, cpu_backend: str | None, expected: str
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        backend: str,
+        offload: bool,
+        cpu_backend: str | None,
+        expected: str,
+        timeout_minutes: int,
+        gloo_timeout_minutes: int,
     ) -> None:
         """Common worker initialization selects hybrid CPU offload only when configured and preserves the backend timeout."""
         args = make_trainer_config(
             train_backend=backend,
             distributed_backend="nccl",
-            distributed_timeout_minutes=17,
+            distributed_timeout_minutes=timeout_minutes,
             optimizer_cpu_offload=offload,
             fsdp_cpu_backend=cpu_backend,
             debug_deterministic_collective=False,
@@ -489,8 +499,8 @@ class TestBackendProcessGroupSdk:
 
         actor._init_common(args=args, role="actor")
 
-        initialize_group.assert_called_once_with(backend=expected, timeout=timedelta(minutes=17))
-        gloo_group.assert_called_once_with(backend="gloo")
+        initialize_group.assert_called_once_with(backend=expected, timeout=timedelta(minutes=timeout_minutes))
+        gloo_group.assert_called_once_with(backend="gloo", timeout=timedelta(minutes=gloo_timeout_minutes))
         assert (args.backend.rank, args.backend.world_size) == (3, 8)
 
     @pytest.mark.parametrize("valid", [False, True])

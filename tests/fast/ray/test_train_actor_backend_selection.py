@@ -51,7 +51,7 @@ class TestTrainProcessGroupBackendSelection:
         )
         monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 0)
         monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 1)
-        monkeypatch.setattr(train_actor, "init_gloo_group", lambda: None)
+        monkeypatch.setattr(train_actor, "init_gloo_group", lambda **_kwargs: None)
         monkeypatch.setattr(train_actor, "rebind_env_reporting", lambda _args: None)
 
         actor._init_common(args=args, role="actor")
