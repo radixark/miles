@@ -58,7 +58,7 @@ jobs:
     needs: resolve
     uses: ./.github/workflows/wheel-smoke.yml
     with:
-      ref: ${{ needs.resolve.outputs.ref }}
+      commit: ${{ needs.resolve.outputs.ref }}
       version: ${{ needs.resolve.outputs.version }}
 
   publish:
