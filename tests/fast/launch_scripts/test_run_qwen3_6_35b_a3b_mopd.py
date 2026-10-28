@@ -2,7 +2,6 @@ import json
 import shlex
 
 import pytest
-import ray
 
 from tests.fast.launch_scripts.py_harness import freeze_environment, import_launch_script, install_command_recorder
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT
@@ -18,7 +17,7 @@ def _submitted(monkeypatch, *, external_ray: bool = False, **cli_args) -> tuple[
     recording = install_command_recorder(monkeypatch)
     launcher = import_launch_script(LAUNCHER)
     node_checks = []
-    monkeypatch.setattr(launcher, "_check_trainer_node_sorts_first", node_checks.append)
+    monkeypatch.setattr(launcher, "_check_trainer_node_sorts_first", lambda args, layout: node_checks.append(layout))
 
     launcher.execute(launcher.ScriptArgs(**cli_args))
 
@@ -90,28 +89,41 @@ def test_mtp_spec_decode_turns_on_eagle_with_the_mtp_head(monkeypatch):
     assert runtime_env["SGLANG_ENABLE_SPEC_V2"] == "1"
 
 
-def _ray_nodes(monkeypatch, nodes: list[tuple[str, int]]) -> None:
-    monkeypatch.setattr(ray, "init", lambda **kwargs: None)
-    monkeypatch.setattr(ray, "shutdown", lambda: None)
-    monkeypatch.setattr(
-        ray,
-        "nodes",
-        lambda: [{"Alive": True, "NodeManagerAddress": ip, "Resources": {"GPU": gpus}} for ip, gpus in nodes]
-        + [{"Alive": True, "NodeManagerAddress": "10.0.0.1", "Resources": {"CPU": 8}}],
-    )
+class _ListingBackend:
+    """Answers the launcher's node listing with what `ray.nodes()` would print, after a log line."""
+
+    def __init__(self, nodes: list[tuple[str, int]]) -> None:
+        self.nodes = nodes
+        self.commands: list[str] = []
+
+    def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str:
+        self.commands.append(cmd)
+        return "2026-10-27 12:00:00,000 INFO worker.py:1 -- Connecting to existing Ray cluster\n" + json.dumps(
+            self.nodes
+        )
+
+
+def _check(monkeypatch, nodes: list[tuple[str, int]]) -> list[str]:
+    launcher = import_launch_script(LAUNCHER)
+    args = launcher.ScriptArgs(layout="b200-async")
+    backend = _ListingBackend(nodes)
+    monkeypatch.setattr(args, "create_backend", lambda: backend)
+    launcher._check_trainer_node_sorts_first(args, args.layout_spec)
+    return backend.commands
 
 
 def test_the_node_check_sorts_ips_numerically_as_miles_places_the_trainer(monkeypatch):
-    launcher = import_launch_script(LAUNCHER)
     # "10.0.0.10" sorts before "10.0.0.9" as a string, but not as an address
-    _ray_nodes(monkeypatch, [("10.0.0.10", 6), ("10.0.0.9", 8)])
+    (command,) = _check(monkeypatch, [("10.0.0.10", 6), ("10.0.0.9", 8)])
 
-    launcher._check_trainer_node_sorts_first(launcher._LAYOUTS["b200-async"])
+    assert command.startswith('python3 -c \'import json, ray; ray.init(address="auto"')
 
 
 def test_the_node_check_rejects_a_rollout_node_that_sorts_first(monkeypatch):
-    launcher = import_launch_script(LAUNCHER)
-    _ray_nodes(monkeypatch, [("10.0.0.9", 6), ("10.0.0.10", 8)])
-
     with pytest.raises(AssertionError, match=r"expose \[6, 8\] GPUs"):
-        launcher._check_trainer_node_sorts_first(launcher._LAYOUTS["b200-async"])
+        _check(monkeypatch, [("10.0.0.9", 6), ("10.0.0.10", 8)])
+
+
+def test_the_node_check_rejects_a_cluster_missing_the_rollout_node(monkeypatch):
+    with pytest.raises(AssertionError, match=r"expose \[8\] GPUs"):
+        _check(monkeypatch, [("10.0.0.9", 8)])

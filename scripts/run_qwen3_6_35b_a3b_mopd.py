@@ -73,6 +73,7 @@ Examples:
         --dump-dir /root/shared_data/mopd-dump --extra-env-vars "NCCL_IB_GID_INDEX=3"
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -339,7 +340,7 @@ eval:
         )
 
         def before_ray_job_submit():
-            _check_trainer_node_sorts_first(layout)
+            _check_trainer_node_sorts_first(args, layout)
 
     args.create_backend().execute_train(
         train_args=train_args,
@@ -356,21 +357,20 @@ eval:
     )
 
 
-def _check_trainer_node_sorts_first(layout: _Layout) -> None:
-    """Miles fills the trainer's bundles first, in node-IP order, so the trainer node must sort first."""
-    import ray
+# (node IP, GPU count) of every live GPU node of the running cluster, as JSON on the last stdout line
+_LIST_RAY_GPU_NODES = (
+    'python3 -c \'import json, ray; ray.init(address="auto", logging_level="ERROR"); '
+    'print(json.dumps([[n["NodeManagerAddress"], n["Resources"]["GPU"]] for n in ray.nodes() '
+    'if n["Alive"] and n["Resources"].get("GPU")]))\''
+)
 
+
+def _check_trainer_node_sorts_first(args: ScriptArgs, layout: _Layout) -> None:
+    """Miles fills the trainer's bundles first, in node-IP order, so the trainer node must sort first."""
     from miles.ray.placement_group import sort_key
 
-    ray.init(address="auto", logging_level="ERROR")
-    try:
-        nodes = sorted(
-            (sort_key((0, node["NodeManagerAddress"], 0)), int(node["Resources"]["GPU"]))
-            for node in ray.nodes()
-            if node["Alive"] and node["Resources"].get("GPU")  # config-access-exempt: CPU-only nodes lack "GPU"
-        )
-    finally:
-        ray.shutdown()
+    listed = args.create_backend().exec_command_cpu(_LIST_RAY_GPU_NODES, capture_output=True)
+    nodes = sorted((sort_key((0, ip, 0)), int(gpus)) for ip, gpus in json.loads(listed.strip().splitlines()[-1]))
     gpus = [count for _, count in nodes]
     assert gpus and gpus[0] == layout.actor_gpus and sum(gpus) == layout.actor_gpus + layout.rollout_gpus, (
         f"Ray GPU nodes sorted by IP expose {gpus} GPUs; expected the trainer node ({layout.actor_gpus} GPUs) "
