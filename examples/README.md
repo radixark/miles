@@ -14,6 +14,7 @@ End-to-end training workflows — the place to start.
   - **[tinker_agent](./multi_lora/tinker_agent)**: Agentic training with your own sandbox or harness through the official Tinker cookbook capture recipe.
 - **[multi_policy](./multi_policy)**: Two policies in one run — a solver answering gsm8k, and a verifier scored on ruling correctly about the solver's answers.
 - **[on_policy_distillation](./on_policy_distillation)**: Teacher–student distillation on the student's own rollouts, run inside the on-policy training loop.
+  - **[mopd_reasoning_gym](./on_policy_distillation/mopd_reasoning_gym)**: Qwen3.6-35B-A3B distilled from two reasoning_gym GRPO teachers on two B200 or GB300 nodes, synchronous or one-step overlap.
   - **[qwen3_5_35b_selfdistill](./on_policy_distillation/qwen3_5_35b_selfdistill)**: Two-phase self-distillation of Qwen3.5-35B-A3B on one 8xH200 node, with an in-process Megatron teacher.
 - **[ppo](./ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
 - **[retool_v2](./retool_v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.

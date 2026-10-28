@@ -1,0 +1,58 @@
+### 0
+hf download Qwen/Qwen3.6-35B-A3B
+  --local-dir /root/models/Qwen3.6-35B-A3B
+
+### 1
+hf download semianalysisai/Qwen3.6-35B-A3B-caesar-cipher-GRPO-20260924
+  --revision dfedf677a5bf08a451733ec48c845c2661a6ab14
+  --local-dir /root/models/teacher-caesar_cipher
+
+### 2
+hf download semianalysisai/Qwen3.6-35B-A3B-simple-geometry-GRPO-20260925
+  --revision 679d4b66018c03249a3bfd0ecca3195ed9cd0e0d
+  --local-dir /root/models/teacher-simple_geometry
+
+### 3
+python <REPO_ROOT>/examples/on_policy_distillation/mopd_reasoning_gym/prepare_data.py
+  --out /root/datasets/mopd-reasoning-gym
+  --tokenizer /root/models/Qwen3.6-35B-A3B
+
+### 4
+PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 8 <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 16
+  --num-query-groups 2
+  --kv-channels 256
+  --num-layers 40
+  --hidden-size 2048
+  --ffn-hidden-size 512
+  --normalization RMSNorm
+  --apply-layernorm-1p
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --rotary-percent 0.25
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 248320
+  --rotary-base 10000000
+  --moe-ffn-hidden-size 512
+  --moe-shared-expert-intermediate-size 512
+  --moe-router-score-function softmax
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --num-experts 256
+  --moe-grouped-gemm
+  --moe-token-drop-policy probs
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
+  --attention-output-gate
+  --moe-shared-expert-gate
+  --mtp-num-layers 1
+  --hf-checkpoint /root/models/Qwen3.6-35B-A3B
+  --save /root/models/Qwen3.6-35B-A3B_torch_dist 
