@@ -7,7 +7,8 @@ import pytest
 from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
-from miles.utils.workers.cell_operations.ray import RayCellOperations
+from miles.utils.workers.worker_manager.client import ManagerCellOperations
+from miles.utils.workers.worker_provider.ray import RayWorkerManagerClient
 
 from .conftest import (
     MockInferenceController,
@@ -49,8 +50,8 @@ def _make_actor_handler(
     manager = MockWorkerManager(make_cell_summaries(ACTOR_CELL_ID, suspended=suspended))
     handler = _CellHandler(
         cell_type="actor",
-        operations=RayCellOperations(
-            worker_manager_handle=manager,
+        operations=ManagerCellOperations(
+            RayWorkerManagerClient(manager),
         ),
         controllers=[group],
         pool_ids=["trainer-engine-actor"],
@@ -158,8 +159,8 @@ def _make_rollout_handler(
     controller = MockInferenceController({cell_id: resolved} if resolved is not None else {})
     return _CellHandler(
         cell_type="rollout",
-        operations=RayCellOperations(
-            worker_manager_handle=manager,
+        operations=ManagerCellOperations(
+            RayWorkerManagerClient(manager),
         ),
         controllers=[controller],
         pool_ids=[cell_id.rsplit("-", 1)[0]],
@@ -243,8 +244,8 @@ class TestRolloutCellHandler:
         controller = MockInferenceController()
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
@@ -261,8 +262,8 @@ class TestRolloutCellHandler:
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
@@ -279,8 +280,8 @@ class TestRolloutCellHandler:
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID, suspended=True))
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
@@ -320,8 +321,8 @@ class TestRolloutCellHandler:
         controller = MockInferenceController({ENGINE_CELL_ID: _SUSPENDED_STATUS})
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
@@ -351,8 +352,8 @@ class TestRolloutCellHandler:
         )
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=None,
@@ -373,8 +374,8 @@ class TestRolloutCellHandler:
         controller = MockInferenceController()
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
@@ -391,8 +392,8 @@ class TestRolloutCellHandler:
         manager = MockWorkerManager(make_cell_summaries("engine-a", "engine-b", "engine-c"))
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
@@ -415,8 +416,8 @@ class TestRolloutCellHandlerControlFaultHook:
         manager.control_fault_hook = MockRemoteCall(record)
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
@@ -453,8 +454,8 @@ class TestCellStatusGeneration:
         manager = MockWorkerManager([])
         handler = _CellHandler(
             cell_type="actor",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[BlockingController(), RecordingController()],
             pool_ids=[],
@@ -482,8 +483,8 @@ class TestCellStatusGeneration:
         stale = _running_status(TriState.TRUE, workers_hash="pseudo-hash-old")
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
@@ -505,8 +506,8 @@ class TestCellStatusGeneration:
         current = _running_status(TriState.FALSE)
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: current})],
             pool_ids=_pool_ids_of(manager),
@@ -526,8 +527,8 @@ class TestCellStatusGeneration:
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID, suspended=True, workers_hash="gen-2"))
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[
                 MockInferenceController({ENGINE_CELL_ID: _running_status(TriState.TRUE, workers_hash="gen-1")})
@@ -547,8 +548,8 @@ class TestCellStatusGeneration:
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID, workers_hash="gen-2"))
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
@@ -575,8 +576,8 @@ class TestCellStatusGeneration:
         )
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
@@ -607,8 +608,8 @@ class TestCellStatusGeneration:
         )
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
@@ -630,8 +631,8 @@ class TestCellStatusGeneration:
         stale = _running_status(TriState.TRUE, workers_hash="gen-1")
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
@@ -648,8 +649,8 @@ class TestCellStatusGeneration:
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID, workers_hash="gen-2"))
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[
                 MockInferenceController({ENGINE_CELL_ID: _running_status(TriState.TRUE, workers_hash="gen-1")})
@@ -673,8 +674,8 @@ class TestCellStatusGeneration:
         controller = MockInferenceController({ENGINE_CELL_ID: _running_status(TriState.TRUE, workers_hash="gen-1")})
         handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=manager,
+            operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
