@@ -168,6 +168,54 @@ async def test_sampling_resolves_against_the_saved_version(service):
     assert service.backend.named("sample")[0]["lora_name"] == f"{model_id}@1"
 
 
+@pytest.mark.parametrize("requested,expected", [(8192, 7630), (32, 32), (0, 0)])
+async def test_sampling_respects_the_remaining_context_without_mutating_the_request(service, requested, expected):
+    service.config.max_tokens_per_sample = 65536
+    payload = {
+        "num_samples": 1,
+        "prompt_tokens": [1] * 57906,
+        "sampling_params": {"max_tokens": requested, "temperature": 0.7},
+    }
+    request_id, _ = service.submit_sample("tenant", payload)
+    assert (await await_settled(service, "tenant", request_id)).state == DONE
+    sent = service.backend.named("sample")[0]["payload"]
+    assert sent["sampling_params"] == {"max_tokens": expected, "temperature": 0.7}
+    assert sent["prompt_tokens"] == payload["prompt_tokens"]
+    assert payload["sampling_params"]["max_tokens"] == requested
+
+
+@pytest.mark.parametrize("prompt_length", [65536, 65537])
+async def test_an_exhausted_context_never_reaches_the_engine(service, prompt_length):
+    service.config.max_tokens_per_sample = 65536
+    with pytest.raises(UserInputError, match="prompt is too long"):
+        service.submit_sample(
+            "tenant",
+            {"num_samples": 1, "prompt_tokens": [1] * prompt_length, "sampling_params": {"max_tokens": 1}},
+        )
+    assert service.backend.named("sample") == []
+
+
+@pytest.mark.parametrize("scoring", [{"prompt_logprobs": True}, {"topk_prompt_logprobs": 2}])
+async def test_a_sequence_sampled_to_the_window_can_be_scored(service, scoring):
+    service.config.max_tokens_per_sample = 8
+    payload = {"num_samples": 1, "prompt_tokens": [1] * 8, "sampling_params": {"max_tokens": 1}} | scoring
+    request_id, _ = service.submit_sample("tenant", payload)
+    assert (await await_settled(service, "tenant", request_id)).state == DONE
+    assert service.backend.named("sample")[0]["payload"]["sampling_params"] == {"max_tokens": 0}
+
+
+async def test_a_short_inference_window_does_not_shrink_the_training_window(service):
+    service.config.max_tokens_per_sample = 2
+    service.config.max_tokens_per_datum = 8
+    with pytest.raises(UserInputError, match="prompt is too long"):
+        service.submit_sample(
+            "tenant", {"num_samples": 1, "prompt_tokens": [1, 2], "sampling_params": {"max_tokens": 1}}
+        )
+    model_id = await created_model(service)
+    request_id = service.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum(7)]))
+    assert (await await_settled(service, "tenant", request_id)).state == DONE
+
+
 async def test_sampler_requests_carry_the_published_checkpoint_path(service):
     model_id = await created_model(service)
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
@@ -835,7 +883,7 @@ async def test_dispatcher_shutdown_stops_model_creation_and_sampling(tmp_path, m
     monkeypatch.setattr(gateway, "_run_lease_sweeper", _run_lease_sweeper)
     run_task = asyncio.create_task(gateway.run())
     gateway.create_model("tenant", model_payload(gateway))
-    gateway.submit_sample("tenant", {"num_samples": 1, "prompt_tokens": [1]})
+    gateway.submit_sample("tenant", {"num_samples": 1, "prompt_tokens": [1], "sampling_params": {"max_tokens": 1}})
     tasks = [run_task, *gateway._create_tasks, *(task for task, _ in gateway._sample_tasks.values())]
     try:
         backend_tasks = [await asyncio.wait_for(started.get(), timeout=2) for _ in range(2)]

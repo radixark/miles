@@ -153,14 +153,14 @@ def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeyp
     monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     args = SimpleNamespace(
         log_probs_backend="torch",
+        loss_type="policy_loss",
         qkv_format="thd",
         rollout_temperature=1.0,
         true_on_policy_mode=True,
-        bf16=False,
-        fp16=False,
         log_probs_chunk_size=-1,
-        vocab_size=4,
         allgather_cp=False,
+        train_backend="megatron",
+        backend=SimpleNamespace(bf16=False, fp16=False, vocab_size=4),
         debug_unified_grad_fused_logprob=False,
     )
     logits = torch.tensor(

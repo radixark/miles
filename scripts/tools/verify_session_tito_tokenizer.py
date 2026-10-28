@@ -48,9 +48,11 @@ Usage examples::
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 
+from miles.utils.args.runtime import AllConfig
 from miles.utils.arguments import parse_args
 from miles.utils.test_utils.session_verify_agent import fixed_template_append_roles, select_schedule
 from miles.utils.test_utils.session_verify_runner import (
@@ -95,6 +97,70 @@ def _with_session_verify_defaults(argv: list[str]) -> list[str]:
     return [*defaults, *argv]
 
 
+def _parse_session_verify_args() -> argparse.Namespace:
+    wrapper_values = {}
+
+    def extract_wrapper_args(args: argparse.Namespace) -> None:
+        for name in ("assistant_text_threshold", "enable_spec"):
+            wrapper_values[name] = vars(args).pop(name)
+
+    config = parse_args(add_custom_arguments=session_verify_extras, preprocess_args=extract_wrapper_args)
+    return _runner_namespace(config=config, **wrapper_values)
+
+
+# TODO: Migrate the session verifier runner to typed configuration and remove this adapter.
+def _runner_namespace(*, config: AllConfig, assistant_text_threshold: float, enable_spec: bool) -> argparse.Namespace:
+    generate = config.custom_generate_function_path
+    agent = config.custom_agent_function_path
+    assert generate is not None and generate.config is not None
+    assert agent is not None
+    generate_values = dict(generate.config)
+    return argparse.Namespace(
+        hf_checkpoint=config.hf_checkpoint,
+        prompt_data=config.prompt_data,
+        input_key=config.input_key,
+        num_rollout=config.num_rollout,
+        rollout_batch_size=config.rollout_batch_size,
+        n_samples_per_prompt=config.n_samples_per_prompt,
+        rollout_max_response_len=config.rollout_max_response_len,
+        rollout_temperature=config.rollout_temperature,
+        global_batch_size=config.global_batch_size,
+        custom_generate_function_path=generate.path,
+        custom_agent_function_path=agent.path,
+        session_verify_cycles=generate_values["session_verify_cycles"],
+        tool_call_failure_mode=generate_values["tool_call_failure_mode"],
+        tito_model=config.tito_model,
+        session_message_matcher=config.session_message_matcher,
+        rollout_num_gpus_per_engine=config.rollout_num_gpus_per_engine,
+        rollout_num_gpus=config.rollout_num_gpus,
+        rm_type=config.rm_type,
+        actor_num_nodes=config.actor_num_nodes,
+        actor_num_gpus_per_node=config.actor_num_gpus_per_node,
+        train_backend=config.train_backend,
+        use_session_server=config.use_session_server,
+        debug_rollout_only=config.debug_rollout_only,
+        ci_test=config.ci_test,
+        ci_tito_special_token_count_threshold=config.ci_tito_special_token_count_threshold,
+        enable_sample_ownership_checker=config.enable_sample_ownership_checker,
+        colocate=config.colocate,
+        assistant_text_threshold=assistant_text_threshold,
+        enable_spec=enable_spec,
+        **{
+            f"sglang_{name}": config.sglang.common_value(name)
+            for name in (
+                "reasoning_parser",
+                "tool_call_parser",
+                "context_length",
+                "kv_cache_dtype",
+                "mamba_full_memory_ratio",
+                "cuda_graph_max_bs_decode",
+                "cuda_graph_backend_prefill",
+                "ep_size",
+            )
+        },
+    )
+
+
 def _print_action_table(allowed_roles: list[str], *, cycles: int) -> None:
     schedule = select_schedule(allowed_roles, cycles=cycles)
     print("Driver schedule (after initial completion):")
@@ -122,7 +188,7 @@ def main() -> int:
     )
 
     sys.argv[1:] = _with_session_verify_defaults(sys.argv[1:])
-    args = parse_args(add_custom_arguments=session_verify_extras)
+    args = _parse_session_verify_args()
 
     # Resolve the family-owned capability before any GPU work starts so an
     # unsupported verifier schedule fails immediately.

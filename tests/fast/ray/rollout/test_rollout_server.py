@@ -5,13 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.fixtures.sglang_config_fixtures import resolve_sglang_config, resolve_sglang_config_and_scaling
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.backends.sglang_utils.sglang_config import (
-    _compute_megatron_num_gpus,
-    _compute_rollout_offset,
-    resolve_sglang_config,
-)
+from miles.backends.sglang_utils.sglang_config import _compute_megatron_num_gpus, _compute_rollout_offset
 from miles.ray.rollout.cell_state import CellAddrInfo, StateServing
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
@@ -31,19 +28,19 @@ class TestRolloutServerPureFunctions:
             "        num_gpus: 4\n"
             "        num_gpus_per_engine: 1\n"
         )
-        args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=8)
         with pytest.raises(AssertionError, match="total GPUs"):
-            resolve_sglang_config(args)
+            resolve_sglang_config(make_args(sglang_config=str(cfg_path), rollout_num_gpus=8))
 
     def test_eval_fleet_inherits_rollout_engine_settings(self):
         """The eval model carries only what makes it an eval fleet; the rest is inherited."""
         args = make_args(eval_num_gpus=2, eval_num_gpus_per_engine=2)
-        config = resolve_sglang_config(args)
+        config, scaling = resolve_sglang_config_and_scaling(args)
 
         [eval_model] = [m for m in config.models if m.name == "eval"]
         assert eval_model.update_weights is False
         [group] = eval_model.server_groups
-        assert (group.num_gpus, group.num_gpus_per_engine) == (2, 2)
+        [group_scaling] = scaling.groups["eval"]
+        assert (group_scaling.num_gpus, group.num_gpus_per_engine) == (2, 2)
         # Eval samples never feed training, so the replay side-channels are forced off.
         assert group.overrides["enable_return_routed_experts"] is False
         assert group.overrides["enable_return_indexer_topk"] is False
@@ -88,10 +85,10 @@ class TestRolloutServerPureFunctions:
     def test_debug_train_only_builds_only_the_eval_model(self):
         args = make_args(debug_train_only=True, eval_num_gpus=8, eval_num_gpus_per_engine=1)
 
-        config = resolve_sglang_config(args)
+        config, scaling = resolve_sglang_config_and_scaling(args)
 
         assert [model.name for model in config.models] == ["eval"]
-        assert sum(group.num_gpus for model in config.models for group in model.server_groups) == 8
+        assert sum(group.num_gpus for groups in scaling.groups.values() for group in groups) == 8
 
     def test_debug_train_only_without_eval_fleet_builds_no_model(self):
         args = make_args(debug_train_only=True, eval_num_gpus=0)
@@ -164,23 +161,17 @@ class TestRolloutServerPureFunctions:
         )
         assert _compute_rollout_offset(args) == 0
 
-    def test_compute_rollout_offset_critic_train_only(self):
-        args = make_args(
-            colocate=False,
-            debug_train_only=False,
-            debug_rollout_only=False,
-            critic_train_only=True,
-            critic_num_nodes=1,
-            critic_num_gpus_per_node=4,
-        )
-        assert _compute_rollout_offset(args) == 4
+    def test_compute_rollout_offset_refuses_the_removed_critic_train_only_field(self):
+        args = make_args(colocate=False, debug_train_only=False, debug_rollout_only=False)
+        args.critic_train_only = True
+        with pytest.raises(AssertionError, match="critic_train_only is not supported"):
+            _compute_rollout_offset(args)
 
     def test_compute_rollout_offset_shared_actor_critic(self):
         args = make_args(
             colocate=False,
             debug_train_only=False,
             debug_rollout_only=False,
-            critic_train_only=False,
             use_critic=True,
             actor_num_nodes=1,
             actor_num_gpus_per_node=8,
@@ -195,7 +186,6 @@ class TestRolloutServerPureFunctions:
             actor_num_gpus_per_node=8,
             use_critic=False,
             debug_rollout_only=False,
-            critic_train_only=False,
         )
         assert _compute_megatron_num_gpus(args) == 16
 
@@ -207,7 +197,6 @@ class TestRolloutServerPureFunctions:
             critic_num_nodes=1,
             critic_num_gpus_per_node=4,
             debug_rollout_only=False,
-            critic_train_only=False,
         )
         assert _compute_megatron_num_gpus(args) == 8
 

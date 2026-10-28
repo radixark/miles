@@ -6,13 +6,17 @@ import json
 import logging
 import os
 import platform
-import random
+import secrets
 import shlex
 import socket
+import string
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
+from miles.utils.env_report.redaction import redact_arg
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.object_store_config import (
@@ -20,6 +24,7 @@ from miles.utils.object_store_config import (
     MOONCAKE_MASTER_PORT,
     compute_mooncake_init_kwargs_vanilla,
 )
+from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR, SNAPSHOT_UPDATE_ENV_VAR
 from miles.utils.workers.argv_utils import parse_declared_args
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
 
@@ -50,7 +55,7 @@ def rsync_cmd(path_src: str, path_dst: str) -> str:
 def train_env_vars(
     request: ExecuteTrainRequest, backend_env_vars: dict[str, str], *, config: ExecuteTrainConfig
 ) -> dict[str, str]:
-    return {
+    env = {
         # exported for the submitting client too, but only the runtime env reaches the ray workers
         "PYTHONUNBUFFERED": "1",
         # If setting this in FSDP, the computation communication overlapping may have issues
@@ -76,6 +81,12 @@ def train_env_vars(
         **_parse_extra_env_vars(config.extra_env_vars),
     }
 
+    if SNAPSHOT_TESTING_ENABLED:
+        env[SNAPSHOT_UPDATE_ENV_VAR] = os.environ.get(SNAPSHOT_UPDATE_ENV_VAR, "")
+        env[SNAPSHOT_RECORD_DIR_ENV_VAR] = os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR, "")
+        env.update(generated_value_registry.to_env())
+    return env
+
 
 def _parse_extra_env_vars(text: str):
     try:
@@ -88,7 +99,7 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
     from miles.utils.logging_utils import configure_logger_raw
 
     configure_logger_raw("launcher")
-    if not os.environ.get("WANDB_API_KEY"):
+    if not (wandb_key := os.environ.get("WANDB_API_KEY")):
         logger.info("Skip wandb configuration since WANDB_API_KEY is not found")
         return ""
 
@@ -99,12 +110,17 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
 
     wandb_run_name = run_id or create_run_id()
     if (x := os.environ.get("GITHUB_COMMIT_NAME")) is not None:
+        if SNAPSHOT_TESTING_ENABLED:
+            generated_value_registry.register(kind="ci_commit_name", value=x, name="github")
         wandb_run_name += f"_{x}"
     if (x := run_name_prefix) is not None:
         wandb_run_name = f"{x}_{wandb_run_name}"
 
     # Use the actual key value from environment to avoid shell expansion issues
-    wandb_key = os.environ.get("WANDB_API_KEY")
+    if SNAPSHOT_TESTING_ENABLED:
+        generated_value_registry.register(
+            kind="wandb_key", name="environment", value=redact_arg("wandb_key", wandb_key)
+        )
     return (
         "--use-wandb "
         f"--wandb-project miles-{test_name} "
@@ -114,8 +130,17 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
     )
 
 
+_RUN_ID_SUFFIX_ALPHABET = string.ascii_lowercase + string.digits
+
+
 def create_run_id() -> str:
-    return datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
+    # 4 base-36 characters: launches in the same second, in any process, collide with odds of 1 in 1.7M, and the id
+    # stays at 18 characters, all that the split-deployment example's release names leave it.
+    suffix = "".join(secrets.choice(_RUN_ID_SUFFIX_ALPHABET) for _ in range(4))
+    value = datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{suffix}"
+    if SNAPSHOT_TESTING_ENABLED:
+        generated_value_registry.register(kind="run_id", value=value)
+    return value
 
 
 _warned_bool_env_var_keys = set()
@@ -207,12 +232,21 @@ def get_mooncake_master_port(train_argv: list[str]) -> int:
     return parse_host_and_port(address).port
 
 
-def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT, master_host: str = "127.0.0.1") -> str:
+def get_mooncake_object_store_args(
+    master_port: int = MOONCAKE_MASTER_PORT, master_host: str = "127.0.0.1", global_segment_size: str | None = None
+) -> str:
     init_kwargs = compute_mooncake_init_kwargs_vanilla(host=master_host, master_port=master_port)
+    if global_segment_size is not None:
+        init_kwargs["global_segment_size"] = global_segment_size
     return (
         f"{OBJECT_STORE_BACKEND_FLAG} {MOONCAKE_BACKEND_NAME} "
         f"{MOONCAKE_INIT_KWARGS_FLAG} {shlex.quote(json.dumps(init_kwargs))} "
     )
+
+
+def get_output_store_args(global_segment_size: str | None = None) -> str:
+    """--use-output-store with the Mooncake object store it lives in."""
+    return f"{get_mooncake_object_store_args(global_segment_size=global_segment_size)}--use-output-store "
 
 
 def _is_tcp_server_ready(host: str, port: int) -> bool:

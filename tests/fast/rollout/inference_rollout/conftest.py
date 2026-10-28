@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
@@ -20,6 +21,7 @@ class FakeGenerateState(GenerateState):
             mask_offpolicy_in_partial_rollout=False,
             group_rm=True,
             sglang_router_policy="round_robin",
+            sglang=make_sglang_config(enable_deterministic_inference=False),
         )
         self.generate_fn_semaphore = asyncio.Semaphore(2)
         self.aborted = False
@@ -52,6 +54,7 @@ def make_eval_args(*, namespaced_radix_cache: bool = True) -> dict[str, Any]:
         mask_offpolicy_in_partial_rollout=False,
         group_rm=False,
         sglang_router_policy="round_robin",
+        sglang=make_sglang_config(enable_deterministic_inference=False),
         eval_datasets=[EvalDatasetConfig(name="fake_ds", path="fake.jsonl", n_samples_per_eval_prompt=2)],
         hf_checkpoint="fake-checkpoint",
         apply_chat_template=False,

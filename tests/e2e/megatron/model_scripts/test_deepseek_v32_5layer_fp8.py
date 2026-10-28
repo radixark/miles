@@ -16,6 +16,8 @@ from scripts.run_deepseek_v32 import (
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
+from miles.utils.external_utils import command_utils
+
 register_cuda_ci(
     est_time=1300, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper"], num_gpus=4
 )
@@ -25,6 +27,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 
 def _args() -> ScriptArgs:
@@ -44,6 +47,7 @@ def _args() -> ScriptArgs:
         extra_args=(
             "--ci-test --check-weight-update-allow-quant-error --bf16 "
             "--use-rollout-routing-replay "
+            f"{command_utils.get_output_store_args()}"
             "--skip-actor-forward-only "
             "--sglang-disable-shared-experts-fusion "
             # TP2 doubles the per-rank activations of the script's TP4 token budget

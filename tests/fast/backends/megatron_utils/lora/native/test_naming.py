@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
+from tests.fast.fixtures.args_fixtures import make_trainer_config
 
 from miles.backends.megatron_utils.lora.native.naming import ConverterNaming, DeclaredNaming
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
@@ -37,7 +38,7 @@ def _weight(layer, path):
     return owner
 
 
-_GQA_ARGS = SimpleNamespace(
+_GQA_ARGS = make_trainer_config(
     hidden_size=8, num_attention_heads=4, num_query_groups=2, kv_channels=2, hf_checkpoint="/ckpt"
 )
 

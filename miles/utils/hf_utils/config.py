@@ -33,7 +33,8 @@ class _HFConfigAlias:
 
 
 def _normalize_deepseek_v41_kwargs(kwargs: dict) -> dict:
-    """Flatten the composite HF config (text_config holds the decoder)."""
+    """Flatten the composite HF config (text_config holds the decoder). Every V4.1 layer is MoE, so
+    DeepseekV3Config's first_k_dense_replace=3 default does not apply."""
     kwargs = dict(kwargs)
     text = kwargs.pop("text_config", None)
     kwargs.pop("vision_config", None)
@@ -41,6 +42,7 @@ def _normalize_deepseek_v41_kwargs(kwargs: dict) -> dict:
         text = dict(text)
         text.pop("model_type", None)
         kwargs = {**text, **kwargs}
+    kwargs.setdefault("first_k_dense_replace", 0)
     return kwargs
 
 
@@ -82,7 +84,9 @@ def register_hf_config_aliases() -> None:
                 f"set override_hf_native=True to override."
             )
         module = importlib.import_module(alias.base_module)
-        base_config = getattr(module, alias.base_class)
+        base_config = getattr(
+            module, alias.base_class
+        )  # config-access-exempt: attribute selected at runtime from alias.base_class
         attrs = {"model_type": alias.model_type, "__module__": __name__}
         if alias.normalize_kwargs is not None:
             normalize = globals()[alias.normalize_kwargs]
@@ -134,7 +138,11 @@ def load_hf_config(
 
 
 def is_dsa(hf_config) -> bool:
-    return getattr(hf_config, "model_type", None) in ("deepseek_v32", "glm_moe_dsa", "glm5_next")
+    return getattr(hf_config, "model_type", None) in (
+        "deepseek_v32",
+        "glm_moe_dsa",
+        "glm5_next",
+    )  # config-access-exempt: model-family schemas differ in optional model_type metadata
 
 
 # Written by HF exports after all ranks finish, so consumers can tell finished from partial.

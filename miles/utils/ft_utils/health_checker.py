@@ -67,10 +67,18 @@ class SimpleHealthCheckerConfig(StrictBaseModel):
     def from_args(args: object, *, prefix: str) -> SimpleHealthCheckerConfig:
         attr_prefix = prefix.replace("-", "_")
         return SimpleHealthCheckerConfig(
-            interval=getattr(args, f"{attr_prefix}_interval"),
-            timeout=getattr(args, f"{attr_prefix}_timeout"),
-            first_wait=getattr(args, f"{attr_prefix}_first_wait"),
-            failure_threshold=getattr(args, f"{attr_prefix}_failure_threshold"),
+            interval=getattr(
+                args, f"{attr_prefix}_interval"
+            ),  # config-access-exempt: attribute selected at runtime from f'{attr_prefix}_interval'
+            timeout=getattr(
+                args, f"{attr_prefix}_timeout"
+            ),  # config-access-exempt: attribute selected at runtime from f'{attr_prefix}_timeout'
+            first_wait=getattr(
+                args, f"{attr_prefix}_first_wait"
+            ),  # config-access-exempt: attribute selected at runtime from f'{attr_prefix}_first_wait'
+            failure_threshold=getattr(
+                args, f"{attr_prefix}_failure_threshold"
+            ),  # config-access-exempt: attribute selected at runtime from f'{attr_prefix}_failure_threshold'
         )
 
 

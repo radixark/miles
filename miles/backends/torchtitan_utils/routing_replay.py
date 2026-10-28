@@ -112,7 +112,10 @@ def install(model_parts: list[nn.Module]) -> int:
 
 
 def _is_installed(model_parts: list[nn.Module]) -> bool:
-    return routing_replay_manager.enabled and all(getattr(part, _INSTALLED_ATTR, False) for part in model_parts)
+    return routing_replay_manager.enabled and all(
+        getattr(part, _INSTALLED_ATTR, False)
+        for part in model_parts  # config-access-exempt: routing replay installation marker is attached to model parts at runtime
+    )
 
 
 def bypass_schedule_initialization(model_parts: list[nn.Module]) -> None:

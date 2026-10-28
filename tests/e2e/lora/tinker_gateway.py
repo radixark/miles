@@ -14,6 +14,12 @@ MODEL_NAME = "Qwen3-4B-Instruct-2507"
 BASE_MODEL = f"Qwen/{MODEL_NAME}"
 GATEWAY_PORT = 10613
 SERVE_TIMEOUT_S = 1200
+QWEN_SERVE_CMD = (
+    "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
+    f"--hf-checkpoint /root/models/{MODEL_NAME} "
+    "--model-type qwen3-4B-Instruct-2507 --tp 2 --ep 1 --lora-rank 8 --lora-alpha 16 "
+    f'--extra-args "--tinker-base-model {BASE_MODEL}"'
+)
 
 
 def prepare_gateway():
@@ -37,15 +43,9 @@ def _wait_for_gateway(server: subprocess.Popen) -> None:
 
 
 @contextmanager
-def running_gateway():
+def running_gateway(serve_cmd: str = QWEN_SERVE_CMD):
     if not is_port_available(GATEWAY_PORT):
         raise RuntimeError(f"port {GATEWAY_PORT} already has a listener; refusing to reuse a gateway not started here")
-    serve_cmd = (
-        "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
-        f"--hf-checkpoint /root/models/{MODEL_NAME} "
-        "--model-type qwen3-4B-Instruct-2507 --tp 2 --ep 1 --lora-rank 8 --lora-alpha 16 "
-        f'--extra-args "--tinker-base-model {BASE_MODEL}"'
-    )
     server = subprocess.Popen(["bash", "-c", f"exec {serve_cmd}"], start_new_session=True)
     try:
         _wait_for_gateway(server)

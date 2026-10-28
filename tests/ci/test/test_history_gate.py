@@ -797,3 +797,40 @@ def test_single_register_gate_registry_none_still_reparses(tmp_path, store):
     assert result.backend == "cuda"
     assert result.suite == "stage-c-8-gpu-h100"
     assert result.trusted is True
+
+
+# --- tracked metrics (constraint=None) --------------------------------------
+
+
+def test_tracked_metric_reports_its_change_but_never_untrusts(tmp_path, store):
+    test_file = _write_test_file(tmp_path, 'register_ci_gate(metric_key="perf/actor_train_mfu")')
+    _seed_baseline(
+        store,
+        test_file,
+        metric_key="perf/actor_train_mfu",
+        steps_key=LAST_KEY,
+        constraint_key=_key(None),
+        step=-1,
+        values=[0.20, 0.20],
+    )
+    record = _write_record(tmp_path, {"perf/actor_train_mfu": [[0, 0.02], [1, 0.05]]})
+
+    result = evaluate_gate(test_file, record, store, executing_suite="stage-c-8-gpu-h100")
+    m = result.metrics[0]
+    assert m.historical_status == GateStatus.TRACKED
+    assert m.current == 0.05
+    assert m.baseline_mean == pytest.approx(0.20)
+    assert "-75.0%" in m.reason
+    assert result.trusted is True
+
+
+def test_tracked_metric_missing_from_record_is_not_an_error(tmp_path, store):
+    test_file = _write_test_file(tmp_path, 'register_ci_gate(metric_key="perf/actor_train_mfu")')
+    record = _write_record(tmp_path, {"train/grad_norm": [[0, 1.0]]})
+
+    result = evaluate_gate(test_file, record, store, executing_suite="stage-c-8-gpu-h100")
+    m = result.metrics[0]
+    assert m.historical_status == GateStatus.TRACKED
+    assert m.current is None
+    assert "missing" in m.reason
+    assert result.trusted is True
