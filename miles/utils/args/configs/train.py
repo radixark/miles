@@ -13,6 +13,16 @@ class TrainConfig(BaseConfig):
     train_backend: A[str, Arg(choices=["megatron", "fsdp", "torchtitan"], help="The backend for training.")] = (
         "megatron"
     )
+    trainer_worker_class: A[
+        str | None,
+        Arg(
+            help=(
+                "Import path of the Ray actor class that every trainer runs, e.g. 'my_module.MyTrainRayActor'. "
+                "Defaults to the class chosen for --train-backend and multi-LoRA; set it to run a subclass of "
+                "that class."
+            )
+        ),
+    ] = None
     qkv_format: A[str, Arg(choices=["thd", "bshd"], help="The qkv layout.")] = "thd"
     linear_attention_backend: A[
         str,

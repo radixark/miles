@@ -162,13 +162,7 @@ class TrainerSpec(BaseServeSpec):
                 DEFAULT_RPC_PORT_INFO,
             ],
             partial_static_meta=StaticMeta(values=dict(role=config.trainer_role), include_cell_index=True),
-            worker_class=(
-                "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"
-                if config.train_backend == "megatron"
-                and config.trainer_role == ACTOR_ROLE
-                and is_multi_lora_enabled(config)
-                else _TRAINER_ACTOR_CLASSES[config.train_backend]
-            ),
+            worker_class=_compute_trainer_worker_class(config),
             concurrency_groups=TRAINER_CONCURRENCY_GROUPS if config.use_fault_tolerance else None,
         )
 
@@ -204,6 +198,14 @@ class TrainerSpec(BaseServeSpec):
             role=ctx.args.trainer_role,
             cell_index=ctx.cell_index,
         )
+
+
+def _compute_trainer_worker_class(config: TrainerConfig) -> str:
+    if config.trainer_worker_class is not None:
+        return config.trainer_worker_class
+    if config.train_backend == "megatron" and config.trainer_role == ACTOR_ROLE and is_multi_lora_enabled(config):
+        return "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"
+    return _TRAINER_ACTOR_CLASSES[config.train_backend]
 
 
 def compute_trainer_pool_id(trainer_id: str) -> str:

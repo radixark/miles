@@ -287,6 +287,12 @@ class TestConstructorArguments:
             train_specs._TRAINER_ACTOR_CLASSES[backend]
         ] * use_critic
 
+    def test_a_custom_worker_class_replaces_the_backend_choice(self):
+        """A downstream project runs its own subclass of the trainer actor without patching the spec."""
+        specs = specs_trainer(_make_args(use_critic=True, trainer_worker_class="my_module.MyTrainRayActor"))
+
+        assert [spec.worker_class for spec in specs] == ["my_module.MyTrainRayActor"] * 2
+
 
 class TestConcurrencyGroups:
     def test_the_heartbeat_rpc_is_always_isolated(self):
