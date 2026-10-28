@@ -10,8 +10,8 @@ through shared memory (`--update-weight-transfer-mode shm`, about 3 s per sync f
 
 The engine and the trainer share one Python environment. `docker/Dockerfile.tpu` (`python docker/build.py
 --variant tpu`, `radixark/miles:dev-tpu`) builds it on sglang-torchtpu's release image
-(`lmsysorg/sglang:v0.1.0-tpu`), moved to the torch `docker/Dockerfile` runs (2.14.1; the torchtitan backend needs
-torch >= 2.13). To set it up by hand, on that image:
+(`lmsysorg/sglang:v0.1.0-tpu`) with the torch that `docker/Dockerfile` uses (2.14.1; the torchtitan backend
+needs torch >= 2.13). To set it up by hand, on that image:
 
 ```bash
 # torch 2.14.1 (CPU wheel; the image's torch_tpu ships glue for torch 2.11-2.15)
@@ -40,7 +40,7 @@ Model and data default to `/root/models` and `/root/datasets` (`--model-dir`, `-
    `curl localhost:30000/health` to return 200 (about 5 minutes, mostly compilation):
 
    ```bash
-   PYTHONPATH=$PWD python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang
+   python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang
    ```
 
 2. Train on devices 0-3:
