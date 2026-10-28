@@ -363,10 +363,10 @@ class TestExitConditions:
         sample.validate()
 
     def test_partial_rollout_not_supported(self, variant, generation_env):
-        generation_env.args.partial_rollout = True
+        env = replace(generation_env, args=generation_env.args.model_copy(update={"partial_rollout": True}))
 
         with pytest.raises(AssertionError, match="Partial rollout is not supported"):
-            _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+            _run_generate(variant, env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
     def test_abort_preserves_content(self, variant, generation_env):
         if is_agentic_variant(variant):
@@ -601,7 +601,6 @@ class TestRoutedExpertsMultiTurn:
                     # Must be in args BEFORE the session server starts: the R3
                     # decode now runs inside the worker during sample assembly.
                     "num_layers": 2,
-                    "moe_router_topk": 4,
                 }
             }
         ],
@@ -609,7 +608,7 @@ class TestRoutedExpertsMultiTurn:
     )
     def test_two_turns_routed_experts(self, variant, generation_env):
         S = TwoTurnStub
-        num_layers, moe_router_topk = generation_env.args.num_layers, generation_env.args.moe_router_topk
+        num_layers, moe_router_topk = generation_env.args.num_layers, 4
         if is_agentic_variant(variant):
             tito = get_tito_tokenizer(
                 TOKENIZER,
@@ -809,6 +808,7 @@ class TestAgentNoRecords:
     def test_no_records_returns_aborted(self, agentic_variant):
         from tests.fast.fixtures.generation_fixtures import (
             GenerateEnv,
+            compute_generate_args,
             extra_argv_for_variant,
             make_args,
             with_session_server,
@@ -835,7 +835,7 @@ class TestAgentNoRecords:
             )
             with with_session_server(mock_server.url, args, port=session_port):
                 args.session_server_instances = [SessionServerInstance(addr=f"127.0.0.1:{session_port}")]
-                env = GenerateEnv(args=args, mock_server=mock_server)
+                env = GenerateEnv(args=compute_generate_args(args), mock_server=mock_server)
                 result = _run_generate(agentic_variant, env, make_sample(prompt=TwoTurnStub.PROMPT))
 
         SingletonMeta.clear_all_instances()

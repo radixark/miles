@@ -134,7 +134,7 @@ def test_the_degree_one_axes_get_their_own_single_rank_group():
         dist.get_world_size.return_value = 4
         dist.get_rank.return_value = 3
         dist.new_group.return_value = self_group
-        state = parallel_module.create_fsdp_parallel_state(Namespace(dp_replicate_size=1))
+        state = parallel_module.create_fsdp_parallel_state(Namespace(backend=Namespace(dp_replicate_size=1)))
     dist.new_group.assert_called_once_with([3])
     for axis in (state.pp, state.ep, state.etp, state.indep_dp, state.tp, state.cp):
         assert axis.group is self_group

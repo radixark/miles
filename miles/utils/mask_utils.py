@@ -1,4 +1,8 @@
+import logging
+
 from transformers import AutoTokenizer
+
+logger = logging.getLogger(__name__)
 
 
 def get_response_lengths(loss_masks: list[list[int]]) -> list[int]:
@@ -115,19 +119,44 @@ class MultiTurnLossMaskGenerator:
     def gen_multi_turn_loss_mask_distill_qwen(
         self, messages: list[dict], tools: list[dict] = None
     ) -> tuple[list[int], list[int]]:
+        # Trains only the final plain-text assistant answer, tokenized from its raw content so its
+        # reasoning survives (the DeepSeek template strips `<think>` from rendered assistant turns).
+        # Every earlier message is rendered as untrained prompt context. Trailing turns that cannot
+        # be trained this way (tool/user messages, assistant tool calls, answers with
+        # `step_loss_mask=0`) are trimmed off.
+        last = max(
+            (
+                i
+                for i, m in enumerate(messages)
+                if m["role"] == "assistant" and not m.get("tool_calls") and m.get("step_loss_mask", 1) == 1
+            ),
+            default=None,
+        )
+        if last is None:
+            raise ValueError(
+                "distill_qwen loss mask needs an assistant message without tool_calls and with step_loss_mask=1 to train"
+            )
+        if last != len(messages) - 1:
+            logger.warning(
+                f"distill_qwen loss mask: trimming {len(messages) - 1 - last} trailing message(s) after the last "
+                f"plain assistant answer"
+            )
+            messages = messages[: last + 1]
+
         prompt = self.tokenizer.apply_chat_template(
-            messages[:1], tokenize=False, add_generation_prompt=True, tools=tools
+            messages[:-1], tokenize=False, add_generation_prompt=True, tools=tools
         )
         response = messages[-1]["content"]
+        # The DeepSeek generation prompt already opens the reasoning block; do not repeat the tag.
+        if prompt.endswith("<think>\n") and response.startswith("<think>"):
+            response = response[len("<think>") :].removeprefix("\n")
         prompt_tokens = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
         response_tokens = self.tokenizer(response, add_special_tokens=False)["input_ids"]
+        if self.tokenizer.eos_token_id is not None:
+            response_tokens.append(self.tokenizer.eos_token_id)
 
-        response_length = len(response_tokens)
         token_ids = prompt_tokens + response_tokens
-        loss_mask = [0] * len(prompt_tokens) + [1] * response_length
-
-        if messages[-1].get("step_loss_mask", 1) != 1:
-            loss_mask = [0] * len(token_ids)
+        loss_mask = [0] * len(prompt_tokens) + [1] * len(response_tokens)
         return token_ids, loss_mask
 
     def get_loss_mask(self, messages: list[dict], tools: list[dict] = None) -> tuple[list[int], list[int]]:

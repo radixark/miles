@@ -7,8 +7,10 @@ from miles.rollout.generate_utils.sampling_mask import (
     append_forced_sampling_tokens,
     append_sampling_metadata,
     merge_sampling_masks,
+    read_sampled_logprobs,
     should_return_sampling_mask,
 )
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample
 
@@ -37,8 +39,11 @@ def test_generate_payload_automatically_requests_sampling_mask(
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
+        lora_rank=0,
+        lora_adapter_path=None,
     )
 
     payload, halt_status = compute_request_payload(
@@ -85,8 +90,11 @@ def test_evaluation_does_not_request_or_validate_training_sampling_support():
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
+        lora_rank=0,
+        lora_adapter_path=None,
     )
 
     payload, halt_status = compute_request_payload(
@@ -249,3 +257,26 @@ def test_abort_before_sampling_does_not_require_sampling_metadata():
 
     assert append_sampling_metadata(sample, [], {"finish_reason": {"type": "abort"}}) == []
     assert len(sample.rollout_sampling_mask) == 0
+
+
+@pytest.mark.parametrize(
+    ("mode", "key"),
+    [("selected", "output_token_sampling_logprobs"), ("support", "output_token_sampling_selected_logprobs")],
+)
+def test_read_sampled_logprobs_reads_one_value_per_sampled_token(mode, key):
+    # The support rows went to the output store; the other key must not be read.
+    other = "output_token_sampling_logprobs" if mode == "support" else "output_token_sampling_selected_logprobs"
+    meta_info = {key: [-0.25, -1.5], other: [[0.0]]}
+
+    assert read_sampled_logprobs(meta_info, [4, 7], sampling_logprobs_mode=mode) == [-0.25, -1.5]
+    with pytest.raises(StorePlanError, match=f"{key} has 2 values for 3 output tokens"):
+        read_sampled_logprobs(meta_info, [4, 7, 9], sampling_logprobs_mode=mode)
+    with pytest.raises(StorePlanError, match=f"{key} has 0 values for 1 output tokens"):
+        read_sampled_logprobs({}, [4], sampling_logprobs_mode=mode)
+
+
+def test_read_sampled_logprobs_of_no_output_are_empty():
+    # A no-output abort returns no log-probs at all.
+    assert read_sampled_logprobs({}, [], sampling_logprobs_mode="support") == []
+    with pytest.raises(ValueError, match="Unsupported sampling logprobs mode"):
+        read_sampled_logprobs({}, [], sampling_logprobs_mode="other")

@@ -7,7 +7,7 @@ from argparse import Namespace
 
 import pytest
 import torch
-from tests.fast.fixtures.args_fixtures import parser_defaults
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 import miles.rollout.inference_rollout.inference_rollout_train as train
@@ -42,7 +42,7 @@ def make_args(**overrides) -> Namespace:
         sglang_router_port=30000,
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return resolve_parse_boundary_configs(Namespace(**defaults))
 
 
 def make_group(group_index: int) -> list[Sample]:
@@ -357,3 +357,26 @@ class TestSubmissionSchedulers:
         assert pending == {never}
 
         never.cancel()
+
+
+async def test_a_filtered_group_hands_its_output_store_refs_over(monkeypatch):
+    from tests.fast.utils.output_store.test_plan import ref
+
+    from miles.utils.output_store import dropped
+    from miles.utils.output_store.dropped import take_dropped_refs
+    from miles.utils.output_store.plan import StorePlan
+
+    monkeypatch.setattr(dropped, "_dropped", {})
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=1))
+    task = harness.run()
+    await asyncio.sleep(0)
+
+    for sample in harness.submitted_groups[0]:
+        sample.status = Sample.Status.ABORTED
+        sample.rollout_store_plan = StorePlan(fields={}, owned_refs=(ref(f"key-{sample.index}"),))
+    harness.finish_group(0)
+    await asyncio.sleep(0.01)
+    harness.finish_group(1)
+    await task
+
+    assert sorted(take_dropped_refs()) == [f"key-{10 + i}" for i in range(GROUP_SIZE)]

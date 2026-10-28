@@ -8,7 +8,8 @@ SessionError (base)
 ├── TruncatedGenerationError   → 409  extending a length-truncated generation (v2)
 ├── TokenizationError          → 500  TITO tokenizer / prefix mismatch
 ├── UpstreamResponseError      → 502  SGLang response invalid or unexpected
-└── UpstreamGenerationAbortedError → 503  SGLang aborted the generation
+├── UpstreamGenerationAbortedError → 503  SGLang aborted the generation
+└── OutputStoreContractError   → 424  output store contract broken; the rollout stops
 """
 
 
@@ -65,3 +66,12 @@ class UpstreamGenerationAbortedError(SessionError):
     """Raised when upstream aborts a generation without an HTTP error."""
 
     status_code: int = 503
+
+
+class OutputStoreContractError(SessionError):
+    """Raised for a ``StorePlanError``: the output store contract is broken, so retrying cannot fix it.
+
+    The session client raises ``StorePlanError`` again on this status, and the rollout stops.
+    """
+
+    status_code: int = 424

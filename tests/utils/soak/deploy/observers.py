@@ -3,6 +3,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import cached_property
 from pathlib import Path
 
 from tests.utils.deploy.hot_restart.cluster_observer import (
@@ -11,7 +12,7 @@ from tests.utils.deploy.hot_restart.cluster_observer import (
     compute_trainer_rpc_url,
     read_cluster_snapshot,
 )
-from tests.utils.deploy.hot_restart.evidence import RunProgress, read_run_progress
+from tests.utils.deploy.hot_restart.evidence import RunProgress, RunProgressReader
 from tests.utils.soak.core.events import SoakObservationEvent
 from tests.utils.soak.core.types import SoakObserver
 from tests.utils.soak.core.utils import recording_error
@@ -71,10 +72,12 @@ class DeploymentObserver(SoakObserver):
     async def _observe_progress(self, *, errors: dict[str, str]) -> RunProgress | None:
         progress: RunProgress | None = None
         with recording_error(errors, "progress"):
-            progress = await asyncio.to_thread(
-                read_run_progress, checkpoint_dir=self.checkpoint_dir, events_dir=self.events_dir
-            )
+            progress = await asyncio.to_thread(self._progress_reader.read)
         return progress
+
+    @cached_property
+    def _progress_reader(self) -> RunProgressReader:
+        return RunProgressReader(checkpoint_dir=self.checkpoint_dir, events_dir=self.events_dir)
 
     def _create_targets(
         self,

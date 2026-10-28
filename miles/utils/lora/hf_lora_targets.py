@@ -82,6 +82,14 @@ def _deepseek_targets(config):
     return _mla_attention_targets(config), _deepseek_mlp_targets(config)
 
 
+def _deepseek_v41_targets(config):
+    # every V4.1 layer is MoE
+    mlp = list(_prefix_paths("ffn.experts.*", "w1", "w2", "w3"))
+    if config["n_shared_experts"]:
+        mlp.extend(_prefix_paths("ffn.shared_experts", "w1", "w2", "w3"))
+    return _prefix_paths("attn", "wq_a", "wq_b", "wkv", "wo_a", "wo_b"), tuple(mlp)
+
+
 def _kimi_targets(config):
     # Kimi's custom HF implementation retains per-expert modules and interleaved dense layers.
     num_moe_layers = sum(
@@ -208,6 +216,16 @@ def _inkling_targets(config):
     return attention, tuple(mlp)
 
 
+def _mimo_v2_targets(config):
+    # moe_layer_freq lists every layer's MLP: 1 for routed experts (per-expert modules), 0 for dense.
+    mlp = []
+    if not all(config["moe_layer_freq"]):
+        mlp.extend(_DENSE_MLP)
+    if any(config["moe_layer_freq"]):
+        mlp.extend(_ROUTED_EXPERTS)
+    return _QKVO_ATTENTION, tuple(mlp)
+
+
 _HF_LORA_MODELS = {
     "llama": _HfLoraModelSpec(_dense_targets),
     "qwen2": _HfLoraModelSpec(_dense_targets),
@@ -226,6 +244,7 @@ _HF_LORA_MODELS = {
     "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v3": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v32": _HfLoraModelSpec(_deepseek_targets),
+    "deepseek_v41": _HfLoraModelSpec(_deepseek_v41_targets, layer_prefix="layers.*", unembed="head"),
     "kimi_k2": _HfLoraModelSpec(_kimi_targets),
     "kimi_k25": _HfLoraModelSpec(
         _kimi_targets,
@@ -244,6 +263,7 @@ _HF_LORA_MODELS = {
     "glm5_next": _HfLoraModelSpec(
         _glm5_next_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
     ),
+    "mimo_v2": _HfLoraModelSpec(_mimo_v2_targets),
     "inkling_text": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_model": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_mm_model": _HfLoraModelSpec(

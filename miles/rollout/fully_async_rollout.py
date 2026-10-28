@@ -24,7 +24,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.base_types import (
     BaseRolloutFn,
     RolloutFnConstructorInput,
@@ -54,6 +53,7 @@ from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_data
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
+from miles.utils.output_store.dropped import record_dropped_samples
 from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import Sample
 
@@ -91,9 +91,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._curr_kv_cache_namespace: str | None = None
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
-        default_buffer_cls = (
-            DefaultMultiDataBuffer if resolve_megatron_config(self.args).is_multi_policy else DefaultDataBuffer
-        )
+        default_buffer_cls = DefaultMultiDataBuffer if self.args.raw_megatron.is_multi_policy else DefaultDataBuffer
         buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
         self._output: DataBuffer = buffer_cls(
             DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
@@ -249,6 +247,8 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         before_filter = SampleOwnershipRecorder.flatten_samples(data)
         if self._sample_filter is not None:
             self._sample_filter(args, data)
+        kept = {id(sample) for sample in SampleOwnershipRecorder.flatten_samples(data)}
+        record_dropped_samples(sample for sample in before_filter if id(sample) not in kept)
         SampleOwnershipRecorder.log_dropped_groups(
             args=args, before=before_filter, after=data, reason="rollout_sample_filter"
         )
