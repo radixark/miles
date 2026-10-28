@@ -253,6 +253,14 @@
       "pages": [
        "advanced/cluster-backend"
       ]
+     },
+     {
+      "group": "Algorithm",
+      "pages": [
+       "examples/infra-features/score-centering",
+       "examples/infra-features/train-infer-mismatch-helper",
+       "advanced/algorithms/length-penalties"
+      ]
      }
     ]
    },
@@ -285,9 +293,7 @@
        "examples/infra-features/low-precision",
        "examples/infra-features/p2p-weight-transfer",
        "examples/infra-features/random-async",
-       "examples/infra-features/score-centering",
        "examples/infra-features/split-deployment",
-       "examples/infra-features/train-infer-mismatch-helper",
        "examples/infra-features/true-on-policy"
       ]
      }
