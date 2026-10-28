@@ -224,6 +224,33 @@ class TestComputeZeroStdMetrics:
         assert out["zero_std/all_zero_percentage"] == 0.0
         assert out["zero_std/all_one_percentage"] == 0.0
 
+    def test_non_scalar_reward_is_bucketed_instead_of_crashing(self):
+        """Non-scalar rewards must not reach round().
+
+        A custom reward function may return a dict (e.g. a raw teacher reply for OPD), and this runs
+        before --custom-reward-post-process-path rewrites it into the scalar used for advantages.
+        """
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        teacher_response = {"text": "42", "output_ids": [1, 2, 3]}
+        samples = make_samples_grouped(2, 4, rewards=[dict(teacher_response)] * 8)
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out["zero_std/count_non_scalar_dict"] == 2
+        assert out["zero_std/all_zero_percentage"] == 0.0
+        assert out["zero_std/all_one_percentage"] == 0.0
+
+    @pytest.mark.parametrize("group_size", [1, 4])
+    def test_distinct_teacher_replies_are_zero_std_only_in_single_sample_groups(self, group_size):
+        """One response per prompt makes every group zero-std, so every OPD rollout used to hit round()."""
+        args = make_args(advantage_estimator="grpo", reward_key=None, n_samples_per_prompt=group_size)
+        replies = [{"meta_info": {"input_token_logprobs": [None, [-0.5, i]]}} for i in range(3 * group_size)]
+
+        out = _compute_zero_std_metrics(args, make_samples_grouped(3, group_size, rewards=replies))
+
+        assert out.get("zero_std/count_non_scalar_dict", 0) == (3 if group_size == 1 else 0)
+        assert out["zero_std/all_zero_percentage"] == 0.0
+
     def test_empty_samples_does_not_crash(self):
         args = make_args(advantage_estimator="grpo", reward_key=None)
         out = _compute_zero_std_metrics(args, [])
@@ -475,6 +502,12 @@ class TestComputePassrateFromSamples:
         out = _compute_passrate_from_samples(args, samples)
 
         assert out["pass@1"] < out["pass@2"] < out["pass@4"]
+
+    def test_non_scalar_rewards_skip_pass_at_k_instead_of_reporting_zero(self):
+        args = make_args(n_samples_per_prompt=4, reward_key=None)
+        samples = make_samples_grouped(2, 4, rewards=[{"meta_info": {}}] * 4 + [1.0] * 4)
+
+        assert _compute_passrate_from_samples(args, samples) == {}
 
     def test_excludes_incomplete_groups(self):
         args = make_args(n_samples_per_prompt=4, reward_key=None)
@@ -739,6 +772,22 @@ class TestLogRolloutData:
         [(payload, step_key)] = calls
         assert step_key == "alpha/rollout/step"
         assert all(key.startswith("alpha/") for key in payload)
+
+    @pytest.mark.parametrize("group_size", [1, 4])
+    def test_rewards_left_as_teacher_replies_are_logged(self, monkeypatch, group_size):
+        """The rollout metrics accept the dict reward a custom OPD reward function may still return."""
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log", lambda _args, payload, step_key: calls.append(payload)
+        )
+        args = make_args(advantage_estimator="grpo", ci_test=False, log_passrate=True, n_samples_per_prompt=group_size)
+        replies = [{"meta_info": {"input_token_logprobs": [None, [-0.5, i]]}} for i in range(2 * group_size)]
+
+        log_rollout_data(0, args, make_samples_grouped(2, group_size, rewards=replies), None, 1.0)
+
+        [payload] = calls
+        assert payload["rollout/episode_raw_reward"] == 0.0
+        assert not any(key.startswith("passrate/") for key in payload)
 
 
 class TestEvalMetrics:

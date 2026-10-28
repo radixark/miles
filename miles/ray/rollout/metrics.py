@@ -317,11 +317,17 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
         rewards = [sample.get_reward_value(args) for sample in samples]
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
 
+    def _reward_bucket(reward: Any) -> str:
+        # A custom reward function may return a non-scalar reward (e.g. a raw teacher reply for OPD) that
+        # only --custom-reward-post-process-path turns into a scalar, after log_rollout_data() runs.
+        # Bucket those by type instead of calling round() on them.
+        return str(round(reward, 1)) if isinstance(reward, Number) else f"non_scalar_{type(reward).__name__}"
+
     all_sample_groups = group_by(all_samples, lambda s: s.group_index)
     interesting_sample_groups = [g for g in all_sample_groups.values() if _is_zero_std(g)]
 
     uniform_rewards = [g[0].get_reward_value(args) for g in interesting_sample_groups]
-    interesting_rewards = [str(round(reward, 1)) for reward in uniform_rewards]
+    interesting_rewards = [_reward_bucket(reward) for reward in uniform_rewards]
 
     counts = {reward: len(items) for reward, items in group_by(interesting_rewards).items()}
     log_dict = {f"zero_std/count_{reward}": count for reward, count in counts.items()}
@@ -407,6 +413,10 @@ def _compute_passrate_from_samples(args, all_samples: list[Sample]) -> dict[str,
         return {}
 
     flat_rewards = [sample.get_reward_value(args) for group in completed_groups for sample in group]
+    if not all(isinstance(reward, Number) for reward in flat_rewards):
+        # numpy would compare an object array to 1 elementwise and report pass@k = 0
+        logger.warning("pass@k: skipped, some rewards are not scalars (e.g. a custom reward function's dict).")
+        return {}
 
     return compute_pass_rate(
         flat_rewards=flat_rewards,
