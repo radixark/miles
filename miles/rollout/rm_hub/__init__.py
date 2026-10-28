@@ -120,13 +120,11 @@ async def batched_async_rm(
         return None
 
     if args.custom_rm_path is not None:
-        # One batched function scores the whole group here, so a per-row path cannot apply.
-        # Refuse it instead of silently scoring those rows with the global function.
-        if rows := [
+        if rows_with_own_path := [
             i for i, s in enumerate(samples) if isinstance(s.metadata, dict) and s.metadata.get("custom_rm_path")
         ]:
             raise ValueError(
-                f"metadata['custom_rm_path'] is set on group rows {rows}, but --group-rm with --custom-rm-path "
+                f"metadata['custom_rm_path'] is set on group rows {rows_with_own_path}, but --group-rm with --custom-rm-path "
                 "scores the whole group with one batched function; drop one of the two"
             )
         rm_function = load_function(args.custom_rm_path)
