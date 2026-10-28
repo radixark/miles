@@ -102,8 +102,9 @@ checks, not convergence runs.
 |---|---|
 | Qwen2.5-0.5B | |
 | Qwen3-4B-Instruct-2507 | Gateway CI ([`tests/e2e/lora`](https://github.com/radixark/miles/tree/main/tests/e2e/lora)) |
-| Qwen3-30B-A3B | [Gateway example](/examples/multi-lora) |
+| Qwen3-30B-A3B | [Gateway example](/examples/multi-lora), [agentic example](/examples/multi-lora/tinker-agent) |
 | Qwen3.5-35B-A3B | |
+| Qwen3.6-35B-A3B | [Harbor example](/examples/multi-lora/harbor-tinker) |
 | DeepSeek-V2-Chat 236B | |
 | MiMo-V2.6-Flash | [Launcher](/models/mimo/mimo-v2-6-flash#42-multi-lora-through-the-tinker-gateway) |
 | GLM-5.2 | |
@@ -111,7 +112,7 @@ checks, not convergence runs.
 | GLM-4.5-Air | |
 | GPT-OSS-20B / 120B | |
 
-Other Bridge models (for example Llama, Qwen3-Next, Qwen3.6, DeepSeek-V3, Kimi K2,
+Other Bridge models (for example Llama, Qwen3-Next, DeepSeek-V3, Kimi K2,
 full-size GLM-5.x and GLM-4.7-Flash) have not been tested with multi-LoRA.
 
 In review:
