@@ -8,9 +8,9 @@ from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_KILL, READINESS_METHOD, FakeRayCluster
 from tests.fast.utils.workers.fake_specs import FakeServeSpec
 
-from miles.utils.workers import ray_worker_manager as worker_manager_core
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
+from miles.utils.workers.worker_manager import core as worker_manager_core
 from miles.utils.workers.worker_manager.client import ManagerWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerManagerClient
 from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT_INFO, BaseServeSpec, PortInfo, SchedulingSpec

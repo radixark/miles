@@ -15,12 +15,13 @@ from miles.utils.test_utils.fault_injector.actions.process import KillProcessAct
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
 from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
 from miles.utils.workers import ray_worker_manager
-from miles.utils.workers import ray_worker_manager as worker_manager_core
 from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, _BaseActorManager, _CommandActorManager
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
+from miles.utils.workers.worker_manager import core as worker_manager_core
+from miles.utils.workers.worker_manager.core import _BaseActorManager, _CommandActorManager
 from miles.utils.workers.worker_spec import BaseCommandSpec, LaunchCommandContext, PortInfo, SchedulingSpec, StaticMeta
 
 
@@ -825,7 +826,7 @@ class TestMasterPorts:
 class TestConcurrentPhases:
     async def test_all_cells_of_a_phase_run_concurrently(self, fake_ray_cluster: FakeRayCluster):
         """Cells are configured concurrently, so a large pool does not start up one cell at a time."""
-        from miles.utils.workers.ray_worker_manager import _CommandActorManager
+        from miles.utils.workers.worker_manager.core import _CommandActorManager
 
         original_alloc_ports = _CommandActorManager.alloc_ports
         entered: list[int] = []
@@ -855,7 +856,7 @@ class TestConcurrentPhases:
 
     async def test_workers_within_one_cell_run_each_phase_concurrently(self, fake_ray_cluster: FakeRayCluster):
         """The ranks of one engine configure together; serialising them adds a full setup per rank."""
-        from miles.utils.workers.ray_worker_manager import _CommandActorManager
+        from miles.utils.workers.worker_manager.core import _CommandActorManager
 
         original_alloc_ports = _CommandActorManager.alloc_ports
         entered: list[int] = []

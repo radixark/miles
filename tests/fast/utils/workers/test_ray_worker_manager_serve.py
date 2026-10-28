@@ -20,11 +20,12 @@ from tests.fast.utils.workers.fake_specs import FakeServeSpec
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers import ray_worker_manager as rwm
 from miles.utils.workers.backend_capability.base import BackendCapability
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, _build_serve_worker, bootstrapped_worker_class
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
 from miles.utils.workers.serving.serve_actor import ServeActor
 from miles.utils.workers.types import WorkerCommBackend
+from miles.utils.workers.worker_manager.core import _build_serve_worker, bootstrapped_worker_class
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 from miles.utils.workers.worker_spec import (
     DEFAULT_RPC_PORT_INFO,

@@ -1,6 +1,6 @@
 from tests.fast.utils.workers.test_ray_worker_manager_serve import _WORKER_CLASS_PATH, _CtorKwargsProbe
 
-from miles.utils.workers.ray_worker_manager import bootstrapped_worker_class
+from miles.utils.workers.worker_manager.core import bootstrapped_worker_class
 from miles.utils.workers.worker_spec import WorkerLaunchContext
 
 
