@@ -8,17 +8,23 @@ rollout is scored only by its task's teacher (--opd-teacher-urls routed by metad
 per update. examples/on_policy_distillation/mopd_reasoning_gym/README.md has the workload, the
 layouts and the validation results.
 
-Layouts (--layout), all running the same algorithm. Node A runs this launcher; node B runs
-examples/on_policy_distillation/mopd_reasoning_gym/serve_teachers.py.
-    b200-sync    2x8 B200. Node A: trainer (EP8) and 8 TP1 rollout engines share the 8 GPUs
-                 (train.py --colocate). Node B: 4 GPUs per teacher.
-    b200-async   2x8 B200, one-step overlap (train_async.py without --fully-async): rollout k+1
-                 generates while step k trains, so every sample is exactly one update stale and
-                 nothing is dropped. Node A: trainer (EP8). Node B: 6 TP1 rollout engines and
-                 1 GPU per teacher.
-    gb300-sync   2x4 GB300 version of b200-sync. Node A: 4 shared GPUs (EP4). Node B: 2 GPUs per teacher.
-    gb300-async  2x4 GB300 version of b200-async. Node A: trainer (EP4). Node B: 2 rollout engines
-                 and 1 GPU per teacher.
+Two setups, each with a B200 and a GB300 layout (--layout), all with the same algorithm. Node A
+runs this launcher; node B runs examples/on_policy_distillation/mopd_reasoning_gym/serve_teachers.py.
+
+Synchronous (train.py --colocate). Without --mtp-spec-decode this is the matched baseline.
+    b200-sync    2x8 B200. Node A: trainer (EP8) and 8 TP1 rollout engines share the 8 GPUs.
+                 Node B: caesar_cipher teacher DP4 on GPUs 0-3, simple_geometry DP4 on 4-7.
+    gb300-sync   2x4 GB300. Node A: 4 shared GPUs (EP4). Node B: teachers DP2 on GPUs 0-1 and 2-3.
+
+One-step overlap (train_async.py without --fully-async): rollout k+1 generates while step k trains,
+so every sample is exactly one update stale and nothing is dropped. With --mtp-spec-decode this is
+the recommended setup.
+    b200-async   2x8 B200. Node A: trainer (EP8). Node B: 6 TP1 rollout engines on GPUs 0-5,
+                 teachers on 6 and 7.
+    gb300-async  2x4 GB300. Node A: trainer (EP4). Node B: 2 TP1 rollout engines on GPUs 0-1,
+                 teachers on 2 and 3.
+
+Token-mean loss (--calculate-per-token-loss) and --log-probs-backend fused are on in both setups.
 
 Requires:
     - reasoning-gym==0.1.25 on every node: `prepare` builds the prompts with it, and the rollout
@@ -48,16 +54,23 @@ Args:
         the dashboard metrics that examples/on_policy_distillation/mopd_reasoning_gym/analyze.py reads.
 
 Examples:
-    # node B (b200-sync: 4 GPUs per teacher)
+    # synchronous matched baseline. Node B first:
     python examples/on_policy_distillation/mopd_reasoning_gym/serve_teachers.py --models-dir /root/models \\
         --teacher caesar_cipher=0,1,2,3 --teacher simple_geometry=4,5,6,7
-
-    # node A: synchronous baseline
+    # then node A:
     python scripts/run_qwen3_6_35b_a3b_mopd.py --layout b200-sync --teacher-host <node B IP>
 
-    # node A: one-step overlap with MTP decoding, after joining both nodes to one Ray cluster
-    MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_qwen3_6_35b_a3b_mopd.py --layout b200-async \\
-        --mtp-spec-decode --teacher-host <node B IP> --dump-dir /root/shared_data/mopd-dump
+    # one-step overlap with MTP decoding (recommended). Node B: teachers on the GPUs Ray will not see
+    python examples/on_policy_distillation/mopd_reasoning_gym/serve_teachers.py --models-dir /root/models \\
+        --teacher caesar_cipher=6 --teacher simple_geometry=7
+    # Ray: head on node A (the lower IP), worker on node B exposing only the rollout GPUs. On RoCE
+    # clusters whose nodes sit on different subnets, export NCCL_IB_GID_INDEX=3 on both first.
+    ray start --head --node-ip-address <node A IP> --num-gpus 8                   # node A
+    CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 ray start --address <node A IP>:6379 --num-gpus 6   # node B
+    # then node A:
+    MASTER_ADDR=<node A IP> MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_qwen3_6_35b_a3b_mopd.py \\
+        --layout b200-async --mtp-spec-decode --teacher-host <node B IP> \\
+        --dump-dir /root/shared_data/mopd-dump --extra-env-vars "NCCL_IB_GID_INDEX=3"
 """
 
 from dataclasses import dataclass
