@@ -5,7 +5,16 @@ from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
 
 from miles.dashboard.advisory import compute_advisories
 from miles.dashboard.dump_reader import DumpReader, RolloutIds
-from miles.dashboard.store import EngineSample, GpuSample, Meta, MetricsRecord, MetricStore, PhaseEvent, Stream
+from miles.dashboard.store import (
+    EngineSample,
+    GpuSample,
+    Meta,
+    MetricsRecord,
+    MetricStore,
+    PhaseEvent,
+    Stream,
+    _ThinnedEngineSeries,
+)
 
 
 def _store(tmp_path, *, args: dict, engine_samples: list[EngineSample]) -> MetricStore:
@@ -549,7 +558,6 @@ def test_engine_stream_with_only_a_partial_line_makes_no_engine_claim(tmp_path):
 def test_abort_storm_run_share_counts_the_newest_scrape(tmp_path, monkeypatch):
     """The run-long view keeps one scrape per bucket and can drop the newest:
     counters flat for an hour, then one storm in the last scrape."""
-    from miles.dashboard.store import _ThinnedEngineSeries
 
     monkeypatch.setattr(_ThinnedEngineSeries, "SCRAPES_PER_ENGINE", 50)
     last = 2001
