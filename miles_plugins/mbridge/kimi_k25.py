@@ -32,7 +32,9 @@ class KimiK25Bridge(DeepseekV3Bridge):
         # All DeepseekV3Bridge config logic reads plain DSv3 field names, which
         # live on the nested text config; the wrapper keys are irrelevant here.
         text_config = hf_config.text_config
-        rope_parameters = getattr(text_config, "rope_parameters", None)
+        rope_parameters = getattr(
+            text_config, "rope_parameters", None
+        )  # config-access-exempt: HF versions expose optional rope_parameters metadata
         if isinstance(rope_parameters, dict) and "rope_theta" in rope_parameters:
             text_config.rope_theta = rope_parameters["rope_theta"]
         super().__init__(text_config, **kwargs)

@@ -4,7 +4,9 @@ from typing import Any
 
 import pytest
 from tests.e2e import conftest_multi_policy as e2e
+from tests.fast.utils.env_report.conftest import make_args
 
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.utils.audit_utils.event_logger.models import (
     EnvReport,
     EnvReportArgsDump,
@@ -13,6 +15,7 @@ from miles.utils.audit_utils.event_logger.models import (
     MetricEvent,
 )
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
+from miles.utils.env_report.collector import _dump_args
 
 MEGATRON_CONFIG = dict(
     trainers=[
@@ -46,6 +49,12 @@ def _make_report(*, model_id: str | None, rank: int = 0, values: dict[str, Any])
 def _reports_of(model_id: str, **overrides: Any) -> list[EnvReportEvent]:
     [trainer] = [entry for entry in MEGATRON_CONFIG["trainers"] if entry["model_id"] == model_id]
     values = {**trainer["overrides"], "trainer_model_id": model_id, **overrides}
+    values = _dump_args(
+        make_args(
+            **{name: value for name, value in values.items() if name != "num_layers"},
+            backend=MegatronArgsNamespace(num_layers=values["num_layers"]),
+        )
+    ).values
     return [_make_report(model_id=model_id, rank=rank, values=values) for rank in (0, 1) for _ in range(2)]
 
 

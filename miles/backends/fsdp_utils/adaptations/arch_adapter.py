@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable
 import torch
 import torch.nn as nn
 
+from miles.backends.fsdp_utils.adaptations.packing import hf_attention_packing_kwargs
 from miles.backends.fsdp_utils.adaptations.precision import PrecisionPolicy
 from miles.backends.fsdp_utils.adaptations.routing_replay import RoutingReplayAdapter
 
@@ -25,6 +26,8 @@ class ArchAdapter:
     verified: bool = False
     # None means the architecture has no MoE router to replay.
     routing_replay: RoutingReplayAdapter | None = None
+    # stock HF modeling takes the packed boundaries (FlashAttention-4 needs them); remote code may not
+    passes_attention_packing_kwargs: bool = False
 
     def resolve_precision(self, base: PrecisionPolicy, args: Namespace) -> PrecisionPolicy:
         """Adjust the backend's default precision policy for this architecture."""
@@ -38,11 +41,15 @@ class ArchAdapter:
         and the ref model, so it must be idempotent."""
 
     def packing_kwargs(
-        self, *, cu_seqlens: torch.Tensor, cu_seqlens_host: tuple[int, ...], max_seqlen: int
+        self, *, cu_seqlens: torch.Tensor, cu_seqlens_host: tuple[int, ...], max_seqlen: int, num_documents: int
     ) -> dict[str, object]:
         """Extra forward kwargs that tell this architecture's modeling where the packed documents that
         ``get_batch`` recorded start."""
-        return {}
+        if not self.passes_attention_packing_kwargs:
+            return {}
+        return hf_attention_packing_kwargs(
+            cu_seqlens=cu_seqlens, cu_seqlens_host=cu_seqlens_host, num_documents=num_documents
+        )
 
     def param_transform(self, name: str, param: torch.Tensor) -> ParamExpand | None:
         """How to rewrite ``param`` for the rollout engine at weight sync, or None to stream it unchanged."""

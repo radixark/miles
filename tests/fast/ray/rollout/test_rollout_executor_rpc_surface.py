@@ -61,7 +61,7 @@ class TestRolloutExecutorLifecycleRpc:
             assert asyncio.get_running_loop() is not rpc_loop
             loaded.set()
 
-        worker.args = Namespace(load=str(tmp_path), save_debug_event_data=None)
+        worker.args = Namespace(save_debug_event_data=None)
         worker.use_legacy_rollout_v1 = True
         compute_rollout_checkpoint_dir(tmp_path, rollout_id=7).mkdir(parents=True)
         worker._output_snapshotter = SimpleNamespace(
@@ -75,7 +75,7 @@ class TestRolloutExecutorLifecycleRpc:
 
         executor.start(
             spec=specs["load"],
-            kwargs={"rollout_id": 7},
+            kwargs={"rollout_id": 7, "load": str(tmp_path)},
             call_id="load",
             finish=recorder.finish,
         )
@@ -100,3 +100,31 @@ class TestThePackTheTrainerControllerIsGiven:
 
         assert decoded["rollout_data_pack"] == pack
         assert isinstance(decoded["rollout_data_pack"].data_ref, _MooncakeStoreObjectRef)
+
+
+class TestInferenceRuntimeRefresh:
+    async def test_each_refresh_replaces_counts_from_the_current_controller_snapshot(self) -> None:
+        """Scaling changes reach existing rollout configuration without replacing its mutable state object."""
+        from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
+
+        snapshots = iter(
+            [
+                InferenceRuntimeImmutState(engine_count=2, gpu_count=4, eval_engine_count=1),
+                InferenceRuntimeImmutState(engine_count=1, gpu_count=2, eval_engine_count=0),
+            ]
+        )
+
+        class Controller:
+            async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+                return next(snapshots)
+
+        state = InferenceRuntimeMutState()
+        worker = RolloutExecutor.__new__(RolloutExecutor)
+        worker.args = SimpleNamespace(starts_inference_engines=True, inference_runtime_mut_state=state)
+        worker._inference_controller_provider = SimpleNamespace(get_handle=lambda name: Controller())
+
+        await worker._refresh_inference_runtime_mut_state()
+        assert state.model_dump() == {"engine_count": 2, "gpu_count": 4, "eval_engine_count": 1}
+        await worker._refresh_inference_runtime_mut_state()
+        assert worker.args.inference_runtime_mut_state is state
+        assert state.model_dump() == {"engine_count": 1, "gpu_count": 2, "eval_engine_count": 0}
