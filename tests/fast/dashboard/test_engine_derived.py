@@ -262,3 +262,22 @@ def test_kept_scrape_counts_track_the_view_across_split_scrapes(tmp_path, monkey
     recount = dict(kept.group_by("addr").agg(pl.col("ts").n_unique()).iter_rows())
     assert view._kept_scrape_count_by_addr == recount
     assert max(recount.values()) <= 2 * _ThinnedEngineSeries.SCRAPES_PER_ENGINE
+
+
+def test_unreadable_engine_catalog_neither_stops_flushes_nor_hides_names(tmp_path):
+    """A catalog that does not parse cannot vouch for the stream: the writer
+    drops it and keeps writing every stream, readers fall back to the stream."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="t", start_ts=0.0, args={}))
+    writer.append(EngineSample(ts=1.0, addr="http://e:1", metric="sglang_num_running_reqs", labels={}, value=1.0))
+    writer.flush()
+    (tmp_path / MetricStore.ENGINE_CATALOG_FILENAME).write_text("{truncated")
+    assert "sglang_num_running_reqs" in MetricStore.load(tmp_path).engine_metric_names()
+
+    resumed = MetricStore(tmp_path)
+    resumed.append(EngineSample(ts=2.0, addr="http://e:1", metric="sglang_num_queue_reqs", labels={}, value=1.0))
+    resumed.flush()
+    assert not (tmp_path / MetricStore.ENGINE_CATALOG_FILENAME).exists()
+    assert {"sglang_num_running_reqs", "sglang_num_queue_reqs"} <= set(
+        MetricStore.load(tmp_path).engine_metric_names()
+    )

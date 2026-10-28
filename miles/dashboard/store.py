@@ -27,6 +27,7 @@ from __future__ import annotations
 import calendar
 import io
 import json
+import logging
 import math
 import os
 import threading
@@ -44,6 +45,8 @@ except ImportError:
 
 import numpy as np
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 
 class Stream(StrEnum):
@@ -594,6 +597,18 @@ class _ThinnedEngineSeries:
         return kept
 
 
+def _read_engine_catalog(path: Path) -> set[str] | None:
+    """The cataloged engine metric names, or None when no catalog can be
+    trusted: absent, or unreadable. Either way the stream itself answers."""
+    if not path.exists():
+        return None
+    try:
+        return set(json.loads(path.read_text())["metrics"])
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error("ignoring unreadable %s (%r): engine metric names come from the stream", path, e)
+        return None
+
+
 def _concat_frames(frames: list[pl.DataFrame]) -> pl.DataFrame:
     merged = frames[0] if len(frames) == 1 else pl.concat(frames, rechunk=False)
     # bound chunk fragmentation from long tail sessions
@@ -820,8 +835,11 @@ class MetricStore:
         rewrites it on retry."""
         path = self.dir / self.ENGINE_CATALOG_FILENAME
         if self._writes_engine_catalog is None:
-            self._writes_engine_catalog = path.exists() or not self._readers[Stream.ENGINE_SERIES].has_data()
-            self._cataloged_engine_metrics = set(json.loads(path.read_text())["metrics"]) if path.exists() else set()
+            catalog = _read_engine_catalog(path)
+            if catalog is None and path.exists():
+                path.unlink()  # unreadable, so it cannot vouch for the stream; readers scan instead
+            self._writes_engine_catalog = catalog is not None or not self._readers[Stream.ENGINE_SERIES].has_data()
+            self._cataloged_engine_metrics = catalog or set()
         if not self._writes_engine_catalog:
             return
         names = {sample.metric for sample in self._buffers[Stream.ENGINE_SERIES]}
@@ -1322,12 +1340,10 @@ class MetricStore:
     def engine_metric_names(self) -> list[str]:
         """Distinct scraped engine metrics — the L0 sglang category catalog.
 
-        Read from ``engine_catalog.json``; a dir written before it existed
-        falls back to the run-long view."""
-        path = self.dir / self.ENGINE_CATALOG_FILENAME
-        if path.exists():
-            raw = set(json.loads(path.read_text())["metrics"])
-        else:
+        Read from ``engine_catalog.json``; a dir without a usable one falls
+        back to the run-long view."""
+        raw = _read_engine_catalog(self.dir / self.ENGINE_CATALOG_FILENAME)
+        if raw is None:
             raw = set(self._thinned_engine_series.kept_scrapes()[0].get_column("metric").unique())
         names = {name for name in raw if not name.endswith(self._CUMULATIVE_SUFFIXES)}
         names.update(derived for derived, base in self.ENGINE_RATE_METRICS.items() if base in raw)
