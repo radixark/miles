@@ -139,11 +139,13 @@ _MODEL_NAMES = Literal[
     "tmax-4b",
     "tmax-9b",
     "tmax-27b",
+    "tmax-opd-9b-step80",
 ]
 
 
 @dataclass(frozen=True)
 class _Recipe:
+    # A Hugging Face repo, or the absolute path of a local HF checkpoint (e.g. an earlier run's HF snapshot)
     hf_repo: str
     megatron_model_type: str
     # Rendered through Miles' qwen35 template, which (like open-instruct's rlvr_tokenize_v1) opens <think> unless
@@ -163,6 +165,14 @@ _RECIPES: dict[str, _Recipe] = {
     "tmax-4b": _Recipe("allenai/tmax-4b", "qwen3.5-4B", enable_thinking=True),
     "tmax-9b": _Recipe("allenai/tmax-9b", "qwen3.5-9B", enable_thinking=True),
     "tmax-27b": _Recipe("allenai/tmax-27b", "qwen3.5-27B", enable_thinking=True),
+    # The 9B pure-OPD run's step-80 HF snapshot (tmax-9b into hamishivi/Qwen3.5-9B; tmax_prod4node_gateway_opd_9b,
+    # TBlite 0.58, TB2.1 0.28 greedy): hamishivi/Qwen3.5-9B's tokenizer and template, language-model weights only.
+    "tmax-opd-9b-step80": _Recipe(
+        "/weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles/"
+        "tmax_prod4node_gateway_opd_9b_20261027_022952/checkpoints/hf/step_79",
+        "qwen3.5-9B",
+        enable_thinking=True,
+    ),
 }
 
 app = typer.Typer()
@@ -374,7 +384,7 @@ def prepare(args: ScriptArgs):
     _write_prompt_data(args)
     for name in filter(None, [args.model_name, args.opd_teacher]):
         recipe = _RECIPES[name]
-        U.exec_command_cpu(f"hf download {recipe.hf_repo} --local-dir {args.model_dir}/{name}")
+        U.exec_command_cpu(_fetch_command(recipe.hf_repo, f"{args.model_dir}/{name}"))
         if name == args.opd_teacher and args.opd_mode == "sglang":
             continue  # SGLang serves the HF checkpoint
         U.convert_checkpoint(
@@ -385,6 +395,14 @@ def prepare(args: ScriptArgs):
             hf_checkpoint=f"{args.model_dir}/{name}",
             megatron_path=args.megatron_path,
         )
+
+
+def _fetch_command(hf_repo: str, dst: str) -> str:
+    """Download a Hugging Face repo into dst, or copy a local HF checkpoint there once: the model dir keeps it after
+    the run directory it came from is cleaned up."""
+    if not hf_repo.startswith("/"):
+        return f"hf download {hf_repo} --local-dir {dst}"
+    return f"if [ ! -d {dst} ]; then rm -rf {dst}.tmp && cp -r {hf_repo} {dst}.tmp && mv {dst}.tmp {dst}; fi"
 
 
 def _write_prompt_data(args: ScriptArgs) -> None:

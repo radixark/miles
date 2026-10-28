@@ -44,3 +44,17 @@ def test_teacher_servers_go_round_robin_over_the_rollout_nodes_last_first():
 def test_a_same_architecture_teacher_takes_no_gpu():
     args = launcher.ScriptArgs(opd_teacher="tmax-9b", num_nodes=4, async_rollout_gpus=16)
     assert args.opd_mode == "megatron" and args.teacher_server_gpus == 0 and args.train_layout == (2, 8)
+
+
+def test_a_hub_recipe_is_downloaded_and_a_local_checkpoint_copied_once():
+    assert launcher._fetch_command("allenai/tmax-9b", "/models/tmax-9b") == (
+        "hf download allenai/tmax-9b --local-dir /models/tmax-9b"
+    )
+    copy = launcher._fetch_command("/runs/x/hf/step_79", "/models/step80")
+    assert copy.startswith("if [ ! -d /models/step80 ]") and "cp -r /runs/x/hf/step_79 /models/step80.tmp" in copy
+
+
+def test_the_opd_checkpoint_recipe_is_a_local_qwen35_9b():
+    recipe = launcher._RECIPES["tmax-opd-9b-step80"]
+    assert recipe.hf_repo.startswith("/") and recipe.hf_repo.endswith("/hf/step_79")
+    assert recipe.megatron_model_type == "qwen3.5-9B" and recipe.enable_thinking

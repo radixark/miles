@@ -1,0 +1,40 @@
+# GRPO from the 9B pure-OPD run's step-80 checkpoint (tmax-opd-9b-step80) at smoke size, before
+# prod_4node_gateway_grpo_from_opd80.yaml: checks that the local HF snapshot is copied, converts to Megatron and trains.
+# Fully async on Jupiter's 4 H100s as 2 training (TP 2, Adam in host RAM) + 2 rollout GPUs, 3 steps of 4 prompts x
+# 4 samples, 16k per episode, sandboxes on the podman fleet. With 4 samples a group is often uniform, so the
+# zero-variance filter is off (as in smoke_gateway.yaml).
+exp_name: tmax_smoke_grpo_from_opd80_jupiter
+model_name: tmax-opd-9b-step80
+async_rollout_gpus: 2
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_gpus_per_node: 4
+num_prompts: 64
+rollout_batch_size: 4
+n_samples_per_prompt: 4
+num_rollout: 3
+max_seq_len: 16384
+tensor_model_parallel_size: 2
+optimizer_cpu_offload: true                   # Adam in host RAM: 80GB GPUs, not 288GB
+sglang_mem_fraction_static: 0.6
+filter_zero_std: false
+save_interval: 1000
+episode_timeout_s: 3600
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/nora-default/shashankg/miles_tmax_v2/output
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+extra_args: "--log-probs-backend fused"         # prod's; streams the logits instead of an fp32 copy
+
+beaker:
+  cluster: ai2/jupiter
+  workspace: ai2/oe-agents
+  budget: ai2/oe-omai
+  priority: urgent
+  min_runtime: 1h                             # on ai2/oe-agents' Jupiter allocation
+  retries: 0
+  gpus: 4
+  shared_memory: 256GiB
+  image: docker.io/radixark/miles:dev-202610151741
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-private-reasoning-20261017.sqlite3
+  dockerhub_username: shashankg209
