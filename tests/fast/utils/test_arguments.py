@@ -3696,6 +3696,48 @@ class TestMilesValidateArgsDiskDeltaResume:
         assert "ckpt_step" not in vars(args)
 
 
+class TestMilesValidateArgsHttpLora:
+    """http-lora is accepted by the transfer-mode allow-list in miles_validate_args, not only by the
+    protocol factory; path mode needs a staging directory, tensors mode does not."""
+
+    @staticmethod
+    def _parse(tmp_path, extra: list[str]) -> argparse.Namespace:
+        # LoRA target resolution reads the HF config of --hf-checkpoint.
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+        parser = copy.deepcopy(get_megatron_arg_parser())
+        parser.set_defaults(finetune=False)
+        return parser.parse_args(
+            [
+                "--update-weight-transfer-mode",
+                "http-lora",
+                "--lora-rank",
+                "16",
+                "--hf-checkpoint",
+                str(tmp_path),
+                "--num-rollout",
+                "1",
+            ]
+            + extra
+            + REQUIRED_ARGS
+        )
+
+    def test_tensors_mode_validates_without_a_staging_directory(self, tmp_path):
+        args = self._parse(tmp_path, ["--http-lora-ship", "tensors"])
+
+        miles_validate_args(args)
+
+        assert args.update_weight_transfer_mode == "http-lora"
+
+    def test_path_mode_validates_with_a_staging_directory(self, tmp_path):
+        args = self._parse(tmp_path, ["--http-lora-ship", "path", "--update-weight-disk-dir", str(tmp_path / "stage")])
+
+        miles_validate_args(args)
+
+    def test_path_mode_requires_a_staging_directory(self, tmp_path):
+        with pytest.raises(AssertionError, match="requires --update-weight-disk-dir"):
+            miles_validate_args(self._parse(tmp_path, ["--http-lora-ship", "path"]))
+
+
 class TestWeightUpdateDeadlines:
     def _parse(self, extra: list[str]) -> argparse.Namespace:
         parser = get_megatron_arg_parser()
