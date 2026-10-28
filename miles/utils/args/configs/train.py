@@ -147,7 +147,7 @@ class TrainConfig(BaseConfig):
     log_probs_backend: A[
         str,
         Arg(
-            choices=["torch", "fused"],
+            choices=["torch", "fused", "fused_lm_head"],
             help=(
                 "How per-token log-probs and entropy are computed from the logits. 'torch' upcasts each "
                 "response chunk to fp32 and keeps its softmax for backward. 'fused' streams the logits through "
@@ -156,7 +156,9 @@ class TrainConfig(BaseConfig):
                 " as the rollout engine does, while 'torch' normalizes over Megatron's padded vocabulary "
                 "(except for --loss-type score_centering), so with vocab padding (TP > 1) the two give slightly"
                 " different log-probs, ratios and KL. 'fused' does not support --true-on-policy-mode or "
-                "sampling-support replay (--rollout-top-p below 1 or a positive --rollout-top-k)."
+                "sampling-support replay (--rollout-top-p below 1 or a positive --rollout-top-k). 'fused_lm_head' is"
+                " 'fused' without the logits buffer: the output layer runs --log-probs-chunk-size rows at a time"
+                " (default 4096)."
             ),
         ),
     ] = "torch"

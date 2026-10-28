@@ -126,6 +126,7 @@ def policy_loss_function(
         entropy_requires_grad=args.entropy_coef != 0,
         max_seq_lens=max_seq_lens,
         rollout_sampling_mask=rollout_sampling_mask,
+        lm_head=batch.get("lm_head"),
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
@@ -496,6 +497,7 @@ def sft_loss_function(
         response_lengths=response_lengths,
         with_entropy=False,
         max_seq_lens=batch.get("max_seq_lens", None),
+        lm_head=batch.get("lm_head"),
     )
 
     log_probs = log_probs_and_entropy["log_probs"]

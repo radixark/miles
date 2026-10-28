@@ -24,6 +24,11 @@ from megatron.core.utils import get_model_config
 from megatron.training.training import get_model
 
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
+from miles.backends.megatron_utils.lm_head import (
+    check_model_takes_output_processor,
+    lm_head_forward_kwargs,
+    loss_reads_lm_head_input,
+)
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
@@ -296,6 +301,7 @@ def forward_only(
     store_prefix: str = "",
     fp32_output: bool = True,
     use_rollout_sampling_mask: bool = False,
+    lm_head_input: bool = False,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -313,6 +319,8 @@ def forward_only(
         fp32_output: Whether Megatron should upcast the complete model output to FP32.
         use_rollout_sampling_mask: Whether to score over each rollout token's
             captured sampling support.
+        lm_head_input: Whether the model returns its output layer's input instead of the
+            logits, for ``--log-probs-backend fused_lm_head``; ``f`` then gets the output layer.
 
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
@@ -364,6 +372,7 @@ def forward_only(
 
             set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
 
+        lm_head_kwargs, lm_head = lm_head_forward_kwargs(lm_head_input)
         output_tensor = model(
             input_ids=tokens,
             position_ids=None,
@@ -373,6 +382,7 @@ def forward_only(
             loss_mask=batch["input_loss_masks"],
             **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
+            **lm_head_kwargs,
             fp32_output=fp32_output,
         )
 
@@ -386,6 +396,8 @@ def forward_only(
         )
         if use_rollout_sampling_mask:
             callback_kwargs["rollout_sampling_mask"] = rollout_sampling_mask
+        if lm_head is not None:
+            callback_kwargs["lm_head"] = lm_head
 
         return output_tensor, partial(f, **callback_kwargs)
 
@@ -453,6 +465,7 @@ def run_forward_backward_pass(
         if args.use_sampling_support_replay and args.loss_type in ("policy_loss", "score_centering", "custom_loss")
         else ()
     )
+    lm_head_input = loss_reads_lm_head_input(args)
 
     @dumper_phase_util.wrap_forward_step
     def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[
@@ -517,6 +530,7 @@ def run_forward_backward_pass(
 
         if return_schedule_plan:
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
+            assert not lm_head_input, "--log-probs-backend fused_lm_head is not supported with combined 1f1b"
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
             output_tensor = model.build_schedule_plan(
                 input_ids=batch["tokens"],
@@ -541,10 +555,14 @@ def run_forward_backward_pass(
 
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
+            lm_head_kwargs, lm_head = lm_head_forward_kwargs(lm_head_input)
+            forward_kwargs.update(lm_head_kwargs)
 
             output_tensor = model(
                 **forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss", "score_centering")
             )
+            if lm_head is not None:
+                batch["lm_head"] = lm_head
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
@@ -1014,6 +1032,8 @@ def build_model_and_optimizer(
 ) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None]:
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
+    if args.log_probs_backend == "fused_lm_head":
+        check_model_takes_output_processor(model)
     clear_memory()
     return model, optimizer, opt_param_scheduler
 

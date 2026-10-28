@@ -7,13 +7,18 @@ as ``torch.log_softmax``, where ``target_logit - lse`` would cancel. The backwar
 ``(g * (onehot(y) - p) - c * p * (d - mu)) / T`` with ``1 - p`` at the target from ``expm1``.
 No-grad passes call the same function, so their log-probs equal the training forward's bit for bit
 up to the order NCCL adds more than two shards.
+
+``fused_lm_head_log_probs_and_entropy`` computes the same from the output layer's input, projecting a tile
+of rows at a time under activation checkpointing, so the logits never exist beyond one tile.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint
 
 from miles.kernels.softmax import token_log_softmax as kernels
 
@@ -99,6 +104,51 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
             # the kernels write through raw pointers; the bump makes a second reader fail, not read the grad
             torch.autograd.graph.increment_version(logits)
         return grad, None, None, None
+
+
+def fused_lm_head_log_probs_and_entropy(
+    hidden: Tensor,
+    project: Callable[[Tensor], Tensor],
+    rows: Tensor,
+    targets: Tensor,
+    *,
+    tp_group: dist.ProcessGroup | None,
+    vocab_size: int | None = None,
+    temperature: float = 1.0,
+    with_entropy: bool = False,
+    entropy_requires_grad: bool = True,
+    tile_rows: int = 4096,
+) -> tuple[Tensor, Tensor | None]:
+    """``fused_log_probs_and_entropy`` of ``project(hidden)`` at ``rows``, without building all the logits.
+
+    ``hidden`` is ``[N, H]``, the same on every rank of ``tp_group``; ``project`` maps rows of it to this rank's
+    ``[n, V / TP]`` logits (the output layer). Each tile of ``tile_rows`` selected rows runs ``project`` and
+    ``fused_log_probs_and_entropy`` under activation checkpointing: only the tile's row indices are kept, and
+    the backward replays the tile's forward, collectives included, then backpropagates through ``project``'s
+    own backward, so the output layer computes its gradients. The largest buffer is one tile of logits.
+    """
+
+    def tile_log_probs(hidden: Tensor, row_tile: Tensor, target_tile: Tensor) -> tuple[Tensor, Tensor | None]:
+        tile_hidden = hidden.index_select(0, row_tile)
+        return fused_log_probs_and_entropy(
+            project(tile_hidden),
+            torch.arange(tile_hidden.size(0), device=tile_hidden.device),
+            target_tile,
+            tp_group=tp_group,
+            vocab_size=vocab_size,
+            temperature=temperature,
+            with_entropy=with_entropy,
+            entropy_requires_grad=entropy_requires_grad,
+            inplace_backward=True,  # the tile's logits exist only inside this checkpoint
+        )
+
+    # an empty selection still splits into one empty tile, so a rank that scores nothing stays in the graph
+    tiles = [
+        checkpoint(tile_log_probs, hidden, row_tile, target_tile, use_reentrant=False)
+        for row_tile, target_tile in zip(rows.split(tile_rows), targets.split(tile_rows), strict=True)
+    ]
+    log_probs = torch.cat([log_probs for log_probs, _ in tiles])
+    return log_probs, (torch.cat([entropy for _, entropy in tiles]) if with_entropy else None)
 
 
 def _softmax_stats(logits, rows, targets, options: _FusedOptions) -> kernels.SoftmaxStats:
