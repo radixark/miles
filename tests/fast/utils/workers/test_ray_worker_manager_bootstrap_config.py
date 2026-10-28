@@ -18,7 +18,7 @@ class TestBootstrapConfig:
         )
         worker_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
 
-        worker = worker_class(ctor_kwargs=recipe, context=launch_context)
+        worker = worker_class(ctor_kwargs=recipe, context=launch_context, capability_factory=object)
 
         [context] = recipe.contexts
         assert context.args is config

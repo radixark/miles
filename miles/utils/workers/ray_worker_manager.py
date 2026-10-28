@@ -497,6 +497,7 @@ class _ServeActorRayCommManager(_BaseActorManager[BaseServeSpec]):
             self._compute_actor_class(),
             ctor_kwargs=self.spec.ctor_kwargs,
             context=self.launch_context,
+            capability_factory=_create_ray_backend_capability,
         )
 
     def _compute_actor_class(self) -> type:
@@ -553,6 +554,7 @@ class _ServeActorRpcCommManager(_BaseActorManager[BaseServeSpec]):
                 worker_class_path=self.spec.worker_class,
                 ctor_kwargs=self.spec.ctor_kwargs,
                 context=self.launch_context,
+                capability_factory=_create_ray_backend_capability,
             ),
         )
 
@@ -561,9 +563,15 @@ class _ServeActorRpcCommManager(_BaseActorManager[BaseServeSpec]):
 
 
 def _build_serve_worker(
-    *, worker_class_path: str, ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]], context: WorkerLaunchContext
+    *,
+    worker_class_path: str,
+    ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]],
+    context: WorkerLaunchContext,
+    capability_factory: Callable[[], BackendCapability],
 ) -> Any:
-    return bootstrapped_worker_class(worker_class_path)(ctor_kwargs=ctor_kwargs, context=context)
+    return bootstrapped_worker_class(worker_class_path)(
+        ctor_kwargs=ctor_kwargs, context=context, capability_factory=capability_factory
+    )
 
 
 @functools.cache
@@ -572,9 +580,13 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
 
     class BootstrappedWorker(worker_class, NodeProbeMixin):
         def __init__(
-            self, *, ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]], context: WorkerLaunchContext
+            self,
+            *,
+            ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]],
+            context: WorkerLaunchContext,
+            capability_factory: Callable[[], BackendCapability],
         ) -> None:
-            super().__init__(**ctor_kwargs(_ctor_context(context)))
+            super().__init__(**ctor_kwargs(_ctor_context(context, capability_factory=capability_factory)))
 
     BootstrappedWorker.__name__ = worker_class.__name__
     BootstrappedWorker.__qualname__ = worker_class.__qualname__
@@ -582,14 +594,16 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
     return BootstrappedWorker
 
 
-def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
+def _ctor_context(
+    launch_context: WorkerLaunchContext, *, capability_factory: Callable[[], BackendCapability]
+) -> WorkerCtorContext:
     return WorkerCtorContext(
         args=launch_context.args,
         cell_index=launch_context.cell_index,
         worker_in_cell_index=launch_context.worker_in_cell_index,
         num_workers_per_cell=launch_context.num_workers_per_cell,
         gpu_ids=launch_context.gpu_ids,
-        capability=DeferredBackendCapability(create=_create_ray_backend_capability),
+        capability=DeferredBackendCapability(create=capability_factory),
     )
 
 
