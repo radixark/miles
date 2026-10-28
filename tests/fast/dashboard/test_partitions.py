@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from tests.fast.dashboard.dummy_telemetry import dump_dummy_telemetry
 
+import miles.dashboard.store as store_module
 from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.server import make_app
 from miles.dashboard.store import GpuSample, Meta, MetricStore, PhaseEvent, Role, Stream, _hour_key, _PartitionReader
@@ -331,7 +332,6 @@ def test_close_landing_mid_read_in_a_newer_partition_still_pairs_its_open(tmp_pa
     """A flush between reading hour 0 and hour 1 writes an open marker into
     hour 0 and its close into hour 1: the close must not be read before its
     open, or the open stays in the index forever."""
-    import miles.dashboard.store as store_module
 
     writer = MetricStore(tmp_path)
     writer.write_meta(Meta(run_name="race", start_ts=BASE, args={}))
