@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 
 import pytest
+from prometheus_client.parser import text_string_to_metric_families
 
 from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST, ScrapeMode, SglangScraper
 from miles.dashboard.store import EngineSample
@@ -152,7 +153,6 @@ def test_dp_rank_label_survives():
 def test_prefiltered_page_yields_what_the_whole_page_does(page):
     """Dropping non-whitelisted lines before parsing must not change a single
     sample, histogram _sum/_count and multi-rank labels included."""
-    from prometheus_client.parser import text_string_to_metric_families
 
     text = (FIXTURES / page).read_text()
     whitelist = frozenset(DEFAULT_METRIC_WHITELIST)
@@ -177,7 +177,6 @@ def test_prefilter_keeps_a_label_holding_a_unicode_line_break():
     """str.splitlines also breaks on \x85 and
     ; the parser splits on "\\n"
         only, so such a label value must reach it whole."""
-    from prometheus_client.parser import text_string_to_metric_families
 
     text = 'sglang:num_running_reqs{model_name="a\x85b c"} 3.0\nsglang:other_metric 1.0\n'
     scraper = SglangScraper(lambda sample: None, mode=ScrapeMode.DIRECT, engine_addrs=lambda: [])
