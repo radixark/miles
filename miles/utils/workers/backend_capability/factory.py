@@ -33,6 +33,15 @@ def launch_worker_manager(args: Any, specs: list[BaseSpec]) -> LaunchedWorkerMan
         case ClusterBackend.RAY:
             handle = launch_ray_worker_manager(args, specs)
             return LaunchedWorkerManager(shutdown=partial(shutdown_ray_worker_manager, handle))
+        case ClusterBackend.MONARCH:
+            # torchmonarch is an optional dependency, imported only by runs that pick it
+            from miles.utils.workers.monarch.manager import (
+                launch_monarch_worker_manager,
+                shutdown_monarch_worker_manager,
+            )
+
+            manager = launch_monarch_worker_manager(args, specs)
+            return LaunchedWorkerManager(shutdown=partial(shutdown_monarch_worker_manager, manager))
 
 
 def get_backend_capability(
@@ -45,3 +54,8 @@ def get_backend_capability(
             return compute_helm_backend_capability(config=static_connections)
         case ClusterBackend.RAY:
             return RayBackendCapability(worker_manager_handle=RayWorkerManager.get_handle())
+        case ClusterBackend.MONARCH:
+            # torchmonarch is an optional dependency, imported only by runs that pick it
+            from miles.utils.workers.monarch.manager import installed_monarch_backend_capability
+
+            return installed_monarch_backend_capability()

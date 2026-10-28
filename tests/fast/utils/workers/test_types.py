@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from miles.utils.workers.types import HotRestartComponent, parse_hot_restart
+from miles.utils.workers.types import (
+    ClusterBackend,
+    HotRestartComponent,
+    WorkerCommBackend,
+    parse_hot_restart,
+    resolve_worker_comm_backend,
+)
 
 
 class TestParseHotRestart:
@@ -54,3 +60,34 @@ class TestAHotRestartRequestThatNamesNoComponent:
     def test_a_value_that_does_name_a_component_is_still_parsed(self):
         """The refusal is for a value that names nothing, not for the requests the feature exists for."""
         assert parse_hot_restart("orchestration,") == [HotRestartComponent.ORCHESTRATION]
+
+
+class TestClusterBackendPredicates:
+    @pytest.mark.parametrize(
+        ("backend", "ray_cluster", "driver_launched", "auto_resumed"),
+        [
+            (ClusterBackend.RAY, True, True, False),
+            (ClusterBackend.KUBERNETES, False, False, True),
+            (ClusterBackend.MONARCH, False, True, False),
+        ],
+    )
+    def test_each_backend_answers_by_the_reason_a_caller_asks(
+        self, backend: ClusterBackend, ray_cluster: bool, driver_launched: bool, auto_resumed: bool
+    ):
+        """Callers ask why they care, not which backend it is, so a new backend answers in one place."""
+        assert (
+            backend.provides_ray_cluster(),
+            backend.launches_workers_from_driver(),
+            backend.auto_resumes_cells(),
+        ) == (ray_cluster, driver_launched, auto_resumed)
+
+    def test_monarch_speaks_rpc_by_default(self):
+        """Phase 1 of the monarch backend serves every worker over the rpc wire kubernetes already speaks."""
+        assert (
+            resolve_worker_comm_backend(cluster_backend=ClusterBackend.MONARCH, requested=None)
+            is WorkerCommBackend.RPC
+        )
+
+    def test_monarch_refuses_ray_actor_calls(self):
+        with pytest.raises(AssertionError, match="not available under --cluster-backend monarch"):
+            resolve_worker_comm_backend(cluster_backend=ClusterBackend.MONARCH, requested=WorkerCommBackend.RAY.value)

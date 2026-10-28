@@ -6,6 +6,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 class ClusterBackend(Enum):
     RAY = "ray"
     KUBERNETES = "kubernetes"
+    MONARCH = "monarch"
 
     def provides_ray_cluster(self) -> bool:
         """Whether a Ray cluster backs the run, which the Ray-only features (dashboard, prometheus collector,
@@ -15,7 +16,7 @@ class ClusterBackend(Enum):
     def launches_workers_from_driver(self) -> bool:
         """Whether the driver launches its workers through a worker manager it owns, rather than the platform
         creating them before the driver starts."""
-        return self is ClusterBackend.RAY
+        return self in (ClusterBackend.RAY, ClusterBackend.MONARCH)
 
     def auto_resumes_cells(self) -> bool:
         """Whether the platform recreates a suspended cell by itself, so nobody has to resume it."""
@@ -88,6 +89,7 @@ class DeploymentIdentity(FrozenStrictBaseModel):
 _SUPPORTED_WORKER_COMM_BACKENDS = {
     ClusterBackend.RAY: (WorkerCommBackend.RAY, WorkerCommBackend.RPC),
     ClusterBackend.KUBERNETES: (WorkerCommBackend.RPC,),
+    ClusterBackend.MONARCH: (WorkerCommBackend.RPC,),
 }
 
 
