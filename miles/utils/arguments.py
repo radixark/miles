@@ -899,7 +899,6 @@ def miles_validate_args(args):
         "every later eval skip silently"
     )
     args.eval_datasets = _resolve_eval_datasets(args)
-    _validate_rollout_data_yaml_config(args)
 
     if "train" in args.ft_components:
         args.indep_dp = True
@@ -1645,6 +1644,8 @@ def miles_validate_args(args):
         assert (
             args.rollout_max_prompt_len <= args.rollout_max_context_len - 1
         ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.rollout_max_context_len ({args.rollout_max_context_len}) so that there is at least one generated token to compute loss."
+
+    _validate_rollout_data_yaml_config(args)
 
     assert not (
         args.prefill_num_servers is not None and args.rollout_external

@@ -186,5 +186,11 @@ class TestStartupValidation:
         with pytest.raises(ValueError, match="exceeds --rollout-max-response-len 32768"):
             _parse("--rollout-data-yaml-config", _inline(too_long))
 
+    def test_the_prompt_limit_derived_from_the_context_length_bounds_a_dataset(self):
+        """`--rollout-max-prompt-len` defaults from `--rollout-max-context-len`; the check must see that value."""
+        too_long = _with_dataset(max_prompt_len=8192)
+        with pytest.raises(ValueError, match="exceeds --rollout-max-prompt-len 8191"):
+            _parse("--rollout-data-yaml-config", _inline(too_long), "--rollout-max-context-len", "8192")
+
     def test_unset_leaves_startup_unchanged(self):
         assert _parse("--prompt-data", "/dev/null").rollout_data_yaml_config is None
