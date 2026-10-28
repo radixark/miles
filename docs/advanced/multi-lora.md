@@ -104,14 +104,6 @@ support that SGLang can serve LoRA for, within the constraints below. Models wit
 | GLM-4.5-Air | |
 | GPT-OSS-20B / 120B | |
 
-In review:
-
-| Model or layout | PR |
-|---|---|
-| Shared-outer expert adapters (validated on Qwen3.5-35B-A3B) | [#3899](https://github.com/radixark/miles/pull/3899) |
-| Independent Q/K/V and gate/up projections (`canonical_lora`) | [#3905](https://github.com/radixark/miles/pull/3905) |
-| Ungated MoE experts (Nemotron) | [#4032](https://github.com/radixark/miles/pull/4032) |
-
 The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 
 - Separate training and sampling GPUs: no `--colocate` and no `--offload-train`,
