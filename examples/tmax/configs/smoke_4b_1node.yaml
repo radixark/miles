@@ -1,0 +1,51 @@
+# 4-GPU memory smoke for the 2-node 4B recipe (prod_2node_gateway_4b.yaml): its per-GPU training load on fewer
+# GPUs. hamishivi/Qwen3.5-4B (thinking on), 2 training GPUs at TP 1 x CP 1 x DP 2 with up to 67,584 tokens per GPU
+# (one full 64k trajectory per micro-batch, as in prod) and 2 SGLang engines. DP 2 shards the optimizer less than
+# prod's DP 8, so this is the harder memory case. 3 steps of 4 prompts x 8 samples on the full dataset, 64k per
+# episode, sandboxes on the new LiteRegistry fleet.
+exp_name: tmax_smoke_4b_1node
+model_name: Qwen3.5-4B-tmax-template          # hamishivi/Qwen3.5-4B, its patched chat template
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_nodes: 1
+num_gpus_per_node: 4
+async_rollout_gpus: 2
+rollout_batch_size: 4
+n_samples_per_prompt: 8
+num_rollout: 3
+max_seq_len: 67584                            # prod's 64k response + 2k prompt
+rollout_max_response_len: 16384
+max_steps: 64
+filter_zero_std: true
+max_weight_staleness: 4
+async_max_concurrent_samples: 64
+async_data_buffer_capacity_factor: 4
+tensor_model_parallel_size: 1
+context_parallel_size: 1
+max_tokens_per_gpu: 67584                     # >= max_seq_len: the longest trajectory fits one micro-batch
+optimizer_cpu_offload: false
+sglang_mem_fraction_static: 0.8
+sandbox_start_concurrency: 16
+start_failure: drop
+save_interval: 1000
+extra_args: "--log-probs-backend fused --distributed-timeout-minutes 120 --sglang-watchdog-timeout 1800"
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/nora-default/shashankg/miles_tmax_v2/output
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+
+beaker:
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  preemptible: false
+  min_runtime: 8h
+  retries: 0
+  gpus: 4
+  shared_memory: 256GiB
+  image: docker.io/radixark/miles:dev-202610151741
+  dockerhub_username: shashankg209
+  # The fleet literegistry's owners started for us (2026-10-21), as the OPD branch's smokes use.
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-private-reasoning-20261017.sqlite3
+  gateway_min_replicas: 8

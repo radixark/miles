@@ -175,15 +175,24 @@ Open-instruct's and the base model's numbers are sampled (T=0.7), so the compari
 |---|---|---|
 | Ours, step 120 | 0.496 / 0.700 | 0.229 / 0.360 |
 | Ours, step 160 | 0.484 / 0.710 | 0.222 / 0.382 |
-| Ours, step 200 | 0.472 / 0.720 | pending |
-| Ours, step 240 | 0.506 / 0.770 | pending |
-| Ours, step 280 | 0.490 / 0.690 | pending |
-| Ours, step 300 | 0.478 / 0.680 | pending |
-| Open-instruct, step 120 / 240 (sampled) | 0.524 / 0.760, 0.574 / 0.790 | 0.229 / 0.360, 0.249 / 0.393 |
+| Ours, step 200 | 0.472 / 0.720 | 0.258 / 0.404 |
+| Ours, step 240 | 0.528 / 0.780 | 0.258 / 0.371 |
+| Ours, step 280 | 0.490 / 0.690 | 0.236 / 0.382 |
+| Ours, step 300 | 0.478 / 0.680 | 0.238 / 0.360 |
+| Ours, step 320 | 0.470 / 0.660 | 0.240 / 0.360 |
+| Ours, step 340 | 0.516 / 0.720 | 0.207 / 0.315 |
+| Ours, step 360 | 0.514 / 0.750 | 0.238 / 0.326 |
+| Open-instruct, step 120 / 240 / 360 (sampled) | 0.524 / 0.760, 0.574 / 0.790, 0.582 / 0.790 | 0.229 / 0.360, 0.249 / 0.393, 0.301 / 0.416 |
 | Base `hamishivi/Qwen3.5-9B` (sampled) | 0.418 / 0.660 | 0.191 / 0.337 |
 
-The TBlite evals of steps 200-300 lost 10 trials each (the same 8 tasks) to Docker Hub's anonymous pull limit;
-without those tasks step 240 scores 0.522 / 0.793 and the others 0.487-0.496 pass@1.
+The TBlite evals of steps 200, 280 and 300 lost 10 trials each (the same 8 tasks) to Docker Hub's anonymous pull
+limit, because their `--mirror-url` named mirrors that no longer existed; without those tasks they score 0.487-0.496
+pass@1. Step 240 is a rerun through live mirrors (the first run: 0.506 / 0.770), as are all the TB2.1 evals of
+steps 200-300. Most remaining errors are 120 s environment-setup timeouts, counted as failures.
+
+Sampled in open-instruct's exact setup (T=0.7, top_p 0.95, 65536 tokens, 8 concurrent), steps 240 and 360 score
+TBlite 0.512 / 0.780 and 0.506 / 0.740, TB2.1 0.258 / 0.382 and 0.258 / 0.360: within about 0.02 of greedy, so
+decoding does not explain the gap to open-instruct. The run was stopped at step 440 (2026-10-24).
 
 ### Production recipe, 4 nodes
 
