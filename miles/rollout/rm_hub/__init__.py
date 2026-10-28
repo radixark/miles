@@ -4,7 +4,7 @@ import random
 
 import aiohttp
 
-from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.custom_function import CustomFunctionConfig, _compute_config_class
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
@@ -36,18 +36,43 @@ async def remote_rm(args, sample: Sample):
             return await resp.json()
 
 
+def _read_row_custom_rm_path(sample: Sample) -> str | None:
+    """`metadata['custom_rm_path']`, or None when unset or empty."""
+    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
+    path = metadata.get("custom_rm_path")
+    if path is not None and not isinstance(path, str):
+        raise TypeError(f"metadata['custom_rm_path'] must be a function path string, got {type(path).__name__}")
+    return path or None
+
+
+def _run_custom_rm_path(args) -> str | None:
+    run_hook = args.custom_rm_path
+    return run_hook.path if isinstance(run_hook, CustomFunctionConfig) else run_hook
+
+
+def _resolve_row_custom_rm_path(args, path: str) -> CustomFunctionConfig:
+    """A row naming the run's hook reuses its config; a row cannot supply config for any other hook."""
+    if path == _run_custom_rm_path(args) and isinstance(args.custom_rm_path, CustomFunctionConfig):
+        return args.custom_rm_path
+    if _compute_config_class(load_function(path), path=path) is not None:
+        raise ValueError(
+            f"metadata['custom_rm_path']={path!r} names a reward function with its own config, which a dataset row "
+            "cannot carry; set it as --custom-rm-path instead"
+        )
+    return CustomFunctionConfig(path=path)
+
+
 def _resolve_reward_config(args, sample: Sample) -> tuple[CustomFunctionConfig | None, str]:
     # Spec fields win when set; unset/empty fields fall back to sample metadata and process-wide args.
     spec = sample.reward_spec
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
-    metadata_custom_rm_path = metadata.get("custom_rm_path")
-    if metadata_custom_rm_path is not None and not isinstance(metadata_custom_rm_path, str):
-        raise TypeError(
-            f"metadata['custom_rm_path'] must be a function path string, got {type(metadata_custom_rm_path).__name__}"
-        )
-    custom_rm_path = (
-        (spec.custom_rm_path if spec is not None else None) or metadata_custom_rm_path or args.custom_rm_path
-    )
+    row_custom_rm_path = _read_row_custom_rm_path(sample)
+    if spec is not None and spec.custom_rm_path:
+        custom_rm_path = spec.custom_rm_path
+    elif row_custom_rm_path is not None:
+        custom_rm_path = _resolve_row_custom_rm_path(args, row_custom_rm_path)
+    else:
+        custom_rm_path = args.custom_rm_path
     if isinstance(custom_rm_path, str):
         custom_rm_path = CustomFunctionConfig(path=custom_rm_path)
     rm_type = ((spec.rm_type if spec is not None else None) or metadata.get("rm_type") or args.rm_type or "").strip()
@@ -120,12 +145,12 @@ async def batched_async_rm(
         return None
 
     if args.custom_rm_path is not None:
-        if rows_with_own_path := [
-            i for i, s in enumerate(samples) if isinstance(s.metadata, dict) and s.metadata.get("custom_rm_path")
-        ]:
+        run_path = _run_custom_rm_path(args)
+        row_paths = [_read_row_custom_rm_path(sample) for sample in samples]
+        if rows_with_other_path := [i for i, path in enumerate(row_paths) if path not in (None, run_path)]:
             raise ValueError(
-                f"metadata['custom_rm_path'] is set on group rows {rows_with_own_path}, but --group-rm with --custom-rm-path "
-                "scores the whole group with one batched function; drop one of the two"
+                f"metadata['custom_rm_path'] on group rows {rows_with_other_path} differs from --custom-rm-path, "
+                "but --group-rm scores the whole group with that one batched function; drop one of the two"
             )
         rm_function = load_function(args.custom_rm_path)
         fn_args = compute_custom_function_config(args, args.custom_rm_path)
