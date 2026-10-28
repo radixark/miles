@@ -4,6 +4,7 @@ import enum
 import logging
 from abc import ABC, abstractmethod
 from argparse import Namespace
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
@@ -61,12 +62,19 @@ class RouterBackend(ABC):
         self, ctx: LaunchCommandContext, *, model_cfg: "ModelConfig", interpreter_prefix: list[str]
     ) -> list[str]: ...
 
-    @abstractmethod
-    def routes_by_key(self, model_cfg: "ModelConfig | None") -> bool:
-        """Whether the router in front of `model_cfg` places each request by its routing key."""
+    def routes_by_key(self, model_cfgs: "Sequence[ModelConfig]") -> bool:
+        """Whether any router in front of `model_cfgs` places requests by routing key.
 
-    def routing_headers(self, routing_key: str | None, model_cfg: "ModelConfig | None") -> dict[str, str]:
-        if not self.routes_by_key(model_cfg):
+        Each model has its own router and requests may target any of them, so a key goes out whenever one
+        router reads it; the others ignore the header. No models means an external router.
+        """
+        return any(self._router_routes_by_key(model_cfg) for model_cfg in model_cfgs or [None])
+
+    @abstractmethod
+    def _router_routes_by_key(self, model_cfg: "ModelConfig | None") -> bool: ...
+
+    def routing_headers(self, routing_key: str | None, model_cfgs: "Sequence[ModelConfig]") -> dict[str, str]:
+        if not self.routes_by_key(model_cfgs):
             return {}
         if not routing_key:
             raise ValueError(f"the {self.kind.value} router routes by routing key, but the request carries none")
@@ -97,7 +105,7 @@ class SGLangRouterBackend(RouterBackend):
         logger.info(f"Launch router with args: {router_args}")
         return [*interpreter_prefix, "-m", "sglang_router.launch_router", *router_args_to_argv(router_args)]
 
-    def routes_by_key(self, model_cfg: "ModelConfig | None") -> bool:
+    def _router_routes_by_key(self, model_cfg: "ModelConfig | None") -> bool:
         main = self._policies["policy"]
         if self._needs_pd_disaggregation(model_cfg):
             # each PD pool runs its own policy, falling back to the main one
@@ -118,7 +126,7 @@ class MilesRouterBackend(RouterBackend):
         router_config = compute_miles_router_config(self.args, host=primary.host, port=primary.port)
         return [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
 
-    def routes_by_key(self, model_cfg: "ModelConfig | None") -> bool:
+    def _router_routes_by_key(self, model_cfg: "ModelConfig | None") -> bool:
         return False
 
 
@@ -131,9 +139,3 @@ _BACKEND_CLASSES: dict[RouterKind, type[RouterBackend]] = {
 def make_router_backend(args: Namespace) -> RouterBackend:
     kind = RouterKind.MILES if args.use_miles_router else RouterKind.SGLANG
     return _BACKEND_CLASSES[kind](args)
-
-
-def request_router_model(args: Namespace) -> "ModelConfig | None":
-    """The model whose router rollout requests and the session server reach; None when no engine is launched."""
-    models = args.sglang.models
-    return models[0] if models else None

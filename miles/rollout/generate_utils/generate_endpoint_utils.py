@@ -17,7 +17,7 @@ from miles.rollout.generate_utils.sampling_mask import (
     read_sampled_logprobs,
     should_return_sampling_mask,
 )
-from miles.router.backend import make_router_backend, request_router_model
+from miles.router.backend import make_router_backend
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.output_store.plan import (
     FIELDS,
@@ -53,11 +53,11 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
 
 
 def router_routes_by_key(args) -> bool:
-    return make_router_backend(args).routes_by_key(request_router_model(args))
+    return make_router_backend(args).routes_by_key(args.sglang.models)
 
 
 def compute_routing_headers(args, sample: Sample) -> dict[str, str]:
-    return make_router_backend(args).routing_headers(sample.routing_key, request_router_model(args))
+    return make_router_backend(args).routing_headers(sample.routing_key, args.sglang.models)
 
 
 def compute_request_payload(

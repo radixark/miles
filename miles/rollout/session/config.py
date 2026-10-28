@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from miles.router.backend import make_router_backend, request_router_model
+from miles.router.backend import make_router_backend
 from miles.utils.output_store.config import output_store_backend_config
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -84,7 +84,7 @@ def compute_session_server_config(
 
 def _routing_key_header(args) -> str | None:
     backend = make_router_backend(args)
-    if not backend.routes_by_key(request_router_model(args)):
+    if not backend.routes_by_key(args.sglang.models):
         # affinity only saves prefix-cache work, so a router without it is allowed
         logger.warning(
             "--use-session-server with a router that does not route by session: "
