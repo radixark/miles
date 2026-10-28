@@ -119,15 +119,21 @@ The current manual interface does not cross-check `version` against `ref`; a mis
 
 ## 6. Verify the published wheel
 
-`release-wheel.yml` builds the pure-Python wheel and sdist at `v${EXACT_VERSION}`, runs the wheel smoke on them (`wheel-smoke.yml`), uploads both to the `v${EXACT_VERSION}` GitHub release, and asks radixark/miles-wheels to rebuild the pip index. Check that the release carries `miles-${BASE_VERSION}-py3-none-any.whl` and that the index lists it:
+`release-wheel.yml` builds the pure-Python wheel and sdist at `v${EXACT_VERSION}` with that exact version stamped into `setup.py` (so an rc or post release is its own version), runs the wheel smoke on them (`wheel-smoke.yml`), uploads both to the `v${EXACT_VERSION}` GitHub release (created as a prerelease for an rc), writes the tested `sglang` build into the release notes, and asks radixark/miles-wheels to rebuild the pip index. Wheels exist from v0.1.4 on; the workflow refuses an older tag. Check that the release carries `miles-${EXACT_VERSION}-py3-none-any.whl` and that the index lists it:
 
 ```bash
 gh release view "v${EXACT_VERSION}" --json assets --jq '.assets[].name'
-curl -s https://radixark.github.io/miles-wheels/simple/miles/ | grep "miles-${BASE_VERSION}"
+curl -s https://radixark.github.io/miles-wheels/simple/miles/ | grep "miles-${EXACT_VERSION}"
 ```
 
-The index rebuilds hourly on its own, so a missing entry right after the run means only that the dispatch did not reach miles-wheels. Retry with the same paired inputs as the Docker build:
+A published file is never replaced, since installs pin its hash. If the index does not list the release yet, rebuild the index rather than the wheel:
 
 ```bash
-gh workflow run release-wheel.yml -f version="${EXACT_VERSION}" -f ref="v${EXACT_VERSION}"
+gh workflow run pages.yml --repo radixark/miles-wheels
+```
+
+To exercise the build and smoke without touching a release, dispatch with `publish=false`:
+
+```bash
+gh workflow run release-wheel.yml -f version="${EXACT_VERSION}" -f ref="v${EXACT_VERSION}" -f publish=false
 ```

@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: ''
+      version:
+        description: 'Exact release version to stamp into setup.py before the build (rc and post tags share its base version)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -51,6 +56,17 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+
+      - name: Stamp the release version
+        if: inputs.version != ''
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          BASE_VERSION=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+          grep -q "version=\"${BASE_VERSION}\"" setup.py \
+            || { echo "::error::setup.py does not carry version=\"${BASE_VERSION}\""; grep -n 'version="' setup.py; exit 1; }
+          sed -i "s/version=\"${BASE_VERSION}\"/version=\"${VERSION}\"/" setup.py
 
       - name: Build the sdist and the wheel from it
         shell: bash

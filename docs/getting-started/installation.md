@@ -53,19 +53,27 @@ See [Hardware requirements](#hardware-requirements) for per-GPU status.
 
 ## Method 2: pip (FSDP and torchtitan)
 
-Every tagged release publishes a pure-Python `miles` wheel, and every commit of the
+Every tagged release from v0.1.4 on publishes a pure-Python `miles` wheel, and every commit of the
 `sglang-miles` branch publishes an `sglang` wheel, to a pip index at
 `https://radixark.github.io/miles-wheels/simple/`. Linux x86_64 or aarch64, Python 3.11 or 3.12.
 
+PyPI has an unrelated project named `miles`, and pip gives every index equal weight, so install
+with uv, which takes each package from the first index that has it:
+
 ```bash
-pip install "miles[torchtitan]==0.1.4" "sglang==0.5.22.post62+miles.g6136e6d2bd" \
-  --extra-index-url https://radixark.github.io/miles-wheels/simple/
+uv pip install --index https://radixark.github.io/miles-wheels/simple/ \
+  "miles[torchtitan]==<version>" "sglang==<sglang version>"
 ```
 
-- Pin `miles` to the exact version: PyPI also has an unrelated project named `miles`, and an
-  unpinned install may resolve to it.
-- Pin the `sglang` build the release was tested with; each release's notes name it. The
-  `+miles.g<commit>` suffix is the `sglang-miles` commit the wheel was built from.
+With plain pip, install the wheel by URL instead, with the index only for `sglang`:
+
+```bash
+pip install https://github.com/radixark/miles/releases/download/v<version>/miles-<version>-py3-none-any.whl \
+  "sglang==<sglang version>" --extra-index-url https://radixark.github.io/miles-wheels/simple/
+```
+
+- The release's notes name the `sglang` build it was tested with (`<tag>.post<n>+miles.g<commit>`,
+  the `sglang-miles` commit the wheel came from). Pin that one.
 - `[torchtitan]` adds torchtitan and its torch floor; leave it off for FSDP alone. torch itself
   follows SGLang's pin.
 - Megatron-LM is not installable this way: `--train-backend megatron` needs the Docker image.

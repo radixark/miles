@@ -19,6 +19,11 @@ on:
         required: false
         type: string
         default: ''
+      publish:
+        description: 'Upload to the release; off builds and smokes only'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -40,43 +45,81 @@ jobs:
         with:
           version: ${{ github.event.inputs.version }}
           ref: ${{ github.event.inputs.ref }}
+      - name: The ref carries the wheel harness
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ steps.resolve.outputs.ref }}
+        run: |
+          # the pure wheel and its smoke arrived with v0.1.4; older tags have nothing to publish
+          gh api "repos/${GITHUB_REPOSITORY}/contents/tests/ci/wheel_smoke.py?ref=${REF}" --silent \
+            || { echo "::error::${REF} predates the pure wheel (tests/ci/wheel_smoke.py); wheels exist from v0.1.4 on"; exit 1; }
 
   smoke:
     needs: resolve
     uses: ./.github/workflows/wheel-smoke.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
+      version: ${{ needs.resolve.outputs.version }}
 
   publish:
     needs: [resolve, smoke]
+    if: github.event.inputs.publish != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       VERSION: ${{ needs.resolve.outputs.version }}
+      TAG: v${{ needs.resolve.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: miles-dist
           path: dist
 
-      - name: The dist carries the tagged version
+      - name: The dist carries the exact version
         shell: bash
         run: |
           ls dist
-          # rc/postN tags share setup.py's base version; the wheel is named after setup.py
-          BASE_VERSION=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
-          [ -f "dist/miles-${BASE_VERSION}-py3-none-any.whl" ] \
-            || { echo "::error::no miles-${BASE_VERSION} wheel: setup.py at v${VERSION} carries another version"; exit 1; }
+          [ -f "dist/miles-${VERSION}-py3-none-any.whl" ] \
+            || { echo "::error::no miles-${VERSION} wheel in the smoke's dist"; exit 1; }
 
-      - name: Upload to the v${{ needs.resolve.outputs.version }} release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Create the release if the tag has none
         shell: bash
         run: |
-          TAG="v${VERSION}"
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes
-          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+          FLAGS=()
+          case "$VERSION" in *rc*) FLAGS=(--prerelease --latest=false) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "${FLAGS[@]}"
+
+      - name: Name the sglang build the release was tested with
+        shell: bash
+        run: |
+          SGLANG_COMMIT=$(gh api "repos/${GITHUB_REPOSITORY}/contents/release-lock.json?ref=${TAG}" --jq .content 2>/dev/null \
+            | base64 -d | python3 -c 'import json, sys; print(json.load(sys.stdin)["sglang_commit"])') || SGLANG_COMMIT=""
+          [ -n "$SGLANG_COMMIT" ] || { echo "no release-lock.json at ${TAG}; the notes name no sglang build"; exit 0; }
+          # the sglang-miles wheel built from that commit, if the hourly job has published it
+          SGLANG_VERSION=$(gh api --paginate "repos/radixark/miles-wheels/releases?per_page=100" \
+            --jq ".[] | select(.tag_name | startswith(\"sglang-miles-\")) | .assets[].name
+              | select(contains(\"+miles.g${SGLANG_COMMIT:0:10}-\")) | split(\"-\")[1]" | head -1)
+          if [ -n "$SGLANG_VERSION" ]; then
+            LINE="Tested with \`sglang==${SGLANG_VERSION}\` from https://radixark.github.io/miles-wheels/simple/ (sglang-miles ${SGLANG_COMMIT})."
+          else
+            LINE="Tested with sglang-miles ${SGLANG_COMMIT}; its wheel version ends in \`+miles.g${SGLANG_COMMIT:0:10}\`."
+          fi
+          NOTES=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          case "$NOTES" in *"Tested with"*) exit 0 ;; esac
+          printf '%s\n\n%s' "$LINE" "$NOTES" > notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+
+      # a published file is never replaced: pinned hashes must keep matching
+      - name: Upload the sdist and wheel
+        shell: bash
+        run: |
+          PUBLISHED=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          for f in dist/*; do
+            if grep -qx "$(basename "$f")" <<<"$PUBLISHED"; then echo "keeping published $(basename "$f")"; continue; fi
+            gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY"
+          done
 
       # The index rebuilds hourly anyway; this makes the new release installable right away.
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
