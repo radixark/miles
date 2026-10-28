@@ -1,30 +1,9 @@
-"""Utilities for loss function snapshot testing.
-
-Provides deterministic input generation, snapshot save/load, and recursive
-tensor comparison. Designed to be reusable across refactors — any code path
-that implements the same function signatures can be validated against snapshots.
-
-Usage:
-    # Generate inputs for a config
-    parallel_state = make_parallel_state()
-    args = make_args(advantage_estimator="grpo", loss_type="policy_loss")
-    inputs = make_inputs(seed=42, batch_size=3, prompt_lens=[20, 64, 40],
-                         response_lens=[10, 48, 32], vocab_size=128, args=args)
-
-    # Run functions, collect outputs
-    outputs = run_all_functions(args, parallel_state, inputs)
-
-    # Save / load
-    save_snapshot(path, inputs, outputs)
-    loaded_inputs, loaded_outputs = load_snapshot(path)
-"""
+"""Deterministic inputs, args and parallel state for the loss tests."""
 
 from __future__ import annotations
 
 import copy
-import subprocess
 from argparse import Namespace
-from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -32,10 +11,6 @@ import torch.distributed as dist
 from tests.fast.fixtures.args_fixtures import ConfigNamespace
 
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
-
-ARTIFACTS_REPO = "https://github.com/yueming-yuan/miles-artifacts.git"
-ARTIFACTS_CACHE = Path.home() / ".cache" / "miles-test-artifacts"
-
 
 # ---------------------------------------------------------------------------
 # ParallelState (single-process, no distributed)
@@ -119,7 +94,7 @@ _ARGS_DEFAULTS = dict(
 )
 
 
-# fields a trainer reads from its backend namespace, kept flat in the stored snapshot args
+# fields a trainer reads from its backend namespace
 _BACKEND_ARGS_DEFAULTS = dict(
     bf16=False,
     fp16=False,
@@ -130,18 +105,14 @@ _BACKEND_ARGS_DEFAULTS = dict(
 
 
 def make_args(**overrides) -> Namespace:
-    return args_from_dict(overrides)
+    values = {**_ARGS_DEFAULTS, **_BACKEND_ARGS_DEFAULTS, **overrides}
+    backend = {name: values.pop(name) for name in _BACKEND_ARGS_DEFAULTS}
+    return ConfigNamespace(**values, train_backend="megatron", backend=Namespace(**backend))
 
 
 def args_to_dict(args: Namespace) -> dict:
     flat = {name: value for name, value in vars(args).items() if name not in {"backend", "train_backend"}}
     return flat | vars(args.backend)
-
-
-def args_from_dict(d: dict) -> Namespace:
-    values = {**_ARGS_DEFAULTS, **_BACKEND_ARGS_DEFAULTS, **d}
-    backend = {name: values.pop(name) for name in _BACKEND_ARGS_DEFAULTS}
-    return ConfigNamespace(**values, train_backend="megatron", backend=Namespace(**backend))
 
 
 # ---------------------------------------------------------------------------
@@ -278,78 +249,3 @@ def deep_clone(obj):
         cloned = [deep_clone(x) for x in obj]
         return type(obj)(cloned)
     return copy.copy(obj)
-
-
-# torch.exp(float32) vectorized path can differ by 1 ULP across torch builds
-# with the same version string (different CPU SIMD / MKL link). Measured drift
-# between the snapshot env and radixark/miles:dev on ion-user-7 H200: max 1.91e-06.
-# 2e-06 absorbs it. All other ops (cat, sub, mul, clamp, softmax, etc.) are bit-exact.
-TENSOR_ATOL = 2e-6
-
-
-def assert_outputs_equal(actual, expected, path: str = "root"):
-    """Recursively compare outputs. Tensors compared with `<= TENSOR_ATOL`."""
-    if isinstance(expected, torch.Tensor):
-        assert isinstance(actual, torch.Tensor), f"{path}: expected Tensor, got {type(actual)}"
-        assert actual.shape == expected.shape, f"{path}: shape mismatch {actual.shape} vs {expected.shape}"
-        assert actual.dtype == expected.dtype, f"{path}: dtype mismatch {actual.dtype} vs {expected.dtype}"
-        diff = (actual - expected).abs()
-        max_diff = diff.max().item() if diff.numel() else 0.0
-        if max_diff > TENSOR_ATOL:
-            raise AssertionError(
-                f"{path}: tensors differ beyond TENSOR_ATOL={TENSOR_ATOL:.0e}. "
-                f"max_diff={max_diff:.2e}, mean_diff={diff.mean().item():.2e}"
-            )
-    elif isinstance(expected, dict):
-        assert isinstance(actual, dict), f"{path}: expected dict, got {type(actual)}"
-        assert set(actual.keys()) == set(expected.keys()), (
-            f"{path}: key mismatch. extra={set(actual.keys()) - set(expected.keys())}, "
-            f"missing={set(expected.keys()) - set(actual.keys())}"
-        )
-        for k in expected:
-            assert_outputs_equal(actual[k], expected[k], path=f"{path}[{k!r}]")
-    elif isinstance(expected, (list, tuple)):
-        assert isinstance(actual, (list, tuple)), f"{path}: expected list/tuple, got {type(actual)}"
-        assert len(actual) == len(expected), f"{path}: length mismatch {len(actual)} vs {len(expected)}"
-        for i, (a, e) in enumerate(zip(actual, expected, strict=True)):
-            assert_outputs_equal(a, e, path=f"{path}[{i}]")
-    else:
-        assert actual == expected, f"{path}: {actual} != {expected}"
-
-
-# ---------------------------------------------------------------------------
-# Snapshot save / load
-# ---------------------------------------------------------------------------
-
-
-def ensure_snapshot_dir(snapshot_dir: Path) -> Path:
-    """Return a directory containing .pt snapshots.
-
-    If *snapshot_dir* already has .pt files, return it as-is.
-    Otherwise, shallow-clone yueming-yuan/miles-artifacts into a cache
-    directory and return the path to loss_snapshots/ inside the clone.
-    """
-    if snapshot_dir.exists() and any(snapshot_dir.glob("*.pt")):
-        return snapshot_dir
-    repo_dir = ARTIFACTS_CACHE / "repo"
-    result_dir = repo_dir / "loss_snapshots"
-    if result_dir.exists() and any(result_dir.glob("*.pt")):
-        return result_dir
-    ARTIFACTS_CACHE.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "clone", "--depth=1", ARTIFACTS_REPO, str(repo_dir)],
-        check=True,
-    )
-    assert result_dir.exists(), f"Expected {result_dir} after clone"
-    return result_dir
-
-
-def save_snapshot(path: str | Path, inputs: dict, outputs: dict) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"inputs": inputs, "outputs": outputs}, path)
-
-
-def load_snapshot(path: str | Path) -> tuple[dict, dict]:
-    data = torch.load(path, weights_only=False)
-    return data["inputs"], data["outputs"]
