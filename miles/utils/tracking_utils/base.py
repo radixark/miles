@@ -128,7 +128,7 @@ class PrometheusBackend(TrackingBackend):
 
     @classmethod
     def is_supported(cls, args) -> bool:
-        return ClusterBackend(args.cluster_backend) is not ClusterBackend.KUBERNETES
+        return ClusterBackend(args.cluster_backend).provides_ray_cluster()
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
         from .prometheus_utils import init_prometheus
