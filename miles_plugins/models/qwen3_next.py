@@ -7,7 +7,7 @@ from megatron.core.transformer.transformer_layer import get_transformer_layer_of
 from transformers import AutoConfig
 
 from miles_plugins.models.linear_attn import GatedDeltaNet
-from miles_plugins.models.qwen3_5 import Attention as _Qwen3_5Attention
+from miles_plugins.models.qwen3_5.model import Attention as _Qwen3_5Attention
 
 
 class Qwen3NextGatedDeltaNet(GatedDeltaNet):

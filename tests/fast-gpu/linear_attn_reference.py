@@ -14,7 +14,7 @@ from megatron.core.process_groups_config import ProcessGroupCollection
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads, qkv_flat_to_group_major
 from miles_plugins.models.linear_attn import KimiDeltaAttention, LinearAttentionLayer
-from miles_plugins.models.qwen3_5 import Qwen3_5GatedDeltaNet
+from miles_plugins.models.qwen3_5.model import Qwen3_5GatedDeltaNet
 from miles_plugins.models.qwen3_next import Qwen3NextGatedDeltaNet
 
 CONV = 4

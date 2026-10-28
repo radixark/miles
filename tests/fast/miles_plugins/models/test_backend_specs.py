@@ -40,7 +40,7 @@ class TestBackendOwnedSpecs:
         assert calls == [settings]
         assert args.model_dump() == original
 
-    @pytest.mark.parametrize("family", ["qwen3_5", "qwen3_next", "qwen3_8_next.qwen3_8_next"])
+    @pytest.mark.parametrize("family", ["qwen3_5.model", "qwen3_next", "qwen3_8_next.qwen3_8_next"])
     @pytest.mark.parametrize("num_experts", [None, 4])
     def test_qwen_spec_uses_backend_expert_count_before_building_the_real_layer_plan(
         self, monkeypatch: pytest.MonkeyPatch, family: str, num_experts: int | None, gdn: ModuleType
@@ -91,7 +91,7 @@ class TestBackendOwnedSpecs:
             if family.startswith("qwen3_8")
             else (
                 module.get_qwen3_5_spec(args=args, config=config, vp_stage=3)
-                if family == "qwen3_5"
+                if family == "qwen3_5.model"
                 else module.get_qwen3_next_spec(args=args, config=config, vp_stage=3)
             )
         )

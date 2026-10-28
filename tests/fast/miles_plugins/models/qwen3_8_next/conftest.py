@@ -24,7 +24,7 @@ def gdn(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
 
     root = Path(__file__).resolve().parents[5]
     for name, relative_path in (
-        ("miles_plugins.models.qwen3_5", "miles_plugins/models/qwen3_5/model.py"),
+        ("miles_plugins.models.qwen3_5.model", "miles_plugins/models/qwen3_5/model.py"),
         ("_test_qwen3_8_gdn", "miles_plugins/models/qwen3_8_next/gdn.py"),
     ):
         spec = importlib.util.spec_from_file_location(name, root / relative_path)
