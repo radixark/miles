@@ -153,7 +153,8 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
         for group in output.samples:
             assert len(group) == 1 and len(group[0]) == 1
             sample = group[0][0]
-            case = sample.index
+            # Key on the prompt, not the index: --rollout-shuffle reorders which prompt gets which index.
+            case = int(sample.prompt[0]["content"])
             expected = cases[case][2]
             assert sample.status == Sample.Status.COMPLETED
             assert sample.metadata["case"] == case
