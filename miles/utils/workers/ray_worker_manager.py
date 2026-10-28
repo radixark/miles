@@ -161,3 +161,19 @@ def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Calla
 
 def _create_ray_backend_capability() -> BackendCapability:
     return RayBackendCapability(worker_manager_handle=RayWorkerManager.get_handle())
+
+
+def launch_ray_worker_manager(args: Any, specs: list[BaseSpec]) -> ray.actor.ActorHandle:
+    # placement_group reaches the capability through this module, so a top-level import back would deadlock both
+    from miles.ray.placement_group import create_placement_groups
+
+    # TODO: pass in specs instead of args
+    pgs = create_placement_groups(args)
+    return RayWorkerManager.launch(args, specs, pgs, comm_backend=WorkerCommBackend(args.worker_comm_backend))
+
+
+async def shutdown_ray_worker_manager(handle: ray.actor.ActorHandle) -> None:
+    try:
+        await handle.shutdown.remote()
+    finally:
+        ray.kill(handle)

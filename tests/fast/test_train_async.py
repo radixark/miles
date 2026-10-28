@@ -22,6 +22,7 @@ from miles.ray import wiring
 from miles.utils import object_store
 from miles.utils.async_utils import with_disposer
 from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo
+from miles.utils.workers import ray_worker_manager
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -329,10 +330,10 @@ class TestTerminalLifecycle:
         _install_driver_fakes(monkeypatch, args, events)
 
         def init_orchestration_script(_startup_info: ArgvOrchestratorStartupInfo, *, disposer: Any) -> None:
-            disposer.add(partial(wiring.shutdown_worker_manager, manager))
+            disposer.add(partial(wiring.shutdown_worker_manager, manager.launched))
 
         monkeypatch.setattr(train_async_driver, "init_orchestration_script", init_orchestration_script)
-        monkeypatch.setattr(wiring.ray, "kill", manager.kill)
+        monkeypatch.setattr(ray_worker_manager.ray, "kill", manager.kill)
 
         await with_disposer(train_async_driver.train, _startup_info(args))
 

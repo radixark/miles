@@ -17,10 +17,9 @@ from tests.fast.utils.workers.real_ray.conftest import (
 )
 
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
-from miles.ray.wiring import shutdown_worker_manager
 from miles.utils.http_utils import wait_tcp_ready_async
 from miles.utils.workers.naming import compute_worker_name
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.ray_worker_manager import RayWorkerManager, shutdown_ray_worker_manager
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_manager.client import ManagerWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerManagerClient
@@ -192,7 +191,7 @@ class TestRunShutdownOnRealRay:
         handle = manager_factory([make_command_spec("engine", num_cells=2, launch_command=probe.launch_command)])
         records = probe.wait_for_records(2)
 
-        await shutdown_worker_manager(handle)
+        await shutdown_ray_worker_manager(handle)
 
         probe.wait_until_gone([record["pid"] for record in records.values()])
         wait_until_named_manager_is_gone()
