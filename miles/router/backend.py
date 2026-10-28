@@ -52,8 +52,9 @@ class RouterBackend(ABC):
         ), f"{self.kind.value} router does not support PD disaggregation."
         return self._launch_argv(ctx, model_cfg=model_cfg, interpreter_prefix=interpreter_prefix)
 
-    def _needs_pd_disaggregation(self, model_cfg: "ModelConfig") -> bool:
-        return model_cfg.has_pd_disaggregation or self.args.rollout_external_router_pd
+    def _needs_pd_disaggregation(self, model_cfg: "ModelConfig | None") -> bool:
+        # None: an external router in front of engines Miles did not launch
+        return self.args.rollout_external_router_pd or (model_cfg is not None and model_cfg.has_pd_disaggregation)
 
     @abstractmethod
     def _launch_argv(
@@ -61,11 +62,11 @@ class RouterBackend(ABC):
     ) -> list[str]: ...
 
     @abstractmethod
-    def routes_by_key(self) -> bool:
-        """Whether the configured router places each request by its routing key."""
+    def routes_by_key(self, model_cfg: "ModelConfig | None") -> bool:
+        """Whether the router in front of `model_cfg` places each request by its routing key."""
 
-    def routing_headers(self, routing_key: str | None) -> dict[str, str]:
-        if not self.routes_by_key():
+    def routing_headers(self, routing_key: str | None, model_cfg: "ModelConfig | None") -> dict[str, str]:
+        if not self.routes_by_key(model_cfg):
             return {}
         if not routing_key:
             raise ValueError(f"the {self.kind.value} router routes by routing key, but the request carries none")
@@ -96,8 +97,14 @@ class SGLangRouterBackend(RouterBackend):
         logger.info(f"Launch router with args: {router_args}")
         return [*interpreter_prefix, "-m", "sglang_router.launch_router", *router_args_to_argv(router_args)]
 
-    def routes_by_key(self) -> bool:
-        return not self._KEY_POLICIES.isdisjoint(self._policies.values())
+    def routes_by_key(self, model_cfg: "ModelConfig | None") -> bool:
+        main = self._policies["policy"]
+        if self._needs_pd_disaggregation(model_cfg):
+            # each PD pool runs its own policy, falling back to the main one
+            in_effect = {self._policies["prefill_policy"] or main, self._policies["decode_policy"] or main}
+        else:
+            in_effect = {main}
+        return not self._KEY_POLICIES.isdisjoint(in_effect)
 
 
 class MilesRouterBackend(RouterBackend):
@@ -111,7 +118,7 @@ class MilesRouterBackend(RouterBackend):
         router_config = compute_miles_router_config(self.args, host=primary.host, port=primary.port)
         return [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
 
-    def routes_by_key(self) -> bool:
+    def routes_by_key(self, model_cfg: "ModelConfig | None") -> bool:
         return False
 
 
@@ -124,3 +131,9 @@ _BACKEND_CLASSES: dict[RouterKind, type[RouterBackend]] = {
 def make_router_backend(args: Namespace) -> RouterBackend:
     kind = RouterKind.MILES if args.use_miles_router else RouterKind.SGLANG
     return _BACKEND_CLASSES[kind](args)
+
+
+def request_router_model(args: Namespace) -> "ModelConfig | None":
+    """The model whose router rollout requests and the session server reach; None when no engine is launched."""
+    models = args.sglang.models
+    return models[0] if models else None

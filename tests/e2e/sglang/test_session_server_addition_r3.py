@@ -99,6 +99,7 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         use_miles_router=False,
         sglang_router_policy="manual",
         router_args=dict(policy=None, prefill_policy=None, decode_policy=None),
+        rollout_external_router_pd=False,
     )
     config = compute_session_server_config(
         args,

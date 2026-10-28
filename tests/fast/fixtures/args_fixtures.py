@@ -189,4 +189,5 @@ def sglang_router_args(policy: str | None = None) -> dict[str, Any]:
         use_miles_router=False,
         sglang_router_policy=policy,
         router_args=dict(policy=None, prefill_policy=None, decode_policy=None),
+        rollout_external_router_pd=False,
     )
