@@ -33,6 +33,16 @@ class TestAsyncRm:
             ("deepscaler", r"</think>\boxed{42}", "42", 1),
             ("gpqa", "Answer: A", "A", 1.0),
             ("boxed_f1", r"Final answer is \boxed{hello world}", "hello world", 1.0),
+            ("boxed_math", r"<think>2+3=5</think> So the result is \boxed{5}.", "5", 1),
+            ("boxed_math", r"<think>2+3=5</think> So the result is \boxed{6}.", "5", 0),
+            ("boxed_deepscaler", r"<think>2+3=5</think> So the result is \boxed{5}.", "5", 1),
+            ("boxed_gemma_math", r"thinking<channel|>So the result is \boxed{\frac{1}{2}}.", "0.5", 1),
+            ("boxed_dapo", r"<think>2+3=5</think> So the result is \boxed{5}.", "5", {"score": 1.0}),
+            ("boxed_dapo", r"<think>2+3=5</think> So the result is \boxed{6}.", "5", {"score": -1.0}),
+            ("boxed_math", "no box here", "5", 0),
+            # A box only inside unfinished reasoning must not count for graders that need a closer.
+            ("boxed_deepscaler", r"<think>so \boxed{5} maybe", "5", 0),
+            ("boxed_gemma_math", r"\boxed{5} thinking<channel|>the answer is 5", "5", 0),
         ],
     )
     def test_rm_types(self, mock_args, rm_type, response, label, expected):

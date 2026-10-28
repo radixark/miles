@@ -51,7 +51,6 @@ class CheckpointWorker(RolloutExecutor):
     def __init__(self, directory: Path) -> None:
         self.args = Namespace(
             save=str(directory),
-            load=str(directory),
             save_debug_event_data=None,
             ci_test=False,
             ci_inject_missing_prefetched_batch_bug=False,

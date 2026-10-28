@@ -1,10 +1,14 @@
 """Fused CuTe DSL NVFP4 quantize-dequantize for fake QAT.
 
 The kernel keeps the E4M3 block scale and packed E2M1 values in registers and
-writes only the dequantized BF16/FP16 result. Its arithmetic order mirrors
-Transformer Engine's 1D, 1x16, per-tensor NVFP4 implementation. The vectorized
-load, FP4 conversion, and Four Over Six structure are adapted from FlashInfer's
-CuTe DSL NVFP4 quantizer.
+writes only the dequantized BF16/FP16 result. This supplies fake-quantized
+weights to high-precision training GEMMs in the W4A16 RL recipe described in
+"Faster-than-light NVFP4 decode—with precision" by Ziang Li at humans& ai:
+https://humansand.ai/blog/faster-than-light-nvfp4-decode
+
+Its arithmetic order mirrors Transformer Engine's 1D, 1x16, per-tensor NVFP4
+implementation. The vectorized load, FP4 conversion, and Four Over Six
+structure are adapted from FlashInfer's CuTe DSL NVFP4 quantizer.
 
 Supported contract:
 
@@ -1251,7 +1255,7 @@ def fake_nvfp4_quantization_ste(x: torch.Tensor, config: NVFP4QDQConfig | None =
         config = current_nvfp4_qdq_config()
     amax = compute_nvfp4_amax(x)
     output = _FusedNVFP4QDQSTE.apply(x, amax, config)
-    if hasattr(x, "main_grad"):
+    if hasattr(x, "main_grad"):  # config-access-exempt: main_grad is optional backend-attached tensor metadata
         output.main_grad = x.main_grad
     return output
 

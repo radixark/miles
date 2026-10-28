@@ -65,7 +65,9 @@ def test_a_failing_test_explains_itself_inside_the_notifier_window(tmp_path, mon
     )
     monkeypatch.chdir(tmp_path)
     with caplog.at_level(logging.INFO):
-        run_unittest_files([CITestFile(name="test_boom.py")], timeout_per_file=120, continue_on_error=True)
+        run_unittest_files(
+            [CITestFile(name="test_boom.py")], snapshot_hardware="cpu", timeout_per_file=120, continue_on_error=True
+        )
     assert "FAILED: test_boom.py returned exit code 1" in caplog.text
     _, separator, summary = caplog.text.rpartition("\nFAILED:\n")
     assert separator, "the runner printed no failure summary"

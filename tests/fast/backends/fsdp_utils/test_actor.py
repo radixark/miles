@@ -5,6 +5,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import make_trainer_args
 
 from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
@@ -58,7 +59,8 @@ class TestFSDPInit:
         actor._rank = 0
         actor._heartbeat = SimpleHeartbeat()
         actor._init_once = InitOnce(type(actor).__name__)
-        args = Namespace(
+        args = make_trainer_args(
+            train_backend="fsdp",
             debug_deterministic_collective=False,
             distributed_backend="nccl",
             distributed_timeout_minutes=1,
@@ -98,6 +100,7 @@ class TestFSDPModelInputs:
             "cu_seqlens": torch.tensor(cu_seqlens_host, dtype=torch.int32),
             "cu_seqlens_host": cu_seqlens_host,
             "max_seqlen": 3,
+            "unconcat_tokens": [torch.zeros(3, dtype=torch.long), torch.zeros(2, dtype=torch.long)],
         }
 
         model_args = actor._get_model_inputs_args(batch)
@@ -105,6 +108,25 @@ class TestFSDPModelInputs:
         assert model_args["cu_seq_lens_q"] is batch["cu_seqlens"]
         assert model_args["max_length_q"] == 3
         assert model_args["seq_idx"].tolist() == [[0, 0, 0, 1, 1, 2, 2, 2]]
+
+    def test_stock_hf_attention_gets_every_pad_token_as_its_own_segment(self) -> None:
+        """A 4-token pad tail kept as one segment would exceed max_length 3, leaving its rows unwritten."""
+        actor = object.__new__(actor_module.FSDPTrainRayActor)
+        actor.arch_adapter = resolve_arch_adapter(SimpleNamespace(model_type="qwen3"))
+        cu_seqlens_host = (0, 3, 5, 9)
+        batch = {
+            "tokens": torch.zeros(1, 9, dtype=torch.long),
+            "position_ids": torch.tensor([[0, 1, 2, 0, 1, 0, 0, 0, 0]]),
+            "cu_seqlens": torch.tensor(cu_seqlens_host, dtype=torch.int32),
+            "cu_seqlens_host": cu_seqlens_host,
+            "max_seqlen": 4,
+            "unconcat_tokens": [torch.zeros(3, dtype=torch.long), torch.zeros(2, dtype=torch.long)],
+        }
+
+        model_args = actor._get_model_inputs_args(batch)
+
+        assert model_args["cu_seq_lens_q"].tolist() == [0, 3, 5, 6, 7, 8, 9]
+        assert model_args["max_length_q"] == 3
 
 
 class TestFSDPTrainParallelConfigWiring:
@@ -115,7 +137,9 @@ class TestFSDPTrainParallelConfigWiring:
         fsdp_debug_actor: actor_module.FSDPTrainRayActor,
     ) -> None:
         """FSDP init records its live DP layout without precomputed scheduling and train hands it to the loader."""
-        args = Namespace(dumper_enable=False, seed=0, offload_train=False, debug_rollout_only=True)
+        args = make_trainer_args(
+            train_backend="fsdp", dumper_enable=False, seed=0, offload_train=False, debug_rollout_only=True
+        )
         received: list[TrainParallelConfig] = []
 
         def load_rollout_data(
@@ -124,6 +148,7 @@ class TestFSDPTrainParallelConfigWiring:
             rollout_data_ref: object,
             witness_info: object,
             train_parallel_config: TrainParallelConfig,
+            output_store_read: object,
         ) -> tuple[dict[str, list], object]:
             received.append(train_parallel_config)
             return {"tokens": []}, nullcontext()

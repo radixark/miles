@@ -39,7 +39,7 @@ def create_megatron_parallel_state(
             size=mpu.get_context_parallel_world_size(),
             group=mpu.get_context_parallel_group(),
         ),
-        cp_comm_type=getattr(args, "cp_comm_type", None),
+        cp_comm_type=args.cp_comm_type,
         tp=GroupInfo(
             rank=mpu.get_tensor_model_parallel_rank(),
             size=mpu.get_tensor_model_parallel_world_size(),
@@ -117,6 +117,7 @@ def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> Pa
             max_seqlen_kv=batch["max_seqlen"],
             qkv_format="thd",
             cu_seqlens_host=batch["cu_seqlens_host"],
+            total_tokens=batch["cu_seqlens_host"][-1],
         )
         batch["packed_seq_params"] = packed_seq_params
         return packed_seq_params

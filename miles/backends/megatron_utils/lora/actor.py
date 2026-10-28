@@ -23,10 +23,13 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             rollout_data, store_get_result = get_rollout_data(
                 args=self.args,
                 rollout_data_ref=rollout_data_ref,
+                output_store_read=self.output_store_read,
                 train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
             )
             stack.enter_context(store_get_result)
-            return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data)
+            result = lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data)
+        self.prof.step(rollout_id=batch_id)
+        return result
 
     @with_logs
     def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
@@ -42,10 +45,13 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             rollout_data, store_get_result = get_rollout_data(
                 args=self.args,
                 rollout_data_ref=rollout_data_ref,
+                output_store_read=self.output_store_read,
                 train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
             )
             stack.enter_context(store_get_result)
-            return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data, forward_only=True)
+            result = lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data, forward_only=True)
+        self.prof.step(rollout_id=batch_id)
+        return result
 
     @with_logs
     def load_slot(

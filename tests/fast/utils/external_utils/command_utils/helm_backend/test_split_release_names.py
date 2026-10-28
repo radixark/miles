@@ -7,9 +7,11 @@ import shlex
 import pytest
 from pydantic import ValidationError
 from tests.fast.charts.utils import REPO_ROOT
-from tests.fast.ray.rollout.conftest import make_args_with_sglang_config
+from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
+from tests.fast.ray.rollout.conftest import make_sglang_config_yaml
 
 from miles.ray.specs.entrypoint import compute_specs
+from miles.utils.args.runtime import AllConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher import entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo, MooncakePlan
 from miles.utils.external_utils.command_utils.helm_backend.naming import (
@@ -26,20 +28,47 @@ NAMESPACE = "rl"
 
 _SPLIT_COMPONENTS = [DeployComponent.PRIMARY, DeployComponent.TRAINER, DeployComponent.INFERENCE]
 
+_JOINED_STORE_ARGV = ["--mooncake-store-init-kwargs", '{"master_server_address": "the-master:50051"}']
 
-def _args(tmp_path, *, component: DeployComponent):
-    return make_args_with_sglang_config(
-        tmp_path,
-        rollout_num_gpus=8,
-        use_session_server=False,
-        use_critic=False,
-        sglang_router_port=None,
-        deploy_component=component.value,
+_COMPONENT_ARGV = {
+    DeployComponent.PRIMARY: ["--trainer-controller-addrs", "actor=10.0.0.1:8000"],
+    DeployComponent.TRAINER: _JOINED_STORE_ARGV,
+    DeployComponent.INFERENCE: [
+        "--inference-controller-addr",
+        "controller:8000",
+        "--deploy-instance-id",
+        "dc1",
+        *_JOINED_STORE_ARGV,
+    ],
+}
+
+_DEPLOY_INSTANCE_ID = {DeployComponent.INFERENCE: "dc1"}
+
+
+def _args(tmp_path, *, component: DeployComponent) -> AllConfig:
+    sglang_config = tmp_path / "sglang.yaml"
+    sglang_config.write_text(make_sglang_config_yaml())
+    return parse_megatron_test_config(
+        "--rollout-num-gpus",
+        "8",
+        "--sglang-config",
+        str(sglang_config),
+        "--cluster-backend",
+        "kubernetes",
+        "--deploy-component",
+        component.value,
+        "--run-uuid",
+        "0123456789abcdef",
+        "--object-store-backend",
+        "mooncake",
+        *_COMPONENT_ARGV[component],
     )
 
 
 def _release(component: DeployComponent) -> str:
-    return ReleaseName(run_id=RUN_ID, deploy_component=component, deploy_instance_id=None).serialize()
+    return ReleaseName(
+        run_id=RUN_ID, deploy_component=component, deploy_instance_id=_DEPLOY_INSTANCE_ID.get(component)
+    ).serialize()
 
 
 def _object_names(tmp_path, *, component: DeployComponent) -> set[str]:

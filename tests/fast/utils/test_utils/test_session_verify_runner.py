@@ -6,7 +6,11 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from scripts.tools.verify_session_tito_tokenizer import _print_action_table, _with_session_verify_defaults
+from scripts.tools.verify_session_tito_tokenizer import (
+    _parse_session_verify_args,
+    _print_action_table,
+    _with_session_verify_defaults,
+)
 from tests.e2e.sglang.test_session_server_multi_role import _common
 
 from miles.utils.arguments import parse_args_train_backend
@@ -44,6 +48,7 @@ def _build_args(**overrides) -> str:
         "sglang_mamba_full_memory_ratio": None,
         "sglang_cuda_graph_backend_prefill": None,
         "anthropic_intermediate_system_expectation": None,
+        "ci_tito_special_token_count_threshold": 0.0,
     }
     values.update(overrides)
     return namespace_to_train_args(argparse.Namespace(**values))
@@ -505,6 +510,7 @@ def test_run_session_verify_preserves_sidecar_on_failure(monkeypatch, tmp_path, 
         hf_checkpoint="/models/test",
         actor_num_gpus_per_node=8,
         assistant_text_threshold=0.2,
+        ci_tito_special_token_count_threshold=0.0,
     )
 
     expected_error = subprocess.CalledProcessError if failure_phase == "execute_train" else AssertionError
@@ -526,3 +532,51 @@ def test_session_verify_env_isolates_anthropic_from_openai_history(wire_format, 
     assert (RECORD_DIR_ENV in env) is disables_history
     if disables_history:
         assert env[RECORD_DIR_ENV] == ""
+
+
+@pytest.mark.parametrize("threshold", [0.2, 0.75])
+def test_cli_parser_adapts_typed_config_to_mutable_runner_namespace(
+    monkeypatch: pytest.MonkeyPatch, threshold: float
+) -> None:
+    """Verifier-only settings stay local while typed engine and custom-hook settings reach the runner."""
+    argv = _with_session_verify_defaults(
+        [
+            "--tito-model",
+            "qwen3",
+            "--actor-num-gpus-per-node",
+            "1",
+            "--rollout-num-gpus-per-engine",
+            "1",
+            "--rollout-batch-size",
+            "2",
+            "--session-verify-cycles",
+            "2",
+            "--tool-call-failure-mode",
+            "append_user",
+            "--no-enable-sample-ownership-checker",
+            "--assistant-text-threshold",
+            str(threshold),
+            "--sglang-reasoning-parser",
+            "qwen3",
+            "--sglang-tool-call-parser",
+            "qwen25",
+        ]
+    )
+    monkeypatch.setattr(sys, "argv", ["verify_session_tito_tokenizer.py", *argv])
+    args = _parse_session_verify_args()
+
+    assert args.assistant_text_threshold == threshold
+    assert args.enable_sample_ownership_checker is False
+    assert args.rollout_batch_size == 2
+    assert args.session_verify_cycles == 2
+    assert args.tool_call_failure_mode == "append_user"
+    args.hf_checkpoint = "/root/models/local"
+    args.sglang_reasoning_parser = "qwen3"
+    train_args = namespace_to_train_args(args)
+    assert "--hf-checkpoint /root/models/local" in train_args
+    assert "--session-verify-cycles 2" in train_args
+    assert "--tool-call-failure-mode append_user" in train_args
+    assert "--sglang-reasoning-parser qwen3" in train_args
+    assert "--no-enable-sample-ownership-checker" in train_args
+    assert "assistant-text-threshold" not in train_args
+    assert "enable-spec" not in train_args

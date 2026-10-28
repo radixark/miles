@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -36,7 +37,16 @@ class TestCellActionResources:
 
 class TestRestartRolloutCell:
     @pytest.mark.parametrize("auto_resume", [False, True])
-    async def test_restart_waits_for_a_fresh_ready_generation(self, auto_resume, monkeypatch):
+    @pytest.mark.parametrize("public_action", [False, True])
+    async def test_restart_waits_for_a_fresh_ready_generation(
+        self,
+        auto_resume: bool,
+        public_action: bool,
+        monkeypatch: pytest.MonkeyPatch,
+        parkable_script: None,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Both entrypoints wait for a new ready generation using category-filtered cell observations."""
         cell_id = "inference-engine-all-0-0-00001"
         healthy_id = "inference-engine-all-0-0-00000"
 
@@ -50,8 +60,15 @@ class TestRestartRolloutCell:
 
         before = {cell_id: cell(cell_id, "original", 6), healthy_id: cell(healthy_id, "healthy", 4)}
         after = {**before, cell_id: cell(cell_id, "replacement", 6)}
+        observations = iter([before, before, after, after, after])
+
+        async def cell_infos(*, pool_ids: list[str] | None, category: str) -> dict:
+            assert pool_ids is None
+            assert category == "inference_engine"
+            return next(observations)
+
         operations = SimpleNamespace(
-            cell_infos=AsyncMock(side_effect=[before, before, after, after, after]),
+            cell_infos=cell_infos,
             suspend=AsyncMock(),
             resume=AsyncMock(),
         )
@@ -73,13 +90,31 @@ class TestRestartRolloutCell:
             return await fn(60)
 
         monkeypatch.setattr(cell_actions, "retry_until_deadline", poll)
-        receipt = await cell_actions._restart_rollout_cell(
-            cell_id,
-            operations=operations,
-            controller=controller,
-            pool_ids=["inference-engine-all-0-0"],
-            auto_resume=auto_resume,
-        )
+        if public_action:
+            from miles.ray import wiring
+
+            capability = SimpleNamespace(
+                cell_operations=lambda: operations,
+                static_worker_provider=lambda **kwargs: SimpleNamespace(get_handle=lambda name: controller),
+            )
+            monkeypatch.setattr(wiring, "compute_backend_capability", lambda args: capability)
+            args = SimpleNamespace(
+                update_weights_interval=1,
+                ft_components=("rollout",),
+                cluster_backend="kubernetes" if auto_resume else "ray",
+            )
+            await RestartRolloutCellAction(cell_id=cell_id)(
+                context=FaultHookContext(rollout_id=1), resources=FaultHookResources(args=args)
+            )
+            receipt = json.loads(caplog.records[-1].message.removeprefix("[ft test rollout restart] "))
+        else:
+            receipt = await cell_actions._restart_rollout_cell(
+                cell_id,
+                operations=operations,
+                controller=controller,
+                category="inference_engine",
+                auto_resume=auto_resume,
+            )
         operations.suspend.assert_awaited_once_with(cell_id=cell_id)
         if auto_resume:
             operations.resume.assert_not_awaited()
@@ -97,3 +132,22 @@ class TestRestartRolloutCell:
             await RestartRolloutCellAction(cell_id="inference-engine-all-0-0-00001")(
                 context=FaultHookContext(rollout_id=1), resources=FaultHookResources(args=args)
             )
+
+    async def test_restart_rejects_a_cell_outside_the_inference_category(self) -> None:
+        """A target excluded by the inference category cannot be suspended by the restart action."""
+
+        async def cell_infos(*, pool_ids: list[str] | None, category: str) -> dict:
+            assert pool_ids is None
+            assert category == "inference_engine"
+            return {}
+
+        operations = SimpleNamespace(cell_infos=cell_infos, suspend=AsyncMock())
+        with pytest.raises(AssertionError, match="not an observed rollout cell"):
+            await cell_actions._restart_rollout_cell(
+                "trainer-actor-0",
+                operations=operations,
+                controller=SimpleNamespace(),
+                category="inference_engine",
+                auto_resume=False,
+            )
+        operations.suspend.assert_not_awaited()
