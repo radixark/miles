@@ -77,6 +77,19 @@ Default knobs in the launcher: `--mode debug_minimal`, 8 GPUs, `max_tokens_per_g
 `rollout_batch_size=8`, `n_samples_per_prompt=2`, `global_batch_size=16`,
 `rollout_max_response_len=1024`. Override via flags for longer runs.
 
+### 4.2 Multi-teacher on-policy distillation
+
+`scripts/run_qwen3_6_35b_a3b_mopd.py` distills Qwen3.6-35B-A3B from two reasoning_gym GRPO
+teachers with sampled-token OPD on two B200 or GB300 nodes, synchronous or one-step overlap:
+
+```bash
+cd /root/miles
+python scripts/run_qwen3_6_35b_a3b_mopd.py --layout b200-sync --teacher-host <teacher node IP>
+```
+
+The teachers run on the second node. Setup, layouts and validation results are in
+[Multi-Teacher OPD on reasoning_gym](/examples/on-policy-distillation/mopd-reasoning-gym).
+
 ## 5. Recipe Configuration
 
 ### 5.1 Parallelism
@@ -153,3 +166,4 @@ See [Backends Beyond Megatron](/advanced/architecture-support) for FP32 paramete
 - [Speculative Decoding](/advanced/speculative-decoding)
 - [Backends Beyond Megatron](/advanced/architecture-support)
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer)
+- [On-Policy Distillation](/advanced/on-policy-distillation)
