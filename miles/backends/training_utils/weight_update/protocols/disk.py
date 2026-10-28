@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 class UpdateWeightFromDisk(WeightTransferProtocol):
     """
-    Full-checkpoint weight sync over a shared filesystem. The ranks holding the gathered HF buckets
-    split them round-robin and write each as a safetensors shard of a fresh version dir, rank 0 adds
+    Full-checkpoint weight sync over a shared filesystem. Each gathered HF bucket goes to the replica
+    rank with the fewest bytes so far, which writes it as a safetensors shard of a fresh version dir, rank 0 adds
     the index and HF assets, and the engines reload it via /update_weights_from_disk. Needs no NCCL,
     CUDA IPC or /pull_weights, so it works with engines on another accelerator stack.
     """
@@ -72,12 +72,13 @@ class UpdateWeightFromDisk(WeightTransferProtocol):
         self._weight_map = {}
         self._owned_buckets.reset()
         # the other ranks write only after the updater's barrier, so rank 0 alone prepares the directory
-        if dist.get_rank() == 0:
-            if self._previous_version_dir is None:
-                # a crashed run leaves full checkpoints behind, and partial shards in the version a resume rewrites
-                for stale_dir in glob.glob(os.path.join(self.root_dir, "weight_v*")):
-                    shutil.rmtree(stale_dir, ignore_errors=True)
-            os.makedirs(self._version_dir, exist_ok=True)
+        with fail_on_every_rank("[disk] version directory"):
+            if dist.get_rank() == 0:
+                if self._previous_version_dir is None:
+                    # a crashed run leaves full checkpoints behind, and partial shards in the version a resume rewrites
+                    for stale_dir in glob.glob(os.path.join(self.root_dir, "weight_v*")):
+                        shutil.rmtree(stale_dir, ignore_errors=True)
+                os.makedirs(self._version_dir, exist_ok=True)
         return True
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
@@ -114,7 +115,11 @@ class UpdateWeightFromDisk(WeightTransferProtocol):
             [
                 # one call reloads the whole model, so --update-weight-engine-request-timeout does not bound it
                 updater.submit_unbounded_client_call(
-                    "update_weights_from_disk", model_path=self._version_dir, weight_version=str(weight_version)
+                    "update_weights_from_disk",
+                    model_path=self._version_dir,
+                    # the engine's own startup format otherwise applies, and a dummy-loaded engine cannot reload
+                    load_format="safetensors",
+                    weight_version=str(weight_version),
                 )
                 for updater in cell_updaters
             ]
