@@ -4,6 +4,7 @@ from typing import Any
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import merge_rollout_topk_logprobs_field
 from miles.rollout.generate_utils.sampling_mask import merge_sampling_masks
+from miles.utils.output_store.plan import combine_plans
 from miles.utils.types import Sample
 
 _OPD_STUDENT_TOP_LOGPROBS_KEY = "opd_student_top_logprobs"
@@ -32,7 +33,9 @@ def merge_samples(samples: list[Sample], tokenizer) -> Sample:
 
 
 def _introduces_replay_gap(a: Sample, b: Sample) -> bool:
-    return any(getattr(a, field) is not None and getattr(b, field) is None for field in _REPLAY_FIELDS)
+    return any(
+        getattr(a, field) is not None and getattr(b, field) is None for field in _REPLAY_FIELDS
+    )  # config-access-exempt: attribute selected at runtime from field
 
 
 def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
@@ -44,19 +47,19 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
     """
 
     def _merge_equal_value(field):
-        x = getattr(a, field)
-        y = getattr(b, field)
+        x = getattr(a, field)  # config-access-exempt: attribute selected at runtime from field
+        y = getattr(b, field)  # config-access-exempt: attribute selected at runtime from field
         assert x == y, f"{field} mismatch: a.{field}={x}, b.{field}={y}"
         return x
 
     def _per_token(sample: Sample, field: str, default) -> list:
-        value = getattr(sample, field)
+        value = getattr(sample, field)  # config-access-exempt: iterate the explicit sample completion field list
         return value if value is not None else [default] * sample.response_length
 
     def _merge_optional_per_token(field):
         # Optional OPD per-token lists (teacher_log_probs, opd_reverse_kl): merge like
         # rollout_log_probs when present (zeros over the injected observation span), else keep None.
-        av, bv = getattr(a, field), getattr(b, field)
+        av, bv = getattr(a, field), getattr(b, field)  # config-access-exempt: attribute selected at runtime from field
         if av is None and bv is None:
             return None
         av = av if av is not None else [0.0] * a.response_length
@@ -138,6 +141,9 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         assert _startswith(short=a.tokens, long=b.tokens), "b.tokens must start with a.tokens"
         assert obs_len > 0, f"obs_len must be > 0, got {obs_len}"
         sampling_mask = merge_sampling_masks(a, obs_tokens, b)
+        store_plan = combine_plans(
+            a.rollout_store_plan, b.rollout_store_plan, lambda x, y: x.merge_turn(y, observation_tokens=obs_len)
+        )
         if a.rollout_routed_experts is not None:
             assert b.rollout_routed_experts is not None, "cannot merge: a has rollout_routed_experts but b does not"
             assert a.rollout_routed_experts.shape[0] <= b.rollout_routed_experts.shape[0]
@@ -173,6 +179,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             opd_reverse_kl=_merge_optional_per_token("opd_reverse_kl"),
             rollout_routed_experts=b.rollout_routed_experts,
             rollout_indexer_topk=b.rollout_indexer_topk,
+            rollout_store_plan=store_plan,
             remove_sample=_merge_equal_value("remove_sample"),
             status=b.status,
             metadata=_merge_metadata(),
@@ -186,14 +193,14 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             prefix_cache_info=_merge_prefix_cache_info(a.prefix_cache_info, b.prefix_cache_info),
         )
     except AssertionError as e:
-        if hasattr(e, "add_note"):
+        if hasattr(e, "add_note"):  # config-access-exempt: exception notes are unavailable on older Python versions
             e.add_note(f"{a=} {b=}")
         raise
 
 
 def _merge_spec_info(a: Sample.SpecInfo, b: Sample.SpecInfo) -> Sample.SpecInfo:
     def _merge_plus_value(field):
-        return getattr(a, field) + getattr(b, field)
+        return getattr(a, field) + getattr(b, field)  # config-access-exempt: attribute selected at runtime from field
 
     return _create_with_all_fields(
         Sample.SpecInfo,
@@ -206,7 +213,7 @@ def _merge_spec_info(a: Sample.SpecInfo, b: Sample.SpecInfo) -> Sample.SpecInfo:
 
 def _merge_prefix_cache_info(a: Sample.PrefixCacheInfo, b: Sample.PrefixCacheInfo) -> Sample.PrefixCacheInfo:
     def _merge_plus_value(field):
-        return getattr(a, field) + getattr(b, field)
+        return getattr(a, field) + getattr(b, field)  # config-access-exempt: attribute selected at runtime from field
 
     return _create_with_all_fields(
         Sample.PrefixCacheInfo,

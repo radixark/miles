@@ -109,8 +109,12 @@ def _load_adapter(adapter: NativeLoRAAdapter, take) -> list[tuple[torch.Tensor, 
     tp_size = adapter.context.tp_size
     plan: list[tuple[torch.Tensor, torch.Tensor]] = []
     for projection in adapter.projection_specs:
-        a_parameter = getattr(adapter, f"{projection.param_prefix}_A")
-        b_parameter = getattr(adapter, f"{projection.param_prefix}_B")
+        a_parameter = getattr(
+            adapter, f"{projection.param_prefix}_A"
+        )  # config-access-exempt: the architecture projection descriptor selects its registered A parameter
+        b_parameter = getattr(
+            adapter, f"{projection.param_prefix}_B"
+        )  # config-access-exempt: the architecture projection descriptor selects its registered B parameter
         a_name = f"{adapter.hf_prefix}{projection.hf_leaf}.lora_A.weight"
         b_name = f"{adapter.hf_prefix}{projection.hf_leaf}.lora_B.weight"
         a_full = take(a_name)

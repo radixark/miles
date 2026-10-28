@@ -18,6 +18,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         apply_chat_template_kwargs=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        rollout_indexer_topk_num_streams=None,
         use_sampling_support_replay=False,
         sglang_speculative_algorithm=None,
         num_layers=None,
@@ -34,6 +35,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
         rollout_temperature=1.0,
+        output_store_backend_config=None,
     )
     defaults.update(overrides)
     return SessionServerConfig(**defaults)

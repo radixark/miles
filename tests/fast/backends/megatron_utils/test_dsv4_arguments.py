@@ -2,17 +2,13 @@ from argparse import ArgumentParser, Namespace
 
 import pytest
 
-from miles_plugins.models.deepseek_v4.arguments import (
-    DSV4_SPEC_MODULE,
-    add_dsv4_arguments,
-    is_dsv4_model,
-    normalize_dsv4_args,
-)
+from miles.utils.args.configs.custom_megatron_plugins import Dsv4MegatronPluginsConfig
+from miles_plugins.models.deepseek_v4.arguments import DSV4_SPEC_MODULE, is_dsv4_model, normalize_dsv4_args
 
 
 def _parse(*argv: str) -> Namespace:
     parser = ArgumentParser()
-    add_dsv4_arguments(parser)
+    Dsv4MegatronPluginsConfig.add_arguments(parser=parser)
     parser.add_argument("--tensor-model-parallel-size", type=int, default=1)
     parser.add_argument("--dsa-kernel-backend", default=None)
     parser.add_argument("--spec", nargs="*", default=[DSV4_SPEC_MODULE, "get_dsv4_spec"])

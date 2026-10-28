@@ -1,15 +1,20 @@
 import pydantic
 import pytest
-from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import LAYOUT, engine, trainer
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import (
+    LAYOUT,
+    SCALING,
+    build_values_as_launched,
+    engine,
+    trainer,
+)
 
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import pairing_config
-from miles.utils.workers.worker_spec import CommandWorkerSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec
 
 COLOCATE_LAYOUT = LAYOUT.model_copy(update={"colocate": True})
 
 
-def _disaggregated_engines(*, decode_offset: int) -> list[CommandWorkerSpec]:
+def _disaggregated_engines(*, decode_offset: int) -> list[BaseCommandSpec]:
     return [
         engine(num_cells=2, gpus_per_engine=8, name="inference-engine-0-0", gpu_offset=0),
         engine(num_cells=2, gpus_per_engine=8, name="inference-engine-0-1", gpu_offset=decode_offset),
@@ -23,13 +28,13 @@ class TestTheValuesCarryAWholePairingConfig:
         specs = [engine(), *(trainer() for _ in range(trainer_count))]
 
         with pytest.raises(AssertionError, match=rf"this run has {trainer_count} trainer pools"):
-            pairing_config(specs, COLOCATE_LAYOUT)
+            pairing_config(specs, COLOCATE_LAYOUT, scaling=SCALING)
 
     def test_reads_the_pools_that_start_inside_the_trainer_off_their_gpu_offsets(self):
         """The gpu offset is what already decides who shares the trainer's cards, so nothing else declares it."""
         specs = [*_disaggregated_engines(decode_offset=16), trainer(num_cells=4, gpus_per_cell=8)]
 
-        built = build_values(specs, COLOCATE_LAYOUT).as_values()["run"]
+        built = build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()["run"]
 
         assert built["colocate"] == {
             "namespace": "rl",
@@ -67,7 +72,7 @@ class TestTheValuesCarryAWholePairingConfig:
         """The controller identifies a pod by its miles pool label, so the config has to speak that value."""
         specs = [*_disaggregated_engines(decode_offset=16), trainer(num_cells=4, gpus_per_cell=8)]
 
-        built = build_values(specs, COLOCATE_LAYOUT).as_values()["run"]
+        built = build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()["run"]
 
         assert built["colocate"]["trainer_pool_id"] == built["trainerEngines"][0]["poolId"]
         assert [pool["pool_id"] for pool in built["colocate"]["inference_pools"]] == [
@@ -78,7 +83,7 @@ class TestTheValuesCarryAWholePairingConfig:
         """A prefill pool_id on its own nodes needs no pairing, and gating it would strand it forever."""
         specs = [*_disaggregated_engines(decode_offset=32), trainer(num_cells=2, gpus_per_cell=8)]
 
-        built = build_values(specs, COLOCATE_LAYOUT).as_values()["run"]
+        built = build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()["run"]
 
         assert [pool["pool_id"] for pool in built["colocate"]["inference_pools"]] == ["inference-engine-0-0"]
 
@@ -86,7 +91,7 @@ class TestTheValuesCarryAWholePairingConfig:
         """Half the trainer may run no engine at all, which is still a rank-for-rank pairing where it does."""
         specs = [engine(num_cells=2, gpus_per_engine=8), trainer(num_cells=1, gpus_per_cell=32)]
 
-        built = build_values(specs, COLOCATE_LAYOUT).as_values()["run"]
+        built = build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()["run"]
 
         assert [pool["pool_id"] for pool in built["colocate"]["inference_pools"]] == ["inference-engine-0-0"]
 
@@ -95,34 +100,36 @@ class TestTheValuesCarryAWholePairingConfig:
         specs = [*_disaggregated_engines(decode_offset=8), trainer(num_cells=4, gpus_per_cell=8)]
 
         with pytest.raises(pydantic.ValidationError, match="both claim the trainer's gpu"):
-            build_values(specs, COLOCATE_LAYOUT).as_values()
+            build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()
 
     def test_refuses_a_pool_starting_part_way_into_one_of_its_own_pods(self):
         """An 8-gpu engine starting at gpu 4 would want half of each of two nodes' worth of cards."""
         specs = [engine(num_cells=1, gpus_per_engine=8, gpu_offset=4), trainer(num_cells=4, gpus_per_cell=8)]
 
         with pytest.raises(pydantic.ValidationError, match="not a whole number of its own"):
-            build_values(specs, COLOCATE_LAYOUT).as_values()
+            build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()
 
     def test_refuses_more_engine_cells_than_the_trainer_can_seat(self):
         """An engine rank on a gpu no trainer shares would receive nothing from a weight update."""
         specs = [engine(num_cells=8, gpus_per_engine=8), trainer(num_cells=1, gpus_per_cell=32)]
 
         with pytest.raises(pydantic.ValidationError, match="do not fit"):
-            build_values(specs, COLOCATE_LAYOUT).as_values()
+            build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()
 
     def test_rejects_a_pool_whose_cell_is_smaller_than_a_node(self):
         """The device plugin picks the cards, so a sub-node engine's base gpu id cannot be rendered."""
         specs = [engine(num_cells=1, gpus_per_engine=4), trainer(num_cells=1, gpus_per_cell=4)]
 
         with pytest.raises(AssertionError, match="sub-node"):
-            build_values(specs, COLOCATE_LAYOUT).as_values()
+            build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()
 
     def test_places_one_engine_per_gpu_of_a_single_trainer_node(self):
         """The shape a user reaches for first: eight engines sharing the eight cards of one trainer node."""
         specs = [engine(num_cells=8, gpus_per_engine=1), trainer(num_cells=1, gpus_per_cell=8)]
 
-        [pool] = build_values(specs, COLOCATE_LAYOUT).as_values()["run"]["colocate"]["inference_pools"]
+        [pool] = build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()["run"]["colocate"][
+            "inference_pools"
+        ]
 
         assert pool["layout"]["num_inference_cells"] == 8
         assert pool["layout"]["num_gpus_per_inference_pod"] == 1
@@ -133,16 +140,16 @@ class TestTheValuesCarryAWholePairingConfig:
         specs = [engine(num_cells=1, gpus_per_engine=8, gpu_offset=32), trainer(num_cells=4, gpus_per_cell=8)]
 
         with pytest.raises(AssertionError, match="nothing to pair"):
-            build_values(specs, COLOCATE_LAYOUT).as_values()
+            build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()
 
     def test_leaves_out_the_pairing_when_this_deployment_seats_no_engine(self):
         """Replaying saved rollouts asks for --colocate with no local inference pool, and there is nothing to pair."""
         specs = [trainer(num_cells=4, gpus_per_cell=8)]
 
-        assert "colocate" not in build_values(specs, COLOCATE_LAYOUT).as_values()["run"]
+        assert "colocate" not in build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()["run"]
 
     def test_leaves_a_run_that_does_not_colocate_without_the_section(self):
         """A disaggregated run must not gain a pairing controller with pod write rights."""
         specs = [*_disaggregated_engines(decode_offset=16), trainer(num_cells=4, gpus_per_cell=8)]
 
-        assert "colocate" not in build_values(specs, LAYOUT).as_values()["run"]
+        assert "colocate" not in build_values_as_launched(specs, LAYOUT, scaling=SCALING).as_values()["run"]

@@ -43,7 +43,9 @@ def _apply_glm5_next_config(config, text_config) -> None:
     # index_kpool_compress is a checkpoint field the native config does not declare
     assert (
         text_config.index_kpool > 1
-        and getattr(text_config, "index_kpool_compress", False)
+        and getattr(
+            text_config, "index_kpool_compress", False
+        )  # config-access-exempt: only compressed-index model configurations declare index_kpool_compress
         and text_config.index_kpool_always_select_tail
     ), "GLM-5.3 kpool indexer expects index_kpool>1 with compress and always_select_tail"
 
@@ -68,7 +70,9 @@ def _reference_proj_rms(x, weight, eps):
 
 
 def _patch_reference_proj_rms() -> None:
-    if getattr(hyper_connection, "_glm5_next_reference_proj_rms_patched", False):
+    if getattr(
+        hyper_connection, "_glm5_next_reference_proj_rms_patched", False
+    ):  # config-access-exempt: the shim marker exists only after patch installation
         return
 
     original_init = HyperConnectionModule.__init__

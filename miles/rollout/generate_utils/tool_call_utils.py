@@ -61,6 +61,8 @@ def update_sample_with_tool_responses(sample: Sample, tool_messages: list[dict[s
     next_obs_tokens_ids: list[int] = tokenize_tool_responses(tool_messages, tokenizer=tokenizer)
     if sample.rollout_sampling_mask is not None:
         append_forced_sampling_tokens(sample, next_obs_tokens_ids)
+    if sample.rollout_store_plan is not None:
+        sample.rollout_store_plan = sample.rollout_store_plan.insert_tokens(len(next_obs_tokens_ids))
     pad_rollout_topk_logprobs(sample, len(next_obs_tokens_ids))
     sample.response += tokenizer.decode(next_obs_tokens_ids)
     sample.response_length += len(next_obs_tokens_ids)

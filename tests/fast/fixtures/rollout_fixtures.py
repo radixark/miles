@@ -19,6 +19,7 @@ from miles.rollout.session.server import SessionServer
 from miles.rollout.session.types import SessionServerInstance
 from miles.router.config import compute_miles_router_config
 from miles.router.router import MilesRouter
+from miles.utils.args.component_rollout import InferenceRuntimeMutState
 from miles.utils.arguments import parse_args
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import find_available_port, init_http_client
@@ -81,13 +82,14 @@ def _build_args(*, data_path: str, router_port: int, extra_argv: list[str] | Non
     ] + (extra_argv or [])
     with patch("sys.argv", argv):
         args = parse_args()
+    args.inference_runtime_mut_state.set_(InferenceRuntimeMutState(engine_count=1, gpu_count=1))
     init_http_client(args)
     return args
 
 
 @contextmanager
 def _with_miles_router(args: Namespace) -> Iterator[UvicornThreadServer]:
-    config = compute_miles_router_config(args, host=args.sglang_router_ip, port=args.sglang_router_port, num_engines=1)
+    config = compute_miles_router_config(args, host=args.sglang_router_ip, port=args.sglang_router_port)
     router = MilesRouter(config, verbose=False)
     server = UvicornThreadServer(router.app, host=config.host, port=config.port)
     try:

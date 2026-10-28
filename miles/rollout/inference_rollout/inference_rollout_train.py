@@ -3,8 +3,6 @@ import logging
 from argparse import Namespace
 from collections.abc import Callable
 
-import sglang_router
-from packaging.version import parse
 from tqdm import tqdm
 
 from miles.rollout.base_types import RolloutFnTrainOutput, stamp_kv_cache_namespace
@@ -19,6 +17,8 @@ from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRec
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.misc import as_completed_async, call_agent_abort_hook
+from miles.utils.output_store.dropped import record_dropped_samples
+from miles.utils.retry_utils import NonRetryableError
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,7 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
     aborted_samples = []
     async for group in as_completed_async(pendings):
         if not args.partial_rollout:
+            record_dropped_samples(group)
             SampleOwnershipRecorder.log_dropped_samples(
                 args=args,
                 samples=[sample for item in group for sample in (item if isinstance(item, list) else [item])],
@@ -67,13 +68,8 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
 
 async def get_worker_urls(args: Namespace):
-    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
-        urls = response["urls"]
-    else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        urls = [worker["url"] for worker in response["workers"]]
-    return router_worker_base_urls(urls)
+    response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+    return router_worker_base_urls([worker["url"] for worker in response["workers"]])
 
 
 def submit_generate_tasks(
@@ -139,6 +135,9 @@ async def generate_rollout_async(
         for task in done:
             try:
                 group: list[Sample] = task.result()
+            except NonRetryableError:
+                # A broken contract fails every later group the same way; stop instead of spinning.
+                raise
             except Exception as e:
                 logger.error(f"[rollout] Task raised exception: {e!r}", exc_info=True)
                 continue
@@ -159,6 +158,7 @@ async def generate_rollout_async(
             filter_output = apply_preput_filters(args, dynamic_filter, group)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+                record_dropped_samples(group)
                 SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="dynamic_filter")
                 continue
 
@@ -168,6 +168,7 @@ async def generate_rollout_async(
                 data.append(group)
                 pbar.update(args.n_samples_per_prompt)
             else:
+                record_dropped_samples(group)
                 SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="oversampling")
 
     pbar.close()
@@ -194,6 +195,8 @@ async def generate_rollout_async(
     before_filter = SampleOwnershipRecorder.flatten_samples(data)
     if f := load_function(args.rollout_sample_filter_path):
         f(args, data)
+    kept = {id(sample) for sample in SampleOwnershipRecorder.flatten_samples(data)}
+    record_dropped_samples(sample for sample in before_filter if id(sample) not in kept)
     SampleOwnershipRecorder.log_dropped_groups(
         args=args, before=before_filter, after=data, reason="rollout_sample_filter"
     )
