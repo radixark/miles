@@ -31,3 +31,16 @@ def test_fake_rollout_modes_keep_the_production_collective() -> None:
         tokens = _tokens(_FAKE_ROLLOUT_MODE, side)
         assert "--debug-deterministic-collective" not in tokens
         assert "--clip-grad" not in tokens
+        assert _option_value(tokens, "--max-tokens-per-gpu") == "32768"
+
+
+def test_real_moe_sides_bound_microbatch_memory_and_keep_the_full_rollout() -> None:
+    """Both training topologies retain all samples with the same H100 microbatch budget."""
+    for side in ("baseline", "target"):
+        tokens = _tokens(_REAL_ROLLOUT_MODE, side)
+        assert tokens.count("--max-tokens-per-gpu") == 1
+        assert _option_value(tokens, "--max-tokens-per-gpu") == "8192"
+        assert _option_value(tokens, "--global-batch-size") == "256"
+        assert _option_value(tokens, "--rollout-batch-size") == "32"
+        assert _option_value(tokens, "--n-samples-per-prompt") == "8"
+        assert _option_value(tokens, "--num-rollout") == "2"

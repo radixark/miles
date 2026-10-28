@@ -4,7 +4,15 @@ import pytest
 import tools.convert_mimo_v2_to_bf16 as converter
 import torch
 from safetensors.torch import load_file, save_file
-from tools.convert_mimo_v2_to_bf16 import FP4_TABLE, dequant_fused_qkv, dequant_mxfp4, main, split_fused_qkv
+from tools.convert_mimo_v2_to_bf16 import (
+    FP4_TABLE,
+    cast_mxfp4_to_fp8_block,
+    dequant_fp8_block,
+    dequant_fused_qkv,
+    dequant_mxfp4,
+    main,
+    split_fused_qkv,
+)
 
 E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max
 
@@ -36,6 +44,17 @@ def test_dequant_mxfp4_is_exact():
     exponents = torch.randint(120, 134, (8, 2), dtype=torch.uint8)
     expected = FP4_TABLE[codes] * torch.exp2(exponents.float() - 127).repeat_interleave(32, dim=1)
     assert torch.equal(dequant_mxfp4(_pack_mxfp4(codes), exponents).float(), expected.to(torch.bfloat16).float())
+
+
+def test_cast_mxfp4_to_fp8_block_is_exact():
+    codes = torch.randint(0, 16, (256, 384))
+    # scales spanning 14 binades or less per block stay exact; wider spans push the smallest values below e4m3
+    exponents = torch.randint(120, 134, (256, 384 // 32), dtype=torch.uint8)
+    packed = _pack_mxfp4(codes)
+    weight, scale_inv = cast_mxfp4_to_fp8_block(packed, exponents)
+    assert weight.dtype == torch.float8_e4m3fn and scale_inv.shape == (2, 3)
+    assert torch.equal(torch.exp2(torch.log2(scale_inv).round()), scale_inv)
+    assert torch.equal(dequant_fp8_block(weight, scale_inv), dequant_mxfp4(packed, exponents))
 
 
 def test_fused_qkv_scales_are_per_shard():
@@ -118,7 +137,7 @@ def _tiny_checkpoint(path):
     tensors["model.layers.1.mlp.gate.weight"] = torch.randn(4, 128).bfloat16()
     tensors["model.layers.1.mlp.gate.e_score_correction_bias"] = torch.randn(4)
     for expert in range(4):
-        for proj, (rows, cols) in (("gate_proj", (64, 128)), ("up_proj", (64, 128)), ("down_proj", (128, 64))):
+        for proj, (rows, cols) in (("gate_proj", (128, 256)), ("up_proj", (128, 256)), ("down_proj", (256, 128))):
             name = f"model.layers.1.mlp.experts.{expert}.{proj}."
             codes = torch.randint(0, 16, (rows, cols))
             exps = torch.randint(124, 130, (rows, cols // 32), dtype=torch.uint8)
@@ -173,6 +192,32 @@ def test_keep_quant_reindexes_ignored_layers(tmp_path):
     config = json.loads((dst / "config.json").read_text())
     assert config["quantization_config"]["ignored_layers"] == ["model.layers.0.self_attn.o_proj"]
     assert config["attention_projection_layout"] == "fused_qkv"
+
+
+def test_fp8_experts_cast_only_the_experts(tmp_path):
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir()
+    expected = _tiny_checkpoint(src)
+    main(str(src), str(dst), None, None, keep_quant=False, device="cpu", fp8_experts=True)
+    config = json.loads((dst / "config.json").read_text())
+    index = json.loads((dst / "model.safetensors.index.json").read_text())["weight_map"]
+    out = {name: t for f in set(index.values()) for name, t in load_file(str(dst / f)).items()}
+    source = load_file(str(src / "model-00001.safetensors"))
+
+    assert config["quantization_config"] == {
+        "quant_method": "fp8",
+        "ignored_layers": ["model.layers.1.self_attn.o_proj"],
+    }
+    assert config["attention_projection_layout"] == "fused_qkv"
+    experts = [name for name in expected if ".experts." in name]
+    assert len(experts) == 12
+    for name in experts:
+        assert out[name].dtype == torch.float8_e4m3fn and name.removesuffix("weight") + "weight_scale" not in out
+        assert torch.equal(dequant_fp8_block(out[name], out[name + "_scale_inv"]), expected[name]), name
+    rest = {name for name in source if ".experts." not in name}
+    assert set(out) == rest | set(experts) | {name + "_scale_inv" for name in experts}
+    for name in rest:
+        assert torch.equal(out[name].view(torch.uint8), source[name].view(torch.uint8)), name
 
 
 def test_conversion_is_not_complete_until_auxiliary_files_are_copied(tmp_path, monkeypatch):

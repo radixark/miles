@@ -1,7 +1,6 @@
 # ruff: noqa
 # Adapted from https://github.com/tile-ai/tilelang/blob/4956b5835fa554af6c03d4a6289cad44bf310869/examples/deepseek_v32/fp8_lighting_indexer.py
 import tilelang
-import torch
 from tilelang import language as T
 
 
@@ -118,15 +117,13 @@ def _clean_logits_kernel(
     return clean_logits_kernel
 
 
-def indexer_fwd(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True):
+def indexer_fwd(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, logits, clean_logits=True):
     seq_len, heads, index_dim = q.shape
-    seq_len_kv = kv.shape[0]
 
     clean_logits_kernel = _clean_logits_kernel()
 
     kernel = _indexer_fwd_kernel(heads=heads, index_dim=index_dim)
 
-    logits = torch.empty([seq_len, seq_len_kv], device=q.device, dtype=torch.float32)
     kernel(
         q.view(seq_len * heads, index_dim),
         kv,

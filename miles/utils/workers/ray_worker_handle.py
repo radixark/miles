@@ -26,7 +26,9 @@ class RayWorkerHandle(BaseWorkerHandle):
 
         async def call(*args: Any, **kwargs: Any) -> Any:
             try:
-                return await getattr(self._actor_handle, name).remote(*args, **kwargs)
+                return await getattr(self._actor_handle, name).remote(
+                    *args, **kwargs
+                )  # config-access-exempt: attribute selected at runtime from name
             except ray.exceptions.RayActorError as e:
                 raise WorkerUnreachableError(f"Worker died or is unreachable when calling {name!r}: {e!r}") from e
 

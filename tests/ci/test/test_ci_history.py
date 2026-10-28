@@ -48,6 +48,7 @@ def test_record_has_target_keys_and_is_parseable(tmp_path, monkeypatch):
         {
             "rollout/raw_reward": 0.3,
             "rollout/tito_session_mismatch_rate/v2/assistant_text": 0.125,
+            "perf/actor_train_mfu": 0.375,
             "rollout/step": 0,
         },
         step=0,
@@ -65,12 +66,14 @@ def test_record_has_target_keys_and_is_parseable(tmp_path, monkeypatch):
         "train/ppo_kl",
         "rollout/raw_reward",
         "rollout/tito_session_mismatch_rate/v2/assistant_text",
+        "perf/actor_train_mfu",
     }
     # Raw series are preserved unreduced: both grad_norm points are present.
     assert by_metric["train/grad_norm"] == [[0, 1.5], [1, 2.5]]
     assert by_metric["train/ppo_kl"] == [[0, 0.0], [1, 0.1]]
     assert by_metric["rollout/raw_reward"] == [[0, 0.3]]
     assert by_metric["rollout/tito_session_mismatch_rate/v2/assistant_text"] == [[0, 0.125]]
+    assert by_metric["perf/actor_train_mfu"] == [[0, 0.375]]
 
 
 def test_v1_v2_tito_metrics_remain_separate_after_attempt_merge(tmp_path, monkeypatch):
@@ -271,6 +274,7 @@ sys.exit(1)
 
     rc = run_unittest_files(
         [TestFile(name=child.name, estimated_time=1)],
+        snapshot_hardware="cpu",
         timeout_per_file=10,
         enable_retry=True,
         max_attempts=2,

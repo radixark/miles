@@ -10,6 +10,10 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from miles.rollout.base_types import RolloutFnTrainInput, RolloutFnTrainOutput
+from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
+from miles.utils.types import Sample
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 GENERATE_SCRIPT = REPO_ROOT / "examples" / "swe-agent-harbor-docker" / "generate.py"
 
@@ -108,3 +112,25 @@ def test_samples_without_agent_metrics_are_ignored(generate_module: ModuleType) 
     assert generate_module.aggregate_agent_metrics([sample_with({})]) == {}
     assert generate_module.aggregate_agent_metrics([SimpleNamespace(metadata={})]) == {}
     assert generate_module.aggregate_agent_metrics([]) == {}
+
+
+@pytest.mark.asyncio
+async def test_v2_session_samples_contribute_metrics_without_changing_output_groups(
+    generate_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Multi-sample sessions contribute every measurement while preserving rollout grouping."""
+    session = [Sample(metadata={"agent_metrics": {"turns": 2}}), Sample(metadata={"agent_metrics": {"turns": 4}})]
+    groups = [[session, Sample(metadata={"agent_metrics": {"turns": 0}})]]
+    output = RolloutFnTrainOutput(samples=groups, metrics={"rollout/raw_reward": 1.0})
+
+    async def call_train(self: InferenceRolloutFn, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
+        return output
+
+    monkeypatch.setattr(InferenceRolloutFn, "_call_train", call_train)
+    rollout = object.__new__(generate_module.RolloutFn)
+    actual = await rollout._call_train(RolloutFnTrainInput(rollout_id=0))
+
+    assert actual is output
+    assert actual.samples is groups
+    assert actual.samples[0][0] is session
+    assert actual.metrics == {"rollout/raw_reward": 1.0, "agent/turns_mean": 2.0, "agent/turns_sum": 6}

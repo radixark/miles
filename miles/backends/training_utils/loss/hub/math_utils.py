@@ -294,21 +294,62 @@ def compute_log_probs(
         log_probs = torch.log_softmax(full_logits, dim=-1)
         return log_probs.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
 
-    # TODO: when megatron is not installed, fall back to naive implementation
-    from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
-
-    # convert to [seq_len, batch_size, vocab_size] as expected by fused_vocab_parallel_cross_entropy
+    # [seq, 1]: the shape callers have always received
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
 
     if debug_unified_grad_fused_logprob and not torch.is_grad_enabled():
         with torch.enable_grad():
-            log_probs = -fused_vocab_parallel_cross_entropy(
-                logits.detach().requires_grad_(True), tokens, process_group
-            )
+            log_probs = -vocab_parallel_cross_entropy(logits.detach().requires_grad_(True), tokens, process_group)
         return log_probs.detach()
 
-    return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
+    return -vocab_parallel_cross_entropy(logits, tokens, process_group)
+
+
+class _VocabParallelCrossEntropy(torch.autograd.Function):
+    """Cross entropy over logits split along the vocabulary over ``group``, in plain torch.
+
+    Megatron's vocab-parallel cross entropy, bit for bit, so every backend and install runs one
+    implementation. Like it, the forward works in place on fp32 ``logits`` (callers pass a copy).
+    The gradient comes back in the input's dtype.
+    """
+
+    @staticmethod
+    def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
+        ctx.input_dtype = logits.dtype
+        logits = logits.float()
+        logits_max = logits.max(dim=-1)[0]
+        dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=group)
+        logits.sub_(logits_max.unsqueeze(-1))
+
+        partition_vocab_size = logits.size(-1)
+        # group.rank(), as Megatron: None or a rank outside the group fails here instead of reducing over the world
+        vocab_start = group.rank() * partition_vocab_size
+        target_mask = (target < vocab_start) | (target >= vocab_start + partition_vocab_size)
+        masked_target = (target - vocab_start).masked_fill(target_mask, 0)
+        predicted_logits = logits.gather(-1, masked_target.unsqueeze(-1)).squeeze(-1).masked_fill(target_mask, 0.0)
+        exp_logits = logits.exp_()
+        sum_exp_logits = exp_logits.sum(dim=-1)
+
+        # one all-reduce for both, as in Megatron
+        predicted_and_sum = torch.cat((predicted_logits, sum_exp_logits))
+        dist.all_reduce(predicted_and_sum, op=dist.ReduceOp.SUM, group=group)
+        predicted_logits, sum_exp_logits = predicted_and_sum.split(predicted_logits.size(0))
+
+        softmax = exp_logits.div_(sum_exp_logits.unsqueeze(-1))
+        ctx.save_for_backward(softmax, target_mask, masked_target)
+        return torch.log(sum_exp_logits) - predicted_logits
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        softmax, target_mask, masked_target = ctx.saved_tensors
+        # softmax - one_hot(target); the one-hot lives on the rank owning the target
+        grad_input = softmax.scatter_add_(-1, masked_target.unsqueeze(-1), -(~target_mask).unsqueeze(-1).float())
+        return grad_input.mul_(grad_output.unsqueeze(-1)).to(ctx.input_dtype), None, None
+
+
+def vocab_parallel_cross_entropy(logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup):
+    return _VocabParallelCrossEntropy.apply(logits, target, group)
 
 
 def _apply_sampling_mask(
@@ -359,6 +400,20 @@ def _gather_true_on_policy_full_logits(
     return _prepare_true_on_policy_full_logits(full_logits, vocab_size=vocab_size)
 
 
+def true_on_policy_full_log_probs(
+    logits: torch.Tensor,
+    tp_group: dist.ProcessGroup | None,
+    *,
+    vocab_size: int | None = None,
+    sampling_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """``[R, V]`` full-vocabulary log-probs, computed exactly as the true-on-policy scoring computes them."""
+    full_logits = _gather_true_on_policy_full_logits(
+        _apply_sampling_mask(logits, sampling_mask), tp_group, vocab_size=vocab_size
+    )
+    return torch.log_softmax(full_logits, dim=-1)
+
+
 def _split_replicated_loss_gather_grad(
     grad_output: torch.Tensor,
     *,
@@ -399,12 +454,10 @@ class _ReplicatedLossAllGatherLastDim(torch.autograd.Function):
         if world_size == 1:
             return input_.contiguous()
 
-        from megatron.core.tensor_parallel.mappings import dist_all_gather_func
-
         gather_shape = list(input_.shape)
         gather_shape[0] *= world_size
         gathered = torch.empty(gather_shape, dtype=input_.dtype, device=input_.device)
-        dist_all_gather_func(gathered, input_.contiguous(), group=group)
+        dist.all_gather_into_tensor(gathered, input_.contiguous(), group=group)
         return torch.cat(gathered.chunk(world_size, dim=0), dim=-1).contiguous()
 
     @staticmethod

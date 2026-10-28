@@ -1,7 +1,7 @@
 import os
 
 from examples.lora.run_qwen3_lora_native import ScriptArgs, _prepare_download, _train
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 # Smoke test for the native (raw-mode) LoRA plugin on the dense-GQA reference
 # recipe. Qwen3-0.6B on 2 GPUs with TP2+SP is the cheapest end-to-end check and
@@ -12,6 +12,7 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(
     est_time=1500, suite="stage-c-2-gpu-h200", labels=["megatron", "model-scripts", "lora"], hardware=["hopper"]
 )
+register_rocm_ci(est_time=700, suite="nightly-stage-c-2-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
 
 def _args() -> ScriptArgs:
