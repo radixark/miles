@@ -24,11 +24,13 @@ def _leaves(optimizer) -> Iterator[torch.optim.Optimizer]:
     if optimizer is None:
         return
     for children in ("chained_optimizers", "sub_optimizers"):
-        if hasattr(optimizer, children):
-            for child in getattr(optimizer, children):
+        if hasattr(optimizer, children):  # config-access-exempt: attribute selected at runtime from children
+            for child in getattr(
+                optimizer, children
+            ):  # config-access-exempt: attribute selected at runtime from children
                 yield from _leaves(child)
             return
-    if hasattr(optimizer, "optimizer"):
+    if hasattr(optimizer, "optimizer"):  # config-access-exempt: unwrap heterogeneous optimizer containers
         yield from _leaves(optimizer.optimizer)
     else:
         yield optimizer

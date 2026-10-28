@@ -70,6 +70,7 @@ def test_four_layer_rollout_tp_can_span_nodes():
 
 
 def test_checkpoint_paths_derive_from_the_model_name():
+    """Derive all checkpoint paths from the configured model name."""
     args = _four_layer(model_dir="/m")
     assert args.hf_checkpoint == "/m/Kimi-K3-4layer"
     assert args.bf16_checkpoint == "/m/Kimi-K3-4layer-bf16"

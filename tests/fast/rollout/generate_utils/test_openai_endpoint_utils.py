@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
+from miles.rollout.session.errors import OutputStoreContractError
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
     COMPUTED_FIELDS_V2,
@@ -28,7 +29,8 @@ from miles.rollout.session.samples.codec import (
     encode_samples,
 )
 from miles.rollout.session.types import SessionServerInstance
-from miles.utils.http_utils import post_buffer_no_retry
+from miles.utils.http_utils import PostStatusError, post_buffer_no_retry
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import Sample
 
 
@@ -70,6 +72,7 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch, cr
     args = SimpleNamespace(
         session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345", instance_id="server-instance-123")],
         use_sampling_support_replay=expected_payload.get("top_p", 1.0) < 1.0 or expected_payload.get("top_k", -1) > 0,
+        use_session_server=False,
         rollout_temperature=expected_payload.get("temperature", 1.0),
         rollout_top_p=expected_payload.get("top_p", 1.0),
         rollout_top_k=expected_payload.get("top_k", -1),
@@ -93,6 +96,8 @@ async def test_create_without_instance_id_on_args(monkeypatch):
     args = SimpleNamespace(
         session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
         use_sampling_support_replay=False,
+        use_session_server=False,
+        rollout_temperature=1.0,
     )
     tracer = await OpenAIEndpointTracer.create(args)
 
@@ -123,6 +128,8 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
     args = SimpleNamespace(
         session_server_instances=[SessionServerInstance(addr=f"127.0.0.1:{port}") for port in ports],
         use_sampling_support_replay=False,
+        use_session_server=False,
+        rollout_temperature=1.0,
     )
 
     chosen_ports = set()
@@ -167,6 +174,8 @@ class TestOpenAIEndpointTracerCreate:
                 SessionServerInstance(addr="10.0.0.2:5005", instance_id="instance-b"),
             ],
             use_sampling_support_replay=False,
+            use_session_server=False,
+            rollout_temperature=1.0,
         )
         tracer = await OpenAIEndpointTracer.create(args)
 
@@ -202,6 +211,8 @@ class TestOpenAIEndpointTracerCreate:
             SimpleNamespace(
                 session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
                 use_sampling_support_replay=False,
+                use_session_server=False,
+                rollout_temperature=1.0,
             ),
             extra_key=extra_key,
         )
@@ -229,6 +240,8 @@ class TestOpenAIEndpointTracerCreate:
                 SessionServerInstance(addr="10.0.0.2:5005", external_addr="100.64.0.2:5005"),
             ],
             use_sampling_support_replay=False,
+            use_session_server=False,
+            rollout_temperature=1.0,
         )
         tracer = await OpenAIEndpointTracer.create(args)
 
@@ -249,6 +262,8 @@ class TestOpenAIEndpointTracerCreate:
         args = SimpleNamespace(
             session_server_instances=[SessionServerInstance(addr="10.0.0.1:5005")],
             use_sampling_support_replay=False,
+            use_session_server=False,
+            rollout_temperature=1.0,
         )
         tracer = await OpenAIEndpointTracer.create(args)
 
@@ -256,10 +271,10 @@ class TestOpenAIEndpointTracerCreate:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "instances_kwargs", [{}, {"session_server_instances": None}, {"session_server_instances": []}]
+        "instances_kwargs", [{"session_server_instances": None}, {"session_server_instances": []}]
     )
     async def test_create_without_session_server_instances_raises_before_post(self, monkeypatch, instances_kwargs):
-        """create() raises a RuntimeError pointing at --use-session-server and issues no HTTP request when session_server_instances is absent, null or empty."""
+        """create() raises a RuntimeError pointing at --use-session-server and issues no HTTP request when session_server_instances is null or empty."""
         posted: list[str] = []
 
         async def fake_post(url: str, payload: dict, action: str = "post"):
@@ -285,6 +300,7 @@ class TestOpenAIEndpointTracerCreate:
         args = SimpleNamespace(
             session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
             use_sampling_support_replay=True,
+            use_session_server=False,
             rollout_temperature=1.0,
             rollout_top_p=0.95,
             rollout_top_k=32,
@@ -384,11 +400,18 @@ async def test_collect_samples_decoding_does_not_block_event_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_collect_samples_non_2xx_raises_with_body_and_still_deletes(monkeypatch):
-    calls = _CollectCalls(monkeypatch, post_outcome=RuntimeError("422: trim_count 2 exceeds allowed=1"))
-    with pytest.raises(RuntimeError, match="trim_count 2 exceeds allowed=1"):
+@pytest.mark.parametrize(
+    ("status", "expected_error"),
+    [(422, PostStatusError), (OutputStoreContractError.status_code, StorePlanError)],
+    ids=["assembly-error", "store-contract"],
+)
+async def test_collect_samples_non_2xx_raises_with_body_and_still_deletes(monkeypatch, status, expected_error):
+    """A broken store contract comes back as StorePlanError, which stops the rollout; other errors cost the sample."""
+    url = "http://127.0.0.1:12345/sessions/sid-1/samples"
+    calls = _CollectCalls(monkeypatch, post_outcome=PostStatusError(url, status, "trim_count 2 exceeds allowed=1"))
+    with pytest.raises(expected_error, match="trim_count 2 exceeds allowed=1"):
         await _tracer().collect_samples(Sample(), max_seq_len=7)
-    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1?samples_received=false"
 
 
 @pytest.mark.asyncio
@@ -398,7 +421,16 @@ async def test_collect_samples_timeout_raises_and_still_deletes(monkeypatch):
     calls = _CollectCalls(monkeypatch, post_outcome=asyncio.TimeoutError())
     with pytest.raises(asyncio.TimeoutError):
         await _tracer().collect_samples(Sample(), max_seq_len=7)
-    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+    # The server may have built the reply; without it, the session deletes what it handed over too.
+    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1?samples_received=false"
+
+
+@pytest.mark.asyncio
+async def test_collect_samples_undecodable_reply_counts_as_not_received(monkeypatch):
+    calls = _CollectCalls(monkeypatch, post_outcome=b"not a samples reply")
+    with pytest.raises(ValueError):
+        await _tracer().collect_samples(Sample(), max_seq_len=7)
+    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1?samples_received=false"
 
 
 @pytest.mark.asyncio
@@ -505,8 +537,9 @@ _ERROR_BODY = b"cursor 3 != len(accumulated_token_ids) 4"
 )
 async def test_post_buffer_no_retry_does_not_retry_and_carries_body(reply):
     async with _ReplyServer(reply) as server:
-        with pytest.raises(RuntimeError, match="422.*cursor 3"):
+        with pytest.raises(PostStatusError, match="422.*cursor 3") as raised:
             await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert (raised.value.status, raised.value.body) == (422, _ERROR_BODY.decode())
     assert len(server.requests) == 1
 
 

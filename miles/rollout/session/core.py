@@ -5,7 +5,7 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 - `chat_completions` omits choice `meta_info` from client replies, and choice `logprobs` unless the client's request asked for them, without modifying the stored response; `SessionRecord` retains both for sample collection and `GET /sessions/{id}`.
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
-- ``collect_samples`` captures committed session state, then assembles and encodes it off the event loop; deterministic assembly failures return 422 with the assertion text.
+- ``collect_samples`` captures committed session state, then assembles and encodes it off the event loop; deterministic assembly failures return 422 with the assertion text, and a broken output store contract raises ``OutputStoreContractError`` (424).
 """
 
 import asyncio
@@ -22,6 +22,7 @@ from starlette.responses import Response
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
+    OutputStoreContractError,
     SessionNotFoundError,
     TokenizationError,
     UpstreamGenerationAbortedError,
@@ -31,11 +32,14 @@ from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionReg
 from miles.rollout.session.request_args import ClientResponseIntent, filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.samples.merge import (
+    adopt_session_records,
     compute_samples_from_openai_records,
     merge_samples_with_addition_r3,
     truncate_samples_by_total_tokens,
 )
+from miles.rollout.session.store_refs import response_store_ref
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.utils.output_store.plan import StorePlanError
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +212,7 @@ class SessionCore:
         session_server_instance_id=None,
         *,
         use_addition_r3=False,
+        output_store=None,
     ):
         self.backend = backend
         self.registry = registry
@@ -218,6 +223,38 @@ class SessionCore:
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
+        # The output store client deleting what this server's sessions did not hand over; None without one.
+        self._output_store = output_store
+
+    async def _take_store_ref(self, session, request_body: dict, result: dict) -> None:
+        """Record the output store ref of a proxied response before anything can drop the response."""
+        try:
+            ref = response_store_ref(request_body, result)
+        except StorePlanError as exc:
+            # The agent may swallow this turn's error, so the session's /samples fails with it too.
+            session.store_refs.contract_error = str(exc)
+            raise OutputStoreContractError(str(exc)) from exc
+        if ref is None:
+            return
+        if session.closing:
+            # DELETE has taken, or is taking, this session's refs; nobody else will see this one.
+            await self._delete_store_refs([ref])
+        else:
+            session.store_refs.arrived[ref.key] = ref
+
+    async def _delete_store_refs(self, refs: list) -> None:
+        if not refs:
+            return
+        if self._output_store is None:
+            raise StorePlanError(
+                f"{len(refs)} output store refs to delete, but the session server has no store client"
+            )
+        try:
+            # Off the loop: deletion is a blocking Mooncake call.
+            await asyncio.to_thread(self._output_store.delete_many, refs)
+        except Exception:
+            # The session is already gone, so failing the request would only make the client retry into 404s.
+            logger.exception("Failed to delete %d output store refs; their objects stay in Mooncake", len(refs))
 
     async def close(self) -> None:
         await asyncio.to_thread(self._sample_executor.shutdown, wait=True, cancel_futures=True)
@@ -286,12 +323,15 @@ class SessionCore:
     async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
         """Assemble training Samples from this session's records.
 
-        Validation failures return 422; unexpected errors propagate.
+        Validation failures return 422; a broken output store contract raises ``OutputStoreContractError``;
+        unexpected errors propagate.
         """
         session = self.registry.get_session(session_id)
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            if session.store_refs.contract_error is not None:
+                raise OutputStoreContractError(session.store_refs.contract_error)
             snapshot = session.snapshot()
         return await asyncio.get_running_loop().run_in_executor(
             self._sample_executor, partial(self._collect_samples, session_id, snapshot, max_seq_len=max_seq_len)
@@ -323,11 +363,22 @@ class SessionCore:
                 samples = [merge_samples_with_addition_r3(self.config, samples, session.records, tokenizer)]
             else:
                 samples = [merge_samples(samples, tokenizer)]
+            adopt_session_records(samples[0], session.records)
+        except StorePlanError as exc:
+            # Not a 422: the rollout raises it again and stops, as it does for one from /generate.
+            raise OutputStoreContractError(str(exc)) from exc
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
-        return _samples_response(encode_samples(samples, metadata, fields=fields))
+        response = _samples_response(encode_samples(samples, metadata, fields=fields))
+        session.store_refs.hand_over(samples)
+        return response
 
-    async def delete_session(self, session_id: str) -> Response:
+    async def delete_session(self, session_id: str, *, samples_received: bool = True) -> Response:
+        """Drop the session and delete the output store objects its client does not hold.
+
+        ``samples_received=False`` is the client reporting it never got a ``/samples`` reply, so even
+        the refs a reply handed over are deleted.
+        """
         session = self.registry.get_session(session_id)
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
@@ -338,6 +389,7 @@ class SessionCore:
             self.registry.remove_session(session_id)
         finally:
             session.lock.release()
+        await self._delete_store_refs(session.store_refs.kept_by_session(samples_received=samples_received))
         return Response(status_code=204)
 
     async def chat_completions(
@@ -387,6 +439,7 @@ class SessionCore:
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
         )
+        await self._take_store_ref(session, request_body, result)
 
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the
         # agent can retry or handle the error.

@@ -49,4 +49,5 @@ def fsdp_debug_actor() -> actor_module.FSDPTrainRayActor:
     actor = object.__new__(actor_module.FSDPTrainRayActor)
     actor._heartbeat = SimpleHeartbeat()
     actor._init_once = InitOnce(type(actor).__name__)
+    actor._config_snapshot_train_recorded = True
     return actor
