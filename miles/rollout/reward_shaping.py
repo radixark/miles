@@ -6,9 +6,14 @@ from argparse import Namespace
 from miles.utils.types import Sample
 
 
+def is_correct_reward(reward: float) -> bool:
+    """Only an exact raw reward of one denotes a correct trajectory."""
+    return reward == 1.0
+
+
 def validate_length_penalty_args(args: Namespace) -> None:
-    coeff = getattr(args, "length_penalty_coeff", 0.0)
-    minimum = getattr(args, "length_penalty_min_tokens", 1)
+    coeff = args.length_penalty_coeff
+    minimum = args.length_penalty_min_tokens
     if not math.isfinite(coeff) or coeff < 0:
         raise ValueError("--length-penalty-coeff must be finite and non-negative")
     if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 1:
@@ -64,10 +69,10 @@ def apply_length_penalty(
     prompt_groups: list[list[int]],
 ) -> list[float]:
     """Shape correct rollout rewards without mutating samples or raw rewards."""
-    coeff = getattr(args, "length_penalty_coeff", 0.0)
+    coeff = args.length_penalty_coeff
     if coeff == 0:
         return rewards
-    minimum = getattr(args, "length_penalty_min_tokens", 1)
+    minimum = args.length_penalty_min_tokens
     shaped = list(rewards)
     for rows in prompt_groups:
         correct: list[tuple[list[int], int]] = []
@@ -75,7 +80,7 @@ def apply_length_penalty(
             reward = rewards[siblings[0]]
             if any(rewards[row] != reward for row in siblings[1:]):
                 raise ValueError("all samples in a rollout must share one reward")
-            if reward == 1.0:
+            if is_correct_reward(reward):
                 length = sum(
                     sample.effective_response_length for row in siblings if not (sample := samples[row]).remove_sample
                 )
