@@ -4,7 +4,10 @@ import abc
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from miles.utils.workers.cell_handle import BaseCellHandle
 
 logger = logging.getLogger(__name__)
 
@@ -41,3 +44,8 @@ class BaseWorkerHandle(abc.ABC):
 
     @abc.abstractmethod
     async def probe_is_dead(self) -> bool: ...
+
+    def cell_handle_with(self, cell_worker_handles: list[BaseWorkerHandle]) -> BaseCellHandle | None:
+        """A handle that reaches all of ``cell_worker_handles``, this one among them, in one call of the transport's
+        own; None where it has none."""
+        return None

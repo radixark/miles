@@ -248,6 +248,9 @@ class _BarrierWorkerHandle:
     def __init__(self, barrier: _EntryBarrier) -> None:
         self._barrier = barrier
 
+    def cell_handle_with(self, cell_worker_handles: list) -> None:
+        return None
+
     async def train(self, **_kwargs) -> str:
         await self._barrier.enter()
         return "done"
@@ -421,6 +424,9 @@ class _HangingWorkerHandle:
         self._released = released
         self.killed = False
 
+    def cell_handle_with(self, cell_worker_handles: list) -> None:
+        return None
+
     async def update_weights(self, **_kwargs) -> str:
         await self._released.wait()
         return "done"
@@ -435,6 +441,9 @@ class _HangingWorkerHandle:
 class _SlowWorkerHandle:
     def __init__(self, delay: float) -> None:
         self._delay = delay
+
+    def cell_handle_with(self, cell_worker_handles: list) -> None:
+        return None
 
     async def update_weights(self, **_kwargs) -> str:
         await asyncio.sleep(self._delay)
