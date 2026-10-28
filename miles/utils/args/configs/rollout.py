@@ -332,6 +332,18 @@ class RolloutRelatedConfig(BaseConfig):
         float,
         Arg(help="Seconds the trainer controller waits for one trainer cell's update_weights before giving it up."),
     ] = 600.0
+    p2p_transport: A[
+        str,
+        Arg(
+            type_parser=None,
+            choices=["mooncake", "nixl"],
+            help=(
+                "What a P2P weight update writes over. The rollout engines must publish their weights for it: "
+                "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine for mooncake, "
+                "--sglang-remote-instance-weight-loader-start-seed-via-nixl for nixl."
+            ),
+        ),
+    ] = "mooncake"
 
 
 class RolloutRelatedRolloutOnlyConfig(BaseConfig):
