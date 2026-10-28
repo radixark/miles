@@ -19,6 +19,7 @@ from miles.backends.training_utils.loss.hub.math_utils import (
     compute_opsm_mask,
     compute_policy_loss,
 )
+from miles.backends.training_utils.loss.hub.opd import apply_opd_kl_to_advantages, is_opd_formed_in_policy_loss
 from miles.backends.training_utils.loss.hub.score_centering_loss import score_centering_loss_function
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.args.custom_view import compute_custom_function_config
@@ -139,6 +140,15 @@ def policy_loss_function(
         old_log_probs = rollout_old_log_probs
     else:
         old_log_probs = trainer_scored_log_probs
+    if is_opd_formed_in_policy_loss(args):
+        # pi_old is first known here, so the OPD term joins the advantages now
+        opd_data = {"teacher_log_probs": batch.get("teacher_log_probs")}
+        apply_opd_kl_to_advantages(
+            args=args, rollout_data=opd_data, advantages=advantages_list, student_log_probs=trainer_scored_log_probs
+        )
+        advantages = torch.cat(advantages_list, dim=0)
+        # a copy, so a recomputed loss sees the caller's batch unchanged; the OPD metric below reads it
+        batch = {**batch, "opd_reverse_kl": opd_data["opd_reverse_kl"]}
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
 

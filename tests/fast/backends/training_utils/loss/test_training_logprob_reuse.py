@@ -134,6 +134,90 @@ def test_reused_training_log_probs_match_an_explicit_detached_baseline(
     assert reuse_metrics["pg_clipfrac"].item() == 0.0
 
 
+def _opd_policy_loss(args, inputs, teacher_log_probs, *, skip_actor_forward_only):
+    """Advantages from compute_advantages_and_returns, then the policy loss, as one training step runs them.
+
+    The two-pass path gives both the forward-only pass's log-probs (detached scores of the same weights). The
+    skip path gives neither, so the loss must form the OPD term from its own detached log-probs.
+    """
+    args.skip_actor_forward_only = skip_actor_forward_only
+    rollout_data = make_rollout_data(inputs)
+    del rollout_data["values"]
+    rollout_data["teacher_log_probs"] = deep_clone(teacher_log_probs)
+    if skip_actor_forward_only:
+        del rollout_data["log_probs"]
+    else:
+        rollout_data["log_probs"] = [
+            log_prob.detach()
+            for log_prob in get_log_probs_and_entropy(
+                deep_clone(inputs["policy_logits"]),
+                args=args,
+                unconcat_tokens=deep_clone(inputs["unconcat_tokens"]),
+                total_lengths=list(inputs["total_lens"]),
+                response_lengths=list(inputs["response_lens"]),
+                with_entropy=False,
+            )["log_probs"]
+        ]
+    compute_advantages_and_returns(args, rollout_data)
+
+    batch = make_batch(inputs, "policy_loss")
+    # the keys the Megatron train step's get_batch forwards
+    for key in ("log_probs", "advantages", "teacher_log_probs", "opd_reverse_kl"):
+        batch[key] = rollout_data.get(key)
+    return _run_policy_loss(args, batch, inputs, skip_actor_forward_only=skip_actor_forward_only)
+
+
+@pytest.mark.parametrize(
+    ("advantage_estimator", "use_opsm"),
+    [
+        ("grpo", False),
+        ("gspo", False),
+        ("grpo", True),
+    ],
+)
+def test_sampled_token_opd_without_the_actor_forward_matches_the_two_pass_path(
+    process_group, advantage_estimator, use_opsm
+):
+    parallel_state = make_parallel_state()
+    parallel_state.tp = GroupInfo(rank=0, size=1, group=dist.group.WORLD)
+    args = make_args(
+        advantage_estimator=advantage_estimator,
+        entropy_coef=0.0,
+        kl_coef=0.0,
+        observe_training_entropy=False,
+        opd_kl_coef=0.7,
+        opd_type="sglang",
+        true_on_policy_mode=False,
+        use_opd=True,
+        use_opsm=use_opsm,
+    )
+    inputs = make_inputs(
+        seed=4321,
+        batch_size=3,
+        prompt_lens=[20, 64, 40],
+        response_lens=[10, 48, 32],
+        vocab_size=128,
+        args=args,
+    )
+    generator = torch.Generator().manual_seed(7)
+    teacher_log_probs = [torch.randn(length, generator=generator) - 3 for length in inputs["response_lens"]]
+
+    skip_loss, skip_metrics, skip_grad = _opd_policy_loss(
+        args, inputs, teacher_log_probs, skip_actor_forward_only=True
+    )
+    two_pass_loss, two_pass_metrics, two_pass_grad = _opd_policy_loss(
+        args, inputs, teacher_log_probs, skip_actor_forward_only=False
+    )
+
+    assert torch.equal(skip_loss, two_pass_loss)
+    assert torch.equal(skip_grad, two_pass_grad)
+    assert skip_metrics.keys() == two_pass_metrics.keys()
+    for key in skip_metrics:
+        assert torch.equal(skip_metrics[key], two_pass_metrics[key]), key
+    assert skip_metrics["opd_reverse_kl"].item() != 0.0
+    assert torch.count_nonzero(skip_grad).item() > 0
+
+
 def test_skip_actor_forward_only_preserves_rollout_log_probs_as_old_policy(process_group):
     parallel_state = make_parallel_state()
     parallel_state.tp = GroupInfo(rank=0, size=1, group=dist.group.WORLD)

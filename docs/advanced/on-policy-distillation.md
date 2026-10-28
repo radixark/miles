@@ -132,6 +132,12 @@ The teacher model is loaded directly into Megatron via `--opd-teacher-load`. Tea
 
 > **Note**: The teacher checkpoint must be in Megatron format (`torch_dist` or `torch`). You can convert from HuggingFace format using `tools/convert_hf_to_torch_dist.py`.
 
+## Skipping the Old-Policy Forward Pass
+
+The sampled-token OPD advantage is `teacher_logp - old_logp`, so by default the actor runs a forward-only pass over every trained token before the step. With one optimizer step per rollout (`--global-batch-size` equal to rollout batch size x `--n-samples-per-prompt`), `--skip-actor-forward-only` drops that pass: the detached log-probs of the training forward are the old-policy log-probs, and the policy loss adds the OPD term from them. Loss and gradients match the two-pass path.
+
+This covers `--opd-log-prob-top-k 0` with either teacher mode. It cannot be combined with `--normalize-advantages` or `--rollout-data-postprocess-path`, which act on the rollout-wide advantages before the loss adds the OPD term. The rollout-wide `advantages` metric excludes the OPD term; `opd_reverse_kl` is still logged by the loss. With `--use-rollout-logprobs` the OPD baseline is the rollout log-probs, and the actor forward-only pass runs only for `--get-mismatch-metrics`.
+
 ## Running the Examples
 
 Complete example scripts are provided in `examples/on_policy_distillation/`:

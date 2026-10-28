@@ -201,7 +201,9 @@ class AlgoConfig(BaseConfig):
                 "probs remain the old-policy baseline; otherwise detached training log-probs are reused and the"
                 " actor importance log-ratio is exactly 0. This requires a single optimizer step. The skipped "
                 "pass's rollout/log_probs metric is not emitted. Custom model providers and the before-train-"
-                "step hook must not make the training forward differ from the skipped forward."
+                "step hook must not make the training forward differ from the skipped forward. With --use-opd and"
+                " no --use-rollout-logprobs (sampled-token OPD, no --normalize-advantages), the policy loss adds"
+                " the OPD term from the detached training log-probs, so the logged advantages exclude it."
             )
         ),
     ] = False
