@@ -148,7 +148,8 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3
 # (<name>.cu -> <name>.hip, headers -> <name>_hip.<ext>) as untracked files. The checkout below aborts as
 # soon as one of them sits where the new revision tracks a real file, so drop them first. Keep this off
 # ignored files (-x): those include the compiled rust extension and _version.py that the editable sglang
-# install in this image depends on.
+# install in this image depends on. radix_transfer_plugins, the output store package SGLang imports, sits
+# beside python/ in the same checkout, as in the CUDA image.
 RUN cd /sgl-workspace/sglang && \
     git reset --hard && \
     git clean -fd && \
@@ -158,7 +159,9 @@ RUN cd /sgl-workspace/sglang && \
     else \
       git checkout FETCH_HEAD; \
     fi && \
-    pip install -e "python[all_hip]" --no-deps
+    pip install -e "python[all_hip]" --no-deps && \
+    pip install -e radix_transfer_plugins --no-deps && \
+    python3 -c "import radix_transfer_plugins.stashes.token_output"
 
 # SGLang is installed without dependencies, but its Inkling multimodal processor imports numba.
 RUN pip install "numba==0.65.1"

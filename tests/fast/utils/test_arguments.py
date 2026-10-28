@@ -1071,6 +1071,13 @@ class TestClusterBackend:
         with pytest.raises(AssertionError, match="--use-distributed-post"):
             miles_validate_args(args)
 
+    def test_refuses_a_kubernetes_run_that_uses_the_output_store(self):
+        """Its launcher renders engine commands before it points Mooncake at the in-cluster master."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1", "--use-output-store"])
+
+        with pytest.raises(AssertionError, match="--use-output-store"):
+            miles_validate_args(args)
+
     def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path) -> None:
         """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
         from transformers import Qwen3Config
@@ -2075,6 +2082,43 @@ def test_stream_optimizer_state_to_disk_rejects_reading_grads_outside_the_step(m
     args.optimizer = "adam"
     args.use_distributed_optimizer = True
     args.fp16, args.loss_scale, args.log_num_zeros_in_grad = False, None, False
+    vars(args).update(megatron_args)
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(AssertionError, match=match):
+        miles_validate_args(args)
+
+
+@pytest.mark.parametrize(
+    ("extra", "megatron_args", "match"),
+    [
+        (["--stream-optimizer-state-page-cache-mb", "1024"], {}, "needs --stream-optimizer-state-to-disk"),
+        (
+            ["--stream-optimizer-state-to-disk", "--stream-optimizer-state-page-cache-mb", "1024"],
+            {"train_backend": "torchtitan"},
+            "not supported on other backends",
+        ),
+        (
+            ["--stream-optimizer-state-to-disk", "--stream-optimizer-state-page-cache-mb", "-1"],
+            {"optimizer": "adam"},
+            "must be >= 0",
+        ),
+        (
+            ["--stream-optimizer-state-to-disk", "--stream-optimizer-state-page-cache-mb", "1024"],
+            {
+                "optimizer": "dist_muon",
+                "chunked_optimizer_state_offload": True,
+                "optimizer_state_offload_fraction": 1.0,
+            },
+            "caps the Adam bucket store",
+        ),
+    ],
+)
+def test_stream_optimizer_state_page_cache_mb_reaches_only_the_adam_store(extra, megatron_args, match):
+    """The cap is read only by the Adam bucket store, so anything else would make it a silent no-op."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
     vars(args).update(megatron_args)
     _set_megatron_parallel_sizes(args)
 
