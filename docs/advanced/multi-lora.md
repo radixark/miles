@@ -86,17 +86,9 @@ documents failure handling.
 
 ## Supported models
 
-Multi-LoRA is not tied to a model list. It runs on any model that has
-[Megatron-Bridge LoRA](/advanced/lora#lora-training-implementations) support, passes the
-multi-LoRA constraints below, and whose architecture SGLang can serve LoRA for.
-Models with only [native LoRA](/advanced/lora#native-lora) support train a single
-adapter today.
-
-This list comes from the multi-LoRA correctness tracking in
-[#3284](https://github.com/radixark/miles/issues/3284). Each model was checked for
-train/inference log-prob parity: trained adapters on several tenants, comparing
-Megatron and SGLang log-probs on the same tokens. These are short parity
-checks, not convergence runs.
+Multi-LoRA runs on models with [Megatron-Bridge LoRA](/advanced/lora#lora-training-implementations)
+support that SGLang can serve LoRA for, within the constraints below. Models with only
+[native LoRA](/advanced/lora#native-lora) support train a single adapter today.
 
 | Model | Launcher / CI |
 |---|---|
@@ -111,9 +103,6 @@ checks, not convergence runs.
 | Kimi K2.5 | |
 | GLM-4.5-Air | |
 | GPT-OSS-20B / 120B | |
-
-Other Bridge models (for example Llama, Qwen3-Next, DeepSeek-V3, Kimi K2,
-full-size GLM-5.x and GLM-4.7-Flash) have not been tested with multi-LoRA.
 
 In review:
 
