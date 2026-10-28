@@ -207,7 +207,9 @@ def test_the_payload_survives_sglangs_cuda_only_tensor_reducer(monkeypatch):
     def cuda_only_reducer(tensor):
         raise IndexError("tuple index out of range")
 
-    monkeypatch.setattr(reductions, "_reduce_tensor_original", reductions.reduce_tensor, raising=False)
+    # an earlier test may have installed sglang's patch, which already saved torch's reducer there
+    if not hasattr(reductions, "_reduce_tensor_original"):
+        monkeypatch.setattr(reductions, "_reduce_tensor_original", reductions.reduce_tensor, raising=False)
     monkeypatch.setitem(ForkingPickler._extra_reducers, torch.Tensor, cuda_only_reducer)
     protocol = _protocol(replica_rank=0, replica_size=1, tp_sizes=[1])
     _publish(protocol)
