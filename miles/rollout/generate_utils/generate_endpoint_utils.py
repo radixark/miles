@@ -2,6 +2,7 @@
 Utils to integrate SGLang's `/generate` endpoint with RL things like Sample.
 """
 
+import logging
 from copy import deepcopy
 from typing import Any
 
@@ -28,6 +29,42 @@ from miles.utils.output_store.plan import (
 )
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
+
+logger = logging.getLogger(__name__)
+
+
+def split_output_token_logprobs(sample: Sample, meta_info: dict) -> tuple[list[int], list[float]]:
+    """Split SGLang ``output_token_logprobs`` into token ids and log-probs.
+
+    SGLang types each log-prob as ``Optional[float]``. A null value cannot be
+    trained on, so it is replaced by 0.0 and the whole sample is excluded from
+    the loss via ``remove_sample``.
+    """
+    items = meta_info.get("output_token_logprobs") or []
+    token_ids = [item[1] for item in items]
+    log_probs = [item[0] for item in items]
+    null_positions = [i for i, value in enumerate(log_probs) if value is None]
+    if null_positions:
+        logger.warning(
+            "SGLang returned null output log-probs: sample_index=%s group_index=%s "
+            "null_positions=%s (first 16 of %d) prior_response_length=%d new_tokens=%d "
+            "finish_reason=%s prompt_tokens=%s completion_tokens=%s weight_version=%s; "
+            "the sample is excluded from the loss",
+            sample.index,
+            sample.group_index,
+            null_positions[:16],
+            len(null_positions),
+            sample.response_length,
+            len(token_ids),
+            meta_info.get("finish_reason"),
+            meta_info.get("prompt_tokens"),
+            meta_info.get("completion_tokens"),
+            meta_info.get("weight_version"),
+        )
+        log_probs = [0.0 if value is None else value for value in log_probs]
+        sample.remove_sample = True
+        sample.metadata["null_rollout_log_prob_positions"] = [sample.response_length + i for i in null_positions]
+    return token_ids, log_probs
 
 
 # Make this an isolated function because users may want to compute their own
@@ -119,11 +156,7 @@ async def update_sample_from_response(
     if (len(sample.response) == 0) and not sample.tokens:
         sample.tokens = payload["input_ids"]
 
-    if x := output["meta_info"].get("output_token_logprobs"):
-        new_response_tokens = [item[1] for item in x]
-        new_response_log_probs = [item[0] for item in x]
-    else:
-        new_response_tokens, new_response_log_probs = [], []
+    new_response_tokens, new_response_log_probs = split_output_token_logprobs(sample, output["meta_info"])
 
     via_store = payload.get(OUTPUT_STORE_REQUEST_KEY, False)
     sampling_logprobs_mode = payload.get("sampling_logprobs_mode", "selected")

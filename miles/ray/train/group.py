@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 
 _RETRY_MAX_ATTEMPTS = 30
-_CELLS_READY_TIMEOUT_SECONDS = 3600.0
+_CELLS_READY_TIMEOUT_SECONDS = float(os.environ.get("MILES_CELLS_READY_TIMEOUT_SECONDS", 3600.0))
 
 
 def compute_trainer_health_checker_config(args: TrainerConfig) -> SimpleHealthCheckerConfig | None:

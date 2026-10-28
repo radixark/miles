@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 TICK_INTERVAL_SECONDS = 5.0
 CELL_TICK_TIMEOUT_SECONDS = 120.0
 CELLS_READY_POLL_INTERVAL_SECONDS = 2.0
-CELLS_READY_TIMEOUT_SECONDS = 3600.0
+CELLS_READY_TIMEOUT_SECONDS = float(os.environ.get("MILES_CELLS_READY_TIMEOUT_SECONDS", 3600.0))
 
 
 @enforce_lock_discipline

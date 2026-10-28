@@ -28,7 +28,7 @@ PRIMUS_CONFIG=${PRIMUS_CONFIG:-${MILES_DIR}/examples/primus/glm5.3-flash-bf16-rl
 
 TRAIN_NODES=${TRAIN_NODES:-4}
 ROLLOUT_NODES=${ROLLOUT_NODES:-2}
-RESPONSE_LEN=${ROLLOUT_MAX_RESPONSE_LEN:-8192}
+RESPONSE_LEN=${ROLLOUT_MAX_RESPONSE_LEN:-16384}
 PROMPT_LEN=${ROLLOUT_MAX_PROMPT_LEN:-2048}
 EVAL_RESPONSE_LEN=${EVAL_MAX_RESPONSE_LEN:-${RESPONSE_LEN}}
 SGLANG_CONTEXT_LEN=$(( RESPONSE_LEN + PROMPT_LEN ))
@@ -48,6 +48,8 @@ export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 # overwrites it with the trainer. Set 1 only when the engines cannot read the
 # checkpoint and should allocate from its config alone.
 export MILES_SGLANG_DUMMY_LOAD=${MILES_SGLANG_DUMMY_LOAD:-0}
+# NFS checkpoint loads take 25-90 min when many nodes read at once.
+export MILES_CELLS_READY_TIMEOUT_SECONDS=${MILES_CELLS_READY_TIMEOUT_SECONDS:-7200}
 
 export SGLANG_USE_AITER=1
 # rocm: TileLang DSA, AITER MoE, decode CUDA graphs. legacy: image SGLang, graphs off.
@@ -55,7 +57,16 @@ SGLANG_PROFILE=${SGLANG_PROFILE:-rocm}
 if [ "${SGLANG_PROFILE}" = rocm ]; then
   export AITER_ONLINE_TUNE=0 HIP_FORCE_DEV_KERNARG=1
   SGLANG_PROFILE_ARGS=(--sglang-dsa-prefill-backend tilelang --sglang-dsa-decode-backend tilelang
-    --sglang-moe-runner-backend aiter --sglang-cuda-graph-max-bs-decode 128)
+    --sglang-moe-runner-backend aiter --sglang-cuda-graph-max-bs-decode 128
+    # Match the trainer and the GB300 recipe. The model default is FP8 KV, which
+    # the DSA backends warn against and which widens the train/rollout logprob gap.
+    --sglang-kv-cache-dtype bfloat16
+    # AITER custom all-reduce (with FP8 weights) intermittently yields NaN logits in long decodes,
+    # which surface as token 0 with null logprobs. RCCL decodes at the same speed.
+    --sglang-disable-custom-all-reduce
+    # Every TP rank reads every shard; prefetch splits the shards across local ranks into the
+    # shared page cache so NFS serves the checkpoint once per node instead of once per rank.
+    --sglang-weight-loader-prefetch-checkpoints)
 else
   export SGLANG_OPT_DEEPGEMM_HC_PRENORM=0
   export SGLANG_OPT_USE_TILELANG_MHC_PRE=0
@@ -149,7 +160,7 @@ ray job submit --address="http://127.0.0.1:8265" \
   --rollout-max-response-len "${RESPONSE_LEN}" \
   --rollout-max-prompt-len "${PROMPT_LEN}" \
   --rollout-max-context-len "${SGLANG_CONTEXT_LEN}" \
-  --rollout-temperature 1.0 \
+  --rollout-temperature "${ROLLOUT_TEMPERATURE:-1.0}" \
   --eval-interval "${EVAL_INTERVAL:-10}" \
   --eval-prompt-data aime24 "${DATA_DIR}/aime-2024/aime-2024.jsonl" \
   --eval-input-key prompt \
@@ -173,6 +184,8 @@ ray job submit --address="http://127.0.0.1:8265" \
   --optimizer-cpu-offload \
   --overlap-cpu-optimizer-d2h-h2d \
   --use-precision-aware-optimizer \
+  --no-save-optim \
+  --no-load-optim \
   --tensor-model-parallel-size 1 \
   "${PP_ARGS[@]}" \
   "${SEQ_ARGS[@]}" \
@@ -191,7 +204,7 @@ ray job submit --address="http://127.0.0.1:8265" \
   --distributed-timeout-minutes "${DISTRIBUTED_TIMEOUT_MINUTES:-30}" \
   --rollout-num-gpus-per-engine 8 \
   --sglang-router-policy round_robin \
-  --sglang-mem-fraction-static 0.8 \
+  --sglang-mem-fraction-static 0.7 \
   "${CUDA_GRAPH_ARGS[@]}" \
   "${SGLANG_PROFILE_ARGS[@]}" \
   --sglang-disable-radix-cache \
