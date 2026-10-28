@@ -571,8 +571,12 @@ class TrainerController:
             "load_slot", slot=slot, rank=rank, alpha=alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
         )
 
-    async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> list:
-        return await self._execute_slots("save_slot", slot=slot, path=path, metadata=metadata)
+    async def save_slot(
+        self, slot: int, path: str, metadata: dict | None = None, include_optimizer: bool = True
+    ) -> list:
+        return await self._execute_slots(
+            "save_slot", slot=slot, path=path, metadata=metadata, include_optimizer=include_optimizer
+        )
 
     async def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> list:
         return await self._execute_slots(
