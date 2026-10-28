@@ -7,8 +7,10 @@ free slot."""
 from collections.abc import Sequence
 from pathlib import Path
 
+import torch
 from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.dict_utils import nested_values
+from megatron.core.dist_checkpointing.mapping import ShardedTensorFactory
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.utils import unwrap_model
 
@@ -50,12 +52,18 @@ def save_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, me
 def load_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
     checkpoint_dir = str(Path(path))
     weights = _slot_weights_sharded_state_dict(model, slot_optimizer.slot)
+    # dist_checkpointing.load fills plain sharded tensors in place, but a factory (e.g. the
+    # grouped-expert SwiGLU fc1 LoRA B) loads into temporaries that only the returned dict holds.
+    factory_params = {key: value.data for key, value in weights.items() if isinstance(value, ShardedTensorFactory)}
     shells = {_WEIGHTS_KEY: weights}
     if load_optimizer:
         shells[_OPTIM_KEY] = slot_optimizer.sharded_state(weights, is_loading=True)
     _canonicalize_slot_keys(shells, slot_optimizer.slot)
 
     loaded = dist_checkpointing.load(shells, checkpoint_dir)
+    with torch.no_grad():
+        for key, param in factory_params.items():
+            param.copy_(loaded[_WEIGHTS_KEY][key])
     if load_optimizer:
         slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
     else:
