@@ -3,7 +3,7 @@ single node.
 
 dapo-math-17k @ 4k response len, AIME-2024 eval @ 4k every 10 rollouts.
 
---fsdp-cpu-offload is on by default: fp32 master + Adam states for 30B params (~366GB) do not fit in
+--optimizer-cpu-offload is on by default: fp32 master + Adam states for 30B params (~366GB) do not fit in
 4x141GB HBM alongside activations; the optimizer runs on CPU (also disables offload_train internally,
 the two are mutually exclusive).
 
@@ -30,7 +30,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     data_dir: str = "/root"
     model_dir: str = "/root/models"
     wandb_project: str = "miles-fsdp-curve"
-    fsdp_cpu_offload: bool = True
+    optimizer_cpu_offload: bool = True
     extra_args: str = ""
 
 
@@ -114,7 +114,7 @@ def execute(args: ScriptArgs):
         "--gradient-checkpointing "
         "--attn-implementation flash_attention_3 "
         """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
-        f"{'--fsdp-cpu-offload ' if args.fsdp_cpu_offload else ''}"
+        f"{'--optimizer-cpu-offload ' if args.optimizer_cpu_offload else ''}"
     )
 
     perf_args = "--use-dynamic-batch-size --max-tokens-per-gpu 9216 "

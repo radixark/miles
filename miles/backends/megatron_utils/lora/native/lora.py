@@ -97,7 +97,9 @@ def _attach_layer(layer: nn.Module, arch_spec: LoRAArchSpec, context: AttachCont
     # the MLP layout applies to a dense MLP or an MLP-shaped shared expert, not to the MoE block itself
     mlp = layer.mlp
     wrapped += arch_spec.mlp.attach(mlp, layer, context)
-    shared = getattr(mlp, "shared_experts", None)  # absent on dense layers and MoEs without shared experts
+    shared = getattr(
+        mlp, "shared_experts", None
+    )  # absent on dense layers and MoEs without shared experts  # config-access-exempt: dense and MoE MLP modules expose different shared_experts structures
     if shared is not None:
         wrapped += arch_spec.mlp.attach(shared, layer, context)
     if arch_spec.experts is not None:
@@ -107,7 +109,9 @@ def _attach_layer(layer: nn.Module, arch_spec: LoRAArchSpec, context: AttachCont
 
 def _require_grad_on_first_activation(model) -> nn.Module | None:
     """Make a frozen embedding output require grad in training so recomputation enters each block."""
-    embedding = getattr(model, "embedding", None)
+    embedding = getattr(
+        model, "embedding", None
+    )  # config-access-exempt: only pipeline stages containing embeddings expose this module
     if embedding is None:
         return None
 

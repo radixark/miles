@@ -90,6 +90,19 @@ def validate_batch_payload(op: CommandOp, payload: dict, config: GatewayConfig) 
 
 def validate_sample_payload(payload: dict, config: GatewayConfig) -> None:
     validate_token_ids(payload["prompt_tokens"], config.vocab_size, "prompt")
+    max_tokens = payload["sampling_params"].get("max_tokens")
+    if type(max_tokens) is not int or max_tokens < 0:
+        raise UserInputError("sampling_params.max_tokens must be a nonnegative integer")
+    prompt_length = len(payload["prompt_tokens"])
+    # compute_logprobs scores a full sampled sequence with max_tokens=1; at the window it is clamped to 0
+    scoring = bool(payload.get("prompt_logprobs") or payload.get("topk_prompt_logprobs"))
+    if prompt_length > config.max_tokens_per_sample or (
+        max_tokens > 0 and prompt_length == config.max_tokens_per_sample and not scoring
+    ):
+        raise UserInputError(
+            f"prompt is too long: {prompt_length} prompt tokens leave no generation budget "
+            f"in the {config.max_tokens_per_sample}-token context window"
+        )
     num_samples = payload.get("num_samples", 1)
     if type(num_samples) is not int or not 1 <= num_samples <= config.max_samples_per_request:
         raise UserInputError(f"num_samples must be an integer in [1, {config.max_samples_per_request}]")

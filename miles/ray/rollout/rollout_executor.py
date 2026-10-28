@@ -19,6 +19,7 @@ from miles.ray.rollout.train_data_conversion import (
     convert_samples_to_train_data,
     split_train_data_by_dp,
 )
+from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
@@ -29,6 +30,9 @@ from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import object_store
+from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.custom_view import ImmutableNamespace, compute_custom_function_config
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.async_utils import maybe_await
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -44,6 +48,9 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
+from miles.utils.output_store.config import connect_output_store, output_store_backend_config, sweep_output_store
+from miles.utils.output_store.dropped import store_refs_of, take_dropped_refs
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.simple_checkpointer import atomic_save_folder
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
@@ -89,22 +96,31 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
         self._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=args)
+        # Output store refs of each rollout's trained and dropped samples, deleted once it has trained.
+        # Every rollout get() began is here until its release, so one left at dispose was never trained.
+        self._unreleased_store_refs: dict[int, dict[str, Any]] = {}
+        self._delete_store_refs = None
 
     @init_once
     async def init(self) -> None:
         args = self.args
-        if not args.debug_train_only or args.eval_num_gpus > 0:
+        if args.starts_inference_engines:
             await resolve_router_addrs(args, router_providers=self._router_providers)
             await wait_session_server_ready(args, provider=self._session_server_provider)
+        await self._refresh_inference_runtime_mut_state()
 
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
+        if args.use_output_store:
+            store = connect_output_store(output_store_backend_config(args))
+            self._delete_store_refs = store.delete_many
 
         init_http_client(args)
 
         data_source_cls = load_function(self.args.data_source_path)
-        self.data_source = data_source_cls(args)
+        fn_args = compute_custom_function_config(args, self.args.data_source_path)
+        self.data_source = data_source_cls(fn_args)
         SampleOwnershipRecorder.install(
             args=args,
             data_source=self.data_source,
@@ -117,14 +133,17 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 self.generate_rollout = None
                 self.eval_generate_rollout = None
             else:
-                input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
-                self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
+                fn_args = _compute_rollout_function_config(args, self.args.rollout_function_path)
+                rollout_input = RolloutFnConstructorInput(args=fn_args, data_source=self.data_source)
+                self.generate_rollout = load_rollout_function(rollout_input, self.args.rollout_function_path)
                 if self.args.eval_function_path == self.args.rollout_function_path:
                     # Reuse the instance so train and eval share one state (and stateful
                     # rollout fns like FullyAsyncRolloutFn are not constructed twice).
                     self.eval_generate_rollout = self.generate_rollout
                 else:
-                    self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
+                    fn_args = _compute_rollout_function_config(args, self.args.eval_function_path)
+                    eval_input = RolloutFnConstructorInput(args=fn_args, data_source=self.data_source)
+                    self.eval_generate_rollout = load_rollout_function(eval_input, self.args.eval_function_path)
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
@@ -155,7 +174,9 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
 
         if not self.use_legacy_rollout_v1 and self.generate_rollout is not None:
             await maybe_await(self.generate_rollout.dispose())
-        if (close := getattr(self.data_source, "close", None)) is not None:
+        if (
+            close := getattr(self.data_source, "close", None)
+        ) is not None:  # config-access-exempt: custom data sources may omit this lifecycle method
             close()
         event_analyzer.run_sample_ownership_analysis(args=self.args)
         event_analyzer.run_analysis_from_args(self.args)
@@ -163,12 +184,38 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             self._metric_checker.dispose()
         if isinstance(self.eval_generate_rollout, CheckpointEvalFn):
             await maybe_await(self.eval_generate_rollout.dispose())
+        # Last, so a failed CI check raises after the rest of this dispose; only once init reached the store.
+        if self._delete_store_refs is not None:
+            await asyncio.to_thread(self._sweep_output_store)
+
+    def _sweep_output_store(self) -> None:
+        """Remove what the run left in the output store, which nothing reads once it ends."""
+        # Only a run that trained every rollout it generated answers to CI: one that stopped early (a crash, a debug
+        # exit) still holds that rollout's objects, and a crash already has its own error.
+        strict = self.args.ci_test and not self._unreleased_store_refs
+        try:
+            left = sweep_output_store(self.args)
+        except Exception:
+            if strict:
+                raise
+            # Like a failed delete, a failed sweep only leaks objects nothing reads.
+            logger.exception("Failed to sweep the output store; the run's objects stay in Mooncake")
+            return
+        if not left:
+            return
+        message = f"Swept {left} output store keys the run left behind"
+        # A fully-async run ends with groups buffered or in flight, a partial rollout with aborted groups back in
+        # the data buffer; any other run that trained every rollout it generated has released them all.
+        if strict and not (self.args.fully_async or self.args.partial_rollout):
+            raise AssertionError(f"{message}: a retried request, a failed delete or a missed release")
+        logger.warning(message)
 
     # -------------------------- data generation -----------------------------
 
     @event_logger_context(lambda _self, rollout_id, trainer_model_id=None: dict(rollout_id=rollout_id))
     async def get(self, rollout_id: int, trainer_model_id: str | None = None) -> RolloutDataPack:
         self.last_get_rollout_id_of_model_id[trainer_model_id] = rollout_id
+        self._unreleased_store_refs[rollout_id] = {}
         event_analyzer.run_sample_ownership_analysis(args=self.args)
         replay = self._output_snapshotter.get(trainer_model_id=trainer_model_id, rollout_id=rollout_id)
         if replay is None:
@@ -182,6 +229,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             )
         else:
             data, metadata = replay.data, replay.metadata
+        # The dp schedule and a custom convert may leave rows out of the train data: collect from the samples.
+        self._unreleased_store_refs[rollout_id] = store_refs_of(data) | take_dropped_refs()
 
         with SampleOwnershipRecorder.suppress_drop_logging() if replay is not None else nullcontext():
             train_data = convert_samples_to_train_data(
@@ -202,15 +251,34 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
             return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
+    async def release(self, rollout_id: int) -> None:
+        """Delete the output store objects of rollout ``rollout_id``, which has trained."""
+        if not (refs := self._unreleased_store_refs.pop(rollout_id, None)):
+            return
+        if self._delete_store_refs is None:
+            raise StorePlanError(f"rollout {rollout_id} holds {len(refs)} output store refs, but no store client")
+        # Off the loop: the fully-async producer keeps generating on it.
+        await asyncio.to_thread(self._try_delete_store_refs, list(refs.values()))
+
+    def _try_delete_store_refs(self, refs: list) -> None:
+        try:
+            self._delete_store_refs(refs)
+        except Exception:
+            # Nothing reads these objects any more, so a failed delete only leaks them.
+            logger.exception(f"Failed to delete {len(refs)} output store refs; their objects stay in Mooncake")
+
     async def _generate_rollout_data(
         self, *, rollout_id: int, trainer_model_id: str | None
     ) -> tuple[list[Group], dict[str, Any]] | None:
+        await self._refresh_inference_runtime_mut_state()
         start_time = time.time()
         self._rollouts_since_publish_of_model_id[trainer_model_id] += 1
         assert_weight_version_is_published(
             self.args, rollouts_since_publish=self._rollouts_since_publish_of_model_id[trainer_model_id]
         )
-        if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
+        if (
+            get_buffer_length := getattr(self.data_source, "get_buffer_length", None)
+        ) is not None:  # config-access-exempt: custom data sources may omit this lifecycle method
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
             data, metadata, metrics = await self._get_rollout_data(
@@ -245,14 +313,16 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         if self.args.debug_train_only:
             return
 
+        await self._refresh_inference_runtime_mut_state()
         with timer("eval_rollout"):
             if not self.use_legacy_rollout_v1:
                 result = await maybe_await(self.eval_generate_rollout(RolloutFnEvalInput(rollout_id=rollout_id)))
             else:
+                fn_args = _compute_rollout_function_config(self.args, self.args.eval_function_path)
                 result = await asyncio.to_thread(
                     call_rollout_fn,
                     self.eval_generate_rollout,
-                    self.args,
+                    fn_args,
                     rollout_id,
                     self.data_source,
                     evaluation=True,
@@ -330,8 +400,9 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 )
                 data = await maybe_await(self.generate_rollout(input))
             else:
+                fn_args = _compute_rollout_function_config(self.args, self.args.rollout_function_path)
                 data = await asyncio.to_thread(
-                    call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
+                    call_rollout_fn, self.generate_rollout, fn_args, rollout_id, self.data_source, evaluation=False
                 )
             metrics = data.metrics
             data = data.samples
@@ -371,13 +442,18 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             self._output_snapshotter.save(dir_temp / _EXECUTOR_DIRNAME)
 
     # async but never awaits, for the same reason as save
-    async def load(self, rollout_id: int, completed_rollout_ids: dict[str, int] | None = None) -> None:
-        if self.args.load is None:
+    async def load(
+        self, rollout_id: int, completed_rollout_ids: dict[str, int] | None = None, *, load: str | None
+    ) -> None:
+        assert not hasattr(  # config-access-exempt: reject checkpoint load paths in immutable rollout config
+            self.args, "load"
+        ), "Rollout checkpoint load path must be a runtime input"
+        if load is None:
             logger.warning("no --load: the rollout side starts fresh")
             return
         assert rollout_id >= 0, f"rollout {rollout_id} is not a trained step"
 
-        directory = compute_rollout_checkpoint_dir(self.args.load, rollout_id=rollout_id)
+        directory = compute_rollout_checkpoint_dir(load, rollout_id=rollout_id)
         assert directory.is_dir(), (
             f"the trainer restored rollout {rollout_id}, but {directory} does not exist; a run saved before the "
             f"rollout-side state moved into one directory per rollout cannot resume that state"
@@ -393,8 +469,23 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                 eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
+        # The loads dropped every batch that carried these refs, so nothing reads them; their objects
+        # still exist only if the store outlived the run (a hot restart, a reused master).
+        if restored := take_dropped_refs():
+            if self._delete_store_refs is None:
+                logger.warning(
+                    f"Not deleting {len(restored)} restored output store refs: this run has no store client"
+                )
+            else:
+                self._try_delete_store_refs(list(restored.values()))
 
     # -------------------------- misc APIs -----------------------------
+
+    async def _refresh_inference_runtime_mut_state(self) -> None:
+        if not self.args.starts_inference_engines:
+            return
+        controller = self._inference_controller_provider.get_handle(inference_controller_worker_name())
+        self.args.inference_runtime_mut_state.set_(await controller.get_inference_runtime_immut_state())
 
     def get_num_rollout_per_epoch(self) -> int:
         assert self.args.rollout_global_dataset
@@ -420,8 +511,9 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             self._eval_fleet = None
             return
 
+        fn_args = _compute_rollout_function_config(self.args, self.args.eval_function_path)
         self._eval_fleet = RolloutExecutorEvalFleet(
-            self.args, info=eval_fleet_info, inference_controller_provider=self._inference_controller_provider
+            fn_args, info=eval_fleet_info, inference_controller_provider=self._inference_controller_provider
         )
 
 
@@ -430,6 +522,19 @@ def compute_rollout_checkpoint_dir(directory: str | Path, *, rollout_id: int) ->
 
 
 _T = TypeVar("_T")
+
+
+def _compute_rollout_function_config(args: BaseLeafConfig, function: CustomFunctionConfig) -> ImmutableNamespace:
+    return compute_custom_function_config(
+        args,
+        function,
+        nested_functions=(
+            args.custom_generate_function_path,
+            args.custom_agent_function_path,
+            args.custom_rm_path,
+            *(dataset.custom_generate_function_path for dataset in args.eval_datasets),
+        ),
+    )
 
 
 def _single_or_none(xs: Iterable[_T]) -> _T | None:

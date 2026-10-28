@@ -207,6 +207,7 @@ def _miscellaneous_args(args: ScriptArgs) -> str:
             "num_gpus_per_node": args.num_gpus_per_node,
             "rollout_num_gpus": args.num_gpus_per_node,
             "mtp_loss_scaling_factor": 0,
+            "custom_megatron_init_path": "workplace_training_checks.initialize_training_state",
             "custom_megatron_before_train_step_hook_path": "workplace_training_checks.before_train_step",
             "dump_details": str(Path(args.output_dir) / "traces"),
             "use_miles_dashboard": True,
