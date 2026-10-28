@@ -317,11 +317,6 @@ def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int
     return [totals[rid] for rid in rollout_ids]
 
 
-def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes: list[int] | None) -> list[list[int]]:
-    """Return the flattened row indices for each prompt reward group."""
-    return reward_group_segments(args, samples, prompt_group_sizes)
-
-
 def _normalize_rewards_by_rollout(
     args: Any,
     samples: list[Sample],
@@ -333,16 +328,14 @@ def _normalize_rewards_by_rollout(
         return []
 
     normalized_rewards = torch.empty(len(raw_rewards), dtype=torch.float)
-    for prompt_segments in _reward_group_segments(args, samples, prompt_group_sizes):
+    for prompt_segments in reward_group_segments(args, samples, prompt_group_sizes):
         rollout_segment_groups = rollout_segments(samples, prompt_segments)
         shared_rewards: list[float] = []
         for sibling_rows in rollout_segment_groups:
-            sample = samples[sibling_rows[0]]
-            rollout_key = sample.rollout_id if sample.rollout_id is not None else sample.index
             sibling_rewards = [raw_rewards[segment_index] for segment_index in sibling_rows]
             if any(reward != sibling_rewards[0] for reward in sibling_rewards[1:]):
                 raise ValueError(
-                    f"all samples in rollout {rollout_key!r} must share one reward; "
+                    "all samples in a rollout must share one reward; "
                     f"rows {sibling_rows} have rewards {sibling_rewards}"
                 )
             shared_rewards.append(sibling_rewards[0])
