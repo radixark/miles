@@ -114,6 +114,15 @@ class DataBuffer(ABC):
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         """Report the metrics of one policy since its previous call (its window counters reset here)."""
 
+    def should_skip_reward(self, group: Group) -> bool:
+        """Whether the producer may skip the reward call of a group it is still generating.
+
+        ``group`` holds the samples generated so far, so it may be partial. Return True only
+        for a group this buffer rejects on put whatever its rewards: a skipped group reaches
+        put with its rewards unset. The default never skips.
+        """
+        return False
+
     def state_dict(self) -> Any:
         raise NotImplementedError(f"{type(self).__name__} must implement state_dict() for checkpointing")
 
@@ -130,12 +139,16 @@ class DefaultDataBuffer(DataBuffer):
     Rejected on put, because the verdict is fixed once the group is generated:
 
     - aborted groups (the generate function gave up, e.g. an agentic collect timeout)
+    - groups already beyond ``--max-weight-staleness`` at the latest weight version a get saw
     - groups with a missing reward
     - groups ``--dynamic-sampling-filter-path`` does not keep
 
-    Rejected on get, because staleness depends on when the group is consumed:
+    Rejected on get, because staleness grows while the group waits to be consumed:
 
     - groups beyond ``--max-weight-staleness``
+
+    Staleness only grows, so a group past the limit while still generating is rejected on
+    put whatever its rewards; ``should_skip_reward`` lets the producer skip scoring it.
 
     Dataflow control options:
 
@@ -168,6 +181,7 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_gatherer = MetricGatherer()
         self._metric_aborted_groups = 0
         self._metric_stale_groups = 0
+        self._metric_stale_reward_calls_skipped = 0
         self._metric_consumed_staleness: list[int] = []
         self._metric_selected_newest_lag: list[int] = []
         self._metric_selected_version_span: list[int] = []
@@ -191,6 +205,11 @@ class DefaultDataBuffer(DataBuffer):
         if not output.keep:
             self._metric_aborted_groups += 1
             self._unused_handler_fn(input.prompt_group, UnusedReason.ABORTED)
+            return False
+
+        # before the reward filters: a group whose reward call was skipped is stale here
+        if (staleness := self._staleness_over_limit(input.group, self._current_version)) is not None:
+            self._reject_stale(input, staleness)
             return False
 
         output = apply_missing_reward_filter(self._args, input.group)
@@ -240,21 +259,38 @@ class DefaultDataBuffer(DataBuffer):
                 self._record_selected_version_stats(version_stats, current_version)
             return entries
 
+    def should_skip_reward(self, group: Group) -> bool:
+        # A partial group's oldest version only gets older as its other samples finish,
+        # and the version a later put or get sees only grows: stale now is stale on put.
+        if self._staleness_over_limit(group, self._current_version) is None:
+            return False
+        self._metric_stale_reward_calls_skipped += 1
+        return True
+
     def _drop_stale(self, current_version: int | None) -> None:
-        limit = self._args.max_weight_staleness
         kept: list[DataBufferInput] = []
         for entry in self._buffer:
-            staleness = group_staleness(entry.group, current_version)
-            if limit is None or staleness is None or staleness <= limit:
+            if (staleness := self._staleness_over_limit(entry.group, current_version)) is None:
                 kept.append(entry)
             else:
-                logger.info(f"Filtered stale group ({staleness=} > max={limit})")
-                self._metric_stale_groups += 1
-                self._unused_handler_fn(entry.prompt_group, UnusedReason.STALE)
+                self._reject_stale(entry, staleness)
 
         if len(kept) != len(self._buffer):
             self._buffer = kept
             self._cond.notify_all()
+
+    def _staleness_over_limit(self, group: Group, current_version: int | None) -> int | None:
+        """The group's staleness if it exceeds ``--max-weight-staleness``, else None."""
+        limit = self._args.max_weight_staleness
+        staleness = group_staleness(group, current_version)
+        if limit is None or staleness is None or staleness <= limit:
+            return None
+        return staleness
+
+    def _reject_stale(self, entry: DataBufferInput, staleness: int) -> None:
+        logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
+        self._metric_stale_groups += 1
+        self._unused_handler_fn(entry.prompt_group, UnusedReason.STALE)
 
     def _record_selected_version_stats(
         self,
@@ -289,6 +325,7 @@ class DefaultDataBuffer(DataBuffer):
             f"{prefix}queue_size": len(self._buffer),
             f"{prefix}aborted_groups_filtered": self._metric_aborted_groups,
             f"{prefix}stale_groups_filtered": self._metric_stale_groups,
+            f"{prefix}stale_reward_calls_skipped": self._metric_stale_reward_calls_skipped,
             **self._metric_gatherer.collect(),
         }
         if consumed := self._metric_consumed_staleness:
@@ -323,7 +360,7 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_versioned_tokens = 0
         self._metric_selected_samples = 0
         self._metric_selected_versioned_samples = 0
-        self._metric_aborted_groups = self._metric_stale_groups = 0
+        self._metric_aborted_groups = self._metric_stale_groups = self._metric_stale_reward_calls_skipped = 0
         return metrics
 
 

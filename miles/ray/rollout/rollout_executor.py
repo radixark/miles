@@ -29,6 +29,7 @@ from miles.rollout.base_types import (
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
+from miles.rollout.on_policy_distillation import close_scoring_sessions
 from miles.utils import object_store
 from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.custom_view import ImmutableNamespace, compute_custom_function_config
@@ -174,6 +175,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             self._metric_checker.dispose()
         if isinstance(self.eval_generate_rollout, CheckpointEvalFn):
             await maybe_await(self.eval_generate_rollout.dispose())
+        # after every rollout function stopped, so no scoring call is left in flight
+        await close_scoring_sessions()
 
     # -------------------------- data generation -----------------------------
 

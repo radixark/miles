@@ -24,7 +24,14 @@ import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 import miles.rollout.inference_rollout.inference_rollout_common as rollout_common
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
-from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
+from miles.rollout.base_types import (
+    BaseRolloutFn,
+    GenerateFnInput,
+    GenerateFnOutput,
+    RolloutFnConstructorInput,
+    RolloutFnEvalInput,
+    RolloutFnTrainInput,
+)
 from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
@@ -134,7 +141,9 @@ def train_input(**overrides) -> RolloutFnTrainInput:
 
 
 def make_fn(monkeypatch, args, data_source, generate=None):
-    async def default_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+    async def default_generate(
+        state, group, sampling_params, evaluation=False, sample_done_callback=None, skip_group_reward_fn=None
+    ):
         await asyncio.sleep(0)
         for sample in group:
             sample.status = Sample.Status.COMPLETED
@@ -167,7 +176,9 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
     """Shared-engine eval: producer submissions pause during eval and resume after."""
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+    async def blocking_generate(
+        state, group, sampling_params, evaluation=False, sample_done_callback=None, skip_group_reward_fn=None
+    ):
         await release.wait()
         return group
 
@@ -312,7 +323,9 @@ class TestKvCacheNamespace:
         gate: asyncio.Queue[None] = asyncio.Queue()
         stamps: list[str] = []
 
-        async def gated_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        async def gated_generate(
+            state, group, sampling_params, evaluation=False, sample_done_callback=None, skip_group_reward_fn=None
+        ):
             stamps.append(group[0].kv_cache_namespace)
             await gate.get()
             return group
@@ -446,6 +459,50 @@ async def test_stale_group_dropped_by_default(monkeypatch):
 
 
 @pytest.mark.parametrize("handler", ["drop", "retry"])
+async def test_a_group_generated_on_stale_weights_is_never_scored(monkeypatch, handler: str) -> None:
+    """The reward (e.g. an OPD teacher call) of a group the buffer will reject as stale is skipped."""
+    scored: list[int] = []
+    generated_once: set[int] = set()
+
+    async def fake_async_rm(args, sample, **kwargs):
+        scored.append(sample.group_index)
+        return 1.0
+
+    async def generate_group_1_stale_once(input: GenerateFnInput) -> GenerateFnOutput:
+        await asyncio.sleep(0)
+        sample = input.sample
+        stale = sample.group_index == 1 and sample.index not in generated_once
+        generated_once.add(sample.index)
+        sample.status = Sample.Status.COMPLETED
+        sample.weight_versions = make_group(0, weight_versions=["3" if stale else "5"])[0].weight_versions
+        return GenerateFnOutput(samples=sample)
+
+    monkeypatch.setattr(rollout_common, "async_rm", fake_async_rm)
+    monkeypatch.setattr(rollout_common, "policy_uses_routing_key", lambda args: False)
+    groups = [make_group(index, status=Sample.Status.PENDING, reward=None) for index in (1, 2)]
+    args = make_args(
+        rollout_batch_size=1,
+        max_weight_staleness=0,
+        async_unused_samples_handler=handler,
+        rollout_submission_granularity="group",
+        group_rm=False,
+        partial_rollout=False,
+        mask_offpolicy_in_partial_rollout=False,
+    )
+    fn = make_fn(monkeypatch, args, FakeDataSource(scripted=groups), generate=rollout_common.generate_and_rm_group)
+    fn.state.generate_function = generate_group_1_stale_once
+
+    output = await asyncio.wait_for(fn(train_input(rollout_id=0, weight_version=5)), timeout=5)
+
+    assert output.metrics["rollout/fully_async/stale_reward_calls_skipped"] == N_SAMPLES_PER_PROMPT
+    assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
+    # retry regenerates the prompt on fresh weights and scores only that attempt; drop moves on
+    trained = 1 if handler == "retry" else 2
+    assert [group[0].group_index for group in output.samples] == [trained]
+    assert scored == [trained] * N_SAMPLES_PER_PROMPT
+
+
+@pytest.mark.parametrize("handler", ["drop", "retry"])
 @pytest.mark.parametrize("granularity", ["sample", "group"])
 async def test_sample_cancellation_aborts_group_without_stopping_worker(
     monkeypatch: pytest.MonkeyPatch,
@@ -466,6 +523,7 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
         sample: Sample,
         sampling_params: dict,
         evaluation: bool = False,
+        skip_reward_fn=None,
     ) -> Sample:
         if sample.group_index != 1:
             return sample
@@ -536,6 +594,7 @@ async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPa
         sampling_params: dict,
         evaluation: bool = False,
         sample_done_callback: Callable[[], None] | None = None,
+        skip_group_reward_fn: Callable[[list[Sample]], bool] | None = None,
     ) -> list[Sample]:
         started.set()
         await release.wait()
@@ -561,7 +620,9 @@ async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPa
 async def test_a_dying_worker_cancels_the_step_and_is_logged(monkeypatch, caplog):
     """The step it was generating for has to end, and the reason has to be readable in the rollout log."""
 
-    async def failing_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+    async def failing_generate(
+        state, group, sampling_params, evaluation=False, sample_done_callback=None, skip_group_reward_fn=None
+    ):
         raise RuntimeError("generation exploded")
 
     fn = make_fn(monkeypatch, make_args(), FakeDataSource(), generate=failing_generate)
@@ -577,7 +638,9 @@ async def test_a_dying_worker_cancels_the_step_and_is_logged(monkeypatch, caplog
 async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+    async def blocking_generate(
+        state, group, sampling_params, evaluation=False, sample_done_callback=None, skip_group_reward_fn=None
+    ):
         await release.wait()
         return group
 
@@ -621,7 +684,9 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     submitted = []
     retried = asyncio.Event()
 
-    async def multi_sample_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+    async def multi_sample_generate(
+        state, group, sampling_params, evaluation=False, sample_done_callback=None, skip_group_reward_fn=None
+    ):
         assert all(isinstance(sample, Sample) for sample in group), "resubmitted a nested group"
         submitted.append(group)
         if len(submitted) > 1:
@@ -1545,7 +1610,9 @@ async def test_worker_defaults_to_sample_granularity(monkeypatch):
     callbacks = []
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+    async def blocking_generate(
+        state, group, sampling_params, evaluation=False, sample_done_callback=None, skip_group_reward_fn=None
+    ):
         callbacks.append(sample_done_callback)
         await release.wait()
         return group
@@ -1575,7 +1642,9 @@ async def test_group_granularity_opts_the_worker_out_of_backfill(monkeypatch):
     callbacks = []
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+    async def blocking_generate(
+        state, group, sampling_params, evaluation=False, sample_done_callback=None, skip_group_reward_fn=None
+    ):
         callbacks.append(sample_done_callback)
         await release.wait()
         return group
@@ -1616,7 +1685,9 @@ class TestRolloutFnContract:
 async def test_worker_bounds_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+    async def blocking_generate(
+        state, group, sampling_params, evaluation=False, sample_done_callback=None, skip_group_reward_fn=None
+    ):
         await release.wait()
         return group
 
@@ -1650,7 +1721,15 @@ class _GatedGenerate:
         self.callbacks: list = []
         self.open = False
 
-    async def __call__(self, state, group, sampling_params=None, evaluation=False, sample_done_callback=None):
+    async def __call__(
+        self,
+        state,
+        group,
+        sampling_params=None,
+        evaluation=False,
+        sample_done_callback=None,
+        skip_group_reward_fn=None,
+    ):
         gate = asyncio.Event()
         if self.open:
             gate.set()
@@ -1807,7 +1886,7 @@ class TestInFlightBudget:
         """The put lives in the producer loop, so a full buffer wedges submission even with the budget free."""
 
         async def generate_reporting_samples(
-            state, group, sampling_params=None, evaluation=False, sample_done_callback=None
+            state, group, sampling_params=None, evaluation=False, sample_done_callback=None, skip_group_reward_fn=None
         ):
             for sample in group:
                 sample.status = Sample.Status.COMPLETED

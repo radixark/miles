@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 from tests.fast.rollout.inference_rollout.conftest import (
     StampRecordingGenerate,
     make_eval_args,
@@ -16,7 +18,8 @@ from miles.rollout.base_types import (
     RolloutFnEvalInput,
     RolloutFnTrainInput,
 )
-from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
+from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn, generate_and_rm_group
+from miles.utils.types import Sample
 
 
 def test_inference_rollout_fn_exposes_the_constructor_input(monkeypatch) -> None:
@@ -99,3 +102,74 @@ class TestInferenceRolloutFnKvCacheNamespace:
         await fn(RolloutFnEvalInput(rollout_id=4, invocation_id="eval-call"))
 
         assert recorder.take_stamps() == {None}
+
+
+class TestSkipGroupReward:
+    """The producer may skip the reward of a group whose generated samples already doom it."""
+
+    GROUP_SIZE = 3
+
+    @staticmethod
+    async def _complete(input: GenerateFnInput) -> GenerateFnOutput:
+        input.sample.status = Sample.Status.COMPLETED
+        return GenerateFnOutput(samples=input.sample)
+
+    def _state(self, *, group_rm: bool):
+        args = SimpleNamespace(
+            partial_rollout=False,
+            mask_offpolicy_in_partial_rollout=False,
+            group_rm=group_rm,
+            sglang_router_policy="round_robin",
+            sglang=make_sglang_config(enable_deterministic_inference=False),
+        )
+        return make_state(self._complete, args=args)
+
+    def _group(self) -> list[Sample]:
+        return [Sample(group_index=1, index=10 + i) for i in range(self.GROUP_SIZE)]
+
+    async def test_each_reward_call_sees_the_outputs_generated_so_far(self, monkeypatch) -> None:
+        """Once the samples generated so far doom the group, the rest of its reward calls are skipped."""
+        scored: list[int] = []
+
+        async def fake_async_rm(args, sample, **kwargs):
+            scored.append(sample.index)
+            return 1.0
+
+        monkeypatch.setattr(inference_rollout_common, "async_rm", fake_async_rm)
+        seen_sizes: list[int] = []
+
+        def skip_from_the_second_output(generated) -> bool:
+            seen_sizes.append(len(generated))
+            return len(generated) >= 2
+
+        group = await generate_and_rm_group(
+            self._state(group_rm=False),
+            self._group(),
+            sampling_params={},
+            skip_group_reward_fn=skip_from_the_second_output,
+        )
+
+        assert sorted(seen_sizes) == [1, 2, 3]
+        assert len(scored) == 1
+        assert sorted(sample.reward is None for sample in group) == [False, True, True]
+
+    @pytest.mark.parametrize(argnames="skip", argvalues=[True, False])
+    async def test_a_group_rm_call_is_asked_once_with_the_whole_group(self, monkeypatch, skip: bool) -> None:
+        batched_calls: list[int] = []
+
+        async def fake_batched_async_rm(args, samples, inplace_set_reward_field=False):
+            batched_calls.append(len(samples))
+
+        monkeypatch.setattr(inference_rollout_common, "batched_async_rm", fake_batched_async_rm)
+        asked: list[int] = []
+
+        def skip_group(generated) -> bool:
+            asked.append(len(generated))
+            return skip
+
+        await generate_and_rm_group(
+            self._state(group_rm=True), self._group(), sampling_params={}, skip_group_reward_fn=skip_group
+        )
+
+        assert asked == [self.GROUP_SIZE]
+        assert batched_calls == ([] if skip else [self.GROUP_SIZE])

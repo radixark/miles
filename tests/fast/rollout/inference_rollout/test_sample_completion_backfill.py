@@ -259,7 +259,7 @@ async def test_failed_sample_cancels_siblings_and_conserves_credits(monkeypatch)
     """One sample raising must not leave siblings running or credits unreturned."""
     from miles.rollout.inference_rollout import inference_rollout_common as common
 
-    async def fake_generate_and_rm(state, sample, sampling_params, evaluation=False):
+    async def fake_generate_and_rm(state, sample, sampling_params, evaluation=False, skip_reward_fn=None):
         if sample.index == 10:  # first sample of make_group(1)
             raise RuntimeError("sample failed")
         await asyncio.Event().wait()  # runs until cancelled

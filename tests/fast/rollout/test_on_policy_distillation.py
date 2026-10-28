@@ -1,16 +1,26 @@
+import asyncio
 import math
+import threading
 from argparse import Namespace
 
 import pytest
+import torch
+from aiohttp import web
 from tests.ci.ci_register import register_cpu_ci
 
 import miles.rollout.on_policy_distillation as on_policy_distillation
 from miles.rollout.on_policy_distillation import (
+    TOP_K_STRATEGIES,
     _compute_topk_reverse_kl,
     _per_position_ids,
+    _post_json,
     _score_payload,
+    _scoring_session,
     _teacher_url_for_sample,
+    _trim_input_field,
+    close_scoring_sessions,
     parse_teacher_urls,
+    post_process_rewards,
     reward_func,
 )
 from miles.utils.types import Sample
@@ -273,3 +283,218 @@ def test_routing_missing_name_without_default_raises():
     args = _routing_args(urls=["math=http://h1/generate"])
     with pytest.raises(ValueError, match="missing teacher key"):
         _teacher_url_for_sample(args, _tagged_sample({}))
+
+
+# ---------------------------------------------------------------------------
+# Response-only scoring (logprob_start_len = prompt_len - 1)
+# ---------------------------------------------------------------------------
+
+
+class _FakeScorer:
+    """A /generate scoring endpoint that lays out input logprobs the way SGLang does.
+
+    Rows start at logprob_start_len with a None placeholder, row i scoring the token at
+    position logprob_start_len + i; top-k and requested-id rows share that layout, and
+    token_ids_logprob_positions is read by absolute input position (sgl-project/sglang#27421).
+    """
+
+    VOCAB_SIZE = 32
+
+    def __init__(self, seed: int) -> None:
+        self.seed = seed
+
+    def logprob(self, position: int, token_id: int) -> float:
+        # a shared base keeps the two models' top-k overlapping; the seed term tells them apart
+        base = ((position + 1) * 31 + (token_id + 1) * 17) % 89 + 1
+        return -(base + self.seed * ((position + token_id) % 3)) / 16
+
+    def top(self, position: int, k: int) -> list[list]:
+        ranked = sorted(range(self.VOCAB_SIZE), key=lambda token_id: -self.logprob(position, token_id))
+        return [[self.logprob(position, token_id), token_id, None] for token_id in ranked[:k]]
+
+    def __call__(self, payload: dict) -> dict:
+        input_ids = payload["input_ids"]
+        positions = range(payload["logprob_start_len"] + 1, len(input_ids))
+
+        def rows(row_of) -> list:
+            return [None] + [row_of(position) for position in positions]
+
+        def requested(position: int, token_ids: list[int]) -> list[list]:
+            return [[self.logprob(position, token_id), token_id, None] for token_id in token_ids]
+
+        meta_info = {"input_token_logprobs": rows(lambda p: [self.logprob(p, input_ids[p]), input_ids[p], None])}
+        if (k := payload.get("top_logprobs_num", 0)) > 0:
+            meta_info["input_top_logprobs"] = rows(lambda p: self.top(p, k))
+        if (flat := payload.get("token_ids_logprob")) is not None:
+            meta_info["input_token_ids_logprobs"] = rows(lambda p: requested(p, flat))
+        if (per_position := payload.get("token_ids_logprob_positions")) is not None:
+            meta_info["input_token_ids_logprobs"] = rows(lambda p: requested(p, per_position[p]))
+        return {"meta_info": meta_info}
+
+
+_SCORING_TOP_K = 3
+
+
+class TestResponseOnlyScoring:
+    """Scoring from the response boundary must extract exactly what scoring every token did."""
+
+    TEACHER_URL = "http://teacher/generate"
+    PROMPT_LEN = 5
+    RESPONSE_LEN = 4
+
+    def _args(self, *, top_k: int, strategy: str = "only-student", per_position: bool = False) -> Namespace:
+        return Namespace(
+            opd_log_prob_top_k=top_k,
+            opd_top_k_strategy=strategy,
+            opd_reward_weight_mode="student_p",
+            opd_topk_per_position=per_position,
+            opd_teacher_urls=None,
+            opd_teacher_key="opd_teacher",
+            rm_url=self.TEACHER_URL,
+            sglang_router_ip="student",
+            sglang_router_port=30000,
+            sglang_router_request_timeout_secs=None,
+            reward_key=None,
+        )
+
+    def _sample(self, student: _FakeScorer) -> Sample:
+        tokens = [(7 * i + 3) % _FakeScorer.VOCAB_SIZE for i in range(self.PROMPT_LEN + self.RESPONSE_LEN)]
+        student_top = [
+            [entry[:2] for entry in student.top(self.PROMPT_LEN + r, _SCORING_TOP_K)] for r in range(self.RESPONSE_LEN)
+        ]
+        return Sample(
+            tokens=tokens, response_length=self.RESPONSE_LEN, metadata={"opd_student_top_logprobs": student_top}
+        )
+
+    async def _score(self, monkeypatch, args: Namespace, *, client_start_len: int | None) -> tuple[Sample, list]:
+        """Run reward_func + post_process_rewards; ``client_start_len`` replays an older client's offset."""
+        teacher, student = _FakeScorer(seed=1), _FakeScorer(seed=2)
+        exchanges: list[tuple[dict, dict]] = []
+
+        async def fake_post_json(url, payload, timeout_secs=None):
+            if client_start_len is not None:
+                payload = {**payload, "logprob_start_len": client_start_len}
+            response = (teacher if url == self.TEACHER_URL else student)(payload)
+            exchanges.append((payload, response))
+            return response
+
+        monkeypatch.setattr(on_policy_distillation, "_post_json", fake_post_json)
+        sample = self._sample(student)
+        sample.reward = await reward_func(args, sample)
+        post_process_rewards(args, [sample])
+        return sample, exchanges
+
+    @staticmethod
+    def _signal(sample: Sample) -> torch.Tensor:
+        return sample.opd_reverse_kl if sample.teacher_log_probs is None else sample.teacher_log_probs
+
+    @pytest.mark.parametrize(
+        argnames="top_k,strategy,per_position",
+        argvalues=[(0, "only-student", False)]
+        + [
+            (_SCORING_TOP_K, strategy, per_position)
+            for strategy in sorted(TOP_K_STRATEGIES)
+            for per_position in (False, True)
+        ],
+    )
+    async def test_the_extracted_signal_matches_scoring_from_position_zero(
+        self, monkeypatch: pytest.MonkeyPatch, top_k: int, strategy: str, per_position: bool
+    ) -> None:
+        args = self._args(top_k=top_k, strategy=strategy, per_position=per_position)
+
+        new, new_exchanges = await self._score(monkeypatch, args, client_start_len=None)
+        old, _ = await self._score(monkeypatch, args, client_start_len=0)
+
+        assert self._signal(new).shape == (self.RESPONSE_LEN,)
+        assert torch.equal(self._signal(new), self._signal(old))
+        (teacher_payload, teacher_response), *student_exchanges = new_exchanges
+        assert teacher_payload["logprob_start_len"] == self.PROMPT_LEN - 1
+        assert len(teacher_response["meta_info"]["input_token_logprobs"]) == self.RESPONSE_LEN + 1
+        # the live student still scores from position 0, so stale prompt KV cannot leak in
+        assert [payload["logprob_start_len"] for payload, _ in student_exchanges] == [0] * len(student_exchanges)
+
+    def test_a_reply_too_short_for_the_response_is_refused(self) -> None:
+        meta_info = {"input_token_logprobs": [None, [-0.5, 3, None]]}
+
+        with pytest.raises(ValueError, match="too few for a response of 2 tokens"):
+            _trim_input_field(meta_info, "input_token_logprobs", response_length=2)
+
+    def test_a_sample_without_a_prompt_still_scores_from_position_zero(self) -> None:
+        sample = Sample(tokens=[1, 2, 3], response_length=3)
+
+        assert on_policy_distillation._response_logprob_start_len(sample) == 0
+
+
+# ---------------------------------------------------------------------------
+# Pooled scoring session
+# ---------------------------------------------------------------------------
+
+
+class _ScoringServer:
+    """A local /generate endpoint recording the client socket each request came in on."""
+
+    def __init__(self, *, delay_secs: float = 0.0) -> None:
+        self.delay_secs = delay_secs
+        self.peers: list = []
+        self._runner: web.AppRunner | None = None
+
+    async def __aenter__(self) -> str:
+        async def handle(request: web.Request) -> web.Response:
+            self.peers.append(request.transport.get_extra_info("peername"))
+            await asyncio.sleep(self.delay_secs)
+            return web.json_response({"meta_info": {"echo": await request.json()}})
+
+        app = web.Application()
+        app.router.add_post("/generate", handle)
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        await web.TCPSite(self._runner, "127.0.0.1", 0).start()
+        host, port = self._runner.addresses[0][:2]
+        return f"http://{host}:{port}/generate"
+
+    async def __aexit__(self, *exc_info) -> None:
+        await close_scoring_sessions()
+        await self._runner.cleanup()
+
+
+class TestPooledScoringSession:
+    async def test_consecutive_scoring_calls_reuse_one_connection(self) -> None:
+        server = _ScoringServer()
+        async with server as url:
+            replies = [await _post_json(url, {"call": i}) for i in range(3)]
+
+        assert [reply["meta_info"]["echo"] for reply in replies] == [{"call": 0}, {"call": 1}, {"call": 2}]
+        assert len(server.peers) == 3 and len(set(server.peers)) == 1
+
+    async def test_the_timeout_bounds_only_the_request_that_sets_it(self) -> None:
+        async with _ScoringServer(delay_secs=0.3) as url:
+            with pytest.raises(asyncio.TimeoutError):
+                await _post_json(url, {}, timeout_secs=0.05)
+            assert await _post_json(url, {"after": "timeout"}) == {"meta_info": {"echo": {"after": "timeout"}}}
+
+    async def test_closing_releases_the_session_and_the_next_call_opens_a_new_one(self) -> None:
+        first = _scoring_session()
+        assert _scoring_session() is first
+
+        await close_scoring_sessions()
+        second = _scoring_session()
+
+        assert first.closed and not second.closed
+        await close_scoring_sessions()
+
+    async def test_closing_reaches_a_session_opened_on_another_running_loop(self) -> None:
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+
+        async def open_session():
+            return _scoring_session()
+
+        try:
+            other = await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(open_session(), loop))
+            await close_scoring_sessions()
+            assert other.closed
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join()
+            loop.close()

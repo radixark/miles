@@ -165,6 +165,8 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             sampling_params=self.state.sampling_params.copy(),
             evaluation=False,
             sample_done_callback=self._scheduler.sample_done_callback,
+            # e.g. no OPD teacher call for a group the buffer will reject as stale
+            skip_group_reward_fn=self._output.should_skip_reward,
         )
         return DataBufferInput(prompt_group=prompt_group, group=result)
 

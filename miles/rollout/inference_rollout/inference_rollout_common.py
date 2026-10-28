@@ -63,6 +63,7 @@ async def generate_and_rm(
     sample: Sample | list[Sample],
     sampling_params: dict[str, Any],
     evaluation: bool = False,
+    skip_reward_fn: Callable[[Sample | list[Sample]], bool] | None = None,
 ) -> Sample | list[Sample]:
     args = state.args
     input_sample_index = sample.index
@@ -124,6 +125,8 @@ async def generate_and_rm(
         samples = sample
         if any([sample.status == Sample.Status.ABORTED for sample in samples]):
             return samples
+        if skip_reward_fn is not None and skip_reward_fn(samples):
+            return samples
 
         # for multi agent system, the reward of some sample is calculated during generation.
         samples_need_reward = [sample for sample in samples if sample.reward is None]
@@ -131,6 +134,8 @@ async def generate_and_rm(
         return samples
     else:
         if sample.status == Sample.Status.ABORTED:
+            return sample
+        if skip_reward_fn is not None and skip_reward_fn(sample):
             return sample
         # for multi-turn environment, a reward could be assigned to the agent.
         if sample.reward is None:
@@ -146,7 +151,13 @@ async def generate_and_rm_group(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
     sample_done_callback: Callable[[], None] | None = None,
+    skip_group_reward_fn: Callable[[list[Sample | list[Sample]]], bool] | None = None,
 ) -> list[Sample]:
+    """Generate a group and score it.
+
+    ``skip_group_reward_fn`` sees the group's outputs generated so far right before each
+    reward call (the whole group under ``--group-rm``); True leaves that reward unset.
+    """
     args = state.args
 
     if state.aborted:
@@ -159,12 +170,17 @@ async def generate_and_rm_group(
 
     log_prefix = f"[group indices={[s.index for s in group]}]"
     logger.debug(f"{log_prefix} Starting group with {len(group)} samples")
+    skip_reward_fn = _accumulate_group_outputs(skip_group_reward_fn)
     tasks = []
     for idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()
         if args.sglang.common_value("enable_deterministic_inference"):
             current_sampling_params["sampling_seed"] = args.rollout_seed + idx
-        task = asyncio.create_task(generate_and_rm(state, sample, current_sampling_params, evaluation=evaluation))
+        task = asyncio.create_task(
+            generate_and_rm(
+                state, sample, current_sampling_params, evaluation=evaluation, skip_reward_fn=skip_reward_fn
+            )
+        )
         if sample_done_callback is not None:
             # fires on success, exception, and cancellation, so in-flight accounting is conserved
             task.add_done_callback(lambda _task: sample_done_callback())
@@ -183,10 +199,25 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    if args.group_rm:
+    if args.group_rm and (skip_group_reward_fn is None or not skip_group_reward_fn(group)):
         await batched_async_rm(args, group, inplace_set_reward_field=True)
 
     return group
+
+
+def _accumulate_group_outputs(
+    skip_group_reward_fn: Callable[[list[Sample | list[Sample]]], bool] | None,
+) -> Callable[[Sample | list[Sample]], bool] | None:
+    """Turn a group-level skip check into the per-output one generate_and_rm calls."""
+    if skip_group_reward_fn is None:
+        return None
+    generated: list[Sample | list[Sample]] = []
+
+    def skip_reward_fn(output: Sample | list[Sample]) -> bool:
+        generated.append(output)
+        return skip_group_reward_fn(generated)
+
+    return skip_reward_fn
 
 
 def compute_sampling_params(
