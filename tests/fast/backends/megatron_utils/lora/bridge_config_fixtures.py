@@ -78,6 +78,7 @@ def bridge_args(tmp_path: Path) -> Namespace:
         sequence_parallel=True,
         virtual_pipeline_model_parallel_size=2,
         context_parallel_size=2,
+        cp_comm_type=["a2a"],
         gradient_accumulation_fusion=False,
         recompute_granularity="selective",
         recompute_method="uniform",
