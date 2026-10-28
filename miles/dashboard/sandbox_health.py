@@ -64,8 +64,8 @@ class SandboxHealth:
                 sandbox_key=report.sandbox_key, status=report.status, first_seen_ts=report.ts, last_exec_ts=report.ts
             )
         for label in ("task", "provider", "sandbox_id"):
-            if getattr(report, label) is not None:
-                setattr(row, label, getattr(report, label))
+            if getattr(report, label) is not None:  # config-access-exempt: fixed report labels
+                setattr(row, label, getattr(report, label))  # config-access-exempt: fixed report labels
         if report.error is not None:
             row.last_error = report.error
         # reports relayed from a subproc agent call can arrive late; an older one only fills labels

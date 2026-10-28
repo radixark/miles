@@ -38,9 +38,13 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
     _ATTENTION_MAPPING = {**DeepseekV3Bridge._ATTENTION_MAPPING, **_DSA_ATTENTION_MAPPING}
 
     def _get_rope_theta(self):
-        rope_theta = getattr(self.hf_config, "rope_theta", None)
+        rope_theta = getattr(
+            self.hf_config, "rope_theta", None
+        )  # config-access-exempt: HF variants store rotary base directly or in rope_scaling
         if rope_theta is None:
-            rope_scaling = getattr(self.hf_config, "rope_scaling", None)
+            rope_scaling = getattr(
+                self.hf_config, "rope_scaling", None
+            )  # config-access-exempt: HF checkpoints may omit rotary scaling
             if isinstance(rope_scaling, dict):
                 rope_theta = rope_scaling.get("rope_theta")
         if rope_theta is None:
@@ -63,7 +67,9 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
         return rope_scaling
 
     def _get_rope_scaling(self):
-        return self._normalize_rope_scaling(getattr(self.hf_config, "rope_scaling", None))
+        return self._normalize_rope_scaling(
+            getattr(self.hf_config, "rope_scaling", None)
+        )  # config-access-exempt: HF checkpoints may omit rotary scaling
 
     def _hf_config_with_rope_fields(self):
         hf_config = copy.copy(self.hf_config)
@@ -96,7 +102,9 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
         The Miles indexer stores RoPE channels in the last half. Native
         Megatron's core_attention.indexer already uses HF channel order.
         """
-        if not bool(getattr(self.hf_config, "indexer_rope_interleave", False)):
+        if not bool(
+            getattr(self.hf_config, "indexer_rope_interleave", False)
+        ):  # config-access-exempt: HF checkpoints may omit indexer rotary interleaving
             return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
 
         if "self_attention.wq_b.weight" in mcore_weights_name:
@@ -127,7 +135,9 @@ class DeepseekV32Bridge(DeepseekV3Bridge):
 
         The swap operation is its own inverse: swap the two halves back.
         """
-        if not bool(getattr(self.hf_config, "indexer_rope_interleave", False)):
+        if not bool(
+            getattr(self.hf_config, "indexer_rope_interleave", False)
+        ):  # config-access-exempt: HF checkpoints may omit indexer rotary interleaving
             return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
         if "self_attention.wq_b.weight" in mcore_weights_name:

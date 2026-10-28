@@ -23,8 +23,8 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-b-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 | both resolvers, `stage-a-cpu` |
 | `stage-c-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 4 | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 9 | both resolvers, `stage-a-cpu` |
-| `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 1 regular / 2 otherwise | both resolvers, `stage-a-cpu` |
-| `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 4 | both resolvers, `stage-a-cpu` |
+| `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 2 regular / 3 otherwise | both resolvers, `stage-a-cpu` |
+| `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 4 regular / 5 otherwise | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-b200` | B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-b200` | same B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | same plan, no 8-GPU stage barrier |
 | `stage-c-4-gpu-mi350` | 4× MI350 | `["self-hosted","amd","mi350","4gpu"]` | 2 | both resolvers |

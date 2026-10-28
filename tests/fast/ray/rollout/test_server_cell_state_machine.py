@@ -710,7 +710,6 @@ class TestMarkWeightsReady:
                 dict(
                     worker_url="http://10.0.0.1:30000",
                     worker_type=WorkerType.REGULAR,
-                    use_legacy_api=False,
                     bootstrap_port=None,
                 ),
             )

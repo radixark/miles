@@ -3,6 +3,7 @@ from collections.abc import Mapping, Sequence
 import torch
 
 from miles.utils.sampling_mask import RolloutSamplingMask
+from miles.utils.types import RolloutBatch
 
 
 def get_rollout_sampling_masks(batch: Mapping[str, object]) -> list[RolloutSamplingMask]:
@@ -70,3 +71,21 @@ def build_local_sampling_mask(
     mask = torch.zeros(logits.numel(), dtype=torch.bool, device=logits.device)
     mask[flat_local_indices] = True
     return mask.view_as(logits)
+
+
+def rollout_topk_candidate_ids(batch: RolloutBatch, sample: int, indices: torch.Tensor) -> torch.Tensor:
+    """``[len(indices), k]`` rollout top-k candidate ids of one sample's response rows; -1 pads unused slots.
+
+    Selected mode carries the ids; support mode carries per-row lengths into the sampling-mask support.
+    """
+    if batch.get("rollout_topk_token_ids") is not None:
+        return torch.as_tensor(batch["rollout_topk_token_ids"][sample])[indices].long()
+    lengths = torch.as_tensor(batch["rollout_topk_lengths"][sample])[indices]
+    offsets = torch.as_tensor(batch["rollout_sampling_mask_offsets"][sample])[indices]
+    support = torch.as_tensor(batch["rollout_sampling_mask_ids"][sample])
+    width = batch["rollout_topk_log_probs"][sample].shape[-1]
+    columns = torch.arange(width)
+    valid = columns < lengths[:, None]
+    ids = torch.full((len(indices), width), -1, dtype=torch.long)
+    ids[valid] = support[(offsets[:, None] + columns)[valid]].long()
+    return ids

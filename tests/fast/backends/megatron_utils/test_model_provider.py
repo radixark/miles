@@ -3,9 +3,14 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.backends.megatron_utils.provider_signature_fixtures import provider_parallel_state
+from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 
-from miles.backends.megatron_utils.model_provider import _maybe_install_witness
+from miles.backends.megatron_utils.model_provider import _maybe_install_witness, get_model_provider_func
 from miles.backends.training_utils.model_companion import ModelCompanion
+from miles.utils.args.trainer_utils import compute_trainer_config
+
+_ = provider_parallel_state
 
 
 class TestModelCompanionInstallation:
@@ -28,3 +33,34 @@ class TestModelCompanionInstallation:
         assert len(companions) == 1
         assert companions[0].chunk_index == 2
         assert companions[0].sample_consumptions.numel() == 0
+
+
+class TestCustomProviderSignatures:
+    @pytest.mark.parametrize(
+        "provider_name,expected_rate,expected_stage",
+        [
+            ("_legacy_provider", None, None),
+            ("_provider_with_args", 0.003, None),
+            ("_provider_with_stage", None, 3),
+            ("_provider_with_args_and_stage", 0.003, 3),
+        ],
+    )
+    def test_optional_configuration_and_pipeline_stage_are_forwarded_only_when_declared(
+        self,
+        provider_parallel_state: None,
+        provider_name: str,
+        expected_rate: float | None,
+        expected_stage: int | None,
+    ) -> None:
+        """Custom providers receive their declared configuration and pipeline inputs."""
+        path = f"tests.fast.backends.megatron_utils.provider_signature_fixtures.{provider_name}"
+        config = parse_megatron_test_config("--custom-model-provider-path", path, "--lr", "0.003")
+        trainer = compute_trainer_config(all_config=config, trainer=config.raw_megatron.trainers[0])
+        provider = get_model_provider_func(args=trainer)
+
+        model = provider(pre_process=False, post_process=True, vp_stage=3)
+
+        assert model.pre_process is False
+        assert model.post_process is True
+        assert model.learning_rate == expected_rate
+        assert model.vp_stage == expected_stage

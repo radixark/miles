@@ -6,13 +6,13 @@ from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 from transformers import AutoConfig
 
-from miles_plugins.models.linear_attn import GatedDeltaNet, Projections
+from miles_plugins.models.linear_attn import GatedDeltaNet
 from miles_plugins.models.qwen3_5 import Attention as _Qwen3_5Attention
 
 
 class Qwen3NextGatedDeltaNet(GatedDeltaNet):
-    """Qwen3-Next GDN: HF fuses ``in_proj_qkvz`` and ``in_proj_ba``, both group-major per key head, so the
-    projections stay fused and are split here."""
+    """Qwen3-Next GDN: HF fuses ``in_proj_qkvz`` and ``in_proj_ba``, both group-major per key head; the stacked
+    in_proj GEMM regroups their rows into q/k/v, z, b, a sections."""
 
     def _build_projections(self):
         hidden, local = self.config.hidden_size, self.local
@@ -21,25 +21,13 @@ class Qwen3NextGatedDeltaNet(GatedDeltaNet):
         )
         self.in_proj_ba = self.sharded_linear("in_proj_ba", hidden, 2 * local.num_v_heads)
 
-    def project(self, x):
-        batch, seq_len, _ = x.shape
-        local = self.local
-        qkv, z = (
-            self.in_proj_qkvz(x)
-            .view(batch, seq_len, local.num_k_heads, -1)
-            .split([local.group_qkv_dim, local.group_value_dim], dim=-1)
-        )
-        b, a = (
-            self.in_proj_ba(x)
-            .view(batch, seq_len, local.num_k_heads, -1)
-            .split([local.v_per_k, local.v_per_k], dim=-1)
-        )
-        return Projections(
-            qkv.reshape(batch, seq_len, -1),
-            z.reshape(batch, seq_len, -1),
-            b.reshape(batch, seq_len, -1),
-            a.reshape(batch, seq_len, -1),
-        )
+    def in_proj_sections(self):
+        local, hidden = self.local, self.config.hidden_size
+        qkvz = self.in_proj_qkvz.weight.view(local.num_k_heads, -1, hidden)
+        ba = self.in_proj_ba.weight.view(local.num_k_heads, -1, hidden)
+        qkv, z = qkvz.split([local.group_qkv_dim, local.group_value_dim], dim=1)
+        b, a = ba.split([local.v_per_k, local.v_per_k], dim=1)
+        return tuple(t.reshape(-1, hidden) for t in (qkv, z, b, a))
 
 
 class Attention(_Qwen3_5Attention):
@@ -48,7 +36,7 @@ class Attention(_Qwen3_5Attention):
 
 def get_qwen3_next_spec(args, config, vp_stage):
     # always use the moe path
-    if not args.num_experts:
+    if not args.backend.num_experts:
         config.moe_layer_freq = [0] * config.num_layers
 
     # Define the decoder block spec
@@ -69,8 +57,10 @@ def get_qwen3_next_spec(args, config, vp_stage):
     hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
 
     # Compute layer_types if the config class doesn't expose it
-    if not hasattr(hf_config, "layer_types"):
-        interval = getattr(hf_config, "full_attention_interval", 4)
+    if not hasattr(hf_config, "layer_types"):  # config-access-exempt: older HF checkpoints omit explicit layer_types
+        interval = getattr(
+            hf_config, "full_attention_interval", 4
+        )  # config-access-exempt: older HF checkpoints encode full-attention cadence with this optional field
         n = hf_config.num_hidden_layers
         hf_config.layer_types = ["full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)]
 

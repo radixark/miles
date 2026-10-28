@@ -3,16 +3,25 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any, ClassVar, Self
 
 import pytest
 from pydantic import ValidationError
 
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.workers.rpc.client.misc import RpcWorkerCallError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import (
+    RPC_PORT_NAME,
+    BaseServeSpec,
+    PortInfo,
+    SchedulingSpec,
+    WorkerCtorContext,
+    WorkerLaunchContext,
+)
 
 POOL_ID = "e2e-pool"
-RPC_PORT_FLAG = "--rpc-port"
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -44,21 +53,36 @@ class ConformanceWorker:
         raise RuntimeError(message)
 
 
-def compute_specs(worker_argv: list[str]) -> list[ServeWorkerSpec]:
-    return [compute_spec(rpc_port=_parse_rpc_port(worker_argv))]
+class ConformanceWorkerConfig(BaseLeafConfig):
+    rpc_port: int
 
 
-def compute_spec(*, rpc_port: int) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
-        name=POOL_ID,
-        port_infos=[PortInfo(name="rpc", static_port=rpc_port, allow_dynamic=rpc_port == 0)],
+class ConformanceServeSpec(BaseServeSpec):
+    worker_type: ClassVar[str] = "conformance"
+    config_class: ClassVar[type[BaseLeafConfig]] = ConformanceWorkerConfig
+    args: ConformanceWorkerConfig
+    name: str = POOL_ID
+    worker_class: str = f"{__name__}.ConformanceWorker"
+
+    @classmethod
+    def create(cls, config: ConformanceWorkerConfig) -> Self:
+        port_info = PortInfo(name=RPC_PORT_NAME, static_port=config.rpc_port, allow_dynamic=config.rpc_port == 0)
+        return cls(args=config, port_infos=[port_info])
+
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0)
+
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
         # prepend rather than replace: the inherited path is what carries sglang and megatron,
         # which the worker's own imports reach through miles.utils.arguments
-        env_var=lambda _ctx: {"PYTHONPATH": os.pathsep.join([str(REPO_ROOT), os.environ.get("PYTHONPATH", "")])},
-        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
-        worker_class=f"{__name__}.ConformanceWorker",
-        ctor_kwargs=lambda ctx: dict(tag=f"cell-{ctx.cell_index}-worker-{ctx.worker_in_cell_index}"),
-    )
+        return {"PYTHONPATH": os.pathsep.join([str(REPO_ROOT), os.environ.get("PYTHONPATH", "")])}
+
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
+        return dict(tag=f"cell-{ctx.cell_index}-worker-{ctx.worker_in_cell_index}")
+
+
+def compute_spec(*, rpc_port: int) -> BaseServeSpec:
+    return ConformanceServeSpec.create(ConformanceWorkerConfig(rpc_port=rpc_port))
 
 
 async def _call_returns_declared_type(handle: BaseWorkerHandle) -> None:
@@ -123,8 +147,3 @@ CHECKS: list[HandleCheck] = [*SHARED_CHECKS, *RPC_ONLY_CHECKS]
 SHARED_CHECK_IDS = [check.__name__.lstrip("_") for check in SHARED_CHECKS]
 
 CHECK_IDS = [check.__name__.lstrip("_") for check in CHECKS]
-
-
-def _parse_rpc_port(worker_argv: list[str]) -> int:
-    assert RPC_PORT_FLAG in worker_argv, f"{worker_argv} must name the port the conformance worker serves on"
-    return int(worker_argv[worker_argv.index(RPC_PORT_FLAG) + 1])
