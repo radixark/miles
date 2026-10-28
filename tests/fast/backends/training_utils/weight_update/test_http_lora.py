@@ -13,7 +13,10 @@ import torch
 
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocols import http_lora
-from miles.backends.training_utils.weight_update.protocols.http_lora import UpdateWeightHttpLora
+from miles.backends.training_utils.weight_update.protocols.http_lora import (
+    UpdateWeightHttpLora,
+    UpdateWeightHttpLoraStream,
+)
 from miles.utils.lora.utils import LORA_ADAPTER_NAME
 
 _MODULE = "miles.backends.training_utils.weight_update.protocols.http_lora"
@@ -38,11 +41,6 @@ class _FakeEngine:
 
     async def load_lora_adapter(self, lora_name, lora_path, pinned=False, upsert=False, timeout=None):
         return self._load("load", lora_name, lora_path, upsert)
-
-    async def load_lora_adapter_from_tensors(
-        self, lora_name, config_dict, serialized_named_tensors=None, upsert=False, timeout=None
-    ):
-        return self._load("load_from_tensors", lora_name, (config_dict, serialized_named_tensors), upsert)
 
     def _load(self, route: str, lora_name: str, payload: object, upsert: bool) -> dict:
         self.calls.append(f"{route}+upsert" if upsert else route)
@@ -74,6 +72,21 @@ class _FakeEngine:
         self.calls.append(f"version={weight_version}")
 
 
+class _FakeSessionEngine:
+    """Records what a weight-update session receives; the session frame itself belongs to the updater."""
+
+    def __init__(self, url: str = "http://e:1", reject: bool = False) -> None:
+        self.server_url = url
+        self.reject = reject
+        self.posted: list[list[str]] = []
+
+    async def update_weights_from_tensor(self, serialized_named_tensors, load_format=None, flush_cache=False, **_):
+        self.posted.append(list(serialized_named_tensors))
+        if self.reject:
+            return {"success": False, "error_message": "stash refused"}
+        return {"success": True, "message": "Success"}
+
+
 def _make_args(tmp_path, **overrides) -> Namespace:
     args = Namespace(
         lora_rank=16,
@@ -94,8 +107,8 @@ def _make_args(tmp_path, **overrides) -> Namespace:
     return args
 
 
-def _connect(args: Namespace, engines: list[_FakeEngine], gpu_counts: list[int] | None = None) -> UpdateWeightHttpLora:
-    protocol = UpdateWeightHttpLora(args)
+def _connect(args: Namespace, engines: list, gpu_counts: list[int] | None = None, protocol_cls=UpdateWeightHttpLora):
+    protocol = protocol_cls(args)
     with patch(f"{_MODULE}.dist.get_rank", return_value=0):
         protocol.connect(
             engines,
@@ -230,21 +243,46 @@ def test_path_mode_keeps_the_newest_versions_of_this_run_only(tmp_path):
     assert os.path.isdir(tmp_path / f"{LORA_ADAPTER_NAME}_19990101-000000_v30")
 
 
-def test_tensors_mode_sends_one_copy_per_engine_gpu_and_writes_nothing(tmp_path):
-    engines = [_FakeEngine("http://a:1"), _FakeEngine("http://b:1")]
-    protocol = _connect(
-        _make_args(tmp_path, http_lora_ship="tensors", update_weight_disk_dir=None), engines, gpu_counts=[2, 4]
-    )
+def _stream_args(tmp_path) -> Namespace:
+    return _make_args(tmp_path, http_lora_ship="tensors", update_weight_disk_dir=None)
 
-    _sync(protocol, 1, adapter_value=5.0)
+
+def test_stream_mode_posts_one_copy_per_engine_gpu_and_writes_nothing(tmp_path):
+    engines = [_FakeSessionEngine("http://a:1"), _FakeSessionEngine("http://b:1")]
+    protocol = _connect(_stream_args(tmp_path), engines, gpu_counts=[2, 4], protocol_cls=UpdateWeightHttpLoraStream)
+
+    name = f"{LORA_ADAPTER_NAME}:{_HF_KEY}"
+    protocol.send_bucket([(name, torch.full((16, 8), 5.0))])
+    protocol.finalize(1)
 
     for engine, gpu_count in zip(engines, [2, 4], strict=True):
-        config, serialized = engine.served[LORA_ADAPTER_NAME]
-        assert config["r"] == 16
-        assert len(serialized) == gpu_count
-        tensors = pickle.loads(base64.b64decode(serialized[0]))
-        assert torch.equal(tensors[_HF_KEY], torch.full((16, 8), 5.0))
+        assert len(engine.posted) == 1 and len(engine.posted[0]) == gpu_count
+        named = pickle.loads(base64.b64decode(engine.posted[0][0]))
+        assert [n for n, _ in named] == [name]
+        assert torch.equal(named[0][1], torch.full((16, 8), 5.0))
     assert not any(tmp_path.iterdir())
+    assert protocol.pop_metrics()["http_lora/bytes"] == 16 * 8 * 4
+
+
+def test_stream_mode_raises_when_an_engine_rejects_a_bucket(tmp_path):
+    engines = [_FakeSessionEngine("http://a:1"), _FakeSessionEngine("http://b:1", reject=True)]
+    protocol = _connect(_stream_args(tmp_path), engines, protocol_cls=UpdateWeightHttpLoraStream)
+
+    with pytest.raises(RuntimeError, match="stash refused"):
+        protocol.send_bucket([(f"{LORA_ADAPTER_NAME}:{_HF_KEY}", torch.ones(2, 2))])
+
+
+def test_stream_mode_rejects_a_bucket_for_another_adapter(tmp_path):
+    protocol = _connect(_stream_args(tmp_path), [_FakeSessionEngine()], protocol_cls=UpdateWeightHttpLoraStream)
+
+    with pytest.raises(AssertionError, match="one adapter"):
+        protocol.send_bucket([(f"other:{_HF_KEY}", torch.ones(2, 2))])
+
+
+def test_stream_mode_leaves_the_session_frame_to_the_updater():
+    # The updater pauses, registers, and ends the session only for protocols that declare it.
+    assert UpdateWeightHttpLoraStream.use_weight_update_session is True
+    assert UpdateWeightHttpLora.use_weight_update_session is False
 
 
 def _foreign_load_from_bytes(b):

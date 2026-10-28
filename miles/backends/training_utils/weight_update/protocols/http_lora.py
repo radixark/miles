@@ -8,8 +8,10 @@ weights only. A LoRA run needs neither: the base weights never change, and the
 adapter is small enough to hand to each engine over HTTP.
 
 ``--http-lora-ship path`` stages a versioned PEFT directory and posts its path to
-/load_lora_adapter; ``tensors`` posts the adapter itself to
-/load_lora_adapter_from_tensors, so the engines need nothing but an HTTP port.
+/load_lora_adapter. ``tensors`` streams the adapter through the engine's
+weight-update session (/register_lora_adapter, /update_weights_from_tensor,
+/end_weight_update), so the engines need nothing but an HTTP port, and the
+session installs each version in place.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import (
+    check_weight_sync_results,
     maybe_pause_engines,
     maybe_resume_engines,
     set_weight_version,
@@ -81,7 +84,8 @@ def _error_mentions(error: httpx.HTTPStatusError, markers: Sequence[str]) -> boo
 
 
 class UpdateWeightHttpLora(WeightTransferProtocol):
-    """Rank 0 holds the whole adapter and installs it on every engine at finalize."""
+    """``--http-lora-ship path``: rank 0 writes the adapter to shared storage and
+    posts its path to every engine at finalize."""
 
     required_placement = WeightUpdatePlacement(gather_pp=True)
     supports_lora = True
@@ -91,12 +95,11 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         super().__init__(args)
         self.group_name = "miles-http-lora"
         self._lora_config = build_lora_config(args, target_modules=args.lora_adapter_targets)
-        self._stage_root: str | None = args.update_weight_disk_dir
+        self._stage_root: str = args.update_weight_disk_dir
         self._run_tag = time.strftime("%Y%m%d-%H%M%S")
         self._post_write_hook: Callable | None = None
         if args.custom_update_weight_post_write_path:
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
-        self._engine_gpu_counts: list[int] = []
         self._adapter: dict[str, torch.Tensor] = {}
         self._upsert_supported: bool | None = None
 
@@ -114,7 +117,6 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
         self.rollout_engines = rollout_engines
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
-        self._engine_gpu_counts = list(engine_gpu_counts)
         self.is_sender = dist.get_rank() == 0
         self._adapter.clear()
 
@@ -134,8 +136,8 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
             return
 
         start = time.perf_counter()
-        adapter_dir = self._write_adapter(adapter, weight_version) if self._stage_root else None
-        if self.args.http_lora_ship == "path" and self._post_write_hook is not None:
+        adapter_dir = self._write_adapter(adapter, weight_version)
+        if self._post_write_hook is not None:
             self._post_write_hook(self.args, adapter_dir, engines)
         write_s = time.perf_counter() - start
 
@@ -146,15 +148,14 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         try:
             if should_pause:
                 maybe_pause_engines(self.args, cell_updaters)
-            self._load_everywhere(engines, adapter, adapter_dir)
+            self._load_everywhere(engines, adapter_dir)
             set_weight_version(cell_updaters, weight_version)
         finally:
             if should_pause:
                 maybe_resume_engines(self.args, cell_updaters)
         load_s = time.perf_counter() - start
 
-        if self._stage_root:
-            self._prune_old_versions()
+        self._prune_old_versions()
 
         num_bytes = sum(t.numel() * t.element_size() for t in adapter.values())
         self.update_weight_metrics.update(
@@ -187,34 +188,13 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         for version in versions[:-KEEP_VERSIONS]:
             shutil.rmtree(os.path.join(self._stage_root, f"{prefix}{version}"), ignore_errors=True)
 
-    def _load_everywhere(
-        self, engines: list[SGLangApiClient], adapter: dict[str, torch.Tensor], adapter_dir: str | None
-    ) -> None:
-        if self.args.http_lora_ship == "path":
-
-            def _load(engine: SGLangApiClient, gpu_count: int, upsert: bool) -> Awaitable:
-                return engine.load_lora_adapter(LORA_ADAPTER_NAME, adapter_dir, upsert=upsert, timeout=LOAD_TIMEOUT_S)
-
-        else:
-            # A plain pickle, not MultiprocessingSerializer, whose shared-memory handles do not leave the host.
-            pickled = _pickle_with_torch_globals({k: v.contiguous() for k, v in adapter.items()})
-            blob = base64.b64encode(pickled).decode("ascii")
-
-            def _load(engine: SGLangApiClient, gpu_count: int, upsert: bool) -> Awaitable:
-                return engine.load_lora_adapter_from_tensors(
-                    LORA_ADAPTER_NAME,
-                    self._lora_config,
-                    serialized_named_tensors=[blob] * gpu_count,
-                    upsert=upsert,
-                    timeout=LOAD_TIMEOUT_S,
-                )
+    def _load_everywhere(self, engines: list[SGLangApiClient], adapter_dir: str) -> None:
+        def _load(engine: SGLangApiClient, upsert: bool) -> Awaitable:
+            return engine.load_lora_adapter(LORA_ADAPTER_NAME, adapter_dir, upsert=upsert, timeout=LOAD_TIMEOUT_S)
 
         is_probe = self._upsert_supported is None
         results = async_utils.wait_futures(
-            [
-                async_utils.submit(self._replace_adapter(engine, functools.partial(_load, engine, gpu_count)))
-                for engine, gpu_count in zip(engines, self._engine_gpu_counts, strict=True)
-            ]
+            [async_utils.submit(self._replace_adapter(engine, functools.partial(_load, engine))) for engine in engines]
         )
         if not is_probe:
             return
@@ -267,3 +247,79 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
             if not _error_mentions(e, NAME_ABSENT_MARKERS):
                 raise
         await load(upsert=False)
+
+
+class UpdateWeightHttpLoraStream(WeightTransferProtocol):
+    """``--http-lora-ship tensors``: rank 0 posts each adapter bucket into the
+    engines' weight-update session.
+
+    The updater owns the session frame: it registers the adapter, pauses the
+    engines, opens the session, and closes it with end_weight_update, which
+    installs the streamed tensors in place and verifies them against the
+    trainer's checksums under --check-lora-weight-equal.
+    """
+
+    required_placement = WeightUpdatePlacement(gather_pp=True)
+    supports_lora = True
+    use_weight_update_session = True
+
+    def __init__(self, args: Namespace) -> None:
+        super().__init__(args)
+        self.group_name = "miles-http-lora"
+        self._engine_gpu_counts: list[int] = []
+        self._selector = "all"
+        self._num_bytes = 0
+        self._post_s = 0.0
+
+    def connect(
+        self,
+        rollout_engines: Sequence[SGLangApiClient],
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
+        parallel_state: ParallelState,
+        placement: WeightUpdatePlacement,
+        selector: str,
+    ) -> None:
+        assert placement.gather_pp, "http-lora needs the full adapter on one rank"
+        assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
+        self.rollout_engines = rollout_engines
+        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
+        self._engine_gpu_counts = list(engine_gpu_counts)
+        self._selector = selector
+        self.is_sender = dist.get_rank() == 0
+
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
+        for name, _ in bucket:
+            lora_name, _ = name.split(":", 1)
+            assert lora_name == LORA_ADAPTER_NAME, f"http-lora publishes one adapter, got {name!r}"
+        named = [(name, tensor.detach().to("cpu", copy=True).contiguous()) for name, tensor in bucket]
+        # A plain pickle, not MultiprocessingSerializer, whose shared-memory handles do not leave the host.
+        blob = base64.b64encode(_pickle_with_torch_globals(named)).decode("ascii")
+
+        start = time.perf_counter()
+        results = async_utils.wait_futures(
+            [
+                async_utils.submit(
+                    engine.update_weights_from_tensor(
+                        serialized_named_tensors=[blob] * gpu_count, flush_cache=False, selector=self._selector
+                    )
+                )
+                for engine, gpu_count in zip(self.rollout_engines, self._engine_gpu_counts, strict=True)
+            ]
+        )
+        check_weight_sync_results(results, is_lora=True)
+        self._post_s += time.perf_counter() - start
+        self._num_bytes += sum(t.numel() * t.element_size() for _, t in named)
+
+    def finalize(self, weight_version: int) -> None:
+        if not self.is_sender:
+            return
+        self.update_weight_metrics.update(
+            {"http_lora/bytes": float(self._num_bytes), "http_lora/post_s": self._post_s}
+        )
+        logger.info(
+            f"http-lora: v{weight_version} {self._num_bytes / 1e6:.0f} MB posted in {self._post_s:.1f}s "
+            f"to {len(self.rollout_engines)} engine(s)"
+        )
+        self._num_bytes, self._post_s = 0, 0.0
