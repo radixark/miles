@@ -5,6 +5,7 @@ so each output scores logprob(t[i] | x[0..i])."""
 
 import math
 
+import numpy as np
 import pydantic
 
 from miles.tinker.core.input_validation import validate_save_options
@@ -214,5 +215,5 @@ def render_result(result: dict) -> dict:
     raise AssertionError(f"unrenderable result op {op!r}")
 
 
-def _tensor_json(values: list[float]) -> dict:
-    return {"dtype": "float32", "shape": [len(values)], "data": values}
+def _tensor_json(values: list[float] | np.ndarray) -> dict:
+    return {"dtype": "float32", "shape": [len(values)], "data": np.asarray(values).tolist()}

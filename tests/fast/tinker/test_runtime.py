@@ -1,6 +1,7 @@
 """Runtime translation preserves datum order, sampling parameters, and token logprobs."""
 
 import httpx
+import numpy as np
 import pytest
 import torch
 
@@ -44,11 +45,13 @@ def _datum(tokens: list[int], **extra) -> dict:
 class TestBuildTrainData:
     def test_datums_become_rollout_batch_keys(self):
         train_data = _build_train_data([(3, _datum([1, 2, 3])), (5, _datum([4, 5]))])
-        assert train_data["tokens"] == [[1, 2, 3], [4, 5]]
-        assert train_data["target_tokens"] == [[2, 3], [5]]
+        rows = {key: train_data[key] for key in ("tokens", "target_tokens", "loss_masks")}
+        assert {row.dtype for column in rows.values() for row in column} == {np.dtype(np.int32)}
+        assert [row.tolist() for row in rows["tokens"]] == [[1, 2, 3], [4, 5]]
+        assert [row.tolist() for row in rows["target_tokens"]] == [[2, 3], [5]]
+        assert [row.tolist() for row in rows["loss_masks"]] == [[1, 1], [1]]
         assert train_data["response_lengths"] == [2, 1]
         assert train_data["total_lengths"] == [3, 2]
-        assert train_data["loss_masks"] == [[1, 1], [1]]
         assert train_data["adapter_slots"] == [3, 5]
         assert train_data["sample_indices"] == [0, 1]
         assert train_data["dynamic_global_batch_size"] == 2
@@ -57,16 +60,17 @@ class TestBuildTrainData:
         train_data = _build_train_data(
             [(0, _datum([1, 2], weights=[1.0], advantages=[2.0], sampling_logprobs=[-0.5]))]
         )
-        assert train_data["loss_weights"] == [[1.0]]
-        assert train_data["advantages"] == [[2.0]]
-        assert train_data["rollout_log_probs"] == [[-0.5]]
+        for key, value in (("loss_weights", 1.0), ("advantages", 2.0), ("rollout_log_probs", -0.5)):
+            (row,) = train_data[key]
+            assert isinstance(row, torch.Tensor) and row.dtype == torch.float32, "CP slicing uses torch.cat"
+            assert row.tolist() == [value]
 
 
 async def test_forward_backward_merges_worker_replicas():
     backend = MilesBackend(trainer=None, router_url="http://router")
     per_datum = [
-        {"sample_index": 1, "loss": 2.0, "logprobs": torch.tensor([-0.2])},
-        {"sample_index": 0, "loss": 1.0, "logprobs": torch.tensor([-0.1])},
+        {"sample_index": 1, "loss": 2.0, "logprobs": torch.tensor([-0.25], dtype=torch.bfloat16)},
+        {"sample_index": 0, "loss": 1.0, "logprobs": torch.tensor([-0.5], dtype=torch.bfloat16)},
     ]
 
     async def fake_call_trainer(method, batch_id, train_data):
@@ -74,10 +78,9 @@ async def test_forward_backward_merges_worker_replicas():
 
     backend._call_trainer = fake_call_trainer
     outputs = await backend.forward_backward(1, [(0, _datum([1, 2])), (0, _datum([3, 4]))], "cross_entropy", {})
-    assert outputs == [
-        {"loss": 1.0, "logprobs": [pytest.approx(-0.1)]},
-        {"loss": 2.0, "logprobs": [pytest.approx(-0.2)]},
-    ]
+    assert [output["loss"] for output in outputs] == [1.0, 2.0]
+    assert [output["logprobs"].dtype for output in outputs] == [np.float32, np.float32]
+    assert [output["logprobs"].tolist() for output in outputs] == [[-0.5], [-0.25]]
 
 
 class TestGenerateRequest:
@@ -169,7 +172,8 @@ async def test_forward_only_runs_the_requested_loss():
     backend._call_trainer = fake_call_trainer
     outputs = await backend.forward_only(1, [(0, _datum([1, 2]))], "importance_sampling", {})
     assert captured == {"method": "forward_only", "loss_fn": "importance_sampling"}
-    assert outputs == [{"loss": 3.0, "logprobs": [pytest.approx(-0.3)]}]
+    assert outputs[0]["loss"] == 3.0
+    assert outputs[0]["logprobs"].tolist() == [pytest.approx(-0.3)]
 
 
 def test_a_pinned_seed_still_gets_one_model_queue_per_sample():
@@ -206,7 +210,8 @@ async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
     backend._call_trainer = fake_call_trainer
     outputs = await backend.forward_backward(1, [(0, _datum([1, 2], weights=[1.0]))], "cross_entropy", {})
     assert seen["dynamic_global_batch_size"] == 2, "a singleton batch must be padded to the DP size"
-    assert seen["loss_masks"] == [[1], [0]], "the zero mask removes padding from every loss term"
+    masks = [mask.tolist() for mask in seen["loss_masks"]]
+    assert masks == [[1], [0]], "the zero mask removes padding from every loss term"
     assert len(outputs) == 1, "padding outputs are dropped"
 
 

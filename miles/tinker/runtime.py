@@ -3,6 +3,8 @@
 import asyncio
 
 import httpx
+import numpy as np
+import torch
 
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import UserInputError
@@ -25,12 +27,15 @@ def _pad_to_dp_multiple(slot_datums: list, dp_size: int) -> list:
 
 
 def _build_train_data(slot_datums: list) -> dict:
-    """Miles response_lengths select label positions here, including prompt targets."""
+    """Miles response_lengths select label positions here, including prompt targets.
+
+    Rows are arrays so the object store ships buffers instead of per-token Python objects.
+    Loss inputs are tensors because context-parallel slicing joins them with torch.cat."""
     datums = [datum for _, datum in slot_datums]
     train_data = {
-        "tokens": [datum["tokens"] for datum in datums],
-        "target_tokens": [datum["target_tokens"] for datum in datums],
-        "loss_masks": [[0 if datum.get("padding") else 1] * datum["target_len"] for datum in datums],
+        "tokens": [np.asarray(datum["tokens"], dtype=np.int32) for datum in datums],
+        "target_tokens": [np.asarray(datum["target_tokens"], dtype=np.int32) for datum in datums],
+        "loss_masks": [np.full(datum["target_len"], 0 if datum.get("padding") else 1, np.int32) for datum in datums],
         "response_lengths": [datum["target_len"] for datum in datums],
         "total_lengths": [len(datum["tokens"]) for datum in datums],
         "sample_indices": list(range(len(datums))),
@@ -39,7 +44,7 @@ def _build_train_data(slot_datums: list) -> dict:
     }
     for datum_key, batch_key in DATUM_TO_BATCH_KEYS.items():
         if datum_key in datums[0]:
-            train_data[batch_key] = [datum[datum_key] for datum in datums]
+            train_data[batch_key] = [torch.as_tensor(datum[datum_key], dtype=torch.float32) for datum in datums]
     return train_data
 
 
@@ -88,7 +93,7 @@ class MilesBackend:
                 if index not in by_index:
                     by_index[index] = {
                         "loss": float(datum_output["loss"]),
-                        "logprobs": datum_output["logprobs"].tolist(),
+                        "logprobs": datum_output["logprobs"].float().numpy(),
                     }
         return [by_index[index] for index in range(len(slot_datums))]
 
