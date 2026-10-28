@@ -9,7 +9,17 @@ from tests.fast.dashboard.dummy_telemetry import dump_dummy_telemetry
 import miles.dashboard.store as store_module
 from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.server import make_app
-from miles.dashboard.store import GpuSample, Meta, MetricStore, PhaseEvent, Role, Stream, _hour_key, _PartitionReader
+from miles.dashboard.store import (
+    GpuProcessSample,
+    GpuSample,
+    Meta,
+    MetricStore,
+    PhaseEvent,
+    Role,
+    Stream,
+    _hour_key,
+    _PartitionReader,
+)
 
 # hour-aligned base so partition boundaries land where the test says they do
 BASE = ((1_000_000 // 3600) + 1) * 3600.0
@@ -382,7 +392,6 @@ def test_time_range_edge_ignores_a_newest_partition_still_being_written(tmp_path
 
 
 def test_gpu_processes_window_and_lane_filter_match_the_written_rows(tmp_path):
-    from miles.dashboard.store import GpuProcessSample
 
     writer = MetricStore(tmp_path)
     writer.write_meta(Meta(run_name="procs", start_ts=BASE, args={}))
