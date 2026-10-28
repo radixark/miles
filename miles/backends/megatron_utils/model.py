@@ -12,7 +12,6 @@ from pathlib import Path
 import torch
 from megatron.core import mpu
 from megatron.core.distributed import DistributedDataParallel as DDP
-from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
@@ -722,10 +721,12 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
+    from megatron.bridge.peft.utils import finalize_model_grads_with_expert_adapter_sync
+
     from .lora.utils import reduce_marked_lora_grads
 
     reduce_marked_lora_grads(args[0])
-    return finalize_model_grads(*args, **kwargs)
+    return finalize_model_grads_with_expert_adapter_sync(*args, **kwargs)
 
 
 def setup_train_iteration_config(args, model, optimizer, disable_optimizer):

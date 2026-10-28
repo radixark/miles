@@ -14,12 +14,9 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from megatron.bridge.peft.multi_lora_layers import ExpertSlotRouting, MultiLoRAGroupedExpertLinear, init_adapter_slot
-from megatron.bridge.peft.utils import (
-    allreduce_expert_parallel_replicated_grads,
-    enable_expert_parallel_grad_sync_in_finalize,
-)
+from megatron.bridge.peft.utils import enable_expert_parallel_grad_sync_in_finalize
 from megatron.core import parallel_state
-from megatron.core.distributed import DistributedDataParallel, DistributedDataParallelConfig, finalize_model_grads
+from megatron.core.distributed import DistributedDataParallel, DistributedDataParallelConfig
 from megatron.core.extensions.transformer_engine import TEColumnParallelGroupedLinear, TERowParallelGroupedLinear
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.module import MegatronModule
@@ -34,6 +31,7 @@ from miles.backends.megatron_utils.lora.optimizer import (
     adapter_slot_parameters,
     step_slot_optimizers,
 )
+from miles.backends.megatron_utils.model import finalize_model_grads_with_empty_cache
 from miles.utils.distributed_utils import init_gloo_group
 
 register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora", "multi-lora"], hardware=["hopper"])
@@ -102,8 +100,7 @@ class ExpertModel(MegatronModule):
 def forward_backward(model, inputs):
     with accumulate_gradients(model):
         model[0](inputs).float().square().sum().backward()
-        finalize_model_grads(model)
-        allreduce_expert_parallel_replicated_grads(model)
+        finalize_model_grads_with_empty_cache(model)
 
 
 def run_worker(directory, tp):

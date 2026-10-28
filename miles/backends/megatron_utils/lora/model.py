@@ -23,8 +23,6 @@ def run_forward_backward(
     *,
     forward_only: bool = False,
 ) -> dict:
-    from megatron.bridge.peft.utils import allreduce_expert_parallel_replicated_grads
-
     data_iterator, num_microbatches = get_data_iterator(args, model, rollout_data)
     assert len(num_microbatches) == 1, "a work unit is a single forward/backward pass"
 
@@ -46,8 +44,6 @@ def run_forward_backward(
             num_rollouts=None,
             forward_only=forward_only,
         )
-        if not forward_only:
-            allreduce_expert_parallel_replicated_grads(list(model))
     per_datum_outputs = [output for microbatch in losses_reduced for output in microbatch["per_datum"]]
     dumper_phase_util.finalize(model)
 
