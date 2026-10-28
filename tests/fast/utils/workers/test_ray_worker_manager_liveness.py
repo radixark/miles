@@ -8,7 +8,7 @@ from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_KILL, READINESS_METHOD, FakeRayCluster
 from tests.fast.utils.workers.fake_specs import FakeServeSpec
 
-from miles.utils.workers import ray_worker_manager
+from miles.utils.workers import ray_worker_manager as worker_manager_core
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_manager.client import ManagerWorkerProvider
@@ -56,7 +56,7 @@ def _kill_worker_process(cluster: FakeRayCluster, *, handle_index: int) -> None:
 
 @pytest.fixture
 def instant_scans(monkeypatch) -> None:
-    monkeypatch.setattr(ray_worker_manager, "_LIVENESS_SCAN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(worker_manager_core, "_LIVENESS_SCAN_INTERVAL_SECONDS", 0.0)
 
 
 class TestScanLivenessOnce:

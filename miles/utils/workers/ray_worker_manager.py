@@ -32,6 +32,7 @@ from miles.utils.workers.rpc.common.metadata import declared_concurrency_groups
 from miles.utils.workers.serving.serve_actor import ServeActor
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_info import WorkerInfo
+from miles.utils.workers.worker_manager.runtime import GpuSlotRef, WorkerLaunchRequest, WorkerProcess, WorkerRuntime
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
     RPC_PORT_NAME,
@@ -57,28 +58,20 @@ _ACTOR_NAME = "ray_worker_manager"
 _LIVENESS_SCAN_INTERVAL_SECONDS = 10.0
 
 
-class RayWorkerManager:
+class WorkerManager:
+    runtime: WorkerRuntime
+
     def __init__(self):
         self.port_allocator = PortAllocator()
 
-    @staticmethod
-    def launch(args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend):
-        obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
-        ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend))
-        return obj
-
-    @staticmethod
-    def get_handle() -> ray.actor.ActorHandle:
-        return ray.get_actor(_ACTOR_NAME)
-
-    async def init(
-        self, args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
-    ):
+    async def init_pools(
+        self, args, specs: list[BaseSpec], *, runtime: WorkerRuntime, comm_backend: WorkerCommBackend
+    ) -> None:
         configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
 
         self.scaling = ScalingConfig.slice_from(args)
         self.comm_backend = comm_backend
-        self.pgs = pgs
+        self.runtime = runtime
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
         self._membership_lock = asyncio.Lock()
@@ -116,8 +109,8 @@ class RayWorkerManager:
         assert isinstance(target, ObservedFaultHookTarget), "A fault hook sent to a cell names the worker it observed"
         if self.observe_fault_target(cell_id=target.cell_id, rank=target.rank) != target:
             raise StaleFaultTargetError("Fault hook target no longer matches the observed worker")
-        actor = self._find_cell(target.cell_id).actors[target.rank].actor_handle
-        return await actor.control_fault_hook.remote(command=command)
+        process = self._find_cell(target.cell_id).actors[target.rank].process
+        return await process.call("control_fault_hook", command=command)
 
     def get_worker_addrs(self, worker_name: str) -> NamedHostAndPorts:
         addrs = self._find_actor(worker_name).self_addrs
@@ -154,13 +147,13 @@ class RayWorkerManager:
         ]
         return {info.cell_id: info for info in infos}
 
-    def get_actor_handle(self, worker_name: str, *, expected_generation: int) -> ray.actor.ActorHandle:
+    def get_actor_handle(self, worker_name: str, *, expected_generation: int) -> Any:
         actor = self._find_actor(worker_name)
         assert actor.generation == expected_generation, (
             f"{worker_name} is now generation {actor.generation}, not the {expected_generation} it was described as; "
             f"ask for its worker infos again"
         )
-        return actor.actor_handle
+        return actor.process.native_handle
 
     def _compute_worker_info(self, actor: _BaseActorManager) -> WorkerInfo:
         served_over_rpc = isinstance(actor.spec, BaseServeSpec) and self.comm_backend == WorkerCommBackend.RPC
@@ -192,7 +185,7 @@ class _PoolManager:
     cells: list[_CellManager]
 
     @classmethod
-    def initial(cls, spec: BaseSpec, manager: RayWorkerManager) -> _PoolManager:
+    def initial(cls, spec: BaseSpec, manager: WorkerManager) -> _PoolManager:
         return cls(
             spec=spec,
             cells=[
@@ -223,7 +216,7 @@ def _actor_manager_cls(spec: BaseSpec, *, comm_backend: WorkerCommBackend) -> ty
 
 @dataclass(kw_only=True)
 class _CellManager(Generic[SpecT]):
-    manager: RayWorkerManager
+    manager: WorkerManager
     cell_index: int
     spec: SpecT
     actors: list[_BaseActorManager] | None
@@ -241,7 +234,7 @@ class _CellManager(Generic[SpecT]):
                 parent=self,
                 worker_in_cell_index=worker_in_cell_index,
                 spec=self.spec,
-                actor_handle=None,
+                process=None,
                 gpu_slot_index=(
                     scheduling.pg_slot_offset
                     + (self.cell_index * scheduling.num_workers_per_cell + worker_in_cell_index)
@@ -252,28 +245,12 @@ class _CellManager(Generic[SpecT]):
             )
             for worker_in_cell_index in range(scheduling.num_workers_per_cell)
         ]
-        await self._launch_all_or_none()
+        processes = await self.manager.runtime.launch_cell(
+            cell_id=self.cell_id, launches=[a.compute_launch() for a in self.actors]
+        )
+        for actor, process in zip(self.actors, processes, strict=True):
+            actor.process = process
         self.liveness_scan_task = asyncio.create_task(self._scan_liveness_forever(self.generation))
-
-    async def _launch_all_or_none(self) -> None:
-        """Create the cell's actors one at a time; a launch either creates every one of them or leaves none behind.
-
-        When one cannot be created, the ones already created are killed, without a graceful shutdown since none has
-        run anything yet, the rest are never created, and the error is raised again.
-        """
-        try:
-            for actor in self.actors:
-                await actor.launch_actor()
-        except BaseException:
-            for actor in self.actors:
-                if (handle := actor.actor_handle) is not None:
-                    actor.actor_handle = None
-                    try:
-                        ray.kill(handle)
-                        logger.info(f"Killed actor {handle}")
-                    except Exception as e:
-                        logger.warning(f"Failed to kill actor {handle} ({e})")
-            raise
 
     async def alloc_ports(self) -> None:
         await self._for_all_actors(lambda a: a.alloc_ports())
@@ -285,6 +262,9 @@ class _CellManager(Generic[SpecT]):
         if self.actors is None:
             return
         await self._for_all_actors(lambda a: a.stop())
+        # a cell whose launch failed holds no processes: launch_cell cleaned up the ones it had created
+        if processes := [a.process for a in self.actors if a.process is not None]:
+            await self.manager.runtime.release_cell(processes=processes)
         self.actors = None
 
     async def _scan_liveness_forever(self, generation: int) -> None:
@@ -347,16 +327,16 @@ _SHUTDOWN_TIMEOUT = 30
 
 @dataclass(kw_only=True)
 class _BaseActorManager(Generic[SpecT]):
-    manager: RayWorkerManager
+    manager: WorkerManager
     parent: _CellManager
     worker_in_cell_index: int
     spec: SpecT
-    actor_handle: ray.actor.ActorHandle | None
+    process: WorkerProcess | None
     self_addrs: NamedHostAndPorts | None = None
     local_gpu_ids: list[int] | None = None
     gpu_slot_index: int | None
 
-    async def launch_actor(self) -> None:
+    def compute_launch(self) -> WorkerLaunchRequest:
         raise NotImplementedError
 
     async def post_setup(self) -> None:
@@ -366,16 +346,16 @@ class _BaseActorManager(Generic[SpecT]):
         allocated: NamedHostAndPorts = {}
 
         node_ip, external_ip, self.local_gpu_ids = await asyncio.gather(
-            self.actor_handle._get_node_ip.remote(),
-            self.actor_handle._get_node_external_ip.remote(),
-            self.actor_handle._to_local_gpu_ids.remote(gpu_ids=self.gpu_ids),
+            self.process.call("_get_node_ip"),
+            self.process.call("_get_node_external_ip"),
+            self.process.call("_to_local_gpu_ids", gpu_ids=self.gpu_ids),
         )
         for port_info in self.spec.port_infos:
             if self.worker_in_cell_index != 0 and port_info.mode == "master":
                 continue
             if port_info.allow_dynamic:
                 port = await self.manager.port_allocator.alloc(
-                    self.actor_handle._get_free_port_block.remote,
+                    partial(self.process.call, "_get_free_port_block"),
                     node_ip=node_ip,
                     consecutive=port_info.num_consecutive,
                 )
@@ -391,7 +371,7 @@ class _BaseActorManager(Generic[SpecT]):
         self.self_addrs = allocated
 
     async def _assert_static_port_is_free(self, *, port: int, port_name: str, node_ip: str) -> None:
-        free = await self.actor_handle._is_port_available.remote(port=port)
+        free = await self.process.call("_is_port_available", port=port)
         assert free, (
             f"Port {port} on {node_ip} is already in use, so {self.name} cannot serve its {port_name!r} "
             f"endpoint there; a stale process from an earlier run is the usual cause"
@@ -407,49 +387,39 @@ class _BaseActorManager(Generic[SpecT]):
             gpu_ids=self.gpu_ids,
         )
 
-    def _compute_remote_options(self) -> dict:
-        return {}
-
-    def _create_actor(self, actor_class: type, **ctor_kwargs) -> ray.actor.ActorHandle:
+    def _compute_launch_of(
+        self,
+        actor_class: type,
+        *,
+        concurrency_groups: dict[str, int] | None = None,
+        **ctor_kwargs,
+    ) -> WorkerLaunchRequest:
         scheduling = self.spec.scheduling(self.manager.scaling)
-        scheduling_strategy = None
-        if (pg_name := scheduling.pg_name) is not None:
-            pg = self.manager.pgs[pg_name]
-            scheduling_strategy = PlacementGroupSchedulingStrategy(
-                placement_group=pg.pg,
-                placement_group_capture_child_tasks=True,
-                placement_group_bundle_index=pg.pg_reordered_bundle_indices[self.gpu_slot_index],
-            )
-
-        remote_options = self._compute_remote_options()
-        remote_class = ray.remote(**remote_options)(actor_class) if remote_options else ray.remote(actor_class)
-
-        return remote_class.options(
+        return WorkerLaunchRequest(
+            pool_id=self.spec.name,
+            name=self.name,
+            actor_class=actor_class,
+            ctor_kwargs=ctor_kwargs,
+            env_vars=self.spec.env_var(self.launch_context),
             num_cpus=scheduling.num_cpus_per_worker,
             num_gpus=scheduling.num_gpus_per_worker,
-            **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
-            runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
-            **(compute_ray_pin_head_options() if scheduling.pin_to_head else {}),
-        ).remote(**ctor_kwargs)
+            gpu_slots=self._gpu_slots,
+            pin_to_head=scheduling.pin_to_head,
+            concurrency_groups=concurrency_groups,
+        )
 
     async def probe_is_dead(self) -> bool:
-        if self.actor_handle is None:
+        if self.process is None:
             return False
-        return await RayWorkerHandle(self.actor_handle).probe_is_dead()
+        return await self.process.probe_is_dead()
 
     async def stop(self) -> None:
-        if self.actor_handle is None:
+        if self.process is None:
             return
+        await self.shutdown_gracefully()
+        await self.manager.runtime.kill_worker(self.process)
 
-        await self._shutdown_gracefully()
-
-        try:
-            ray.kill(self.actor_handle)
-            logger.info(f"Killed actor at {self=}")
-        except Exception as e:
-            logger.warning(f"Failed to kill actor at {self=} ({e})")
-
-    async def _shutdown_gracefully(self) -> None:
+    async def shutdown_gracefully(self) -> None:
         pass
 
     @property
@@ -465,13 +435,19 @@ class _BaseActorManager(Generic[SpecT]):
         return self.parent.generation
 
     @property
-    def gpu_ids(self) -> list[int]:
+    def _gpu_slots(self) -> GpuSlotRef | None:
         scheduling = self.spec.scheduling(self.manager.scaling)
         if (pg_name := scheduling.pg_name) is None:
+            return None
+        return GpuSlotRef(
+            layout_name=pg_name, first_slot_index=self.gpu_slot_index, num_slots=scheduling.num_gpu_slots_per_worker
+        )
+
+    @property
+    def gpu_ids(self) -> list[int]:
+        if (slots := self._gpu_slots) is None:
             return []
-        pg = self.manager.pgs[pg_name]
-        base_gpu_id = int(pg.pg_reordered_gpu_ids[self.gpu_slot_index])
-        return list(range(base_gpu_id, base_gpu_id + scheduling.num_gpu_slots_per_worker))
+        return self.manager.runtime.physical_gpu_ids(slots)
 
     @property
     def master_mode_addrs(self) -> NamedHostAndPorts:
@@ -480,8 +456,8 @@ class _BaseActorManager(Generic[SpecT]):
 
 @dataclass
 class _CommandActorManager(_BaseActorManager[BaseCommandSpec]):
-    async def launch_actor(self) -> None:
-        self.actor_handle = self._create_actor(CommandActor)
+    def compute_launch(self) -> WorkerLaunchRequest:
+        return self._compute_launch_of(CommandActor)
 
     async def post_setup(self) -> None:
         ctx = LaunchCommandContext(
@@ -495,91 +471,50 @@ class _CommandActorManager(_BaseActorManager[BaseCommandSpec]):
             local_gpu_ids=self.local_gpu_ids,
         )
         launch_cmd = self.spec.launch_command(ctx)
-        # exec lets the command replace /bin/sh, so parent death and Ray's child cleanup kill the
+        # exec lets the command replace /bin/sh, so parent death and the runtime's child cleanup kill the
         # command itself rather than a shell that would leave it orphaned with its ports.
-        self.actor_handle.run.remote(cmd=f"exec {launch_cmd}", envs={})
+        self.process.call_without_result("run", cmd=f"exec {launch_cmd}", envs={})
 
-    async def _shutdown_gracefully(self) -> None:
+    async def shutdown_gracefully(self) -> None:
         try:
-            await asyncio.wait_for(self.actor_handle.shutdown.remote(), timeout=_SHUTDOWN_TIMEOUT)
+            await asyncio.wait_for(self.process.call("shutdown"), timeout=_SHUTDOWN_TIMEOUT)
         except Exception as e:
             logger.warning(f"Graceful shutdown of {self=} failed ({e})")
 
 
 @dataclass
 class _ServeActorRayCommManager(_BaseActorManager[BaseServeSpec]):
-    def _compute_remote_options(self) -> dict:
-        groups = self.spec.concurrency_groups
-        return {} if groups is None else dict(concurrency_groups=groups)
+    """A served worker the driver calls through the runtime's own actor calls rather than rpc."""
 
-    async def launch_actor(self) -> None:
-        self.actor_handle = self._create_actor(
-            self._compute_actor_class(),
+    def compute_launch(self) -> WorkerLaunchRequest:
+        return self._compute_launch_of(
+            bootstrapped_worker_class(self.spec.worker_class),
+            concurrency_groups=self.spec.concurrency_groups,
             ctor_kwargs=self.spec.ctor_kwargs,
             context=self.launch_context,
-            capability_factory=_create_ray_backend_capability,
+            capability_factory=self.manager.runtime.worker_capability_factory(),
         )
-
-    def _compute_actor_class(self) -> type:
-        actor_class = bootstrapped_worker_class(self.spec.worker_class)
-        method_groups = self._compute_method_concurrency_groups(actor_class)
-        if not method_groups:
-            return actor_class
-        return type(
-            f"{actor_class.__name__}WithConcurrencyGroups",
-            (actor_class,),
-            {
-                name: _route_method_to_concurrency_group(
-                    getattr(actor_class, name), group=group
-                )  # config-access-exempt: attribute selected at runtime from name
-                for name, group in method_groups.items()
-            },
-        )
-
-    def _compute_method_concurrency_groups(self, actor_class: type) -> dict[str, str]:
-        if (groups := self.spec.concurrency_groups) is None:
-            return {}
-
-        method_groups = declared_concurrency_groups(actor_class)
-        assert method_groups, (
-            f"Worker {self.spec.name!r} declares concurrency groups {sorted(groups)} but no method of "
-            f"{actor_class.__name__} is annotated with @rpc(concurrency_group=...): threading the actor "
-            f"while every method stays in the default group buys nothing"
-        )
-        undeclared = sorted(set(method_groups.values()) - set(groups))
-        assert not undeclared, f"Worker {self.spec.name!r} routes methods to undeclared groups: {undeclared}"
-        return method_groups
 
     async def post_setup(self) -> None:
         pass
 
 
-def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Callable:
-    @functools.wraps(method)
-    def routed(self, *args, **kwargs):
-        return method(self, *args, **kwargs)
-
-    routed.__signature__ = inspect.signature(method)
-    del routed.__wrapped__
-    return ray.method(concurrency_group=group)(routed)
-
-
 @dataclass
 class _ServeActorRpcCommManager(_BaseActorManager[BaseServeSpec]):
-    async def launch_actor(self) -> None:
-        self.actor_handle = self._create_actor(
+    def compute_launch(self) -> WorkerLaunchRequest:
+        return self._compute_launch_of(
             ServeActor,
             build_worker=partial(
                 _build_serve_worker,
                 worker_class_path=self.spec.worker_class,
                 ctor_kwargs=self.spec.ctor_kwargs,
                 context=self.launch_context,
-                capability_factory=_create_ray_backend_capability,
+                capability_factory=self.manager.runtime.worker_capability_factory(),
             ),
         )
 
     async def post_setup(self) -> None:
-        await self.actor_handle.start_rpc_server.remote(port=self.self_addrs[RPC_PORT_NAME].port)
+        await self.process.call("start_rpc_server", port=self.self_addrs[RPC_PORT_NAME].port)
 
 
 def _build_serve_worker(
@@ -627,12 +562,142 @@ def _ctor_context(
     )
 
 
-def _create_ray_backend_capability() -> BackendCapability:
-    return RayBackendCapability(worker_manager_handle=RayWorkerManager.get_handle())
-
-
 async def _gather_or_raise(coros: list[Coroutine[Any, Any, None]]) -> None:
     results = await asyncio.gather(*coros, return_exceptions=True)
     for result in results:
         if isinstance(result, BaseException):
             raise result
+
+
+class RayWorkerManager(WorkerManager):
+    @staticmethod
+    def launch(args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend):
+        obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
+        ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend))
+        return obj
+
+    @staticmethod
+    def get_handle() -> ray.actor.ActorHandle:
+        return ray.get_actor(_ACTOR_NAME)
+
+    async def init(
+        self, args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
+    ):
+        await self.init_pools(args, specs, runtime=RayWorkerRuntime(pgs=pgs), comm_backend=comm_backend)
+
+
+class RayWorkerRuntime(WorkerRuntime):
+    def __init__(self, *, pgs: dict[str, PlacementGroupInfo]) -> None:
+        self._pgs = pgs
+
+    async def launch_cell(self, *, cell_id: str, launches: list[WorkerLaunchRequest]) -> list[WorkerProcess]:
+        processes: list[WorkerProcess] = []
+        try:
+            for launch in launches:
+                processes.append(_RayWorkerProcess(self._create_actor(launch)))
+        except BaseException:
+            # The core never learns of processes it was not handed, so nobody else would kill these.
+            for process in processes:
+                await self.kill_worker(process)
+            raise
+        return processes
+
+    async def kill_worker(self, process: WorkerProcess) -> None:
+        try:
+            ray.kill(process.native_handle)
+            logger.info(f"Killed actor {process.native_handle}")
+        except Exception as e:
+            logger.warning(f"Failed to kill actor {process.native_handle} ({e})")
+
+    async def release_cell(self, *, processes: list[WorkerProcess]) -> None:
+        pass
+
+    def physical_gpu_ids(self, slots: GpuSlotRef) -> list[int]:
+        base_gpu_id = int(self._pgs[slots.layout_name].pg_reordered_gpu_ids[slots.first_slot_index])
+        return list(range(base_gpu_id, base_gpu_id + slots.num_slots))
+
+    def worker_capability_factory(self) -> Callable[[], BackendCapability]:
+        return _create_ray_backend_capability
+
+    def _create_actor(self, launch: WorkerLaunchRequest) -> ray.actor.ActorHandle:
+        scheduling_strategy = None
+        if (slots := launch.gpu_slots) is not None:
+            pg = self._pgs[slots.layout_name]
+            scheduling_strategy = PlacementGroupSchedulingStrategy(
+                placement_group=pg.pg,
+                placement_group_capture_child_tasks=True,
+                placement_group_bundle_index=pg.pg_reordered_bundle_indices[slots.first_slot_index],
+            )
+
+        actor_class = _compute_actor_class(launch)
+        remote_options = (
+            {} if launch.concurrency_groups is None else dict(concurrency_groups=launch.concurrency_groups)
+        )
+        remote_class = ray.remote(**remote_options)(actor_class) if remote_options else ray.remote(actor_class)
+
+        return remote_class.options(
+            num_cpus=launch.num_cpus,
+            num_gpus=launch.num_gpus,
+            **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
+            runtime_env={"env_vars": launch.env_vars},
+            **(compute_ray_pin_head_options() if launch.pin_to_head else {}),
+        ).remote(**launch.ctor_kwargs)
+
+
+class _RayWorkerProcess(WorkerProcess):
+    def __init__(self, actor_handle: ray.actor.ActorHandle) -> None:
+        self._actor_handle = actor_handle
+
+    async def call(self, method: str, /, **kwargs: Any) -> Any:
+        return await getattr(self._actor_handle, method).remote(
+            **kwargs
+        )  # config-access-exempt: attribute selected at runtime from method
+
+    def call_without_result(self, method: str, /, **kwargs: Any) -> None:
+        getattr(self._actor_handle, method).remote(**kwargs)  # config-access-exempt: attribute selected at runtime
+
+    async def probe_is_dead(self) -> bool:
+        return await RayWorkerHandle(self._actor_handle).probe_is_dead()
+
+    @property
+    def native_handle(self) -> ray.actor.ActorHandle:
+        return self._actor_handle
+
+
+def _compute_actor_class(launch: WorkerLaunchRequest) -> type:
+    actor_class = launch.actor_class
+    if (groups := launch.concurrency_groups) is None:
+        return actor_class
+
+    method_groups = declared_concurrency_groups(actor_class)
+    assert method_groups, (
+        f"Worker {launch.pool_id!r} declares concurrency groups {sorted(groups)} but no method of "
+        f"{actor_class.__name__} is annotated with @rpc(concurrency_group=...): threading the actor "
+        f"while every method stays in the default group buys nothing"
+    )
+    undeclared = sorted(set(method_groups.values()) - set(groups))
+    assert not undeclared, f"Worker {launch.pool_id!r} routes methods to undeclared groups: {undeclared}"
+    return type(
+        f"{actor_class.__name__}WithConcurrencyGroups",
+        (actor_class,),
+        {
+            name: _route_method_to_concurrency_group(
+                getattr(actor_class, name), group=group
+            )  # config-access-exempt: attribute selected at runtime from name
+            for name, group in method_groups.items()
+        },
+    )
+
+
+def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Callable:
+    @functools.wraps(method)
+    def routed(self, *args, **kwargs):
+        return method(self, *args, **kwargs)
+
+    routed.__signature__ = inspect.signature(method)
+    del routed.__wrapped__
+    return ray.method(concurrency_group=group)(routed)
+
+
+def _create_ray_backend_capability() -> BackendCapability:
+    return RayBackendCapability(worker_manager_handle=RayWorkerManager.get_handle())
