@@ -131,7 +131,7 @@ def test_the_engines_reload_the_new_version_between_pause_and_resume(tmp_path, m
         "update_weights_from_disk",
         "continue_generation",
     ]
-    assert calls[2][1] == {"model_path": protocol._version_dir, "weight_version": "3"}
+    assert calls[2][1] == {"model_path": protocol._version_dir, "load_format": "safetensors", "weight_version": "3"}
 
 
 def test_a_sync_deletes_the_version_before_it(tmp_path, monkeypatch):
@@ -176,3 +176,11 @@ def test_the_first_sync_clears_the_versions_a_crashed_run_left(tmp_path, monkeyp
 
     assert sorted(path.name for path in sync_dir.iterdir()) == ["weight_v000003"]
     assert not (sync_dir / "weight_v000003" / "rank007-shard00000.safetensors").exists()
+
+
+def test_a_version_directory_rank_0_cannot_create_fails_every_rank(tmp_path, monkeypatch):
+    """Only rank 0 creates it; the other ranks must not walk into a collective rank 0 never joins."""
+    protocol = _protocol(tmp_path, replica_rank=1, replica_size=2, calls=[])
+    _use_dist(monkeypatch, _FakeDist(1, world_size=2, gathered=["OSError: No space left on device", None]))
+    with pytest.raises(RuntimeError, match="version directory failed on rank 0: OSError: No space left on device"):
+        protocol.begin_sync(1, iter_buckets=None)
