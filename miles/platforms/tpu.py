@@ -22,5 +22,11 @@ class TpuPlatform(Platform):
         # each process sees its one device, which the process group has brought up
         torch.accelerator.set_device_index(0)
 
+    def install_titan_attention(self) -> None:
+        # torch_tpu runs FlexAttention as one dense L x L mask
+        from miles.backends.torchtitan_utils import tpu_doc_attention
+
+        tpu_doc_attention.install()
+
     def device_name(self) -> str | None:
         return None
