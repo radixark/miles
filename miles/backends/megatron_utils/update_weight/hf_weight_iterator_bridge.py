@@ -189,7 +189,11 @@ def _gather_export_dtypes(conversion_tasks):
     """Share owner parameter dtypes with PP receivers that have no local tensor."""
     local_dtypes = {
         task.global_param_name: (
-            torch.float32 if getattr(task.param_weight, "keep_in_fp32", False) else task.param_weight.dtype
+            torch.float32
+            if getattr(
+                task.param_weight, "keep_in_fp32", False
+            )  # config-access-exempt: Megatron annotates only parameters requiring float32 preservation
+            else task.param_weight.dtype
         )
         for task in conversion_tasks
         if task is not None and task.param_weight is not None

@@ -8,6 +8,7 @@ from miles.ray.rollout.metrics import (
     _compute_episode_response_length_metrics,
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
+    _compute_perf_metrics_from_samples,
     _compute_spec_metrics,
     _compute_training_sample_metrics,
     _compute_zero_std_metrics,
@@ -756,3 +757,26 @@ class TestEvalMetrics:
         assert step_key == "eval/step"
         assert payload["eval/gsm8k"] == 0.5
         assert not any(key.startswith("alpha/") for key in payload)
+
+
+class TestObservedGpuThroughput:
+    @pytest.mark.parametrize("gpu_count", [0, 4])
+    def test_throughput_uses_observed_gpus_and_omits_gpu_rates_for_an_empty_fleet(self, gpu_count: int) -> None:
+        """Scaled fleets report rates per observed GPU while an empty fleet avoids invented denominators."""
+        args = make_args(rollout_num_gpus=16)
+        args.inference_runtime_mut_state.gpu_count = gpu_count
+        samples = [
+            make_sample(response_length=4, loss_mask=[1, 1, 0, 0], non_generation_time=0),
+            make_sample(response_length=8, loss_mask=[1] * 8, non_generation_time=0),
+        ]
+
+        metrics = _compute_perf_metrics_from_samples(args, samples, rollout_time=2)
+
+        assert metrics["longest_sample_tokens_per_sec"] == 4
+        assert metrics["longest_effective_sample_tokens_per_sec"] == 4
+        if gpu_count:
+            assert metrics["tokens_per_gpu_per_sec"] == 1.5
+            assert metrics["effective_tokens_per_gpu_per_sec"] == 1.25
+        else:
+            assert "tokens_per_gpu_per_sec" not in metrics
+            assert "effective_tokens_per_gpu_per_sec" not in metrics

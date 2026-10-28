@@ -65,7 +65,9 @@ class AttachContext:
 
     @property
     def output_gate(self) -> bool:
-        return bool(getattr(self.transformer_config, "attention_output_gate", False))
+        return bool(
+            getattr(self.transformer_config, "attention_output_gate", False)
+        )  # config-access-exempt: only attention architectures with output gates declare this config field
 
 
 class AttentionLoRASpec(Protocol):
@@ -87,6 +89,8 @@ class MLPLoRASpec(Protocol):
 
     name: str
     supported_targets: frozenset[str]
+    # regex of the HF blocks (below ``layers.N.``) whose projections this spec adapts
+    hf_block_pattern: str
 
     def attach(self, mlp: nn.Module, layer: nn.Module, context: AttachContext) -> int: ...
 
@@ -134,7 +138,7 @@ class LoRAArchSpec:
         """Whether this spec implements an adapter for the HF module (``*`` stands for any layer)."""
         blocks = (
             (re.escape(self.attention.hf_block), self.attention.supported_targets),
-            (r"mlp(?:\.shared_experts?)?", self.mlp.supported_targets),
+            (self.mlp.hf_block_pattern, self.mlp.supported_targets),
         )
         # a target may nest below its block (GLM-5.3-Flash's forget_gate.f_a_proj)
         return any(

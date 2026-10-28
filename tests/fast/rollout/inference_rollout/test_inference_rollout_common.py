@@ -1,12 +1,14 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from tests.fast.rollout.inference_rollout.conftest import (
     StampRecordingGenerate,
     make_eval_args,
     make_eval_prompt_dataset_cache,
     make_state,
 )
+from tests.fast.utils.output_store.test_dropped import sample_owning
 
 import miles.rollout.inference_rollout.inference_rollout_common as inference_rollout_common
 from miles.rollout.base_types import (
@@ -17,6 +19,9 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
 )
 from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
+from miles.utils.output_store import dropped
+from miles.utils.output_store.dropped import take_dropped_refs
+from miles.utils.types import Sample
 
 
 def test_inference_rollout_fn_exposes_the_constructor_input(monkeypatch) -> None:
@@ -99,3 +104,62 @@ class TestInferenceRolloutFnKvCacheNamespace:
         await fn(RolloutFnEvalInput(rollout_id=4, invocation_id="eval-call"))
 
         assert recorder.take_stamps() == {None}
+
+
+class TestFailedGenerationHandsOverItsOutputStoreRefs:
+    """A sample task that raises reaches no drop site, so the runners record what it held."""
+
+    @pytest.fixture(autouse=True)
+    def _empty_dropped(self, monkeypatch):
+        monkeypatch.setattr(dropped, "_dropped", {})
+
+    async def test_a_failed_sibling_hands_over_what_the_group_filled_in_place_or_returned(self):
+        async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+            if input.sample.index == 0:
+                input.sample.rollout_store_plan = sample_owning("in-place").rollout_store_plan
+                return GenerateFnOutput(samples=input.sample)
+            if input.sample.index == 1:
+                # Like a session: new samples, which only the task result holds.
+                return GenerateFnOutput(samples=[sample_owning("returned")])
+            raise RuntimeError("generate failed")
+
+        group = [Sample(index=index) for index in range(3)]
+        with pytest.raises(RuntimeError, match="generate failed"):
+            await inference_rollout_common.generate_and_rm_group(make_state(generate), group, sampling_params={})
+
+        assert sorted(take_dropped_refs()) == ["in-place", "returned"]
+
+    async def test_a_failed_group_reward_hands_over_the_group(self, monkeypatch):
+        async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+            return GenerateFnOutput(samples=[sample_owning(f"returned-{input.sample.index}")])
+
+        async def failing_rm(*args, **kwargs):
+            raise RuntimeError("reward failed")
+
+        monkeypatch.setattr(inference_rollout_common, "batched_async_rm", failing_rm)
+        group = [Sample(index=index) for index in range(2)]
+        with pytest.raises(RuntimeError, match="reward failed"):
+            await inference_rollout_common.generate_and_rm_group(make_state(generate), group, sampling_params={})
+
+        assert sorted(take_dropped_refs()) == ["returned-0", "returned-1"]
+
+    async def test_samples_whose_reward_fails_hand_over_their_refs(self, monkeypatch):
+        async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+            return GenerateFnOutput(samples=[sample_owning("returned")])
+
+        async def failing_rm(*args, **kwargs):
+            raise RuntimeError("reward failed")
+
+        monkeypatch.setattr(inference_rollout_common, "batched_async_rm", failing_rm)
+        args = SimpleNamespace(
+            partial_rollout=False,
+            mask_offpolicy_in_partial_rollout=False,
+            group_rm=False,
+            sglang_router_policy="round_robin",
+        )
+        with pytest.raises(RuntimeError, match="reward failed"):
+            await inference_rollout_common.generate_and_rm(
+                make_state(generate, args=args), Sample(index=0), sampling_params={}
+            )
+
+        assert list(take_dropped_refs()) == ["returned"]

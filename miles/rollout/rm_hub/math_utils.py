@@ -162,6 +162,7 @@ def _strip_string(string):
 # sympy might hang -- we don't care about trying to be lenient in these cases
 BAD_SUBSTRINGS = ["^{", "^("]
 BAD_REGEXES = [r"\^[0-9]+\^", r"\^[0-9][0-9]+"]
+POWER_BLOWUP_REGEXES = [r"\^\(?[+\-]?[0-9]+\)?\^", r"\^\(?[+\-]?[0-9]{3,}"]
 TUPLE_CHARS = "()[]"
 
 
@@ -338,6 +339,14 @@ def should_allow_eval(expr: str):
 
     for bad_regex in BAD_REGEXES:
         if re.search(bad_regex, expr) is not None:
+            return False
+
+    # The parser also reads `**` as a power, and a signed exponent (`^+9`, `**-9`) gets past the
+    # digit-only regexes above. Block the shapes that make sympy evaluate a huge integer power in
+    # either spelling: stacked powers and exponents of three or more digits.
+    powers = re.sub(r"\s*(?:\*\*|\^)\s*", "^", expr)
+    for bad_regex in POWER_BLOWUP_REGEXES:
+        if re.search(bad_regex, powers) is not None:
             return False
 
     return True

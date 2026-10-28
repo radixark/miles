@@ -27,6 +27,7 @@ def _make_controller(*, num_cells: int = 2, indep_dp: bool = False) -> TrainerCo
         indep_dp=indep_dp,
         actor_num_nodes=1,
         actor_num_gpus_per_node=num_cells,
+        trainer_init_expected_num_cells=num_cells,
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         context_parallel_size=1,

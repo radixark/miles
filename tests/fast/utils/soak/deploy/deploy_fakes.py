@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import threading
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -184,6 +184,14 @@ def _release_snapshot(
     return snapshot.model_copy(update={"orchestrator_state_file": _STATE_FILE})
 
 
+class _FakeProgressReader:
+    def __init__(self, *, read: Callable[[], RunProgress]) -> None:
+        self._read = read
+
+    def read(self) -> RunProgress:
+        return self._read()
+
+
 class _FakeDeploymentReads:
     def __init__(
         self,
@@ -203,7 +211,11 @@ class _FakeDeploymentReads:
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(observers_module, "read_cluster_snapshot", self._read_cluster)
-        monkeypatch.setattr(observers_module, "read_run_progress", self._read_progress)
+        monkeypatch.setattr(
+            observers_module,
+            "RunProgressReader",
+            lambda **kwargs: _FakeProgressReader(read=lambda: self._read_progress(**kwargs)),
+        )
         monkeypatch.setattr(observers_module, "run_process", self._run_process)
 
     def _meet(self) -> None:

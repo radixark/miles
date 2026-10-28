@@ -10,6 +10,7 @@ from miles.backends.training_utils.data.context_parallel import (
     get_local_response_loss_masks,
     slice_log_prob_with_cp,
 )
+from miles.backends.training_utils.data.sampling_mask import rollout_topk_candidate_ids
 from miles.backends.training_utils.loss.hub.logit_processors import _iter_response_chunks
 from miles.backends.training_utils.loss.hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss.hub.score_centering import (
@@ -21,27 +22,13 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import RolloutBatch
 
 
-def _candidate_ids(batch: RolloutBatch, sample: int, indices: torch.Tensor) -> torch.Tensor:
-    if batch.get("rollout_topk_token_ids") is not None:
-        return torch.as_tensor(batch["rollout_topk_token_ids"][sample])[indices].long()
-    lengths = torch.as_tensor(batch["rollout_topk_lengths"][sample])[indices]
-    offsets = torch.as_tensor(batch["rollout_sampling_mask_offsets"][sample])[indices]
-    support = torch.as_tensor(batch["rollout_sampling_mask_ids"][sample])
-    width = batch["rollout_topk_log_probs"][sample].shape[-1]
-    columns = torch.arange(width)
-    valid = columns < lengths[:, None]
-    ids = torch.full((len(indices), width), -1, dtype=torch.long)
-    ids[valid] = support[(offsets[:, None] + columns)[valid]].long()
-    return ids
-
-
 def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Tensor) -> dict[str, list[torch.Tensor]]:
     parallel = get_parallel_state()
     result = {"selected": []}
     if args.use_kl_loss:
         result["kl_log_probs"] = []
     with_entropy = args.entropy_coef != 0 or args.observe_training_entropy
-    replay = getattr(args, "use_sampling_support_replay", False)
+    replay = args.use_sampling_support_replay
     support_only = replay and not args.use_kl_loss
     if with_entropy:
         result["entropy"] = []
@@ -56,13 +43,13 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
     )
     for i, (chunk, tokens, indices) in enumerate(chunks):
         indices = torch.as_tensor(list(indices), dtype=torch.long)
-        ids = _candidate_ids(batch, i, indices).to(logits.device)
+        ids = rollout_topk_candidate_ids(batch, i, indices).to(logits.device)
         ids = torch.cat((tokens.unsqueeze(-1), ids), dim=-1)
         selected, entropy = selected_log_probs_and_entropy(
             chunk,
             ids,
             group=parallel.tp.group if parallel.tp.size > 1 else None,
-            vocab_size=getattr(args, "vocab_size", None),
+            vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
             temperature=args.rollout_temperature,
             chunk_size=args.log_probs_chunk_size,
             with_entropy=with_entropy and (not replay or support_only),
@@ -104,7 +91,7 @@ def _local_candidates(args: Namespace, batch: RolloutBatch, key: str, device: to
         # Slice on CPU before copying to the device; each CP rank needs only its rows.
         if key == "rollout_topk_token_ids":
             indices = slice_log_prob_with_cp(torch.arange(response), total, response, args.qkv_format, maximum)
-            value = _candidate_ids(batch, i, indices)
+            value = rollout_topk_candidate_ids(batch, i, indices)
         else:
             value = slice_log_prob_with_cp(torch.as_tensor(batch[key][i]), total, response, args.qkv_format, maximum)
         values.append(value.to(device))

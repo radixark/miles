@@ -10,12 +10,13 @@ from miles.backends.fsdp_utils.models.replay_routers import install_qwen3_router
 class Qwen3MoeAdapter(ArchAdapter):
     model_types = frozenset({"qwen3_moe"})
     verified = True
+    passes_attention_packing_kwargs = True
     routing_replay = RoutingReplayAdapter(
         name="qwen3_moe", module_cls_name="Qwen3MoeTopKRouter", install=install_qwen3_router_replay
     )
 
     def patch_classes(self, args):
-        if not getattr(args, "true_on_policy_mode", False):
+        if not args.true_on_policy_mode:
             return
         # Lazy: pulls sglang fused-MoE kernels that don't exist for every sglang build.
         from miles.backends.fsdp_utils.models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe

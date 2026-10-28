@@ -25,8 +25,12 @@ class TitanTrainer(Trainer):
         if "special_tokens" in inspect.signature(self.model_parts[0].forward).parameters:
             hf_config = load_hf_config(self.config.hf_assets_path)
             kwargs["special_tokens"] = {
-                "image_id": getattr(hf_config, "image_token_id", -1),
-                "video_id": getattr(hf_config, "video_token_id", -2),
+                "image_id": getattr(
+                    hf_config, "image_token_id", -1
+                ),  # config-access-exempt: HF text-only configurations omit the image token ID
+                "video_id": getattr(
+                    hf_config, "video_token_id", -2
+                ),  # config-access-exempt: HF configurations without video support omit the video token ID
             }
         return kwargs
 
