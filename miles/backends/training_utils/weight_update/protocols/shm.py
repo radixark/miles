@@ -1,14 +1,17 @@
+import base64
 import contextlib
+import io
 import socket
 from argparse import Namespace
 from collections import deque
 from collections.abc import Iterator, Sequence
 from concurrent.futures import Future
+from multiprocessing.reduction import ForkingPickler
 from urllib.parse import urlparse
 
 import torch
 import torch.multiprocessing
-from sglang.srt.utils import MultiprocessingSerializer
+from torch.multiprocessing import reductions
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
@@ -96,9 +99,7 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
                 "update_weights_from_tensor",
                 # one serialization per receiving process: each takes its own reference to the /dev/shm file,
                 # which is unlinked once the references are released, so a shared payload fails a later reader
-                serialized_named_tensors=[
-                    MultiprocessingSerializer.serialize(bucket_payload, output_str=True) for _ in range(tp_size)
-                ],
+                serialized_named_tensors=[_serialize_payload(bucket_payload) for _ in range(tp_size)],
                 load_format="flattened_bucket",
                 selector=self._selector,
             )
@@ -115,6 +116,21 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
     def _wait_for_oldest_bucket(self) -> None:
         _, futures = self._in_flight.popleft()
         check_weight_sync_results(async_utils.wait_futures(futures), is_lora=False)
+
+
+def _serialize_payload(payload: dict) -> str:
+    """sglang's `MultiprocessingSerializer.serialize(payload, output_str=True)`, with torch's own tensor reducer.
+
+    sglang's `monkey_patch_torch_reductions` (installed by Megatron's weight iterator) rewrites every reduced
+    tensor's args as a CUDA tensor's and fails on these shared-memory CPU tensors; the override is per pickler.
+    """
+    buffer = io.BytesIO()
+    pickler = ForkingPickler(buffer)
+    pickler.dispatch_table[torch.Tensor] = getattr(  # config-access-exempt: set only once sglang patched torch
+        reductions, "_reduce_tensor_original", reductions.reduce_tensor
+    )
+    pickler.dump(payload)
+    return base64.b64encode(buffer.getvalue()).decode()
 
 
 def _engines_off_this_host(rollout_engines: Sequence[SGLangApiClient]) -> list[str]:

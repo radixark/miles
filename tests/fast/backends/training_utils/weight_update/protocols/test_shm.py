@@ -182,12 +182,8 @@ def test_an_errored_cell_gets_no_payload(monkeypatch):
     healthy, errored = protocol.cell_updaters_of_cell_id.values()
     errored.is_errored = True
     serialize_calls = []
-    serialize = shm.MultiprocessingSerializer.serialize
-    monkeypatch.setattr(
-        shm.MultiprocessingSerializer,
-        "serialize",
-        lambda *args, **kwargs: serialize_calls.append(1) or serialize(*args, **kwargs),
-    )
+    serialize = shm._serialize_payload
+    monkeypatch.setattr(shm, "_serialize_payload", lambda payload: serialize_calls.append(1) or serialize(payload))
     _publish(protocol)
     protocol.finalize(weight_version=1)
 
@@ -200,3 +196,24 @@ def test_only_engines_on_this_host_can_open_the_buckets():
     hosts = ("127.0.0.1", "localhost", "192.0.2.1", "[2001:db8::1]")
     engines = [SGLangApiClient(f"http://{host}:30000") for host in hosts]
     assert shm._engines_off_this_host(engines) == ["http://192.0.2.1:30000", "http://[2001:db8::1]:30000"]
+
+
+def test_the_payload_survives_sglangs_cuda_only_tensor_reducer(monkeypatch):
+    """Megatron's weight iterator installs sglang's reducer, which treats every tensor as CUDA; shm tensors are CPU."""
+    from multiprocessing.reduction import ForkingPickler
+
+    from torch.multiprocessing import reductions
+
+    def cuda_only_reducer(tensor):
+        raise IndexError("tuple index out of range")
+
+    monkeypatch.setattr(reductions, "_reduce_tensor_original", reductions.reduce_tensor, raising=False)
+    monkeypatch.setitem(ForkingPickler._extra_reducers, torch.Tensor, cuda_only_reducer)
+    protocol = _protocol(replica_rank=0, replica_size=1, tp_sizes=[1])
+    _publish(protocol)
+
+    (updater,) = protocol.cell_updaters_of_cell_id.values()
+    payloads = [kwargs["serialized_named_tensors"][0] for _, kwargs in updater.calls]
+    expected = [[[n, str(t.dtype), t.float().tolist()] for n, t in bucket] for bucket in _BUCKETS]
+    assert _rebuild_in_another_process(payloads) == expected
+    protocol.finalize(weight_version=1)
