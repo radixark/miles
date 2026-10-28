@@ -199,8 +199,8 @@ def _actor_manager_cls(spec: BaseSpec, *, comm_backend: WorkerCommBackend) -> ty
             return _CommandActorManager
         case BaseServeSpec(), WorkerCommBackend.RPC:
             return _ServeActorRpcCommManager
-        case BaseServeSpec(), WorkerCommBackend.RAY:
-            return _ServeActorRayCommManager
+        case BaseServeSpec(), backend if backend.calls_workers_natively():
+            return _ServeActorNativeCommManager
     raise AssertionError(f"{spec.name} is neither served nor launched as a command")
 
 
@@ -381,6 +381,7 @@ class _BaseActorManager(Generic[SpecT]):
         self,
         actor_class: type,
         *,
+        served_natively: bool = False,
         concurrency_groups: dict[str, int] | None = None,
         **ctor_kwargs,
     ) -> WorkerLaunchRequest:
@@ -395,6 +396,7 @@ class _BaseActorManager(Generic[SpecT]):
             num_gpus=scheduling.num_gpus_per_worker,
             gpu_slots=self._gpu_slots,
             pin_to_head=scheduling.pin_to_head,
+            served_natively=served_natively,
             concurrency_groups=concurrency_groups,
         )
 
@@ -473,12 +475,13 @@ class _CommandActorManager(_BaseActorManager[BaseCommandSpec]):
 
 
 @dataclass
-class _ServeActorRayCommManager(_BaseActorManager[BaseServeSpec]):
+class _ServeActorNativeCommManager(_BaseActorManager[BaseServeSpec]):
     """A served worker the driver calls through the runtime's own actor calls rather than rpc."""
 
     def compute_launch(self) -> WorkerLaunchRequest:
         return self._compute_launch_of(
             bootstrapped_worker_class(self.spec.worker_class),
+            served_natively=True,
             concurrency_groups=self.spec.concurrency_groups,
             ctor_kwargs=self.spec.ctor_kwargs,
             context=self.launch_context,

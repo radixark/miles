@@ -26,6 +26,10 @@ class WorkerCommBackend(Enum):
     RAY = "ray"
     RPC = "rpc"
 
+    def calls_workers_natively(self) -> bool:
+        """Whether the driver calls a served worker through the cluster backend's own actor calls, not over rpc."""
+        return self is WorkerCommBackend.RAY
+
 
 class DeployComponent(Enum):
     ALL = "all"

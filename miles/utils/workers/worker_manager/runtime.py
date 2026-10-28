@@ -34,6 +34,8 @@ class WorkerLaunchRequest:
     num_gpus: float
     gpu_slots: GpuSlotRef | None
     pin_to_head: bool
+    # A served worker the driver calls through the runtime's own actor calls rather than rpc.
+    served_natively: bool = False
     # Only for a worker served natively: concurrency group -> threads.
     concurrency_groups: dict[str, int] | None = None
 
