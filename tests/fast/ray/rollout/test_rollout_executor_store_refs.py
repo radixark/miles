@@ -110,14 +110,23 @@ async def test_refs_without_a_store_client_fail_loudly():
         await executor.release(5)
 
 
+def run_end_args(*, ci_test=True, fully_async=False, partial_rollout=False):
+    return make_args(ci_test=ci_test, fully_async=fully_async, partial_rollout=partial_rollout)
+
+
 @pytest.mark.parametrize(
-    ("ci_test", "fully_async", "fails"),
-    [(True, False, True), (True, True, False), (False, False, False)],
+    ("args", "fails"),
+    [
+        (run_end_args(), True),
+        (run_end_args(fully_async=True), False),
+        (run_end_args(partial_rollout=True), False),
+        (run_end_args(ci_test=False), False),
+    ],
 )
-def test_keys_left_at_the_end_fail_only_a_synchronous_ci_run(monkeypatch, caplog, ci_test, fully_async, fails):
-    """A fully-async run ends with groups buffered or in flight, so only a synchronous one must leave none."""
+def test_keys_left_at_the_end_fail_only_a_synchronous_ci_run(monkeypatch, caplog, args, fails):
+    """A fully-async run ends with groups buffered or in flight, a partial rollout with aborted groups in its buffer."""
     executor, _ = make_executor({})
-    executor.args = make_args(ci_test=ci_test, fully_async=fully_async)
+    executor.args = args
     monkeypatch.setattr(rollout_executor_module, "sweep_output_store", lambda args: 4)
 
     if fails:
@@ -130,9 +139,57 @@ def test_keys_left_at_the_end_fail_only_a_synchronous_ci_run(monkeypatch, caplog
 
 def test_a_run_that_left_nothing_logs_nothing(monkeypatch, caplog):
     executor, _ = make_executor({})
-    executor.args = make_args(ci_test=True, fully_async=False)
+    executor.args = run_end_args()
     monkeypatch.setattr(rollout_executor_module, "sweep_output_store", lambda args: 0)
 
     executor._sweep_output_store()
 
     assert "Swept" not in caplog.text
+
+
+def _fail_the_generation(rollout_id):
+    raise RuntimeError("engine died")
+
+
+@pytest.mark.parametrize("stopped_in", ["train", "generation"])
+async def test_a_run_that_stopped_before_training_a_rollout_only_logs_what_it_left(monkeypatch, caplog, stopped_in):
+    """Its error is the crash itself; the untrained rollout's objects are expected, not a leak."""
+    if stopped_in == "train":
+        executor, _ = make_executor({5: [sample_owning("a")]})
+        await executor.get(rollout_id=5)
+    else:
+        executor, _ = make_executor({5: [sample_owning("a")]}, during_get=_fail_the_generation)
+        with pytest.raises(RuntimeError, match="engine died"):
+            await executor.get(rollout_id=5)
+    executor.args = run_end_args()
+    monkeypatch.setattr(rollout_executor_module, "sweep_output_store", lambda args: 4)
+
+    executor._sweep_output_store()
+
+    assert "Swept 4 output store keys" in caplog.text
+
+
+def _fail_the_sweep(args):
+    raise RuntimeError("Mooncake store setup failed: -1")
+
+
+@pytest.mark.parametrize(
+    ("args", "stopped_early", "fails"),
+    [(run_end_args(), False, True), (run_end_args(ci_test=False), False, False), (run_end_args(), True, False)],
+)
+async def test_a_failed_sweep_fails_only_a_ci_run_that_trained_every_rollout(
+    monkeypatch, caplog, args, stopped_early, fails
+):
+    """Like a failed delete, a failed sweep only leaks objects nothing reads; CI still wants to see it."""
+    executor, _ = make_executor({5: [sample_owning("a")]})
+    if stopped_early:
+        await executor.get(rollout_id=5)
+    executor.args = args
+    monkeypatch.setattr(rollout_executor_module, "sweep_output_store", _fail_the_sweep)
+
+    if fails:
+        with pytest.raises(RuntimeError, match="setup failed"):
+            executor._sweep_output_store()
+    else:
+        executor._sweep_output_store()
+        assert "Failed to sweep the output store" in caplog.text

@@ -97,6 +97,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self._inference_controller_provider = inference_controller_provider
         self._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=args)
         # Output store refs of each rollout's trained and dropped samples, deleted once it has trained.
+        # Every rollout get() began is here until its release, so one left at dispose was never trained.
         self._unreleased_store_refs: dict[int, dict[str, Any]] = {}
         self._delete_store_refs = None
 
@@ -189,11 +190,23 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
 
     def _sweep_output_store(self) -> None:
         """Remove what the run left in the output store, which nothing reads once it ends."""
-        if not (left := sweep_output_store(self.args)):
+        # Only a run that trained every rollout it generated answers to CI: one that stopped early (a crash, a debug
+        # exit) still holds that rollout's objects, and a crash already has its own error.
+        strict = self.args.ci_test and not self._unreleased_store_refs
+        try:
+            left = sweep_output_store(self.args)
+        except Exception:
+            if strict:
+                raise
+            # Like a failed delete, a failed sweep only leaks objects nothing reads.
+            logger.exception("Failed to sweep the output store; the run's objects stay in Mooncake")
+            return
+        if not left:
             return
         message = f"Swept {left} output store keys the run left behind"
-        # A fully-async run ends with groups buffered or in flight; a synchronous one has released every rollout.
-        if self.args.ci_test and not self.args.fully_async:
+        # A fully-async run ends with groups buffered or in flight, a partial rollout with aborted groups back in
+        # the data buffer; any other run that trained every rollout it generated has released them all.
+        if strict and not (self.args.fully_async or self.args.partial_rollout):
             raise AssertionError(f"{message}: a retried request, a failed delete or a missed release")
         logger.warning(message)
 
@@ -202,6 +215,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
     @event_logger_context(lambda _self, rollout_id, trainer_model_id=None: dict(rollout_id=rollout_id))
     async def get(self, rollout_id: int, trainer_model_id: str | None = None) -> RolloutDataPack:
         self.last_get_rollout_id_of_model_id[trainer_model_id] = rollout_id
+        self._unreleased_store_refs[rollout_id] = {}
         event_analyzer.run_sample_ownership_analysis(args=self.args)
         replay = self._output_snapshotter.get(trainer_model_id=trainer_model_id, rollout_id=rollout_id)
         if replay is None:
@@ -216,8 +230,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         else:
             data, metadata = replay.data, replay.metadata
         # The dp schedule and a custom convert may leave rows out of the train data: collect from the samples.
-        if store_refs := store_refs_of(data) | take_dropped_refs():
-            self._unreleased_store_refs[rollout_id] = store_refs
+        self._unreleased_store_refs[rollout_id] = store_refs_of(data) | take_dropped_refs()
 
         with SampleOwnershipRecorder.suppress_drop_logging() if replay is not None else nullcontext():
             train_data = convert_samples_to_train_data(
