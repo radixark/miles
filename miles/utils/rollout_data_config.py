@@ -44,7 +44,7 @@ class RolloutDatasetConfig(BaseModel):
     max_prompt_len: int | None = Field(default=None, ge=1)
     max_response_len: int | None = Field(default=None, ge=1)
     generate_function: str | None = Field(default=None, min_length=1)
-    # Free-form settings handed to this dataset's generate function, e.g. turn limits and timeouts.
+    # free-form, for this dataset's generate function
     agent: dict[str, Any] | None = None
 
     @field_validator("sha256")

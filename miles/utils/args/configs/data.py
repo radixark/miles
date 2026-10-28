@@ -66,9 +66,8 @@ class DataConfig(BaseConfig):
         Arg(
             help=(
                 "Path to a YAML file, or an inline `base64:<payload>`, listing the training datasets to mix and "
-                "how many prompts each contributes per rollout step (see miles/utils/rollout_data_config.py). "
-                "Cannot be combined with --prompt-data. The file is validated at startup; no data source "
-                "consumes it yet, so setting it currently stops the run with an error."
+                "how many prompts each contributes per rollout step. Replaces --prompt-data. "
+                "Validated at startup; no data source reads it yet, so setting it stops the run with an error."
             )
         ),
     ] = None

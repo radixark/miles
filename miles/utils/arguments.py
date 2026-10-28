@@ -478,7 +478,7 @@ def _validate_rollout_data_yaml_config(args) -> None:
         rollout_max_prompt_len=args.rollout_max_prompt_len,
         rollout_max_response_len=args.rollout_max_response_len,
     )
-    # Refuse rather than run without the configured data: no data source reads these datasets yet.
+    # TODO(#3947): drop once the mixing data source reads these datasets
     raise NotImplementedError(
         f"--rollout-data-yaml-config is valid ({len(datasets)} datasets), but no data source consumes it yet; "
         "the mixing data source is tracked in https://github.com/radixark/miles/issues/3947"
