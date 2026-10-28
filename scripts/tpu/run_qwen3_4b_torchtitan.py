@@ -1,25 +1,22 @@
 """Qwen3-4B GRPO on one TPU v7x 2x2x1 host: torchtitan trainer + sglang-torchtpu rollout.
 
-=====================
-
-The host's 8 TensorCores are split in half. `sglang` serves the policy on devices 4-7
-(chips 2-3); `train` runs the torchtitan trainer as 4 ranks on devices 0-3 (chips 0-1)
-and drives that server as an external rollout engine. Weights reach the server through shared
-memory (--weight-transfer shm, the default) or a shared filesystem (disk). Run `sglang` in its
-own shell (it stays in the foreground), wait for it to report healthy, then run `train`. See
-scripts/tpu/README.md for the environment both commands expect.
-
-=====================
+The host's 8 TensorCores are split in half. `sglang` serves the policy on devices 4-7 (chips 2-3);
+`train` runs the torchtitan trainer as 4 ranks on devices 0-3 (chips 0-1) and drives that server as an
+external rollout engine. Weights reach the server through shared memory (`--weight-transfer shm`, the
+default) or a shared filesystem (`disk`). Run `sglang` in its own shell (it stays in the foreground), wait
+for it to report healthy, then run `train`. scripts/tpu/README.md describes the environment both expect.
 
 Args:
   --recipe: smoke (3 short rollouts), bench (4 full-shape rollouts, no eval) or full.
-  --model-dir / --data-dir: Directory holding Qwen3-4B / dapo-math-17k and aime-2024.
-  --sglang-port: Port of the sglang server `train` connects to.
+  --model-dir / --data-dir: directories holding Qwen3-4B / dapo-math-17k and aime-2024.
+  --sglang-port: port of the sglang server `train` connects to.
+  --sglang-env-script: sglang-torchtpu's environment script, sourced before the server starts.
   --weight-transfer: shm (default) or disk.
+  --weight-dir: where `disk` writes the weights.
   --wandb-project: wandb project; empty disables wandb (the key comes from WANDB_API_KEY or ~/.netrc).
+  --extra-args: more train.py flags, appended last.
 
-=====================
-
+Examples:
   python scripts/tpu/run_qwen3_4b_torchtitan.py sglang
   python scripts/tpu/run_qwen3_4b_torchtitan.py train --recipe full
 """
@@ -36,6 +33,7 @@ from miles.utils.external_utils import command_utils
 MODEL_NAME = "Qwen3-4B"
 SEQ_LEN = 8192
 NUM_TRAINER_DEVICES = 4
+NUM_ENGINE_DEVICES = 4
 SGLANG_BASE_DEVICE = 4
 HALF_HOST_TOPOLOGY = "1,2,1,2"
 
@@ -106,7 +104,7 @@ def _serve_sglang(args: ScriptArgs):
         "--page-size 64 "
         f"--context-length {SEQ_LEN} "
         "--chunked-prefill-size 2048 "
-        f"--tp-size {NUM_TRAINER_DEVICES} "
+        f"--tp-size {NUM_ENGINE_DEVICES} "
         f"--base-gpu-id {SGLANG_BASE_DEVICE} "
         "--gpu-id-step 1 "
         "--mem-fraction-static 0.4 "
@@ -122,9 +120,8 @@ def _prepare(args: ScriptArgs):
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
 
-# sglang's TPU scheduling flags for the trainer, with the scoped-VMEM limit at the v7x maximum (65536 KiB is
-# rejected: max valid 67043328 bytes) and the associative-scan emitter off (libtpu >= 0.0.44 miscompiles
-# cumulative ops for lengths not a multiple of 1024; the trainer has no cumsum left on device).
+# sglang's TPU scheduling flags, with scoped VMEM at the v7x maximum and the associative-scan emitter off
+# (libtpu >= 0.0.44 miscompiles cumulative ops for lengths not a multiple of 1024)
 _TRAINER_LIBTPU_ARGS = (
     "--xla_tpu_scoped_vmem_limit_kib=65472 "
     "--xla_tpu_enable_async_collective_fusion=true "
@@ -205,8 +202,8 @@ def _execute(args: ScriptArgs):
 
     sglang_args = (
         f"--rollout-external-engine-addrs http://localhost:{args.sglang_port} "
-        f"--rollout-num-gpus {NUM_TRAINER_DEVICES} "
-        f"--rollout-num-gpus-per-engine {NUM_TRAINER_DEVICES} "
+        f"--rollout-num-gpus {NUM_ENGINE_DEVICES} "
+        f"--rollout-num-gpus-per-engine {NUM_ENGINE_DEVICES} "
         f"--update-weight-transfer-mode {args.weight_transfer} "
     )
     if args.weight_transfer == "disk":
