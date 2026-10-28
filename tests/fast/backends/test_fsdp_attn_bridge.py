@@ -23,7 +23,7 @@ class _RecordingModelCls:
 
 def _actor(attn_implementation, model_cls):
     actor = object.__new__(FSDPTrainRayActor)
-    actor.args = SimpleNamespace(attn_implementation=attn_implementation)
+    actor.args = SimpleNamespace(backend=SimpleNamespace(attn_implementation=attn_implementation))
     actor._get_model_cls = lambda: model_cls
     return actor
 

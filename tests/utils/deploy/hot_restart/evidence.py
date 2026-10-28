@@ -1,10 +1,11 @@
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from tests.utils.deploy.hot_restart.cluster_observer import ClusterSnapshot
 
-from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.logger import EventReader, read_events
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.comparisons.metrics import read_metric_events
@@ -27,10 +28,30 @@ class RunProgress:
 
 
 def read_run_progress(*, checkpoint_dir: Path, events_dir: Path) -> RunProgress:
-    return RunProgress(
-        last_saved_iteration=read_last_saved_iteration(checkpoint_dir),
-        last_finished_rollout_id=read_last_finished_rollout_id(events_dir),
-    )
+    return RunProgressReader(checkpoint_dir=checkpoint_dir, events_dir=events_dir).read()
+
+
+class RunProgressReader:
+    def __init__(self, *, checkpoint_dir: Path, events_dir: Path) -> None:
+        self._checkpoint_dir = checkpoint_dir
+        self._events = EventReader(events_dir, event_types=(MetricEvent,))
+        self._lock = threading.Lock()
+
+    def read(self) -> RunProgress:
+        with self._lock:
+            return RunProgress(
+                last_saved_iteration=read_last_saved_iteration(self._checkpoint_dir),
+                last_finished_rollout_id=max(
+                    (
+                        event.rollout_id
+                        for event in self._events.read()
+                        if isinstance(event, MetricEvent)
+                        and event.rollout_id is not None
+                        and TRAIN_STEP_METRIC_KEY in event.metrics
+                    ),
+                    default=None,
+                ),
+            )
 
 
 def read_last_saved_iteration(checkpoint_dir: Path) -> int | None:
@@ -89,6 +110,7 @@ class HotRestartEvidence(FrozenStrictBaseModel):
     release: str
     observation_attempts: int = 0
     observation_failures: int = 0
+    commands_of_pod_uid: dict[str, tuple[str, ...]] = {}
 
     def write(self, *, dump_dir: str) -> None:
         path = evidence_path(dump_dir=dump_dir)

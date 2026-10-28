@@ -23,6 +23,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     optimizer="dist_muon",
@@ -44,6 +45,7 @@ CASE = CaseConfig(
     sglang_deepep_dispatcher_output_dtype="bf16",
     use_spec=False,
     use_r3=True,
+    use_output_store=True,
 )
 
 

@@ -3,25 +3,34 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.fast.utils.workers.serving.registered_serve import serve_config_argv
+from tests.fast.utils.workers.serving.serve_smoke_worker import SmokeServeSpec, SmokeWorkerConfig
 
+from miles.ray.specs.entrypoint import SERVE_SPEC_CLASSES
+from miles.utils.workers.connection_config import WorkerPodMetadata
+from miles.utils.workers.env_vars import WORKER_METADATA_ENV_VAR
 from miles.utils.workers.serving import serve_inner
 from miles.utils.workers.serving import utils as serving_utils
 from miles.utils.workers.serving.serve_inner import _rpc_port_of, parse_own_args
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import PortInfo, StaticMeta
 
-SPECS_PATH = "tests.fast.utils.workers.e2e.e2e_worker.compute_specs"
-POOL_ID = "e2e-pool"
+CONFIG_PAYLOAD = '{"worker_type": "demo"}'
 
 
-def _serve_spec() -> ServeWorkerSpec:
-    return ServeWorkerSpec(
-        name=POOL_ID,
-        port_infos=[PortInfo(name="rpc", static_port=8000)],
-        env_var=lambda context: {},
-        scheduling=SchedulingSpec.single(num_gpus_per_worker=0),
+def _smoke_spec() -> SmokeServeSpec:
+    return SmokeServeSpec.create(SmokeWorkerConfig(rpc_port=8000, worker_argv=[]))
+
+
+def _pod_metadata(port_infos: list[PortInfo]) -> str:
+    return WorkerPodMetadata(
+        workers_per_pod=1,
+        pods_per_cell=1,
+        gpu_slots_per_worker=0,
+        dynamic_pool=False,
         worker_class="test.worker",
-        ctor_kwargs=lambda context: {},
-    )
+        port_infos=port_infos,
+        static_meta=StaticMeta(),
+    ).model_dump_json()
 
 
 class _FakeServerSocket:
@@ -40,39 +49,31 @@ class _FakeServerSocket:
 
 
 class TestParseOwnArgs:
-    def test_the_spec_table_and_the_pool_it_serves_are_read(self) -> None:
-        """These two are the whole of what the pod needs to find the one spec it is a worker of."""
-        args = parse_own_args(["--specs", SPECS_PATH, "--pool-id", POOL_ID])
+    def test_the_serialized_pool_config_is_read(self) -> None:
+        """The config payload is the whole of what the pod needs to rebuild the one spec it is a worker of."""
+        assert parse_own_args(["--config", CONFIG_PAYLOAD]).config == CONFIG_PAYLOAD
 
-        assert (args.specs, args.pool_id) == (SPECS_PATH, POOL_ID)
-
-    def test_an_omitted_pool_id_is_a_usage_error(self) -> None:
-        """A process that does not know which pool it serves would pick a spec at random."""
+    def test_an_omitted_config_is_a_usage_error(self) -> None:
+        """A process that is not told what it serves would have nothing to rebuild its spec from."""
         with pytest.raises(SystemExit) as exc_info:
-            parse_own_args(["--specs", SPECS_PATH])
-
-        assert exc_info.value.code == 2
-
-    def test_an_omitted_spec_table_is_a_usage_error(self) -> None:
-        """Without the run's spec table there is nothing to match the pool id against."""
-        with pytest.raises(SystemExit) as exc_info:
-            parse_own_args(["--pool-id", POOL_ID])
+            parse_own_args([])
 
         assert exc_info.value.code == 2
 
     def test_unknown_inner_option_is_a_usage_error(self) -> None:
         """The inner entrypoint rejects an option it does not define instead of ignoring it."""
         with pytest.raises(SystemExit) as exc_info:
-            parse_own_args(["--specs", SPECS_PATH, "--pool-id", POOL_ID, "--unknown-option", "1"])
+            parse_own_args(["--config", CONFIG_PAYLOAD, "--unknown-option", "1"])
 
         assert exc_info.value.code == 2
 
 
 def _served(monkeypatch: pytest.MonkeyPatch, *, has_dualstack_ipv6: bool) -> dict[str, Any]:
     served: dict[str, Any] = {}
-    monkeypatch.setattr(serve_inner.sys, "argv", ["serve_inner", "--specs", SPECS_PATH, "--pool-id", POOL_ID])
+    own_argv = serve_config_argv(spec_class=SmokeServeSpec, config=SmokeWorkerConfig(rpc_port=8000, worker_argv=[]))
+    monkeypatch.setitem(SERVE_SPEC_CLASSES, SmokeServeSpec.worker_type, SmokeServeSpec)
+    monkeypatch.setattr(serve_inner.sys, "argv", ["serve_inner", *own_argv])
     monkeypatch.setattr(serving_utils.socket, "has_dualstack_ipv6", lambda: has_dualstack_ipv6)
-    monkeypatch.setattr(serve_inner, "compute_serve_worker_spec", lambda **kwargs: SimpleNamespace(worker_class="w"))
     monkeypatch.setattr(serve_inner, "create_worker", lambda spec, **kwargs: object())
     monkeypatch.setattr(serve_inner, "create_rpc_app", lambda worker: "app")
     monkeypatch.setattr(serve_inner, "read_worker_in_pod_index", lambda environ: 0)
@@ -143,11 +144,17 @@ class TestRpcPortOf:
             ([PortInfo(name="rpc", static_port=8000), PortInfo(name="rpc", static_port=8001)], 2),
         ],
     )
-    def test_a_spec_without_exactly_one_rpc_port_is_rejected(
-        self, port_infos: list[PortInfo], expected_count: int
+    def test_a_pod_without_exactly_one_rpc_port_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, port_infos: list[PortInfo], expected_count: int
     ) -> None:
-        """A served spec with a missing or ambiguous rpc port cannot choose a listening port."""
-        spec = _serve_spec().model_copy(update={"port_infos": port_infos})
+        """A served pod whose metadata has a missing or ambiguous rpc port cannot choose a listening port."""
+        monkeypatch.setenv(WORKER_METADATA_ENV_VAR, _pod_metadata(port_infos))
 
         with pytest.raises(AssertionError, match=rf"declares {expected_count} rpc ports"):
-            _rpc_port_of(spec)
+            _rpc_port_of(_smoke_spec())
+
+    def test_the_port_comes_from_the_pod_metadata(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The address book publishes the metadata's port, so the process must bind that one and not its own."""
+        monkeypatch.setenv(WORKER_METADATA_ENV_VAR, _pod_metadata([PortInfo(name="rpc", static_port=8123)]))
+
+        assert _rpc_port_of(_smoke_spec()).static_port == 8123
