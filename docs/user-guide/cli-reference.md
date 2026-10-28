@@ -342,10 +342,21 @@ contract, session behavior, and model-family selection.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--use-fault-tolerance` | flag | off | Enable rank-level recovery and heartbeats. |
-| `--rollout-health-check-first-wait` | int | `0` | Grace period before heartbeats start. |
-| `--rollout-health-check-interval` | int | `30` | Seconds between heartbeats. |
-| `--rollout-health-check-timeout` | int | `30` | Heartbeat timeout. |
+| `--use-fault-tolerance` | flag | off | Replace failed rollout and trainer cells in place. See [Fault Tolerance](/advanced/fault-tolerance). |
+| `--ft-components` | enum | `rollout weight_update` | One or more of `rollout`, `train`, `weight_update`. Ignored without `--use-fault-tolerance`. |
+| `--rollout-health-check-interval` | float | `30` | Seconds between `/health_generate` checks of an engine. |
+| `--rollout-health-check-timeout` | float | `30` | Seconds one check may take. |
+| `--rollout-health-check-first-wait` | float | `0` | Grace period after each resume before checks start. |
+| `--rollout-health-check-failure-threshold` | int | `1` | Consecutive failed checks before an engine is unhealthy. |
+| `--trainer-heartbeat-checker-interval` | float | `10` | Seconds between heartbeats of a trainer cell. Active with `train`. |
+| `--trainer-heartbeat-checker-timeout` | float | `10` | Seconds one heartbeat may take. |
+| `--trainer-heartbeat-checker-first-wait` | float | `300` | Grace period after each resume before heartbeats start. |
+| `--trainer-heartbeat-checker-failure-threshold` | int | `3` | Consecutive failed heartbeats before a trainer cell is unhealthy. |
+| `--api-server-host` | str | `127.0.0.1` | Address the cell API binds to; `0.0.0.0` accepts remote controllers. |
+| `--api-server-port` | int | derived | `18080` under `--use-fault-tolerance`, else `0` (disabled). |
+| `--mini-ft-controller-enable` | flag | derived | On when fault tolerance selects components and the API port is set; `--no-mini-ft-controller-enable` leaves healing to an external controller. |
+| `--mini-ft-controller-poll-interval` | float | `10` | Seconds between cell polls. |
+| `--mini-ft-controller-resume-delay` | float | `10` | Seconds between suspending and resuming a cell. |
 
 ### Async / partial rollout
 
