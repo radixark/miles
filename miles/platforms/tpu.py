@@ -13,6 +13,9 @@ class TpuPlatform(Platform):
     nvml_numa_affinity = False
     # torch_tpu lowers compiled graphs to XLA
     compile_backend = "tpu"
+    triton_kernels = False
+    # a TPU engine shares neither NCCL nor CUDA IPC (colocate) with the trainer
+    weight_transfer_modes = frozenset({"disk", "shm"})
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         # touching the device before init_process_group breaks the multi-process rendezvous

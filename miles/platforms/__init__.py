@@ -19,6 +19,10 @@ class Platform:
     nvml_numa_affinity = True
     # the torch.compile backend for model code
     compile_backend = "inductor"
+    # Triton kernels (e.g. --log-probs-backend fused) run here
+    triton_kernels = True
+    # the --update-weight-transfer-mode values an engine on this platform can receive; None: all of them
+    weight_transfer_modes: frozenset[str] | None = None
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         torch.cuda.set_device(f"cuda:{local_rank}")
