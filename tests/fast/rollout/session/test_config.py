@@ -87,7 +87,12 @@ def _make_args(**overrides) -> Namespace:
 class TestComputeSessionServerConfig:
     def test_every_config_field_has_a_known_source(self):
         """Adding a config field without extending this test's mapping must fail here."""
-        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values()) | set(_DERIVED_FIELDS) | set(_ROUTER_DERIVED_FIELDS)
+        covered = (
+            set(_CALL_SITE_FIELDS)
+            | set(_ARGS_TO_CONFIG_FIELD.values())
+            | set(_DERIVED_FIELDS)
+            | set(_ROUTER_DERIVED_FIELDS)
+        )
         assert covered == set(SessionServerConfig.model_fields)
 
     def test_call_site_fields_are_copied(self):
