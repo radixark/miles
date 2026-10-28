@@ -4,7 +4,12 @@ from typing import Any
 import torch
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
-from miles.rollout.reward_shaping import apply_length_penalty, is_correct_reward, reward_group_segments, rollout_segments
+from miles.rollout.reward_shaping import (
+    apply_length_penalty,
+    is_correct_reward,
+    reward_group_segments,
+    rollout_segments,
+)
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
@@ -344,7 +349,9 @@ def _normalize_rewards_by_rollout(
         normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
         # In all-correct groups the only signal is length. Standardizing it would
         # amplify arbitrarily small penalties into full-strength advantages.
-        length_only = unshaped_rewards is not None and all(is_correct_reward(unshaped_rewards[row]) for row in prompt_segments)
+        length_only = unshaped_rewards is not None and all(
+            is_correct_reward(unshaped_rewards[row]) for row in prompt_segments
+        )
         if (
             args.advantage_estimator in ["grpo", "gspo"]
             and args.grpo_std_normalization
