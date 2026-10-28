@@ -6,7 +6,7 @@ import torch.distributed as dist
 
 from miles import platforms
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
-from miles.backends.torchtitan_utils import compat, tpu_doc_attention
+from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
@@ -80,8 +80,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
 
         self.prof = TrainProfiler(args)
         self.load_hf_assets()
-        if platforms.IS_TPU:
-            tpu_doc_attention.install()
+        platforms.current_platform.install_titan_attention()
 
         self.trainer = TitanTrainer(config)
         self.model_parts = self.trainer.model_parts
