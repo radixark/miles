@@ -1,8 +1,4 @@
-"""A sample's own max_response_len lowers the run's max_new_tokens for that sample only.
-
-Both rollout paths (the legacy sglang_rollout and inference_rollout) apply it before
-calling the generate function, so custom generate functions see the lowered budget
-too, and the shared sampling params of the run stay untouched."""
+"""`Sample.max_response_len` lowers `max_new_tokens` for that sample only, in both rollout paths."""
 
 from contextlib import nullcontext
 from types import SimpleNamespace

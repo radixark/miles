@@ -211,7 +211,7 @@ class Sample:
 
     metadata: dict = field(default_factory=dict)
     generate_function_path: str | None = None
-    # Per-sample response budget; it may only lower the run's max_new_tokens
+    # may only lower the run's max_new_tokens
     max_response_len: int | None = None
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None

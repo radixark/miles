@@ -55,12 +55,10 @@ def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
 
 
 def apply_sample_max_response_len(sampling_params: dict[str, Any], sample: Sample) -> dict[str, Any]:
-    """Return the sampling params with the sample's own response budget applied.
+    """Return the sampling params with `sample.max_response_len` as `max_new_tokens`.
 
-    The incoming ``max_new_tokens`` is the run's upper bound (``--rollout-max-response-len``, or an eval
-    dataset's limit) that training memory and packing are sized from, so a sample may only lower it; a
-    larger value is an error rather than being clamped silently. A run without that bound (``None``) accepts
-    any positive budget.
+    The incoming `max_new_tokens` sizes training memory and packing, so a sample may only lower it;
+    a larger value raises instead of being clamped.
     """
     if (limit := sample.max_response_len) is None:
         return sampling_params
