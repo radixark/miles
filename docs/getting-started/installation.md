@@ -68,7 +68,7 @@ uv pip install --index https://radixark.github.io/miles-wheels/simple/ \
 With plain pip, install the wheel by URL instead, with the index only for `sglang`:
 
 ```bash
-pip install https://github.com/radixark/miles/releases/download/v<version>/miles-<version>-py3-none-any.whl \
+pip install "miles[torchtitan] @ https://github.com/radixark/miles/releases/download/v<version>/miles-<version>-py3-none-any.whl" \
   "sglang==<sglang version>" --extra-index-url https://radixark.github.io/miles-wheels/simple/
 ```
 
