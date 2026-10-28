@@ -12,7 +12,12 @@ from pathlib import Path
 MEGATRON_ONLY = ("megatron", "mbridge", "transformer_engine", "apex")
 BACKENDS = ("fsdp", "torchtitan")
 # loaded by name at run time, so importing the drivers does not reach them
-RUNTIME_MODULES = ("miles.rollout.sglang_rollout", "miles.rollout.session.server")
+RUNTIME_MODULES = (
+    "miles.rollout.inference_rollout.inference_rollout_train",
+    "miles.rollout.inference_rollout.inference_rollout_eval",
+    "miles.rollout.sglang_rollout",  # MILES_USE_LEGACY_ROLLOUT_V1=1
+    "miles.rollout.session.server",
+)
 ENTRY_SCRIPTS = ("train.py", "train_async.py")
 
 
