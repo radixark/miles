@@ -24,6 +24,7 @@ def _args(**overrides) -> Namespace:
         seq_length=8192,
         micro_batch_size=1,
         use_dynamic_batch_size=False,
+        log_probs_backend="torch",
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
         expert_model_parallel_size=1,
@@ -71,7 +72,10 @@ def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
 
 def _on_tpu(monkeypatch) -> None:
     monkeypatch.setattr(platforms, "IS_TPU", True)
+    # TpuPlatform's values; importing it would import torch_tpu
     monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
+    monkeypatch.setattr(platforms.current_platform, "triton_kernels", False)
+    monkeypatch.setattr(platforms.current_platform, "weight_transfer_modes", frozenset({"disk", "shm"}))
 
 
 def test_a_tpu_microbatch_cannot_outgrow_the_largest_length_bucket(monkeypatch):

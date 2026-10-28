@@ -56,8 +56,11 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
-    if platforms.IS_TPU and args.log_probs_backend == "fused":
-        raise ValueError("--log-probs-backend fused is a Triton kernel; on TPU use --log-probs-backend torch")
+    platform = platforms.current_platform
+    if args.log_probs_backend == "fused" and not platform.triton_kernels:
+        raise ValueError(
+            f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
+        )
     # without dynamic shapes, packed microbatches are padded to a power-of-two bucket capped at --seq-length
     if not platforms.current_platform.dynamic_shapes:
         if args.use_dynamic_batch_size and args.max_tokens_per_gpu > args.seq_length:
@@ -71,11 +74,13 @@ def validate_torchtitan_args(args) -> None:
                 "tokens, the largest length bucket; use --use-dynamic-batch-size with --max-tokens-per-gpu"
             )
 
-    # colocate syncs through CUDA IPC and broadcast/p2p/disk-delta through NCCL, none of which a TPU engine has
-    if platforms.IS_TPU and (args.colocate or args.update_weight_transfer_mode not in ("disk", "shm")):
+    # colocate syncs through CUDA IPC, outside the transfer modes
+    modes = platform.weight_transfer_modes
+    if modes is not None and (args.colocate or args.update_weight_transfer_mode not in modes):
         raise ValueError(
-            f"on TPU the trainer syncs weights with --update-weight-transfer-mode disk or shm to disaggregated "
-            f"engines; got {args.update_weight_transfer_mode!r}{' with --colocate' if args.colocate else ''}"
+            f"on {platform.device_type} the trainer syncs weights with --update-weight-transfer-mode "
+            f"{' or '.join(sorted(modes))} to disaggregated engines; got "
+            f"{args.update_weight_transfer_mode!r}{' with --colocate' if args.colocate else ''}"
         )
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
