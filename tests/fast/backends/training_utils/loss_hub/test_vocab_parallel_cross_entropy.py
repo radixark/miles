@@ -33,7 +33,7 @@ def _grad_output() -> torch.Tensor:
 def _check_against_full_softmax(rank: int, world_size: int, group: dist.ProcessGroup) -> None:
     """Loss and gradient equal a plain log-softmax over the whole vocabulary, however it is split."""
     shard = VOCAB // world_size
-    for dtype, tol in ((torch.float32, 1e-6), (torch.bfloat16, 1e-2)):
+    for dtype, loss_tol in ((torch.float32, 1e-6), (torch.bfloat16, 1e-2)):
         full = _full_logits(dtype)
         expected_loss, expected_grad = _reference(full, _target())
         local = full[..., rank * shard : (rank + 1) * shard].clone().requires_grad_()
@@ -41,10 +41,11 @@ def _check_against_full_softmax(rank: int, world_size: int, group: dist.ProcessG
         loss = vocab_parallel_cross_entropy(local, _target(), group)
         loss.backward(_grad_output())
 
-        torch.testing.assert_close(loss, expected_loss, atol=tol, rtol=tol)
+        torch.testing.assert_close(loss, expected_loss, atol=loss_tol, rtol=loss_tol)
         assert local.grad.dtype == dtype
+        # the gradient is rounded to bf16 for every input dtype
         torch.testing.assert_close(
-            local.grad, expected_grad[..., rank * shard : (rank + 1) * shard], atol=tol, rtol=tol
+            local.grad, expected_grad[..., rank * shard : (rank + 1) * shard], atol=1e-2, rtol=1e-2
         )
 
 
@@ -64,6 +65,8 @@ def _check_against_megatron(rank: int, world_size: int, group: dist.ProcessGroup
             loss.backward(_grad_output())
             results.append((loss.detach(), local.grad))
         (loss, grad), (megatron_loss, megatron_grad) = results
+        # Megatron's fused version, which log probs used, rounds the gradient to bf16; this one does too
+        megatron_grad = megatron_grad.to(torch.bfloat16).to(dtype)
         assert torch.equal(loss, megatron_loss) and torch.equal(grad, megatron_grad), dtype
 
 
@@ -103,7 +106,7 @@ def test_vocab_parallel_cross_entropy(world_size: int) -> None:
 
 @pytest.mark.parametrize("world_size", [1, 2])
 def test_matches_megatron_vocab_parallel_cross_entropy(world_size: int) -> None:
-    """Bit for bit Megatron's math. Its fused kernel differs in the last bits, from torch.compile's
-    exp and summation order, and rounds the gradient to bf16."""
+    """Bit for bit Megatron's math, with the gradient rounded to bf16 as its fused kernel does. The fused
+    kernel itself differs in the last bits, from torch.compile's exp and summation order."""
     pytest.importorskip("megatron.core.tensor_parallel.cross_entropy")
     run_multiprocess(_run_megatron_check, world_size=world_size)

@@ -311,12 +311,11 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
 
     Megatron's vocab-parallel cross entropy, bit for bit, so every backend and install runs one
     implementation. Like it, the forward works in place on fp32 ``logits`` (callers pass a copy).
-    The gradient comes back in the input's dtype.
+    Like the fused version log probs used before, the gradient is rounded to bf16 whatever the input dtype.
     """
 
     @staticmethod
     def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
-        ctx.input_dtype = logits.dtype
         logits = logits.float()
         logits_max = logits.max(dim=-1)[0]
         dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=group)
@@ -345,7 +344,8 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         softmax, target_mask, masked_target = ctx.saved_tensors
         # softmax - one_hot(target); the one-hot lives on the rank owning the target
         grad_input = softmax.scatter_add_(-1, masked_target.unsqueeze(-1), -(~target_mask).unsqueeze(-1).float())
-        return grad_input.mul_(grad_output.unsqueeze(-1)).to(ctx.input_dtype), None, None
+        # autograd casts it back to the input's dtype
+        return grad_input.mul_(grad_output.unsqueeze(-1)).to(torch.bfloat16), None, None
 
 
 def vocab_parallel_cross_entropy(logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup):
