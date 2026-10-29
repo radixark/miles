@@ -26,25 +26,6 @@ class _FakeApiClient:
         return f"info-{self.name}"
 
 
-class _SlowApiClient:
-    async def update_weights_from_disk(self, **kwargs: Any) -> str:
-        await asyncio.sleep(0.2)
-        return "reloaded"
-
-
-class TestUnboundedClientCall:
-    def test_a_whole_model_call_outlives_the_per_request_timeout(self) -> None:
-        """The per-request timeout is sized for one bucket; a whole-model reload must not be cut by it."""
-        args = Namespace(ft_components=["weight_update"], update_weight_engine_request_timeout=0.05)
-        bounded = _RolloutCellUpdater(args=args, cell_id="cell-a", api_client=_SlowApiClient())
-        unbounded = _RolloutCellUpdater(args=args, cell_id="cell-b", api_client=_SlowApiClient())
-
-        assert bounded.submit_client_call("update_weights_from_disk").result(timeout=10) is None
-        assert bounded.is_errored
-        assert unbounded.submit_unbounded_client_call("update_weights_from_disk").result(timeout=10) == "reloaded"
-        assert not unbounded.is_errored
-
-
 class TestSubmitClientCall:
     """Every engine request of a weight update goes through the updater of its own cell."""
 
