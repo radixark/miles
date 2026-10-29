@@ -187,7 +187,7 @@ class _SharedImage:
 def _allocate_shared_bucket(bucket: list[tuple[str, torch.Tensor]], layout) -> _SharedBucket:
     metadata = flatten_weight_bucket([(name, tensor.to("meta")) for name, tensor in bucket]).get_metadata()
     nbytes = metadata[-1].end_idx
-    # a full tmpfs SIGBUSes on write; the earlier buckets' pages are already in (pinned or copied)
+    # a full tmpfs SIGBUSes on write. Best effort: ranks allocating at once can all pass this before any writes
     free = shutil.disk_usage("/dev/shm").free
     if nbytes > free:
         raise RuntimeError(
