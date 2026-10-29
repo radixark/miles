@@ -60,8 +60,69 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 - **Remote sandbox fleets** (from the user). open-instruct has two alternatives to colocated podman:
   1. A LiteRegistry podman fleet behind a local gateway (branch `literegistry_podman`). Now option L, ported.
   2. A hosted OpenSandbox service on GCP (branch `pd_open_sandbox_cuda13`, paid). Not explored yet.
+- **GRPO after OPD on tasks the start does not always solve.** GRPO from the 9B OPD run's step 80 gained nothing by
+  step 120 ([README](README.md#grpo-from-the-9b-opd-runs-step-80-4-nodes)): 37-45% of its sampled groups are all-pass
+  and about 20% all-fail, so about 65% of the rollouts are dropped by the zero-variance filter. The filter already keeps
+  those groups out of the gradient, so dropping the tasks up front mainly buys throughput (about 40% fewer rollouts per
+  step without the all-pass tasks, about 2.5x fewer without both kinds) and a shift toward harder tasks. A run sees
+  under one epoch, so it needs a pass-rate sweep with the start checkpoint (about 116k episodes at k=8 over all
+  14.5k tasks, or a subset), or screening each task with a few samples before the full 32 (SPEED-RL's idea), which
+  needs a two-phase group in the rollout wrapper.
 
 Larger directions to evaluate against the evidence below. Add yours here.
+
+## 2026-10-29: `oe-adapt` full again; checkpoint saves fail
+
+- **Runs:** GRPO from OPD step 80 (Beaker `01M60M1V4QBQDE3XMG8ZQ0KR3R`, commit `286b0c0563`), last checkpoint 169, and
+  the 4B RLVR run (`01M60M1X1A5M1D3HXNY123BYYG`, commit `3ec4925326`), last checkpoint 134.
+- **What happened:** `/weka/oe-adapt-default` (440 TB) reached 100% at about 02:00 UTC, 34 MB free. At 02:08 both runs
+  failed in `save_model` (`CheckpointException`, then `NonRetryableError: All cells failed during
+  execute_first_alive#save_model`), and Beaker retried both.
+- **GRPO's retries failed at startup.** Attempt 3 failed within 2 minutes. Attempt 4 failed after 30: the entry
+  script could not create the gateway log on weka (`tmax_beaker_entry.sh: line 162: …literegistry-gateway-…`), so the
+  gateway never started and the 30-minute replica wait ran out. Its commit predates `320cd35167`, which keeps the
+  gateway restarting and logs to `/tmp` while weka refuses (the 2026-10-23 incident). The 4B run has that fix: its
+  attempt 4 logged the gateway to `/tmp`, resumed from step 134 and saved `iter_0000139` and `iter_0000144` once
+  space returned.
+- **Recovery:** the user freed space (4.2 TB free at 03:46, 18 TB at 04:16). GRPO's attempt 5 saved `iter_0000174` at
+  04:38; four of its ten retries were used. Weka reads stayed slow for a while afterwards: a gateway-log read and a
+  `gantry` start each blocked in `D` state for minutes.
+- **Our share:** about 4.7 TB on 2026-10-29. Each 9B run keeps 3 training states of about 117 GB plus HF snapshots of
+  17 GB, and the debug dumps (`--save-debug-rollout-data`, `--save-debug-train-data`) add 40-175 GB per run under
+  `deletable_rollouts/`.
+- **Options:** in [ROADMAP.md](ROADMAP.md) (P1, checkpoint storage).
+
+## 2026-10-28: the fleets' registry mirror fails, then the private fleet's Redis
+
+- **Fleets:** `podman-parallel64-20261027` (parallel64; the 4B RLVR run) and `podman-private-reasoning-20261017`
+  (private; GRPO from OPD step 80 and the cross-size OPD run). The older shared fleet,
+  `podman-terminal-jupiter-head`, is off.
+- **Symptom:** `sandbox start failed for image=hamishi740/swerl-tmax-v3:<tag>: PodmanGatewayError('gateway returned
+  HTTP 503 for affinity/handshake: … Resolving "hamishi740/swerl-tmax-v3" using unqualified-search registries …
+  Trying to pull docker.io/…')`, then `sandbox never started, dropping the group`.
+  - On parallel64 from the 4B run's first attempt (`01M5ZZ4SG85JNP62W1XRTSCRNC`, 00:39), stopped at 02:44 without a
+    checkpoint.
+  - On private from 04:43: 10-15 groups dropped per run every 7 minutes, against 8 groups per step. Neither run
+    trained after 04:36 (GRPO) and 04:41 (OPD), and by 05:50 handshakes hung until the client's 310 s timeout.
+- **Cause:** every replica was started with one fixed `registry_mirror`, the fleet's own gateway (parallel64:
+  `jupiter-cs-aus-154:29040`, private: `jupiter-cs-aus-190:28940`). When a gateway moved to another host after a node
+  failure, the replicas kept the dead address; with no Docker Hub credentials, pulls of images a replica had not cached
+  fell back to anonymous docker.io and its rate limit. The fleets' registered mirror services stayed healthy
+  throughout. At 05:41 the private fleet's Redis head also stopped (`jupiter-cs-aus-125` refused connections), so no
+  gateway could route at all.
+- **Our gateway could not help.** The head runs its own gateway, as open-instruct's `start_colocated_gateway.sh`
+  does, so the fleet's gateway moving never touches our routing, and it follows Redis moves through the head registry.
+  But the pull happens on the replica, and routing needs Redis.
+- **Fix, by the fleet owners the same night:** both fleets relaunched (128 replicas each, literegistry 1.0.61) under
+  a wrapper that every 30 s writes podman's `registries.conf` from the registry: every registered mirror (shuffled per
+  replica), then the fleet's gateway, then Docker Hub with credentials from the user's Beaker secrets. Private's
+  Redis was recovered from its snapshot and then replaced. After the repair, 16 of 16 starts of images neither fleet
+  had cached bound in 4-21 s, through a local literegistry 1.0.63 gateway started as the head starts it.
+- **What we did:** stopped both private-fleet runs at 05:53 (checkpoints 59 and 94) and resumed them with their
+  original configs and `--exp-name` at 06:44, on the repaired private fleet; the 4B run started over on parallel64.
+  About 2 h of 8 nodes lost.
+- **Later the same day:** a failed node (`jupiter-cs-aus-164`) took 3-4 replicas from both fleets: about 250
+  `affinity_owner_unavailable` per run in 10 minutes and 3-4 lost containers. Training continued.
 
 ## 2026-10-27: the 9B pure-OPD run's early transient
 

@@ -167,6 +167,12 @@ python examples/tmax/beaker/registry_mirror/registry_mirror.py warm     # open-i
   pull, not the job.
 - **Mirrors move.** Whenever Beaker reschedules one, its address changes and its cache starts empty. Relaunch the
   mirrors, then resubmit (with `--exp-name` to continue a run) to pick up the new addresses.
+- **How the running mirrors are launched.** `launch` defaults to `ai2/oe-agents-holmes` with 8 CPUs and an 8 h
+  minimum runtime. The mirrors in use since 2026-10-22 run in `ai2/general-tool-use` (`urls --workspace
+  ai2/general-tool-use`) with no resource request, since a CPU request makes these clusters attach a GPU, and no
+  minimum runtime, which needs an allocation that workspace lacks on Jupiter. They auto-resume with 10 retries, and
+  preemptions use the retries up: five of six launched on 2026-10-22 were gone by 2026-10-25. Check `urls` before
+  relying on them and keep at least 3 running.
 - **Warming is optional and large.** A full warm is about 4.4 TB per mirror. The image janitor deletes images unused
   for 10 minutes, so most pulls are cache misses on the node anyway.
 - **After rotating the Docker Hub token**, update the Beaker secret, then relaunch the mirrors, which read it at
@@ -190,7 +196,8 @@ beaker:
   environment, and literegistry into a venv of its own, since literegistry pins starlette and pulls streamlit, which
   the training environment cannot take. It then starts `python -m literegistry.gateway
   --registry=<gateway_registry> --register=False` on `127.0.0.1:24750`, restarting it if it exits; the gateway's log
-  goes to `<output_dir>/<run>/literegistry-gateway-<UTC time>.log` on weka, one file per attempt. Before training starts, the head waits up to 30 min for the gateway to
+  goes to `<output_dir>/<run>/literegistry-gateway-<UTC time>.log` on weka, one file per attempt, or to `/tmp` in the
+  job while weka refuses writes (`320cd35167`). Before training starts, the head waits up to 30 min for the gateway to
   list `gateway_min_replicas` podman replicas. The gateway finds the fleet's Redis through the head registry, so it
   follows a Redis move, and prints the first replica's `session_limits` once enough are listed. `gateway_url` skips
   all this and uses a running gateway. However the job ends, including Beaker's SIGTERM on preemption or cancel
@@ -219,7 +226,15 @@ beaker:
     admission deadline (`504 affinity_admission_timeout`, on both fleets in October 2026). A timed-out handshake
     may still start a container nobody can name, which idles out after 2 h whether or not it is resent.
 - **The fleet** is shared and managed outside this job. Its roster is at `<gateway>/v1/models`: on 2026-10-16, 172
-  podman replicas, 8 mirrors and the fleet's own gateway.
+  podman replicas, 8 mirrors and the fleet's own gateway. The task images are pulled by the replicas, not by this job.
+  Since 2026-10-28 each replica rewrites its podman mirror list from the roster every 30 s (every registered mirror,
+  then the fleet's gateway, then Docker Hub with credentials). Before that, each replica had one fixed mirror, the
+  fleet's gateway, so when that gateway moved to another host every image a replica had not cached failed to pull
+  ([mirror outage](../INVESTIGATIONS.md#2026-10-28-the-fleets-registry-mirror-fails-then-the-private-fleets-redis)).
+- **Which fleet.** In October 2026: `podman-private-reasoning-20261017` ("private") and `podman-parallel64-20261027`
+  ("parallel64"), 128 replicas and 1,024 sessions each since 2026-10-28; a run holds up to
+  `async_max_concurrent_samples` (512) at once. The older `podman-terminal-jupiter-head` ("shared") is off. To move a
+  run to another fleet, stop it and resubmit a config with the other `gateway_registry` and `--exp-name`.
 - **Check it from a dev box.** Start a gateway from the same registry with `python -m literegistry.gateway
   --registry=<gateway_registry> --host=127.0.0.1 --port=24711 --register=False`. Then `curl
   127.0.0.1:24711/v1/models` lists the replicas.
@@ -316,6 +331,8 @@ What to do when a symptom shows up. Every failure mode seen so far, with its sta
 | `!!!!!!! Segfault encountered !!!!!!!` from `RolloutExecutor`, then `EOFError: Ran out of input` from agent processes | A native crash in the rollout executor; no stack in the job log | The retry resumes. Set `PYTHONFAULTHANDLER: "1"` in the config's `env` to capture a stack next time |
 | `gateway http://127.0.0.1:24750: N podman replicas (need M)` and the head exits | Gateway backend: the fleet's registry is unreachable or lists too few replicas | Check the registry path and the fleet's roster (`/v1/models`); see [Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend) |
 | `end=sandbox_lost` in episode logs | Gateway backend: the replica removed or stopped the container (its resource watchdog, or the agent killed PID 1), its replica left, or its binding expired | `sandbox_lost_reason` in the trace says which: the policy's limits and a stopped container score 0, the fleet's losses drop the group; a burst of `unknown` is the fleet's, see [INVESTIGATIONS.md](../INVESTIGATIONS.md) |
+| `sandbox start failed for image=…: … 503 … Resolving "hamishi740/swerl-tmax-v3" using unqualified-search registries`, then `sandbox never started, dropping the group`; steps stop | Gateway backend: the fleet's replicas cannot pull images they have not cached (their mirror is unreachable and Docker Hub refuses anonymous pulls) | Tell the fleet's owners. To keep training, move the run to another fleet ([Sandboxes on a podman fleet](#sandboxes-on-a-podman-fleet-gateway-backend)); see FAILURE_MODES D7 |
+| `CheckpointException` from `save_model`, `No space left on device` | The shared `oe-adapt` volume is full; every retry fails at its first save until space returns | Free space, our old training states and debug dumps first ([Weka full](../INVESTIGATIONS.md#2026-10-29-oe-adapt-full-again-checkpoint-saves-fail)) |
 | `Failed collecting samples: ReadError('')` from `agentic_tool_call.py` | Fetching an episode from the session server failed; the whole group is dropped | 2.5-3% of episodes on the pre-rebase code; none so far on the rebased code (upstream's session-server and transport fixes) |
 | `http_utils.py … Error: , retrying... (attempt 1/60, url=…/sessions` with `starlette.requests.ClientDisconnect` on the session server | A session-create request dropped mid-body | Harmless: retried and succeeded |
 | `AttributeError` mentioning `enable_prefill_weight_versions` at start | Image older than session server v2 needs | Pin `dev-202610151741` or newer |
