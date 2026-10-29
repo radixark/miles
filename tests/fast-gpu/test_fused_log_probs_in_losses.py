@@ -26,6 +26,7 @@ from tests.fast.backends.training_utils.loss.loss_test_utils import (
 from tests.fast.dist_utils import find_free_port
 
 from miles.backends.training_utils.data.context_parallel import all_gather_with_cp
+from miles.backends.training_utils.loss.hub import score_centering_loss
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
 from miles.backends.training_utils.loss.objective import loss_function
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
@@ -190,6 +191,132 @@ def test_score_centering_log_probs_match_the_torch_backend(nccl_world, with_entr
         torch.testing.assert_close(fused_ent, torch_ent, rtol=1e-5, atol=5e-5)
     torch.testing.assert_close(fused_grad, torch_grad, rtol=1e-5, atol=1e-5)
     assert (fused_grad[..., vocab_size:] == 0).all()
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_score_centering_candidates_match_the_torch_backend(nccl_world, dtype):
+    """Score centering's training loss scores ``[sampled token, top-K candidates]`` per row: the fused
+    backend in one call with K targets, the torch backend through selected_log_probs_and_entropy.
+    Scores, entropy and the logits gradient must agree."""
+    make_parallel_state()
+    prompt_lens, response_lens, n_candidates = [5, 9, 3], [7, 4, 6], 8
+    width, vocab_size = _LOSS_VOCAB, _LOSS_VOCAB - 96
+    total_lens = [p + r for p, r in zip(prompt_lens, response_lens, strict=True)]
+    gen = torch.Generator(device="cuda").manual_seed(29)
+    logits = (torch.randn(1, sum(total_lens), width, device="cuda", generator=gen) * 4).to(dtype)
+    tokens = [torch.randint(0, vocab_size, (total,), device="cuda", generator=gen) for total in total_lens]
+    candidates = []
+    for sample_tokens, response in zip(tokens, response_lens, strict=True):
+        ids = torch.randint(0, vocab_size, (response, n_candidates), device="cuda", generator=gen)
+        ids[:, 0] = sample_tokens[-response:]  # the sampled token is usually among the candidates
+        ids[::2, -2:] = -1
+        candidates.append(ids.cpu())
+    batch = {
+        "unconcat_tokens": tokens,
+        "total_lengths": total_lens,
+        "response_lengths": response_lens,
+        "rollout_topk_token_ids": candidates,
+    }
+
+    outputs = {}
+    for backend in ("torch", "fused"):
+        args = make_args(
+            loss_type="score_centering",
+            true_on_policy_mode=False,
+            log_probs_backend=backend,
+            rollout_temperature=0.8,
+            vocab_size=vocab_size,
+            use_kl_loss=True,
+            entropy_coef=0.01,
+            observe_training_entropy=False,
+            use_sampling_support_replay=False,
+            recompute_loss_function=False,
+        )
+        leaf = logits.clone().requires_grad_(True)
+        result = score_centering_loss._candidate_log_probs(args, batch, leaf * 1)
+        selected, entropy = torch.cat(result["selected"]), torch.cat(result["entropy"])
+        weights = torch.linspace(-1, 1, selected.numel(), device="cuda").view(selected.shape)
+        ((selected * weights).sum() + 0.1 * entropy.sum()).backward()
+        outputs[backend] = (selected.detach(), torch.cat(result["kl_log_probs"]).detach(), entropy.detach(), leaf.grad)
+
+    *scores, grad = outputs["fused"]
+    *reference_scores, reference_grad = outputs["torch"]
+    for fused, reference in zip(scores, reference_scores, strict=True):
+        torch.testing.assert_close(fused, reference, rtol=1e-5, atol=5e-5)
+    # both backends round the gradient into the logits' dtype once
+    grad_tol = dict(rtol=1e-5, atol=1e-5) if dtype == torch.float32 else dict(rtol=1e-2, atol=1e-3)
+    torch.testing.assert_close(grad.float(), reference_grad.float(), **grad_tol)
+
+
+def _score_centering_batch(prompt_lens, response_lens, vocab_size, n_candidates, seed):
+    gen = torch.Generator(device="cuda").manual_seed(seed)
+    total_lens = [p + r for p, r in zip(prompt_lens, response_lens, strict=True)]
+    tokens = [torch.randint(0, vocab_size, (total,), device="cuda", generator=gen) for total in total_lens]
+    candidates = []
+    for sample_tokens, response in zip(tokens, response_lens, strict=True):
+        ids = torch.randint(0, vocab_size, (response, n_candidates), device="cuda", generator=gen)
+        ids[:, 0] = sample_tokens[-response:]  # the sampled token is usually among the candidates
+        ids[::2, -2:] = -1
+        candidates.append(ids.cpu())
+    return {
+        "unconcat_tokens": tokens,
+        "total_lengths": total_lens,
+        "response_lengths": response_lens,
+        "rollout_topk_token_ids": candidates,
+    }
+
+
+def _score_centering_args(backend, vocab_size):
+    return make_args(
+        loss_type="score_centering",
+        true_on_policy_mode=False,
+        log_probs_backend=backend,
+        rollout_temperature=0.8,
+        vocab_size=vocab_size,
+        use_kl_loss=True,
+        entropy_coef=0.01,
+        observe_training_entropy=False,
+        use_sampling_support_replay=False,
+        recompute_loss_function=False,
+    )
+
+
+@pytest.mark.parametrize("cp_rank", [0, 1])
+def test_score_centering_zigzag_cp2_matches_the_torch_backend(nccl_world, cp_rank):
+    """Zigzag CP2 with the layout where rank 1 scores no response row: the fused backend's K
+    targets per row must land on the same rows, and an empty rank must still run."""
+    set_parallel_state(dataclasses.replace(make_parallel_state(), cp=GroupInfo(rank=cp_rank, size=2, group=None)))
+    vocab_size = _LOSS_VOCAB - 96
+    batch = _score_centering_batch(_ZIGZAG_PROMPT_LENS, _ZIGZAG_RESPONSE_LENS, vocab_size, 8, seed=40 + cp_rank)
+    local_rows = sum(2 * -(-total // 4) for total in batch["total_lengths"])
+    logits = torch.randn(1, local_rows, _LOSS_VOCAB, device="cuda", generator=torch.Generator("cuda").manual_seed(41))
+
+    outputs = {}
+    for backend in ("torch", "fused"):
+        leaf = (logits * 4).requires_grad_(True)
+        result = score_centering_loss._candidate_log_probs(_score_centering_args(backend, vocab_size), batch, leaf * 1)
+        selected, entropy = torch.cat(result["selected"]), torch.cat(result["entropy"])
+        weights = torch.linspace(-1, 1, selected.numel(), device="cuda").view(selected.shape)
+        ((selected * weights).sum() + 0.1 * entropy.sum()).backward()
+        outputs[backend] = ([s.size(0) for s in result["selected"]], selected.detach(), entropy.detach(), leaf.grad)
+
+    (torch_sizes, *torch_outputs), (fused_sizes, *fused_outputs) = outputs["torch"], outputs["fused"]
+    assert fused_sizes == torch_sizes
+    if cp_rank == 1:
+        assert fused_sizes[0] == 0
+    for fused, reference in zip(fused_outputs, torch_outputs, strict=True):
+        torch.testing.assert_close(fused, reference, rtol=1e-5, atol=5e-5)
+
+
+def test_score_centering_rejects_a_candidate_outside_the_vocabulary(nccl_world):
+    """Both backends reject such an id with the same readable error, before any kernel runs."""
+    make_parallel_state()
+    vocab_size = _LOSS_VOCAB - 96
+    batch = _score_centering_batch([5, 9], [7, 4], vocab_size, 8, seed=42)
+    batch["rollout_topk_token_ids"][1][2, 3] = vocab_size  # first id of Megatron's vocab padding
+    logits = torch.randn(1, sum(batch["total_lengths"]), _LOSS_VOCAB, device="cuda")
+    with pytest.raises(ValueError, match="outside the model vocabulary"):
+        score_centering_loss._candidate_log_probs(_score_centering_args("fused", vocab_size), batch, logits)
 
 
 # (prompt_lens, response_lens): totals divide by 2 * cp. In the second case rank 0's contiguous

@@ -13,6 +13,7 @@ from miles.backends.training_utils.loss.hub.score_centering_loss import _regular
 def test_candidate_collection_retains_full_vocabulary_kl_scores(monkeypatch: pytest.MonkeyPatch) -> None:
     logits = torch.tensor([[0.2, -0.3, 0.8, 0.4, 10.0]], requires_grad=True)
     args = Namespace(
+        log_probs_backend="torch",
         use_kl_loss=True,
         entropy_coef=0,
         observe_training_entropy=False,
