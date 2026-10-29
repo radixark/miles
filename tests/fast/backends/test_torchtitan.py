@@ -37,7 +37,7 @@ def _args(**overrides) -> Namespace:
         lr_wsd_decay_iters=None,
         lr_decay_iters=None,
         lora_rank=0,
-        lora_type="canonical_lora",
+        lora_type="lora",
         lora_A_init_method="kaiming",
         lora_dropout=0.0,
         lora_adapter_path=None,
@@ -83,8 +83,8 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
     validate_torchtitan_args(_args(lora_rank=8))
     with pytest.raises(ValueError, match="qwen3 only"):
         validate_torchtitan_args(_args(lora_rank=8, titan_model_name="glm5_next"))
-    with pytest.raises(ValueError, match="canonical_lora"):
-        validate_torchtitan_args(_args(lora_rank=8, lora_type="lora"))
+    with pytest.raises(ValueError, match="--lora-type lora"):
+        validate_torchtitan_args(_args(lora_rank=8, lora_type="canonical_lora"))
     with pytest.raises(ValueError, match="kaiming"):
         validate_torchtitan_args(_args(lora_rank=8, lora_A_init_method="xavier"))
     with pytest.raises(ValueError, match="no dropout"):
@@ -99,12 +99,11 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
 def test_lora_defaults_are_the_values_torchtitan_honors():
     """A torchtitan LoRA command without --lora-type or --lora-A-init-method must not hit the refusals."""
     parser = build_torchtitan_parser(get_miles_extra_args_provider())
-    assert (parser.get_default("lora_type"), parser.get_default("lora_A_init_method")) == ("canonical_lora", "kaiming")
+    assert (parser.get_default("lora_type"), parser.get_default("lora_A_init_method")) == ("lora", "kaiming")
 
 
 def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
-    """torchtitan runs in the default raw mode; megatron's native adapter spec, which refuses
-    canonical_lora, must not vet its targets."""
+    """torchtitan runs in the default raw mode; megatron's native adapter spec must not vet its targets."""
     hf_config = SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"})
     monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
     monkeypatch.setattr(
@@ -123,7 +122,7 @@ def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
         hf_checkpoint="/hf",
         lora_rank=8,
         lora_adapter_path=None,
-        lora_type="canonical_lora",
+        lora_type="lora",
         target_modules="q_proj",
         exclude_modules=None,
         experts_shared_outer_loras=False,

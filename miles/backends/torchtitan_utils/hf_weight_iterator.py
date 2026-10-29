@@ -82,11 +82,13 @@ def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[st
 def hf_adapter_weights(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
     """The LoRA adapter as HF PEFT tensors, gathered like the base weights. Only the adapter
     tensors visit the GPU, so an offloaded frozen base stays on the host."""
-    model_state = {k: v for part in trainer.model_parts for k, v in part.state_dict().items()}
-    adapter = {
-        name: tensor.to(current_platform.current_device())
-        for name, tensor in lora_names.iter_hf_adapter_tensors(_state_dict_adapter(trainer), model_state)
+    adapter_state = {
+        k: v.to(current_platform.current_device())
+        for part in trainer.model_parts
+        for k, v in part.state_dict().items()
+        if lora_names.is_adapter_key(k)
     }
+    adapter = dict(lora_names.iter_hf_adapter_tensors(_state_dict_adapter(trainer), adapter_state))
     layout = _StageLayout.from_trainer(trainer, complete_across_pp=complete_across_pp)
     yield from layout.stream(adapter)
 
