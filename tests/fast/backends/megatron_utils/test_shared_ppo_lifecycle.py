@@ -610,13 +610,12 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
 
     expected_top_indices = torch.tensor([[1]], dtype=torch.int64)
 
-    def preload_replay_data(**kwargs):
-        assert kwargs["data_key"] == data_key
-        assert kwargs["replay_list"] is manager.replays
-        kwargs["replay_list"][0].record(kwargs["rollout_data"].pop(data_key)[0])
+    def preload_replay_data(attached_manager, **kwargs):
+        assert attached_manager is manager
+        manager.replays[0].record(kwargs["rollout_data"].pop(data_key)[0])
 
-    fill_replay_data = Mock(side_effect=preload_replay_data)
-    monkeypatch.setattr(actor_module, "fill_replay_data", fill_replay_data)
+    attach_replay_data = Mock(side_effect=preload_replay_data)
+    monkeypatch.setattr(actor_module, "attach_replay_data", attach_replay_data)
 
     def train_with_replay(*_args, **_kwargs):
         topk_fn = manager.get_topk_fn(
@@ -638,7 +637,7 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
     worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
     worker._compute_log_prob.assert_not_called()
-    fill_replay_data.assert_called_once()
+    attach_replay_data.assert_called_once()
     replay.pop_backward.assert_called_once()
     assert queued_top_indices == []
 
