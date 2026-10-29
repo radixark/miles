@@ -76,7 +76,11 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         return op, decoded | {"adam_params": {**ADAM_PARAM_DEFAULTS, **payload["adam_params"]}}
     if op == "save_state":
         validate_save_options(payload)
-        return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
+        return op, decoded | {
+            "name": payload.get("path"),
+            "overwrite": bool(payload.get("overwrite", False)),
+            "ttl_seconds": payload.get("ttl_seconds"),
+        }
     if op == "load_state":
         return op, decoded | {
             "path": payload["path"],
@@ -85,7 +89,7 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         }
     if op == "save_weights_for_sampler":
         validate_save_options(payload)
-        return op, decoded | {"sampler_path": payload.get("path")}
+        return op, decoded | {"sampler_path": payload.get("path"), "ttl_seconds": payload.get("ttl_seconds")}
     raise UserInputError(f"unknown command op {op!r}")
 
 

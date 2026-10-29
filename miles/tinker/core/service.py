@@ -5,6 +5,7 @@ The trainer lock serializes trainer calls across dispatch, model creation, and l
 import asyncio
 import logging
 import os
+import shutil
 import time
 import uuid
 
@@ -31,6 +32,8 @@ from miles.tinker.core.types import (
 )
 from miles.tinker.core.utils import (
     build_checkpoint_metadata,
+    checkpoint_expired_on_disk,
+    expired_checkpoints,
     parse_tinker_path,
     read_checkpoint_metadata,
     resolve_checkpoint_dir,
@@ -336,10 +339,15 @@ class TinkerService:
         name = payload["name"] or f"checkpoint-{payload['seq_id']:06d}"
         validate_checkpoint_segment(name)
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "weights", name)
-        if not payload["overwrite"] and os.path.exists(checkpoint_dir):
-            raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
+        if os.path.exists(checkpoint_dir):
+            if checkpoint_expired_on_disk(checkpoint_dir):
+                shutil.rmtree(checkpoint_dir)  # an expired name is free to reuse before the sweeper runs
+            elif not payload["overwrite"]:
+                raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
         failure = await self.backend.save_slot(
-            record.slot, checkpoint_dir, metadata=build_checkpoint_metadata(record, self.config)
+            record.slot,
+            checkpoint_dir,
+            metadata=build_checkpoint_metadata(record, self.config, payload.get("ttl_seconds")),
         )
         if failure is not None:
             return failure
@@ -375,13 +383,16 @@ class TinkerService:
             validate_checkpoint_segment(version)
         path = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "sampler_weights", version)
         if os.path.exists(path):
-            raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
+            if checkpoint_expired_on_disk(path):
+                shutil.rmtree(path)  # an expired snapshot name is free to reuse before the sweeper runs
+            else:
+                raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
         failure = await self.backend.export_slot(
             record.slot,
             record.lora_rank,
             record.lora_alpha,
             path,
-            metadata=build_checkpoint_metadata(record, self.config),
+            metadata=build_checkpoint_metadata(record, self.config, payload.get("ttl_seconds")),
         )
         if failure is not None:
             return failure
@@ -527,9 +538,25 @@ class TinkerService:
     async def _run_lease_sweeper(self) -> None:
         """Reclaim from stale sessions: cancel sampling, unload models, free
         slots. Training state dies with the lease; only checkpoints survive."""
+        await self._expire_checkpoints()  # drop checkpoints already past their TTL before serving
         while True:
             await asyncio.sleep(30)
             await self._expire_sessions()
+            await self._expire_checkpoints()
+
+    async def _expire_checkpoints(self) -> None:
+        """Delete checkpoints past their TTL and drop any sampling session bound to one. Runs under the
+        trainer lock, so a sweep never races a save executing in the same critical section. A sample
+        already in flight keeps its resolved snapshot; a new one is refused when it reads the metadata."""
+        async with self._trainer_lock:
+            expired = expired_checkpoints(self.config.checkpoint_root)
+            for tinker_path, checkpoint_dir in expired:
+                logger.warning(f"checkpoint {tinker_path} is past its TTL; deleting it")
+                shutil.rmtree(checkpoint_dir, ignore_errors=True)
+            expired_paths = {tinker_path for tinker_path, _ in expired}
+            for sampling_session_id, sampling in list(self.sampling_sessions.items()):
+                if sampling.model_path in expired_paths:
+                    del self.sampling_sessions[sampling_session_id]
 
     async def _expire_sessions(self) -> None:
         async with self._trainer_lock:
