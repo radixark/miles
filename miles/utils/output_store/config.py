@@ -92,6 +92,11 @@ def check_output_store_args(args: argparse.Namespace, *, sglang: SglangConfig, m
                 "a custom convert function would bypass the output store plan column",
             ),
             (
+                args.custom_async_data_buffer_path is not None,
+                "a custom DataBuffer (--custom-async-data-buffer-path) may drop or restore groups without "
+                "recording their output store refs",
+            ),
+            (
                 megatron.is_multi_policy,
                 "multi-policy training is not supported: stored objects are released per rollout id",
             ),

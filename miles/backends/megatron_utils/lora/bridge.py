@@ -263,8 +263,7 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
 
     use_distributed_optimizer = "muon" not in (args.backend.optimizer or "").lower()
     if is_multi_lora_enabled(args):
-        # Per-slot LayerWise optimizers: plain DDP all-reduce keeps full grads on
-        # every rank (whole-param sharding + retained-gradient idempotency).
+        # Per-slot LayerWise optimizers require full parameter gradients.
         use_distributed_optimizer = False
     ddp_config = DistributedDataParallelConfig(
         use_distributed_optimizer=use_distributed_optimizer,
