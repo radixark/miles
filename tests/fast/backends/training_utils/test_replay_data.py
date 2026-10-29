@@ -8,7 +8,9 @@ import pytest
 import torch
 
 from miles.backends.training_utils import parallel
-from miles.backends.training_utils.replay.data import fill_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.data.rollout import DataIterator
+from miles.backends.training_utils.replay.data import attach_replay_data, register_replay_list_sequential
+from miles.utils.replay_base import BaseReplayManager
 
 
 class _Replay:
@@ -18,6 +20,20 @@ class _Replay:
 
     def record(self, value):
         self.recorded.append(value)
+
+    def clear(self):
+        self.recorded = []
+
+
+def _manager(replays, *, if_sp_region=True, indexer=False, kept_in_train_dump=False):
+    manager = BaseReplayManager()
+    manager.data_key = "routes"
+    manager.replays = replays
+    manager.register_replay_list_func = register_replay_list_sequential
+    manager.if_sp_region = if_sp_region
+    manager.replay_indices_are_token_positions = indexer
+    manager.kept_in_train_dump = kept_in_train_dump
+    return manager
 
 
 def test_register_replay_list_sequential_falls_back_to_enum_when_no_stream_idx():
@@ -93,18 +109,14 @@ def test_fill_replay_bshd_token_alignment(
                 "tokens": tokens,
                 "max_seq_lens": [max_seqlen] * len(tokens),
             }
-            iterator = SimpleNamespace(reset=lambda: None, get_next=lambda keys, batch=rollout_data: batch)
             replays = [_Replay(), _Replay()]
-            fill_replay_data(
+            attach_replay_data(
+                _manager(replays, if_sp_region=sequence_first),
                 args=args,
                 models=None,
-                data_iterator=[iterator],
+                data_iterator=[DataIterator(rollout_data, micro_batch_size=len(tokens))],
                 num_microbatches=[1],
                 rollout_data=rollout_data,
-                data_key="routes",
-                replay_list=replays,
-                register_replay_list_func=register_replay_list_sequential,
-                if_sp_region=sequence_first,
                 sequence_first=sequence_first,
             )
 
@@ -156,19 +168,15 @@ def test_fill_replay_thd_preserves_packed_order(
             "tokens": [torch.arange(3), torch.arange(3)],
             "max_seq_lens": None,
         }
-        iterator = SimpleNamespace(reset=lambda: None, get_next=lambda keys, batch=rollout_data: batch)
         replay = _Replay()
-        fill_replay_data(
+        attach_replay_data(
+            _manager([replay], kept_in_train_dump=kept_in_train_dump),
             args=args,
             models=None,
-            data_iterator=[iterator],
+            data_iterator=[DataIterator(rollout_data, micro_batch_size=2)],
             num_microbatches=[1],
             rollout_data=rollout_data,
-            data_key="routes",
-            replay_list=[replay],
-            register_replay_list_func=register_replay_list_sequential,
             sequence_first=sequence_first,
-            kept_in_train_dump=kept_in_train_dump,
         )
         local_expected = expected.chunk(tp_size)[tp_rank] if sequence_parallel else expected
         torch.testing.assert_close(replay.recorded[0][:, 0], local_expected)
@@ -193,18 +201,14 @@ def _fill_thd_cp2(monkeypatch, *, cp_rank, allgather_cp, lengths, data_pad_size_
         "tokens": [torch.arange(length) for length in lengths],
         "max_seq_lens": None,
     }
-    iterator = SimpleNamespace(reset=lambda: None, get_next=lambda keys: rollout_data)
     replay = _Replay()
-    fill_replay_data(
+    attach_replay_data(
+        _manager([replay], indexer=indexer),
         args=args,
         models=None,
-        data_iterator=[iterator],
+        data_iterator=[DataIterator(rollout_data, micro_batch_size=len(lengths))],
         num_microbatches=[1],
         rollout_data=rollout_data,
-        data_key="routes",
-        replay_list=[replay],
-        register_replay_list_func=register_replay_list_sequential,
-        indices_are_token_positions=indexer,
     )
     return replay.recorded[0][:, 0].tolist()
 
@@ -251,6 +255,45 @@ def test_fill_replay_thd_allgather_cp(monkeypatch, indexer):
         assert recorded == expected
 
 
+@pytest.mark.parametrize(
+    "schedule,expected",
+    [
+        (dict(micro_batch_size=1), [[0, 1, -1], [2, 3, -1]]),
+        (dict(micro_batch_indices=[[1], [0]]), [[2, 3, -1], [0, 1, -1]]),
+    ],
+    ids=["fixed", "balanced"],
+)
+def test_attach_fills_micro_batches_in_the_iterator_order(monkeypatch, schedule, expected):
+    state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
+    monkeypatch.setattr(parallel, "_parallel_state", state)
+    args = SimpleNamespace(
+        qkv_format="thd",
+        allgather_cp=False,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=False),
+        data_pad_size_multiplier=1,
+        save_debug_train_data=None,
+    )
+    rollout_data = {
+        "routes": [torch.tensor([0, 1]).reshape(2, 1, 1), torch.tensor([2, 3]).reshape(2, 1, 1)],
+        "tokens": [torch.arange(3), torch.arange(3)],
+        "max_seq_lens": None,
+    }
+    replay = _Replay()
+
+    attach_replay_data(
+        _manager([replay]),
+        args=args,
+        models=None,
+        data_iterator=[DataIterator(rollout_data, **schedule)],
+        num_microbatches=[2],
+        rollout_data=rollout_data,
+    )
+
+    assert [entry[:, 0].tolist() for entry in replay.recorded] == expected
+    assert "routes" not in rollout_data
+
+
 class TestNativeReplayOwnership:
     def test_fsdp_replay_does_not_require_megatron_sequence_parallel_settings(
         self, monkeypatch: pytest.MonkeyPatch
@@ -270,19 +313,15 @@ class TestNativeReplayOwnership:
             "tokens": [torch.tensor([1, 2, 3])],
             "max_seq_lens": [4],
         }
-        iterator = SimpleNamespace(reset=lambda: None, get_next=lambda keys: batch)
         replay = _Replay()
 
-        fill_replay_data(
+        attach_replay_data(
+            _manager([replay]),
             args=args,
             models=None,
-            data_iterator=[iterator],
+            data_iterator=[DataIterator(batch, micro_batch_size=1)],
             num_microbatches=[1],
             rollout_data=batch,
-            data_key="routes",
-            replay_list=[replay],
-            register_replay_list_func=register_replay_list_sequential,
-            if_sp_region=True,
         )
 
         assert len(replay.recorded) == 1
