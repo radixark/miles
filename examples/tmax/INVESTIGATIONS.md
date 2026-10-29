@@ -43,7 +43,7 @@ The options below are the ones presented during the investigations; none is impl
 | H | `PYTHONFAULTHANDLER=1` in the Beaker env | Captures a Python stack if the rollout executor segfaults again | One env var | Bundle with the next restart |
 | I | More episodes in flight (1024, 256 sandboxes per node) | Uses idle engine capacity during long-tail phases | Doubles sandbox load per node, which is the suspected cause of the stalls | Not before A–C |
 | J | Episode wall-clock cap (`episode_timeout_s`) | Bounds long-tail episodes | open-instruct has no cap | Not now |
-| L | Sandboxes on a LiteRegistry podman fleet: `sandbox_backend: gateway`, open-instruct's `literegistry_podman` setup | Removes the sandboxes, and their CPU load, from the training and SGLang nodes altogether ([2026-10-16 entry](#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet)) | Implemented on branch `shashank/tmax-gateway`, 4-GPU smoke passed; depends on a fleet run outside the job | The 4-node run (fleet capacity first) |
+| L | Sandboxes on a LiteRegistry podman fleet: `sandbox_backend: gateway`, open-instruct's `literegistry_podman` setup | Removes the sandboxes, and their CPU load, from the training and SGLang nodes altogether ([2026-10-16 entry](#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet)) | Implemented (`255d93f374` .. `1e9265bd13`, merged in `e961a935aa`), 4-GPU smoke passed; depends on a fleet run outside the job | The 4-node run (fleet capacity first) |
 | M | Worker replicas' watch on the Ray head. (1) None: workers leave when the head marks the run done, or through Beaker's `propagateFailure` when the head's job fails. (2) open-instruct's: 6 failed `ray status` checks 5 s apart, with no timeout on a check. (3) A ~20-minute tolerance (`HEAD_MISS_LIMIT` 80, `aeb4f9ecd3`) | The ported check (6 misses with a 10 s timeout each, about 90 s) failed three podman attempts on 2026-10-17 while a starved head was slow to answer | (1) relies on Beaker noticing a failed head; a head that hangs without exiting would leave the workers waiting | **(1), taken 2026-10-19 by the user, after (2) ended resume 6 on a starved head that had recovered from 5 misses minutes before; (2) was used 2026-10-17 to 19** |
 | K | Make a dropped weight-sync reply non-fatal: treat it as "outcome unknown" after a completed broadcast and verify the engines' weight version | Survives the `ReadError` seen once in the old run | Miles core change; check upstream first | Only if it recurs |
 | N | Keep the 9B OPD run's recipe (lr 1e-6, OPD term from the rollout log-probs) and decide at about step 30 ([2026-10-27 entry](#2026-10-27-the-9b-pure-opd-runs-early-transient)) | open-instruct's identical run settled by itself by steps 25 to 30 | None | Current choice |
@@ -166,7 +166,7 @@ Larger directions to evaluate against the evidence below. Add yours here.
 
 ## 2026-10-17: the gateway backend at prod scale (two 4-node runs)
 
-Two runs of `prod_4node_gateway.yaml` (branch `shashank/tmax-gateway`) alongside the podman resume, to see whether
+Two runs of `prod_4node_gateway.yaml` (the gateway backend's first version, before its rework into `255d93f374` .. `1e9265bd13`) alongside the podman resume, to see whether
 the backend can be trusted at prod scale.
 
 - **v1** (`01M54060ECZQ0CN4XF1A5FZPZ6`, from 03:58): the fleet's Redis outage cost a retry (entry below). It then
@@ -209,7 +209,7 @@ the backend can be trusted at prod scale.
 ## 2026-10-17: fleet Redis outage delays the gateway prod run
 
 - **Run:** `tmax_prod4node_gateway_qwen35_9b_20261017_035830` (Beaker `01M54060ECZQ0CN4XF1A5FZPZ6`,
-  `prod_4node_gateway.yaml` on branch `shashank/tmax-gateway`), from step 0, alongside the podman run.
+  `prod_4node_gateway.yaml`, the gateway backend's first version), from step 0, alongside the podman run.
 - **What happened:** the fleet's Redis (`jupiter-cs-aus-159:29088`) stopped answering between 03:50 and 04:13 UTC and
   the head registry emptied at 04:23. The head's gateway listed no replicas, the 30-minute readiness wait ran out, and
   the first attempt exited 1 at 04:43. The fleet's owner (goncalof) recovered Redis (`redis-local-diagnose`,
@@ -318,7 +318,7 @@ the backend can be trusted at prod scale.
     `task_005427` (107 in 20 minutes) and `task_000635` (173 over the hour).
 - **Reading:** the same CPU contention as at step 16, here starving the head node's HTTP serving (router, session
   servers, agents) rather than its engines.
-- **Options:** A, B, C, E (above) and L, the gateway backend (on branch `shashank/tmax-gateway`), which takes the
+- **Options:** A, B, C, E (above) and L, the gateway backend (merged in `e961a935aa`), which takes the
   sandboxes off the nodes altogether.
 
 ## 2026-10-16: gateway backend (sandboxes on a podman fleet)
@@ -326,7 +326,7 @@ the backend can be trusted at prod scale.
 - **The idea:** open-instruct's answer to colocated podman. A separate Beaker deployment runs rootless podman
   replicas and Docker Hub mirrors that heartbeat into Redis; a LiteRegistry gateway routes each container's requests
   to the replica that owns it. The training job runs no podman.
-- **Port:** `tmax_gateway.TmaxGatewaySandbox` (branch `shashank/tmax-gateway`), behind `sandbox_backend: gateway`. It
+- **Port:** `tmax_gateway.TmaxGatewaySandbox` (`examples/tmax/tmax_gateway.py`), behind `sandbox_backend: gateway`. It
   follows open-instruct's `GatewayBackend` but talks to the gateway through literegistry's own client,
   `literegistry-podman-client`, which owns the API and its error types. It tracks the current literegistry release:
   the user's call, since the fleet is launched from that repository, so there is no handling for older ones. On
