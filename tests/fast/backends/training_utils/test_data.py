@@ -120,8 +120,10 @@ class TestDataIteratorMicrobatchIndices:
         iterator = data_utils.DataIterator(rollout, **schedule)
         yielded = [iterator.get_next(["sample_indices"])["sample_indices"] for _ in range(3)]
 
-        assert data_utils.DataIterator(rollout, **schedule).microbatch_indices(3) == yielded
-        assert data_utils.DataIterator(rollout, **schedule).microbatch_indices(2) == yielded[:2]
+        consumed = iterator.offset
+        assert iterator.microbatch_indices(3) == yielded
+        assert iterator.microbatch_indices(2) == yielded[:2]
+        assert iterator.offset == consumed
 
 
 class TestGetDataIteratorUnsupportedSchedule:
