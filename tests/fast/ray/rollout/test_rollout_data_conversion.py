@@ -96,6 +96,26 @@ class TestPostprocessRolloutData:
         )
         assert len(out) == 3
 
+    @pytest.mark.parametrize("compact_first", [False, True])
+    def test_flattens_groups_that_mix_single_turn_and_compact_rollouts(self, compact_first):
+        """A mixed-dataset batch holds bare samples next to compact `list[Sample]` rollouts; every
+        sample must come out flat, whichever kind the first group is."""
+        args = make_args(global_batch_size=4, disable_rollout_trim_samples=False, use_dynamic_global_batch_size=False)
+        single_turn_group = [make_sample(index=0), make_sample(index=1)]
+        compact_group = [
+            [make_sample(index=2, rollout_id=2), make_sample(index=3, rollout_id=2)],
+            [make_sample(index=4, rollout_id=4)],
+        ]
+        groups = [compact_group, single_turn_group] if compact_first else [single_turn_group, compact_group]
+
+        out, _meta = postprocess_rollout_data(
+            args=args, data=groups, train_parallel_config=make_train_parallel_config(dp_size=1)
+        )
+
+        assert all(not isinstance(sample, list) for sample in out)
+        # one compact rollout makes the batch rollout-scheduled, so 5 rows are not trimmed to 4
+        assert sorted(sample.index for sample in out) == [0, 1, 2, 3, 4]
+
 
 class TestValidateRolloutIdAnnotated:
     def test_flat_list_skips_validation(self):
