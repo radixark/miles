@@ -79,7 +79,7 @@ def _protocol(*, replica_rank: int, replica_size: int, tp_sizes: list[int]) -> U
     protocol._engine_tp_sizes = tp_sizes
     protocol._selector = "all"
     protocol._owned_buckets = OwnedBuckets(replica_rank=replica_rank, replica_size=replica_size)
-    protocol._max_in_flight = max(1, shm._MAX_BUCKETS_IN_FLIGHT_PER_HOST // replica_size)
+    protocol._max_in_flight = shm._MAX_BUCKETS_IN_FLIGHT_PER_HOST
     return protocol
 
 
