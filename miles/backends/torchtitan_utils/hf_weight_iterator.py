@@ -92,12 +92,7 @@ def hf_adapter_weights(trainer, *, complete_across_pp: bool) -> Iterator[tuple[s
 
 
 def _state_dict_adapter(trainer):
-    sd_adapter = getattr(
-        trainer.checkpointer, "sd_adapter", None
-    )  # config-access-exempt: TorchTitan checkpointer versions may omit the state-dict adapter
-    if sd_adapter is None:
-        sd_adapter = trainer.config.model_spec.state_dict_adapter(trainer.model_config, trainer.config.hf_assets_path)
-    return sd_adapter
+    return trainer.engine.state_dict_adapter
 
 
 @functools.cache
@@ -105,7 +100,7 @@ def _stage_process_groups(stage_ranks: tuple[tuple[int, ...], ...]) -> tuple:
     return tuple(dist.new_group(list(ranks)) for ranks in stage_ranks)
 
 
-_GROUPED_EXPERTS = "moe.routed_experts.inner_experts"
+_GROUPED_EXPERTS = ".routed_experts."
 
 
 def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
@@ -138,7 +133,7 @@ class _StageLayout:
         world = dist.get_world_size()
         my_rank = dist.get_rank()
         stage_of: list = [None] * world
-        pp_mesh = trainer.parallel_dims.get_optional_mesh("pp")
+        pp_mesh = trainer.parallelism.get_optional_mesh("pp")
         my_stage_id = dist.get_rank(group=pp_mesh.get_group()) if pp_mesh is not None else 0
         dist.all_gather_object(stage_of, my_stage_id)
         stage_groups: dict[int, list[int]] = {}

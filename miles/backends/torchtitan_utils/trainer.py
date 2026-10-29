@@ -1,50 +1,76 @@
-import functools
-import inspect
 from collections.abc import Callable
+from dataclasses import dataclass
 
+import spmd_types as spmd
 import torch
 import torch.distributed as dist
 from torch.distributed.pipelining.schedules import PipelineScheduleSingle
 from torch.distributed.tensor import DTensor
-from torchtitan.distributed import utils as titan_dist_utils
-from torchtitan.distributed.context_parallel import cp_shard
-from torchtitan.trainer import Trainer
+from torchtitan.config import Configurable
+from torchtitan.config.validation import validate_model_training_config
+from torchtitan.distributed import ParallelismContext
+from torchtitan.models.base import BaseModel
+from torchtitan.training_engine import TrainingEngine
 
 from miles.backends.torchtitan_utils import routing_replay
 from miles.backends.training_utils.torch_native.step_runner import StepMetrics
-from miles.utils.hf_utils.config import load_hf_config
 
 _FLEX_BLOCK = 128
 _CP_LENGTH_BUCKET = 1024
 
 
-class TitanTrainer(Trainer):
-    @functools.cached_property
-    def _family_forward_kwargs(self) -> dict:
-        kwargs = {}
-        if "special_tokens" in inspect.signature(self.model_parts[0].forward).parameters:
-            hf_config = load_hf_config(self.config.hf_assets_path)
-            kwargs["special_tokens"] = {
-                "image_id": getattr(
-                    hf_config, "image_token_id", -1
-                ),  # config-access-exempt: HF text-only configurations omit the image token ID
-                "video_id": getattr(
-                    hf_config, "video_token_id", -2
-                ),  # config-access-exempt: HF configurations without video support omit the video token ID
-            }
-        return kwargs
+class TitanTrainer(Configurable):
+    """torchtitan's TrainingEngine builds, parallelizes, checkpoints and steps the model; miles feeds it
+    variable-length packed microbatches through its own forward/backward loop."""
+
+    @dataclass(kw_only=True, slots=True)
+    class Config(TrainingEngine.Config):
+        model: BaseModel.Config
+        hf_assets_path: str
+        output_dir: str
+
+        def __post_init__(self) -> None:
+            TrainingEngine.Config.__post_init__(self)
+            validate_model_training_config(
+                self.model,
+                parallelism=self.parallelism,
+                training=self.training,
+                debug=self.debug,
+                activation_remat=self.activation_remat,
+                max_num_documents=None,
+            )
+
+    def __init__(self, config: Config, *, parallelism: ParallelismContext | None = None):
+        self.config = config
+        torch.autograd.set_multithreading_enabled(False)
+        self.engine = TrainingEngine(
+            config, model_config=config.model, max_num_documents=None, output_dir=config.output_dir
+        )
+        if parallelism is not None:
+            self.engine.parallelism_context = parallelism
+        self.engine.initialize(hf_assets_path=config.hf_assets_path)
+        self.parallelism = self.engine.parallelism_context
+        self.model_parts = self.engine.model_parts
+        self.optimizers = self.engine.optim.optimizers
+        self.checkpointer = self.engine.checkpointer
+        self.device = self.engine.device
+        self.loss_fn = self.engine.loss_fn
+
+    @property
+    def step(self) -> int:
+        return self.engine.num_completed_steps
 
     def padded_length(self, n_tokens: int) -> int:
-        if self.parallel_dims.pp_enabled:
-            target = self.config.training.seq_len
+        if self.parallelism.pp_enabled:
+            target = self.config.training.max_context_length
             if n_tokens > target:
                 raise ValueError(
                     f"packed microbatch of {n_tokens} tokens exceeds --seq-length "
                     f"{target}, which is the fixed shape PP stages exchange"
                 )
             return target
-        if self.parallel_dims.cp_enabled:
-            align = max(self.parallel_dims.cp * _FLEX_BLOCK, _CP_LENGTH_BUCKET)
+        if self.parallelism.cp_enabled:
+            align = max(self.parallelism.cp * _FLEX_BLOCK, _CP_LENGTH_BUCKET)
             return n_tokens + (align - n_tokens % align) % align
         return n_tokens
 
@@ -53,28 +79,20 @@ class TitanTrainer(Trainer):
         if missing:
             pad = torch.full((missing, *tensor.shape[1:]), pad_value, dtype=tensor.dtype, device=tensor.device)
             tensor = torch.cat([tensor, pad], dim=0)
-        if self.parallel_dims.cp_enabled:
-            (local,), _ = cp_shard(
-                self.parallel_dims.get_mesh("cp"),
-                (tensor.unsqueeze(0).to(self.device),),
-                None,
-                self.config.parallelism.context_parallel_load_balancer,
-                input_seq_dim=1,
-            )
-            tensor = local.squeeze(0).to(tensor.device)
-        if self.parallel_dims.tp_enabled:
-            mesh = self.parallel_dims.get_mesh("tp")
-            tp = mesh.size()
-            if tensor.shape[0] % tp:
+        for axis in ("cp", "tp"):
+            mesh = self.parallelism.get_optional_mesh(axis)
+            if mesh is None:
+                continue
+            if tensor.shape[0] % mesh.size():
                 raise ValueError(
-                    f"a {tensor.shape[0]}-token side channel does not divide across {tp} tensor-parallel ranks"
+                    f"a {tensor.shape[0]}-token side channel does not divide across {mesh.size()} {axis} ranks"
                 )
-            tensor = tensor.chunk(tp, dim=0)[dist.get_rank(mesh.get_group())]
+            tensor = tensor.chunk(mesh.size(), dim=0)[dist.get_rank(mesh.get_group())]
         return tensor
 
-    def _microbatch_inputs(self, batches: list) -> tuple[list[dict], list[torch.Tensor]]:
-        if self.parallel_dims.pp_enabled:
-            expected = self.num_pipeline_parallel_microbatches
+    def _microbatch_inputs(self, batches: list) -> list[tuple]:
+        if self.parallelism.pp_enabled:
+            expected = self.config.parallelism.num_pp_microbatches
             if len(batches) != expected:
                 raise ValueError(
                     f"the PP schedule was built for {expected} microbatches per optimizer step "
@@ -82,28 +100,36 @@ class TitanTrainer(Trainer):
                     "micro_batch_size must be constant (no dynamic batch sizing with PP)"
                 )
 
-        def _model_inputs(batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-            tokens, positions = batch["tokens"], batch["position_ids"]
-            pad = self.padded_length(tokens.shape[1]) - tokens.shape[1]
+        prepared = []
+        for index, batch in enumerate(batches):
+            tokens, positions = batch["tokens"].flatten(), batch["position_ids"].flatten()
+            pad = self.padded_length(tokens.shape[0]) - tokens.shape[0]
             if pad:
                 tokens = torch.nn.functional.pad(tokens, (0, pad), value=0)
-                extra = torch.arange(pad, device=positions.device, dtype=positions.dtype)
-                positions = torch.cat([positions, extra.unsqueeze(0)], dim=1)
-            return tokens, positions
-
-        input_dicts = []
-        for batch in batches:
-            tokens, positions = _model_inputs(batch)
-            input_dicts.append({"input": tokens, "positions": positions, **self._family_forward_kwargs})
-        labels = [torch.full_like(input_dicts[i]["input"], i, dtype=torch.long) for i in range(len(batches))]
-        return input_dicts, labels
+                positions = torch.cat([positions, torch.arange(pad, device=positions.device, dtype=positions.dtype)])
+            input_dict = {
+                "input": tokens.to(self.device),
+                "labels": torch.full_like(tokens, index, dtype=torch.long, device=self.device),
+                "positions": positions.to(self.device),
+            }
+            with self.parallelism.activate_spmd():
+                prepared.append(
+                    self.model_parts[0].preprocess_inputs(
+                        input_dict,
+                        parallelism_context=self.parallelism,
+                        parallelism=self.config.parallelism,
+                        max_num_documents=None,
+                        max_context_length=self.config.training.max_context_length,
+                    )
+                )
+        return prepared
 
     def _bypass_schedule_probe(self, *, has_backward: bool) -> None:
         if self._pipeline_will_infer_metadata(has_backward=has_backward):
             routing_replay.bypass_schedule_initialization(self.model_parts)
 
     def _pipeline_will_infer_metadata(self, *, has_backward: bool) -> bool:
-        schedule = self.pp_schedule
+        schedule = self.engine.pp_schedule
         if isinstance(schedule, PipelineScheduleSingle):
             forward_initialized = schedule._stage_forward_initialized
             backward_initialized = schedule._stage_backward_initialized
@@ -112,82 +138,72 @@ class TitanTrainer(Trainer):
             backward_initialized = schedule._stages_backward_initialized
         return not forward_initialized or has_backward != backward_initialized
 
+    def _pipeline_microbatches(self, prepared: list[tuple]) -> dict:
+        return dict(
+            arg_mbs=[(inputs,) for inputs, *_ in prepared] if self.engine.pp_has_first_stage else None,
+            kwarg_mbs=[model_kwargs for _, _, model_kwargs, _ in prepared],
+            target_mbs=[labels for _, labels, _, _ in prepared] if self.engine.pp_has_last_stage else None,
+            losses=[] if self.engine.pp_has_last_stage else None,
+            return_outputs=False,
+        )
+
     def run_forward_backward(self, batches, loss_closure: Callable) -> list[dict]:
         batches = list(batches)
         self.loss_fn.arm(batches, loss_closure, is_training=True)
-        input_dicts, labels = self._microbatch_inputs(batches)
-        ones = torch.ones((), device=self.device)
-        with routing_replay.consumption_guard(self.model_parts, len(batches)):
-            if self.parallel_dims.pp_enabled:
+        prepared = self._microbatch_inputs(batches)
+        with routing_replay.consumption_guard(self.model_parts, len(batches)), self.parallelism.activate_spmd():
+            if self.parallelism.pp_enabled:
                 self._bypass_schedule_probe(has_backward=True)
-                self.forward_backward_step(input_dict=input_dicts, labels=labels, global_valid_tokens=ones)
+                self.engine.pp_schedule.step(**self._pipeline_microbatches(prepared))
             else:
-                for input_dict, label in zip(input_dicts, labels, strict=True):
-                    self.forward_backward_step(input_dict=input_dict, labels=label, global_valid_tokens=ones)
+                for inputs, labels, model_kwargs, _ in prepared:
+                    pred = self.model_parts[0](inputs, **model_kwargs)
+                    loss, _ = self.loss_fn(pred, labels)
+                    del pred
+                    with spmd.no_typecheck():
+                        loss.backward()
         return self.loss_fn.collect() if self.has_last_stage() else []
 
     def run_forward(self, batches, compute: Callable) -> list:
         batches = list(batches)
         self.loss_fn.arm(batches, compute, is_training=False)
-        input_dicts, labels = self._microbatch_inputs(batches)
-        with routing_replay.consumption_guard(self.model_parts, len(batches)):
-            if self.parallel_dims.pp_enabled:
-                arg_mbs, kwarg_mbs, target_mbs = [], [], []
-                for input_dict, label in zip(input_dicts, labels, strict=True):
-                    inputs, label, extra = self.post_dataloading_process(input_dict, label)
-                    arg_mbs.append((inputs,))
-                    kwarg_mbs.append(extra)
-                    target_mbs.append(label)
-                losses = [] if self.pp_has_last_stage else None
+        prepared = self._microbatch_inputs(batches)
+        with routing_replay.consumption_guard(self.model_parts, len(batches)), self.parallelism.activate_spmd():
+            if self.parallelism.pp_enabled:
                 self._bypass_schedule_probe(has_backward=False)
-                self.pp_schedule.eval(
-                    arg_mbs=arg_mbs if self.pp_has_first_stage else None,
-                    kwarg_mbs=kwarg_mbs,
-                    target_mbs=target_mbs if self.pp_has_last_stage else None,
-                    losses=losses,
-                    return_outputs=False,
-                )
+                self.engine.pp_schedule.eval(**self._pipeline_microbatches(prepared))
             else:
-                for input_dict, label in zip(input_dicts, labels, strict=True):
-                    inputs, label, extra = self.post_dataloading_process(input_dict, label)
-                    pred = self.model_parts[0](inputs, **extra)
-                    self.loss_fn(pred, label)
+                for inputs, labels, model_kwargs, _ in prepared:
+                    self.loss_fn(self.model_parts[0](inputs, **model_kwargs), labels)
         return self.loss_fn.collect() if self.has_last_stage() else []
 
     def apply_optimizer_step(self) -> StepMetrics:
-        grad_norm = titan_dist_utils.clip_grad_norm_(
-            [p for m in self.model_parts for p in m.parameters()],
-            self.config.training.max_norm,
-            foreach=True,
-            pp_mesh=self.parallel_dims.get_optional_mesh("pp"),
-            ep_enabled=self.parallel_dims.ep_enabled,
-        )
-        self.checkpointer.maybe_wait_for_staging()
-        self.optimizers.step()
-        self.lr_schedulers.step()
-        self.step += 1
+        self.engine.loss = torch.zeros((), device=self.device)
+        grad_norm = self.engine.optim_step()
         if isinstance(grad_norm, DTensor):
             grad_norm = grad_norm.full_tensor()
-        return StepMetrics(grad_norm=float(grad_norm.item()), extra_metrics=self.lr_schedulers.get_metrics())
+        return StepMetrics(
+            grad_norm=float(grad_norm.item()), extra_metrics=self.engine.optim.lr_schedulers.get_metrics()
+        )
 
     def configure_loss_reduction(self) -> None:
-        dims = self.parallel_dims
+        dims = self.parallelism
         self.loss_fn.set_gradient_scale(1.0 / (dims.dp_replicate * dims.dp_shard * dims.cp))
         if not dims.cp_enabled:
             return
         torch._dynamo.config.recompile_limit = max(
-            torch._dynamo.config.recompile_limit, 2 * (self.config.training.seq_len // _CP_LENGTH_BUCKET + 1)
+            torch._dynamo.config.recompile_limit,
+            2 * (self.config.training.max_context_length // _CP_LENGTH_BUCKET + 1),
         )
-        balancer_type = self.config.parallelism.context_parallel_load_balancer
-        if balancer_type != "headtail":
+        if self.config.parallelism.context_parallel_load_balancer is not None:
             raise ValueError(
-                f"context_parallel_load_balancer={balancer_type!r} is not supported yet: only a "
-                "data-independent sharding can be undone from the sequence length"
+                "a context-parallel load balancer permutes tokens by batch content; miles undoes only "
+                "the contiguous sharding"
             )
-        self.loss_fn.set_context_parallel(self.parallel_dims.get_mesh("cp"), balancer_type)
+        self.loss_fn.set_context_parallel(self.parallelism.get_mesh("cp"))
 
     def has_last_stage(self) -> bool:
-        return (not self.parallel_dims.pp_enabled) or self.pp_has_last_stage
+        return (not self.parallelism.pp_enabled) or self.engine.pp_has_last_stage
 
     def step_runner(self) -> "TrainerStepRunner":
         return TrainerStepRunner(self)

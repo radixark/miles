@@ -1,85 +1,62 @@
+"""torchtitan 0.4.0 is released against torch 2.15; these shims run it on the torch 2.14 sglang links.
+
+`backport_torch_apis` must run before torchtitan is first imported, so the package `__init__` runs it;
+`install` patches torchtitan itself.
+"""
+
 import inspect
 import logging
+import types
 
+import torch.distributed.config as dist_config
+import torch.distributed.fsdp as torch_fsdp
+import torch.distributed.pipelining as torch_pipelining
 
 logger = logging.getLogger(__name__)
+
+_DIST_MOE_PIPELINING_APIS = ("analyze_pipeline_activation_liveness", "PipelineStageInfo")
+
+
+def backport_torch_apis() -> None:
+    _stub_dist_moe_pipelining_apis()
+    _accept_unset_param_dtype_override()
 
 
 def install() -> None:
     _patch_fsdp2_grad_accumulation_attr_error()
-    _patch_pipeline_schedule_microbatch_api()
-    _shim_dist_set_timeout()
+    _declare_pipeline_per_edge_p2p()
 
 
-def _shim_dist_set_timeout() -> None:
-    import torch.distributed as dist
+def _stub_dist_moe_pipelining_apis() -> None:
+    def unsupported(*args, **kwargs):
+        raise NotImplementedError("Dist-MoE pipeline liveness needs torch>=2.15")
 
-    if hasattr(
-        dist, "set_timeout"
-    ):  # config-access-exempt: PyTorch versions differ in the public distributed timeout API
-        return
-    from torch.distributed.distributed_c10d import _set_pg_timeout
-
-    dist.set_timeout = _set_pg_timeout
-    logger.info("Aliased torch.distributed.set_timeout to _set_pg_timeout")
+    for name in _DIST_MOE_PIPELINING_APIS:
+        if not hasattr(torch_pipelining, name):  # config-access-exempt: torch 2.15 adds these pipelining APIs
+            setattr(torch_pipelining, name, unsupported)
 
 
-def _patch_pipeline_schedule_microbatch_api() -> None:
-    import torch
-    from torchtitan.distributed.pipeline_parallel import PipelineScheduleMulti, PipelineScheduleSingle
-
-    if "arg_mbs" in inspect.signature(PipelineScheduleSingle.step).parameters:
+def _accept_unset_param_dtype_override() -> None:
+    policy_cls = torch_fsdp.MixedPrecisionPolicy
+    if "param_dtype_override_fn" in inspect.signature(policy_cls).parameters:
         return
 
-    def _make_step(original_step):
-        def step(
-            self,
-            *args,
-            arg_mbs=None,
-            kwarg_mbs=None,
-            target_mbs=None,
-            target=None,
-            losses=None,
-            return_outputs=True,
-            loss_kwargs=None,
-            **kwargs
-        ):
-            if arg_mbs is None and kwarg_mbs is None and target_mbs is None:
-                return original_step(
-                    self,
-                    *args,
-                    target=target,
-                    losses=losses,
-                    return_outputs=return_outputs,
-                    loss_kwargs=loss_kwargs,
-                    **kwargs,
-                )
-            if (
-                self._has_backward
-                and getattr(
-                    self, "_backward_requires_autograd", True
-                )  # config-access-exempt: PyTorch pipeline versions may omit the backward autograd flag
-                and not torch.is_grad_enabled()
-            ):
-                raise RuntimeError(
-                    "step() requires gradients to be enabled for backward computation; "
-                    "call eval() under torch.no_grad() instead."
-                )
-            stages = getattr(self, "_stages", None) or [
-                self._stage
-            ]  # config-access-exempt: PyTorch pipeline schedules expose either multiple stages or one stage
-            for stage in stages:
-                stage.has_backward = self._has_backward
-                stage.clear_runtime_states()
-            return self._step_microbatches(
-                arg_mbs, kwarg_mbs, target_mbs, losses, return_outputs, loss_kwargs=loss_kwargs
-            )
+    def mixed_precision_policy(*args, param_dtype_override_fn=None, **kwargs):
+        if param_dtype_override_fn is not None:
+            raise NotImplementedError("MixedPrecisionPolicy(param_dtype_override_fn=...) needs torch>=2.15")
+        return policy_cls(*args, **kwargs)
 
-        return step
+    torch_fsdp.MixedPrecisionPolicy = mixed_precision_policy
+    logger.info("Let MixedPrecisionPolicy accept the unset param_dtype_override_fn torchtitan passes")
 
-    PipelineScheduleSingle.step = _make_step(PipelineScheduleSingle.step)
-    PipelineScheduleMulti.step = _make_step(PipelineScheduleMulti.step)
-    logger.info("Patched pipeline schedules with nightly's microbatch-list step API")
+
+def _declare_pipeline_per_edge_p2p() -> None:
+    import torchtitan.distributed.utils as titan_dist_utils
+
+    if hasattr(dist_config, "pipeline_per_edge_p2p"):  # config-access-exempt: torch 2.15 adds this c10d option
+        return
+    titan_dist_utils.dist_config = types.SimpleNamespace(pipeline_per_edge_p2p=False)
+    logger.info("Declared torch.distributed.config.pipeline_per_edge_p2p for torchtitan's pipeline check")
 
 
 def _patch_fsdp2_grad_accumulation_attr_error() -> None:

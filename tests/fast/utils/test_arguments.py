@@ -3960,7 +3960,7 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
     monkeypatch: pytest.MonkeyPatch, backend: str, detach_heads: bool
 ) -> None:
     """Native backend parsing preserves the MTP option without an unowned argument error."""
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     argv = [
         "test",
         "--train-backend",

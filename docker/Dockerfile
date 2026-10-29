@@ -23,7 +23,7 @@ ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
 ARG TORCHTITAN_REPO=pytorch/torchtitan
-ARG TORCHTITAN_COMMIT=086bf6c166ec85c1298eb5596fa9bf95f6a2d840
+ARG TORCHTITAN_COMMIT=45e33cd413b64cb37a7840cfd3c9765d3c639ae1
 
 ARG WHEELS_REPO=radixark/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
@@ -188,14 +188,15 @@ RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@8cd3466d14d2
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
-# torchtitan backend: pinned to the v0.3.0 release commit because torchtitan tracks
+# torchtitan backend: pinned to the v0.4.0 release commit because torchtitan tracks
 # torch nightly and its model/adapter layouts move; --no-deps keeps its torch and
 # datasets pins from touching the versions sglang links against. Its own python
-# deps are pinned explicitly (spmd_types is a hard import in parallel_dims).
+# deps are pinned explicitly to the versions its requirements.txt names.
 RUN git clone https://github.com/${TORCHTITAN_REPO}.git torchtitan && \
     cd torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
     pip install --no-deps -e .
-RUN pip install "spmd_types==0.2.3" "tyro>=1.0.5" && pip install --no-deps "torchdata>=0.8.0"
+RUN pip install "spmd_types==0.3.1" "torch_remat==0.2.2" "torch_checkpointing==0.1.1" "grain==0.2.18" && \
+    pip install --no-deps "attn-gym==0.0.17"
 
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt

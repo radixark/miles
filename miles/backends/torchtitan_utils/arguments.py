@@ -32,8 +32,8 @@ def load_torchtitan_args(extra_args_provider=None):
 
 def validate_torchtitan_args(args) -> None:
     torch_version = tuple(int(part) for part in torch.__version__.split(".")[:2])
-    if torch_version < (2, 13):
-        raise ValueError(f"the torchtitan backend needs torch>=2.13; this environment runs {torch.__version__}")
+    if torch_version < (2, 14):
+        raise ValueError(f"the torchtitan backend needs torch>=2.14; this environment runs {torch.__version__}")
     if args.context_parallel_size != 1 and args.titan_model_name == "qwen3_5":
         raise ValueError("torchtitan does not support context parallelism for qwen3_5")
 
