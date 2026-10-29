@@ -25,6 +25,7 @@ Examples:
 
 import hashlib
 import importlib.metadata
+import json
 import os
 import socket
 from dataclasses import dataclass
@@ -78,10 +79,11 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         """torch_tpu keys a cached program by graph, shapes, XLA flags and devices, under a directory per libtpu.
 
         Its own lowering code is not part of that key, so each torch_tpu build (the hash of its wheel's file
-        list) gets a directory of its own. An editable install's RECORD does not change when its code does,
-        so a source build of torch_tpu needs a fresh --compile-cache-dir after each rebuild.
+        list) gets a directory of its own. An editable install's file list does not change with its code.
         """
         torch_tpu = importlib.metadata.distribution("torch_tpu")
+        if json.loads(torch_tpu.read_text("direct_url.json") or "{}").get("dir_info", {}).get("editable"):
+            raise ValueError("--compile-cache-dir cannot key an editable torch_tpu install by its build")
         record = torch_tpu.read_text("RECORD")
         if record is None:
             raise ValueError("--compile-cache-dir keys the cache by torch_tpu's RECORD, which this install lacks")
@@ -153,18 +155,25 @@ _TRAINER_LIBTPU_ARGS = (
 )
 
 
+def _set_compile_cache_env(args: ScriptArgs) -> None:
+    if args.compile_cache_dir:
+        if "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT" in os.environ:
+            raise ValueError("--compile-cache-dir and TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT both set the compile cache")
+        # read once per process at its first compile; ray workers inherit it through `ray start`
+        os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = args.compile_cache_root
+    # torch's AOTAutograd and FX graph caches key torch_tpu programs without their devices, so a run on another
+    # device set loads programs it cannot run; torch_tpu's own cache above keys the devices
+    os.environ.setdefault("TORCHINDUCTOR_AUTOGRAD_CACHE", "0")
+    os.environ.setdefault("TORCHINDUCTOR_FX_GRAPH_CACHE", "0")
+
+
 def _execute(args: ScriptArgs):
     U = args.create_backend()
     recipe = _RECIPES[args.recipe]
     _set_half_host_env()
     os.environ["MILES_ACCELERATOR"] = "tpu"
     os.environ.setdefault("LIBTPU_INIT_ARGS", _TRAINER_LIBTPU_ARGS)  # a caller's flag set wins
-    if args.compile_cache_dir and "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT" not in os.environ:
-        # read once per process at its first compile; ray workers inherit it through `ray start`
-        os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = args.compile_cache_root
-    # torch's AOTAutograd cache keys torch_tpu programs without their devices, so a run on another device set
-    # loads programs it cannot run and recompiles them; torch_tpu's own cache above keys the devices
-    os.environ.setdefault("TORCHINDUCTOR_AUTOGRAD_CACHE", "0")
+    _set_compile_cache_env(args)
     os.environ["TORCH_TPU_SLICEBUILDER_ADDRESSES"] = ",".join(
         f"localhost:{port}" for port in _free_ports(NUM_TRAINER_DEVICES)
     )
