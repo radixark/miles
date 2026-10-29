@@ -107,7 +107,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--connector", required=True, choices=sorted(CONNECTORS))
     parser.add_argument(
-        "--backend", required=True, help="sandbox platform, passed through to the connector (e2b, daytona, modal, ...)"
+        "--backend",
+        required=True,
+        help="sandbox platform, passed through to the connector (e2b, daytona, modal, novita, ...)",
     )
     parser.add_argument(
         "--agent",

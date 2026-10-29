@@ -58,6 +58,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     daytona_api_key_file: str = os.environ.get("DAYTONA_API_KEY_FILE", "")
     e2b_api_key_file: str = os.environ.get("E2B_API_KEY_FILE", "")
     modal_config_file: str = os.environ.get("MODAL_CONFIG_PATH", "")
+    novita_api_key_file: str = os.environ.get("NOVITA_API_KEY_FILE", "")
 
     # The host agents outside the cluster reach every session server on; passed as
     # --session-server-external-host, which also keeps the session servers on the head node.

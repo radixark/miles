@@ -37,7 +37,7 @@ Prereqs:
     signal.
 
 Usage:
-    OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py   # or daytona / modal
+    OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py   # or daytona / modal / novita
     python run-openenv-tbench2.py --openenv-env-url http://<env-host>:8003  # shared server
 """
 
@@ -96,14 +96,15 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     openenv_tb2_tasks_dir: str = os.environ.get("OPENENV_TB2_TASKS_DIR", "")
     # Which per-episode sandbox provider runs the tasks_dir episodes:
     # "agentenv" (alias for e2b — a self-hosted AgentENV deployment reached via
-    # E2B_API_URL/E2B_SANDBOX_URL), "daytona", "e2b" (E2B Cloud), or "modal".
-    # Required whenever openenv_tb2_tasks_dir is set; there is no default.
+    # E2B_API_URL/E2B_SANDBOX_URL), "daytona", "e2b" (E2B Cloud), "modal", or
+    # "novita". Required whenever openenv_tb2_tasks_dir is set; there is no default.
     openenv_sandbox_backend: str = os.environ.get("OPENENV_SANDBOX_BACKEND", "")
     daytona_api_key_file: str = os.environ.get("DAYTONA_API_KEY_FILE", "")
     e2b_api_key_file: str = os.environ.get("E2B_API_KEY_FILE", "")
     # Modal's credential is a token pair, so the file here is its config file
     # (~/.modal.toml), forwarded by path exactly like the others' key files.
     modal_config_file: str = os.environ.get("MODAL_CONFIG_PATH", "")
+    novita_api_key_file: str = os.environ.get("NOVITA_API_KEY_FILE", "")
     # When set, miles dumps full per-episode agent trajectories (tokens, logprobs,
     # loss masks, reward, multi-turn messages) to <dir>/rollout_data/{rollout_id}.pt
     # for post-hoc inspection via miles.utils.debug_utils.display_debug_rollout_data.

@@ -29,7 +29,7 @@ with the extra for your backend:
 ```bash
 # uv, not pip: the branch carries a uv-workspace dependency pip cannot resolve
 uv pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
-# or harbor[daytona], harbor[modal], ...
+# or harbor[daytona], harbor[modal], harbor[novita], ...
 ```
 
 ## 2. Provision the sandbox backend
