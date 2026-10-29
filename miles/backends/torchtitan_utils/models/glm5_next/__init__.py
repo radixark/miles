@@ -23,8 +23,8 @@ from miles.backends.torchtitan_utils.models.glm5_next.model import Glm5NextBlock
 
 __all__ = ["build_model_config"]
 
-_INIT = partial(nn.init.trunc_normal_, std=0.02)
-_EXPERTS_INIT = {name: _INIT for name in ("w1_EFD", "w2_EDF", "w3_EFD")}
+_TRUNC_NORMAL_INIT = partial(nn.init.trunc_normal_, std=0.02)
+_EXPERTS_INIT = {name: _TRUNC_NORMAL_INIT for name in ("w1_EFD", "w2_EDF", "w3_EFD")}
 # Megatron hardcodes the indexer's key LayerNorm eps; the HF config does not carry it
 _INDEXER_K_NORM_EPS = 1e-6
 
@@ -138,7 +138,9 @@ def _linear(in_features: int, out_features: int) -> Linear.Config:
 
 def _ffn(arch: _Architecture, hidden_dim: int) -> DenseFeedForward.Config:
     return DenseFeedForward.Config(
-        w13=Linear.Config(in_features=arch.dim, out_features=hidden_dim, num_linears=2, param_init={"weight": _INIT}),
+        w13=Linear.Config(
+            in_features=arch.dim, out_features=hidden_dim, num_linears=2, param_init={"weight": _TRUNC_NORMAL_INIT}
+        ),
         w2=_linear(hidden_dim, arch.dim),
         activation_fn=ClampedSwiGLU.Config(swiglu_limit=arch.swiglu_limit),
     )
@@ -159,7 +161,7 @@ def _moe(arch: _Architecture, *, enable_ep: bool):
         router=make_router_config(
             dim=arch.dim,
             num_experts=arch.num_experts,
-            gate_param_init={"weight": _INIT},
+            gate_param_init={"weight": _TRUNC_NORMAL_INIT},
             top_k=arch.top_k,
             score_func=Sigmoid.Config(),
             route_norm=arch.route_norm,
