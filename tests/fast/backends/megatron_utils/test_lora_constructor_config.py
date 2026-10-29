@@ -10,8 +10,9 @@ __all__ = ["bridge_constructors"]
 
 class TestLoraConstructorConfig:
     @pytest.mark.parametrize("kind", ["lora", "canonical_lora"])
+    @pytest.mark.parametrize("shared_outer", [False, True])
     def test_miles_selects_the_adapter_and_preserves_explicit_rank_dropout_and_initialization(
-        self, kind: str, bridge_constructors: _BridgeConstructors
+        self, kind: str, shared_outer: bool, bridge_constructors: _BridgeConstructors
     ) -> None:
         """Miles forwards explicit LoRA settings to the selected SDK constructor boundary."""
         args = make_trainer_args(
@@ -21,7 +22,7 @@ class TestLoraConstructorConfig:
             lora_dropout=0.25,
             lora_A_init_method="normal",
             lora_B_init_method="zero",
-            experts_shared_outer_loras=False,
+            experts_shared_outer_loras=shared_outer,
         )
 
         adapter = create_lora_instance(args, target_modules=["linear_qkv"])
@@ -34,9 +35,8 @@ class TestLoraConstructorConfig:
         assert adapter.lora_A_init_method == "normal"
         assert adapter.lora_B_init_method == "zero"
         assert adapter.target_modules == ["linear_qkv"]
-        if kind == "lora":
-            assert adapter.share_expert_adapters is False
-            assert adapter.experts_shared_outer_loras is False
+        assert adapter.share_expert_adapters is False
+        assert adapter.experts_shared_outer_loras is shared_outer
 
     @pytest.mark.parametrize("kind", ["lora", "canonical_lora"])
     def test_multi_adapter_config_preserves_slot_count_and_dropout(
@@ -68,12 +68,3 @@ class TestLoraConstructorConfig:
         assert adapter.lora_A_init_method == "normal"
         assert adapter.lora_B_init_method == "zero"
         assert adapter.target_modules == ["linear_qkv"]
-
-    def test_canonical_adapter_rejects_the_shared_expert_mode(self, bridge_constructors: _BridgeConstructors) -> None:
-        """Canonical LoRA cannot silently accept the standard adapter's shared-expert layout."""
-        args = make_trainer_args(
-            lora_type="canonical_lora", experts_shared_outer_loras=True, lora_B_init_method="zero"
-        )
-
-        with pytest.raises(AssertionError, match="requires the standard LoRA adapter type"):
-            create_lora_instance(args, target_modules=["linear_qkv"])

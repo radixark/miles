@@ -22,7 +22,7 @@ class _LoRA(_AdapterConfig):
 
 
 @dataclass(kw_only=True)
-class _CanonicalLoRA(_AdapterConfig):
+class _CanonicalLoRA(_LoRA):
     pass
 
 
