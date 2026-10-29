@@ -1,6 +1,6 @@
 # TMax port roadmap
 
-Open work on the port, by priority, as of 2026-10-22. The differences from open-instruct that motivate most items
+Open work on the port, by priority, as of 2026-10-29. The differences from open-instruct that motivate most items
 are described in [the comparison](../../docs/deep-dive/open-instruct-comparison.md); this file only tracks the
 work. When an item is done, move it to [Done](#done) with its commit.
 
@@ -26,8 +26,9 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Fully-async throughput metrics | `perf/rollout_time` measures the buffer drain, so `perf/tokens_per_gpu_per_sec` is meaningless and some `perf/longest_*` go negative; `rollout/zero_std/*` is computed after the filter and is always 0. Fix upstream or hide |
 | open-instruct metrics worth porting | Max and std of the train/rollout log-prob gap (`debug/vllm_vs_local_logprob_diff_{max,std}`): a change in Miles's loss, where only the mean is reduced; cumulative token counter |
 | Podman 5.6.2 and crun 1.14.3 in the image | apt's podman 4.9 breaks exec framing under load (44 of 70 step failures in one 4-node run). Plan: a thin image derived from the official Miles image with podman, crun and docker-py baked in, launched with beaker-gantry |
-| OPD at production scale | open-instruct's terminal OPD runs are pure OPD on 4 nodes at 64k: 8 prompts x 32 samples, `--async_steps 4`, DPPO, lr 1e-6 (`scripts/general_agent/terminal/rl/opd/` on branch `opd`). Same size: `prod_4node_gateway_opd_9b.yaml` (tmax-9b into the 9B, Megatron teacher) runs. Cross size: `smoke_opd_9b_to_4b_sglang_2teachers_jupiter.yaml` passed; next `prod_4node_gateway_opd_9b_to_4b.yaml`, whose first steps are the first run of the teachers' cross-node placement; size `opd_teacher_gpus` from its teacher latency (2 is an estimate). `prod_4node_gateway_opd_27b_to_9b.yaml` is written, not run. Run the 2B smoke (`smoke_opd_2b.yaml`), the only Beaker check of `scripts/models/qwen3.5-2B.py` |
-| OPD signal from the trainer's log-probs | The 9B pure-OPD run's early transient (gap 0.18, entropy 0.9 at step 17) matches open-instruct's, which settled by step 30; if ours does not, options P (Prime-RL's split: OPD term from the trainer's log-probs, DPPO anchored on the rollout's), Q (per-token OPD advantage clip) and R (lr 5e-7) in [INVESTIGATIONS.md](INVESTIGATIONS.md#open-decisions). Core changes: check upstream and ask first |
+| OPD at production scale | Same size (`prod_4node_gateway_opd_9b.yaml`) and across sizes with SGLang teachers on the rollout nodes (`prod_4node_gateway_opd_9b_to_4b.yaml`, 2 teacher servers kept up) both ran; results in [README.md](README.md#results). Still open: `prod_4node_gateway_opd_27b_to_9b.yaml` is written, not run, and the 2B smoke (`smoke_opd_2b.yaml`) is the only Beaker check of `scripts/models/qwen3.5-2B.py` |
+| OPD train/rollout gap | The 9B run's early transient settled as open-instruct's did. The cross-size run tracked open-instruct's reverse KL throughout, but its train/rollout gap was 2-4 times open-instruct's (0.06-0.10 vs 0.02-0.03) and DPPO masked about ten times as many tokens (3-6% vs under 0.5%), more after step 140. Find out why before the next OPD run; candidates are options P (Prime-RL's split: OPD term from the trainer's log-probs, DPPO anchored on the rollout's) and Q (per-token OPD advantage clip) in [INVESTIGATIONS.md](INVESTIGATIONS.md#open-decisions). Core changes: check upstream and ask first |
+| Checkpoint storage | The shared `oe-adapt` volume filled on 2026-10-16 and again on 2026-10-29, failing every running job at its next save ([INVESTIGATIONS.md](INVESTIGATIONS.md#2026-10-29-oe-adapt-full-again-checkpoint-saves-fail)). Our share was about 4.7 TB. Delete the training states of finished runs (keep their HF snapshots, which evals read from `oe-adapt`), turn the debug dumps off by default (40-175 GB per run), and consider `keep_last_n_checkpoints: 2` |
 | Agents near their sandboxes | Every agent process runs on the head node, which also trains; open-instruct spreads its environment actors over the nodes. Run agents on the node of their sandbox |
 
 ## P2
@@ -85,7 +86,11 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Pure on-policy distillation (`opd_pure`, open-instruct's `--opd_pure`), and recipes for `allenai/tmax-2b` and `hamishivi/Qwen3.5-2B` | `107a60581c`, `eb48263f8d`, `b7fdc6b939` |
 | CUDA 13 images on Jupiter's and Ceres' 570 drivers (forward compatibility) | `f5cd9bd69e` |
 | OPD with the teacher on an SGLang server (`opd_teacher_mode`), for teachers of another size: `allenai/tmax-9b` into a 4B | `db7fb3bbed`, `fd80e1e137`, `a2c533ba6b` |
-| Several SGLang teacher servers (`opd_teacher_gpus`), Ray actors on the rollout nodes, the least busy one per sample; the `tmax-27b` recipe | `ad411895fd`, `7dbeaf0fb2` |
+| Several SGLang teacher servers (`opd_teacher_gpus`), Ray actors on the rollout nodes, the least busy one per sample (round-robin among idle ones); the `tmax-27b` recipe | `ad411895fd`, `eb8fcb7422`, `7dbeaf0fb2` |
+| literegistry 1.0.63 gateway and podman client 0.1.7; at most 3 handshakes per start; the keepalive renews the binding | `f754dc12c6`, `b2a4b2336a`, `7137343b89` |
+| The head's gateway keeps restarting, logging to `/tmp`, when weka refuses its log | `320cd35167` |
+| Recipes from a local HF checkpoint (`tmax-opd-9b-step80`); GRPO from the 9B OPD run's step 80 | `a6a326d6a2`, `286b0c0563` |
+| The TMax recipe on `hamishivi/Qwen3.5-4B` on 2 nodes, and its RLVR baseline on the parallel64 fleet | `0d90795151`, `3ec4925326` |
 
 ## Decisions taken
 

@@ -18,6 +18,7 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | On-policy distillation (sync and async), 4 GPUs | `--opd-teacher tmax-4b` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 + 4 steps |
 | Pure on-policy distillation, fully async, 4 H100s (Jupiter) | `configs/smoke_opd_4b_async_jupiter_fused.yaml` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 steps, 2026-10-23 |
 | Pure on-policy distillation with the teacher on an SGLang server, same and cross size | `configs/smoke_opd_{4b,9b_to_4b}_sglang_jupiter.yaml` | `allenai/tmax-4b` and `allenai/tmax-9b` into `hamishivi/Qwen3.5-4B`, 3 steps each, 2026-10-23 |
+| Pure OPD across sizes on 4 nodes, the teacher on 2 SGLang servers on the rollout nodes | `configs/prod_4node_gateway_opd_9b_to_4b.yaml` | `allenai/tmax-9b` into `hamishivi/Qwen3.5-4B`, 194 steps, 2026-10-28 |
 | open-instruct's production recipe, fully async on 4 nodes (32x B300), 64k context | `configs/prod_4node.yaml` | Qwen3.5-9B, training on Beaker since 2026-10-16 |
 
 | Read | For |
@@ -111,6 +112,103 @@ The deliberate algorithmic difference is the loss: open-instruct trains with DPP
 the port uses PPO clip (0.2 / 0.28) around the rollout log-probs.
 
 ## Results
+
+### RLVR on `hamishivi/Qwen3.5-4B`, 2 nodes
+
+`configs/prod_2node_gateway_4b_parallel64.yaml` on 2x 8 B300, run `tmax_prod2node_gateway_qwen35_4b_p64_20261028_064439`
+(Beaker `01M60M1X1A5M1D3HXNY123BYYG`, commit `3ec4925326`): the GRPO recipe of the 9B runs below on the 4B, with one
+training node and one rollout node, and sandboxes on the `podman-parallel64-20261027` fleet. It is the RLVR baseline
+for the cross-size OPD run. Training since 2026-10-28, about 6 minutes per step:
+
+| Steps | Solve rate before the filter | All-pass / all-fail groups | Entropy | Train/rollout gap | KL to base |
+|---|---|---|---|---|---|
+| 0-39 | 0.43 | 7% / 28% | 0.38 | 0.008 | 0.002 |
+| 40-79 | 0.52 | 11% / 27% | 0.34 | 0.008 | 0.009 |
+| 80-119 | 0.56 | 19% / 23% | 0.30 | 0.008 | 0.017 |
+| 120-159 | 0.63 | 28% / 20% | 0.26 | 0.008 | 0.035 |
+| 160-179 | 0.55 | 21% / 28% | 0.23 | 0.008 | 0.050 |
+
+Greedy evaluations (k=5, `max-model-len` 67584, tmax repo `c98902cc`, 1 GPU):
+
+| Model | TBlite pass@1 / pass@5 |
+|---|---|
+| RLVR, step 80 | 0.372 / 0.530 |
+| `allenai/tmax-4b` | 0.450 / 0.610 |
+| Base `hamishivi/Qwen3.5-4B` | 0.312 / 0.470 |
+
+At step 80 it has closed under half the distance from the base model to `allenai/tmax-4b`, where the cross-size OPD
+run below matched it by step 40. Steps 120 and 160 are being evaluated. Entropy keeps falling (0.38 to 0.23), unlike
+the 9B runs'.
+
+### Pure OPD across sizes, `allenai/tmax-9b` into `hamishivi/Qwen3.5-4B`, 4 nodes
+
+`configs/prod_4node_gateway_opd_9b_to_4b.yaml` on 4x 8 B300, run `tmax_prod4node_gateway_opd_9b_to_4b_20261027_204218`
+(Beaker `01M5ZHJYVY7FAAKSQC7PAGJNJK`, then `01M60M1W1BTKF7G49SAJMKP8M7`, commit `eb8fcb7422`): open-instruct's
+`qwen35_4b_opd_from_tmax9b_4node_64k.sh`, with the teacher on 2 SGLang servers on the rollout nodes (14 rollout
+engines and 2 teacher GPUs) instead of on the learners. About 2.5-3.5 minutes per step. It lost a node to reimaging
+at step 196 on 2026-10-28 and was not resumed (resumable from `iter_0000194`). Compared with open-instruct's run (W&B
+`vjgol9zb`, 275 steps):
+
+| Steps | Reverse KL to the teacher, ours / open-instruct | Train/rollout gap, ours / OI | DPPO-masked tokens, ours / OI | Entropy | Raw reward |
+|---|---|---|---|---|---|
+| 0-39 | 0.128 / 0.158 | 0.074 / 0.043 | 3.8% / 1.8% | 0.56 | 0.56 |
+| 40-79 | 0.106 / 0.104 | 0.069 / 0.023 | 3.7% / 0.2% | 0.56 | 0.63 |
+| 80-119 | 0.099 / 0.102 | 0.064 / 0.026 | 3.1% / 0.3% | 0.54 | 0.68 |
+| 120-159 | 0.098 / 0.100 | 0.097 / 0.030 | 6.0% / 0.5% | 0.54 | 0.65 |
+| 160-194 | 0.098 / 0.097 | 0.102 / 0.026 | 5.5% / 0.4% | 0.55 | 0.67 |
+
+The distillation tracks open-instruct's (the same reverse KL throughout), but the train/rollout gap is 2-4 times
+open-instruct's and DPPO masks about ten times as many tokens, more after step 140; the cause is open
+([ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md)).
+
+Greedy evaluations (k=5, `max-model-len` 67584, tmax repo `c98902cc`; TBlite on 1 GPU, TB2.1 on 2 GPUs, since a
+1-GPU TB2.1 run takes about 8 h and was preempted at its 8 h guarantee):
+
+| Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
+|---|---|---|
+| OPD, step 20 | 0.436 / 0.630 | 0.165 at 443/445, pass@5 pending |
+| OPD, step 40 | 0.452 / 0.640 | 0.202 / 0.315 |
+| OPD, step 60 | 0.478 / 0.690 | 0.187 / 0.326 |
+| OPD, step 100 | 0.438 / 0.680 | 0.199 at 443/445, pass@5 pending |
+| OPD, step 140 | 0.466 / 0.700 | 0.178 at 444/445, pass@5 pending |
+| OPD, step 195 | 0.480 / 0.700 | 0.180 at 444/445, pass@5 pending |
+| `allenai/tmax-4b` | 0.450 / 0.610 | 0.202 / 0.303 |
+| Base `hamishivi/Qwen3.5-4B` | 0.312 / 0.470 | 0.128 / 0.214 |
+
+The 4B student reaches `allenai/tmax-4b` on TBlite pass@1 by step 20-40 and passes it on pass@5 from step 60
+(0.69-0.70); pass@1 stays at 0.44-0.48 after that. On TB2.1 it stays at `allenai/tmax-4b`'s level or a little
+below. Training past step 60 bought pass@5 only, so the run was not resumed.
+
+### GRPO from the 9B OPD run's step 80, 4 nodes
+
+`configs/prod_4node_gateway_grpo_from_opd80.yaml` on 4x 8 B300, run `tmax_prod4node_gateway_grpo_from_opd80_20261027_201957`
+(Beaker `01M5ZGA1A4BHCWKDYP7ZAEPPDY`, then `01M60M1V4QBQDE3XMG8ZQ0KR3R`, commit `286b0c0563`): the GRPO run's recipe
+below, started from the pure-OPD run's step-80 HF snapshot (recipe `tmax-opd-9b-step80`, which is also its
+reference model). About 8 minutes per step. Stopped at step 194 on 2026-10-29 (resumable from `iter_0000194`).
+Compared with the GRPO run from the base model at the same steps:
+
+| Steps | Solve rate before the filter, ours / from base | All-pass groups | Entropy, ours / from base | Train/rollout gap, ours / from base | KL to its start |
+|---|---|---|---|---|---|
+| 0-39 | 0.66 / 0.54 | 37% | 0.42 / 0.32 | 0.013 / 0.008 | 0.003 |
+| 40-79 | 0.69 / 0.61 | 44% | 0.60 / 0.30 | 0.017 / 0.007 | 0.024 |
+| 80-119 | 0.69 / 0.63 | 44% | 0.65 / 0.28 | 0.015 / 0.008 | 0.037 |
+| 120-159 | 0.70 / 0.64 | 45% | 0.59 / 0.32 | 0.017 / 0.009 | 0.037 |
+| 160-193 | 0.70 / 0.65 | 44% | 0.55 / 0.33 | 0.016 / 0.008 | 0.044 |
+
+| Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
+|---|---|---|
+| GRPO from OPD step 80, step 120 | 0.574 / 0.760 | – |
+| Its start, OPD step 80 | 0.584 / 0.770 (B300), 0.574 / 0.730 (A100) | 0.283 / 0.449 |
+
+RL did not move the OPD checkpoint: its solve rate stayed at 0.66-0.70 from step 40 while the run from the base
+model climbed toward it, and step 120 evaluates at the starting checkpoint's TBlite score. With 37-45% of sampled
+groups all-pass and about 20% all-fail, only about 35% of the rollouts train, against about 50% from the base model.
+Entropy rose from 0.42 to 0.65 by step 100, and the train/rollout gap stayed twice the base run's. Step 180 is being
+evaluated on both benchmarks. Training only on tasks the starting checkpoint does not always solve is in
+[INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md#ideas-to-explore).
+
+These three runs went through the private fleet's mirror outage, a preemption and a full `oe-adapt` volume on
+2026-10-28 and 29; see [INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md).
 
 ### Pure OPD, `allenai/tmax-9b` into `hamishivi/Qwen3.5-9B`, 4 nodes
 
@@ -292,8 +390,8 @@ With two teacher servers (`opd_teacher_gpus: 2`, Ray actors of one GPU each: 1 t
 cross-size pair trained 3 steps: reverse KL 0.167 / 0.179 / 0.209, grad_norm 4.7 / 4.1 / 5.1, train/rollout gap
 0.009-0.013, trained reward 0. The launcher listed both servers (ports 30100 and 30101) and every one of the 67
 teacher requests was answered (64 by the first server, 3 by the second: at this smoke's concurrency requests rarely
-overlap, and the least-busy choice breaks ties toward the first server). The teachers' placement on other nodes
-than the head first runs on several nodes.
+overlap, and the least-busy choice then broke ties toward the first server; since `eb8fcb7422` ties go round-robin).
+The teachers' placement on nodes other than the head first ran in the cross-size 4-node run above.
 
 For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi/Qwen3.5-2B`'s own trajectories
 (8 tasks x 2 at 16k, thinking off) with `allenai/tmax-2b` through vLLM gave 0.48 nats per assistant token (p90 1.75,
