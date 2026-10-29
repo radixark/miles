@@ -3,8 +3,8 @@ from typing import Any, ClassVar
 
 from sglang_router.launch_router import RouterArgs
 
+from miles.backends.dynamo_utils.config import DynamoConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
-
 
 _ROUTER_DEST_PREFIX = "router_"
 
@@ -28,6 +28,11 @@ class RouterConfig(BaseConfig):
     ] = 14400
 
     router_args: dict[str, Any]
+
+    dynamo_config: A[
+        DynamoConfig | None,
+        Arg(type_parser=str, help="Dynamo router/sidecar JSON configuration."),
+    ] = None
 
     use_miles_router: A[
         bool,

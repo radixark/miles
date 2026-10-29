@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from miles.backends.dynamo_utils.arguments import configure_dynamo
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
@@ -383,6 +384,7 @@ def parse_args_and_get_parser(
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     _validate_argument_ownership(args, parser=parser, training_backend_arg_names=training_backend_arg_names)
     sglang, sglang_scaling = SglangConfig.parse_args(args)
+    configure_dynamo(args, sglang=sglang)
     raw_megatron = resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {})
     check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
