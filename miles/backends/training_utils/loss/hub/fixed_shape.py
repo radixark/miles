@@ -1,4 +1,4 @@
-"""Log-probs and the policy loss on the padded microbatch, for accelerators that compile one program per shape.
+"""Log-probs and losses on the padded microbatch, for accelerators that compile one program per shape.
 
 The per-sample path (`logit_processors.py`, `losses.py`) slices every response out of the packed logits,
 so each op after the model sees that response's length. TorchTPU runs every eager op as an XLA program
@@ -8,8 +8,8 @@ model input instead, which the torchtitan trainer rounds up to a few buckets on 
 
 - log-probs and entropy are scored for all T rows, in fixed-size row chunks, against a `[T]` target row;
 - prompt and padding rows are masked out, and a per-sample mean divides each row by its sample's count;
-- per-sample tensors (tokens, loss masks, old log-probs, advantages) stay on the host. A microbatch moves
-  each of them to the device in one copy, laid out on the rows, and moves results back in one copy.
+- per-sample tensors (tokens, loss masks, old log-probs, advantages, rollout top-k candidates) stay on the host.
+  A microbatch moves each of them to the device in one copy, laid out on the rows, and moves results back in one copy.
 """
 
 import itertools
@@ -20,12 +20,14 @@ from dataclasses import dataclass
 import torch
 
 from miles import platforms
+from miles.backends.training_utils.data.sampling_mask import rollout_topk_candidate_ids
 from miles.backends.training_utils.loss.hub.math_utils import (
     _safe_exp_neg_ppo_kl,
     calculate_log_probs_and_entropy,
     compute_approx_kl,
     compute_policy_loss,
 )
+from miles.backends.training_utils.loss.hub.score_centering_loss import score_candidates, score_centering_objective
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.types import RolloutBatch
@@ -33,10 +35,11 @@ from miles.utils.types import RolloutBatch
 # the smallest TPU length bucket (torchtitan_utils/trainer.py)
 _CHUNK_ROWS = 1024
 _ADVANTAGE_ESTIMATORS = ("grpo", "reinforce_plus_plus", "reinforce_plus_plus_baseline")
+_LOSS_TYPES = ("policy_loss", "score_centering")
 
 
 def fixed_shape_loss_enabled(args: Namespace) -> bool:
-    """Whether log-probs and the policy loss run on padded microbatches instead of per-sample slices.
+    """Whether log-probs and the loss run on padded microbatches instead of per-sample slices.
 
     Only the torchtitan trainer pads microbatches to fixed buckets, and only without CP or PP is every
     padded row a whole packed sample. Features this module does not implement keep the per-sample path.
@@ -47,7 +50,7 @@ def fixed_shape_loss_enabled(args: Namespace) -> bool:
         and args.qkv_format == "thd"
         and args.context_parallel_size == 1
         and args.pipeline_model_parallel_size == 1
-        and args.loss_type == "policy_loss"
+        and args.loss_type in _LOSS_TYPES
         and args.advantage_estimator in _ADVANTAGE_ESTIMATORS
         and not (
             args.true_on_policy_mode
@@ -99,9 +102,10 @@ class PackedResponses:
     def scatter(
         self, per_sample: Sequence[torch.Tensor], dtype: torch.dtype = torch.float32, *, fill: float = 0
     ) -> torch.Tensor:
-        """Host per-sample `[R_i]` values -> `[T]` rows on the device (`fill` elsewhere), in one copy."""
-        values = torch.full((self.num_rows,), fill, dtype=dtype)
-        values[self.rows] = torch.cat([value.to("cpu", dtype) for value in per_sample])
+        """Host per-sample `[R_i, ...]` values -> `[T, ...]` rows on the device (`fill` elsewhere), in one copy."""
+        packed = torch.cat([torch.as_tensor(value).to("cpu", dtype) for value in per_sample])
+        values = torch.full((self.num_rows, *packed.shape[1:]), fill, dtype=dtype)
+        values[self.rows] = packed
         return values.to(self.device)
 
     def split(self, values: torch.Tensor) -> list[torch.Tensor]:
@@ -180,16 +184,8 @@ def fixed_shape_policy_loss_function(
         num_rows=logits.size(1),
         device=logits.device,
     )
-    loss_masks = layout.scatter(batch["loss_masks"])
+    loss_masks, sum_of_row_mean = _loss_masks_and_row_mean(args, batch, layout)
     active = loss_masks.bool()
-    denominators = layout.mean_denominators(
-        batch["loss_masks"],
-        per_token=args.backend.calculate_per_token_loss,
-        denominators=batch.get("rollout_mask_sums"),
-    )
-
-    def sum_of_row_mean(x: torch.Tensor) -> torch.Tensor:
-        return (x * loss_masks / denominators).sum()
 
     calculate_entropy = args.entropy_coef != 0 or args.observe_training_entropy
     log_probs, entropy = _score_rows(
@@ -251,6 +247,66 @@ def fixed_shape_policy_loss_function(
     return loss, {"loss": loss.clone().detach(), **reported_loss}
 
 
+def fixed_shape_score_centering_loss_function(
+    args: Namespace,
+    batch: RolloutBatch,
+    logits: torch.Tensor,
+    sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """`score_centering_loss_function` on the padded microbatch: the same objective on `[T]` and `[T, K]` rows."""
+    del sum_of_sample_mean
+    layout = PackedResponses.build(
+        total_lengths=batch["total_lengths"],
+        response_lengths=batch["response_lengths"],
+        num_rows=logits.size(1),
+        device=logits.device,
+    )
+    loss_masks, sum_of_row_mean = _loss_masks_and_row_mean(args, batch, layout)
+    candidate_ids = layout.scatter(
+        [
+            rollout_topk_candidate_ids(batch, i, torch.arange(length))
+            for i, length in enumerate(layout.response_lengths)
+        ],
+        dtype=torch.long,
+        fill=-1,
+    )
+    ids = torch.cat((layout.targets(batch["unconcat_tokens"]).unsqueeze(-1), candidate_ids), dim=-1)
+    return score_centering_objective(
+        args,
+        scored=score_candidates(args, logits.squeeze(0), ids, chunk_size=_row_chunk_size(args)),
+        active=loss_masks.bool(),
+        rollout_log_probs=layout.scatter(batch["rollout_log_probs"]),
+        advantages=layout.scatter(batch["advantages"]),
+        candidate_ids=candidate_ids,
+        rollout_head_log_probs=layout.scatter(batch["rollout_topk_log_probs"]),
+        ref_log_probs=layout.scatter(batch["ref_log_probs"]) if args.use_kl_loss else None,
+        reduce=sum_of_row_mean,
+    )
+
+
+def _row_chunk_size(args: Namespace) -> int:
+    # -1 means "a whole response at once" on the per-sample path. A padded microbatch is always a full
+    # bucket, so it is always chunked: the fp32 copy of a chunk stays [chunk, V].
+    return args.log_probs_chunk_size if args.log_probs_chunk_size > 0 else _CHUNK_ROWS
+
+
+def _loss_masks_and_row_mean(
+    args: Namespace, batch: RolloutBatch, layout: PackedResponses
+) -> tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]]:
+    """The `[T]` loss masks, and the reducer that replaces `sum_of_sample_mean` on rows."""
+    loss_masks = layout.scatter(batch["loss_masks"])
+    denominators = layout.mean_denominators(
+        batch["loss_masks"],
+        per_token=args.backend.calculate_per_token_loss,
+        denominators=batch.get("rollout_mask_sums"),
+    )
+
+    def sum_of_row_mean(x: torch.Tensor) -> torch.Tensor:
+        return (x * loss_masks / denominators).sum()
+
+    return loss_masks, sum_of_row_mean
+
+
 def _score_rows(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -265,16 +321,13 @@ def _score_rows(
         assert not entropy_requires_grad, "the fused log-prob op keeps entropy out of the graph"
         log_probs, entropy = _FusedLogProb.apply(logits.squeeze(0), targets, float(args.rollout_temperature))
         return log_probs, (entropy if with_entropy else None)
-    # -1 means "a whole response at once" on the per-sample path. A padded microbatch is always a full
-    # bucket, so it is always chunked: the fp32 copy of a chunk stays [chunk, V].
-    chunk_size = args.log_probs_chunk_size if args.log_probs_chunk_size > 0 else _CHUNK_ROWS
     log_probs, entropy = calculate_log_probs_and_entropy(
         logits.squeeze(0),
         targets,
         get_parallel_state().tp.group,
         with_entropy=with_entropy,
         entropy_requires_grad=entropy_requires_grad,
-        chunk_size=chunk_size,
+        chunk_size=_row_chunk_size(args),
         vocab_size=args.backend.vocab_size if args.train_backend == "megatron" else None,
         temperature=args.rollout_temperature,
         debug_unified_grad_fused_logprob=args.debug_unified_grad_fused_logprob,

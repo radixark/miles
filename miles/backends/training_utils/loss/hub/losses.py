@@ -14,6 +14,7 @@ from miles.backends.training_utils.loss.hub.corrections import vanilla_tis_funct
 from miles.backends.training_utils.loss.hub.fixed_shape import (
     fixed_shape_loss_enabled,
     fixed_shape_policy_loss_function,
+    fixed_shape_score_centering_loss_function,
 )
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss.hub.math_utils import (
@@ -528,7 +529,11 @@ def get_loss_function(args: Namespace, loss_fn: str | None = None) -> LossFuncti
         return TINKER_LOSS_FUNCTIONS[loss_fn]
     match args.loss_type:
         case "score_centering":
-            return score_centering_loss_function
+            return (
+                fixed_shape_score_centering_loss_function
+                if fixed_shape_loss_enabled(args)
+                else score_centering_loss_function
+            )
         case "policy_loss":
             return fixed_shape_policy_loss_function if fixed_shape_loss_enabled(args) else policy_loss_function
         case "value_loss":
