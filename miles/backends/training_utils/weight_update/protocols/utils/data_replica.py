@@ -48,6 +48,8 @@ class OwnedBuckets:
             ]
             self._owned.append((self._next_index, host_bucket))
         self._next_index += 1
+        # the caller's loop holds this list while the next bucket is gathered; empty it so its device tensors free first
+        bucket.clear()
 
     def take(self) -> list[tuple[int, list[tuple[str, torch.Tensor]]]]:
         """The owned host buckets with their stream index, handed over so none stays alive after the sync."""

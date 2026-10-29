@@ -6,6 +6,8 @@ from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.object_store_config import ObjectStoreBackend
 
+UPDATE_WEIGHT_TRANSFER_MODES = ("broadcast", "broadcast_packed", "p2p", "disk-delta", "disk", "shm")
+
 
 # rollout
 class RolloutRelatedConfig(BaseConfig):
@@ -251,7 +253,7 @@ class RolloutRelatedConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "disk", "shm"],
+            choices=list(UPDATE_WEIGHT_TRANSFER_MODES),
             help=(
                 "The method to transfer weights to remote rollout engines during update weight. "
                 "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "

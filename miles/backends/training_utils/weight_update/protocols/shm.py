@@ -10,6 +10,7 @@ from multiprocessing.reduction import ForkingPickler
 from urllib.parse import urlparse
 
 import torch
+import torch.distributed as dist
 import torch.multiprocessing
 from torch.multiprocessing import reductions
 
@@ -29,7 +30,7 @@ from miles.utils import async_utils
 
 
 # buckets in flight across the host, enough to keep the engines loading while the next one is copied out; arbitrary
-# otherwise. Each replica rank gets its share but at least one, so /dev/shm holds max(this, replica ranks) buckets.
+# otherwise. Each trainer rank gets its share but at least one, so /dev/shm holds max(this, trainer ranks) buckets.
 _MAX_BUCKETS_IN_FLIGHT_PER_HOST = 4
 
 
@@ -37,7 +38,7 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
     """
     Host weight sync through shared memory, for engines on the trainer's host. Each gathered bucket goes
     to the replica rank with the fewest bytes so far, which copies it flattened into a shared-memory tensor
-    once the collective gathers are done, and hand the engines its handle through
+    once the collective gathers are done, and hands the engines its handle through
     /update_weights_from_tensor; each engine maps it in place, with no file written or parsed.
     A bucket is published as soon as it is in shared memory, so the copies overlap the engine loads, and only
     a few shared-memory buckets are alive at once (`_MAX_BUCKETS_IN_FLIGHT_PER_HOST`).
@@ -72,7 +73,8 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
         self._engine_tp_sizes = engine_gpu_counts
         replica_rank, replica_size = get_data_replica_rank_and_size(parallel_state, placement)
         self._owned_buckets = OwnedBuckets(replica_rank=replica_rank, replica_size=replica_size)
-        self._max_in_flight = max(1, _MAX_BUCKETS_IN_FLIGHT_PER_HOST // replica_size)
+        # every rank publishes (each PP stage its own buckets), and shm keeps the trainer on one host
+        self._max_in_flight = max(1, _MAX_BUCKETS_IN_FLIGHT_PER_HOST // dist.get_world_size())
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
         self._owned_buckets.reset()
@@ -139,7 +141,11 @@ def _engines_off_this_host(rollout_engines: Sequence[SGLangApiClient]) -> list[s
 
 def _is_this_host(host: str) -> bool:
     # only an address of one of this machine's interfaces can be bound, IPv4 or IPv6
-    for family, _, _, _, address in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
+    try:
+        addresses = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+    for family, _, _, _, address in addresses:
         with socket.socket(family, socket.SOCK_STREAM) as probe:
             try:
                 probe.bind((address[0], 0))

@@ -27,6 +27,7 @@ from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
+from miles.utils.args.configs.rollout import UPDATE_WEIGHT_TRANSFER_MODES
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
 from miles.utils.args.runtime import AllConfig
@@ -864,7 +865,8 @@ def miles_validate_args(args):
             setattr(args, k, v)
 
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "disk", "shm"):
+    # --custom-config-path overrides above bypass the parser's choices
+    if mode not in UPDATE_WEIGHT_TRANSFER_MODES:
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1309,7 +1311,7 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode disk needs --update-weight-disk-dir on a filesystem "
             "both the trainer and the rollout engines can read"
         )
-        assert os.path.isdir(args.hf_checkpoint), (
+        assert args.hf_checkpoint and os.path.isdir(args.hf_checkpoint), (
             "--update-weight-transfer-mode disk needs --hf-checkpoint to be a local directory: "
             "each published version copies its config and tokenizer files"
         )
@@ -1331,7 +1333,7 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --update-weight-local-checkpoint-dir "
             "(a rollout-host-local directory, e.g. NVMe)."
         )
-        assert os.path.isdir(args.hf_checkpoint), (
+        assert args.hf_checkpoint and os.path.isdir(args.hf_checkpoint), (
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
         )

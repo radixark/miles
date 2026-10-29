@@ -14,6 +14,11 @@ def fail_on_every_rank(step: str) -> Iterator[None]:
         yield
     except Exception as error:
         local_error = error
+    raise_on_every_rank(step, local_error)
+
+
+def raise_on_every_rank(step: str, local_error: Exception | None) -> None:
+    """Collective: raises on every rank if any rank passes an error."""
     messages: list[str | None] = [None] * dist.get_world_size()
     local_message = None if local_error is None else f"{type(local_error).__name__}: {local_error}"
     dist.all_gather_object(messages, local_message, group=get_gloo_group())
