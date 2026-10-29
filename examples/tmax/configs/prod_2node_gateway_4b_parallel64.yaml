@@ -1,0 +1,59 @@
+# prod_2node_gateway_4b.yaml, the 4B RLVR baseline, on the dedicated podman-parallel64-20261027 fleet (128 replicas,
+# 1,024 sessions on 2026-10-28) instead of the fleet the 9B runs share, and with its checkpoints and HF snapshots on
+# oe-adapt-default, which eval jobs mount (nora-default is not mounted there). The recipe and the 2-node layout are
+# its twin's. Submit with:
+#   python examples/tmax/beaker/submit.py examples/tmax/configs/prod_2node_gateway_4b_parallel64.yaml
+exp_name: tmax_prod2node_gateway_qwen35_4b_p64
+model_name: Qwen3.5-4B-tmax-template
+sandbox_backend: gateway
+num_nodes: 2
+num_gpus_per_node: 8
+async_rollout_gpus: 8
+rollout_batch_size: 8
+n_samples_per_prompt: 32
+num_rollout: 500
+max_seq_len: 67584
+rollout_max_response_len: 16384
+max_steps: 64
+filter_zero_std: true
+max_weight_staleness: 4
+async_max_concurrent_samples: 512
+async_data_buffer_capacity_factor: 4
+tensor_model_parallel_size: 1
+context_parallel_size: 1
+max_tokens_per_gpu: 67584
+optimizer_cpu_offload: false
+sglang_mem_fraction_static: 0.8
+sandbox_start_concurrency: 64
+start_failure: drop
+save_interval: 5
+hf_snapshot_every: 20
+extra_args: "--log-probs-backend fused --distributed-timeout-minutes 120 --sglang-watchdog-timeout 1800"
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+# oe-adapt-default filled up on 2026-10-23 and stopped the 9B run; the 4B's checkpoints (about 50 GB each, 3 kept)
+# and HF snapshots (about 8 GB every 20 steps) go to the nora bucket.
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+wandb_project: oe-general-agents
+wandb_entity: ai2-llm
+
+beaker:
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  preemptible: true                           # only used without min_runtime (Beaker allows one)
+  min_runtime: 8h
+  retries: 10
+  nodes: 2
+  gpus: 8
+  shared_memory: 512GiB
+  image: docker.io/radixark/miles:dev-202610151741
+  dockerhub_username: shashankg209
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-parallel64-20261027.sqlite3
+  gateway_min_replicas: 64
+  keep_last_n_checkpoints: 3
+  env:
+    NCCL_DEBUG: WARN

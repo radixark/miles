@@ -91,9 +91,10 @@ The default `--custom-agent-function-mode subproc` gives every episode a process
 
 ### What runs where
 
-- **The local dev box cannot run Miles.** It is a Beaker session with 4× L40S and driver 570 (CUDA 12.8). Current
-  Miles needs CUDA 13, and GPU containers cannot be nested inside a Beaker task. Training, SGLang and the session
-  server only run in Beaker jobs.
+- **The local dev box cannot run Miles.** It is a Beaker session with 4× L40S and driver 570 (CUDA 12.8), and GPU
+  containers cannot be nested inside a Beaker task. CUDA 13 itself is not the obstacle: CUDA 13 torch runs here (and
+  on Jupiter) through NVIDIA's forward-compatibility driver, the image's `/usr/local/cuda/compat` on
+  `LD_LIBRARY_PATH`. Training, SGLang and the session server only run in Beaker jobs.
 - **Locally you can:**
   - lint;
   - run CPU unit tests;
@@ -115,7 +116,7 @@ ruff check examples/tmax
 
 # Unit tests that need no GPU (the gateway backend's need literegistry's client, and skip without it)
 uv run --no-project --python /stage/.venv/bin/python --with "pytest-asyncio==0.24.0" \
-    --with "literegistry-podman-client==0.1.4" python -m pytest -q --noconftest -p no:cacheprovider -o addopts="" \
+    --with "literegistry-podman-client==0.1.7" python -m pytest -q --noconftest -p no:cacheprovider -o addopts="" \
     tests/fast/utils/test_ray_utils.py tests/fast/examples/tmax
 
 # Tests that import SGLang: the wheel alone, no deps, in a scratch dir
@@ -193,3 +194,5 @@ Run each rung before the next, and keep jobs to 4 GPUs until the change is ready
 | 2026-10-14 | Multi-node: Beaker replicas, sandboxes spread over nodes, first 4-node runs. A gradient reduce-scatter stalled at step 7 (10-min NCCL timeout) and a weight sync crawled at step 11 (SGLang's 5-min watchdog); a Docker Hub token in job logs was fixed (`set -x`); pull credentials and registry mirrors added; training-batch dumps added |
 | 2026-10-15 | Gap audit against open-instruct. Timeouts raised and NCCL warnings turned on. Rebased onto upstream `e30d9a8ec6`: session server v2 with the namespaced radix cache, image `dev-202610151741`, 1 h synchronized replica start, per-submission run names. The old 4-node run reached step 118 before a weight-sync `ReadError` and a retry loop on unstarted replicas. 2-node v2 smoke validated: trained samples match v1's |
 | 2026-10-16 | 4-node prod on the rebased code (`tmax_prod4node_qwen35_9b_20261016_001037`), with no session-collect failures. Branch force-pushed at `edf2c7ae3e`. Engine probe: `trtllm_mha` 1.75× faster than SGLang's default `triton`, and the fp32 LM head pays off only on both sides. Step 16 took 47 min while one node's engines crawled. The rollout executor segfaulted at step 24; Beaker resumed. Retry 1 reached step 34 before Ray declared a starved rollout node dead. Details in [INVESTIGATIONS.md](INVESTIGATIONS.md) |
+| 2026-10-22/23 | On-policy distillation on the current code (branch `shashank/tmax-opd`): pure OPD (`opd_pure`) and the 2B recipes; a 4-GPU pure-OPD async smoke trained on Jupiter's H100s, which run the CUDA 13 image through the forward-compatibility driver; the teacher on an SGLang server (`opd_teacher_mode`), smoked same size and cross size (`allenai/tmax-9b` into a 4B) |
+| 2026-10-24/29 | OPD at production scale on the 9B gateway runs' parity recipe: pure OPD of `allenai/tmax-9b` into the 9B reached the teacher by step 40; GRPO from its step 80 gained nothing by step 120 and was stopped at 194; across sizes, with the teacher on SGLang servers on the rollout nodes, the 4B student matched `allenai/tmax-4b` by step 40; a 4B RLVR baseline on 2 nodes. literegistry 1.0.63 gateway and client. The fleets' mirror outage (2026-10-28) and a full `oe-adapt` (2026-10-29) cost hours, not checkpoints. Merged into `shashank/tmax-terminal-rl` on 2026-10-29 |

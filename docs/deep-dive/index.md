@@ -17,6 +17,7 @@ those pages are stale.
 | [Async & off-policy](/deep-dive/async-and-off-policy) | Timelines for sync / `train_async.py` / `--fully-async`, how staleness arises and is bounded, which logprobs anchor the PPO ratio, weight-sync protocols, fault tolerance. |
 | [Agentic rollout internals](/deep-dive/agentic-rollout-internals) | The generate-function contract, the multi-turn token loop, the TITO session server, sandbox lifecycle and failure handling, one Harbor/Terminal episode traced, porting Terminal RL. |
 | [Miles vs open-instruct](/deep-dive/open-instruct-comparison) | How Miles and open-instruct differ as RL frameworks, as Terminal-RL harnesses and as Beaker infrastructure, traced through the TMax port, with the flag-by-flag mapping of its production recipe. |
+| [OPD in Miles, open-instruct and Prime-RL](/deep-dive/opd-across-frameworks) | Where each framework runs the on-policy-distillation teacher, how it handles a teacher of another size and several teachers, and how the teacher signal enters the loss. |
 
 ## Coming from open-instruct
 
@@ -31,7 +32,7 @@ those pages are stale.
 | `rl_with_environments.md` / sandboxed envs | [Environments](/user-guide/environments), [Sandbox providers](/user-guide/sandbox-providers), [Adding a sandbox provider](/developer/adding-a-sandbox-provider), [Harbor](/user-guide/harbor) |
 | `tmax_4b_script_reference.md` (arg reference) | [CLI reference](/user-guide/cli-reference), [Argument groups](/user-guide/argument-groups), [Launch script](/user-guide/launch-script) |
 | train/inference mismatch discussion | [True on-policy](/examples/infra-features/true-on-policy), [Mismatch helper](/examples/infra-features/train-infer-mismatch-helper) |
-| On-policy distillation | [On-policy distillation](/advanced/on-policy-distillation) |
+| On-policy distillation | [On-policy distillation](/advanced/on-policy-distillation), [OPD across frameworks](/deep-dive/opd-across-frameworks) |
 
 ## Findings worth knowing before you launch
 

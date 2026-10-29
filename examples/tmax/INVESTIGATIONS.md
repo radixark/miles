@@ -43,9 +43,14 @@ The options below are the ones presented during the investigations; none is impl
 | H | `PYTHONFAULTHANDLER=1` in the Beaker env | Captures a Python stack if the rollout executor segfaults again | One env var | Bundle with the next restart |
 | I | More episodes in flight (1024, 256 sandboxes per node) | Uses idle engine capacity during long-tail phases | Doubles sandbox load per node, which is the suspected cause of the stalls | Not before A–C |
 | J | Episode wall-clock cap (`episode_timeout_s`) | Bounds long-tail episodes | open-instruct has no cap | Not now |
-| L | Sandboxes on a LiteRegistry podman fleet: `sandbox_backend: gateway`, open-instruct's `literegistry_podman` setup | Removes the sandboxes, and their CPU load, from the training and SGLang nodes altogether ([2026-10-16 entry](#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet)) | Implemented on branch `shashank/tmax-gateway`, 4-GPU smoke passed; depends on a fleet run outside the job | The 4-node run (fleet capacity first) |
+| L | Sandboxes on a LiteRegistry podman fleet: `sandbox_backend: gateway`, open-instruct's `literegistry_podman` setup | Removes the sandboxes, and their CPU load, from the training and SGLang nodes altogether ([2026-10-16 entry](#2026-10-16-gateway-backend-sandboxes-on-a-podman-fleet)) | Implemented (`255d93f374` .. `1e9265bd13`, merged in `e961a935aa`), 4-GPU smoke passed; depends on a fleet run outside the job | The 4-node run (fleet capacity first) |
 | M | Worker replicas' watch on the Ray head. (1) None: workers leave when the head marks the run done, or through Beaker's `propagateFailure` when the head's job fails. (2) open-instruct's: 6 failed `ray status` checks 5 s apart, with no timeout on a check. (3) A ~20-minute tolerance (`HEAD_MISS_LIMIT` 80, `aeb4f9ecd3`) | The ported check (6 misses with a 10 s timeout each, about 90 s) failed three podman attempts on 2026-10-17 while a starved head was slow to answer | (1) relies on Beaker noticing a failed head; a head that hangs without exiting would leave the workers waiting | **(1), taken 2026-10-19 by the user, after (2) ended resume 6 on a starved head that had recovered from 5 misses minutes before; (2) was used 2026-10-17 to 19** |
 | K | Make a dropped weight-sync reply non-fatal: treat it as "outcome unknown" after a completed broadcast and verify the engines' weight version | Survives the `ReadError` seen once in the old run | Miles core change; check upstream first | Only if it recurs |
+| N | Keep the 9B OPD run's recipe (lr 1e-6, OPD term from the rollout log-probs) and decide at about step 30 ([2026-10-27 entry](#2026-10-27-the-9b-pure-opd-runs-early-transient)) | open-instruct's identical run settled by itself by steps 25 to 30 | None | Current choice |
+| O | OPD term from the trainer's recompute: drop `--use-rollout-logprobs` | Removes the stale student term behind the transient | One flag, but the rollout log-probs then stop anchoring DPPO's ratio, so stale samples lose their correction | No: P keeps the correction |
+| P | Prime-RL's split: OPD term from the trainer's log-probs, DPPO still anchored on the rollout log-probs ([OPD across frameworks](../../docs/deep-dive/opd-across-frameworks.md)) | The stale student term, keeping the staleness correction | Small Miles core change (`apply_opd_kl_to_advantages` / `loss/objective.py`); check upstream first | First choice if N fails |
+| Q | Per-token clip on the OPD advantage (open-instruct `mopd`'s `opd_adv_clip`) | Bounds the -36 advantages of teacher-rejected tokens and the KL-to-base spikes | Miles core change; changes the objective relative to open-instruct's `opd` runs | Low value: the outliers are a format preamble the student drops by step 10, so a clip only changes steps 0–10 |
+| R | lr 5e-7 (open-instruct tried it for a 4B student, run `zjfcsx10`) | Slows everything, the transient included | A config | Last resort: it does not target the cause |
 
 Suggested next restart: A + B + F + H (and G once the trainer side exists), validated on a 4-GPU smoke, then
 resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to continue from the latest checkpoint.
@@ -55,8 +60,116 @@ resubmitted with `--exp-name tmax_prod4node_qwen35_9b_20261016_001037` to contin
 - **Remote sandbox fleets** (from the user). open-instruct has two alternatives to colocated podman:
   1. A LiteRegistry podman fleet behind a local gateway (branch `literegistry_podman`). Now option L, ported.
   2. A hosted OpenSandbox service on GCP (branch `pd_open_sandbox_cuda13`, paid). Not explored yet.
+- **GRPO after OPD on tasks the start does not always solve.** GRPO from the 9B OPD run's step 80 gained nothing by
+  step 120 ([README](README.md#grpo-from-the-9b-opd-runs-step-80-4-nodes)): 37-45% of its sampled groups are all-pass
+  and about 20% all-fail, so about 65% of the rollouts are dropped by the zero-variance filter. The filter already keeps
+  those groups out of the gradient, so dropping the tasks up front mainly buys throughput (about 40% fewer rollouts per
+  step without the all-pass tasks, about 2.5x fewer without both kinds) and a shift toward harder tasks. A run sees
+  under one epoch, so it needs a pass-rate sweep with the start checkpoint (about 116k episodes at k=8 over all
+  14.5k tasks, or a subset), or screening each task with a few samples before the full 32 (SPEED-RL's idea), which
+  needs a two-phase group in the rollout wrapper.
 
 Larger directions to evaluate against the evidence below. Add yours here.
+
+## 2026-10-29: `oe-adapt` full again; checkpoint saves fail
+
+- **Runs:** GRPO from OPD step 80 (Beaker `01M60M1V4QBQDE3XMG8ZQ0KR3R`, commit `286b0c0563`), last checkpoint 169, and
+  the 4B RLVR run (`01M60M1X1A5M1D3HXNY123BYYG`, commit `3ec4925326`), last checkpoint 134.
+- **What happened:** `/weka/oe-adapt-default` (440 TB) reached 100% at about 02:00 UTC, 34 MB free. At 02:08 both runs
+  failed in `save_model` (`CheckpointException`, then `NonRetryableError: All cells failed during
+  execute_first_alive#save_model`), and Beaker retried both.
+- **GRPO's retries failed at startup.** Attempt 3 failed within 2 minutes. Attempt 4 failed after 30: the entry
+  script could not create the gateway log on weka (`tmax_beaker_entry.sh: line 162: …literegistry-gateway-…`), so the
+  gateway never started and the 30-minute replica wait ran out. Its commit predates `320cd35167`, which keeps the
+  gateway restarting and logs to `/tmp` while weka refuses (the 2026-10-23 incident). The 4B run has that fix: its
+  attempt 4 logged the gateway to `/tmp`, resumed from step 134 and saved `iter_0000139` and `iter_0000144` once
+  space returned.
+- **Recovery:** the user freed space (4.2 TB free at 03:46, 18 TB at 04:16). GRPO's attempt 5 saved `iter_0000174` at
+  04:38; four of its ten retries were used. Weka reads stayed slow for a while afterwards: a gateway-log read and a
+  `gantry` start each blocked in `D` state for minutes.
+- **Our share:** about 4.7 TB on 2026-10-29. Each 9B run keeps 3 training states of about 117 GB plus HF snapshots of
+  17 GB, and the debug dumps (`--save-debug-rollout-data`, `--save-debug-train-data`) add 40-175 GB per run under
+  `deletable_rollouts/`.
+- **Options:** in [ROADMAP.md](ROADMAP.md) (P1, checkpoint storage).
+
+## 2026-10-28: the fleets' registry mirror fails, then the private fleet's Redis
+
+- **Fleets:** `podman-parallel64-20261027` (parallel64; the 4B RLVR run) and `podman-private-reasoning-20261017`
+  (private; GRPO from OPD step 80 and the cross-size OPD run). The older shared fleet,
+  `podman-terminal-jupiter-head`, is off.
+- **Symptom:** `sandbox start failed for image=hamishi740/swerl-tmax-v3:<tag>: PodmanGatewayError('gateway returned
+  HTTP 503 for affinity/handshake: … Resolving "hamishi740/swerl-tmax-v3" using unqualified-search registries …
+  Trying to pull docker.io/…')`, then `sandbox never started, dropping the group`.
+  - On parallel64 from the 4B run's first attempt (`01M5ZZ4SG85JNP62W1XRTSCRNC`, 00:39), stopped at 02:44 without a
+    checkpoint.
+  - On private from 04:43: 10-15 groups dropped per run every 7 minutes, against 8 groups per step. Neither run
+    trained after 04:36 (GRPO) and 04:41 (OPD), and by 05:50 handshakes hung until the client's 310 s timeout.
+- **Cause:** every replica was started with one fixed `registry_mirror`, the fleet's own gateway (parallel64:
+  `jupiter-cs-aus-154:29040`, private: `jupiter-cs-aus-190:28940`). When a gateway moved to another host after a node
+  failure, the replicas kept the dead address; with no Docker Hub credentials, pulls of images a replica had not cached
+  fell back to anonymous docker.io and its rate limit. The fleets' registered mirror services stayed healthy
+  throughout. At 05:41 the private fleet's Redis head also stopped (`jupiter-cs-aus-125` refused connections), so no
+  gateway could route at all.
+- **Our gateway could not help.** The head runs its own gateway, as open-instruct's `start_colocated_gateway.sh`
+  does, so the fleet's gateway moving never touches our routing, and it follows Redis moves through the head registry.
+  But the pull happens on the replica, and routing needs Redis.
+- **Fix, by the fleet owners the same night:** both fleets relaunched (128 replicas each, literegistry 1.0.61) under
+  a wrapper that every 30 s writes podman's `registries.conf` from the registry: every registered mirror (shuffled per
+  replica), then the fleet's gateway, then Docker Hub with credentials from the user's Beaker secrets. Private's
+  Redis was recovered from its snapshot and then replaced. After the repair, 16 of 16 starts of images neither fleet
+  had cached bound in 4-21 s, through a local literegistry 1.0.63 gateway started as the head starts it.
+- **What we did:** stopped both private-fleet runs at 05:53 (checkpoints 59 and 94) and resumed them with their
+  original configs and `--exp-name` at 06:44, on the repaired private fleet; the 4B run started over on parallel64.
+  About 2 h of 8 nodes lost.
+- **Later the same day:** a failed node (`jupiter-cs-aus-164`) took 3-4 replicas from both fleets: about 250
+  `affinity_owner_unavailable` per run in 10 minutes and 3-4 lost containers. Training continued.
+
+## 2026-10-27: the 9B pure-OPD run's early transient
+
+- **Run:** `tmax_prod4node_gateway_opd_9b_20261027_022952` (Beaker `01M5XK2NCJAPFZ5M8G01659VZ5`, commit `b131645fa6`,
+  `configs/prod_4node_gateway_opd_9b.yaml`): pure OPD of `allenai/tmax-9b` into `hamishivi/Qwen3.5-9B`, Megatron-mode
+  teacher, 4× 8 B300, from 03:26 UTC on 2026-10-27. Compared with open-instruct's identical recipe,
+  `swerl_qwen35_9b_dppo_opd_4node_64k` (W&B `6kyg0v64`; lr 1e-6, grad clip 1, DPPO TV 0.1, 8 x 32, async 4).
+- **What happened:** the teacher KL fell (0.102 at step 0, 0.037 at step 13) and the raw task reward rose (0.42 to
+  0.81), but from step 9 the train/rollout gap, the DPPO mask and the training entropy rose:
+
+  | Step | Gap, Miles / open-instruct | DPPO-masked tokens, Miles / OI | Teacher log-prob on student samples, Miles / OI | Entropy, Miles | Grad norm, Miles / OI |
+  |---|---|---|---|---|---|
+  | 4 | 0.022 / 0.012 | 0.7% / 0.1% | -0.38 / -0.42 | 0.30 | 2.2 / 0.75 |
+  | 10 | 0.078 / 0.035 | 5.9% / 2.1% | -0.44 / -0.45 | 0.48 | 2.7 / 0.56 |
+  | 14 | 0.033 / 0.078 | 0.1% / 4.9% | -0.81 / -0.59 | 0.76 | 7.3 / 0.66 |
+  | 17 | 0.184 / 0.154 | 11.0% / 9.5% | -0.90 / -0.65 | 0.92 | 2.6 / 0.97 |
+  | 25–30 | – / 0.04 | – / 2–4% | – / -0.3 to -0.5 | – | – / 0.5–0.7 |
+
+  open-instruct logs no entropy. Its run peaked around steps 16 to 22 (gap 0.16, 10% masked, teacher log-prob -0.96)
+  and settled by steps 25 to 30; its teacher KL reached 0.018 at step 30 and 0.005 at step 100.
+- **Evidence it is not a bug:** the dumped batches' reference and rollout log-probs agree on generated tokens (mean
+  |difference| 0.007, k3 0.0003 at steps 0 to 2), so the teacher weights never leaked into the reference. The
+  episodes at step 14 read coherently and solve tasks. The KL-to-base spikes (22,571 at step 3) are k3 outliers from
+  about 100 tokens per step (0.01%) whose OPD advantage is below -20, down to -36.
+- **Grad norm:** Miles' is 3 to 5 times open-instruct's from step 0. Both report it before clipping at 1.0, so Miles
+  clips every step and open-instruct rarely; under Adam a constant gradient scale barely changes the update, and the
+  learning rate is the same. The spikes relative to each run's baseline match (7.3 on about 2, 1.9 on about 0.6). Not
+  a reason to lower the learning rate.
+- **Likely driver:** the OPD term uses the rollout's student log-prob, so with up to 4 versions of staleness a
+  teacher-rejected token keeps its full negative advantage after earlier updates have lowered it. Prime-RL computes
+  the term from the trainer's live log-prob instead ([OPD across frameworks](../../docs/deep-dive/opd-across-frameworks.md)).
+- **Dump analysis (steps 0 to 89, every 5th; the CP shards rejoined per sample):**
+  - The extreme OPD advantages are a format difference. At step 0, 412 of the 501 tokens below -10 open a visible
+    preamble after `</think>` ("THOUGHT: Let me", "Now", "I", "The"), which 36% of the base student's turns have and
+    which tmax-9b never writes (log-prob about -36; the student samples them at a median of -0.8). The preamble fell to
+    6% of turns by step 5 and 0% from step 10; tokens below -10 fell from 501 (step 0) to 17 (step 10) and 0 (step 60).
+    A clip at ±5 would touch 0.22% of tokens at step 0 and none after step 20.
+  - Solved and failed trajectories carry the same per-token signal (mean reverse KL 0.011 vs 0.009 at step 89, 0.019
+    vs 0.012 at step 40), so gating OPD on success would scale down 60–78% of the signal without selecting anything.
+  - The signal is in the reasoning: `<think>` holds 60–78% of the |advantage| mass on 35–55% of the tokens, tool calls
+    20–37% on 42–64%.
+  - The grad-norm and masking bursts (steps 47, 69–72, 75) are not outliers (none below -10), not staler batches
+    (mean lag 1.3–2.4 versions vs 1.8–3.0 at quiet steps) and not one trajectory (the largest carries 1–2% of the
+    signal). Unexplained.
+  - Scripts: `opd_dump_analysis/analyze.py` in the session scratchpad.
+- **Options:** N to R in [Open decisions](#open-decisions). Open: whether the run settles by step 30 as
+  open-instruct's did.
 
 ## 2026-10-19: resume 5 dies at the first step after `iter_0000224`, three times
 
@@ -114,7 +227,7 @@ Larger directions to evaluate against the evidence below. Add yours here.
 
 ## 2026-10-17: the gateway backend at prod scale (two 4-node runs)
 
-Two runs of `prod_4node_gateway.yaml` (branch `shashank/tmax-gateway`) alongside the podman resume, to see whether
+Two runs of `prod_4node_gateway.yaml` (the gateway backend's first version, before its rework into `255d93f374` .. `1e9265bd13`) alongside the podman resume, to see whether
 the backend can be trusted at prod scale.
 
 - **v1** (`01M54060ECZQ0CN4XF1A5FZPZ6`, from 03:58): the fleet's Redis outage cost a retry (entry below). It then
@@ -157,7 +270,7 @@ the backend can be trusted at prod scale.
 ## 2026-10-17: fleet Redis outage delays the gateway prod run
 
 - **Run:** `tmax_prod4node_gateway_qwen35_9b_20261017_035830` (Beaker `01M54060ECZQ0CN4XF1A5FZPZ6`,
-  `prod_4node_gateway.yaml` on branch `shashank/tmax-gateway`), from step 0, alongside the podman run.
+  `prod_4node_gateway.yaml`, the gateway backend's first version), from step 0, alongside the podman run.
 - **What happened:** the fleet's Redis (`jupiter-cs-aus-159:29088`) stopped answering between 03:50 and 04:13 UTC and
   the head registry emptied at 04:23. The head's gateway listed no replicas, the 30-minute readiness wait ran out, and
   the first attempt exited 1 at 04:43. The fleet's owner (goncalof) recovered Redis (`redis-local-diagnose`,
@@ -266,7 +379,7 @@ the backend can be trusted at prod scale.
     `task_005427` (107 in 20 minutes) and `task_000635` (173 over the hour).
 - **Reading:** the same CPU contention as at step 16, here starving the head node's HTTP serving (router, session
   servers, agents) rather than its engines.
-- **Options:** A, B, C, E (above) and L, the gateway backend (on branch `shashank/tmax-gateway`), which takes the
+- **Options:** A, B, C, E (above) and L, the gateway backend (merged in `e961a935aa`), which takes the
   sandboxes off the nodes altogether.
 
 ## 2026-10-16: gateway backend (sandboxes on a podman fleet)
@@ -274,7 +387,7 @@ the backend can be trusted at prod scale.
 - **The idea:** open-instruct's answer to colocated podman. A separate Beaker deployment runs rootless podman
   replicas and Docker Hub mirrors that heartbeat into Redis; a LiteRegistry gateway routes each container's requests
   to the replica that owns it. The training job runs no podman.
-- **Port:** `tmax_gateway.TmaxGatewaySandbox` (branch `shashank/tmax-gateway`), behind `sandbox_backend: gateway`. It
+- **Port:** `tmax_gateway.TmaxGatewaySandbox` (`examples/tmax/tmax_gateway.py`), behind `sandbox_backend: gateway`. It
   follows open-instruct's `GatewayBackend` but talks to the gateway through literegistry's own client,
   `literegistry-podman-client`, which owns the API and its error types. It tracks the current literegistry release:
   the user's call, since the fleet is launched from that repository, so there is no handling for older ones. On

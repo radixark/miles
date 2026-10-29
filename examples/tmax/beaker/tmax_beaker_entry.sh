@@ -27,8 +27,8 @@
 #   GATEWAY_REGISTRY          the fleet's head registry, e.g. head+sqlite:///weka/.../head.sqlite3 (gateway started here)
 #   GATEWAY_URL               or an already running gateway to use as is
 #   GATEWAY_MIN_REPLICAS      podman replicas the gateway must list before training starts (default: 1)
-#   LITEREGISTRY_VERSION      the gateway's literegistry release (default: 1.0.57, the fleet's)
-#   LITEREGISTRY_PODMAN_CLIENT_VERSION   the sandboxes' client, literegistry-podman-client (default: 0.1.4)
+#   LITEREGISTRY_VERSION      the gateway's literegistry release (default: 1.0.63)
+#   LITEREGISTRY_PODMAN_CLIENT_VERSION   the sandboxes' client, literegistry-podman-client (default: 0.1.7)
 set -euxo pipefail
 
 REPO=$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)
@@ -42,6 +42,18 @@ PODMAN_TCP_PORT=23750  # worker replicas forward <port + shard> to their podman 
 cd "$REPO"
 git log -1 --format='running miles @ %H (%s)' || true
 nvidia-smi
+# CUDA forward compatibility: the Miles image is CUDA 13, and the H100 clusters' drivers are older (Ceres: 570.124.06,
+# CUDA 12.8), where torch stops at "The NVIDIA driver on your system is too old". The image ships NVIDIA's
+# cuda-compat-13-0 user-mode driver, supported on data-center GPUs over driver branches 535, 550, 565, 570 and 575 (its
+# NVIDIA_REQUIRE_CUDA), but nothing loads it: Beaker's command replaces the image's entrypoint. Put it first on the
+# library path when the host driver is older than the image's CUDA; every process started below inherits it. Holmes'
+# drivers are new enough and keep their own libcuda.
+DRIVER_CUDA_MAJOR=$(nvidia-smi | sed -n 's/.*CUDA Version: *\([0-9]*\)\..*/\1/p')
+IMAGE_CUDA_VERSION=${CUDA_VERSION:-0}  # the CUDA base image's own ENV
+if [ -d /usr/local/cuda/compat ] && [ "${DRIVER_CUDA_MAJOR:-0}" -lt "${IMAGE_CUDA_VERSION%%.*}" ]; then
+    export LD_LIBRARY_PATH=/usr/local/cuda/compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+    echo "CUDA forward compatibility: the driver supports CUDA $DRIVER_CUDA_MAJOR, the image is CUDA $IMAGE_CUDA_VERSION"
+fi
 # A node whose raylet is starved of CPU misses Ray's health checks and is declared dead, which fails the job (three
 # times on 2026-10-16/17, INVESTIGATIONS.md). Ray's default gives up after 5 missed checks (3 s apart, 10 s timeout);
 # allow about 20 minutes instead, so a stall the node recovers from does not kill the run. ray start reads these.
@@ -123,14 +135,14 @@ fi
 # from the head registry on weka, so it follows a Redis restart, and it is restarted if it exits.
 if [ "$SANDBOX_BACKEND" = gateway ] && [ "$RANK" = 0 ]; then
     # literegistry's own client: the agent processes reach the gateway through it (small: aiohttp + fire).
-    pip install -q "literegistry-podman-client==${LITEREGISTRY_PODMAN_CLIENT_VERSION:-0.1.4}"
+    pip install -q "literegistry-podman-client==${LITEREGISTRY_PODMAN_CLIENT_VERSION:-0.1.7}"
     if [ -n "${GATEWAY_REGISTRY:-}" ]; then
         # literegistry pins starlette and pulls streamlit/pandas, which the training env cannot take: its own venv.
         LR_VENV=/opt/literegistry-venv
         if command -v uv >/dev/null; then
-            uv venv -q --python "$(command -v python3)" "$LR_VENV" && uv pip install -q --python "$LR_VENV/bin/python" "literegistry==${LITEREGISTRY_VERSION:-1.0.57}"
+            uv venv -q --python "$(command -v python3)" "$LR_VENV" && uv pip install -q --python "$LR_VENV/bin/python" "literegistry==${LITEREGISTRY_VERSION:-1.0.63}"
         else
-            python3 -m venv "$LR_VENV" && "$LR_VENV/bin/pip" install -q "literegistry==${LITEREGISTRY_VERSION:-1.0.57}"
+            python3 -m venv "$LR_VENV" && "$LR_VENV/bin/pip" install -q "literegistry==${LITEREGISTRY_VERSION:-1.0.63}"
         fi
         GATEWAY_PORT=${GATEWAY_PORT:-24750}
         # On weka next to the run's checkpoints, one file per attempt, so it outlives the job (2026-10-17's stayed in
@@ -146,10 +158,15 @@ PY
         mkdir -p "$(dirname "$GATEWAY_LOG")"
         echo "literegistry gateway log: $GATEWAY_LOG"
         (
+            # Under set -e a failed redirect ended this loop, so the gateway never started (2026-10-23: weka full,
+            # three attempts lost to the 30 min replica wait). Keep restarting, and log to /tmp while weka refuses.
+            set +e
             while true; do
+                log=$GATEWAY_LOG
+                { : >> "$log"; } 2> /dev/null || log=/tmp/$(basename "$GATEWAY_LOG")
                 "$LR_VENV/bin/python" -m literegistry.gateway --registry="$GATEWAY_REGISTRY" --host=127.0.0.1 \
-                    --port="$GATEWAY_PORT" --workers="${GATEWAY_WORKERS:-8}" --register=False >> "$GATEWAY_LOG" 2>&1
-                echo "literegistry gateway exited; restarting in 5 s (log: $GATEWAY_LOG)"
+                    --port="$GATEWAY_PORT" --workers="${GATEWAY_WORKERS:-8}" --register=False >> "$log" 2>&1
+                echo "literegistry gateway exited; restarting in 5 s (log: $log)"
                 sleep 5
             done
         ) &

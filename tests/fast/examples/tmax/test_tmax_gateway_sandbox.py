@@ -1,6 +1,6 @@
 """The TMax gateway sandbox backend against a fake LiteRegistry gateway.
 
-The fake is a real HTTP server speaking literegistry 1.0.57's /affinity/* contract, driven through literegistry's own
+The fake is a real HTTP server speaking literegistry 1.0.63's /affinity/* contract, driven through literegistry's own
 client, with a tiny in-container model: the launcher exec records the command, wait execs answer with its scripted
 result, uploads decode their base64 stdin. That is enough to check the launch-then-wait protocol, chunked uploads, the
 episode logic shared with the podman backend, retries, and how a lost container ends the episode.
@@ -59,9 +59,12 @@ class FakeGateway:
         self.markerless_rounds = 0  # wait execs that answer with neither marker
         self.stopped_on_probe = False  # the `true` probe finds the container stopped
         self.fail_next: list[tuple[int, object]] = []  # (status, JSON body) for the next requests
+        self.lost_on_first_exec: set[str] = set()  # containers the fleet loses before their first exec answers
+        self.requests: list[str] = []  # every request's endpoint, failed ones included
 
     async def handle(self, request: web.Request) -> web.Response:
         payload = await request.json()
+        self.requests.append(request.match_info["op"])
         if self.fail_next:
             status, body = self.fail_next.pop(0)
             return web.json_response(body, status=status)
@@ -73,6 +76,10 @@ class FakeGateway:
             return web.json_response(
                 {"affinity_id": cid, "container_id": cid, "instance_id": "replica-1", "image": payload["image"]}
             )
+        if op == "renew":
+            if payload["affinity_id"] not in self.containers:
+                return web.json_response({"error": "strict affinity binding was not found or has expired"}, status=404)
+            return web.json_response({"status": "renewed", "expires_at": 0.0})
         if op == "close":
             self.closed.append(payload["affinity_id"])
             self.containers.pop(payload["affinity_id"], None)
@@ -81,6 +88,10 @@ class FakeGateway:
         if container is None:
             return web.json_response({"detail": "strict affinity binding was not found or has expired"}, status=404)
         if self.stopped_on_probe and payload["command"] == "true":
+            return web.json_response(SANDBOX_STOPPED, status=410)
+        if payload["affinity_id"] in self.lost_on_first_exec:
+            self.lost_on_first_exec.discard(payload["affinity_id"])
+            self.containers.pop(payload["affinity_id"])
             return web.json_response(SANDBOX_STOPPED, status=410)
         exit_code, stdout, stderr = self._exec(container, payload["command"], payload["stdin"])
         return web.json_response(
@@ -291,10 +302,24 @@ def test_transient_errors_are_retried(gateway, task_dir, monkeypatch, caplog):
     assert "(502) after" in retries[1] and "affinity_upstream_disconnected" in retries[1]
 
 
-def test_start_retries_then_gives_up(gateway, task_dir, monkeypatch):
-    gateway.fail_next = [(503, {"error": "no podman replicas"})] * (
-        tmax_gateway._HANDSHAKE_ATTEMPTS * tmax_sandbox._START_ATTEMPTS
-    )
+ADMISSION_TIMEOUT = {"code": "affinity_admission_timeout", "execution_outcome": "unknown"}
+
+
+def test_a_timed_out_handshake_is_resent(gateway, task_dir, monkeypatch):
+    gateway.fail_next = [(504, ADMISSION_TIMEOUT)]
+
+    async def episode():
+        async with tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir) as box:
+            return await box.bash("echo hi")
+
+    observation, _ = run(gateway, episode, monkeypatch)
+    assert observation.endswith("(exit_code=0)")
+    assert gateway.requests[:2] == ["handshake", "handshake"] and gateway.handshakes == 1
+
+
+def test_handshakes_give_up_after_their_attempts(gateway, task_dir, monkeypatch):
+    """A start sends at most _HANDSHAKE_ATTEMPTS handshakes: failing ones do not restart the start loop."""
+    gateway.fail_next = [(504, ADMISSION_TIMEOUT)] * tmax_gateway._HANDSHAKE_ATTEMPTS
 
     async def episode():
         async with tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir):
@@ -302,7 +327,34 @@ def test_start_retries_then_gives_up(gateway, task_dir, monkeypatch):
 
     with pytest.raises(tmax_sandbox.SandboxInfraError):
         run(gateway, episode, monkeypatch)
-    assert gateway.handshakes == 0
+    assert gateway.requests == ["handshake"] * tmax_gateway._HANDSHAKE_ATTEMPTS
+
+
+def test_keepalive_renews_the_binding_without_running_a_command(gateway, task_dir, monkeypatch):
+    monkeypatch.setenv("TMAX_GATEWAY_KEEPALIVE_S", "0.05")
+
+    async def idle_episode():
+        async with tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir):
+            execs = gateway.requests.count("podman")
+            await asyncio.sleep(0.4)  # a long generation: no commands
+            return execs
+
+    execs_before_idle = run(gateway, idle_episode, monkeypatch)
+    assert gateway.requests.count("renew") >= 2
+    assert gateway.requests.count("podman") == execs_before_idle, "the keepalive ran nothing in the container"
+
+
+def test_a_container_lost_while_starting_is_replaced(gateway, task_dir, monkeypatch):
+    gateway.lost_on_first_exec = {"container0001"}
+
+    async def episode():
+        async with tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir) as box:
+            return await box.bash("echo hi")
+
+    observation, _ = run(gateway, episode, monkeypatch)
+    assert observation.endswith("(exit_code=0)")
+    # The fleet already removed the lost container, so only its replacement is closed.
+    assert gateway.handshakes == 2 and gateway.closed == ["container0002"]
 
 
 def test_abort_closes_live_containers(gateway, task_dir, monkeypatch):
@@ -327,7 +379,10 @@ def test_job_exit_closes_every_rollout_process_containers(gateway, task_dir, mon
         monkeypatch.setenv(rollout_limits.SCOPE_ENV_VAR, "another-rollout-process")
         second = tmax_gateway.TmaxGatewaySandbox(image="img:1", task_dir=task_dir)
         await second.__aenter__()
-        return await tmax_gateway.close_all_live_sandboxes(timeout_s=10)
+        closed = await tmax_gateway.close_all_live_sandboxes(timeout_s=10)
+        for box in (first, second):  # the processes' own HTTP pools, which a killed process never closes
+            await box._client.aclose()
+        return closed
 
     assert run(gateway, two_rollout_processes, monkeypatch) == 2
     assert sorted(gateway.closed) == ["container0001", "container0002"] and not gateway.containers
