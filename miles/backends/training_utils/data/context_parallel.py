@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import torch
@@ -402,6 +403,102 @@ def all_gather_with_cp(
     return full_tensor
 
 
+@dataclass(frozen=True)
+class CPLayout:
+    """Which token positions of each sequence in a micro batch this context-parallel rank holds.
+
+    A sequence is split on its own: into ``2 * cp_size`` chunks under zigzag CP, rank ``r`` holding
+    chunks ``r`` and ``2 * cp_size - 1 - r``, or into ``cp_size`` contiguous pieces otherwise. Under
+    thd all-gather CP the micro batch's sequences are concatenated and the concatenation is split
+    into contiguous pieces instead. :meth:`build` derives the layout from ``qkv_format`` and
+    ``allgather_cp``.
+    """
+
+    cp_rank: int
+    cp_size: int
+    zigzag: bool
+    max_seq_len: int | None  # bshd: every sequence is padded to this length before the split
+    pack_multiple: int | None  # thd all-gather CP: the concatenation is padded to a multiple of this
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        qkv_format: str,
+        allgather_cp: bool,
+        cp_rank: int,
+        cp_size: int,
+        max_seq_len: int | None = None,
+        pad_size: int | None = None,
+    ) -> "CPLayout":
+        if qkv_format == "bshd":
+            assert max_seq_len is not None
+            if allgather_cp:
+                assert max_seq_len % cp_size == 0, f"max_seq_len {max_seq_len} not divisible by cp_size {cp_size}"
+        per_pack = qkv_format == "thd" and allgather_cp and cp_size > 1
+        if per_pack:
+            assert pad_size is not None, "thd all-gather CP pads the concatenation to a multiple of cp_size * pad_size"
+        return cls(
+            cp_rank=cp_rank,
+            cp_size=cp_size,
+            zigzag=cp_size > 1 and not allgather_cp,
+            max_seq_len=max_seq_len if qkv_format == "bshd" else None,
+            pack_multiple=cp_size * pad_size if per_pack else None,
+        )
+
+    @property
+    def per_pack(self) -> bool:
+        """Whether the micro batch's sequences are concatenated and split once (thd all-gather CP)."""
+        return self.pack_multiple is not None
+
+    def local_ranges(self, lengths: Sequence[int]) -> list[tuple[tuple[int, int], ...]]:
+        """Per sequence, the half-open position ranges this rank holds, in local order.
+
+        Positions at or past a sequence's length are padding; under thd all-gather CP the padding
+        that ends the concatenation belongs to its last sequence.
+        """
+        if not self.per_pack:
+            return [self._split(self.max_seq_len if self.max_seq_len is not None else n) for n in lengths]
+        padded = -(-sum(lengths) // self.pack_multiple) * self.pack_multiple
+        ((piece_start, piece_end),) = self._split(padded)
+        ranges = []
+        start = 0
+        for i, length in enumerate(lengths):
+            end = padded if i == len(lengths) - 1 else start + length
+            lo, hi = max(piece_start, start), min(piece_end, end)
+            ranges.append(((lo - start, hi - start),) if lo < hi else ((0, 0),))
+            start += length
+        return ranges
+
+    def _split(self, length: int) -> tuple[tuple[int, int], ...]:
+        rank = self.cp_rank
+        if self.zigzag:
+            chunk = -(-length // (2 * self.cp_size))
+            back = 2 * self.cp_size - 1 - rank
+            return ((chunk * rank, chunk * (rank + 1)), (chunk * back, chunk * (back + 1)))
+        piece = length // self.cp_size
+        return ((piece * rank, piece * (rank + 1)),)
+
+
+def take_ranges(
+    tensor: torch.Tensor, ranges: Sequence[tuple[int, int]], pad_value: int | float | Callable
+) -> torch.Tensor:
+    """Concatenate the rows of ``tensor`` in ``ranges`` along dim 0; rows past its end are padding.
+
+    ``pad_value`` is a fill value, or a function ``(tensor, num_rows) -> tensor`` that appends
+    ``num_rows`` rows of padding.
+    """
+    end = max(stop for _, stop in ranges)
+    if end > tensor.size(0):
+        pad = end - tensor.size(0)
+        if callable(pad_value):
+            tensor = pad_value(tensor, pad)
+        else:
+            tensor = F.pad(tensor, (0, 0) * (tensor.dim() - 1) + (0, pad), value=pad_value)
+    pieces = [tensor[start:stop] for start, stop in ranges]
+    return pieces[0] if len(pieces) == 1 else torch.cat(pieces)
+
+
 def slice_with_cp(
     tokens: torch.Tensor,
     pad_value: tuple[int, float, Callable],
@@ -414,42 +511,15 @@ def slice_with_cp(
     """
     if parallel_state is None:
         parallel_state = get_parallel_state()
-    cp_rank = parallel_state.cp.rank
-    cp_size = parallel_state.cp.size
-
-    if qkv_format == "bshd":
-        assert max_seq_len is not None
-
-    def pad_tokens(tokens, pad):
-        if isinstance(pad_value, Callable):
-            pad_func = pad_value
-            tokens = pad_func(tokens, pad)
-        else:
-            # pad on the first dimension
-            pad_tuple = (0, 0) * (tokens.dim() - 1) + (0, pad)
-            tokens = F.pad(tokens, pad_tuple, value=pad_value)
-        return tokens
-
-    if cp_size == 1:
-        if qkv_format == "bshd":
-            pad = max_seq_len - tokens.size(0)
-            tokens = pad_tokens(tokens, pad)
-        return tokens
-
-    token_len = len(tokens)
-    if qkv_format == "thd":
-        chunk_size = (token_len + 2 * cp_size - 1) // (2 * cp_size)
-    else:
-        chunk_size = (max_seq_len + 2 * cp_size - 1) // (2 * cp_size)
-
-    # pad
-    pad = 2 * cp_size * chunk_size - token_len
-    tokens = pad_tokens(tokens, pad)
-
-    # get 2 chunk for thd cp
-    start_1, end_1 = chunk_size * cp_rank, chunk_size * (cp_rank + 1)
-    start_2, end_2 = chunk_size * (2 * cp_size - cp_rank - 1), chunk_size * (2 * cp_size - cp_rank)
-    return torch.cat([tokens[start_1:end_1], tokens[start_2:end_2]])
+    layout = CPLayout.build(
+        qkv_format=qkv_format,
+        allgather_cp=False,
+        cp_rank=parallel_state.cp.rank,
+        cp_size=parallel_state.cp.size,
+        max_seq_len=max_seq_len,
+    )
+    (ranges,) = layout.local_ranges([tokens.size(0)])
+    return take_ranges(tokens, ranges, pad_value)
 
 
 def natural_to_zigzag_slice(tensor: torch.Tensor, dim: int, cp_size: int, cp_rank: int) -> torch.Tensor:
