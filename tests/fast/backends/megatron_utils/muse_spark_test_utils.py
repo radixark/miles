@@ -3,8 +3,9 @@
 import torch
 from megatron.core.transformer.enums import AttnBackend
 
-from miles_plugins.models.muse_spark.config import MuseSpark1xTransformerConfig, map_to_megatron_fields
+from miles_plugins.models.muse_spark.config import map_to_megatron_fields
 from miles_plugins.models.muse_spark.provider import validate_model_config
+from miles_plugins.models.muse_spark.transformer_config import MuseSpark1xTransformerConfig
 
 _RUNTIME_FIELDS = frozenset(
     {

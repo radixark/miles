@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from typing import Any
 
 import torch.nn.functional as F
-from megatron.core.transformer.transformer_config import TransformerConfig
 
 from miles_plugins.models.muse_spark.ops.norms import calculate_gain_center
 
@@ -651,8 +650,3 @@ def map_to_megatron_fields(config: MuseSpark1xConfig) -> dict[str, Any]:
         "expert_tensor_parallel_size": 1,
         "use_mup": False,
     }
-
-
-@dataclass
-class MuseSpark1xTransformerConfig(TransformerConfig):
-    spark: MuseSpark1xConfig = field(default_factory=MuseSpark1xConfig)

@@ -9,12 +9,9 @@ from megatron.core.transformer.enums import AttnBackend
 from megatron.training import get_args
 from megatron.training.arguments import core_transformer_config_from_args
 
-from miles_plugins.models.muse_spark.config import (
-    MuseSpark1xTransformerConfig,
-    map_to_megatron_fields,
-    parse_muse_spark_1x_config,
-)
+from miles_plugins.models.muse_spark.config import map_to_megatron_fields, parse_muse_spark_1x_config
 from miles_plugins.models.muse_spark.model import MuseSpark1xGPTModel
+from miles_plugins.models.muse_spark.transformer_config import MuseSpark1xTransformerConfig
 
 _UNSUPPORTED_CONFIG_FIELDS = (
     "fp8",
