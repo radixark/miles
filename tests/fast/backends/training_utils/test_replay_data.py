@@ -18,6 +18,10 @@ class _Replay:
         self.stream_idx = stream_idx
         self.recorded = []
 
+    @property
+    def top_indices_list(self):
+        return self.recorded
+
     def record(self, value):
         self.recorded.append(value)
 
@@ -292,6 +296,41 @@ def test_attach_fills_micro_batches_in_the_iterator_order(monkeypatch, schedule,
 
     assert [entry[:, 0].tolist() for entry in replay.recorded] == expected
     assert "routes" not in rollout_data
+
+
+def test_attach_aligns_each_recorded_entry_once(monkeypatch):
+    state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
+    monkeypatch.setattr(parallel, "_parallel_state", state)
+    args = SimpleNamespace(
+        qkv_format="thd",
+        allgather_cp=False,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=False),
+        data_pad_size_multiplier=1,
+        save_debug_train_data=None,
+    )
+    rollout_data = {
+        "routes": [torch.tensor([0, 1]).reshape(2, 1, 1), torch.tensor([2, 3]).reshape(2, 1, 1)],
+        "tokens": [torch.arange(3), torch.arange(3)],
+        "max_seq_lens": None,
+    }
+    replays = [_Replay(stream_idx=0), _Replay(stream_idx=0)]
+
+    def append_pad_row(entry, pad_value):
+        return torch.cat([entry, entry.new_full((1, *entry.shape[1:]), pad_value)])
+
+    attach_replay_data(
+        _manager(replays),
+        args=args,
+        models=None,
+        data_iterator=[DataIterator(rollout_data, micro_batch_size=1)],
+        num_microbatches=[2],
+        rollout_data=rollout_data,
+        align=append_pad_row,
+    )
+
+    for replay in replays:
+        assert [entry[:, 0].tolist() for entry in replay.recorded] == [[0, 1, -1, -1], [2, 3, -1, -1]]
 
 
 class TestNativeReplayOwnership:
