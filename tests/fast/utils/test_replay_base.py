@@ -182,3 +182,33 @@ def test_staged_ids_compile_once_under_activation_checkpointing(monkeypatch):
 
     assert counter.frame_count == 1, f"{counter.frame_count} compiles for {len(ids)} microbatches"
     assert [replay.backward_index for replay in replays] == [0, 0, 0]
+
+
+def test_fill_through_fills_each_micro_batch_once_up_to_the_cursor():
+    manager = BaseReplayManager()
+    filled = []
+    manager.attach(filled.append)
+
+    manager.fill_through(1)
+    manager.fill_through(0)
+    manager.fill_through(2)
+
+    assert filled == [0, 1, 2]
+
+
+def test_attach_and_clear_all_drop_the_previous_source_and_entries():
+    manager = BaseReplayManager()
+    replay = manager.create_replay()
+    replay.top_indices_list = [torch.zeros(1)]
+    first, second = [], []
+
+    manager.attach(first.append)
+    assert replay.top_indices_list == []
+    manager.fill_through(0)
+    manager.attach(second.append)
+    manager.fill_through(1)
+    manager.clear_all()
+    manager.fill_through(2)
+
+    assert first == [0]
+    assert second == [0, 1]

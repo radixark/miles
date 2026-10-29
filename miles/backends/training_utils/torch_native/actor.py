@@ -228,7 +228,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         """The passes before the optimizer steps: ref and actor log-probs, then advantages."""
         data_iterators, num_microbatches = get_data_iterator(self.args, self.model_parts, rollout_data)
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
-        routing_replay.fill(
+        routing_replay.attach(
             self.args,
             self.model_parts,
             data_iterators,

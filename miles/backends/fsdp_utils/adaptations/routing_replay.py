@@ -6,7 +6,7 @@ registered as a replay stream keyed by global decoder-layer index, the axis the 
 ``[tokens, num_layers, topk]`` uses.
 
 This module owns every R3 concern the actor needs: setup (``enable``, ``install``), per-rollout
-data loading (``fill``), and stage control (``stage``, ``rewind``, ``reset``). The actor holds
+data loading (``attach``), and stage control (``stage``, ``rewind``, ``reset``). The actor holds
 only call sites and never touches ``routing_replay_manager`` directly.
 """
 
@@ -22,8 +22,8 @@ from miles.backends.training_utils.replay.routing_replay import (
     RECORD,
     REPLAY_BACKWARD,
     REPLAY_FORWARD,
+    attach,
     enable,
-    fill,
     log_prob_stage,
     reset,
     rewind,
@@ -109,8 +109,8 @@ __all__ = [
     "RECORD",
     "REPLAY_BACKWARD",
     "REPLAY_FORWARD",
+    "attach",
     "enable",
-    "fill",
     "install",
     "log_prob_stage",
     "reset",
