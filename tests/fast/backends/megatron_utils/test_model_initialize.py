@@ -166,14 +166,14 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
     stack.enter_context(patch("miles.backends.megatron_utils.model.check_model_hashes"))
 
 
-def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
+def _initialize_with_scheduler(**overrides) -> MagicMock:
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
     args = make_trainer_config(
-        use_checkpoint_opt_param_scheduler=True,
         global_batch_size=8,
         finetune=False,
         pretrained_checkpoint="/checkpoint",
+        **overrides,
     )
     model = [_FakeModelChunk()]
     optimizer = object()
@@ -196,40 +196,25 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
         opt_param_scheduler,
         LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
     )
-    opt_param_scheduler.step.assert_not_called()
+    return opt_param_scheduler
 
 
-def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
-    from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
+@pytest.mark.parametrize("use_checkpoint_opt_param_scheduler", [True, False])
+def test_initialize_does_not_step_scheduler_restored_from_checkpoint(use_checkpoint_opt_param_scheduler):
+    """Megatron restores the step count with the optimizer, whichever scheduler settings win."""
+    scheduler = _initialize_with_scheduler(use_checkpoint_opt_param_scheduler=use_checkpoint_opt_param_scheduler)
 
-    args = make_trainer_config(
-        use_checkpoint_opt_param_scheduler=False,
-        global_batch_size=8,
-        finetune=False,
-        pretrained_checkpoint="/checkpoint",
+    scheduler.step.assert_not_called()
+
+
+@pytest.mark.parametrize("use_checkpoint_opt_param_scheduler", [True, False])
+def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it(use_checkpoint_opt_param_scheduler):
+    """--no-load-optim skips the scheduler state, so the step count is rebuilt from the iteration."""
+    scheduler = _initialize_with_scheduler(
+        use_checkpoint_opt_param_scheduler=use_checkpoint_opt_param_scheduler, no_load_optim=True
     )
-    model = [_FakeModelChunk()]
-    optimizer = object()
-    opt_param_scheduler = MagicMock()
 
-    with ExitStack() as stack:
-        stack.enter_context(
-            patch(
-                "miles.backends.megatron_utils.model.setup_model_and_optimizer",
-                return_value=(model, optimizer, opt_param_scheduler),
-            )
-        )
-        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True)))
-        _patch_initialize_side_effects(stack)
-        result = initialize_model_and_optimizer(args, resume_from_ckpt=True)
-
-    assert result == (
-        model,
-        optimizer,
-        opt_param_scheduler,
-        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
-    )
-    opt_param_scheduler.step.assert_called_once_with(increment=800)
+    scheduler.step.assert_called_once_with(increment=800)
 
 
 def _load_model_state_with(

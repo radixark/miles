@@ -1055,11 +1055,16 @@ def load_model_state(
                 args=args,
                 skip_load_to_model_and_opt=False,
             )
+        # MCore loads scheduler state with the optimizer state, and its load_state_dict
+        # replays the saved step count whatever use_checkpoint_opt_param_scheduler says;
+        # that flag only picks which scheduler settings win.
+        scheduler_restored = restored_trained_iteration and not args.backend.no_load_optim
     else:
         if is_first_replica_megatron_main_rank():
             logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
         iteration = 0
         restored_trained_iteration = not args.backend.finetune
+        scheduler_restored = False
 
     adapter_iteration = None
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
@@ -1069,15 +1074,14 @@ def load_model_state(
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True
+            scheduler_restored = True
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()
 
     check_model_hashes(args, model, iteration)
 
-    # Megatron checkpoint loads can restore scheduler state directly. In that
-    # case, stepping by the checkpoint iteration here would double-count.
-    if opt_param_scheduler is not None and not (args.backend.use_checkpoint_opt_param_scheduler and iteration > 0):
+    if opt_param_scheduler is not None and not scheduler_restored:
         opt_param_scheduler.step(increment=iteration * args.backend.global_batch_size)
 
     if not restored_trained_iteration:
