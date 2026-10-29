@@ -1,5 +1,7 @@
 import asyncio
 import builtins
+import os
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -380,6 +382,42 @@ class TestEnvironmentVariables:
             env_vars["NVSHMEM_DISABLE_NCCL"],
             env_vars["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"],
         ) == ("1", "0", "1")
+
+    def test_the_inductor_compile_pool_is_kept_alive_by_default(self, monkeypatch):
+        """A quiesced Inductor pool is forked anew on the next compile, and a subprocess forked then can deadlock."""
+        monkeypatch.delenv("TORCHINDUCTOR_QUIESCE_ASYNC_COMPILE_POOL", raising=False)
+
+        (spec,) = specs_trainer(_make_args())
+
+        assert spec.env_var(_make_context())["TORCHINDUCTOR_QUIESCE_ASYNC_COMPILE_POOL"] == "0"
+
+    def test_the_inductor_compile_pool_default_can_be_overridden(self, monkeypatch):
+        """Both the launcher environment and --train-env-vars can turn quiescing back on."""
+        monkeypatch.setenv("TORCHINDUCTOR_QUIESCE_ASYNC_COMPILE_POOL", "1")
+        (from_env,) = specs_trainer(_make_args())
+        assert from_env.env_var(_make_context())["TORCHINDUCTOR_QUIESCE_ASYNC_COMPILE_POOL"] == "1"
+
+        monkeypatch.delenv("TORCHINDUCTOR_QUIESCE_ASYNC_COMPILE_POOL")
+        (from_flag,) = specs_trainer(_make_args(train_env_vars={"TORCHINDUCTOR_QUIESCE_ASYNC_COMPILE_POOL": "1"}))
+        assert from_flag.env_var(_make_context())["TORCHINDUCTOR_QUIESCE_ASYNC_COMPILE_POOL"] == "1"
+
+    def test_torch_turns_compile_pool_quiescing_off_for_the_trainer_value(self):
+        """Guards the variable name: torch must read the value the trainer gets as "do not quiesce"."""
+        code = (
+            "try:\n"
+            "    import torch._inductor.config as c\n"
+            "except ImportError:\n"
+            "    print('absent')\n"
+            "else:\n"
+            "    print(getattr(c, 'quiesce_async_compile_pool', 'absent'))\n"
+        )
+        env = {**os.environ, "TORCHINDUCTOR_QUIESCE_ASYNC_COMPILE_POOL": "0"}
+        out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True)
+        value = out.stdout.strip().splitlines()[-1]
+        if value == "absent":
+            pytest.skip("no torch with Inductor compile-pool quiescing installed")
+
+        assert value == "False"
 
     def test_the_fp8_scaling_default_is_captured_when_the_spec_is_built(self, monkeypatch):
         """The environment is rendered later inside the gpu-less worker manager, which would decide the wrong default."""
