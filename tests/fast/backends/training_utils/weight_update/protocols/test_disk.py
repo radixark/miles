@@ -86,7 +86,7 @@ def _write(protocol: UpdateWeightFromDisk, monkeypatch: pytest.MonkeyPatch, *, r
     _use_dist(monkeypatch, _FakeDist(rank, world_size=2))
     protocol.begin_sync(weight_version, iter_buckets=None)
     for bucket in _BUCKETS:
-        protocol.send_bucket(bucket)
+        protocol.send_bucket(list(bucket))
     protocol.after_base_weights()
 
 
