@@ -65,8 +65,6 @@ def validate_torchtitan_args(args) -> None:
         raise ValueError(
             "torchtitan's LR schedule takes --lr-warmup-iters only; fraction, WSD and decay-iters are unsupported"
         )
-    if args.save_debug_train_data is not None:
-        raise ValueError("--save-debug-train-data is not wired up for the torchtitan backend")
     if args.use_routing_replay and not args.use_rollout_routing_replay and not current_platform.dynamic_shapes:
         raise ValueError(
             "--use-routing-replay without --use-rollout-routing-replay records the ids inside a compiled block, which "

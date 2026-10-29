@@ -64,6 +64,7 @@ class _Provider(TorchNativeTrainRayActor):
             qkv_format="thd",
             ci_test=False,
             use_sampling_support_replay=False,
+            save_debug_train_data=None,
         )
         self.model_parts = [MagicMock()]
         self.optimizers = [object()]
@@ -136,6 +137,19 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
     assert step["steps"] == [actor.runner]
     assert rollout_data == {"ref_log_probs": [1], "log_probs": [1], "adv": True}
     assert step["replay"].fill.call_args.kwargs["align"] is actor.align_token_side_channel
+
+
+@pytest.mark.parametrize("dumps_train_data", [True, False])
+def test_only_a_rank_that_owns_its_rollout_slice_dumps_train_data(step, monkeypatch, dumps_train_data):
+    """torchtitan's CP peers share one rollout, so only one of them writes the dump."""
+    dump = MagicMock()
+    monkeypatch.setattr(base_module.train_dump, "save_debug_train_data", dump)
+    actor = _Provider()
+    actor.dumps_train_data = dumps_train_data
+
+    actor._train_core(rollout_id=3, rollout_data={})
+
+    assert dump.called == dumps_train_data
 
 
 _VOCAB_SIZE = 11
