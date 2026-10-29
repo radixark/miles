@@ -7,14 +7,11 @@ from fla.modules.fused_norm_gate import rms_norm_gated
 from fla.ops.kda import chunk_kda
 from fla.ops.kda.gate import fused_kda_gate
 from torch import nn
-from torch.distributed.tensor import DTensor
-from torchtitan.models.common.attention import VarlenMetadata
-from torchtitan.models.common.feed_forward import FeedForward
+from torchtitan.models.base.module import Module
+from torchtitan.models.common.activation import BinaryActivationFn
 from torchtitan.models.common.linear import Linear
-from torchtitan.models.common.moe import GroupedExperts
-from torchtitan.protocols.module import Module
 
-from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import PackedSequence
+from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import DocumentOffsets, PackedSequence
 from miles.kernels.attention.dsa import sparse_attention
 from miles.kernels.attention.dsa.kpool import build_pooled_keys, pool_boundaries
 from miles_plugins.models.glm5_next.ops.kpool_indexer import kpool_select_topk
@@ -61,42 +58,19 @@ class Glm5NextLayerNorm(Module):
         return F.layer_norm(x.float(), (x.shape[-1],), self.weight.float(), self.bias.float(), self.eps)
 
 
-def _clamped_swiglu(gate: torch.Tensor, up: torch.Tensor, limit: float) -> torch.Tensor:
-    return F.silu(gate.clamp(max=limit)) * up.clamp(min=-limit, max=limit)
+class ClampedSwiGLU(BinaryActivationFn):
+    """GLM's SwiGLU: gate clamped from above and up clamped to ``[-limit, limit]`` (torchtitan's ClampedSwiGLU is
+    GPT-OSS's, with a scaled sigmoid and ``up + 1``)."""
 
-
-class ClampedFeedForward(FeedForward):
     @dataclass(kw_only=True, slots=True)
-    class Config(FeedForward.Config):
+    class Config(BinaryActivationFn.Config):
         swiglu_limit: float
 
-    def __init__(self, config: Config):
-        super().__init__(config)
-        self.swiglu_limit = config.swiglu_limit
+    def __init__(self, config: Config) -> None:
+        self.limit = config.swiglu_limit
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w2(_clamped_swiglu(self.w1(x), self.w3(x), self.swiglu_limit))
-
-
-class ClampedGroupedExperts(GroupedExperts):
-    @dataclass(kw_only=True, slots=True)
-    class Config(GroupedExperts.Config):
-        swiglu_limit: float
-
-    def __init__(self, config: Config):
-        super().__init__(config)
-        self.swiglu_limit = config.swiglu_limit
-
-    def forward(self, x_RD: torch.Tensor, num_tokens_per_expert_E: torch.Tensor) -> torch.Tensor:
-        w1_EFD, w2_EDF, w3_EFD = (
-            w.to_local() if isinstance(w, DTensor) else w for w in (self.w1_EFD, self.w2_EDF, self.w3_EFD)
-        )
-        offsets_E = torch.cumsum(num_tokens_per_expert_E, dim=0, dtype=torch.int32)
-        x_RD_bf16 = x_RD.bfloat16()
-        gate_RF = self._grouped_mm(A=x_RD_bf16, B_t=w1_EFD.bfloat16().transpose(-2, -1), offs=offsets_E)
-        up_RF = self._grouped_mm(A=x_RD_bf16, B_t=w3_EFD.bfloat16().transpose(-2, -1), offs=offsets_E)
-        h_RF = _clamped_swiglu(gate_RF, up_RF, self.swiglu_limit)
-        return self._grouped_mm(A=h_RF, B_t=w2_EDF.bfloat16().transpose(-2, -1), offs=offsets_E).type_as(x_RD)
+    def _activation_fn(self, gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+        return F.silu(gate.clamp(max=self.limit)) * up.clamp(min=-self.limit, max=self.limit)
 
 
 def _sinkhorn(logits: torch.Tensor, num_iterations: int, eps: float) -> torch.Tensor:
@@ -133,9 +107,9 @@ class HyperConnection(Module):
         nn.init.zeros_(self.base)
         nn.init.zeros_(self.scale)
 
-    def forward(self, x_BLND: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x_TND: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         n = self.num_streams
-        streams = x_BLND.float()
+        streams = x_TND.float()
         flat = streams.flatten(-2)
         rms = torch.rsqrt(flat.pow(2).mean(dim=-1, keepdim=True) + self.norm_eps)
         alpha = torch.cat(
@@ -145,15 +119,15 @@ class HyperConnection(Module):
         h_pre = logits[..., :n].sigmoid() + self.eps
         h_post = logits[..., n : 2 * n].sigmoid() * 2
         h_res = _sinkhorn(logits[..., 2 * n :].unflatten(-1, (n, n)), self.sinkhorn_iterations, self.eps)
-        aggregated = (streams * h_pre.unsqueeze(-1)).sum(dim=-2).to(x_BLND.dtype)
+        aggregated = (streams * h_pre.unsqueeze(-1)).sum(dim=-2).to(x_TND.dtype)
         return aggregated, h_post, h_res
 
 
 def update_residual_streams(
-    layer_out_BLD: torch.Tensor, streams_BLND: torch.Tensor, h_post: torch.Tensor, h_res: torch.Tensor
+    layer_out_TD: torch.Tensor, streams_TND: torch.Tensor, h_post: torch.Tensor, h_res: torch.Tensor
 ) -> torch.Tensor:
-    mixed = torch.einsum("blij,blic->bljc", h_res, streams_BLND.float())
-    return (mixed + h_post.unsqueeze(-1) * layer_out_BLD.float().unsqueeze(-2)).to(streams_BLND.dtype)
+    mixed = torch.einsum("tij,tic->tjc", h_res, streams_TND.float())
+    return (mixed + h_post.unsqueeze(-1) * layer_out_TD.float().unsqueeze(-2)).to(streams_TND.dtype)
 
 
 class ShortConv(Module):
@@ -227,7 +201,7 @@ class GatedRMSNorm(Module):
         return rms_norm_gated(x, gate, self.weight, None, activation="sigmoid", eps=self.eps)
 
 
-def _cu_seqlens(masks: VarlenMetadata) -> tuple[torch.Tensor, torch.Tensor]:
+def _cu_seqlens(masks: DocumentOffsets) -> tuple[torch.Tensor, torch.Tensor]:
     # fla caches varlen helpers by tensor identity; a fresh tensor keeps forward and AC recompute aligned
     cu_seqlens = masks.cu_seq_q.clone()
     cu_seqlens_cpu = torch.tensor(masks.cu_seq_q_host, dtype=cu_seqlens.dtype)
@@ -273,16 +247,17 @@ class KimiDeltaAttention(Module):
         self.o_norm = config.o_norm.build()
         self.o_proj = config.o_proj.build()
 
-    def forward(self, x_BLD: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
+    def forward(self, x_TD: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
+        x_BLD = x_TD.unsqueeze(0)
         if sequence.cp_layout is None:
             cu_seqlens, cu_seqlens_cpu = _cu_seqlens(sequence.masks)
-            return self._forward_shard(x_BLD, cu_seqlens=cu_seqlens, cu_seqlens_cpu=cu_seqlens_cpu, cp_context=None)
-        cp_context = sequence.kda_cp_context
-        contiguous = sequence.to_contiguous(x_BLD.squeeze(0)).unsqueeze(0)
-        out = self._forward_shard(
-            contiguous, cu_seqlens=cp_context.cu_seqlens, cu_seqlens_cpu=None, cp_context=cp_context
-        )
-        return sequence.from_contiguous(out.squeeze(0)).unsqueeze(0)
+            out = self._forward_shard(x_BLD, cu_seqlens=cu_seqlens, cu_seqlens_cpu=cu_seqlens_cpu, cp_context=None)
+        else:
+            cp_context = sequence.kda_cp_context
+            out = self._forward_shard(
+                x_BLD, cu_seqlens=cp_context.cu_seqlens, cu_seqlens_cpu=None, cp_context=cp_context
+            )
+        return out.squeeze(0)
 
     def _forward_shard(self, x_BLD: torch.Tensor, *, cu_seqlens, cu_seqlens_cpu, cp_context) -> torch.Tensor:
         heads = (self.num_heads, self.head_dim)
@@ -394,8 +369,7 @@ class DSAAttention(Module):
         self.o_proj = config.o_proj.build()
         self.indexer = config.indexer.build()
 
-    def forward(self, x_BLD: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
-        x_TD = x_BLD.squeeze(0)
+    def forward(self, x_TD: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
         q_lora = self.q_norm(self.wq_a(x_TD))
         q = self.wq_b(q_lora).unflatten(-1, (self.n_heads, self.qk_head_dim))
         latent_kv = sequence.gather_tokens(self.kv_norm(self.wkv_a(x_TD)))
@@ -414,4 +388,4 @@ class DSAAttention(Module):
             d_v=self.kv_lora_rank,
         ).squeeze(0)
         out = torch.einsum("thm,hdm->thd", out, w_vc.to(out.dtype))
-        return self.o_proj(out.flatten(-2)).unsqueeze(0)
+        return self.o_proj(out.flatten(-2))
