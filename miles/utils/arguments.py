@@ -1785,7 +1785,9 @@ def validate_compile_warmup(args) -> None:
     if args.train_backend != "torchtitan":
         raise ValueError(f"{option} only supports --train-backend torchtitan")
     if not args.use_dynamic_batch_size:
-        raise ValueError(f"{option} packs each DP rank's samples into one microbatch: it needs --use-dynamic-batch-size")
+        raise ValueError(
+            f"{option} packs each DP rank's samples into one microbatch: it needs --use-dynamic-batch-size"
+        )
     incompatible_options = [
         name
         for name, enabled in (
