@@ -40,6 +40,7 @@ from miles.utils.processing_utils import (
 from miles.utils.types import Sample
 
 from .generate_utils.generate_endpoint_utils import (
+    apply_sample_max_response_len,
     compute_routing_headers,
     get_indexer_topk_from_response,
     policy_uses_routing_key,
@@ -327,6 +328,7 @@ async def generate_and_rm(
         return sample
 
     state = GenerateState(args)
+    sampling_params = apply_sample_max_response_len(sampling_params, sample)
 
     # dashboard lifecycle probe (design §18.3): the semaphore wait IS the
     # queue; attempt_end fires once generation is over, before reward

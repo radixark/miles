@@ -66,6 +66,28 @@ def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
     return None
 
 
+def apply_sample_max_response_len(sampling_params: dict[str, Any], sample: Sample) -> dict[str, Any]:
+    """Return the sampling params with `sample.max_response_len` as `max_new_tokens`.
+
+    The incoming `max_new_tokens` sizes training memory and packing, so a sample may only lower it;
+    a larger value raises instead of being clamped.
+    """
+    if (limit := sample.max_response_len) is None:
+        return sampling_params
+    upper_bound = sampling_params.get("max_new_tokens")
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or limit < 1
+        or (upper_bound is not None and limit > upper_bound)
+    ):
+        raise ValueError(
+            f"sample (index={sample.index}) max_response_len={limit!r} must be an int in [1, {upper_bound}], "
+            "the run's max_new_tokens"
+        )
+    return {**sampling_params, "max_new_tokens": limit}
+
+
 def compute_request_payload(
     args,
     input_ids: list[int],
