@@ -1300,6 +1300,20 @@ def miles_validate_args(args):
         ), "--update-weight-transfer-mode shm needs each rollout engine on one node"
         # untested with pipeline-parallel engines
         assert args.sglang_pp_size == 1, "--update-weight-transfer-mode shm does not support --sglang-pp-size > 1"
+    if args.update_weight_transfer_mode == "tpu-sync":
+        assert (
+            args.train_backend == "torchtitan"
+        ), "--update-weight-transfer-mode tpu-sync needs --train-backend torchtitan"
+        assert not args.colocate, "--update-weight-transfer-mode tpu-sync needs disaggregated engines; drop --colocate"
+        assert args.lora_rank <= 0, "LoRA weight sync is not supported for --update-weight-transfer-mode tpu-sync"
+        assert (
+            args.prefill_num_servers is None
+        ), "--update-weight-transfer-mode tpu-sync has not been tested when PD is enabled"
+        # the engine receives target weights only; a draft would keep its startup weights
+        assert (
+            args.sglang_speculative_algorithm is None
+        ), "--update-weight-transfer-mode tpu-sync does not sync speculative draft models"
+        assert args.sglang_pp_size == 1, "--update-weight-transfer-mode tpu-sync does not support --sglang-pp-size > 1"
     if args.update_weight_transfer_mode == "disk":
         # /update_weights_from_disk reloads the draft model from the same directory, which has no draft weights
         assert args.sglang_speculative_algorithm is None or args.enable_mtp_training, (

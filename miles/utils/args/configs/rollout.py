@@ -6,7 +6,7 @@ from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.object_store_config import ObjectStoreBackend
 
-UPDATE_WEIGHT_TRANSFER_MODES = ("broadcast", "broadcast_packed", "p2p", "disk-delta", "disk", "shm")
+UPDATE_WEIGHT_TRANSFER_MODES = ("broadcast", "broadcast_packed", "p2p", "disk-delta", "disk", "shm", "tpu-sync")
 
 
 # rollout
@@ -263,7 +263,9 @@ class RolloutRelatedConfig(BaseConfig):
                 "the engines reload it via /update_weights_from_disk; it needs no NCCL, CUDA IPC or "
                 "/pull_weights, so it works with engines on another accelerator stack (e.g. TPU). "
                 "'shm' hands engines on the trainer's host shared-memory tensors through "
-                "/update_weights_from_tensor, skipping the files 'disk' writes and parses."
+                "/update_weights_from_tensor, skipping the files 'disk' writes and parses. "
+                "'tpu-sync' (TPU, torchtitan) sends each trainer rank's FSDP shards straight to every engine "
+                "TP rank's slice with the tpu-sync library, with no gather and no staging files."
             ),
         ),
     ] = "broadcast"

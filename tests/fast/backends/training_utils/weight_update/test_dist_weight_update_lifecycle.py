@@ -81,6 +81,7 @@ def _make_updater(
     pause_generation_mode: str = "retract",
     begin_sync_result: bool = True,
     weight_update_ft: bool = False,
+    transfer=None,
 ) -> WeightUpdater:
     begin_sync_versions: list[int] = []
 
@@ -90,6 +91,8 @@ def _make_updater(
 
     protocol = SimpleNamespace(
         use_weight_update_session=True,
+        streams_buckets=transfer is None,
+        transfer=transfer,
         needs_base_resync_for_lora=False,
         is_sender=True,
         group_name="test",
@@ -276,6 +279,25 @@ class TestWeightUpdateSessionFrame:
         _run(updater, rank=1)
 
         assert calls == []
+
+
+class TestWholeModelTransfer:
+    def test_transfer_runs_once_inside_the_session_without_gathering_buckets(self):
+        """A protocol that moves the whole model itself (tpu-sync) must still load between begin and end."""
+        calls: list[tuple[int, str, dict]] = []
+        transferred = []
+        updater = _make_updater(
+            _make_engines(calls),
+            transfer=lambda iterator: transferred.append((iterator, _phases(calls))),
+        )
+
+        _run(updater)
+
+        assert len(transferred) == 1
+        iterator, phases_before = transferred[0]
+        assert phases_before == _PREPARE_PHASES
+        assert _phases(calls) == _PREPARE_PHASES + _FINALIZE_PHASES
+        iterator.iter_hf_weights.assert_not_called()
 
 
 class TestExplicitWeightVersion:

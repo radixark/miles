@@ -15,7 +15,7 @@ class TpuPlatform(Platform):
     compile_backend = "tpu"
     triton_kernels = False
     # a TPU engine shares neither NCCL nor CUDA IPC (colocate) with the trainer
-    weight_transfer_modes = frozenset({"disk", "shm"})
+    weight_transfer_modes = frozenset({"disk", "shm", "tpu-sync"})
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         # touching the device before init_process_group breaks the multi-process rendezvous

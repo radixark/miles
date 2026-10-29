@@ -30,6 +30,8 @@ class WeightTransferProtocol(ABC):
     # Opt in only when separate instances own independent transfer state.
     supports_receiver_pools: ClassVar[bool] = False
     use_weight_update_session: ClassVar[bool] = True
+    # False: the protocol moves the whole model in ``transfer`` instead of receiving gathered buckets
+    streams_buckets: ClassVar[bool] = True
     needs_base_resync_for_lora: bool = False
 
     def __init__(self, args: Namespace) -> None:
@@ -63,6 +65,10 @@ class WeightTransferProtocol(ABC):
 
     @abstractmethod
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None: ...
+
+    def transfer(self, hf_weight_iterator) -> None:
+        """Move the base weights on every rank, for protocols that set ``streams_buckets = False``."""
+        raise NotImplementedError
 
     def after_base_weights(self) -> None:  # noqa: B027 — optional hook
         """Hook after the base-weight stream completes (e.g. await in-flight writes)."""
@@ -109,4 +115,8 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
         from miles.backends.training_utils.weight_update.protocols.p2p import UpdateWeightP2P
 
         return UpdateWeightP2P(args)
+    if mode == "tpu-sync":
+        from miles.backends.training_utils.weight_update.protocols.tpu_sync import UpdateWeightTpuSync
+
+        return UpdateWeightTpuSync(args)
     raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
