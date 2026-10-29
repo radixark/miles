@@ -90,8 +90,10 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         )
         install_routing_replay(self.trainer.model_parts)
 
+        # torchtitan shards sequences inside the model, so CP peers hold the same rollout data
         cp_mesh = self.trainer.parallel_dims.get_optional_mesh("cp")
         cp_rank0 = cp_mesh is None or dist.get_rank(cp_mesh.get_group()) == 0
+        self.dumps_train_data = cp_rank0
         if cp_rank0 and get_parallel_state().is_metrics_rank:
             init_tracking(args, primary=False)
 

@@ -10,7 +10,6 @@ from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.adaptations import routing_replay
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
-from miles.backends.training_utils.metrics import train_dump
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
 from miles.backends.training_utils.torch_native.step_runner import LinearStepRunner, StepMetrics
@@ -343,9 +342,6 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             self._config_snapshot_train_recorded = True
 
     def _after_rollout(self, rollout_id: int, rollout_data) -> None:
-        if self.args.save_debug_train_data is not None:
-            train_dump.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
-
         if (
             self.args.ref_update_interval is not None
             and (rollout_id + 1) % self.args.ref_update_interval == 0
