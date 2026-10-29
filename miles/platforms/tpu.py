@@ -20,5 +20,12 @@ class TpuPlatform(Platform):
         # each process sees its one device, which the process group has brought up
         torch.accelerator.set_device_index(0)
 
+    def pin_host_memory(self, tensor: torch.Tensor) -> None:
+        # torch_tpu has no host-registration call; device copies go through pageable memory
+        pass
+
+    def unpin_host_memory(self, tensor: torch.Tensor) -> None:
+        pass
+
     def device_name(self) -> str | None:
         return None
