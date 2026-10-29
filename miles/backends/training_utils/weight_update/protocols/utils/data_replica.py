@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import torch
 import torch.distributed as dist
 
@@ -20,13 +22,25 @@ def get_data_replica_rank_and_size(parallel_state: ParallelState, placement: Wei
     return sorted(set(all_column_ids)).index(column_id), dist.get_world_size() // parallel_state.pp.size
 
 
+HostBucketFactory = Callable[[int, list[tuple[str, torch.Tensor]]], list[torch.Tensor]]
+
+
+def _new_host_bucket(index: int, bucket: list[tuple[str, torch.Tensor]]) -> list[torch.Tensor]:
+    # unpinned, since `.to("cpu", non_blocking=True)` pins memory that CUDA's host allocator keeps cached
+    return [torch.empty(tensor.shape, dtype=tensor.dtype) for _, tensor in bucket]
+
+
 class OwnedBuckets:
     """The buckets one rank publishes, copied to the host: each bucket goes to the replica rank with the fewest
-    bytes so far, so the ranks holding identical gathered data share the writes evenly."""
+    bytes so far, so the ranks holding identical gathered data share the writes evenly. `host_bucket` gives the
+    host tensors an owned bucket (by its stream index) is copied into."""
 
-    def __init__(self, *, replica_rank: int, replica_size: int) -> None:
+    def __init__(
+        self, *, replica_rank: int, replica_size: int, host_bucket: HostBucketFactory = _new_host_bucket
+    ) -> None:
         self._replica_rank = replica_rank
         self._replica_size = replica_size
+        self._host_bucket = host_bucket
         self.reset()
 
     def reset(self) -> None:
@@ -40,11 +54,11 @@ class OwnedBuckets:
         self._bytes_per_rank[owner] += sum(tensor.nbytes for _, tensor in bucket)
         if owner == self._replica_rank:
             # kept on the device until the stream ends, the owned buckets would add model/replica_size to each
-            # rank's peak device memory. Non-blocking, so the copy overlaps the next gather; into unpinned host
-            # tensors, since `.to("cpu", non_blocking=True)` pins memory that CUDA's host allocator keeps cached
+            # rank's peak device memory. Non-blocking, so the copy overlaps the next gather
+            host_tensors = self._host_bucket(self._next_index, bucket)
             host_bucket = [
-                (name, torch.empty(tensor.shape, dtype=tensor.dtype).copy_(tensor, non_blocking=True))
-                for name, tensor in bucket
+                (name, host.copy_(tensor, non_blocking=True))
+                for (name, tensor), host in zip(bucket, host_tensors, strict=True)
             ]
             self._owned.append((self._next_index, host_bucket))
         self._next_index += 1

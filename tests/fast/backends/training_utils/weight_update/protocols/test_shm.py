@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 from argparse import Namespace
@@ -13,6 +14,11 @@ from miles.backends.training_utils.weight_update.protocols import shm
 from miles.backends.training_utils.weight_update.protocols.shm import UpdateWeightFromSharedMemory
 from miles.backends.training_utils.weight_update.protocols.utils import rank_errors
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import OwnedBuckets
+
+
+def shutil_usage(*, free: int):
+    return shutil._ntuple_diskusage(total=free, used=0, free=free)
+
 
 _BUCKETS = [
     [
@@ -58,6 +64,20 @@ def _single_rank(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rank_errors, "get_gloo_group", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def pinned(monkeypatch: pytest.MonkeyPatch) -> dict[int, torch.Tensor]:
+    """The host tensors the platform has page-locked, by address; CUDA's registration needs a GPU."""
+    pinned: dict[int, torch.Tensor] = {}
+
+    def pin(tensor: torch.Tensor) -> None:
+        assert tensor.data_ptr() not in pinned, "pinned twice"
+        pinned[tensor.data_ptr()] = tensor
+
+    monkeypatch.setattr(shm.current_platform, "pin_host_memory", pin)
+    monkeypatch.setattr(shm.current_platform, "unpin_host_memory", lambda tensor: pinned.pop(tensor.data_ptr()))
+    return pinned
+
+
 class _RecordingCellUpdater:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
@@ -77,16 +97,25 @@ def _protocol(*, replica_rank: int, replica_size: int, tp_sizes: list[int]) -> U
     protocol.cell_updaters_of_cell_id = {f"cell-{i}": _RecordingCellUpdater() for i in range(len(tp_sizes))}
     protocol._engine_tp_sizes = tp_sizes
     protocol._selector = "all"
-    protocol._owned_buckets = OwnedBuckets(replica_rank=replica_rank, replica_size=replica_size)
-    protocol._max_in_flight = max(1, shm._MAX_BUCKETS_IN_FLIGHT_PER_HOST // replica_size)
+    protocol._owned_buckets = OwnedBuckets(
+        replica_rank=replica_rank, replica_size=replica_size, host_bucket=protocol._image.host_bucket
+    )
     return protocol
 
 
-def _publish(protocol: UpdateWeightFromSharedMemory) -> None:
+def _publish(protocol: UpdateWeightFromSharedMemory, buckets: list = _BUCKETS) -> None:
     protocol.begin_sync(weight_version=1, iter_buckets=None)
-    for bucket in _BUCKETS:
+    for bucket in buckets:
         protocol.send_bucket(bucket)
     protocol.after_base_weights()
+
+
+def _published(updater: _RecordingCellUpdater) -> list[str]:
+    return [kwargs["serialized_named_tensors"][0] for _, kwargs in updater.calls]
+
+
+def _expected(buckets: list) -> list:
+    return [[[n, str(t.dtype), t.float().tolist()] for n, t in bucket] for bucket in buckets]
 
 
 def _rebuild_in_another_process(payloads: list[str]) -> list:
@@ -125,20 +154,54 @@ def test_the_replica_ranks_publish_every_bucket_exactly_once():
     assert sorted(published) == sorted([name for name, _ in bucket] for bucket in _BUCKETS)
 
 
-def test_a_sync_keeps_at_most_the_window_of_host_copies_alive(monkeypatch):
-    """Host memory must stay a few buckets, not the whole model, however many buckets a sync sends."""
-    monkeypatch.setattr(shm, "_MAX_BUCKETS_IN_FLIGHT_PER_HOST", 2)
+def test_a_later_sync_rewrites_the_same_shared_buckets_in_place(pinned):
+    """No sync after the first allocates, pins or faults in host memory; the engine still reads the new weights."""
     protocol = _protocol(replica_rank=0, replica_size=1, tp_sizes=[1])
     (updater,) = protocol.cell_updaters_of_cell_id.values()
-    alive_at_submit = []
-    updater.on_submit = lambda: alive_at_submit.append(len(protocol._in_flight))
     _publish(protocol)
-
-    assert len(updater.calls) == len(_BUCKETS) > 2
-    # the bucket being published joins the ones already in flight
-    assert max(alive_at_submit) + 1 == 2
     protocol.finalize(weight_version=1)
-    assert not protocol._in_flight
+    addresses = [shared.flat.data_ptr() for shared in protocol._image._buckets.values()]
+
+    updater.calls.clear()
+    stepped = [[(name, tensor + 1) for name, tensor in bucket] for bucket in _BUCKETS]
+    _publish(protocol, stepped)
+
+    assert [shared.flat.data_ptr() for shared in protocol._image._buckets.values()] == addresses
+    assert sorted(pinned) == sorted(addresses)
+    assert _rebuild_in_another_process(_published(updater)) == _expected(stepped)
+    protocol.finalize(weight_version=2)
+
+
+def test_a_bucket_whose_weights_changed_shape_gets_a_new_shared_tensor(pinned):
+    protocol = _protocol(replica_rank=0, replica_size=1, tp_sizes=[1])
+    (updater,) = protocol.cell_updaters_of_cell_id.values()
+    _publish(protocol)
+    protocol.finalize(weight_version=1)
+    first = protocol._image.bucket(1).flat
+
+    updater.calls.clear()
+    resized = [_BUCKETS[0], [("layers.1.w", torch.full((6,), 3.0))], _BUCKETS[2]]
+    _publish(protocol, resized)
+
+    assert protocol._image.bucket(1).flat.data_ptr() != first.data_ptr()
+    assert first.data_ptr() not in pinned, "the replaced tensor stays page-locked"
+    assert len(pinned) == len(_BUCKETS)
+    assert _rebuild_in_another_process(_published(updater)) == _expected(resized)
+    protocol.finalize(weight_version=2)
+
+
+def test_a_full_dev_shm_fails_every_rank_after_the_stream_not_mid_gather(monkeypatch):
+    """The gathers are collective: a rank leaving the stream early would leave the others waiting in them."""
+    protocol = _protocol(replica_rank=0, replica_size=1, tp_sizes=[1])
+    (updater,) = protocol.cell_updaters_of_cell_id.values()
+    monkeypatch.setattr(shm.shutil, "disk_usage", lambda path: shutil_usage(free=0))
+    protocol.begin_sync(weight_version=1, iter_buckets=None)
+    for bucket in _BUCKETS:
+        protocol.send_bucket(bucket)  # each bucket of the stream is still consumed
+
+    with pytest.raises(RuntimeError, match=r"bucket publish failed on rank 0: .*/dev/shm"):
+        protocol.after_base_weights()
+    assert not updater.calls
 
 
 def test_every_receiving_process_can_open_the_bucket_after_the_others_released_it():
@@ -153,18 +216,6 @@ def test_every_receiving_process_can_open_the_bucket_after_the_others_released_i
     for payload in first_bucket:
         assert _rebuild_in_another_process([payload]) == expected
     protocol.finalize(weight_version=1)
-
-
-def test_the_window_is_shared_by_the_hosts_replica_ranks():
-    """Each rank holds its share, so /dev/shm stays near the per-host bound however many ranks publish."""
-    assert (
-        _protocol(replica_rank=0, replica_size=1, tp_sizes=[1])._max_in_flight == shm._MAX_BUCKETS_IN_FLIGHT_PER_HOST
-    )
-    assert (
-        _protocol(replica_rank=0, replica_size=2, tp_sizes=[1])._max_in_flight
-        == shm._MAX_BUCKETS_IN_FLIGHT_PER_HOST // 2
-    )
-    assert _protocol(replica_rank=0, replica_size=64, tp_sizes=[1])._max_in_flight == 1
 
 
 def test_a_sync_leaves_the_process_sharing_strategy_alone():

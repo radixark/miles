@@ -1,11 +1,12 @@
 import base64
 import contextlib
 import io
+import shutil
 import socket
 from argparse import Namespace
-from collections import deque
 from collections.abc import Iterator, Sequence
 from concurrent.futures import Future
+from dataclasses import dataclass
 from multiprocessing.reduction import ForkingPickler
 from urllib.parse import urlparse
 
@@ -25,28 +26,26 @@ from miles.backends.training_utils.weight_update.protocols.utils.flattened_bucke
 from miles.backends.training_utils.weight_update.protocols.utils.rank_errors import fail_on_every_rank
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
+from miles.platforms import current_platform
 from miles.utils import async_utils
-
-
-# buckets in flight across the host, enough to keep the engines loading while the next one is copied out; arbitrary
-# otherwise. Each replica rank gets its share but at least one, so /dev/shm holds max(this, replica ranks) buckets.
-_MAX_BUCKETS_IN_FLIGHT_PER_HOST = 4
 
 
 class UpdateWeightFromSharedMemory(WeightTransferProtocol):
     """
     Host weight sync through shared memory, for engines on the trainer's host. Each gathered bucket goes
-    to the replica rank with the fewest bytes so far, which copies it flattened into a shared-memory tensor
-    once the collective gathers are done, and hand the engines its handle through
+    to the replica rank with the fewest bytes so far, which copies it from the device straight into that bucket's
+    shared-memory tensor, in the engine's flattened layout, and hands the engines its handle through
     /update_weights_from_tensor; each engine maps it in place, with no file written or parsed.
-    A bucket is published as soon as it is in shared memory, so the copies overlap the engine loads, and only
-    a few shared-memory buckets are alive at once (`_MAX_BUCKETS_IN_FLIGHT_PER_HOST`).
+    The shared-memory tensors are kept across syncs (`_SharedImage`), so a sync neither allocates nor
+    copies through other host memory; /dev/shm holds each rank's share of the model for the run.
     """
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
-        # each published host copy with its engine calls; a copy lives until every engine has loaded it
-        self._in_flight: deque[tuple[torch.Tensor, list[Future]]] = deque()
+        self._image = _SharedImage()
+        # this sync's engine calls; the next sync rewrites the shared buckets only once every engine has loaded them
+        self._in_flight: list[Future] = []
+        self._send_error: Exception | None = None
 
     def connect(
         self,
@@ -71,27 +70,35 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
         self._selector = selector
         self._engine_tp_sizes = engine_gpu_counts
         replica_rank, replica_size = get_data_replica_rank_and_size(parallel_state, placement)
-        self._owned_buckets = OwnedBuckets(replica_rank=replica_rank, replica_size=replica_size)
-        self._max_in_flight = max(1, _MAX_BUCKETS_IN_FLIGHT_PER_HOST // replica_size)
+        self._owned_buckets = OwnedBuckets(
+            replica_rank=replica_rank, replica_size=replica_size, host_bucket=self._image.host_bucket
+        )
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
         self._owned_buckets.reset()
+        self._send_error = None
         return True
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
-        self._owned_buckets.offer(bucket)
+        # raising mid-stream would strand the other ranks in its gathers; every rank raises it after the stream
+        if self._send_error is not None:
+            return
+        try:
+            self._owned_buckets.offer(bucket)
+        except Exception as error:
+            self._send_error = error
 
     def after_base_weights(self) -> None:
-        # published only after the collective gathers finish, so the ranks' copies run in parallel
+        # after the stream: take() is where the non-blocking device copies are known to have landed
         cell_updaters = list(self.cell_updaters_of_cell_id.values())
         with fail_on_every_rank("[shm] bucket publish"):
-            for _, bucket in self._owned_buckets.take():
-                if len(self._in_flight) == self._max_in_flight:
-                    self._wait_for_oldest_bucket()
-                host_tensor, metadata = _copy_to_shared_bucket(bucket)
+            if self._send_error is not None:
+                raise self._send_error
+            for index, _ in self._owned_buckets.take():
+                shared = self._image.bucket(index)
                 with _file_system_sharing():
-                    futures = self._publish(cell_updaters, {"flattened_tensor": host_tensor, "metadata": metadata})
-                self._in_flight.append((host_tensor, futures))
+                    payload = {"flattened_tensor": shared.flat, "metadata": shared.metadata}
+                    self._in_flight += self._publish(cell_updaters, payload)
 
     def _publish(self, cell_updaters: list, bucket_payload: dict) -> list[Future]:
         return [
@@ -110,12 +117,8 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
 
     def finalize(self, weight_version: int) -> None:
         with fail_on_every_rank("[shm] engine load"):
-            while self._in_flight:
-                self._wait_for_oldest_bucket()
-
-    def _wait_for_oldest_bucket(self) -> None:
-        _, futures = self._in_flight.popleft()
-        check_weight_sync_results(async_utils.wait_futures(futures), is_lora=False)
+            futures, self._in_flight = self._in_flight, []
+            check_weight_sync_results(async_utils.wait_futures(futures), is_lora=False)
 
 
 def _serialize_payload(payload: dict) -> str:
@@ -149,14 +152,56 @@ def _is_this_host(host: str) -> bool:
     return False
 
 
-def _copy_to_shared_bucket(bucket: list[tuple[str, torch.Tensor]]) -> tuple[torch.Tensor, list]:
-    """The host bucket as one shared-memory byte tensor in the engine's flattened layout, with one copy per tensor."""
+@dataclass(frozen=True)
+class _SharedBucket:
+    """One bucket as a pinned shared-memory byte tensor in the engine's flattened layout, with a view per weight."""
+
+    layout: tuple[tuple[str, tuple[int, ...], torch.dtype], ...]
+    flat: torch.Tensor
+    metadata: list
+    views: list[torch.Tensor]
+
+
+class _SharedImage:
+    """This rank's owned buckets in shared memory, by stream index, reused while a bucket's layout is unchanged.
+
+    Rewriting in place never races an engine: the next sync starts only after every load has finished.
+    """
+
+    def __init__(self) -> None:
+        self._buckets: dict[int, _SharedBucket] = {}
+
+    def host_bucket(self, index: int, bucket: list[tuple[str, torch.Tensor]]) -> list[torch.Tensor]:
+        layout = tuple((name, tuple(tensor.shape), tensor.dtype) for name, tensor in bucket)
+        shared = self._buckets.get(index)
+        if shared is None or shared.layout != layout:
+            if shared is not None:
+                current_platform.unpin_host_memory(shared.flat)
+            shared = self._buckets[index] = _allocate_shared_bucket(bucket, layout)
+        return shared.views
+
+    def bucket(self, index: int) -> _SharedBucket:
+        return self._buckets[index]
+
+
+def _allocate_shared_bucket(bucket: list[tuple[str, torch.Tensor]], layout) -> _SharedBucket:
     metadata = flatten_weight_bucket([(name, tensor.to("meta")) for name, tensor in bucket]).get_metadata()
+    nbytes = metadata[-1].end_idx
+    # a full tmpfs SIGBUSes on write; the earlier buckets' pages are already in (pinned or copied)
+    free = shutil.disk_usage("/dev/shm").free
+    if nbytes > free:
+        raise RuntimeError(
+            f"--update-weight-transfer-mode shm keeps each rank's share of the model in /dev/shm; a {nbytes} byte "
+            f"bucket does not fit in its {free} free bytes. Enlarge /dev/shm or use more trainer ranks"
+        )
     with _file_system_sharing():
-        host_tensor = torch.empty(metadata[-1].end_idx, dtype=torch.uint8).share_memory_()
-    for (_, tensor), meta in zip(bucket, metadata, strict=True):
-        host_tensor[meta.start_idx : meta.end_idx].view(tensor.dtype).view(tensor.shape).copy_(tensor)
-    return host_tensor, metadata
+        flat = torch.empty(nbytes, dtype=torch.uint8).share_memory_()
+    current_platform.pin_host_memory(flat)
+    views = [
+        flat[meta.start_idx : meta.end_idx].view(dtype).view(shape)
+        for (_, shape, dtype), meta in zip(layout, metadata, strict=True)
+    ]
+    return _SharedBucket(layout=layout, flat=flat, metadata=metadata, views=views)
 
 
 @contextlib.contextmanager
