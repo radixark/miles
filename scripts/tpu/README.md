@@ -52,6 +52,10 @@ Model and data default to `/root/models` and `/root/datasets` (`--model-dir`, `-
    `--recipe smoke` runs 3 short rollouts to check the setup; `--recipe bench` runs 4 rollouts
    at full shapes without eval, for timing. Pass extra `train.py` flags through `--extra-args`.
 
+   The trainer's first step compiles its programs for minutes. `--compile-cache-dir DIR` keeps them
+   on disk (on a shared filesystem, for every host), so a later run with the same shapes, flags and
+   torch_tpu build loads them instead.
+
 wandb is on when `WANDB_API_KEY` is set or `~/.netrc` holds the key; `--wandb-project ""`
 turns it off.
 

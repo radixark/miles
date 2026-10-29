@@ -14,6 +14,8 @@ Args:
   --weight-transfer: shm (default) or disk.
   --weight-dir: where `disk` writes the weights.
   --wandb-project: wandb project; empty disables wandb (the key comes from WANDB_API_KEY or ~/.netrc).
+  --compile-cache-dir: persistent cache of the trainer's compiled XLA programs, reused by later runs with
+    the same graphs and shapes (a shared filesystem shares it across hosts); empty (default) disables it.
   --extra-args: more train.py flags, appended last.
 
 Examples:
@@ -21,6 +23,8 @@ Examples:
   python scripts/tpu/run_qwen3_4b_torchtitan.py train --recipe full
 """
 
+import hashlib
+import importlib.metadata
 import os
 import socket
 from dataclasses import dataclass
@@ -66,6 +70,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     weight_dir: str = "/dev/shm/miles_weights"
     weight_transfer: Literal["shm", "disk"] = "shm"
     wandb_project: str = "miles-tpu"
+    compile_cache_dir: str = ""
     extra_args: str = ""
 
 
@@ -133,12 +138,26 @@ _TRAINER_LIBTPU_ARGS = (
 )
 
 
+def _compile_cache_root(cache_dir: str) -> str:
+    """torch_tpu keys a cached program by graph, shapes, XLA flags and devices, under a directory per libtpu.
+
+    Its own lowering code is not part of that key, so each torch_tpu build (the hash of its wheel's file
+    list) gets a directory of its own.
+    """
+    torch_tpu = importlib.metadata.distribution("torch_tpu")
+    build = hashlib.sha1(torch_tpu.read_text("RECORD").encode()).hexdigest()[:10]
+    return f"{cache_dir}/torch_tpu-{torch_tpu.version}-{build}"
+
+
 def _execute(args: ScriptArgs):
     U = args.create_backend()
     recipe = _RECIPES[args.recipe]
     _set_half_host_env()
     os.environ["MILES_ACCELERATOR"] = "tpu"
     os.environ.setdefault("LIBTPU_INIT_ARGS", _TRAINER_LIBTPU_ARGS)  # a caller's flag set wins
+    if args.compile_cache_dir:
+        # read once per process at its first compile; ray workers inherit it through `ray start`
+        os.environ.setdefault("TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT", _compile_cache_root(args.compile_cache_dir))
     os.environ["TORCH_TPU_SLICEBUILDER_ADDRESSES"] = ",".join(
         f"localhost:{port}" for port in _free_ports(NUM_TRAINER_DEVICES)
     )
