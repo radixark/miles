@@ -158,7 +158,9 @@ _TRAINER_LIBTPU_ARGS = (
 def _set_compile_cache_env(args: ScriptArgs) -> None:
     if args.compile_cache_dir:
         if "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT" in os.environ:
-            raise ValueError("--compile-cache-dir and TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT both set the compile cache")
+            raise ValueError(
+                "--compile-cache-dir and TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT both set the compile cache"
+            )
         # read once per process at its first compile; ray workers inherit it through `ray start`
         os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = args.compile_cache_root
     # torch's AOTAutograd and FX graph caches key torch_tpu programs without their devices, so a run on another
