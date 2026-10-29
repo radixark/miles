@@ -51,8 +51,10 @@ def test_each_torch_tpu_build_gets_its_own_cache_directory(monkeypatch, launcher
 def test_an_install_without_a_build_identity_is_refused(monkeypatch, launcher, files):
     _install_torch_tpu(monkeypatch, files)
 
+    args = launcher.ScriptArgs(compile_cache_dir="/cache")
+
     with pytest.raises(ValueError):
-        launcher.ScriptArgs(compile_cache_dir="/cache").compile_cache_root
+        _ = args.compile_cache_root
 
 
 def test_the_cache_dir_sets_the_root_and_turns_off_torchs_device_blind_caches(monkeypatch, launcher):
