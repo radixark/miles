@@ -176,6 +176,81 @@ def test_fill_replay_thd_preserves_packed_order(
         assert ("routes" in rollout_data) == (kept_in_train_dump and save_debug_train_data is not None)
 
 
+def _fill_thd_cp2(monkeypatch, *, cp_rank, allgather_cp, lengths, data_pad_size_multiplier, indexer):
+    """Fill one thd micro batch on CP rank ``cp_rank`` of 2; sample ``i`` has replay rows ``10(i+1) + j``."""
+    args = SimpleNamespace(
+        qkv_format="thd",
+        allgather_cp=allgather_cp,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=False),
+        data_pad_size_multiplier=data_pad_size_multiplier,
+        save_debug_train_data=None,
+    )
+    state = SimpleNamespace(cp=SimpleNamespace(size=2, rank=cp_rank), tp=SimpleNamespace(size=1, rank=0))
+    monkeypatch.setattr(parallel, "_parallel_state", state)
+    rollout_data = {
+        "routes": [10 * (i + 1) + torch.arange(length - 1).reshape(-1, 1, 1) for i, length in enumerate(lengths)],
+        "tokens": [torch.arange(length) for length in lengths],
+        "max_seq_lens": None,
+    }
+    iterator = SimpleNamespace(reset=lambda: None, get_next=lambda keys: rollout_data)
+    replay = _Replay()
+    fill_replay_data(
+        args=args,
+        models=None,
+        data_iterator=[iterator],
+        num_microbatches=[1],
+        rollout_data=rollout_data,
+        data_key="routes",
+        replay_list=[replay],
+        register_replay_list_func=register_replay_list_sequential,
+        indices_are_token_positions=indexer,
+    )
+    return replay.recorded[0][:, 0].tolist()
+
+
+@pytest.mark.parametrize(
+    "indexer,expected_by_rank",
+    [
+        # Sample 0 (T = 5) is padded to 8 in chunks of 2: rank 0 holds chunks 0 and 3, rank 1 chunks 1 and 2.
+        # Sample 1 (T = 3) is padded to 4 in chunks of 1. The micro batch is then padded to a multiple of 4.
+        (False, [[10, 11, -1, -1, 20, -1, -1, -1], [12, 13, -1, -1, 21, -1, -1, -1]]),
+        # Indexer positions of sample 1 are shifted by sample 0's 4 local rows.
+        (True, [[10, 11, -1, -1, 24, -1, -1, -1], [12, 13, -1, -1, 25, -1, -1, -1]]),
+    ],
+    ids=["moe", "indexer"],
+)
+def test_fill_replay_thd_zigzag_cp(monkeypatch, indexer, expected_by_rank):
+    for cp_rank, expected in enumerate(expected_by_rank):
+        recorded = _fill_thd_cp2(
+            monkeypatch,
+            cp_rank=cp_rank,
+            allgather_cp=False,
+            lengths=(5, 3),
+            data_pad_size_multiplier=4,
+            indexer=indexer,
+        )
+        assert recorded == expected
+
+
+@pytest.mark.parametrize("indexer", [False, True], ids=["moe", "indexer"])
+def test_fill_replay_thd_allgather_cp(monkeypatch, indexer):
+    # The packed rows [10 11 12 13 -1 | 20 21 22 -1 | 30 -1] are padded to a multiple of 2 * 2 and split in two:
+    # sample 0 stays on rank 0, sample 1 spans both ranks, sample 2 and the pack padding land on rank 1.
+    # Indexer positions are not shifted under all-gather CP.
+    expected_by_rank = [[10, 11, 12, 13, -1, 20], [21, 22, -1, 30, -1, -1]]
+    for cp_rank, expected in enumerate(expected_by_rank):
+        recorded = _fill_thd_cp2(
+            monkeypatch,
+            cp_rank=cp_rank,
+            allgather_cp=True,
+            lengths=(5, 4, 2),
+            data_pad_size_multiplier=2,
+            indexer=indexer,
+        )
+        assert recorded == expected
+
+
 class TestNativeReplayOwnership:
     def test_fsdp_replay_does_not_require_megatron_sequence_parallel_settings(
         self, monkeypatch: pytest.MonkeyPatch
