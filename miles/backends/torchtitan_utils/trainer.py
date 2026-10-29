@@ -5,7 +5,6 @@ import spmd_types as spmd
 import torch
 import torch.distributed as dist
 from torch.distributed.pipelining.schedules import PipelineScheduleSingle
-from torch.distributed.tensor import DTensor
 from torchtitan.config import Configurable
 from torchtitan.config.validation import validate_model_training_config
 from torchtitan.distributed import ParallelismContext
@@ -52,7 +51,6 @@ class TitanTrainer(Configurable):
         self.parallelism = self.engine.parallelism_context
         self.model_parts = self.engine.model_parts
         self.optimizers = self.engine.optim.optimizers
-        self.checkpointer = self.engine.checkpointer
         self.device = self.engine.device
         self.loss_fn = self.engine.loss_fn
 
@@ -154,7 +152,10 @@ class TitanTrainer(Configurable):
         with routing_replay.consumption_guard(self.model_parts, len(batches)), self.parallelism.activate_spmd():
             if self.parallelism.pp_enabled:
                 self._bypass_schedule_probe(has_backward=True)
-                self.engine.pp_schedule.step(**self._pipeline_microbatches(prepared))
+                microbatches = self._pipeline_microbatches(prepared)
+                self.engine.pp_schedule.step(**microbatches)
+                for loss in microbatches["losses"] or []:
+                    self.engine.loss += loss.detach()
             else:
                 for inputs, labels, model_kwargs, _ in prepared:
                     pred = self.model_parts[0](inputs, **model_kwargs)
@@ -162,6 +163,7 @@ class TitanTrainer(Configurable):
                     del pred
                     with spmd.no_typecheck():
                         loss.backward()
+                    self.engine.loss += loss.detach()
         return self.loss_fn.collect() if self.has_last_stage() else []
 
     def run_forward(self, batches, compute: Callable) -> list:
@@ -177,11 +179,12 @@ class TitanTrainer(Configurable):
                     self.loss_fn(self.model_parts[0](inputs, **model_kwargs), labels)
         return self.loss_fn.collect() if self.has_last_stage() else []
 
-    def apply_optimizer_step(self) -> StepMetrics:
+    def zero_grad(self) -> None:
+        self.optimizers.zero_grad(set_to_none=True)
         self.engine.loss = torch.zeros((), device=self.device)
+
+    def apply_optimizer_step(self) -> StepMetrics:
         grad_norm = self.engine.optim_step()
-        if isinstance(grad_norm, DTensor):
-            grad_norm = grad_norm.full_tensor()
         return StepMetrics(
             grad_norm=float(grad_norm.item()), extra_metrics=self.engine.optim.lr_schedulers.get_metrics()
         )
@@ -195,11 +198,6 @@ class TitanTrainer(Configurable):
             torch._dynamo.config.recompile_limit,
             2 * (self.config.training.max_context_length // _CP_LENGTH_BUCKET + 1),
         )
-        if self.config.parallelism.context_parallel_load_balancer is not None:
-            raise ValueError(
-                "a context-parallel load balancer permutes tokens by batch content; miles undoes only "
-                "the contiguous sharding"
-            )
         self.loss_fn.set_context_parallel(self.parallelism.get_mesh("cp"))
 
     def has_last_stage(self) -> bool:
@@ -220,7 +218,7 @@ class TrainerStepRunner:
         return self.trainer.run_forward_backward(batches, loss_closure)
 
     def zero_grad(self) -> None:
-        self.trainer.optimizers.zero_grad(set_to_none=True)
+        self.trainer.zero_grad()
 
     def apply_step(self) -> StepMetrics:
         return self.trainer.apply_optimizer_step()

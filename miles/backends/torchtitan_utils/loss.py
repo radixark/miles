@@ -3,7 +3,6 @@ from dataclasses import dataclass
 
 import torch
 from torch.distributed._functional_collectives import all_gather_single_autograd
-from torch.distributed.tensor import DTensor
 from torchtitan.components.loss import BaseLoss
 
 
@@ -37,15 +36,7 @@ class RLLossAdapter(BaseLoss):
             raise RuntimeError(f"the schedule never ran microbatch(es) {missing}")
         return [self._results[i] for i in range(len(self._batches))]
 
-    def __call__(self, pred, target, global_valid_tokens=None, **kwargs):
-        if isinstance(pred, DTensor):
-            for placement in pred.placements:
-                if not (placement.is_shard() and placement.dim in (pred.ndim - 1, -1)):
-                    raise RuntimeError(
-                        f"expected vocab-sharded logits (Shard({pred.ndim - 1})), got {pred.placements}"
-                    )
-            pred = pred.to_local()
-
+    def __call__(self, pred, target, **kwargs):
         if self._cp_mesh is not None:
             pred = all_gather_single_autograd(pred, 0, self._cp_mesh.get_group())
         pred = pred.unsqueeze(0)

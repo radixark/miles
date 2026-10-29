@@ -8,8 +8,10 @@ from types import ModuleType
 import torch.distributed as dist
 from torchtitan.components.optim import AdamW, LRSchedulersContainer, Optim, OptimizersContainer
 from torchtitan.config import TrainingConfig
+from torchtitan.config.configs import DebugConfig
 from torchtitan.config.parallelism import ParallelismConfig
-from torchtitan.config.transform import ContextParallelTransform, apply_transforms
+from torchtitan.config.transform import ContextParallelTransform
+from torchtitan.config.transform.apply import transform_model_config_
 from torchtitan.distributed.activation_remat import FullActivationRematConfig
 from torchtitan.models.base import BaseModel
 from torchtitan.models.common.attention import FlexInnerAttention
@@ -59,11 +61,15 @@ def build_model_config(
             raise ValueError(f"{module.__name__} sizes its model from the HF config; pass hf_assets_path")
         kwargs["hf_config"] = load_hf_config(hf_assets_path)
     model = builder(args.backend.titan_model_flavor, **kwargs)
-    _route_as_the_checkpoint_does(model)
+    _disable_load_balancing(model)
+    if parallelism.context_parallel_degree > 1:
+        model = transform_model_config_(
+            model, [ContextParallelTransform(inner_attention_map={FlexInnerAttention: AllGatherKVFlexInnerAttention})]
+        )
     return model
 
 
-def _route_as_the_checkpoint_does(model: BaseModel.Config) -> None:
+def _disable_load_balancing(model: BaseModel.Config) -> None:
     for _, moe, _, _ in model.traverse(MoE.Config):
         moe.router.aux_loss = None
         moe.freeze_expert_bias = True
@@ -82,21 +88,19 @@ def _parallelism_config(args: TrainerConfig) -> ParallelismConfig:
         data_parallel_replicate_degree=args.backend.dp_replicate_size,
         tensor_parallel_degree=args.backend.tensor_model_parallel_size,
         pipeline_parallel_degree=args.backend.pipeline_model_parallel_size,
+        context_parallel_degree=args.backend.context_parallel_size,
         expert_parallel_degree=args.backend.expert_model_parallel_size,
+        num_pp_microbatches=_num_pipeline_microbatches(args),
     )
 
 
-def _data_parallel_size(args: TrainerConfig) -> int:
-    model_parallel = (
+def _num_pipeline_microbatches(args: TrainerConfig) -> int:
+    model_parallel_size = (
         args.backend.tensor_model_parallel_size
         * args.backend.pipeline_model_parallel_size
         * args.backend.context_parallel_size
     )
-    return dist.get_world_size() // model_parallel
-
-
-def _num_pipeline_microbatches(args: TrainerConfig) -> int:
-    dp_size = _data_parallel_size(args)
+    dp_size = dist.get_world_size() // model_parallel_size
     if args.backend.pipeline_model_parallel_size > 1 and args.backend.global_batch_size % (
         dp_size * args.backend.micro_batch_size
     ):
@@ -164,7 +168,6 @@ def build_trainer_config(
         )
 
     parallelism = _parallelism_config(args)
-    parallelism.num_pp_microbatches = _num_pipeline_microbatches(args)
     model = build_model_config(args, parallelism=parallelism, hf_assets_path=hf_assets_path)
     model.enable_weight_tying = ties_embeddings
     if ties_embeddings:
@@ -174,7 +177,7 @@ def build_trainer_config(
             model, hf_targets=args.hf_lora_targets, rank=args.lora_rank, alpha=args.lora_alpha
         )
 
-    config = TitanTrainer.Config(
+    return TitanTrainer.Config(
         model=model,
         hf_assets_path=hf_assets_path,
         output_dir=os.path.join(
@@ -192,12 +195,5 @@ def build_trainer_config(
         checkpointer=_checkpointer_config(args, dump_subdir=dump_subdir),
         activation_remat=FullActivationRematConfig() if args.backend.gradient_checkpointing else None,
         loss=RLLossAdapter.Config(),
+        debug=DebugConfig(seed=args.backend.seed),
     )
-    config.debug.seed = args.backend.seed
-    if args.backend.context_parallel_size > 1:
-        config.parallelism.context_parallel_degree = args.backend.context_parallel_size
-        config = apply_transforms(
-            config,
-            [ContextParallelTransform(inner_attention_map={FlexInnerAttention: AllGatherKVFlexInnerAttention})],
-        )
-    return config
