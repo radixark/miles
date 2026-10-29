@@ -66,8 +66,8 @@ class DataConfig(BaseConfig):
         Arg(
             help=(
                 "Path to a YAML file, or an inline `base64:<payload>`, listing the training datasets to mix and "
-                "how many prompts each contributes per rollout step. Replaces --prompt-data. "
-                "Validated at startup; no data source reads it yet, so setting it stops the run with an error."
+                "how much each contributes per rollout step (`samples_per_step` weights). Replaces --prompt-data "
+                "and selects miles.rollout.data_source.MixedRolloutDataSource; needs --num-rollout."
             )
         ),
     ] = None
