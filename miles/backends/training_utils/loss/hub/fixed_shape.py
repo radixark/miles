@@ -30,7 +30,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.types import RolloutBatch
 
-# the smallest TPU length bucket (torchtitan_utils/trainer.py)
+# the smallest TPU length bucket (torchtitan_utils/length_buckets.py)
 _CHUNK_ROWS = 1024
 _ADVANTAGE_ESTIMATORS = ("grpo", "reinforce_plus_plus", "reinforce_plus_plus_baseline")
 

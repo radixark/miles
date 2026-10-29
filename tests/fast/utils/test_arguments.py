@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
+from tests.fast.fixtures.args_fixtures import parse_megatron_test_config, parser_defaults
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 
 from miles.backends.fsdp_utils.arguments import build_fsdp_parser
@@ -43,6 +43,7 @@ from miles.utils.arguments import (
     resolve_rollout_function_paths,
     supports_partial_target_weight_update,
     validate_async_off_policy_correction,
+    validate_compile_warmup,
     validate_log_probs_backend_args,
     validate_skip_actor_forward_only,
 )
@@ -3986,3 +3987,44 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
     assert native_args is not None
     assert native_args.mtp_detach_heads is detach_heads
     assert "mtp_detach_heads" not in args.model_fields
+
+
+def _compile_warmup_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        train_backend="torchtitan",
+        use_dynamic_batch_size=True,
+        pipeline_model_parallel_size=1,
+        context_parallel_size=1,
+    )
+    return SimpleNamespace(**{**parser_defaults(), **defaults, **overrides})
+
+
+class TestValidateCompileWarmup:
+    def test_the_torchtitan_parse_path_reads_every_argument_it_checks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(torch, "__version__", "2.13.0")
+        argv = ["test", "--train-backend", "torchtitan", "--rollout-batch-size", "2", "--num-rollout", "1"]
+        argv += ["--actor-num-gpus-per-node", "1", "--rollout-max-response-len", "1024"]
+        argv += ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "4096", "--compile-warmup"]
+        monkeypatch.setattr(sys, "argv", argv)
+
+        args, _ = parse_args_and_get_parser()
+
+        assert args.compile_warmup
+
+    @pytest.mark.parametrize(
+        ("overrides", "flag"),
+        [
+            ({"train_backend": "fsdp"}, "--train-backend torchtitan"),
+            ({"use_dynamic_batch_size": False}, "--use-dynamic-batch-size"),
+            ({"colocate": True}, "--colocate"),
+            ({"pipeline_model_parallel_size": 2}, "--pipeline-model-parallel-size"),
+            ({"use_rollout_routing_replay": True}, "--use-rollout-routing-replay"),
+            ({"use_critic": True}, "--use-critic"),
+            ({"custom_convert_samples_to_train_data_path": "pkg.convert"}, "--custom-convert-samples-to-train-data-path"),
+        ],
+    )
+    def test_a_run_the_synthetic_batch_cannot_mirror_is_refused(self, overrides: dict, flag: str) -> None:
+        validate_compile_warmup(_compile_warmup_args())
+
+        with pytest.raises(ValueError, match=re.escape(flag)):
+            validate_compile_warmup(_compile_warmup_args(**overrides))

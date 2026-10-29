@@ -241,6 +241,8 @@ def _execute(args: ScriptArgs):
         "--gradient-checkpointing "
         "--distributed-backend tpu_dist "
         "--titan-fsdp-gather-once "
+        # compile the first step on a synthetic batch while rollout 0 generates
+        "--compile-warmup "
         "--use-dynamic-batch-size "
         # headroom under the fixed shape: rebalancing the packed microbatches can exceed the packing budget
         f"--max-tokens-per-gpu {SEQ_LEN - 1024} "

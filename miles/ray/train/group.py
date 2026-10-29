@@ -242,6 +242,20 @@ class TrainerController:
 
         return worker_results
 
+    async def warm_up(self, rollout_data_packs: list[RolloutDataPack]) -> None:
+        """Compile the per-rollout passes on synthetic data (--compile-warmup).
+
+        A failure keeps the cells alive and raises: the first train step would fail the same way.
+        """
+        _, outputs = await self._execute_all_alive_and_catch(
+            "warm_up",
+            check_recoverable=False,
+            kill_on_failure=False,
+            rollout_data_refs=[pack.data_ref for pack in rollout_data_packs],
+        )
+        if (error := _first_exception(outputs)) is not None:
+            raise error
+
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
             return None

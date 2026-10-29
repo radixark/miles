@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from miles.dashboard import hooks as dashboard_hooks
+from miles.ray.rollout.compile_warmup_data import compile_warmup_samples
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, RolloutExecutorEvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
@@ -54,6 +55,7 @@ from miles.utils.output_store.plan import StorePlanError
 from miles.utils.simple_checkpointer import atomic_save_folder
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.types import Sample
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
 from miles.utils.workers.rpc.common.metadata import DedicatedRpcLoopWorker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
@@ -233,23 +235,36 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self._unreleased_store_refs[rollout_id] = store_refs_of(data) | take_dropped_refs()
 
         with SampleOwnershipRecorder.suppress_drop_logging() if replay is not None else nullcontext():
-            train_data = convert_samples_to_train_data(
-                self.args,
-                data,
-                metadata=metadata,
-                custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
-                custom_reward_post_process_func=self.custom_reward_post_process_func,
+            return self._put_train_data(data, metadata=metadata, trainer_model_id=trainer_model_id)
+
+    async def put_compile_warmup_data(self, trainer_model_id: str | None = None) -> list[RolloutDataPack]:
+        """Synthetic train data, one pack per length bucket, stored like a rollout but outside any rollout."""
+        dp_size = self._train_parallel_configs_of_model_id[trainer_model_id].dp_size
+        return [
+            self._put_train_data(samples, metadata={}, trainer_model_id=trainer_model_id)
+            for samples in compile_warmup_samples(self.args, dp_size=dp_size).values()
+        ]
+
+    def _put_train_data(
+        self, samples: list[Sample], *, metadata: dict[str, Any], trainer_model_id: str | None
+    ) -> RolloutDataPack:
+        train_data = convert_samples_to_train_data(
+            self.args,
+            samples,
+            metadata=metadata,
+            custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
+            custom_reward_post_process_func=self.custom_reward_post_process_func,
+        )
+        sample_indices = train_data.get("sample_indices")
+        store = object_store.get_instance()
+        if self.args.delay_split_train_data_by_dp:
+            data_ref = store.put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+        else:
+            shards = split_train_data_by_dp(
+                self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
             )
-            sample_indices = train_data.get("sample_indices")
-            if self.args.delay_split_train_data_by_dp:
-                data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
-            else:
-                shards = split_train_data_by_dp(
-                    self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
-                )
-                store = object_store.get_instance()
-                data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
-            return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
+            data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+        return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
     async def release(self, rollout_id: int) -> None:
         """Delete the output store objects of rollout ``rollout_id``, which has trained."""

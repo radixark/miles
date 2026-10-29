@@ -188,6 +188,16 @@ class TrainConfig(BaseConfig):
             )
         ),
     ] = None
+    compile_warmup: A[
+        bool,
+        Arg(
+            help=(
+                "Compile every training pass for every length bucket on a synthetic batch while "
+                "eval-before-train and rollout 0 run, instead of during the first train step. For platforms that "
+                "compile one program per static shape (TPU)."
+            )
+        ),
+    ] = False
 
 
 class TrainRolloutOnlyConfig(BaseConfig):

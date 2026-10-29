@@ -304,6 +304,10 @@ class TrainRayActor(NodeProbeMixin):
     ) -> TrainStepOutput:
         raise NotImplementedError
 
+    def warm_up(self, rollout_data_refs: list[StoreObjectRef | list[StoreObjectRef]]) -> None:
+        """Run the per-rollout passes on synthetic data without changing the weights (--compile-warmup)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support --compile-warmup")
+
     @abc.abstractmethod
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         raise NotImplementedError
