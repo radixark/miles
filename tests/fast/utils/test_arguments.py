@@ -4024,6 +4024,7 @@ class TestValidateCompileWarmup:
                 {"custom_convert_samples_to_train_data_path": "pkg.convert"},
                 "--custom-convert-samples-to-train-data-path",
             ),
+            ({"custom_reward_post_process_path": "pkg.rewards"}, "--custom-reward-post-process-path"),
         ],
     )
     def test_a_run_the_synthetic_batch_cannot_mirror_is_refused(self, overrides: dict, flag: str) -> None:

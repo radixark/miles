@@ -280,6 +280,11 @@ class Dataset:
         return len(self.samples)
 
 
+def padded_token_count(num_tokens: int, pad_size: int) -> int:
+    """The length a packed microbatch of `num_tokens` tokens is padded to (get_batch)."""
+    return -(-num_tokens // pad_size) * pad_size
+
+
 def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     # use first fit to get the number of micro batches
     batches = []

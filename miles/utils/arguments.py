@@ -1805,6 +1805,7 @@ def validate_compile_warmup(args) -> None:
                 "--custom-convert-samples-to-train-data-path",
                 args.custom_convert_samples_to_train_data_path is not None,
             ),
+            ("--custom-reward-post-process-path", args.custom_reward_post_process_path is not None),
             ("--use-dynamic-global-batch-size", args.use_dynamic_global_batch_size),
             ("--rollout-top-logprobs-num", args.rollout_top_logprobs_num > 0),
             ("--rollout-top-p below 1 or a positive --rollout-top-k", args.use_sampling_support_replay),

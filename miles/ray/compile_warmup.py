@@ -18,7 +18,8 @@ class CompileWarmup:
     async def start(
         cls, args, *, actor_model: BaseWorkerHandle, rollout_executor: BaseWorkerHandle, disposer: Disposer
     ) -> "CompileWarmup":
-        if not args.compile_warmup:
+        # a rollout-only debug run builds no trainer to compile
+        if not args.compile_warmup or args.debug_rollout_only:
             return cls(task=None)
         packs = await rollout_executor.put_compile_warmup_data()
         warmup = cls(task=await eager_create_task(_warm_up(args, actor_model=actor_model, packs=packs)))

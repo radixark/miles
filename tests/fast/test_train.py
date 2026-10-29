@@ -34,6 +34,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         colocate_memory_peak_device="cpu",
         compile_warmup=False,
         debug_exit_after_rollout=None,
+        debug_rollout_only=False,
         eval_interval=None,
         eval_uses_snapshots=False,
         ft_components=[],
@@ -461,9 +462,15 @@ class TestCompileWarmup:
         assert events.count("warm_up_start") == 1
         assert held_at_train == [False, False]
 
-    async def test_no_warmup_without_the_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        ("compile_warmup", "debug_rollout_only"), [(False, False), (True, True)], ids=["off", "rollout_only"]
+    )
+    async def test_no_warmup_without_the_flag_or_a_trainer(
+        self, monkeypatch: pytest.MonkeyPatch, compile_warmup: bool, debug_rollout_only: bool
+    ) -> None:
+        """A rollout-only debug run builds no trainer, so there is nothing to compile."""
         events: list[str] = []
-        args = _make_args(num_rollout=1)
+        args = _make_args(num_rollout=1, compile_warmup=compile_warmup, debug_rollout_only=debug_rollout_only)
         components = _install_driver_fakes(monkeypatch, args, events)
 
         await with_disposer(train_driver.train, _startup_info(args))

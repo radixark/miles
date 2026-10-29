@@ -1,23 +1,28 @@
 """Synthetic rollouts that make the trainer compile its per-rollout passes before rollout 0 arrives (--compile-warmup)."""
 
 from miles.backends.torchtitan_utils.length_buckets import fixed_shape_length_bucket, fixed_shape_length_buckets
+from miles.utils.data import padded_token_count
 from miles.utils.types import Sample
 
 
 def compile_warmup_samples(args, *, dp_size: int) -> dict[int, list[Sample]]:
     """One optimizer step's worth of samples per length bucket, each DP rank's share packing into one microbatch.
 
-    Every sample has the same length, so any DP split gives each rank the same token sum, which lies in the
-    bucket's range and under the packer's --max-tokens-per-gpu cap.
+    Every sample has the same length, so any DP split gives each rank the same token sum, which stays under the
+    packer's --max-tokens-per-gpu cap and, padded as the trainer pads a microbatch, lies in the bucket's range.
     """
     seq_length = args.raw_torchtitan.seq_length
+    pad_size = args.raw_torchtitan.tensor_model_parallel_size * args.data_pad_size_multiplier
     num_local_samples = args.global_batch_size // dp_size
     samples_of_bucket = {}
     for bucket in sorted(fixed_shape_length_buckets(seq_length)):
-        length = min(bucket, args.max_tokens_per_gpu) // num_local_samples
+        # rounded down to the pad, so the padded microbatch stays within the bucket and --seq-length
+        budget = min(bucket, args.max_tokens_per_gpu) // pad_size * pad_size
+        length = budget // num_local_samples
+        padded_total = padded_token_count(length * num_local_samples, pad_size)
         # One microbatch cannot reach a bucket above the cap (only a lone sample longer than the cap does), nor a
         # bucket the local samples overshoot with their minimum of one prompt and one response token each.
-        if length >= 2 and fixed_shape_length_bucket(length * num_local_samples, seq_length) == bucket:
+        if length >= 2 and fixed_shape_length_bucket(padded_total, seq_length) == bucket:
             samples_of_bucket[bucket] = _synthetic_samples(args, length=length)
     return samples_of_bucket
 
