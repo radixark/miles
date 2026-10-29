@@ -294,7 +294,7 @@ def compute_mis_weights(
             total_weights_sum = sum(masked_sum(w, m) for w, m in zip(all_weights, loss_masks, strict=False))
             total_mask_count = sum(m.sum() for m in loss_masks)
             weights_mean = total_weights_sum / torch.clamp_min(total_mask_count, 1)
-        elif tis_level == "sequence":
+        elif tis_level in ("sequence", "geometric"):
             # Sequence-level: normalize over sequence weights (one weight per sequence)
             # For each sequence, compute mean over valid tokens (they all have the same weight)
             # then average across sequences
