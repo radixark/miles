@@ -50,7 +50,7 @@ Dispatch the branch-cut workflow:
 gh workflow run release-branch-cut.yml -f branch_name="${RELEASE_BRANCH}"
 ```
 
-Add `-f commit_sha=FULL_MAIN_SHA` to cut from a specific commit already on `main`; otherwise the workflow uses the checked-out `main` tip. On the first dispatch, it creates `release/vX.Y.Z`, records the SGLang and Megatron-LM commits in `release-lock.json`, retags the preflighted development image as `release-vX.Y.Z-ci`, and commits the lockfile on the release branch. Re-dispatching an existing branch preserves its lockfile and tests its current tip.
+Add `-f commit_sha=FULL_MAIN_SHA` to cut from a specific commit already on `main`; otherwise the workflow uses the checked-out `main` tip. On the first dispatch, it creates `release/vX.Y.Z`, records the SGLang and Megatron-LM commits in `release-lock.json` (with the published `sglang` wheel version for that commit, which the miles wheel built from the branch then depends on; the cut fails if `build-wheels.yml` has not published it yet), retags the preflighted development image as `release-vX.Y.Z-ci`, and commits the lockfile on the release branch. Re-dispatching an existing branch preserves its lockfile and tests its current tip.
 
 Release CUDA CI uses the CUDA 13 image and the locked `sglang_commit` and `megatron_commit`.
 

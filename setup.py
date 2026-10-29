@@ -1,9 +1,21 @@
+import json
+import os
+
 from setuptools import find_packages, setup
 
 
 def _fetch_requirements(path):
     with open(path) as fd:
         return [r.strip() for r in fd.readlines() if r.strip() and not r.startswith("#")]
+
+
+def _sglang_pin():
+    """The sglang-miles wheel a release branch was tested with; the images install miles --no-deps."""
+    if not os.path.exists("release-lock.json"):
+        return []
+    with open("release-lock.json") as fd:
+        wheel = json.load(fd).get("sglang_wheel")  # cuts before the field have no wheel to pin
+    return [f"sglang=={wheel}"] if wheel else []
 
 
 # Setup configuration
@@ -17,7 +29,7 @@ setup(
         "miles.dashboard": ["static/*"],
         "miles.utils.chat_template_utils.templates": ["*.jinja"],
     },
-    install_requires=_fetch_requirements("requirements.txt"),
+    install_requires=_fetch_requirements("requirements.txt") + _sglang_pin(),
     extras_require={
         "fsdp": [
             "torch>=2.0",
