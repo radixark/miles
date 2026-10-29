@@ -10,6 +10,7 @@ import torch
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.utils.args.configs.rollout import UPDATE_WEIGHT_TRANSFER_MODES
 
 if TYPE_CHECKING:
     from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
@@ -79,7 +80,8 @@ class WeightTransferProtocol(ABC):
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "disk", "shm"):
+    # an unknown mode must not fall through to the colocated transfer below
+    if mode not in UPDATE_WEIGHT_TRANSFER_MODES:
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")

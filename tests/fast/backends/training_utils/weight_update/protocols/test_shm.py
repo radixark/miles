@@ -3,6 +3,7 @@ import subprocess
 import sys
 from argparse import Namespace
 from concurrent.futures import Future
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -78,14 +79,14 @@ def _protocol(*, replica_rank: int, replica_size: int, tp_sizes: list[int]) -> U
     protocol._engine_tp_sizes = tp_sizes
     protocol._selector = "all"
     protocol._owned_buckets = OwnedBuckets(replica_rank=replica_rank, replica_size=replica_size)
-    protocol._max_in_flight = max(1, shm._MAX_BUCKETS_IN_FLIGHT_PER_HOST // replica_size)
+    protocol._max_in_flight = shm._MAX_BUCKETS_IN_FLIGHT_PER_HOST
     return protocol
 
 
 def _publish(protocol: UpdateWeightFromSharedMemory) -> None:
     protocol.begin_sync(weight_version=1, iter_buckets=None)
     for bucket in _BUCKETS:
-        protocol.send_bucket(bucket)
+        protocol.send_bucket(list(bucket))
     protocol.after_base_weights()
 
 
@@ -155,16 +156,17 @@ def test_every_receiving_process_can_open_the_bucket_after_the_others_released_i
     protocol.finalize(weight_version=1)
 
 
-def test_the_window_is_shared_by_the_hosts_replica_ranks():
-    """Each rank holds its share, so /dev/shm stays near the per-host bound however many ranks publish."""
-    assert (
-        _protocol(replica_rank=0, replica_size=1, tp_sizes=[1])._max_in_flight == shm._MAX_BUCKETS_IN_FLIGHT_PER_HOST
-    )
-    assert (
-        _protocol(replica_rank=0, replica_size=2, tp_sizes=[1])._max_in_flight
-        == shm._MAX_BUCKETS_IN_FLIGHT_PER_HOST // 2
-    )
-    assert _protocol(replica_rank=0, replica_size=64, tp_sizes=[1])._max_in_flight == 1
+@pytest.mark.parametrize("world_size,expected", [(1, 4), (4, 1), (64, 1)])
+def test_the_window_is_shared_by_every_rank_on_the_host(monkeypatch, world_size, expected):
+    """With PP each stage publishes its own buckets, so the window splits over all trainer ranks, not one stage's."""
+    monkeypatch.setattr(shm, "_MAX_BUCKETS_IN_FLIGHT_PER_HOST", 4)
+    monkeypatch.setattr(shm, "dist", SimpleNamespace(get_world_size=lambda: world_size))
+    # a PP=2 layout: half the ranks hold identical data
+    monkeypatch.setattr(shm, "get_data_replica_rank_and_size", lambda *_: (0, max(1, world_size // 2)))
+    monkeypatch.setattr(shm, "create_rollout_cell_updaters", lambda *_: {})
+    protocol = UpdateWeightFromSharedMemory(Namespace())
+    protocol.connect([], [], [], [], parallel_state=None, placement=None, selector="all")
+    assert protocol._max_in_flight == expected
 
 
 def test_a_sync_leaves_the_process_sharing_strategy_alone():
@@ -196,6 +198,13 @@ def test_only_engines_on_this_host_can_open_the_buckets():
     hosts = ("127.0.0.1", "localhost", "192.0.2.1", "[2001:db8::1]")
     engines = [SGLangApiClient(f"http://{host}:30000") for host in hosts]
     assert shm._engines_off_this_host(engines) == ["http://192.0.2.1:30000", "http://[2001:db8::1]:30000"]
+
+
+def test_an_unresolvable_engine_host_counts_as_elsewhere():
+    # .invalid never resolves (RFC 2606)
+    assert shm._engines_off_this_host([SGLangApiClient("http://engine.invalid:30000")]) == [
+        "http://engine.invalid:30000"
+    ]
 
 
 def test_the_payload_survives_sglangs_cuda_only_tensor_reducer(monkeypatch):
