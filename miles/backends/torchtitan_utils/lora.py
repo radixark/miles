@@ -10,7 +10,9 @@ from miles.backends.torchtitan_utils.lora_names import hf_export_names
 from miles.utils.lora.utils import matches_lora_target
 
 
-def convert_model_config(model_config: BaseModel.Config, *, hf_targets: list[str], rank: int, alpha: float):
+def convert_model_config(
+    model_config: BaseModel.Config, *, hf_targets: list[str], rank: int, alpha: float
+) -> BaseModel.Config:
     """``model_config`` with LoRA on exactly the Linear projections ``hf_targets`` name."""
     sd_adapter = model_config._owner.state_dict_adapter_cls(model_config, None)
     hf_names_by_projection = {
