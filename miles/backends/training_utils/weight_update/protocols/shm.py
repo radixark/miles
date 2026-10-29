@@ -38,7 +38,7 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
     """
     Host weight sync through shared memory, for engines on the trainer's host. Each gathered bucket goes
     to the replica rank with the fewest bytes so far, which copies it flattened into a shared-memory tensor
-    once the collective gathers are done, and hand the engines its handle through
+    once the collective gathers are done, and hands the engines its handle through
     /update_weights_from_tensor; each engine maps it in place, with no file written or parsed.
     A bucket is published as soon as it is in shared memory, so the copies overlap the engine loads, and only
     a few shared-memory buckets are alive at once (`_MAX_BUCKETS_IN_FLIGHT_PER_HOST`).
