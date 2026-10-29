@@ -451,6 +451,12 @@ class DataIterator:
             self.offset += self.micro_batch_size
         return batch
 
+    def microbatch_indices(self, count: int) -> list[list[int]]:
+        """Sample indices of the first `count` micro-batches, in the order `get_next` yields them."""
+        if self.micro_batch_indices is not None:
+            return self.micro_batch_indices[:count]
+        return [list(range(i * self.micro_batch_size, (i + 1) * self.micro_batch_size)) for i in range(count)]
+
     def reset(self) -> "DataIterator":
         """Reset internal offset to the start and return self."""
         self.offset = 0

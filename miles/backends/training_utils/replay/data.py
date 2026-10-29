@@ -1,13 +1,8 @@
-from typing import Protocol
-
 import torch
 
 from miles.backends.training_utils.data.context_parallel import CPLayout, take_ranges
 from miles.backends.training_utils.parallel import get_parallel_state
-
-
-class RegisterReplayListFunc(Protocol):
-    def __call__(self, replay_list: list, replay_data: torch.Tensor, **kwargs) -> None: ...
+from miles.utils.replay_base import BaseReplayManager
 
 
 def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
@@ -27,38 +22,37 @@ def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
         replay.record(replay_data[:, stream_idx])
 
 
-def fill_replay_data(
+def attach_replay_data(
+    manager: BaseReplayManager,
     *,
     args,
     models,
     data_iterator,
     num_microbatches,
     rollout_data,
-    data_key: str,
-    replay_list: list,
-    register_replay_list_func: RegisterReplayListFunc,
-    if_sp_region=True,
-    indices_are_token_positions=False,
     sequence_first=False,
-    kept_in_train_dump=False,
+    align=None,
 ):
-    """Load rollout replay tensors into module replay queues.
+    """Load rollout replay tensors into `manager`'s replay queues, one micro batch per `fill(index)`.
 
-    `rollout_data[data_key]` contains one tensor per sample with shape
-    `[num_tokens - 1, num_streams, topk]`. This function replays the training
-    data iterator to process those tensors in the same microbatch order as
-    log-prob and train forwards, pads/slices them to match the local CP/SP
-    token layout, and then delegates stream-to-module mapping to
-    `register_replay_list_func`.
+    `rollout_data[manager.data_key]` contains one tensor per sample with shape
+    `[num_tokens - 1, num_streams, topk]`. Micro batch `index` holds the samples
+    the log-prob and train forwards see as their `index`-th micro batch; their
+    tensors are padded/sliced to match the local CP/SP token layout, and
+    stream-to-module mapping is delegated to `manager.register_replay_list_func`.
+    Every micro batch is filled before this returns.
 
     For `bshd`, `sequence_first` selects Megatron MoE's `[S, B]` token order;
-    indexer replay consumes the default `[B, S]` order.
+    indexer replay consumes the default `[B, S]` order. `align`, if given, is
+    applied to each recorded entry.
     """
+    data_key = manager.data_key
     if data_key not in rollout_data:
         raise ValueError(f"{data_key} is required in rollout_data for replay.")
 
-    for iterator in data_iterator:
-        iterator.reset()
+    order = data_iterator[0].microbatch_indices(sum(num_microbatches))
+    # A train-data dump, written after training, keeps the column so it holds what replay consumed.
+    keep_column = manager.kept_in_train_dump and args.save_debug_train_data is not None
 
     parallel_state = get_parallel_state()
     tp_rank = parallel_state.tp.rank
@@ -75,17 +69,15 @@ def fill_replay_data(
         )
         return torch.cat([data, pad_tensor], dim=0)
 
-    for _ in range(sum(num_microbatches)):
-        batch = data_iterator[0].get_next([data_key, "tokens", "max_seq_lens"])
-        replay_data = batch[data_key]
-        tokens = batch["tokens"]
-        assert len(replay_data) == len(tokens)
+    def fill(index):
+        replay_data = [rollout_data[data_key][j] for j in order[index]]
+        tokens = [rollout_data["tokens"][j] for j in order[index]]
         for a, b in zip(replay_data, tokens, strict=False):
             assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
 
         # Row p replays token p. The final token has no row, so it is padded like the CP padding; the
         # padded positions are masked from loss.
-        max_seq_len = batch["max_seq_lens"][0] if qkv_format == "bshd" else None
+        max_seq_len = rollout_data["max_seq_lens"][order[index][0]] if qkv_format == "bshd" else None
         pad_size = None if qkv_format == "bshd" else parallel_state.tp.size * args.data_pad_size_multiplier
         layout = CPLayout.build(
             qkv_format=qkv_format,
@@ -108,7 +100,7 @@ def fill_replay_data(
             # The ranges already cover this rank's piece of the padded concatenation.
             replay_data = torch.cat(replay_data, dim=0)
         else:
-            if indices_are_token_positions:
+            if manager.replay_indices_are_token_positions:
                 # map indices to thd format
                 offset = 0
                 for i, r in enumerate(replay_data):
@@ -120,17 +112,18 @@ def fill_replay_data(
                 replay_data = pad_func(replay_data, pad)
 
         # sequence_parallel is Megatron-only; FSDP has tp_size == 1 so the slice is a no-op there.
-        if args.train_backend == "megatron" and args.backend.sequence_parallel and if_sp_region:
+        if args.train_backend == "megatron" and args.backend.sequence_parallel and manager.if_sp_region:
             seqlen = replay_data.size(0)
             assert seqlen % tp_size == 0
             start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
             replay_data = replay_data[start:end]
 
-        register_replay_list_func(replay_list, replay_data, models=models)
+        manager.register_replay_list_func(manager.replays, replay_data, models=models)
+        if align is not None:
+            for replay in manager.replays:
+                replay.top_indices_list[-1] = align(replay.top_indices_list[-1], -1)
+        if index == len(order) - 1 and not keep_column:
+            del rollout_data[data_key]
 
-    # A train-data dump, written after training, keeps the column so it holds what replay consumed.
-    if not (kept_in_train_dump and args.save_debug_train_data is not None):
-        del rollout_data[data_key]
-
-    for iterator in data_iterator:
-        iterator.reset()
+    manager.attach(fill)
+    manager.fill_through(len(order) - 1)

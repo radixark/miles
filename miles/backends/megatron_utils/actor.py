@@ -34,7 +34,7 @@ from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionWeightVersionUtils,
 )
-from miles.backends.training_utils.replay.data import fill_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.replay.data import attach_replay_data, register_replay_list_sequential
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
@@ -747,19 +747,14 @@ class MegatronTrainRayActor(TrainRayActor):
 
         for m in all_replay_managers:
             if self._use_rollout_replay(m):
-                fill_replay_data(
+                attach_replay_data(
+                    m,
                     args=self.args,
                     models=self.model,
                     data_iterator=data_iterator,
                     num_microbatches=num_microbatches,
                     rollout_data=rollout_data,
-                    data_key=m.data_key,
-                    replay_list=m.replays,
-                    register_replay_list_func=m.register_replay_list_func,
-                    if_sp_region=m.if_sp_region,
-                    indices_are_token_positions=m.replay_indices_are_token_positions,
                     sequence_first=m is routing_replay_manager,
-                    kept_in_train_dump=m.kept_in_train_dump,
                 )
 
         with inverse_timer("train_wait"), timer("train"):
