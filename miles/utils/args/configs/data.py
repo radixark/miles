@@ -61,6 +61,16 @@ class DataConfig(BaseConfig):
             )
         ),
     ] = None
+    rollout_data_yaml_config: A[
+        str | None,
+        Arg(
+            help=(
+                "Path to a YAML file, or an inline `base64:<payload>`, listing the training datasets to mix and "
+                "how many prompts each contributes per rollout step. Replaces --prompt-data. "
+                "Validated at startup; no data source reads it yet, so setting it stops the run with an error."
+            )
+        ),
+    ] = None
     apply_chat_template: A[bool, Arg()] = False
     # Temporarily be JSON-serialized str, will be a real dict after using Omegaconf
     apply_chat_template_kwargs: A[Any, Arg(type_parser=json.loads)] = "{}"
