@@ -58,6 +58,10 @@ class Replay:
 class BaseReplayManager:
     name: str = ""
     filename: str = ""
+    # Defined by each subclass: the rollout column to replay, and whether sequence parallelism
+    # splits its rows across tensor-parallel ranks.
+    data_key: str
+    if_sp_region: bool
     replay_check_min_overlap_ratio = 0.0  # 0.0 = mismatch only on zero overlap
     # True when replayed indices are token/KV positions (indexer): rebase the
     # per-sample 0-based rollout indices onto the packed training sequence.
