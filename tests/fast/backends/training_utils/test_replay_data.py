@@ -260,14 +260,14 @@ def test_fill_replay_thd_allgather_cp(monkeypatch, indexer):
 
 
 @pytest.mark.parametrize(
-    "schedule,expected",
+    "schedule,num_microbatches,expected",
     [
-        (dict(micro_batch_size=1), [[0, 1, -1], [2, 3, -1]]),
-        (dict(micro_batch_indices=[[1], [0]]), [[2, 3, -1], [0, 1, -1]]),
+        (dict(micro_batch_size=1), [1, 1], [[0, 1, -1], [2, 3, 4, -1]]),
+        (dict(micro_batch_indices=[[1], [0]]), [2], [[2, 3, 4, -1], [0, 1, -1]]),
     ],
     ids=["fixed", "balanced"],
 )
-def test_attach_fills_micro_batches_in_the_iterator_order(monkeypatch, schedule, expected):
+def test_attach_fills_micro_batches_in_the_iterator_order(monkeypatch, schedule, num_microbatches, expected):
     state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
     monkeypatch.setattr(parallel, "_parallel_state", state)
     args = SimpleNamespace(
@@ -279,23 +279,25 @@ def test_attach_fills_micro_batches_in_the_iterator_order(monkeypatch, schedule,
         save_debug_train_data=None,
     )
     rollout_data = {
-        "routes": [torch.tensor([0, 1]).reshape(2, 1, 1), torch.tensor([2, 3]).reshape(2, 1, 1)],
-        "tokens": [torch.arange(3), torch.arange(3)],
+        "routes": [torch.tensor([0, 1]).reshape(2, 1, 1), torch.tensor([2, 3, 4]).reshape(3, 1, 1)],
+        "tokens": [torch.arange(3), torch.arange(4)],
         "max_seq_lens": None,
     }
     replay = _Replay()
+    iterator = DataIterator(rollout_data, **schedule)
 
     attach_replay_data(
         _manager([replay]),
         args=args,
         models=None,
-        data_iterator=[DataIterator(rollout_data, **schedule)],
-        num_microbatches=[2],
+        data_iterator=[iterator],
+        num_microbatches=num_microbatches,
         rollout_data=rollout_data,
     )
 
     assert [entry[:, 0].tolist() for entry in replay.recorded] == expected
     assert "routes" not in rollout_data
+    assert iterator.offset == 0
 
 
 def test_attach_aligns_each_recorded_entry_once(monkeypatch):
