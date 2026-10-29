@@ -162,6 +162,9 @@ def _execute(args: ScriptArgs):
     if args.compile_cache_dir and "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT" not in os.environ:
         # read once per process at its first compile; ray workers inherit it through `ray start`
         os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = args.compile_cache_root
+    # torch's AOTAutograd cache keys torch_tpu programs without their devices, so a run on another device set
+    # loads programs it cannot run and recompiles them; torch_tpu's own cache above keys the devices
+    os.environ.setdefault("TORCHINDUCTOR_AUTOGRAD_CACHE", "0")
     os.environ["TORCH_TPU_SLICEBUILDER_ADDRESSES"] = ",".join(
         f"localhost:{port}" for port in _free_ports(NUM_TRAINER_DEVICES)
     )
