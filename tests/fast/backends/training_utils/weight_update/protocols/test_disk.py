@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from argparse import Namespace
 from concurrent.futures import Future
 from pathlib import Path
@@ -12,6 +14,7 @@ from miles.backends.training_utils.weight_update.protocols import disk
 from miles.backends.training_utils.weight_update.protocols.disk import UpdateWeightFromDisk
 from miles.backends.training_utils.weight_update.protocols.utils import rank_errors
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import OwnedBuckets
+from miles.backends.training_utils.weight_update.protocols.utils.owner import owner_tag
 
 _BUCKETS = [
     [("layers.0.w", torch.full((2, 3), 0.0)), ("layers.0.b", torch.full((3,), 0.5))],
@@ -26,12 +29,6 @@ class _RecordingCellUpdater:
         self._calls = calls
 
     def submit_client_call(self, name: str, **kwargs) -> Future:
-        self._calls.append((name, kwargs))
-        done: Future = Future()
-        done.set_result({"success": True})
-        return done
-
-    def submit_unbounded_client_call(self, name: str, **kwargs) -> Future:
         self._calls.append((name, kwargs))
         done: Future = Future()
         done.set_result({"success": True})
@@ -72,6 +69,7 @@ def _protocol(tmp_path: Path, *, replica_rank: int, replica_size: int, calls: li
         colocate=False,
     )
     protocol = UpdateWeightFromDisk(args)
+    protocol.run_dir = str(tmp_path / "sync" / "run-this")
     protocol._owned_buckets = OwnedBuckets(replica_rank=replica_rank, replica_size=replica_size)
     protocol.cell_updaters_of_cell_id = {"cell-0": _RecordingCellUpdater(calls)}
     return protocol
@@ -97,7 +95,7 @@ def _no_gloo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_the_replica_ranks_write_every_tensor_once_and_the_index_finds_it(tmp_path, monkeypatch):
-    """Round-robin ownership must neither drop nor duplicate a bucket, and the merged index must point at its shard."""
+    """Byte-balanced ownership must neither drop nor duplicate a bucket, and the merged index must find its shard."""
     calls: list = []
     ranks = [_protocol(tmp_path, replica_rank=rank, replica_size=2, calls=calls) for rank in range(2)]
     for rank, protocol in enumerate(ranks):
@@ -156,26 +154,44 @@ def test_a_failed_engine_reload_raises(tmp_path, monkeypatch):
         done.set_result({"success": name != "update_weights_from_disk", "error_message": "bad shard"})
         return done
 
-    protocol.cell_updaters_of_cell_id = {
-        "cell-0": SimpleNamespace(submit_client_call=_reject, submit_unbounded_client_call=_reject)
-    }
+    protocol.cell_updaters_of_cell_id = {"cell-0": SimpleNamespace(submit_client_call=_reject)}
     _write(protocol, monkeypatch, rank=0, weight_version=1)
     _use_dist(monkeypatch, _FakeDist(0, world_size=1))
     with pytest.raises(RuntimeError, match="bad shard"):
         protocol.finalize(weight_version=1)
 
 
-def test_the_first_sync_clears_the_versions_a_crashed_run_left(tmp_path, monkeypatch):
-    """Each version is a full checkpoint, and a resumed run rewrites its version over the crashed attempt's shards."""
+def test_the_first_sync_deletes_the_runs_that_ended_on_this_host_and_no_live_or_remote_one(tmp_path, monkeypatch):
+    """A run ends by a kill and leaves its last version behind; only a run whose trainer is gone may lose it."""
+    host, namespace, _ = owner_tag().rsplit("-", 2)
+    ended = subprocess.Popen([sys.executable, "-c", "pass"])
+    ended.wait()
     sync_dir = tmp_path / "sync"
-    (sync_dir / "weight_v000001").mkdir(parents=True)
-    (sync_dir / "weight_v000003").mkdir()
-    (sync_dir / "weight_v000003" / "rank007-shard00000.safetensors").write_text("partial")
+    for tag in (f"{host}-{namespace}-{ended.pid}", owner_tag(), f"other-host-{namespace}-{ended.pid}"):
+        (sync_dir / f"run-{tag}" / "weight_v000004").mkdir(parents=True)
     protocol = _protocol(tmp_path, replica_rank=0, replica_size=1, calls=[])
     _write(protocol, monkeypatch, rank=0, weight_version=3)
 
-    assert sorted(path.name for path in sync_dir.iterdir()) == ["weight_v000003"]
-    assert not (sync_dir / "weight_v000003" / "rank007-shard00000.safetensors").exists()
+    assert sorted(path.name for path in sync_dir.iterdir()) == sorted(
+        ["run-this", f"run-{owner_tag()}", f"run-other-host-{namespace}-{ended.pid}"]
+    )
+
+
+def test_a_version_that_cannot_be_deleted_is_reported_and_the_sync_goes_on(tmp_path, monkeypatch, caplog):
+    """A version dir left behind is a full checkpoint on shared storage, so it must not vanish silently."""
+
+    def _read_only(path):
+        raise PermissionError("read-only")
+
+    protocol = _protocol(tmp_path, replica_rank=0, replica_size=1, calls=[])
+    for weight_version in (1, 2):
+        _write(protocol, monkeypatch, rank=0, weight_version=weight_version)
+        _use_dist(monkeypatch, _FakeDist(0, world_size=1))
+        if weight_version == 2:
+            monkeypatch.setattr(disk.shutil, "rmtree", _read_only)
+        protocol.finalize(weight_version=weight_version)
+
+    assert "could not delete" in caplog.text and "weight_v000001" in caplog.text
 
 
 def test_a_version_directory_rank_0_cannot_create_fails_every_rank(tmp_path, monkeypatch):
