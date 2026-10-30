@@ -91,7 +91,7 @@ from .model import (
 )
 from .named_weights import named_params_and_buffers
 from .optimizer_utils import reset_optimizer_state
-from .parallel import verify_megatron_parallel_state
+from .parallel import verify_allgather_cp_support, verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
@@ -239,6 +239,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
 
         verify_megatron_parallel_state(self.model)
+        # After the hybrid-CP setup above, which decides whether those layers read the contiguous layout.
+        verify_allgather_cp_support(self.model, allgather_cp=args.allgather_cp)
 
         self._asleep = False
         self._grad_buffer_paused = False

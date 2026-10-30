@@ -515,6 +515,10 @@ class LinearAttentionLayer(MegatronModule):
         for param in self.input_layernorm.parameters():
             param.sequence_parallel = self.sequence_parallel
 
+    @property
+    def supports_allgather_cp(self) -> bool:
+        return self.allgather_cp
+
     def _global_cu_seqlens(self, hidden_states, packed_seq_params):
         if packed_seq_params is not None and packed_seq_params.cu_seqlens_q is not None:
             return packed_seq_params.cu_seqlens_q
