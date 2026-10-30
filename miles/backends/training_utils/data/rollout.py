@@ -12,7 +12,7 @@ from miles.backends.training_utils.data.multimodal import expand_multimodal_roll
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
+from miles.utils.data import get_minimum_num_micro_batch_size, padded_token_count, process_rollout_data
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.object_store import ObjectStoreGetResult
@@ -291,7 +291,7 @@ def get_batch(
             tokens = torch.cat(tokens)
 
             # Always pad to reduce memory fragmentation and maybe make the computation faster
-            pad = (pad_size - tokens.size(0) % pad_size) % pad_size
+            pad = padded_token_count(tokens.size(0), pad_size) - tokens.size(0)
             if pad != 0:
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
                 cu_seqlens.append(cu_seqlens[-1] + pad)

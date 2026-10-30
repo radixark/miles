@@ -56,6 +56,8 @@ Model and data default to `/root/models` and `/root/datasets` (`--model-dir`, `-
    on disk (on a shared filesystem, for every host), so a later run with the same shapes, flags and
    torch_tpu build loads them instead. It grows with every new shape, flag set and build (tens of GB over
    many runs): delete a `torch_tpu-<build>` directory once no job uses that build.
+   `--compile-warmup`, which the launcher passes, compiles them on a synthetic batch while
+   eval-before-train and rollout 0 run, instead of after rollout 0 arrives.
 
 wandb is on when `WANDB_API_KEY` is set or `~/.netrc` holds the key; `--wandb-project ""`
 turns it off.

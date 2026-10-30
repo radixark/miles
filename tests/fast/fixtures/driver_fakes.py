@@ -51,6 +51,8 @@ class FakeRolloutExecutor:
         self.report_eval_skip = FakeRemoteMethod(self._report_eval_skip)
         self.released: list[int] = []
         self.release = FakeRemoteMethod(self._release)
+        self.compile_warmup_packs: list[RolloutDataPack] = []
+        self.put_compile_warmup_data = FakeRemoteMethod(self._put_compile_warmup_data)
 
     async def _get(self, rollout_id: int) -> RolloutDataPack:
         self.events.append(f"generate_start:{rollout_id}")
@@ -71,6 +73,10 @@ class FakeRolloutExecutor:
 
     async def _release(self, rollout_id: int) -> None:
         self.released.append(rollout_id)
+
+    async def _put_compile_warmup_data(self) -> list[RolloutDataPack]:
+        self.events.append("put_compile_warmup_data")
+        return self.compile_warmup_packs
 
     async def dispose(self) -> None:
         if self._disposed:
@@ -123,6 +129,7 @@ class FakeTrainingModel:
         self.train_outputs: dict[int, Any] = {}
         self.train_started: dict[int, asyncio.Event] = defaultdict(asyncio.Event)
         self.consume_external_data: Callable[[Any], None] | None = None
+        self.warm_up_packs: list[list[RolloutDataPack]] = []
 
     async def train(self, rollout_id: int, rollout_data: Any, external_data: Any = None) -> Any:
         self.events.append(f"{self.role}_train:{rollout_id}")
@@ -132,6 +139,10 @@ class FakeTrainingModel:
             consume(external_data)
         self.train_started[rollout_id].set()
         return self.train_outputs.get(rollout_id, f"{self.role}-values-{rollout_id}")
+
+    async def warm_up(self, rollout_data_packs: list[RolloutDataPack]) -> None:
+        self.events.append(f"{self.role}_warm_up")
+        self.warm_up_packs.append(rollout_data_packs)
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         self.events.append(f"{self.role}_save:{rollout_id}")

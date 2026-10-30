@@ -4,6 +4,7 @@ import os
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
+from miles.ray.compile_warmup import CompileWarmup
 from miles.ray.placement_group import (
     create_rollout_components,
     create_trainer_handles,
@@ -65,6 +66,9 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
 
     # always update weight first so that sglang has the loaded weights from training.
     await update_weights(args, actor_model, rollout_executor, inference_controller)
+    compile_warmup = await CompileWarmup.start(
+        args, actor_model=actor_model, rollout_executor=rollout_executor, disposer=disposer
+    )
 
     if args.check_weight_update_equal:
         await inference_controller.check_weights(
@@ -136,6 +140,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
                     offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
                 await inference_controller.offload(tags=offload_tags)
 
+        await compile_warmup.wait()
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_pack)
             if args.offload_train:

@@ -125,8 +125,7 @@ def test_splash_attention_needs_a_tpu_and_whole_1024_token_tiles(monkeypatch):
 @pytest.mark.parametrize("seq_len", [1000, 1024, 3000, 8192])
 def test_the_recompile_limit_counts_every_length_bucket(seq_len):
     """A bucket the limit misses is one compile too many, which a fullgraph block turns into a crash."""
-    pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.trainer import fixed_shape_length_bucket, fixed_shape_length_buckets
+    from miles.backends.torchtitan_utils.length_buckets import fixed_shape_length_bucket, fixed_shape_length_buckets
 
     assert {fixed_shape_length_bucket(n, seq_len) for n in range(1, seq_len + 1)} == fixed_shape_length_buckets(
         seq_len

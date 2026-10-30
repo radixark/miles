@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 
+from miles.ray.compile_warmup import CompileWarmup
 from miles.ray.placement_group import (
     create_rollout_components,
     create_trainer_handles,
@@ -59,6 +60,9 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
 
     # always update weight first so that sglang has the loaded weights from training.
     await update_weights(args, actor_model, rollout_executor, inference_controller)
+    compile_warmup = await CompileWarmup.start(
+        args, actor_model=actor_model, rollout_executor=rollout_executor, disposer=disposer
+    )
 
     if args.check_weight_update_equal:
         await inference_controller.check_weights(
@@ -121,6 +125,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             if has_next_rollout and not defer_next_drain:
                 rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
+        await compile_warmup.wait()
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref)
             if args.offload_train:

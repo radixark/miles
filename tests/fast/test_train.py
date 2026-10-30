@@ -1,3 +1,4 @@
+import asyncio
 from functools import partial
 from types import SimpleNamespace
 from typing import Any
@@ -18,6 +19,7 @@ from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutpu
 from miles.ray import placement_group, wiring
 from miles.utils import object_store
 from miles.utils.async_utils import with_disposer
+from miles.utils.data import RolloutDataPack
 from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo
 
 
@@ -30,7 +32,9 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         check_weight_update_selector=None,
         check_weight_update_skip_list=None,
         colocate_memory_peak_device="cpu",
+        compile_warmup=False,
         debug_exit_after_rollout=None,
+        debug_rollout_only=False,
         eval_interval=None,
         eval_uses_snapshots=False,
         ft_components=[],
@@ -421,3 +425,55 @@ class TestOutputStoreRelease:
         await with_disposer(train_driver.train, _startup_info(args))
 
         assert trained_at_release == [(0, [0]), (1, [0, 1]), (2, [0, 1, 2])]
+
+
+class TestCompileWarmup:
+    async def test_the_warmup_overlaps_rollout_0_and_frees_its_data_before_the_first_train(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The trainer compiles while rollout 0 generates, and only the first train waits for it."""
+        events: list[str] = []
+        args = _make_args(num_rollout=2, compile_warmup=True)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        store = FakeObjectStore()
+        monkeypatch.setattr(object_store, "_INSTANCE", store)
+        packs = [RolloutDataPack(data_ref=[store.put(bucket)]) for bucket in (1024, 2048)]
+        components.rollout_executor.compile_warmup_packs = packs
+        refs = [ref for pack in packs for ref in pack.data_refs]
+        held_at_train: list[bool] = []
+        components.actor_model.consume_external_data = lambda _values: held_at_train.append(
+            any(store.contains(ref) for ref in refs)
+        )
+
+        async def warm_up_until_rollout_0_is_generated(rollout_data_packs: list[RolloutDataPack]) -> None:
+            assert rollout_data_packs == packs
+            events.append("warm_up_start")
+            while "generate_done:0" not in events:
+                await asyncio.sleep(0)
+            events.append("warm_up_done")
+
+        components.actor_model.warm_up = warm_up_until_rollout_0_is_generated
+
+        await asyncio.wait_for(with_disposer(train_driver.train, _startup_info(args)), timeout=30)
+
+        assert events.index("update_weights:None") < events.index("put_compile_warmup_data")
+        assert events.index("warm_up_start") < events.index("generate_start:0")
+        assert events.index("warm_up_done") < events.index("actor_train:0")
+        assert events.count("warm_up_start") == 1
+        assert held_at_train == [False, False]
+
+    @pytest.mark.parametrize(
+        ("compile_warmup", "debug_rollout_only"), [(False, False), (True, True)], ids=["off", "rollout_only"]
+    )
+    async def test_no_warmup_without_the_flag_or_a_trainer(
+        self, monkeypatch: pytest.MonkeyPatch, compile_warmup: bool, debug_rollout_only: bool
+    ) -> None:
+        """A rollout-only debug run builds no trainer, so there is nothing to compile."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, compile_warmup=compile_warmup, debug_rollout_only=debug_rollout_only)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert "put_compile_warmup_data" not in events
+        assert components.actor_model.warm_up_packs == []
