@@ -25,7 +25,7 @@ class TestLaunchWorkerManager:
     def test_a_ray_run_launches_the_ray_worker_manager(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The Ray path is the one every existing run takes, and it must be untouched."""
         launched: list[Any] = []
-        monkeypatch.setattr(wiring, "_launch_ray_worker_manager", lambda args: launched.append(args))
+        monkeypatch.setattr(wiring, "_launch_ray_worker_manager", lambda args, *, worker_env: launched.append(args))
 
         args = SimpleNamespace(cluster_backend=ClusterBackend.RAY.value)
         wiring.launch_worker_manager(args)
@@ -136,11 +136,11 @@ class TestTheWireTheWorkerManagerIsLaunchedWith:
         monkeypatch.setattr(
             wiring.RayWorkerManager,
             "launch",
-            staticmethod(lambda args, specs, pgs, *, comm_backend: launched.append(comm_backend)),
+            staticmethod(lambda args, specs, pgs, *, comm_backend, worker_env: launched.append(comm_backend)),
         )
 
         args = SimpleNamespace(cluster_backend=ClusterBackend.RAY.value, worker_comm_backend=resolved)
-        wiring._launch_ray_worker_manager(args)
+        wiring._launch_ray_worker_manager(args, worker_env=None)
 
         assert launched == [WorkerCommBackend(resolved)]
 

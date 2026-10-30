@@ -8,9 +8,15 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
+from miles.ray.rollout.debug_data import (
+    RolloutDataInjectionUtil,
+    drop_conversations_not_dumped,
+    load_debug_rollout_data,
+    save_debug_rollout_data,
+)
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, RolloutExecutorEvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
+from miles.ray.rollout.observer_reports import report_data_buffer, report_rollout_samples
 from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
@@ -29,7 +35,7 @@ from miles.rollout.base_types import (
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
-from miles.utils import object_store
+from miles.utils import object_store, observers
 from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.custom_view import ImmutableNamespace, compute_custom_function_config
 from miles.utils.args.runtime_base import BaseLeafConfig
@@ -104,6 +110,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
     @init_once
     async def init(self) -> None:
         args = self.args
+        observers.start_process("rollout_manager")
         if args.starts_inference_engines:
             await resolve_router_addrs(args, router_providers=self._router_providers)
             await wait_session_server_ready(args, provider=self._session_server_provider)
@@ -279,11 +286,17 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         if (
             get_buffer_length := getattr(self.data_source, "get_buffer_length", None)
         ) is not None:  # config-access-exempt: custom data sources may omit this lifecycle method
-            dashboard_hooks.report_data_buffer(get_buffer_length())
+            buffer_length = get_buffer_length()
+            dashboard_hooks.report_data_buffer(buffer_length)
+            if buffer_length is not None:
+                report_data_buffer(buffer_length)
         with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
             data, metadata, metrics = await self._get_rollout_data(
                 rollout_id=rollout_id, trainer_model_id=trainer_model_id
             )
+        # before the dump, which moves recorded conversations out of the samples
+        report_rollout_samples(data, rollout_id=rollout_id, evaluation=False)
+        drop_conversations_not_dumped(self.args, data, evaluation=False)
         save_debug_rollout_data(
             self.args,
             data,
@@ -328,6 +341,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                     evaluation=True,
                 )
         data = result.data
+        report_rollout_samples(data, rollout_id=rollout_id, evaluation=True)
+        drop_conversations_not_dumped(self.args, data, evaluation=True)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         if self._metric_checker is not None:
@@ -371,6 +386,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 return self.report_eval_skip(rollout_id, e.reason)
 
             data = result.data
+            report_rollout_samples(data, rollout_id=rollout_id, evaluation=True)
+            drop_conversations_not_dumped(self.args, data, evaluation=True)
             save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
             extra_metrics = dict(result.metrics or {})
             if (last_get_rollout_id := _single_or_none(self.last_get_rollout_id_of_model_id.values())) is not None:

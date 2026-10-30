@@ -17,7 +17,7 @@ from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadCon
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.platforms import current_platform
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.utils import object_store
+from miles.utils import object_store, observers
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
@@ -126,6 +126,7 @@ class TrainRayActor(NodeProbeMixin):
 
         object_store.init_instance(args)
         self.output_store_read = output_store_reader(args)
+        observers.start_process("train", rank=rank, gpus=ray.get_gpu_ids)
 
     @functools.cached_property
     def _model_flops(self) -> ModelFlops | None:

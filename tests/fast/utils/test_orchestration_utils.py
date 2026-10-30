@@ -1,13 +1,17 @@
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 
 import miles.utils.orchestration_utils as orchestration_utils
+from miles.utils import observers
 from miles.utils.async_utils import Disposer
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo, PayloadOrchestratorStartupInfo
 from miles.utils.tracking_utils import tracking
 from miles.utils.tracking_utils.base import TrackingManager
+
+_RUN_UUID = "0123456789abcdef"
 
 
 class TestInitOrchestrationScript:
@@ -25,7 +29,8 @@ class TestInitOrchestrationScript:
             async with Disposer() as disposer:
                 orchestration_utils.init_orchestration_script(
                     ArgvOrchestratorStartupInfo(
-                        args=Namespace(enabled=True, resources=resources), all_args=Namespace()
+                        args=Namespace(enabled=True, resources=resources, use_miles_dashboard=False),
+                        all_args=Namespace(),
                     ),
                     disposer=disposer,
                 )
@@ -35,7 +40,13 @@ class TestInitOrchestrationScript:
     def test_initializes_the_shared_driver_machinery_in_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every driver restores the event history first, then initializes the shared machinery in order."""
         args = Namespace(
-            run="test", ci_fault_hooks=None, ci_fault_hooks_path=None, wandb_run_id="wandb", mlflow_run_id="mlflow"
+            run="test",
+            run_uuid=_RUN_UUID,
+            ci_fault_hooks=None,
+            ci_fault_hooks_path=None,
+            wandb_run_id="wandb",
+            mlflow_run_id="mlflow",
+            use_miles_dashboard=False,
         )
         all_args = Namespace(wandb_run_id=None, mlflow_run_id=None)
         worker_manager = object()
@@ -59,7 +70,7 @@ class TestInitOrchestrationScript:
             calls.append("init_tracking")
             captured["tracking_args"] = actual_args
 
-        def fake_launch_worker_manager(actual_args: Namespace) -> object:
+        def fake_launch_worker_manager(actual_args: Namespace, *, worker_env: dict[str, str]) -> object:
             calls.append("launch_worker_manager")
             captured["worker_manager_args"] = actual_args
             captured["worker_manager_run_ids"] = (actual_args.wandb_run_id, actual_args.mlflow_run_id)
@@ -113,7 +124,14 @@ class TestInitOrchestrationScript:
 
     def test_a_payload_started_orchestrator_launches_no_workers(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The launcher installed the workers, so the capability comes from the payload's static connections."""
-        args = Namespace(run="test", ci_fault_hooks=None, ci_fault_hooks_path=None, cluster_backend="kubernetes")
+        args = Namespace(
+            run="test",
+            run_uuid=_RUN_UUID,
+            ci_fault_hooks=None,
+            ci_fault_hooks_path=None,
+            cluster_backend="kubernetes",
+            use_miles_dashboard=False,
+        )
         static_connections = object()
         capability = object()
         captured: dict[str, object] = {}
@@ -159,7 +177,7 @@ class TestInitOrchestrationScript:
         monkeypatch.setattr(orchestration_utils, "configure_logger", lambda _args, *, source: None)
         monkeypatch.setattr(orchestration_utils, "maybe_start_periodic_pyspy_dump", lambda: None)
         monkeypatch.setattr(orchestration_utils, "init_tracking", lambda _args: None)
-        monkeypatch.setattr(orchestration_utils, "launch_worker_manager", lambda _args: worker_manager)
+        monkeypatch.setattr(orchestration_utils, "launch_worker_manager", lambda _args, *, worker_env: worker_manager)
         monkeypatch.setattr(orchestration_utils, "compute_backend_capability", lambda _args: object())
         monkeypatch.setattr(
             orchestration_utils.object_store, "init_instance", lambda _args, *, contribute_segment: None
@@ -172,10 +190,12 @@ class TestInitOrchestrationScript:
                 ArgvOrchestratorStartupInfo(
                     args=Namespace(
                         run="test",
+                        run_uuid=_RUN_UUID,
                         ci_fault_hooks=None,
                         ci_fault_hooks_path=None,
                         wandb_run_id=None,
                         mlflow_run_id=None,
+                        use_miles_dashboard=False,
                     ),
                     all_args=Namespace(),
                 ),
@@ -185,3 +205,30 @@ class TestInitOrchestrationScript:
             assert released == []
 
         assert released == [worker_manager, "tracking"]
+
+    def test_the_dashboard_and_an_observer_of_sample_lifecycles_are_refused_together(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only one of them can receive sample lifecycles, so running both would silently starve one."""
+
+        class _LifecycleObserver(observers.Observer):
+            def trajectory_event(self, event) -> None:
+                pass
+
+        monkeypatch.setattr(
+            observers,
+            "entry_points",
+            lambda group: [SimpleNamespace(name="lifecycles", load=lambda: _LifecycleObserver)],
+        )
+        monkeypatch.setattr(orchestration_utils.event_logger_checkpoint, "restore", lambda _args: None)
+        monkeypatch.setattr(orchestration_utils, "configure_logger", lambda _args, *, source: None)
+        monkeypatch.setattr(orchestration_utils, "maybe_start_periodic_pyspy_dump", lambda: None)
+        monkeypatch.setattr(
+            orchestration_utils, "init_tracking", lambda _args: pytest.fail("the run must be refused before it starts")
+        )
+
+        with pytest.raises(ValueError, match="--use-miles-dashboard"):
+            orchestration_utils.init_orchestration_script(
+                ArgvOrchestratorStartupInfo(args=Namespace(use_miles_dashboard=True), all_args=Namespace()),
+                disposer=Disposer(),
+            )

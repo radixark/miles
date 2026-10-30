@@ -3,7 +3,8 @@ import os
 import subprocess
 import threading
 
-from miles.utils.misc import NodeProbeMixin
+from miles.utils import observers
+from miles.utils.misc import NodeProbeMixin, visible_gpu_ids
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord
@@ -19,6 +20,7 @@ class CommandActor(NodeProbeMixin):
 
     def run(self, cmd: str, envs: dict[str, str]) -> None:
         assert self._process is None, "CommandActor.run can only be called once"
+        observers.start_process("command", gpus=visible_gpu_ids)
 
         logger.info(f"CommandActor launches subprocess cmd={cmd!r} env_names={sorted(envs)}")
         self._process = process_utils.launch_bound_subprocess(["/bin/sh", "-c", cmd], envs=envs)

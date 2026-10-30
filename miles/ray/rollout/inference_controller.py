@@ -9,11 +9,12 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
+from miles.ray.rollout.engine_topology import EngineTopologyReporter
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
-from miles.utils import async_utils
+from miles.utils import async_utils, observers
 from miles.utils.args.component_rollout import InferenceRuntimeImmutState
 from miles.utils.audit_utils.checksum_utils import ChecksumCollectionFailure
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
@@ -63,11 +64,13 @@ class InferenceController:
         self._eval_fleet: InferenceControllerEvalFleet | None = None
         self._watcher_disposers: list[StopWatchFn] = []
         self._ticker: SimpleTicker | None = None
+        self._engine_topology_reporter = EngineTopologyReporter()
 
     @lock_exempt
     @init_once
     async def init(self) -> None:
         configure_logger(self.args, source=SimpleProcessIdentity(component="inference_controller"))
+        observers.start_process("inference_controller")
 
         if not self.args.starts_inference_engines:
             return
@@ -131,6 +134,7 @@ class InferenceController:
     async def prepare_rollout(self, rollout_id: int, model_id: str | None = None) -> None:
         await self._health_monitoring_resume(model_id)
         await dashboard_hooks.register_engines(self.servers, provider=self._engine_provider)
+        await self._engine_topology_reporter.report_if_changed(self.servers, provider=self._engine_provider)
 
     @with_lock
     async def prepare_eval(self, model_id: str | None = None) -> None:

@@ -5,7 +5,7 @@ from functools import partial
 from typing_extensions import Self
 
 from miles.ray.wiring import compute_backend_capability, launch_worker_manager, shutdown_worker_manager
-from miles.utils import object_store
+from miles.utils import object_store, observers
 from miles.utils.args.runtime import AllConfig, OrchestratorConfig
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer
@@ -67,14 +67,24 @@ def init_orchestration_script(startup_info: OrchestratorStartupInfo, *, disposer
     event_logger_checkpoint.restore(args)
     configure_logger(args, source=SimpleProcessIdentity(component="main"))
     maybe_start_periodic_pyspy_dump()
+    if args.use_miles_dashboard and observers.Observers().hears("trajectory_event"):
+        raise ValueError(
+            "--use-miles-dashboard cannot run together with an installed run observer that takes sample "
+            "lifecycle events, because only one of them can receive those events. Drop --use-miles-dashboard "
+            "or disable that observer."
+        )
     disposer.add(finish_tracking)
     init_tracking(args)
+    worker_env = observers.start_run(run_uuid=args.run_uuid, args=args)
+    observers.start_process("driver")
+    # registered before the worker manager, so it runs after the workers are gone
+    disposer.add_exit(lambda succeeded: observers.Observers().end_run(succeeded=succeeded))
 
     if isinstance(startup_info, ArgvOrchestratorStartupInfo):
         all_args = startup_info.all_args
         all_args.wandb_run_id = args.wandb_run_id
         all_args.mlflow_run_id = args.mlflow_run_id
-        worker_manager = launch_worker_manager(all_args)
+        worker_manager = launch_worker_manager(all_args, worker_env=worker_env)
         disposer.add(partial(shutdown_worker_manager, worker_manager))
 
     capability = _compute_backend_capability(startup_info)

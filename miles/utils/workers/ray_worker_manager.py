@@ -62,9 +62,16 @@ class RayWorkerManager:
         self.port_allocator = PortAllocator()
 
     @staticmethod
-    def launch(args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend):
+    def launch(
+        args,
+        specs: list[BaseSpec],
+        pgs: dict[str, PlacementGroupInfo],
+        *,
+        comm_backend: WorkerCommBackend,
+        worker_env: dict[str, str] | None = None,
+    ):
         obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
-        ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend))
+        ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend, worker_env=worker_env))
         return obj
 
     @staticmethod
@@ -72,12 +79,20 @@ class RayWorkerManager:
         return ray.get_actor(_ACTOR_NAME)
 
     async def init(
-        self, args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
+        self,
+        args,
+        specs: list[BaseSpec],
+        pgs: dict[str, PlacementGroupInfo],
+        *,
+        comm_backend: WorkerCommBackend,
+        worker_env: dict[str, str] | None = None,
     ):
         configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
 
         self.scaling = ScalingConfig.slice_from(args)
         self.comm_backend = comm_backend
+        # set in every worker on top of its spec's env, e.g. what run observers need
+        self.worker_env = dict(worker_env or {})
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
@@ -406,7 +421,7 @@ class _BaseActorManager(Generic[SpecT]):
             num_cpus=scheduling.num_cpus_per_worker,
             num_gpus=scheduling.num_gpus_per_worker,
             **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
-            runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
+            runtime_env={"env_vars": {**self.manager.worker_env, **self.spec.env_var(self.launch_context)}},
             **(compute_ray_pin_head_options() if scheduling.pin_to_head else {}),
         ).remote(**ctor_kwargs)
 

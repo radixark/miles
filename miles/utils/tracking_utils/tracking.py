@@ -4,6 +4,7 @@ import torch
 
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import MetricEvent
+from miles.utils.observers import Observers
 
 from .base import (
     MilesDashboardBackend,
@@ -50,8 +51,15 @@ def log(args, metrics, step_key: str):
     _manager.log(metrics, step=step, step_key=step_key)
 
     if is_event_logger_initialized():
-        serializable_metrics = {k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
-        get_event_logger().log(MetricEvent, {"metrics": serializable_metrics}, print_log=False)
+        get_event_logger().log(MetricEvent, {"metrics": _serializable(metrics)}, print_log=False)
+    observers = Observers()
+    if observers.active:
+        with observers.isolated("metrics"):
+            observers.metrics(_serializable(metrics), step_key=step_key, step=step)
+
+
+def _serializable(metrics) -> dict:
+    return {k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
 
 
 def finish_tracking():

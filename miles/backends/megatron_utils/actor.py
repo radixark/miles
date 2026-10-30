@@ -28,7 +28,7 @@ from miles.backends.training_utils.loss.objective import (
     get_values,
     log_train_advantage_computation_event,
 )
-from miles.backends.training_utils.metrics import train_dump
+from miles.backends.training_utils.metrics import observer_reports, train_dump
 from miles.backends.training_utils.metrics.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
@@ -855,6 +855,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.prof.step(rollout_id=rollout_id)
 
         train_dump.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
+        observer_reports.report_train_tokens(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
         for m in all_replay_managers:
             if m.enabled:
