@@ -37,7 +37,9 @@ from miles.backends.megatron_utils.lora.optimizer import (
 from miles.backends.megatron_utils.model import finalize_model_grads_with_empty_cache
 from miles.utils.distributed_utils import init_gloo_group
 
-register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora", "multi-lora"], hardware=["hopper"])
+register_cuda_ci(
+    est_time=120, suite="stage-b-2-gpu-h200", labels=["lora", "multi-lora"], hardware=["hopper"], num_gpus=2
+)
 
 logger = logging.getLogger(__name__)
 
