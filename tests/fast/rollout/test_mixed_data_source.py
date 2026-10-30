@@ -108,6 +108,21 @@ class TestMixedRolloutDataSource:
         # 30 draws from 7 prompts: four full passes plus two prompts of the fifth
         assert sorted(Counter(drawn).values()) == [4, 4, 4, 4, 4, 5, 5]
 
+    def test_resume_continues_with_exactly_the_same_prompts(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        source = _make_source(tmp_path, datasets)
+        for size in (8, 1, 5):
+            source.get_samples(size)
+        source.save(tmp_path / "ckpt")
+        expected = [[(s.prompt, s.index, s.metadata["dataset_name"]) for s in g] for g in source.get_samples(13)]
+
+        resumed = _make_source(tmp_path, datasets)
+        resumed.load(tmp_path / "ckpt")
+
+        assert [
+            [(s.prompt, s.index, s.metadata["dataset_name"]) for s in g] for g in resumed.get_samples(13)
+        ] == expected
+
     def test_max_prompt_len_filters_only_its_dataset(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", ["short", "a much longer prompt"]))
@@ -123,3 +138,11 @@ class TestMixedRolloutDataSource:
         datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", ["two words"]))
         with pytest.raises(ValueError, match="'math'.*no prompts"):
             _make_source(tmp_path, datasets)
+
+    def test_resume_refuses_a_different_dataset_list(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        _make_source(tmp_path, datasets).save(tmp_path / "ckpt")
+
+        del datasets["code"]
+        with pytest.raises(ValueError, match="now lists \\['math'\\]"):
+            _make_source(tmp_path, datasets).load(tmp_path / "ckpt")
