@@ -5,8 +5,15 @@ register_cuda_ci(
     est_time=20, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
 )
 
+import sys
+
 import pytest
 import torch
+
+# the package applies the torch 2.14 backports torchtitan needs at import, so it must load first
+import miles.backends.torchtitan_utils  # noqa: F401
+
+# isort: split
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.qwen3 import build_model_config
@@ -93,3 +100,7 @@ def test_fused_adapters_export_as_one_peft_adapter_per_hf_projection():
         torch.testing.assert_close(exported[f"{module}.lora_B.weight"], base_split[f"{module}.weight"][:, :rank])
     assert exported["model.layers.3.mlp.down_proj.lora_A.weight"] is down_a
     assert exported["model.layers.3.mlp.down_proj.lora_B.weight"] is down_b
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))
