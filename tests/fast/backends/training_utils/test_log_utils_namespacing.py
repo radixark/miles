@@ -7,7 +7,7 @@ import torch
 from miles.backends.training_utils import parallel
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.metrics import log_utils
-from miles.utils.metric_utils import strip_metrics_namespace
+from miles.utils.metric_utils import compute_rollout_step, strip_metrics_namespace
 
 
 def _capture(monkeypatch) -> list[tuple[dict, str]]:
@@ -29,7 +29,7 @@ class TestLogTrainStep:
         calls = _capture(monkeypatch)
 
         log_dict = log_utils.log_train_step(
-            args=Namespace(trainer_model_id="alpha"),
+            args=Namespace(trainer_model_id="alpha", wandb_always_use_train_step=False),
             loss_dict={"loss": 0.5},
             grad_norm=2.0,
             rollout_id=2,
@@ -40,7 +40,12 @@ class TestLogTrainStep:
 
         [(payload, step_key)] = calls
         assert step_key == "alpha/train/step"
-        assert payload == {"alpha/train/loss": 0.5, "alpha/train/grad_norm": 2.0, "alpha/train/step": 9}
+        assert payload == {
+            "alpha/train/loss": 0.5,
+            "alpha/train/grad_norm": 2.0,
+            "alpha/rollout/step": 2,
+            "alpha/train/step": 9,
+        }
         assert log_dict == payload
 
     def test_a_run_without_a_policy_id_keeps_the_names_it_had(self, monkeypatch):
@@ -48,7 +53,7 @@ class TestLogTrainStep:
         calls = _capture(monkeypatch)
 
         log_dict = log_utils.log_train_step(
-            args=Namespace(trainer_model_id=None),
+            args=Namespace(trainer_model_id=None, wandb_always_use_train_step=False),
             loss_dict={"loss": 0.5},
             grad_norm=2.0,
             rollout_id=2,
@@ -59,7 +64,31 @@ class TestLogTrainStep:
 
         [(payload, step_key)] = calls
         assert step_key == "train/step"
-        assert log_dict == payload == {"train/loss": 0.5, "train/grad_norm": 2.0, "train/step": 9}
+        assert log_dict == payload == {"train/loss": 0.5, "train/grad_norm": 2.0, "rollout/step": 2, "train/step": 9}
+
+    def test_the_rollout_step_matches_the_one_rollout_rows_log_when_scaled_to_train_steps(self, monkeypatch):
+        """Train curves line up with rollout and eval on rollout/step only if every writer uses one formula."""
+        calls = _capture(monkeypatch)
+        args = Namespace(
+            trainer_model_id=None,
+            wandb_always_use_train_step=True,
+            rollout_batch_size=8,
+            n_samples_per_prompt=4,
+            global_batch_size=16,
+        )
+
+        log_utils.log_train_step(
+            args=args,
+            loss_dict={"loss": 0.5},
+            grad_norm=2.0,
+            rollout_id=2,
+            step_id=1,
+            num_steps_per_rollout=4,
+            should_log=True,
+        )
+
+        [(payload, _)] = calls
+        assert payload["rollout/step"] == compute_rollout_step(args, 2) == 4
 
 
 class TestGatherLogData:
