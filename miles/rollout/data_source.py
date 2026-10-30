@@ -295,11 +295,36 @@ class MixedRolloutDataSource(DataSource):
         return [self._make_group(config, prompt) for config, prompt in prompts]
 
     def save(self, directory: Path) -> None:
-        # TODO(#3947): checkpoint the per-dataset positions
-        raise NotImplementedError("MixedRolloutDataSource cannot be checkpointed yet")
+        state_dict = {
+            "offsets": self.offsets,
+            "epoch_ids": self.epoch_ids,
+            "credits": dict(zip(self.datasets, self.credits, strict=True)),
+            "num_requests": self.num_requests,
+            "sample_group_index": self.sample_group_index,
+            "sample_index": self.sample_index,
+        }
+        save_simple_checkpoint(directory=directory, data=state_dict)
 
     def load(self, directory: Path) -> None:
-        raise NotImplementedError("MixedRolloutDataSource cannot be checkpointed yet")
+        state_dict = load_simple_checkpoint(directory=directory)
+        if set(state_dict["offsets"]) != set(self.datasets):
+            raise ValueError(
+                f"the checkpoint mixed datasets {sorted(state_dict['offsets'])}, but --rollout-data-yaml-config now "
+                f"lists {sorted(self.datasets)}"
+            )
+        # a dataset filtered shorter since the save (e.g. a lower max_prompt_len) cannot resume at its position
+        if too_far := {n: o for n, o in state_dict["offsets"].items() if o > len(self.datasets[n])}:
+            raise ValueError(
+                f"the checkpoint resumes {too_far} past the end of datasets now holding "
+                f"{ {n: len(self.datasets[n]) for n in too_far} } prompts; keep the dataset and its filters unchanged"
+            )
+        self.offsets = dict(state_dict["offsets"])
+        self.epoch_ids = dict(state_dict["epoch_ids"])
+        self.credits = [state_dict["credits"][name] for name in self.datasets]
+        self.num_requests = state_dict["num_requests"]
+        self.sample_group_index = state_dict["sample_group_index"]
+        self.sample_index = state_dict["sample_index"]
+        self._shuffle_datasets()
 
     def _shuffle_datasets(self) -> None:
         if self.args.rollout_shuffle:
@@ -314,7 +339,7 @@ class MixedRolloutDataSource(DataSource):
             prompts += chunk
             count -= len(chunk)
             self.offsets[name] += len(chunk)
-            if self.offsets[name] == len(dataset):
+            if self.offsets[name] >= len(dataset):
                 self.offsets[name] = 0
                 self.epoch_ids[name] += 1
                 if self.args.rollout_shuffle:
