@@ -6,27 +6,6 @@ from transformers import BaseImageProcessor
 from miles.backends.training_utils.data import token_space_media_process
 from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
 
-_ENGINE_VALUES = {
-    "model_path": "/ckpt",
-    "tokenizer_path": None,
-    "tokenizer_mode": "auto",
-    "tokenizer_backend": "huggingface",
-    "revision": None,
-    "model_config_parser": "auto",
-    "json_model_override_args": "{}",
-    "image_processor_backend": "auto",
-    "disable_fast_image_processor": False,
-    "mm_process_config": {"video": {"fps": 2}},
-}
-
-
-class _SglangConfig:
-    def __init__(self, **overrides):
-        self.values = {**_ENGINE_VALUES, **overrides}
-
-    def common_value(self, name):
-        return self.values[name]
-
 
 class _RecordingProcessor:
     def __init__(self):
@@ -58,7 +37,7 @@ def test_trainer_rebuilds_tensors_without_expanding_the_rollout_tokens(monkeypat
     tokens = [torch.tensor([1, 9, 9, 9, 9, 2, 5]), torch.tensor([1, 2])]
 
     train_inputs = token_space_media_process.compute_multimodal_train_inputs(
-        RolloutEngineProcessorArgs.from_sglang_config(_SglangConfig()),
+        object(),
         multimodal_inputs,
         tokens,
         device=torch.device("cpu"),
