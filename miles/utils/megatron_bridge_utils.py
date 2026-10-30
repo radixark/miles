@@ -11,7 +11,6 @@ except ImportError:
 def load_auto_bridge(hf_checkpoint: str):
     from megatron.bridge import AutoBridge
 
-    # registers miles bridges and shims; not at package import, which every process pays for
     import miles_plugins.megatron_bridge  # noqa: F401
 
     return AutoBridge.from_hf_pretrained(hf_checkpoint, trust_remote_code=True)
