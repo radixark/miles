@@ -701,6 +701,8 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service, fi
     future = await await_settled(service, "tenant", loaded)
     assert (future.state, future.error_category) == (FAILED, "user") and field in future.error
     assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
+    if field != "lora_alpha":
+        assert "restore it on one launched with" in future.error, "a gateway-wide layout names the fix"
 
 
 @pytest.mark.parametrize("shared_outer", [False, True])
