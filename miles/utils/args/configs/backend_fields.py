@@ -33,7 +33,7 @@ class TrainerBackendTraitConfig(BaseConfig):
     ] = False
 
     # from ClusterConfig
-    distributed_backend: A[str, Arg(reset=True)] = "nccl"
+    distributed_backend: A[str | None, Arg(reset=True)] = None
     distributed_timeout_minutes: A[int, Arg(reset=True)] = 10
 
     # from EvalConfig

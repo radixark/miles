@@ -7,6 +7,7 @@ import functools
 import os
 
 import torch
+import torch.distributed as dist
 
 
 class Platform:
@@ -27,14 +28,27 @@ class Platform:
     def current_device(self) -> torch.device:
         return torch.device(self.device_type, torch.accelerator.current_device_index())
 
+    @property
+    def dist_backend(self) -> str:
+        """The collective backend torch pairs with this device: nccl on CUDA/ROCm, xccl on XPU."""
+        return dist.get_default_backend_for_device(self.device_type)
+
     @functools.cache  # noqa: B019 -- one instance per process
     def device_name(self) -> str | None:
         """The CUDA device's marketing name (for peak-FLOPs lookup); None without a CUDA device."""
         return torch.cuda.get_device_name() if torch.cuda.is_available() else None
 
 
+def _detect_device_type() -> str:
+    device_type = os.environ.get("MILES_ACCELERATOR")
+    if device_type:
+        return device_type
+    accelerator = torch.accelerator.current_accelerator()
+    return accelerator.type if accelerator is not None else "cuda"
+
+
 def _select_platform() -> Platform:
-    device_type = os.environ.get("MILES_ACCELERATOR", "cuda")
+    device_type = _detect_device_type()
     if device_type == "cuda":
         return Platform()
     if device_type == "tpu":
@@ -42,7 +56,11 @@ def _select_platform() -> Platform:
         from miles.platforms.tpu import TpuPlatform
 
         return TpuPlatform()
-    raise ValueError(f"MILES_ACCELERATOR={device_type!r}; expected cuda or tpu")
+    if device_type == "xpu":
+        from miles.platforms.xpu import XpuPlatform
+
+        return XpuPlatform()
+    raise ValueError(f"accelerator {device_type!r}; expected cuda, tpu or xpu (set MILES_ACCELERATOR to override)")
 
 
 current_platform = _select_platform()

@@ -9,6 +9,7 @@ from sglang.srt.server_args import ServerArgs
 from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.platforms import current_platform
 from miles.utils.lora.utils import (
     LORA_ADAPTER_NAME,
     engine_loads_adapter_from_disk,
@@ -222,7 +223,7 @@ def _compute_server_args(
             kwargs["max_loaded_loras"] = 2 * kwargs["max_loras_per_batch"]
 
     if kwargs.get("device") is None:
-        kwargs["device"] = "cuda"
+        kwargs["device"] = current_platform.device_type
 
     return kwargs
 

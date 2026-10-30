@@ -205,19 +205,19 @@ class TrainRayActor(NodeProbeMixin):
 
         current_platform.bind_device_before_process_group(int(os.environ.get("LOCAL_RANK", 0)))
 
+        backend = args.backend.distributed_backend or current_platform.dist_backend
         if args.debug_deterministic_collective:
             register_det_nccl_backend()
-            assert args.backend.distributed_backend == DET_NCCL_BACKEND_NAME
+            assert backend == DET_NCCL_BACKEND_NAME
             logger.info("Deterministic collectives: training world uses the det_nccl backend")
 
-        # FSDP2's CPU offload steps the optimizer on host tensors, which needs a CPU backend alongside NCCL
-        backend = args.backend.distributed_backend
+        # FSDP2's CPU offload steps the optimizer on host tensors, which needs a CPU backend alongside the device one
         if (
             args.train_backend in ("fsdp", "torchtitan")
             and args.backend.optimizer_cpu_offload
             and args.backend.fsdp_cpu_backend
         ):
-            backend = f"cpu:{args.backend.fsdp_cpu_backend},cuda:{args.backend.distributed_backend}"
+            backend = f"cpu:{args.backend.fsdp_cpu_backend},{current_platform.device_type}:{backend}"
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
         with override_env({"TORCH_NCCL_DUMP_ON_TIMEOUT": "0"} if args.indep_dp else {}):

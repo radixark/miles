@@ -13,6 +13,7 @@ from transformers import GPT2Config, GPT2LMHeadModel, PreTrainedTokenizerFast
 
 from miles.backends.fsdp_utils.arguments import FSDPArgs
 from miles.backends.training_utils.parallel import ParallelState
+from miles.platforms import current_platform
 from miles.utils import distributed_utils
 
 
@@ -56,7 +57,7 @@ def init_backend_capture(
     monkeypatch.setattr(dist, "barrier", lambda **kwargs: None)
     monkeypatch.setattr(dist, "broadcast", lambda *args, **kwargs: None)
     monkeypatch.setattr(distributed_utils, "GLOO_GROUP", object())
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(current_platform, "current_device", lambda: torch.device("cpu"))
     monkeypatch.setattr("torch.distributed.fsdp.fully_shard", fully_shard)
     monkeypatch.setattr("torch.distributed.checkpoint.state_dict.set_model_state_dict", set_model_state_dict)
     monkeypatch.setattr(torch.optim, "AdamW", capture_adamw)
