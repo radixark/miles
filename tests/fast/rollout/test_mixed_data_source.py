@@ -124,6 +124,15 @@ class TestMixedRolloutDataSource:
             [(s.prompt, s.index, s.metadata["dataset_name"]) for s in g] for g in resumed.get_samples(13)
         ] == expected
 
+    def test_a_dataset_generate_function_reaches_its_samples_only(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        datasets["code"]["generate_function"] = "json.dumps"
+        source = _make_source(tmp_path, datasets)
+
+        by_name = {group[0].metadata["dataset_name"]: group for group in source.get_samples(8)}
+        assert {sample.generate_function_path for sample in by_name["code"]} == {"json.dumps"}
+        assert {sample.generate_function_path for sample in by_name["math"]} == {None}
+
     def test_max_prompt_len_filters_only_its_dataset(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", ["short", "a much longer prompt"]))
