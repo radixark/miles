@@ -1298,8 +1298,7 @@ def miles_validate_args(args):
         assert (
             args.rollout_num_gpus_per_engine <= args.num_gpus_per_node
         ), "--update-weight-transfer-mode shm needs each rollout engine on one node"
-        # each engine rank opens the payload at its TP rank; PP stages share TP ranks, so one payload would be
-        # opened by several processes and its /dev/shm file unlinked while another stage still needs it
+        # untested with pipeline-parallel engines
         assert args.sglang_pp_size == 1, "--update-weight-transfer-mode shm does not support --sglang-pp-size > 1"
     if args.update_weight_transfer_mode == "disk":
         # /update_weights_from_disk reloads the draft model from the same directory, which has no draft weights

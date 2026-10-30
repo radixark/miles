@@ -18,6 +18,7 @@ from miles.backends.training_utils.weight_update.protocols.utils.data_replica im
     OwnedBuckets,
     get_data_replica_rank_and_size,
 )
+from miles.backends.training_utils.weight_update.protocols.utils.owner import owner_is_gone, owner_tag
 from miles.backends.training_utils.weight_update.protocols.utils.rank_errors import fail_on_every_rank
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import (
@@ -37,7 +38,8 @@ class UpdateWeightFromDisk(WeightTransferProtocol):
     Full-checkpoint weight sync over a shared filesystem. Each gathered HF bucket goes to the replica
     rank with the fewest bytes so far, which writes it as a safetensors shard of a fresh version dir, rank 0 adds
     the index and HF assets, and the engines reload it via /update_weights_from_disk. Needs no NCCL,
-    CUDA IPC or /pull_weights, so it works with engines on another accelerator stack.
+    CUDA IPC or /pull_weights, so it works with engines on another accelerator stack. A run writes its versions
+    under `run-<owner_tag of rank 0>` in --update-weight-disk-dir, so runs sharing it never touch each other's.
     """
 
     # /update_weights_from_disk replaces every weight in one call, so no begin/end session
@@ -45,7 +47,6 @@ class UpdateWeightFromDisk(WeightTransferProtocol):
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
-        self.root_dir = args.update_weight_disk_dir
         self._version_dir: str | None = None
         self._previous_version_dir: str | None = None
         self._weight_map: dict[str, str] = {}
@@ -63,21 +64,25 @@ class UpdateWeightFromDisk(WeightTransferProtocol):
         self.rollout_engines = rollout_engines
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, self.rollout_engines, engine_cell_ids)
         self.group_name = "miles-disk"
+        rank0_tag = [owner_tag()]
+        dist.broadcast_object_list(rank0_tag, src=0, group=get_gloo_group())
+        self.run_dir = os.path.join(self.args.update_weight_disk_dir, f"run-{rank0_tag[0]}")
         replica_rank, replica_size = get_data_replica_rank_and_size(parallel_state, placement)
         self._owned_buckets = OwnedBuckets(replica_rank=replica_rank, replica_size=replica_size)
         self.is_sender = True
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
-        self._version_dir = os.path.join(self.root_dir, f"weight_v{weight_version:06d}")
+        self._version_dir = os.path.join(self.run_dir, f"weight_v{weight_version:06d}")
         self._weight_map = {}
         self._owned_buckets.reset()
         # the other ranks write only after the updater's barrier, so rank 0 alone prepares the directory
         with fail_on_every_rank("[disk] version directory"):
             if dist.get_rank() == 0:
                 if self._previous_version_dir is None:
-                    # a crashed run leaves full checkpoints behind, and partial shards in the version a resume rewrites
-                    for stale_dir in glob.glob(os.path.join(self.root_dir, "weight_v*")):
-                        shutil.rmtree(stale_dir, ignore_errors=True)
+                    # a run ends by a kill, leaving its last version behind; on this host, delete those of gone runs
+                    for run_dir in glob.glob(os.path.join(self.args.update_weight_disk_dir, "run-*")):
+                        if owner_is_gone(os.path.basename(run_dir).removeprefix("run-")):
+                            _remove_dir(run_dir)
                 os.makedirs(self._version_dir, exist_ok=True)
         return True
 
@@ -88,7 +93,8 @@ class UpdateWeightFromDisk(WeightTransferProtocol):
         # written only after the collective gathers finish, so the ranks' file writes run in parallel
         with fail_on_every_rank("[disk] shard write"):
             for bucket_index, bucket in self._owned_buckets.take():
-                tensors = {name: tensor.contiguous() for name, tensor in bucket}
+                # safetensors refuses tensors sharing a buffer, which the packed host bucket's views do
+                tensors = {name: tensor.clone() for name, tensor in bucket}
                 shard = f"rank{dist.get_rank():03d}-shard{bucket_index:05d}.safetensors"
                 safetensors.torch.save_file(tensors, os.path.join(self._version_dir, shard))
                 self._weight_map.update({name: shard for name in tensors})
@@ -113,8 +119,8 @@ class UpdateWeightFromDisk(WeightTransferProtocol):
         maybe_pause_engines(self.args, cell_updaters)
         results = async_utils.wait_futures(
             [
-                # one call reloads the whole model, so --update-weight-engine-request-timeout does not bound it
-                updater.submit_unbounded_client_call(
+                # bounded per engine, inside --update-weights-timeout, so a hung engine costs its cell, not the trainer
+                updater.submit_client_call(
                     "update_weights_from_disk",
                     model_path=self._version_dir,
                     # the engine's own startup format otherwise applies, and a dummy-loaded engine cannot reload
@@ -129,5 +135,13 @@ class UpdateWeightFromDisk(WeightTransferProtocol):
 
     def _drop_previous_version(self) -> None:
         if dist.get_rank() == 0 and self._previous_version_dir not in (None, self._version_dir):
-            shutil.rmtree(self._previous_version_dir, ignore_errors=True)
+            _remove_dir(self._previous_version_dir)
         self._previous_version_dir = self._version_dir
+
+
+def _remove_dir(path: str) -> None:
+    # a dir left behind holds a full checkpoint on the shared filesystem, so say so instead of failing the sync
+    try:
+        shutil.rmtree(path)
+    except OSError as error:
+        logger.warning("[disk] could not delete %s: %s", path, error)

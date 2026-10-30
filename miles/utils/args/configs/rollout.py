@@ -273,7 +273,9 @@ class RolloutRelatedConfig(BaseConfig):
             help=(
                 "Filesystem directory disk and disk-delta weight sync publish to, written by the "
                 "trainer and read by every rollout host: one full checkpoint (disk) or one delta "
-                "directory with the changed tensors only (disk-delta) per sync. Required for both modes."
+                "directory with the changed tensors only (disk-delta) per sync. Required for both modes. "
+                "disk keeps each run's last version in a run-* subdirectory; a later run on the same host "
+                "deletes those of runs that ended, and runs that ended on other hosts must be cleaned by hand."
             )
         ),
     ] = None
@@ -333,7 +335,12 @@ class RolloutRelatedConfig(BaseConfig):
     ] = 30.0
     update_weight_engine_request_timeout: A[
         float,
-        Arg(help="Seconds allowed for one weight-update request to a rollout engine before its cell is given up."),
+        Arg(
+            help=(
+                "Seconds allowed for one weight-update request to a rollout engine before its cell is given up. "
+                "In --update-weight-transfer-mode disk one request reloads the whole model; raise it for large models."
+            )
+        ),
     ] = 300.0
     update_weights_timeout: A[
         float,
