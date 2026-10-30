@@ -412,6 +412,9 @@ contacting inference engines. Engines load the same frozen base at startup and
 load adapter snapshots from disk on demand. A failed engine load fails sampling
 without invalidating the saved snapshot or model training.
 
+A model holds its adapter slot until its session finishes (`ServiceClient.close`,
+Tinker SDK 0.36 or newer) or the session's lease expires.
+
 Futures, model leases, and sequence deduplication are in memory and are lost on
 gateway restart. Saved checkpoints retain their ownership and adapter metadata
 and can be used to create a new training or sampling client.
