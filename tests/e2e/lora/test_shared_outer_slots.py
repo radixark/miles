@@ -14,7 +14,10 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from megatron.bridge.peft.multi_lora_layers import ExpertSlotRouting, MultiLoRAGroupedExpertLinear, init_adapter_slot
-from megatron.bridge.peft.utils import enable_expert_parallel_grad_sync_in_finalize
+from megatron.bridge.peft.utils import (
+    enable_expert_parallel_grad_sync_in_finalize,
+    finalize_model_grads_with_expert_adapter_sync,
+)
 from megatron.core import parallel_state
 from megatron.core.distributed import DistributedDataParallel, DistributedDataParallelConfig
 from megatron.core.extensions.transformer_engine import TEColumnParallelGroupedLinear, TERowParallelGroupedLinear
@@ -100,7 +103,7 @@ class ExpertModel(MegatronModule):
 def forward_backward(model, inputs):
     with accumulate_gradients(model):
         model[0](inputs).float().square().sum().backward()
-        finalize_model_grads_with_empty_cache(model)
+        finalize_model_grads_with_empty_cache(model, finalize=finalize_model_grads_with_expert_adapter_sync)
 
 
 def run_worker(directory, tp):
