@@ -154,12 +154,6 @@ def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
         return [None] * len(gpu_ids)
 
 
-def visible_gpu_ids() -> list[int]:
-    """The physical GPUs this process was given, as CUDA_VISIBLE_DEVICES (or HIP_VISIBLE_DEVICES) lists them."""
-    devices = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES") or ""
-    return [int(device) for device in devices.split(",") if device.strip().isdigit()]
-
-
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
     if not cvd:

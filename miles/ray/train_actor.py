@@ -31,7 +31,7 @@ from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger, rebind_env_reporting
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port, visible_gpu_ids
+from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.output_store.config import output_store_reader
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -66,6 +66,13 @@ class WeightUpdateOutput:
         ), f"a cell failed under more than one trainer cell: {failed_cell_ids}"
         [weight_version] = weight_versions or {None}
         return cls(weight_version=weight_version, failed_cell_ids=tuple(failed_cell_ids))
+
+
+def _held_gpu_ids() -> list[int]:
+    # a train rank in a Kubernetes pod runs outside any Ray worker, on the pod GPU of its index
+    if CELL_INDEX_ENV_VAR in os.environ:
+        return [read_worker_in_pod_index(os.environ)]
+    return ray.get_gpu_ids()
 
 
 def get_local_gpu_id():
@@ -126,8 +133,7 @@ class TrainRayActor(NodeProbeMixin):
 
         object_store.init_instance(args)
         self.output_store_read = output_store_reader(args)
-        # a train rank in a Kubernetes pod runs outside any Ray worker
-        observers.start_process("train", rank=rank, gpus=ray.get_gpu_ids if ray.is_initialized() else visible_gpu_ids)
+        observers.start_process("train", rank=rank, gpus=_held_gpu_ids)
 
     @functools.cached_property
     def _model_flops(self) -> ModelFlops | None:
