@@ -1,6 +1,4 @@
-import base64
 import inspect
-import io
 import logging
 import os
 from collections.abc import Mapping
@@ -54,12 +52,6 @@ def _fix_v5_tokenizer_components(tokenizer: PreTrainedTokenizerBase, model_name_
         )
         backend.pre_tokenizer = raw.pre_tokenizer
         backend.decoder = raw.decoder
-
-
-# Default image patch size for vision-language models
-# Note: Qwen3-VL uses 16, Qwen2.5-VL uses 14
-# Reference: https://github.com/QwenLM/Qwen3-VL/blob/main/qwen-vl-utils/README.md
-DEFAULT_PATCH_SIZE = 14
 
 
 _TOKENIZER_CACHE: dict[tuple, PreTrainedTokenizerBase] = {}
@@ -167,34 +159,3 @@ def load_processor(name_or_path: str, **kwargs):
         proc = None
 
     return proc
-
-
-def process_vision_info(prompt, processor):
-    if hasattr(
-        processor, "extract_media"
-    ):  # config-access-exempt: processor capabilities vary across tokenizer and modality implementations
-        return processor.extract_media(prompt)
-
-    # TODO: temporary solution, will write image utils for miles later
-    from qwen_vl_utils import process_vision_info as qwen_process_vision_info
-
-    if hasattr(
-        processor.image_processor, "patch_size"
-    ):  # config-access-exempt: processor capabilities vary across tokenizer and modality implementations
-        image_patch_size = processor.image_processor.patch_size
-    else:
-        logger.info(f"Using default patch size: {DEFAULT_PATCH_SIZE}")
-        image_patch_size = DEFAULT_PATCH_SIZE
-    images, videos = qwen_process_vision_info(prompt, image_patch_size=image_patch_size)
-    multimodal_inputs = {"images": images, "videos": videos}
-    return multimodal_inputs
-
-
-def encode_image_for_rollout_engine(image) -> str:
-    """Load an image from path, ensure RGB, encode as PNG base64 string."""
-    buffer = io.BytesIO()
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    image.save(buffer, format="PNG")
-    image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{image_base64}"

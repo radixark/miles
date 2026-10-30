@@ -29,10 +29,10 @@ from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.media_refs import has_media, load_media_for_processor, rollout_media_payload
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook
 from miles.utils.processing_utils import (
     call_processor,
-    encode_image_for_rollout_engine,
     extract_multimodal_train_inputs,
     load_processor,
     load_tokenizer,
@@ -166,11 +166,10 @@ async def generate(
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
-    if state.processor and (
-        isinstance(sample.prompt, (list, tuple))
-        or (sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()))
-    ):
-        processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
+    if state.processor and (isinstance(sample.prompt, (list, tuple)) or has_media(sample.multimodal_inputs)):
+        processor_output = call_processor(
+            state.processor, sample.prompt, load_media_for_processor(sample.multimodal_inputs)
+        )
         prompt_ids = processor_output["input_ids"][0]
         prompt_ids = (
             prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
@@ -215,16 +214,7 @@ async def generate(
     if args.use_rollout_indexer_replay:
         payload["return_indexer_topk"] = True
 
-    if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
-        image_data = sample.multimodal_inputs["images"]
-        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
-
-    if sample.multimodal_inputs and sample.multimodal_inputs.get("audios"):
-        import base64 as _b64
-
-        payload["audio_data"] = [
-            f"data:audio;base64,{_b64.b64encode(a).decode('ascii')}" for a in sample.multimodal_inputs["audios"]
-        ]
+    payload.update(rollout_media_payload(sample.multimodal_inputs))
 
     # Use existing tokens for multi-turn or tokenize the new prompt
     if len(sample.response) > 0:
@@ -631,6 +621,7 @@ async def eval_rollout_single_dataset(
             prompt_key=dataset_cfg.input_key,
             label_key=dataset_cfg.label_key,
             multimodal_keys=args.multimodal_keys,
+            media_dir=args.shared_media_dir,
             metadata_key=dataset_cfg.metadata_key,
             tool_key=dataset_cfg.tool_key,
             apply_chat_template=args.apply_chat_template,
