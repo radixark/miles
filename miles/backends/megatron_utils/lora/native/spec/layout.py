@@ -229,6 +229,7 @@ class LayoutSpec:
 
     name: str = ""
     layout: ModuleLayout = ModuleLayout(name="empty")
+    shared_a_targets: frozenset[str] = frozenset()
 
     @property
     def supported_targets(self) -> frozenset[str]:

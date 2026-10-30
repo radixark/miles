@@ -115,6 +115,7 @@ class FusedGateUpMLPSpec(LayoutSpec):
     """An HF MLP whose gate/up is one ``gate_up_proj`` module (GLM-4, Inkling), plus the down projection."""
 
     name = "fused_gate_up_mlp"
+    shared_a_targets = frozenset({"gate_up_proj"})
     layout = ModuleLayout(
         name="fused_gate_up_mlp",
         present_when_attr="linear_fc1",
