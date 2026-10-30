@@ -22,6 +22,7 @@ from miles.backends.megatron_utils.megatron_config import MegatronConfig, get_me
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
+from miles.router.backend import RouterKind
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import (
@@ -165,6 +166,42 @@ class TestAddArgumentsSupport:
         ):
             parser = argparse.ArgumentParser()
             get_miles_extra_args_provider()(parser)
+
+
+class TestRouterFlag:
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            ([], RouterKind.SGLANG),
+            (["--router", "miles"], RouterKind.MILES),
+            (["--use-miles-router"], RouterKind.MILES),
+        ],
+        ids=["default", "router-flag", "alias"],
+    )
+    def test_the_alias_selects_the_same_router_as_the_flag(self, argv: list[str], expected: RouterKind):
+        """Existing launchers pass --use-miles-router; it must land in the one field the backend reads."""
+        assert parse_megatron_test_config(*argv).router is expected
+
+    def test_an_unknown_router_is_rejected_at_parse_time(self):
+        with pytest.raises(SystemExit):
+            parse_megatron_test_config("--router", "dynamo")
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [("use_miles_router: true", RouterKind.MILES), ("use_miles_router: false", RouterKind.SGLANG)],
+        ids=["legacy-key", "legacy-key-off"],
+    )
+    def test_a_legacy_config_file_key_selects_the_router(self, tmp_path: Path, config: str, expected: RouterKind):
+        """A config written before --router must not silently fall back to sgl-router."""
+        path = tmp_path / "config.yaml"
+        path.write_text(config)
+        assert parse_megatron_test_config("--custom-config-path", str(path)).router is expected
+
+    def test_an_unknown_router_in_a_config_file_is_rejected(self, tmp_path: Path):
+        path = tmp_path / "config.yaml"
+        path.write_text("router: dynamo")
+        with pytest.raises(ValueError, match="router"):
+            parse_megatron_test_config("--custom-config-path", str(path))
 
 
 class TestFullyAsyncDataBufferFlags:
