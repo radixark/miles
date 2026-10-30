@@ -152,6 +152,7 @@ replaceable component with the following interface:
 | `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
 | `state_dict()` | Checkpoint save | Return every accepted entry needed to resume without loss or duplication |
 | `load_state_dict(state)` | Checkpoint load | Replace the buffer state with a previously returned state |
+| `admits(in_flight)` | The rollout worker, before each submission | Whether one more group may start generating. The base class always admits; `--async-staleness-admission` requires a buffer that overrides it, as `DefaultDataBuffer` does |
 
 These methods are the whole interface: the worker and the trainer see nothing
 else, and everything inside the box below is the built-in `DefaultDataBuffer`.
@@ -208,6 +209,21 @@ Staleness control decides which of those groups training is allowed to see:
 |---|---|
 | `--max-weight-staleness` | Maximum gap between a group's oldest weight version and the current engine version. Unset by default, which disables the filter |
 | `--async-unused-samples-handler` | What happens to a group training does not use, either aborted or too stale. The default `drop` discards it; `retry` recycles its prompts into the data source for regeneration. Dynamic-filter rejects are always dropped |
+| `--async-staleness-admission` | Also applies `--max-weight-staleness N` when the worker submits a group, instead of only when the trainer takes it. Off by default |
+
+The filter rejects a group only after all of it was generated. With
+`--async-staleness-admission`, the default buffer admits a new group only while the buffered
+and in-flight groups number fewer than `N * rollout_batch_size`, plus one `rollout_batch_size`
+while a training step waits for its batch (the bound AReaL uses). Because it hands out groups
+in completion order:
+
+- A group is trained at most `N` weight versions after it entered the buffer, so the
+  filter only rejects groups whose generation spanned a weight update.
+- With `N = 0` nothing generates during a training step: rollout is synchronous and no
+  group is stale.
+
+The flag counts staleness in training steps, so it requires `--update-weights-interval 1`
+and one optimizer step per rollout.
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass

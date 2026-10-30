@@ -104,6 +104,7 @@ def make_args(**overrides) -> Namespace:
         rollout_batch_size=2,
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
+        async_staleness_admission=False,
         async_max_concurrent_samples=None,
         async_data_buffer_capacity_factor=1000.0,
         async_unused_samples_handler="drop",
@@ -1846,6 +1847,68 @@ class TestInFlightBudget:
         assert all(x.task.done() for x in fn._running_tasks)
 
         await fn.dispose()
+
+
+class TestStalenessAdmission:
+    @pytest.mark.parametrize("max_weight_staleness", [0, 1])
+    async def test_the_producer_runs_at_most_max_weight_staleness_batches_ahead_of_training(
+        self, monkeypatch, max_weight_staleness: int
+    ) -> None:
+        """Each step opens room for one more batch, however large the in-flight budget is."""
+        source = FakeDataSource()
+        args = make_args(
+            rollout_batch_size=2,
+            async_max_concurrent_samples=64,
+            max_weight_staleness=max_weight_staleness,
+            async_staleness_admission=True,
+        )
+        fn = make_fn(monkeypatch, args, source)
+        try:
+            for rollout_id in range(3):
+                await asyncio.wait_for(fn(train_input(rollout_id=rollout_id, weight_version=rollout_id)), timeout=5)
+                await _settle()
+                assert source.num_get_calls == (max_weight_staleness + 1 + rollout_id) * 2
+        finally:
+            await fn.dispose()
+
+    @pytest.mark.parametrize("handler", ["drop", "retry"])
+    async def test_a_group_rejected_as_stale_frees_its_place_for_a_new_one(self, monkeypatch, handler: str) -> None:
+        """The producer is already waiting when the drain rejects the group, so the rejection must wake it."""
+        calls = 0
+
+        async def generate_stale_once(state, group, sampling_params=None, evaluation=False, sample_done_callback=None):
+            nonlocal calls
+            calls += 1
+            for sample in group:
+                sample.status = Sample.Status.COMPLETED
+                sample.reward = 1
+                if calls == 1:
+                    sample.weight_versions = make_group(0, weight_versions=["0"])[0].weight_versions
+            return group
+
+        args = make_args(
+            rollout_batch_size=1,
+            max_weight_staleness=0,
+            async_staleness_admission=True,
+            async_unused_samples_handler=handler,
+        )
+        fn = make_fn(monkeypatch, args, FakeDataSource(), generate=generate_stale_once)
+        try:
+            output = await asyncio.wait_for(fn(train_input(rollout_id=0, weight_version=5)), timeout=5)
+        finally:
+            await fn.dispose()
+
+        assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
+        assert calls == 2
+
+    def test_a_custom_buffer_without_admits_is_rejected_at_construction(self, monkeypatch) -> None:
+        args = make_args(
+            custom_async_data_buffer_path=f"{__name__}.WedgedBuffer",
+            max_weight_staleness=1,
+            async_staleness_admission=True,
+        )
+        with pytest.raises(AssertionError, match="admits"):
+            make_fn(monkeypatch, args, FakeDataSource())
 
 
 # ============================== unused handler ==============================

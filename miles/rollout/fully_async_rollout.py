@@ -91,8 +91,12 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._curr_kv_cache_namespace: str | None = None
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
+        self._admission_changed = asyncio.Event()
         default_buffer_cls = DefaultMultiDataBuffer if self.args.raw_megatron.is_multi_policy else DefaultDataBuffer
         buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
+        assert (
+            not self.args.async_staleness_admission or buffer_cls.admits is not DataBuffer.admits
+        ), f"--async-staleness-admission requires {buffer_cls.__name__} to implement admits()"
         self._output: DataBuffer = buffer_cls(
             DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
         )
@@ -173,14 +177,29 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         active: set[asyncio.Task] = set()
         while True:
             await self._producer_resumed.wait()
-            while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
+            self._admission_changed.clear()
+            while (admits := self._output.admits(in_flight=len(active))) and self._scheduler.has_capacity(
+                pending_groups=len(active), group_budget=self._max_in_flight_groups()
+            ):
                 active.add(self._submit_one_group())
-            done, active = await self._scheduler.wait_for_progress(active)
+            if admits:
+                done, active = await self._scheduler.wait_for_progress(active)
+            else:
+                done, active = await self._wait_for_admission(active)
             for task in done:
                 prompt_group = next(x.prompt_group for x in self._running_tasks if x.task is task)
                 entry = self._collect_group_result(task, prompt_group)
                 await self._output.put(entry)
                 self._running_tasks = [x for x in self._running_tasks if x.task is not task]
+
+    async def _wait_for_admission(self, pendings: set[asyncio.Task]) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
+        """Wait for a drain to start, an unused group to leave, or a group to finish (its put may reject it)."""
+        waiter = asyncio.create_task(self._admission_changed.wait())
+        try:
+            done, pending = await asyncio.wait(pendings | {waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+        return done - {waiter}, pending - {waiter}
 
     def _collect_group_result(self, task: asyncio.Task, prompt_group: list[Sample]) -> DataBufferInput:
         if not task.cancelled():
@@ -209,6 +228,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
         assert not self._worker.done(), "the fully-async rollout worker has ended"
         self._worker_error_cancel_targets.add(asyncio.current_task())
+        self._admission_changed.set()
         entries = await self._output.get(
             current_version=input.weight_version,
             num_groups=args.rollout_batch_size,
@@ -259,9 +279,11 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         for sample in prompt_group:
             sample.reset_for_retry()
         self._retry_buffer.append(prompt_group)
+        self._admission_changed.set()
 
     def _drop_unused(self, prompt_group: list[Sample], reason: UnusedReason) -> None:
         SampleOwnershipRecorder.log_dropped_samples(args=self.args, samples=prompt_group, reason=reason.value)
+        self._admission_changed.set()
 
     def save(self, directory: Path) -> None:
         state = _FullyAsyncRolloutState(

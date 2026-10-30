@@ -504,6 +504,18 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
             )
         ),
     ] = None
+    async_staleness_admission: A[
+        bool,
+        Arg(
+            help=(
+                "Also apply --max-weight-staleness N when the fully async producer submits a group: the default "
+                "data buffer admits one only while the buffered and in-flight groups number fewer than "
+                "N * rollout_batch_size, plus one rollout_batch_size while a training step waits for its batch. "
+                "N = 0 makes generation synchronous. Requires one weight version per training step, and a data "
+                "buffer that implements admits()."
+            )
+        ),
+    ] = False
     async_max_concurrent_samples: A[
         int | None,
         Arg(

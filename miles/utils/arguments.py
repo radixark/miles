@@ -1543,6 +1543,18 @@ def miles_validate_args(args):
             )
         args.global_batch_size = global_batch_size
 
+    if args.async_staleness_admission:
+        assert (
+            args.fully_async and args.max_weight_staleness is not None and args.max_weight_staleness >= 0
+        ), "--async-staleness-admission requires --fully-async and --max-weight-staleness >= 0"
+        assert args.update_weights_interval == 1 and (
+            args.use_dynamic_global_batch_size
+            or args.global_batch_size == args.rollout_batch_size * args.n_samples_per_prompt
+        ), (
+            "--async-staleness-admission requires one weight version per step: --update-weights-interval 1 and "
+            "one optimizer step per rollout"
+        )
+
     # Multi-LoRA adapters carry their own n_samples_per_prompt; the per-group
     # normalization path already skips std for singleton groups.
     if args.n_samples_per_prompt == 1 and not args.multi_lora:
