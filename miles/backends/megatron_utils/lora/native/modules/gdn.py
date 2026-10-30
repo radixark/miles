@@ -29,7 +29,7 @@ class LoRAGDNInProj(LoRASplitAdapter):
         projections: Sequence[ProjectionSpec],
     ):
         local = gdn.local
-        rows = {
+        rows_by_param_prefix = {
             "q": local.key_dim,
             "k": local.key_dim,
             "v": local.value_dim,
@@ -43,11 +43,11 @@ class LoRAGDNInProj(LoRASplitAdapter):
             reference=reference,
             context=context,
             projections=projections,
-            rows_by_param_prefix=rows,
+            rows_by_param_prefix=rows_by_param_prefix,
         )
         flat_qkv = torch.arange(local.qkv_dim, device=reference.device)
         group_major_qkv = group_major(list(flat_qkv.split([local.key_dim, local.key_dim, local.value_dim])), local)
-        rest = torch.arange(local.qkv_dim, sum(rows.values()), device=reference.device)
+        rest = torch.arange(local.qkv_dim, sum(rows_by_param_prefix.values()), device=reference.device)
         self.register_buffer("out_perm", torch.cat([group_major_qkv, rest]), persistent=False)
 
     def _branch_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:

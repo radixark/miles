@@ -93,6 +93,18 @@ class MLPLoRASpec(Protocol):
     def attach(self, mlp: nn.Module, layer: nn.Module, context: AttachContext) -> int: ...
 
 
+class LinearAttentionLoRASpec(Protocol):
+    """Adapters on a hybrid model's linear-attention mixer layers."""
+
+    name: str
+    hf_block: str
+    supported_targets: frozenset[str]
+
+    def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int: ...
+
+    def served_targets(self, modules: list[str], hf_targets: list[str], *, lora_type: str) -> list[str]: ...
+
+
 class ExpertsLoRASpec(Protocol):
     """Routed-expert attachment for architectures whose experts carry adapters."""
 
@@ -129,7 +141,7 @@ class LoRAArchSpec:
     lm_head: Any = None
     has_linear_attention_layers: bool = False
     # adapters of the linear-attention mixer layers; None leaves those layers unadapted
-    linear_attention: Any = None
+    linear_attention: LinearAttentionLoRASpec | None = None
     fixed_targets: FixedTargets | None = None
     # None names adapters after the raw-mode converter's HF weight names
     declared_naming: Any = None

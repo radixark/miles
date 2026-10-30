@@ -21,6 +21,8 @@ GDN_IN_PROJ_COMPONENTS = (
     ("in_proj_b", "in_proj_b", "b"),
     ("in_proj_a", "in_proj_a", "a"),
 )
+# SGLang stacks the components into in_proj_qkvz and in_proj_ba only as complete groups
+GDN_IN_PROJ_SERVED_GROUPS = (frozenset({"in_proj_qkv", "in_proj_z"}), frozenset({"in_proj_b", "in_proj_a"}))
 
 
 class Qwen35GDNSpec:
@@ -71,3 +73,36 @@ class Qwen35GDNSpec:
             attach_projection_delta(gdn, adapter, context.lora.scale)
             count += 1
         return count + attach_layout(gdn, self.out_proj_layout, layer, context)
+
+    def served_targets(self, modules: list[str], hf_targets: list[str], *, lora_type: str) -> list[str]:
+        """Check the in_proj selection and name its targets after the components native exports.
+
+        SGLang stacks only complete groups and rejects a partial one at load.
+        """
+        leaves_by_block: dict[str, set[str]] = {}
+        for module in modules:
+            block, _, leaf = module.rpartition(".")
+            if block.endswith(self.hf_block) or not block:
+                leaves_by_block.setdefault(block, set()).add(leaf)
+        selects_in_proj = any(leaves & self.in_proj_targets for leaves in leaves_by_block.values())
+        assert not selects_in_proj or lora_type == "canonical_lora", (
+            "native LoRA trains the GDN in_proj only as independent q/k/v/z/b/a components; pass "
+            "--lora-type canonical_lora (one shared A over the fused in_proj is Bridge's --lora-type lora)"
+        )
+        for block, leaves in leaves_by_block.items():
+            for group in GDN_IN_PROJ_SERVED_GROUPS:
+                assert leaves & group in (set(), group), (
+                    f"native GDN LoRA needs {sorted(group)} selected together in {block or self.hf_block} "
+                    f"(got {sorted(leaves & group)}): SGLang serves the components only as a stacked group"
+                )
+        components: dict[str, list[str]] = {}
+        for host, component, _prefix in GDN_IN_PROJ_COMPONENTS:
+            components.setdefault(host, []).append(component)
+        served = []
+        for target in hf_targets:
+            block, dot, leaf = target.rpartition(".")
+            if leaf in components and (block.endswith(self.hf_block) or not block):
+                served.extend(f"{block}{dot}{component}" for component in components[leaf])
+            else:
+                served.append(target)
+        return served

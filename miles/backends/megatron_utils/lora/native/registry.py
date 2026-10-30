@@ -18,7 +18,7 @@ from miles.backends.megatron_utils.lora.native.spec.attention import (
     MLAAttentionSpec,
 )
 from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, LoRAArchSpec
-from miles.backends.megatron_utils.lora.native.spec.gdn import GDN_IN_PROJ_COMPONENTS, Qwen35GDNSpec
+from miles.backends.megatron_utils.lora.native.spec.gdn import Qwen35GDNSpec
 from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
 from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec
 from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGateUpMLPSpec, SplitGateUpMLPSpec
@@ -192,7 +192,7 @@ def resolve_adapter_targets(
     _assert_shared_expert_up_proj_has_gate_proj(selected or hf_targets)
     if spec.linear_attention is None:
         return hf_targets
-    return _gdn_component_targets(selected or hf_targets, hf_targets, lora_type=lora_type)
+    return spec.linear_attention.served_targets(selected or hf_targets, hf_targets, lora_type=lora_type)
 
 
 def validate_native_lora_args(args) -> None:
@@ -242,41 +242,6 @@ def _assert_shared_expert_up_proj_has_gate_proj(hf_targets: list[str]) -> None:
     assert (
         not lone_up_projs
     ), f"native LoRA needs gate_proj selected with {lone_up_projs}: SGLang drops a shared expert's lone up_proj"
-
-
-def _gdn_component_targets(modules: list[str], hf_targets: list[str], *, lora_type: str) -> list[str]:
-    """Check the GDN in_proj selection and name its targets after the components native exports.
-
-    SGLang stacks the components into ``in_proj_qkvz`` and ``in_proj_ba`` only when all of q/k/v/z, or both b
-    and a, are present; any other subset would be loaded as nothing.
-    """
-    leaves_by_block: dict[str, set[str]] = {}
-    for module in modules:
-        block, _, leaf = module.rpartition(".")
-        if block.endswith("linear_attn") or not block:
-            leaves_by_block.setdefault(block, set()).add(leaf)
-    selects_in_proj = any(leaves & Qwen35GDNSpec.in_proj_targets for leaves in leaves_by_block.values())
-    assert not selects_in_proj or lora_type == "canonical_lora", (
-        "native LoRA trains the GDN in_proj only as independent q/k/v/z/b/a components; pass "
-        "--lora-type canonical_lora (one shared A over the fused in_proj is Bridge's --lora-type lora)"
-    )
-    for block, leaves in leaves_by_block.items():
-        for group in ({"in_proj_qkv", "in_proj_z"}, {"in_proj_b", "in_proj_a"}):
-            assert leaves & group in (set(), group), (
-                f"native GDN LoRA needs {sorted(group)} selected together in {block or 'linear_attn'} "
-                f"(got {sorted(leaves & group)}): SGLang serves the components only as a stacked group"
-            )
-    components = {}
-    for host, component, _prefix in GDN_IN_PROJ_COMPONENTS:
-        components.setdefault(host, []).append(component)
-    served = []
-    for target in hf_targets:
-        block, dot, leaf = target.rpartition(".")
-        if leaf in components and (block.endswith("linear_attn") or not block):
-            served.extend(f"{block}{dot}{component}" for component in components[leaf])
-        else:
-            served.append(target)
-    return served
 
 
 def attention_target_modules_csv(hf_config: dict) -> str:
