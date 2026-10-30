@@ -11,6 +11,8 @@ def _args(**overrides) -> Namespace:
         **{
             "length_penalty_coeff": 1.0,
             "length_penalty_min_tokens": 1,
+            "custom_reward_post_process_path": None,
+            "custom_convert_samples_to_train_data_path": None,
             "reward_key": None,
             "n_samples_per_prompt": 4,
             "rollout_batch_size": 2,
