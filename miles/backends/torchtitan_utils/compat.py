@@ -22,6 +22,28 @@ def backport_torch_apis() -> None:
 
 def install() -> None:
     _patch_fsdp2_grad_accumulation_attr_error()
+    _compile_flex_attention_for_dynamic_shapes()
+
+
+def _compile_flex_attention_for_dynamic_shapes() -> None:
+    """torchtitan compiles flex_attention for the first shape it sees and recompiles dynamically on the
+    second; the two kernels round differently, so the first micro-batch of the log-prob pass and the
+    same micro-batch in training disagree in the last bits (ppo_kl != 0 on step 0). One dynamic kernel
+    serves both. fullgraph and recompile_limit mirror torchtitan's own compile."""
+    import torch
+    from torch.nn.attention.flex_attention import flex_attention
+    from torchtitan.models.common.attention import FlexInnerAttention
+
+    if getattr(
+        FlexInnerAttention._compiled_flex_attn, "_dynamic_shapes", False
+    ):  # config-access-exempt: idempotence marker set below
+        return
+    compiled = torch.compile(
+        flex_attention, dynamic=True, fullgraph=True, options=FlexInnerAttention.inductor_configs, recompile_limit=16
+    )
+    compiled._dynamic_shapes = True
+    FlexInnerAttention._compiled_flex_attn = staticmethod(compiled)
+    logger.info("Compiled flex_attention for dynamic shapes, so every micro-batch runs one kernel")
 
 
 def _stub_dist_moe_pipelining_apis() -> None:
