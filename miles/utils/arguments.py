@@ -486,6 +486,9 @@ def _validate_rollout_data_yaml_config(args) -> None:
         datasets,
         rollout_max_prompt_len=args.rollout_max_prompt_len,
         rollout_max_response_len=args.rollout_max_response_len,
+        max_seq_len=getattr(
+            args, "max_seq_len", None
+        ),  # config-access-exempt: optional length limit registered by custom agent hooks
     )
     if args.num_rollout is None:
         # an epoch has no single length across independently wrapping datasets

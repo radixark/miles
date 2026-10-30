@@ -8,6 +8,7 @@ from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 from tests.fast.rollout.inference_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_train
 
 from miles.utils.function_registry import function_registry
+from miles.utils.test_utils import mock_tools
 
 
 async def _row_reward(args, sample, **kwargs) -> float:
@@ -64,3 +65,54 @@ def test_train_rollout_mixes_grades_and_caps_by_dataset(rollout_env):
 
     budgets = sorted(request["sampling_params"]["max_new_tokens"] for request in env.mock_server.request_log)
     assert budgets == [8] * 6 + [16] * 2
+
+
+_AGENT_CALLS: Counter = Counter()
+_THIS_MODULE = "tests.fast.rollout.inference_rollout.integration.test_mixed_datasets"
+
+
+async def swe_agent(**kwargs):
+    _AGENT_CALLS["swe"] += 1
+    return await mock_tools.run_agentic_tool_call(**kwargs)
+
+
+async def web_agent(**kwargs):
+    _AGENT_CALLS["web"] += 1
+    return await mock_tools.run_agentic_tool_call(**kwargs)
+
+
+_AGENTIC_DATASETS = {
+    "swe": (
+        [{"input": "What is 1+7?", "label": "8"}] * 3,
+        {"samples_per_step": 1, "agent_function": f"{_THIS_MODULE}.swe_agent"},
+    ),
+    "web": (
+        [{"input": "What is 1+7?", "label": "8"}] * 3,
+        {"samples_per_step": 1, "agent_function": f"{_THIS_MODULE}.web_agent"},
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "rollout_env",
+    [
+        pytest.param(
+            RolloutEnvConfig(
+                extra_argv=MODULAR_ROLLOUT_BASE_ARGV + extra_argv_for_variant("agentic_tool_call") + _BATCH_ARGV,
+                mixed_datasets=_AGENTIC_DATASETS,
+            ),
+            id="two_agents",
+        )
+    ],
+    indirect=True,
+)
+def test_two_agentic_datasets_each_run_their_own_agent(rollout_env):
+    _AGENT_CALLS.clear()
+    out = load_and_call_train(rollout_env.args, rollout_env.data_source)
+
+    names = Counter(
+        group[0].metadata["dataset_name"] if not isinstance(group[0], list) else group[0][0].metadata["dataset_name"]
+        for group in out.samples
+    )
+    assert names == {"swe": 2, "web": 2}
+    assert _AGENT_CALLS == {"swe": 4, "web": 4}

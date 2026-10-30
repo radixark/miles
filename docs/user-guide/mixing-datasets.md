@@ -34,9 +34,14 @@ The flag also accepts an inline `base64:<payload>`, like `--eval-config`.
 | `max_prompt_len` | no | Drop this dataset's longer prompts. At most `--rollout-max-prompt-len`. |
 | `max_response_len` | no | Response budget for this dataset's samples. At most `--rollout-max-response-len`. |
 | `generate_function` | no | Generate function for this dataset's samples. Unset: `--custom-generate-function-path`, or Miles' default `miles.rollout.generate_hub.single_turn.generate` when that is unset too. |
+| `agent_function` | no | Agent function for `agentic_tool_call` on this dataset, instead of `--custom-agent-function-path`. |
+| `max_seq_len` | no | Agentic sequence limit for this dataset. At most `--max-seq-len`. |
 | `agent` | no | Free-form settings passed to the agent function as `metadata["agent_config"]`. |
 
-Unknown fields are rejected, so a typo fails at startup instead of being ignored.
+Unknown fields are rejected, so a typo fails at startup instead of being ignored. A `generate_function` or
+`agent_function` that declares its own options (`config_class` or `add_arguments`) gets them registered as
+flags, just like one passed through `--custom-generate-function-path`, so two agentic datasets can each run
+their own generate function and agent.
 
 ### How prompts are drawn
 

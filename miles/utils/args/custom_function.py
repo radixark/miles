@@ -8,6 +8,7 @@ from pydantic import ConfigDict, SerializeAsAny, create_model, model_validator
 
 from miles.utils.args.schema import BaseConfig, validate_complete_config
 from miles.utils.function_registry import load_function
+from miles.utils.rollout_data_config import load_rollout_data_config
 from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 
 
@@ -46,6 +47,8 @@ def add_user_provided_function_arguments(
     if modify_args is not None:
         modify_args(args_partial)
     infos = _compute_custom_function_field_infos(args_partial, partial=True, config_class=config_class)
+    if config_class is None:
+        infos += _compute_rollout_dataset_function_infos(args_partial, partial=True)
     registered_paths: set[str] = set()
     registered_config_classes: set[type[BaseConfig]] = set()
     for info in infos:
@@ -67,6 +70,15 @@ def resolve_custom_function_configs(args: argparse.Namespace, *, config_class: t
         if resolved.config is not None:
             custom_arg_names.update(type(resolved.config).model_fields)
         setattr(args, info.name, resolved)
+
+    if config_class is None:
+        # functions a --rollout-data-yaml-config dataset names; no args field holds them
+        args.rollout_dataset_functions = {}
+        for info in _compute_rollout_dataset_function_infos(args, partial=False):
+            resolved = _resolve_custom_function_config(info=info, args=args)
+            if resolved.config is not None:
+                custom_arg_names.update(type(resolved.config).model_fields)
+            args.rollout_dataset_functions[info.path] = resolved
 
     for name in custom_arg_names:
         if hasattr(args, name):  # config-access-exempt: schema-selected field
@@ -140,6 +152,47 @@ def _compute_custom_function_field_infos(
             continue
         config_class = _compute_config_class(fn, path=path)
         infos.append(_CustomFunctionFieldInfo(name=name, path=path, fn=fn, config_class=config_class))
+    return infos
+
+
+_ROLLOUT_DATASET_FUNCTION_FIELDS = ("generate_function", "agent_function")
+
+
+def _compute_rollout_dataset_function_infos(
+    args: argparse.Namespace, *, partial: bool
+) -> list[_CustomFunctionFieldInfo]:
+    """Hooks a --rollout-data-yaml-config dataset names, so their own flags are registered and resolved."""
+    value = getattr(args, "rollout_data_yaml_config", None)  # config-access-exempt: absent from partial parses
+    if value is None:
+        return []
+    try:
+        datasets = load_rollout_data_config(value)
+    except (OSError, ValueError):
+        # a bad file is reported by the startup validation, not by the partial parse
+        if partial:
+            return []
+        raise
+    infos = []
+    for dataset in datasets:
+        for field_name in _ROLLOUT_DATASET_FUNCTION_FIELDS:
+            if (path := getattr(dataset, field_name)) is None:  # config-access-exempt: fixed field names
+                continue
+            try:
+                fn = load_function(path)
+            except (ModuleNotFoundError, ValueError):
+                if partial:
+                    continue
+                raise
+            if partial and fn is None:
+                continue
+            infos.append(
+                _CustomFunctionFieldInfo(
+                    name=f"rollout_dataset:{dataset.name}:{field_name}",
+                    path=path,
+                    fn=fn,
+                    config_class=_compute_config_class(fn, path=path),
+                )
+            )
     return infos
 
 

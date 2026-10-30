@@ -126,7 +126,13 @@ class TestMixedRolloutDataSource:
 
     def test_dataset_settings_reach_every_sample(self, tmp_path):
         datasets = _two_datasets(tmp_path)
-        datasets["code"] |= {"max_response_len": 64, "generate_function": "json.dumps", "agent": {"max_turns": 3}}
+        datasets["code"] |= {
+            "max_response_len": 64,
+            "generate_function": "json.dumps",
+            "agent": {"max_turns": 3},
+            "agent_function": "json.loads",
+            "max_seq_len": 4096,
+        }
         source = _make_source(tmp_path, datasets)
 
         by_name = {name: group for group, name in ((g, g[0].metadata["dataset_name"]) for g in source.get_samples(8))}
@@ -136,6 +142,8 @@ class TestMixedRolloutDataSource:
             "json.dumps",
             {"max_turns": 3},
         )
+        assert (code.metadata["agent_function_path"], code.metadata["dataset_max_seq_len"]) == ("json.loads", 4096)
+        assert "agent_function_path" not in math.metadata and "dataset_max_seq_len" not in math.metadata
         assert (math.max_response_len, math.generate_function_path, "agent_config" in math.metadata) == (
             None,
             None,
