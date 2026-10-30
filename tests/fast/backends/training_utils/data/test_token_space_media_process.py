@@ -23,7 +23,9 @@ class _RecordingProcessor:
 def test_trainer_rebuilds_tensors_without_expanding_the_rollout_tokens(monkeypatch):
     processor = _RecordingProcessor()
     monkeypatch.setattr(
-        token_space_media_process, "_token_space_processor", lambda hf_checkpoint, mm_process_config_json: processor
+        token_space_media_process,
+        "_token_space_processor",
+        lambda hf_checkpoint, mm_process_config_json, device: processor,
     )
     multimodal_inputs = [{"images": ["/shared/a.png", "/shared/b.png"]}, None]
     tokens = [torch.tensor([1, 9, 9, 9, 9, 2, 5]), torch.tensor([1, 2])]

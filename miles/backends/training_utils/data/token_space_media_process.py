@@ -37,7 +37,7 @@ def compute_multimodal_train_inputs(
         Each sample's ``multimodal_train_inputs``, or None for a text-only sample.
     """
     # Canonical JSON so the config can key the processor cache.
-    processor = _token_space_processor(hf_checkpoint, json.dumps(mm_process_config or {}, sort_keys=True))
+    processor = _token_space_processor(hf_checkpoint, json.dumps(mm_process_config or {}, sort_keys=True), device)
     return [
         (
             _sample_train_inputs(processor, sample_multimodal_inputs, sample_tokens, device=device)
@@ -49,13 +49,14 @@ def compute_multimodal_train_inputs(
 
 
 @functools.cache
-def _token_space_processor(hf_checkpoint: str, mm_process_config_json: str):
+def _token_space_processor(hf_checkpoint: str, mm_process_config_json: str, device: torch.device):
     # Deferred: only SGLang builds with the token-space processor provide these modules.
     from sglang.srt.multimodal.processors.processor_config import MultimodalProcessorConfig
     from sglang.srt.multimodal.token_space_mm_process.processor import TokenSpaceProcessor
-    from sglang.srt.multimodal.token_space_mm_process.registry import strategy_for
+    from sglang.srt.multimodal.token_space_mm_process.registry import register_token_space_models, strategy_for
     from sglang.srt.utils.hf_transformers import get_config, get_processor
 
+    register_token_space_models()
     hf_config = get_config(hf_checkpoint, trust_remote_code=True)
     strategy_class = strategy_for(hf_config)
     if strategy_class is None:
@@ -68,6 +69,8 @@ def _token_space_processor(hf_checkpoint: str, mm_process_config_json: str):
         processor_config=MultimodalProcessorConfig(
             image_processor_backend="auto", mm_process_config=json.loads(mm_process_config_json)
         ),
+        # SGLang's worker threads decode on bare "cuda", which a new thread resolves to GPU 0.
+        worker_thread_device=device if device.type == "cuda" else None,
     )
 
 
