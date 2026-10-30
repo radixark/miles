@@ -10,12 +10,12 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64.
 
-ARG SGLANG_IMAGE_TAG=v0.5.22
+ARG SGLANG_IMAGE_TAG=v0.5.23
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
 
-ARG SGLANG_BRANCH=sglang-miles
+ARG SGLANG_BRANCH=sglang-miles-v0.5.23
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
