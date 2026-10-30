@@ -44,6 +44,7 @@ from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
 from miles.utils.lora.utils import is_lora_enabled, lora_sync_sends_base
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
+from miles.utils.msc_utils import storage_path
 from miles.utils.object_store_config import (
     MOONCAKE_MASTER_ADDRESS_KEY,
     ObjectStoreBackend,
@@ -1048,10 +1049,11 @@ def miles_validate_args(args):
         args.sglang_chat_template = args.chat_template_path
 
     if args.kl_coef != 0 or args.use_kl_loss:
-        if not os.path.exists(args.ref_load):
+        ref_load = storage_path(args.ref_load)
+        if not ref_load.exists():
             raise FileNotFoundError(f"ref_load {args.ref_load} does not exist, please check the path.")
 
-        if not os.path.exists(os.path.join(args.ref_load, "latest_checkpointed_iteration.txt")):
+        if not (ref_load / "latest_checkpointed_iteration.txt").exists():
             logger.info(
                 f"ref_load {args.ref_load} does not have latest_checkpointed_iteration.txt, "
                 "please make sure it is a valid megatron checkpoint directory."
