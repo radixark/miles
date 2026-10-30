@@ -1,6 +1,7 @@
 """The dashboard observer hands each event to the collector actor as the record the store reads."""
 
 import time
+from importlib.metadata import EntryPoint
 from types import SimpleNamespace
 
 import numpy as np
@@ -10,6 +11,8 @@ from miles.dashboard import observer as dashboard_observer
 from miles.dashboard import sandbox_health
 from miles.dashboard.observer import BATCH_MAX_EVENTS, SHUTDOWN_TIMEOUT_SECONDS, DashboardObserver
 from miles.dashboard.store import EngineInfo, MetricStore, PhaseEvent, Role, Stream, TrajectoryEvent
+from miles.utils import observers
+from miles.utils.misc import SingletonMeta
 
 TRAIN_RANK = dict(role="train", node="10.0.0.3", rank=7, gpus=[3])
 ROLLOUT_MANAGER = dict(role="rollout_manager", node="10.0.0.5", rank=-1, gpus=[])
@@ -53,6 +56,20 @@ def _pushed(method: FakeRemoteMethod) -> list:
 
 def _trajectory_event(ts: float) -> dict:
     return dict(ts=ts, kind="gen_start", sample_index=5, group_index=-1, turn=1, weight_version="2", detail="")
+
+
+def test_a_run_the_dashboard_cannot_serve_is_refused_before_it_starts(monkeypatch):
+    """Turning the dashboard on without ``--dump-details`` must stop the run, not let it train without telemetry."""
+    monkeypatch.setenv("MILES_DASHBOARD", "1")
+    installed = [
+        EntryPoint("miles_dashboard", "miles.dashboard.observer:DashboardObserver", observers.ENTRY_POINT_GROUP)
+    ]
+    monkeypatch.setattr(observers, "entry_points", lambda group: installed)
+    SingletonMeta._instances.pop(observers.Observers, None)
+    args = SimpleNamespace(dump_details=None, cluster_backend="ray", use_rollout_entropy=True)
+
+    with pytest.raises(observers.RunRefusedError, match="dump-details"):
+        observers.start_run(run_uuid="0123456789abcdef", args=args)
 
 
 def test_a_phase_start_is_pushed_at_once_as_an_open_phase(collector):

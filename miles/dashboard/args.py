@@ -8,6 +8,7 @@ from typing import Any
 
 from miles.dashboard.collector import CollectorConfig
 from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST
+from miles.utils.observers import RunRefusedError
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +44,14 @@ _SNAPSHOT_KEYS = (
 
 def validate_dashboard_args(args) -> None:
     if args["dump_details"] is None:
-        raise ValueError(
+        raise RunRefusedError(
             f"{ENABLE_ENV}=1 writes telemetry under {{dump-details}}/dashboard/ and the "
             "trajectory views read the rollout/train dumps, so --dump-details is required"
         )
     if args["cluster_backend"] == "kubernetes":
-        raise ValueError(f"{ENABLE_ENV}=1 creates a Ray actor, which --cluster-backend kubernetes has no cluster for")
+        raise RunRefusedError(
+            f"{ENABLE_ENV}=1 creates a Ray actor, which --cluster-backend kubernetes has no cluster for"
+        )
     if not args["use_rollout_entropy"]:
         logger.warning(
             f"{ENABLE_ENV}=1 without --use-rollout-entropy: per-token entropy "

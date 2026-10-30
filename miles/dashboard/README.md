@@ -30,12 +30,14 @@ engine-metric scraper, and forwards what every process of the run reports
 to it. Everything is appended under `{dump-details}/dashboard/` (append-only
 JSONL). Overhead on the training path is a few milliseconds per step; all
 pushes are fire-and-forget and a dead collector never affects training.
+The dashboard cannot serve a run without `--dump-details` or on
+`--cluster-backend kubernetes`, so such a run stops at startup.
 
 `--dump-details` alone (without `MILES_DASHBOARD`) still writes the rollout
 `.pt` and — for session / multi-turn runs — a raw-conversation sidecar
 (`trajectory/`, for the conversation view). The viewer writes a per-token
-column mirror (`dashboard_columns/`) the first time it reads a step, so later
-token views never full-load the `.pt`.
+column mirror into its cache directory (`--cache-dir`) the first time it reads
+a step, so later token views never full-load the `.pt`.
 
 ## View
 
@@ -125,7 +127,7 @@ Architecture:
 ```
 producers (the run observer in every process / NVML samplers / sglang scraper)
     -> DashboardCollector (named actor, driver node)          [live JSONL streams]
-dump .pt + dashboard_columns/*.parquet + trajectory/*.jsonl   [written by training]
+dump .pt + trajectory/*.jsonl                                [written by training]
     -> serve.py: MetricStore + DumpReader -> FastAPI -> static SPA
 ```
 

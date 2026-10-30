@@ -5,6 +5,7 @@ import pytest
 
 from miles.dashboard.args import collector_config_from_args, validate_dashboard_args
 from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST
+from miles.utils.observers import RunRefusedError
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +42,7 @@ def test_defaults():
 
 def test_validate_requires_dump_details():
     args = full_args(dump_details=None)
-    with pytest.raises(ValueError, match="dump-details"):
+    with pytest.raises(RunRefusedError, match="dump-details"):
         validate_dashboard_args(args)
 
 
@@ -57,7 +58,7 @@ def test_validate_warns_without_entropy(caplog):
 
 
 def test_validate_refuses_a_kubernetes_run():
-    with pytest.raises(ValueError, match="kubernetes"):
+    with pytest.raises(RunRefusedError, match="kubernetes"):
         validate_dashboard_args(full_args(cluster_backend="kubernetes"))
 
 

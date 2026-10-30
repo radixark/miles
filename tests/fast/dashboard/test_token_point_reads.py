@@ -1,5 +1,8 @@
 """Token-view point reads: parquet mirror + mmap'd train shards."""
 
+import threading
+import time
+
 import polars as pl
 import pytest
 import torch
@@ -14,10 +17,14 @@ def dumped(tmp_path):
     return tmp_path
 
 
+def _mirror(reader: DumpReader):
+    return reader.cache_dir / "columns" / "rollout_0.parquet"
+
+
 def test_the_first_point_read_writes_the_parquet_mirror(dumped):
     reader = DumpReader(dumped)
     reader.tokens(0, 0, start=0, end=1)
-    frame = pl.read_parquet(dumped / "dashboard_columns" / "rollout_0.parquet")
+    frame = pl.read_parquet(_mirror(reader))
     joined = reader.joined(0)
     assert sorted(frame["sample_index"]) == sorted(s.index for s in joined.samples)
     sample = joined.samples[0]
@@ -41,19 +48,53 @@ def test_tokens_does_not_touch_the_rollout_pt(dumped, monkeypatch):
 
 
 def test_missing_mirror_is_rebuilt(dumped):
-    mirror = dumped / "dashboard_columns" / "rollout_0.parquet"
     reader = DumpReader(dumped)
     payload = reader.tokens(0, 0, start=0, end=4)
-    assert mirror.exists() and payload["token_ids"]
+    assert _mirror(reader).exists() and payload["token_ids"]
 
 
 def test_stale_schema_is_rebuilt(dumped):
-    mirror = dumped / "dashboard_columns" / "rollout_0.parquet"
-    mirror.parent.mkdir()
+    reader = DumpReader(dumped)
+    mirror = _mirror(reader)
+    mirror.parent.mkdir(parents=True)
     pl.DataFrame({"sample_index": [0]}).write_parquet(mirror)
-    payload = DumpReader(dumped).tokens(0, 0, start=0, end=4)
+    payload = reader.tokens(0, 0, start=0, end=4)
     assert payload["token_ids"]
     assert "tokens" in pl.read_parquet_schema(mirror)
+
+
+def test_the_mirror_goes_to_the_cache_dir_so_a_read_only_dump_still_serves(dumped, tmp_path_factory):
+    """A dump the viewer cannot write to must still serve token views when ``--cache-dir`` points elsewhere."""
+    before = sorted(path for path in dumped.rglob("*"))
+    reader = DumpReader(dumped, cache_dir=tmp_path_factory.mktemp("cache"))
+
+    assert reader.tokens(0, 0, start=0, end=4)["token_ids"]
+    assert _mirror(reader).exists()
+    assert sorted(path for path in dumped.rglob("*")) == before
+
+
+def test_concurrent_first_reads_build_the_mirror_once(dumped, monkeypatch):
+    """Two handlers reading a new step at once must not both rebuild its mirror through the same temp file."""
+    reader = DumpReader(dumped)
+    loads: list[str] = []
+    real_load = reader._torch_load
+
+    def slow_load(path, **kwargs):
+        if "rollout_data" in str(path):
+            loads.append(str(path))
+            time.sleep(0.2)
+        return real_load(path, **kwargs)
+
+    monkeypatch.setattr(reader, "_torch_load", slow_load)
+    payloads: list[dict] = []
+    threads = [threading.Thread(target=lambda: payloads.append(reader.tokens(0, 0, start=0, end=4))) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(payloads) == 2 and all(payload["token_ids"] for payload in payloads)
+    assert len(loads) == 1, "both handlers rebuilt the mirror"
 
 
 def test_unknown_sample_raises(dumped):

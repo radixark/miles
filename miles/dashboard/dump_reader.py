@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
@@ -420,6 +421,7 @@ class DumpReader:
         self._trajectory_cache: OrderedDict[tuple[int, bool], dict[SampleKey, dict]] = OrderedDict()
         self._tokenizer = None
         self._tokenizer_loaded = False
+        self._columns_lock = threading.Lock()
 
     def rollout_ids(self) -> RolloutIds:
         ids = RolloutIds(train=[], eval=[])
@@ -652,8 +654,8 @@ class DumpReader:
 
     # -------------------------- token-view point reads ----------------------
 
-    # rollout-side per-token columns; the parquet mirror is built here on
-    # first read (a schema mismatch also triggers the rebuild)
+    # rollout-side per-token columns; the parquet mirror is built under
+    # cache_dir on first read (a schema mismatch also triggers the rebuild)
     ROLLOUT_COLUMNS: ClassVar[tuple[str, ...]] = (
         "sample_index",
         "response_length",
@@ -667,11 +669,13 @@ class DumpReader:
         self, rollout_id: int, sample_index: int, *, sample_occurrence: int, evaluation: bool
     ) -> dict:
         stem = ("eval_" if evaluation else "") + str(rollout_id)
-        path = self.dump_dir / "dashboard_columns" / f"rollout_{stem}.parquet"
-        if not path.exists() or set(pl.read_parquet_schema(path)) != set(self.ROLLOUT_COLUMNS):
-            name = f"eval_{rollout_id}.pt" if evaluation else f"{rollout_id}.pt"
-            pack = self._torch_load(self.rollout_dir / name)
-            save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)
+        path = self.cache_dir / "columns" / f"rollout_{stem}.parquet"
+        # concurrent request handlers: build each step's mirror once
+        with self._columns_lock:
+            if not path.exists() or set(pl.read_parquet_schema(path)) != set(self.ROLLOUT_COLUMNS):
+                name = f"eval_{rollout_id}.pt" if evaluation else f"{rollout_id}.pt"
+                pack = self._torch_load(self.rollout_dir / name)
+                save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)
         frame = pl.scan_parquet(path).filter(pl.col("sample_index") == sample_index).collect()
         if not 0 <= sample_occurrence < len(frame):
             raise KeyError(
@@ -944,6 +948,6 @@ def save_dashboard_columns(samples: list[Sample], path: Path) -> None:
         schema=schema,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
     frame.write_parquet(tmp, row_group_size=8)
     tmp.replace(path)
