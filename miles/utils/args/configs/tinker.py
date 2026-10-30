@@ -12,5 +12,5 @@ class TinkerConfig(BaseConfig):
     ] = None
     tinker_checkpoint_root: A[
         str | None,
-        Arg(help="Directory for tinker:// checkpoints (default: <save>/tinker)"),
+        Arg(help="Directory for tinker:// checkpoints (required)"),
     ] = None
