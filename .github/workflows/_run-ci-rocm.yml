@@ -89,7 +89,7 @@ jobs:
       run:
         working-directory: ${{ github.workspace }}
     env:
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/plugins/miles-dashboard
+      PYTHONPATH: ${{ github.workspace }}
       MILES_HARDWARE_PLATFORM: rocm
       GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
@@ -191,14 +191,14 @@ jobs:
             git log --oneline -1
             pip install -e . --no-deps --break-system-packages
           fi
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          cd $GITHUB_WORKSPACE && pip install -e . -e plugins/miles-dashboard --no-deps --break-system-packages
           pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
 
       - name: Install (miles only)
         if: ${{ inputs.skip_dependency_install }}
         shell: bash
         run: |
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          cd $GITHUB_WORKSPACE && pip install -e . -e plugins/miles-dashboard --no-deps --break-system-packages
           pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
 
       - name: Install Megatron Bridge override
