@@ -170,6 +170,15 @@ class TestMixedRolloutDataSource:
         with pytest.raises(ValueError, match="'math': row 0 has non-mapping metadata"):
             _make_source(tmp_path, datasets)
 
+    def test_a_prompt_row_cannot_choose_the_agent(self, tmp_path):
+        """Row metadata is copied into samples, so a data row could otherwise name the agent code that runs."""
+        datasets = _two_datasets(tmp_path)
+        datasets["math"]["path"] = str(
+            _write_jsonl(tmp_path / "math.jsonl", ["p0"], metadata={"agent_function_path": "evil.run"})
+        )
+        with pytest.raises(ValueError, match="reserved keys \\['agent_function_path'\\]"):
+            _make_source(tmp_path, datasets)
+
     def test_a_dataset_empty_after_filtering_fails_at_startup(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         datasets["math"]["max_prompt_len"] = 1

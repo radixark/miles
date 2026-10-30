@@ -9,6 +9,7 @@ import ray
 
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import MILES_HOST_IP_ENV, is_port_available
+from miles.utils.rollout_data_config import load_rollout_data_config
 
 logger = logging.getLogger(__name__)
 
@@ -52,34 +53,48 @@ def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V
 
 
 async def call_agent_abort_hook(args) -> None:
-    """Invoke the agent plugin's optional abort hook, if it defines one.
+    """Invoke the optional abort hook of every agent function the run can call.
 
     When oversampling collects enough samples, the rollout aborts SGLang, but an
-    external agent loop (driven by ``--custom-agent-function-path``) keeps running
-    and keeps issuing fresh completion requests until it hits its own limit. The
-    agent integration knows how to tell its backend to stop, so we look for a
-    sibling ``abort`` callable in the same module as the configured agent function
-    and call it. Backends that don't expose one are left to drain as before.
+    external agent loop keeps running and keeps issuing fresh completion requests
+    until it hits its own limit. The agent integration knows how to tell its
+    backend to stop, so we look for a sibling ``abort`` callable in the same module
+    as each agent function -- ``--custom-agent-function-path`` and every
+    ``--rollout-data-yaml-config`` dataset's ``agent_function`` -- and call it.
+    Backends that don't expose one are left to drain as before.
     """
     from miles.utils.args.custom_view import compute_custom_function_config
 
-    agent_function_path = args.custom_agent_function_path
-    if not agent_function_path:
-        return
+    called_modules: set[str] = set()
+    for agent_function in _compute_agent_function_configs(args):
+        module_path, _, _ = agent_function.path.rpartition(".")
+        if not module_path or module_path in called_modules:
+            continue
+        called_modules.add(module_path)
+        try:
+            abort_hook = load_function(f"{module_path}.abort")
+        except (AttributeError, ModuleNotFoundError):
+            continue  # plugin doesn't expose an abort hook; nothing to tear down
 
-    module_path, _, _ = agent_function_path.path.rpartition(".")
-    if not module_path:
-        return
-    try:
-        abort_hook = load_function(f"{module_path}.abort")
-    except (AttributeError, ModuleNotFoundError):
-        return  # plugin doesn't expose an abort hook; nothing to tear down
+        try:
+            fn_args = compute_custom_function_config(args, agent_function)
+            await abort_hook(fn_args)
+        except Exception as e:
+            logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
 
-    try:
-        fn_args = compute_custom_function_config(args, agent_function_path)
-        await abort_hook(fn_args)
-    except Exception as e:
-        logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
+
+def _compute_agent_function_configs(args) -> list:
+    agent_functions = [args.custom_agent_function_path] if args.custom_agent_function_path else []
+    data_config = getattr(  # config-access-exempt: absent from hook-only views, e.g. hot restart and tests
+        args, "rollout_data_yaml_config", None
+    )
+    if data_config is not None:
+        agent_functions += [
+            args.rollout_dataset_functions[dataset.agent_function]
+            for dataset in load_rollout_data_config(data_config)
+            if dataset.agent_function is not None
+        ]
+    return agent_functions
 
 
 class SingletonMeta(type):

@@ -15,6 +15,7 @@ from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRec
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.output_store.trainer_columns import materialize_store_columns
 from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.rollout_data_config import RESERVED_SAMPLE_METADATA_KEYS
 
 from .audit_utils.witness.allocator import WitnessInfo
 
@@ -216,6 +217,9 @@ class Dataset:
             prompt = _build_messages(data, prompt_key, as_conversation, multimodal_keys)
 
             metadata = data.get(metadata_key) or {}
+            # only the mixer may choose an agent or sequence limit; a prompt row must not pick code to run
+            if isinstance(metadata, dict) and (reserved := RESERVED_SAMPLE_METADATA_KEYS & metadata.keys()):
+                raise ValueError(f"prompt row metadata sets reserved keys {sorted(reserved)} in {path}")
             tools = None
             if tool_key is not None and tool_key in data:
                 tools = data[tool_key]

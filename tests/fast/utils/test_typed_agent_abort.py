@@ -45,6 +45,34 @@ class TestTypedAgentAbort:
         assert ("provider shutdown failed" in caplog.text) is fails
         assert "hook_marker" not in dict(args)
 
+    async def test_a_dataset_agent_function_gets_its_own_abort(self, tmp_path) -> None:
+        """An agent chosen by a mixed dataset kept issuing requests on abort when only the run-wide agent was aborted."""
+        config = tmp_path / "mix.yaml"
+        config.write_text(
+            "datasets:\n"
+            "  swe:\n    path: /data/swe.jsonl\n    samples_per_step: 1\n    agent_function: test86.swe.run\n"
+            "  web:\n    path: /data/web.jsonl\n    samples_per_step: 1\n    agent_function: test86.swe.run\n"
+        )
+        args = ImmutableNamespace(
+            custom_agent_function_path=_hook("test86.global.run"),
+            rollout_data_yaml_config=str(config),
+            rollout_dataset_functions={"test86.swe.run": _hook("test86.swe.run")},
+        )
+        aborted: list[str] = []
+
+        async def abort_global(view: ImmutableNamespace) -> None:
+            aborted.append("global")
+
+        async def abort_swe(view: ImmutableNamespace) -> None:
+            assert view.hook_marker == 41
+            aborted.append("swe")
+
+        with function_registry.temporary("test86.global.abort", abort_global):
+            with function_registry.temporary("test86.swe.abort", abort_swe):
+                await call_agent_abort_hook(args)
+
+        assert aborted == ["global", "swe"]
+
     @pytest.mark.parametrize("path", [None, "single_component", "missing_test86_package.agent"])
     async def test_absent_agent_or_abort_callback_does_not_require_plugin_state(self, path: str | None) -> None:
         """Optional abort teardown tolerates absent configuration and integrations with no sibling module."""
