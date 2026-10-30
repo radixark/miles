@@ -652,9 +652,8 @@ class DumpReader:
 
     # -------------------------- token-view point reads ----------------------
 
-    # rollout-side per-token columns; the parquet mirror is written by
-    # save_dashboard_columns at dump time and lazily rebuilt here for runs
-    # that predate it (a schema mismatch also triggers the rebuild)
+    # rollout-side per-token columns; the parquet mirror is built here on
+    # first read (a schema mismatch also triggers the rebuild)
     ROLLOUT_COLUMNS: ClassVar[tuple[str, ...]] = (
         "sample_index",
         "response_length",
@@ -670,8 +669,6 @@ class DumpReader:
         stem = ("eval_" if evaluation else "") + str(rollout_id)
         path = self.dump_dir / "dashboard_columns" / f"rollout_{stem}.parquet"
         if not path.exists() or set(pl.read_parquet_schema(path)) != set(self.ROLLOUT_COLUMNS):
-            from miles.ray.rollout.debug_data import save_dashboard_columns
-
             name = f"eval_{rollout_id}.pt" if evaluation else f"{rollout_id}.pt"
             pack = self._torch_load(self.rollout_dir / name)
             save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)
@@ -919,3 +916,34 @@ def _max(values: torch.Tensor | None) -> float | None:
 
 def _std(values: torch.Tensor | None) -> float | None:
     return None if values is None else float(values.std())
+
+
+def save_dashboard_columns(samples: list[Sample], path: Path) -> None:
+    """Point-read mirror of the per-token rollout columns (parquet, one row
+    per sample) so the dashboard token view never full-loads the .pt."""
+    schema = dict(
+        sample_index=pl.Int32,
+        response_length=pl.Int32,
+        total_length=pl.Int32,
+        tokens=pl.List(pl.Int32),
+        loss_mask=pl.List(pl.Int8),
+        rollout_log_probs=pl.List(pl.Float32),
+    )
+    frame = pl.DataFrame(
+        [
+            dict(
+                sample_index=sample.index,
+                response_length=sample.response_length,
+                total_length=len(sample.tokens),
+                tokens=list(sample.tokens),
+                loss_mask=sample.loss_mask,
+                rollout_log_probs=sample.rollout_log_probs,
+            )
+            for sample in samples
+        ],
+        schema=schema,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    frame.write_parquet(tmp, row_group_size=8)
+    tmp.replace(path)

@@ -111,7 +111,6 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_model_routers=None,
         prefill_num_servers=None,
         # routers / session server
-        use_miles_dashboard=False,
         router="sglang",
         miles_router_timeout=None,
         miles_router_max_connections=None,

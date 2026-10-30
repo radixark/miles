@@ -14,9 +14,10 @@ def dumped(tmp_path):
     return tmp_path
 
 
-def test_save_writes_the_parquet_mirror(dumped):
-    frame = pl.read_parquet(dumped / "dashboard_columns" / "rollout_0.parquet")
+def test_the_first_point_read_writes_the_parquet_mirror(dumped):
     reader = DumpReader(dumped)
+    reader.tokens(0, 0, start=0, end=1)
+    frame = pl.read_parquet(dumped / "dashboard_columns" / "rollout_0.parquet")
     joined = reader.joined(0)
     assert sorted(frame["sample_index"]) == sorted(s.index for s in joined.samples)
     sample = joined.samples[0]
@@ -27,6 +28,7 @@ def test_save_writes_the_parquet_mirror(dumped):
 
 def test_tokens_does_not_touch_the_rollout_pt(dumped, monkeypatch):
     reader = DumpReader(dumped)
+    reader.tokens(0, 0, start=0, end=1)  # the first read builds the mirror from the .pt
     real_load = torch.load
 
     def guarded(path, *args, **kwargs):
@@ -40,7 +42,6 @@ def test_tokens_does_not_touch_the_rollout_pt(dumped, monkeypatch):
 
 def test_missing_mirror_is_rebuilt(dumped):
     mirror = dumped / "dashboard_columns" / "rollout_0.parquet"
-    mirror.unlink()
     reader = DumpReader(dumped)
     payload = reader.tokens(0, 0, start=0, end=4)
     assert mirror.exists() and payload["token_ids"]
@@ -48,6 +49,7 @@ def test_missing_mirror_is_rebuilt(dumped):
 
 def test_stale_schema_is_rebuilt(dumped):
     mirror = dumped / "dashboard_columns" / "rollout_0.parquet"
+    mirror.parent.mkdir()
     pl.DataFrame({"sample_index": [0]}).write_parquet(mirror)
     payload = DumpReader(dumped).tokens(0, 0, start=0, end=4)
     assert payload["token_ids"]

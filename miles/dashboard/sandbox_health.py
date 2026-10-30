@@ -12,11 +12,11 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
+
+from miles.utils.observers import SANDBOX_STATUSES
 
 SNAPSHOT_FILENAME = "sandboxes.json"
-SandboxStatus = Literal["healthy", "error", "finished"]
-STATUSES: tuple[str, ...] = ("healthy", "error", "finished")
 
 
 @dataclass
@@ -117,7 +117,7 @@ def sandbox_summary(rows: list[dict[str, Any]], *, now: float, stale_after_s: fl
     """Counts per health and the rows, errors first, then stale ones.
 
     A healthy sandbox is stale when it has not reported for over ``stale_after_s``."""
-    counts = dict.fromkeys((*STATUSES, "stale"), 0)
+    counts = dict.fromkeys((*SANDBOX_STATUSES, "stale"), 0)
     out = []
     for row in rows:
         age_s = now - row["last_exec_ts"]

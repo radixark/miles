@@ -37,7 +37,8 @@ from pathlib import Path
 import torch
 
 from miles.backends.training_utils.metrics.train_dump import save_debug_train_data_for_rank
-from miles.ray.rollout.debug_data import save_dashboard_columns, save_debug_rollout_data
+from miles.dashboard.dump_reader import save_dashboard_columns
+from miles.ray.rollout.debug_data import save_debug_rollout_data
 from miles.ray.rollout.train_data_conversion import (
     convert_samples_to_train_data,
     process_rollout_data_shard,

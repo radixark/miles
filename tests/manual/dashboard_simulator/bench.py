@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from miles.dashboard.collector import CollectorConfig, DashboardCollector
-from miles.dashboard.sglang_scraper import ScrapeMode, SglangScraper
+from miles.dashboard.sglang_scraper import SglangScraper
 from miles.dashboard.store import GpuSample, MetricStore, Stream
 
 _TIMEOUT_S = 1800
@@ -306,7 +306,6 @@ def bench_collector(metrics_page: Path, *, engines: int, duration_s: float, push
         collector.start()
         cpu_start = resource.getrusage(resource.RUSAGE_SELF)
         wall_start = time.monotonic()
-        collector.set_router("http://router:30000")
         push_seconds = []
         # one sampler batch per node per 5 s, 128 nodes; a zero rate is the scrape-only baseline
         batch_rows = max(1, push_rows_per_s * 5 // 128) if push_rows_per_s else 0
@@ -347,5 +346,5 @@ def bench_collector(metrics_page: Path, *, engines: int, duration_s: float, push
 
 def _rows_per_round(page: str, engines: int) -> int:
     rows = []
-    SglangScraper(rows.append, mode=ScrapeMode.DIRECT, engine_addrs=lambda: [])._ingest("x", page, 0.0)
+    SglangScraper(rows.append, engine_addrs=lambda: [])._ingest("x", page, 0.0)
     return len(rows) * engines

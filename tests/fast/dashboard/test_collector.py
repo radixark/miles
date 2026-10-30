@@ -7,7 +7,6 @@ import pytest
 from tests.fast.dashboard.dummy_telemetry import BASE_TS, dump_dummy_telemetry
 
 from miles.dashboard.collector import CollectorConfig, DashboardCollector
-from miles.dashboard.sglang_scraper import ScrapeMode
 from miles.dashboard.store import (
     DataBufferSample,
     EngineInfo,
@@ -21,7 +20,7 @@ from miles.dashboard.store import (
     TopologySnapshot,
 )
 
-ROUTER_FIXTURE = (Path(__file__).parent / "fixtures" / "engine_metrics_router.txt").read_text()
+DIRECT_FIXTURE = (Path(__file__).parent / "fixtures" / "engine_metrics_direct.txt").read_text()
 
 
 def make_collector(tmp_path, **kwargs) -> DashboardCollector:
@@ -126,59 +125,32 @@ def test_flush_thread_persists_periodically(tmp_path):
         collector.shutdown()
 
 
-def test_shutdown_flushes_and_stops_scraper(tmp_path):
-    collector = make_collector(tmp_path, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
-    collector.set_router("http://router:3000")
-    assert collector._scraper is not None
+def test_start_scrapes_the_latest_topology_and_shutdown_stops_it(tmp_path, monkeypatch):
+    """The scraper follows the engines of the newest topology; shutdown stops it and still flushes what it got."""
+    from miles.dashboard import collector as collector_mod
+
+    monkeypatch.setattr(collector_mod, "_list_gpu_nodes", lambda: [])  # no sampler actors in a unit test
+    urls: list[str] = []
+
+    def fake_get(url, timeout):
+        urls.append(url)
+        return DIRECT_FIXTURE
+
+    collector = make_collector(tmp_path, scraper_http_get=fake_get)
+    collector.update_topology(TopologySnapshot(ts=1.0, engines=[_engine("http://a:1")]))
+    collector.update_topology(TopologySnapshot(ts=2.0, engines=[_engine("http://a:2")]))  # restart
+    collector.start()
+    deadline = time.monotonic() + 10
+    while not urls and time.monotonic() < deadline:
+        time.sleep(0.02)
     collector.push_metrics(MetricsRecord(ts=1.0, step_key="rollout/step", step=0, metrics={"a": 1}))
     collector.shutdown()
 
     assert collector._scraper._stop_event.is_set()
+    assert set(urls) == {"http://a:2/metrics"}
     loaded = MetricStore.load(collector.config.dashboard_dir)
     assert len(loaded.records[Stream.METRICS]) == 1
-
-
-def _router_mode_collector(tmp_path):
-    config = CollectorConfig(
-        dashboard_dir=str(tmp_path / "dashboard"), run_name="collector-test", start_ts=1.0, scrape_mode="router"
-    )
-    return make_collector(tmp_path, config=config, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
-
-
-def test_auto_scrape_mode_is_direct(tmp_path):
-    collector = make_collector(tmp_path, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
-    collector.set_router("http://router:3000")
-    assert collector._scraper.mode == ScrapeMode.DIRECT
-    collector.shutdown()
-
-
-def test_explicit_router_scrape_mode_is_honoured(tmp_path):
-    collector = _router_mode_collector(tmp_path)
-    collector.set_router("http://router:3000")
-    assert collector._scraper.mode == ScrapeMode.ROUTER
-    collector.shutdown()
-
-
-def test_scraper_repoint(tmp_path):
-    collector = _router_mode_collector(tmp_path)
-    collector.set_router("http://router:3000")
-    first = collector._scraper
-
-    collector.set_router("http://router:3000")  # no-op
-    assert collector._scraper is first
-
-    collector.update_topology(TopologySnapshot(ts=1.0, engines=[_engine("http://e:1")]))
-    collector.set_router("http://router2:3000")  # router restarted
-    assert collector._scraper is not first
-    assert first._stop_event.is_set()
-    # actor-registered engine first, then the externals remembered from the
-    # first router's scrapes (never actor-known -> kept as scrape targets)
-    assert collector._scraper.engine_addrs() == [
-        "http://e:1",
-        "http://10.0.0.1:15000",
-        "http://10.0.0.1:15004",
-    ]
-    collector.shutdown()
+    assert {sample.addr for sample in loaded.iter_records(Stream.ENGINE_SERIES)} == {"http://a:2"}
 
 
 def test_disk_failure_is_loud_and_buffers_stay_bounded(tmp_path, monkeypatch, caplog):
@@ -270,51 +242,6 @@ def test_sampler_reconcile_spawns_late_nodes_and_skips_nvml_less(tmp_path, monke
 
     collector.shutdown()
     assert sorted(h for h in killed) == ["handle-id-a2", "handle-id-b"]
-
-
-def test_external_engines_synthesized_from_scrapes(tmp_path):
-    """Pure sglang engines (no miles actor) never reach register_engines;
-    the scrape itself is the topology source (disagg report 2026-07-14)."""
-    from miles.dashboard.store import EngineSample, Stream, TopologySnapshot
-
-    collector = make_collector(tmp_path)
-    collector.push_metrics(MetricsRecord(ts=1.0, step_key="rollout/step", step=0, metrics={}))
-    for addr in ("http://10.1.0.5:15000", "http://10.1.0.6:15000"):
-        collector._append(EngineSample(ts=2.0, addr=addr, metric="sglang_num_running_reqs", labels={}, value=1.0))
-    collector._sync_external_topology()  # the flush-loop step
-    collector._sync_external_topology()  # steady state: no duplicate snapshot
-    collector.flush()
-
-    store = MetricStore.load(collector.config.dashboard_dir)
-    [snapshot] = store.records[Stream.TOPOLOGY]
-    assert [(e.addr, e.worker_type, e.gpus) for e in snapshot.engines] == [
-        ("http://10.1.0.5:15000", "external", []),
-        ("http://10.1.0.6:15000", "external", []),
-    ]
-
-    # a real actor registration keeps the synthetic externals merged in
-    from miles.dashboard.store import EngineInfo
-
-    real = TopologySnapshot(
-        ts=3.0,
-        engines=[
-            EngineInfo(
-                addr="http://10.1.0.5:15000",
-                worker_type="regular",
-                engine_rank=0,
-                gpus=[["10.1.0.5", 0]],
-                gpu_uuids=[None],
-            )
-        ],
-    )
-    collector.update_topology(real)
-    collector.flush()
-    snapshots = MetricStore.load(collector.config.dashboard_dir).records[Stream.TOPOLOGY]
-    latest = snapshots[-1]
-    assert {e.addr: e.worker_type for e in latest.engines} == {
-        "http://10.1.0.5:15000": "regular",
-        "http://10.1.0.6:15000": "external",
-    }
 
 
 class TestConstructorContract:

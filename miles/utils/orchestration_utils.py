@@ -70,12 +70,6 @@ def init_orchestration_script(startup_info: OrchestratorStartupInfo, *, disposer
     event_logger_checkpoint.restore(args)
     configure_logger(args, source=SimpleProcessIdentity(component="main"))
     maybe_start_periodic_pyspy_dump()
-    if args.use_miles_dashboard and observers.Observers().hears("trajectory_event"):
-        raise ValueError(
-            "--use-miles-dashboard cannot run together with an installed run observer that takes sample "
-            "lifecycle events, because only one of them can receive those events. Drop --use-miles-dashboard "
-            "or disable that observer."
-        )
     disposer.add(finish_tracking)
     init_tracking(args)
     worker_env = observers.start_run(run_uuid=args.run_uuid, args=args)

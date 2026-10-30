@@ -46,7 +46,6 @@ def test_recipe_records_dashboard_traces_and_honors_gpu_count(args, monkeypatch)
 
     assert _value(argv, "--dump-details") == "/output/260101-example/details"
     assert _value(argv, "--num-gpus-per-node") == "8"
-    assert "--use-miles-dashboard" in argv
     assert "--use-rollout-entropy" in argv
     assert "--observe-training-entropy" in argv
     assert "--log-multi-turn" in argv
@@ -64,6 +63,7 @@ def test_agent_runtime_environment_reuses_harbor_adapters(args):
     env = run._extra_env_vars(args)
 
     assert env == {
+        "MILES_DASHBOARD": "1",
         "PYTHONPATH": str(REPO_ROOT / "examples" / "swe-agent-harbor-docker"),
         "AGENT_SERVER_URL": "http://agent.example:11000",
         "AGENT_MODEL_NAME": "model",

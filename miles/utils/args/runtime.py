@@ -17,7 +17,6 @@ from miles.utils.args.configs.custom_megatron_plugins import (
     DsaMegatronPluginsConfig,
     Dsv4MegatronPluginsConfig,
 )
-from miles.utils.args.configs.dashboard import DashboardConfig
 from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.debug import DebugConfig, DebugRolloutOnlyConfig
 from miles.utils.args.configs.eval import EvalConfig, EvalRolloutOnlyConfig
@@ -77,7 +76,6 @@ class OrchestratorConfig(
     PrometheusConfig,
     TensorboardConfig,
     WandbConfig,
-    DashboardConfig,
     SglangFieldsConfig,
 ):
     pass
@@ -112,7 +110,6 @@ class TrainerConfig(
     PrometheusConfig,
     TensorboardConfig,
     WandbConfig,
-    DashboardConfig,
     SglangFieldsConfig,
 ):
     # ========================== same-name delegates ===========================
@@ -194,7 +191,6 @@ class InferenceControllerConfig(
     PrometheusConfig,
     TensorboardConfig,
     WandbConfig,
-    DashboardConfig,
     SglangFieldsConfig,
 ):
     pass
@@ -241,7 +237,6 @@ class RolloutConfig(
     PrometheusConfig,
     TensorboardConfig,
     WandbConfig,
-    DashboardConfig,
     SglangFieldsConfig,
 ):
     pass
@@ -277,7 +272,6 @@ class MultiLoraConfig(
     PrometheusConfig,
     TensorboardConfig,
     WandbConfig,
-    DashboardConfig,
     SglangFieldsConfig,
 ):
     pass
@@ -307,7 +301,6 @@ class AllConfig(
     MlflowConfig,
     TensorboardConfig,
     PrometheusConfig,
-    DashboardConfig,
     RouterConfig,
     DebugConfig,
     DebugRolloutOnlyConfig,
