@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 def export_lora_hf_named(adapters: Iterable[NativeLoRAAdapter]) -> list[tuple[str, torch.Tensor]]:
     """Materialize full HF/PEFT adapter tensors of ``adapters`` on every TP rank.
 
+    Collective: every TP/EP rank must pass the same adapters in the same order.
+
     This representation preserves the exact target set; the serving exporter adds the
     zero siblings SGLang's fused buffers need. The weight iterator gathers across PP.
     """
