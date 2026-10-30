@@ -13,6 +13,8 @@ from miles.utils.observers import RunRefusedError
 logger = logging.getLogger(__name__)
 
 ENABLE_ENV = "MILES_DASHBOARD"
+_ON = frozenset({"1", "true", "t", "yes", "y", "on"})
+_OFF = frozenset({"", "0", "false", "f", "no", "n", "off"})
 _INTERVAL_ENVS = {
     "flush_interval_seconds": "MILES_DASHBOARD_FLUSH_INTERVAL",
     "gpu_sample_interval_seconds": "MILES_DASHBOARD_GPU_SAMPLE_INTERVAL",
@@ -64,11 +66,21 @@ def validate_dashboard_args(args) -> None:
         )
 
 
+def env_switch(name: str) -> bool:
+    """An on/off environment variable, spelled the way miles' other switches are."""
+    value = os.environ.get(name, "").strip().lower()
+    if value not in _ON | _OFF:
+        raise ValueError(f"{name}={value!r} is neither on ({', '.join(sorted(_ON))}) nor off")
+    return value in _ON
+
+
 def collector_config_from_args(args: dict[str, Any], *, start_ts: float) -> CollectorConfig:
-    """``args`` is every argument of the run, as the observers' ``start_run`` reports them."""
+    """``args`` is every argument of the run, as the observers' ``start_run`` reports them.
+    Raises ``ValueError`` for a dashboard setting it cannot read."""
     if (metrics := os.environ.get("MILES_DASHBOARD_SGLANG_METRICS")) is not None:
         whitelist = tuple(m for m in metrics.split(",") if m)
-        assert whitelist, f"empty MILES_DASHBOARD_SGLANG_METRICS: {metrics!r}"
+        if not whitelist:
+            raise ValueError(f"MILES_DASHBOARD_SGLANG_METRICS={metrics!r} names no metric")
     else:
         whitelist = DEFAULT_METRIC_WHITELIST
     # an interval left unset keeps CollectorConfig's default
@@ -81,6 +93,6 @@ def collector_config_from_args(args: dict[str, Any], *, start_ts: float) -> Coll
         start_ts=start_ts,
         args_snapshot={key: args[key] for key in _SNAPSHOT_KEYS if key in args},
         metric_whitelist=whitelist,
-        forward_prometheus=os.environ.get("MILES_DASHBOARD_FORWARD_PROMETHEUS") == "1",
+        forward_prometheus=env_switch("MILES_DASHBOARD_FORWARD_PROMETHEUS"),
         **intervals,
     )

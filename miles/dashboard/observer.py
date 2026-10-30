@@ -10,7 +10,6 @@ are not forwarded: the viewer reads them from the ``--dump-details`` dumps.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from collections.abc import Callable
@@ -20,10 +19,18 @@ import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from miles.dashboard import sandbox_health, store
-from miles.dashboard.args import ENABLE_ENV, collector_config_from_args, validate_dashboard_args
+from miles.dashboard.args import ENABLE_ENV, collector_config_from_args, env_switch, validate_dashboard_args
 from miles.dashboard.collector import COLLECTOR_ACTOR_NAME, DashboardCollector
 from miles.utils.logging_utils import RateLimitedWarner
-from miles.utils.observers import EngineInfo, Observer, ProcessStart, RunStart, SandboxReport, TrajectoryEvent
+from miles.utils.observers import (
+    EngineInfo,
+    Observer,
+    ProcessStart,
+    RunRefusedError,
+    RunStart,
+    SandboxReport,
+    TrajectoryEvent,
+)
 from miles.utils.tracking_utils.prometheus_utils import _COLLECTOR_ACTOR_NAME as _PROMETHEUS_ACTOR_NAME
 
 logger = logging.getLogger(__name__)
@@ -45,11 +52,14 @@ class DashboardObserver(Observer):
         self._trajectories = _Batcher(lambda batch: self._collector.push_trajectories.remote(batch))
 
     def enabled(self) -> bool:
-        return os.environ.get(ENABLE_ENV) == "1"
+        return env_switch(ENABLE_ENV)
 
     def start_run(self, run: RunStart) -> dict[str, str]:
         validate_dashboard_args(run["args"])
-        config = collector_config_from_args(run["args"], start_ts=run["start_ts"])
+        try:
+            config = collector_config_from_args(run["args"], start_ts=run["start_ts"])
+        except ValueError as e:
+            raise RunRefusedError(f"unreadable dashboard setting: {e}") from e
         self._collector = (
             ray.remote(DashboardCollector)
             .options(

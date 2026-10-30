@@ -4,6 +4,7 @@ import logging
 import pytest
 
 from miles.dashboard.args import collector_config_from_args, validate_dashboard_args
+from miles.dashboard.observer import DashboardObserver
 from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST
 from miles.utils.observers import RunRefusedError
 
@@ -18,6 +19,7 @@ def no_ambient_settings(monkeypatch):
         "FORWARD_PROMETHEUS",
     ):
         monkeypatch.delenv(f"MILES_DASHBOARD_{name}", raising=False)
+    monkeypatch.delenv("MILES_DASHBOARD", raising=False)
 
 
 def full_args(**overrides):
@@ -78,3 +80,18 @@ def test_collector_config_whitelist_override_and_run_name_fallback(monkeypatch):
     config = collector_config_from_args(args, start_ts=0.0)
     assert config.metric_whitelist == ("sglang_gen_throughput", "sglang_token_usage")
     assert config.run_name == "miles-run"
+
+
+@pytest.mark.parametrize("value, on", [("1", True), ("true", True), ("Yes", True), ("0", False), ("off", False)])
+def test_the_switch_takes_the_spellings_of_miles_other_switches(monkeypatch, value, on):
+    """``MILES_DASHBOARD=true`` must not quietly leave the dashboard off."""
+    monkeypatch.setenv("MILES_DASHBOARD", value)
+    assert DashboardObserver().enabled() is on
+
+
+def test_an_unreadable_setting_refuses_the_run(monkeypatch):
+    """A typo in a dashboard setting must stop the run, not let it train without the dashboard."""
+    monkeypatch.setenv("MILES_DASHBOARD_FLUSH_INTERVAL", "five")
+
+    with pytest.raises(RunRefusedError, match="MILES_DASHBOARD_FLUSH_INTERVAL|five"):
+        DashboardObserver().start_run(dict(run_uuid="0123456789abcdef", start_ts=0.0, args=full_args()))
