@@ -189,7 +189,8 @@ class TestSha256:
 
         with caplog.at_level("WARNING", logger="miles.rollout.data_source"):
             _make_source(tmp_path, datasets)
-        assert f"sha256: {actual[:8]}`" in caplog.text
+        # quoted, so an all-digit prefix stays a string when pasted into YAML
+        assert f'sha256: "{actual[:8]}"' in caplog.text
 
     def test_resume_refuses_a_dataset_that_changed_since_the_checkpoint(self, tmp_path):
         datasets = _two_datasets(tmp_path)

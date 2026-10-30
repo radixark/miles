@@ -392,7 +392,7 @@ def _check_dataset_sha256(config: RolloutDatasetConfig) -> str | None:
             digest.update(chunk)
     actual = digest.hexdigest()
     if config.sha256 is None:
-        logger.warning(f"rollout dataset {config.name!r} has no sha256; add `sha256: {actual[:8]}` to pin it")
+        logger.warning(f'rollout dataset {config.name!r} has no sha256; add `sha256: "{actual[:8]}"` to pin it')
     elif config.sha256 != actual[:8]:
         raise ValueError(
             f"rollout dataset {config.name!r} ({path}) does not match its sha256: expected {config.sha256}, "
