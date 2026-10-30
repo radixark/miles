@@ -9,7 +9,7 @@ from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.inference import compute_router_providers, create_inference_controller_handle
 from miles.ray.specs.train import ACTOR_ROLE, compute_trainer_configs
 from miles.ray.train.init_request import TrainerControllerInitRequest
-from miles.tinker.arguments import configure_tinker_args
+from miles.tinker.arguments import configure_tinker_args, validate_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 async def serve(args, *, disposer: Disposer):
     assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters > 0"
+    validate_tinker_args(args)
     trainer_configs = compute_trainer_configs(args)
     [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
     ckpt_load_config = compute_trainer_ckpt_load_config(args, actor_config)
