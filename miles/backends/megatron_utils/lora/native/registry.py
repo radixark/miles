@@ -195,11 +195,7 @@ def resolve_adapter_targets(
     if lora_type == "canonical_lora":
         _assert_independent_a(
             spec,
-            [
-                module
-                for module in selected or hf_targets
-                if module.rpartition(".")[2] in spec.mlp.shared_a_targets
-            ],
+            [module for module in selected or hf_targets if module.rpartition(".")[2] in spec.mlp.shared_a_targets],
         )
     if spec.linear_attention is None:
         return hf_targets
