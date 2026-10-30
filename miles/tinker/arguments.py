@@ -17,13 +17,7 @@ def configure_tinker_args(args):
 
 def validate_tinker_args(args):
     """Checks on the final arguments; preprocessing runs before --custom-config-path is merged."""
-    # the gateway never runs the RL save loop
-    for flag, value in (
-        ("--save", args.save),
-        ("--save-interval", args.save_interval),
-        ("--save-hf", args.save_hf),
-        ("--save-trigger-sentinel", args.save_trigger_sentinel),
-        ("--custom-megatron-post-save-hook-path", args.custom_megatron_post_save_hook_path),
-    ):
+    # --save-interval and the other save-loop flags already require --save in miles_validate_args
+    for flag, value in (("--save", args.save), ("--save-hf", args.save_hf)):
         assert value is None, f"Tinker does not support {flag}; checkpoints are saved through the Tinker API"
     assert args.tinker_checkpoint_root, "Tinker requires --tinker-checkpoint-root"
