@@ -170,6 +170,7 @@ Sections mirror the launch-script argument groups.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--prompt-data` | str | – | Path to a single JSONL file. |
+| `--rollout-data-yaml-config` | str | – | YAML of several datasets mixed by weight; replaces `--prompt-data`. See [Mixing Datasets](/user-guide/mixing-datasets). |
 | `--input-key` | str | `input` | JSONL key to `Sample.prompt`. |
 | `--label-key` | str | `None` | JSONL key to `Sample.label`. |
 | `--metadata-key` | str | `metadata` | JSONL key to `Sample.metadata`. |

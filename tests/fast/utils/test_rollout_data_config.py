@@ -170,9 +170,32 @@ def _parse(*extra_argv: str):
 
 
 class TestStartupValidation:
-    def test_a_valid_config_stops_the_run_until_a_data_source_consumes_it(self):
-        with pytest.raises(NotImplementedError, match="valid \\(2 datasets\\)"):
-            _parse("--rollout-data-yaml-config", _inline(_DOCUMENT))
+    def test_a_valid_config_selects_the_mixed_data_source(self):
+        args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(max_prompt_len=8192, sha256=_SHA)))
+        assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
+
+    @pytest.mark.parametrize(
+        "fields",
+        [{"max_response_len": 64}, {"generate_function": "my_pkg.agent_generate"}, {"agent": {"max_turns": 50}}],
+    )
+    def test_settings_the_mixer_does_not_pass_on_yet_fail_at_startup(self, fields):
+        with pytest.raises(NotImplementedError, match=f"{next(iter(fields))} not supported yet"):
+            _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+
+    def test_it_needs_num_rollout(self):
+        i = _BASE_ARGV.index("--num-rollout")
+        argv = _BASE_ARGV[:i] + _BASE_ARGV[i + 2 :] + ["--num-epoch", "1"]
+        with patch("sys.argv", argv + ["--rollout-data-yaml-config", _inline(_with_dataset())]):
+            with pytest.raises(ValueError, match="needs --num-rollout"):
+                parse_args()
+
+    def test_it_cannot_be_combined_with_partial_rollout(self):
+        with pytest.raises(ValueError, match="--partial-rollout"):
+            _parse("--rollout-data-yaml-config", _inline(_with_dataset()), "--partial-rollout")
+
+    def test_it_cannot_be_combined_with_a_custom_data_source(self):
+        with pytest.raises(ValueError, match="drop --data-source-path"):
+            _parse("--rollout-data-yaml-config", _inline(_with_dataset()), "--data-source-path", "my_pkg.MySource")
 
     def test_it_cannot_be_combined_with_prompt_data(self):
         with pytest.raises(ValueError, match="replaces --prompt-data"):
