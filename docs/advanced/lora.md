@@ -69,7 +69,8 @@ Qwen3.5 / Qwen3.6 GDN layers adapt `linear_attn.out_proj` and, with `--lora-type
 input projections as independent `in_proj_q`/`in_proj_k`/`in_proj_v`/`in_proj_z`/`in_proj_b`/`in_proj_a`
 adapters, the components official Tinker trains. SGLang stacks them only as complete groups, so
 `in_proj_qkv` and `in_proj_z` are selected together, and so are `in_proj_b` and `in_proj_a`. Native trains
-one A per HF projection everywhere else, so `canonical_lora` changes no other adapter.
+one A per HF projection everywhere else, so `canonical_lora` changes no other adapter; it is rejected for
+specs whose HF `gate_up_proj` native trains with one shared A (GLM-4, Inkling).
 Selecting a projection the spec does not implement
 (for example routed experts or Qwen3-Next GDN projections) fails at startup; use
 `--megatron-to-hf-mode bridge` for those. A partial fused selection (for example
@@ -133,7 +134,7 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 | `--lora-rank` | `0` | Adapter rank; a positive value enables LoRA. Supplying an adapter path also marks LoRA enabled, but still requires matching positive-rank configuration. |
 | `--lora-alpha` | `16` | Adapter scaling factor. |
 | `--lora-dropout` | `0.0` | Dropout on the adapter path. |
-| `--lora-type` | `lora` | `lora` uses fused Megatron projections; `canonical_lora` uses split Q/K/V and gate/up projections. The canonical path is implemented and covered by fast name-mapping tests, but has no maintained recipe or E2E validation. |
+| `--lora-type` | `lora` | Bridge: `lora` shares one A across a fused Megatron projection; `canonical_lora` uses split Q/K/V and gate/up projections. Native trains one A per HF projection under both; `canonical_lora` adds the GDN input-projection components. The canonical path is implemented and covered by fast name-mapping tests, but has no maintained recipe or E2E validation. |
 | `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, `attn/mlp/unembed` groups, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
 | `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
 | `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
@@ -201,7 +202,7 @@ ranks before checking fused selections. Explicit Megatron selectors retain a
 compatibility conversion at startup. Adapter factories receive only Megatron
 targets; they do not overwrite the HF selection. Arbitrary layer/expert subsets
 within a registry template are not implemented and are rejected.
-Standard LoRA requires all projections of a fused weight together;
+For Bridge, standard LoRA requires all projections of a fused weight together;
 `canonical_lora` supports individual Q/K/V and dense gate/up selections.
 Grouped-expert FC1 and GDN input projections remain fused and require all of
 their HF projections even in canonical mode.
@@ -225,8 +226,7 @@ unsupported.
 Native LoRA validates the resolved HF selection against the architecture spec
 before injection and matches each adapter by its full HF path, so layer-scoped
 selections work. Native Inkling uses a fixed adapter schema: defaults select that
-complete schema, and partial/custom layouts are rejected. `canonical_lora` is
-Bridge-only.
+complete schema, and partial/custom layouts are rejected.
 
 ### Rollout topology
 
