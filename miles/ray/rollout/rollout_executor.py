@@ -91,6 +91,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self._weight_versions_of_model_id: dict[str | None, int] = {}
         self.last_get_rollout_id_of_model_id: dict[str | None, int] = {}
         self._rollouts_since_publish_of_model_id: dict[str | None, int] = defaultdict(int)
+        self._last_rollout_end_time_of_model_id: dict[str | None, float] = {}
         self._train_parallel_configs_of_model_id: dict[str | None, TrainParallelConfig | None] = {}
         self._router_providers = router_providers
         self._session_server_provider = session_server_provider
@@ -292,8 +293,21 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
             metadata=metadata,
             trainer_model_id=trainer_model_id,
         )
+        end_time = time.time()
+        rollout_interval_time = None
+        if self.args.fully_async and not self.args.colocate:
+            # The producer keeps generating while the trainer trains, so a get only waits for the tail of its batch.
+            previous_end_time = self._last_rollout_end_time_of_model_id.get(trainer_model_id, start_time)
+            rollout_interval_time = end_time - previous_end_time
+        self._last_rollout_end_time_of_model_id[trainer_model_id] = end_time
         log_rollout_data(
-            rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
+            rollout_id,
+            self.args,
+            data,
+            metrics,
+            end_time - start_time,
+            trainer_model_id=trainer_model_id,
+            rollout_interval_time=rollout_interval_time,
         )
         return data, metadata
 
