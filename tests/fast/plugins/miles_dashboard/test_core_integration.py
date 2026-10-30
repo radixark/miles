@@ -8,21 +8,21 @@ appear only on hosts with NVML; everything else must work identically on a
 laptop and a GPU node.
 """
 
-import re
 import time
 from argparse import Namespace
 from importlib.metadata import EntryPoint
 from pathlib import Path
 
 import pytest
+import tomllib
 
-from miles.dashboard.dump_reader import DumpReader
-from miles.dashboard.observer import DashboardObserver
-from miles.dashboard.server import make_app
-from miles.dashboard.store import MetricStore, Role, Stream
 from miles.utils import observers
 from miles.utils.timer import Timer, timer
 from miles.utils.tracking_utils.tracking import log as tracking_log
+from miles_dashboard.dump_reader import DumpReader
+from miles_dashboard.observer import DashboardObserver
+from miles_dashboard.server import make_app
+from miles_dashboard.store import MetricStore, Role, Stream
 
 
 def _args(tmp_path) -> Namespace:
@@ -36,7 +36,7 @@ def test_the_dashboard_observer_end_to_end_on_local_ray(tmp_path, ray_local_mode
     monkeypatch.setenv("MILES_DASHBOARD_FLUSH_INTERVAL", "0.2")
     monkeypatch.setenv("MILES_DASHBOARD_GPU_SAMPLE_INTERVAL", "0.2")
     installed = [
-        EntryPoint("miles_dashboard", "miles.dashboard.observer:DashboardObserver", observers.ENTRY_POINT_GROUP)
+        EntryPoint("miles_dashboard", "miles_dashboard.observer:DashboardObserver", observers.ENTRY_POINT_GROUP)
     ]
     monkeypatch.setattr(observers, "entry_points", lambda group: installed)
     saved_sinks = list(Timer().event_sinks)
@@ -82,8 +82,10 @@ def test_the_dashboard_observer_end_to_end_on_local_ray(tmp_path, ray_local_mode
     assert "rollout/rewards_mean" in meta["metric_keys"]
 
 
-def test_miles_registers_the_dashboard_observer():
+def test_the_package_registers_the_dashboard_observer():
     """miles finds the dashboard only through this entry point, so it must name the observer that feeds the collector."""
-    setup_py = (Path(__file__).resolve().parents[3] / "setup.py").read_text()
-    [target] = re.findall(r'"miles_dashboard = ([\w.:]+)"', setup_py)
-    assert EntryPoint("miles_dashboard", target, observers.ENTRY_POINT_GROUP).load() is DashboardObserver
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parents[4] / "plugins/miles-dashboard/pyproject.toml").read_text()
+    )
+    [(name, target)] = pyproject["project"]["entry-points"][observers.ENTRY_POINT_GROUP].items()
+    assert EntryPoint(name, target, observers.ENTRY_POINT_GROUP).load() is DashboardObserver

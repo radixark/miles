@@ -6,9 +6,9 @@ import time
 import polars as pl
 import pytest
 import torch
-from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
+from tests.fast.plugins.miles_dashboard.dummy_dump import blank_samples, dump_dummy_run
 
-from miles.dashboard.dump_reader import DumpReader
+from miles_dashboard.dump_reader import DumpReader
 
 
 @pytest.fixture

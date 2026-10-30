@@ -29,9 +29,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
-from miles.dashboard.sandbox_health import SNAPSHOT_FILENAME, SandboxHealth, SandboxReport
-from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST, SglangScraper
-from miles.dashboard.store import (
+from miles.utils.logging_utils import RateLimitedWarner
+from miles_dashboard.sandbox_health import SNAPSHOT_FILENAME, SandboxHealth, SandboxReport
+from miles_dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST, SglangScraper
+from miles_dashboard.store import (
     DataBufferSample,
     EngineSample,
     GpuProcessSample,
@@ -44,7 +45,6 @@ from miles.dashboard.store import (
     TopologySnapshot,
     TrajectoryEvent,
 )
-from miles.utils.logging_utils import RateLimitedWarner
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ def _default_spawn_sampler(node_id: str, node_ip: str, interval: float):
     import ray
     from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-    from miles.dashboard.gpu_sampler import GpuSampler
+    from miles_dashboard.gpu_sampler import GpuSampler
 
     handle = (
         ray.remote(GpuSampler)

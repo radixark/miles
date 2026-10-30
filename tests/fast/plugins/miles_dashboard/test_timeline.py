@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from tests.fast.dashboard.dummy_telemetry import (
+from tests.fast.plugins.miles_dashboard.dummy_telemetry import (
     BASE_TS,
     DRAIN_B,
     ENGINE_A,
@@ -11,9 +11,9 @@ from tests.fast.dashboard.dummy_telemetry import (
     dump_dummy_telemetry,
 )
 
-from miles.dashboard.dump_reader import DumpReader
-from miles.dashboard.server import make_app
-from miles.dashboard.store import MetricStore, Role
+from miles_dashboard.dump_reader import DumpReader
+from miles_dashboard.server import make_app
+from miles_dashboard.store import MetricStore, Role
 
 
 @pytest.fixture
@@ -193,7 +193,7 @@ def test_timeline_endpoints(tmp_path):
 
 
 def test_open_interval_clips_to_data_edge_and_closed_twin_wins(tmp_path):
-    from miles.dashboard.store import GpuSample, Meta, PhaseEvent, Role
+    from miles_dashboard.store import GpuSample, Meta, PhaseEvent, Role
 
     writer = MetricStore(tmp_path)
     writer.write_meta(Meta(run_name="open", start_ts=0.0, args={}))

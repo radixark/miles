@@ -10,23 +10,23 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from miles.dashboard.collector import CollectorConfig, DashboardCollector
-from miles.dashboard.dump_reader import DumpReader
-from miles.dashboard.sandbox_health import (
-    SNAPSHOT_FILENAME,
-    SandboxHealth,
-    SandboxReport,
-    read_snapshot,
-    sandbox_summary,
-)
-from miles.dashboard.server import make_app
-from miles.dashboard.store import MetricsRecord, MetricStore, Stream
 from miles.rollout.agentic.agent_function import call_agent_function
 from miles.rollout.agentic.sandbox_reports import push_sandbox_reports, report_sandbox
 from miles.utils import observers as observers_module
 from miles.utils.misc import SingletonMeta
 from miles.utils.observers import Observer, Observers
 from miles.utils.test_utils import sandbox_report_stubs
+from miles_dashboard.collector import CollectorConfig, DashboardCollector
+from miles_dashboard.dump_reader import DumpReader
+from miles_dashboard.sandbox_health import (
+    SNAPSHOT_FILENAME,
+    SandboxHealth,
+    SandboxReport,
+    read_snapshot,
+    sandbox_summary,
+)
+from miles_dashboard.server import make_app
+from miles_dashboard.store import MetricsRecord, MetricStore, Stream
 
 
 class _SandboxRecorder(Observer):

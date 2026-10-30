@@ -20,7 +20,6 @@ miles/
 │   ├── ray/                  # Ray actors, placement groups, the train and rollout groups
 │   ├── rollout/              # rollout functions, data source, filters, fully-async buffer
 │   ├── router/               # Miles Router (FastAPI proxy in router.py)
-│   ├── dashboard/            # the run dashboard (collector + backend)
 │   ├── true_on_policy/       # true-on-policy contracts and model profiles
 │   └── utils/                # arguments.py, async / IO / distributed helpers, audit utils
 ├── miles_plugins/            # opt-in plugins, imported by name from flags
@@ -28,6 +27,7 @@ miles/
 │   ├── mbridge/              # per-architecture weight bridges
 │   ├── megatron_bridge/      # megatron.bridge shims
 │   └── optimizers/           # optimizer plugins (NVMe streaming store)
+├── plugins/                  # packages that install on their own
 ├── scripts/                  # launchers, one per recipe; scripts/models/ holds the architecture flags
 ├── tools/                    # checkpoint converters, quantizers, profilers
 ├── tests/                    # fast / fast-gpu / e2e / ci / manual (see Running CI)

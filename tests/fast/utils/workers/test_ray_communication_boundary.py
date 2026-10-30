@@ -30,8 +30,6 @@ RAY_USING_MODULES = {
     "miles/utils/http_utils.py": "launcher closure: reaching a port on a node the launcher scheduled",
     "miles/utils/object_store.py": "object store exemption: the ray object store is a data plane of its own",
     "miles/utils/object_store_config.py": "object store exemption: config discovers the local node for its own data plane",
-    "miles/dashboard/collector.py": "known debt: the dashboard collector is a named actor, tracked outside M23",
-    "miles/dashboard/observer.py": "known debt: the dashboard collector is a named actor, tracked outside M23",
     "miles/utils/tracking_utils/prometheus_utils.py": "known debt: the prometheus collector is a ray actor, skipped under kubernetes",
     "miles/ray/train_actor.py": "launcher closure: a launched actor reads the gpu ids ray gave it",
     "miles/backends/training_utils/weight_update/protocols/broadcast.py": "node ip lookup for a collective, not a call to another worker",

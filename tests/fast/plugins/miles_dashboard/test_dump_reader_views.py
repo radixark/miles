@@ -5,10 +5,10 @@ import time
 
 import polars as pl
 import pytest
-from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
+from tests.fast.plugins.miles_dashboard.dummy_dump import blank_samples, dump_dummy_run
 
-from miles.dashboard.dump_reader import DumpReader, _weight_version_summary
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles_dashboard.dump_reader import DumpReader, _weight_version_summary
 
 REMOVED = (3,)  # within-step positions marked remove_sample=True by the fixture
 
@@ -222,9 +222,9 @@ def test_summary_and_tokens_survive_dump_without_log_probs(tmp_path):
     derived from them degrades to None instead of KeyError -> HTTP 404
     (disagg report 2026-07-14)."""
     import torch
-    from tests.fast.dashboard.dummy_dump import dump_dummy_run
+    from tests.fast.plugins.miles_dashboard.dummy_dump import dump_dummy_run
 
-    from miles.dashboard.dump_reader import DumpReader
+    from miles_dashboard.dump_reader import DumpReader
 
     dump_dummy_run(tmp_path)
     for shard in (tmp_path / "train_data").glob("0_*.pt"):
@@ -369,8 +369,8 @@ def test_pre_fix_columnless_cache_is_not_served(tmp_path):
 
 def test_turns_counts_calls_not_spans():
     """A single generation call that spanned a weight update is still one turn."""
-    from miles.dashboard.dump_reader import _weight_version_summary
     from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+    from miles_dashboard.dump_reader import _weight_version_summary
 
     sample = Sample(group_index=0, index=0, prompt="p", tokens=[1, 2, 3], response="r", response_length=3, label="l")
     sample.weight_versions = [
@@ -382,8 +382,8 @@ def test_turns_counts_calls_not_spans():
 
 def test_turns_counts_a_call_that_carried_no_version():
     """An unstamped call still happened, so it must not vanish from the turn count."""
-    from miles.dashboard.dump_reader import _weight_version_summary
     from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+    from miles_dashboard.dump_reader import _weight_version_summary
 
     sample = Sample(group_index=0, index=0, prompt="p", tokens=[1, 2], response="r", response_length=2, label="l")
     sample.weight_versions = [

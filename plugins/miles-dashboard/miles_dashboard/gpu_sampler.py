@@ -25,8 +25,8 @@ import time
 from collections.abc import Callable
 from typing import ClassVar
 
-from miles.dashboard.store import GpuProcessSample, GpuSample
 from miles.utils.logging_utils import RateLimitedWarner
+from miles_dashboard.store import GpuProcessSample, GpuSample
 
 logger = logging.getLogger(__name__)
 

@@ -89,7 +89,7 @@ jobs:
       run:
         working-directory: ${{ github.workspace }}
     env:
-      PYTHONPATH: ${{ github.workspace }}
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/plugins/miles-dashboard
       MILES_HARDWARE_PLATFORM: rocm
       GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}

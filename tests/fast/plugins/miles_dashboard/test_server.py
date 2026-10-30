@@ -4,11 +4,11 @@ from pathlib import Path
 import pytest
 import torch
 from fastapi.testclient import TestClient
-from tests.fast.dashboard.dummy_dump import dump_dummy_run
+from tests.fast.plugins.miles_dashboard.dummy_dump import dump_dummy_run
 
-from miles.dashboard.dump_reader import DumpReader
-from miles.dashboard.server import _wandb_url, make_app
-from miles.dashboard.store import Meta, MetricsRecord, MetricStore
+from miles_dashboard.dump_reader import DumpReader
+from miles_dashboard.server import _wandb_url, make_app
+from miles_dashboard.store import Meta, MetricsRecord, MetricStore
 
 
 @pytest.fixture
@@ -95,7 +95,7 @@ class TestMeta:
 
 
 def test_meta_reports_latest_data_buffer_length(dump_dir):
-    from miles.dashboard.store import DataBufferSample
+    from miles_dashboard.store import DataBufferSample
 
     writer = MetricStore(dump_dir / "dashboard")
     writer.append(DataBufferSample(ts=104.0, length=3))
@@ -243,7 +243,7 @@ def test_static_index(client):
 
 
 def test_dump_keys_advertised_only_without_telemetry(tmp_path):
-    from tests.fast.dashboard.dummy_dump import dump_dummy_run
+    from tests.fast.plugins.miles_dashboard.dummy_dump import dump_dummy_run
 
     dump_dummy_run(tmp_path)  # dumps only: no dashboard/ telemetry at all
     client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
@@ -253,10 +253,10 @@ def test_dump_keys_advertised_only_without_telemetry(tmp_path):
 
 
 def test_engine_metric_catalog(tmp_path):
-    from tests.fast.dashboard.dummy_telemetry import dump_dummy_telemetry
+    from tests.fast.plugins.miles_dashboard.dummy_telemetry import dump_dummy_telemetry
 
     dump_dummy_telemetry(tmp_path)
-    from tests.fast.dashboard.dummy_dump import dump_dummy_run
+    from tests.fast.plugins.miles_dashboard.dummy_dump import dump_dummy_run
 
     dump_dummy_run(tmp_path)
     client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
@@ -265,7 +265,7 @@ def test_engine_metric_catalog(tmp_path):
 
 
 def test_sample_messages_from_trajectory_sidecar(tmp_path):
-    from tests.fast.dashboard.dummy_dump import dump_dummy_run
+    from tests.fast.plugins.miles_dashboard.dummy_dump import dump_dummy_run
 
     dump_dummy_run(tmp_path)
     client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
@@ -279,7 +279,7 @@ def test_sample_messages_from_trajectory_sidecar(tmp_path):
 
 
 def test_make_demo_dir(tmp_path):
-    from miles.dashboard.serve import make_demo_dir
+    from miles_dashboard.serve import make_demo_dir
 
     make_demo_dir(tmp_path)
     reader = DumpReader(tmp_path)

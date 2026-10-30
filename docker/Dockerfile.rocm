@@ -233,7 +233,8 @@ RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-t
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
-    pip install -e . --no-deps
+    pip install -e . --no-deps && \
+    pip install -e plugins/miles-dashboard --no-deps
 
 RUN python -c "import miles.backends.fsdp_utils.actor; import miles.backends.fsdp_utils.arguments; import miles.backends.megatron_utils; print('miles backends: OK')"
 

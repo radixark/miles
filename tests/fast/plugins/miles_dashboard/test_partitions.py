@@ -4,12 +4,12 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
-from tests.fast.dashboard.dummy_telemetry import dump_dummy_telemetry
+from tests.fast.plugins.miles_dashboard.dummy_telemetry import dump_dummy_telemetry
 
-import miles.dashboard.store as store_module
-from miles.dashboard.dump_reader import DumpReader
-from miles.dashboard.server import make_app
-from miles.dashboard.store import (
+import miles_dashboard.store as store_module
+from miles_dashboard.dump_reader import DumpReader
+from miles_dashboard.server import make_app
+from miles_dashboard.store import (
     GpuProcessSample,
     GpuSample,
     Meta,

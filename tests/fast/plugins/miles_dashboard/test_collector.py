@@ -4,10 +4,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.dashboard.dummy_telemetry import BASE_TS, dump_dummy_telemetry
+from tests.fast.plugins.miles_dashboard.dummy_telemetry import BASE_TS, dump_dummy_telemetry
 
-from miles.dashboard.collector import CollectorConfig, DashboardCollector
-from miles.dashboard.store import (
+from miles_dashboard.collector import CollectorConfig, DashboardCollector
+from miles_dashboard.store import (
     DataBufferSample,
     EngineInfo,
     GpuProcessSample,
@@ -127,7 +127,7 @@ def test_flush_thread_persists_periodically(tmp_path):
 
 def test_start_scrapes_the_latest_topology_and_shutdown_stops_it(tmp_path, monkeypatch):
     """The scraper follows the engines of the newest topology; shutdown stops it and still flushes what it got."""
-    from miles.dashboard import collector as collector_mod
+    from miles_dashboard import collector as collector_mod
 
     monkeypatch.setattr(collector_mod, "_list_gpu_nodes", lambda: [])  # no sampler actors in a unit test
     urls: list[str] = []
@@ -207,7 +207,7 @@ def test_forwarding_disabled_by_default(tmp_path):
 
 
 def test_sampler_reconcile_spawns_late_nodes_and_skips_nvml_less(tmp_path, monkeypatch):
-    from miles.dashboard import collector as collector_mod
+    from miles_dashboard import collector as collector_mod
 
     nodes = [("id-a", "10.0.0.1")]
     spawned, killed = [], []
@@ -286,8 +286,8 @@ class TestDefaultSpawnSampler:
         """The sampler actor is constructed with keywords its keyword-only signature accepts."""
         import ray
 
-        from miles.dashboard import collector as collector_mod
-        from miles.dashboard.gpu_sampler import GpuSampler
+        from miles_dashboard import collector as collector_mod
+        from miles_dashboard.gpu_sampler import GpuSampler
 
         actor_classes: list[_FakeRayActorClass] = []
 

@@ -1,6 +1,6 @@
 """Standalone dashboard server over a ``--dump-details`` directory.
 
-    python -m miles.dashboard.serve --dump-details /path/to/dump_details \\
+    python -m miles_dashboard.serve --dump-details /path/to/dump_details \\
         [--host 0.0.0.0] [--port 7788] [--follow] [--tensor-lru 2] [--cache-dir DIR]
 
 Works on any machine that can see the directory (login node, laptop over
@@ -19,10 +19,10 @@ from pathlib import Path
 
 import uvicorn
 
-from miles.dashboard.advisory import DEFAULT_LOW_MFU
-from miles.dashboard.dump_reader import DumpReader
-from miles.dashboard.server import make_app
-from miles.dashboard.store import MetricStore
+from miles_dashboard.advisory import DEFAULT_LOW_MFU
+from miles_dashboard.dump_reader import DumpReader
+from miles_dashboard.server import make_app
+from miles_dashboard.store import MetricStore
 
 FOLLOW_INTERVAL_SECONDS = 2.0
 
@@ -33,8 +33,8 @@ def make_demo_dir(target: Path) -> Path:
     Uses the dummy generators from the test suite, so it requires a miles
     repo checkout (they are deliberately not shipped in the wheel)."""
     try:
-        from tests.fast.dashboard.dummy_dump import dump_dummy_run
-        from tests.fast.dashboard.dummy_telemetry import dump_dummy_telemetry
+        from tests.fast.plugins.miles_dashboard.dummy_dump import dump_dummy_run
+        from tests.fast.plugins.miles_dashboard.dummy_telemetry import dump_dummy_telemetry
     except ImportError as e:
         raise SystemExit("--demo needs the dummy generators under tests/; run from a miles repo checkout") from e
     dump_dummy_run(target, steps=3, num_prompts=8, n_samples_per_prompt=4, max_response_len=48)

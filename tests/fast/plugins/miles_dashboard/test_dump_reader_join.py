@@ -5,10 +5,10 @@ from collections import defaultdict
 import polars as pl
 import pytest
 import torch
-from tests.fast.dashboard.dummy_dump import dump_dummy_run
+from tests.fast.plugins.miles_dashboard.dummy_dump import dump_dummy_run
 
-from miles.dashboard.dump_reader import DumpReader, DumpStillWriting, TrainRow
 from miles.utils.types import Sample
+from miles_dashboard.dump_reader import DumpReader, DumpStillWriting, TrainRow
 
 
 @pytest.fixture

@@ -29,8 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from miles.dashboard.sandbox_health import SNAPSHOT_FILENAME, SandboxHealth, SandboxReport
-from miles.dashboard.store import (
+from miles_dashboard.sandbox_health import SNAPSHOT_FILENAME, SandboxHealth, SandboxReport
+from miles_dashboard.store import (
     EngineInfo,
     EngineSample,
     GpuSample,
