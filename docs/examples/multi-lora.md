@@ -136,3 +136,6 @@ It can be combined with `--experts-shared-outer-loras`: expert gate and up then 
 have their own A matrix shared across experts; their B matrices remain per expert.
 These settings are fixed for the gateway, and training checkpoints must use the same layout.
 GDN projections keep their existing fused layout; this does not promise full Tinker-hosted model equivalence.
+Canonical Q/K/V needs every TP rank to hold whole KV heads (`num_query_groups >= tensor_model_parallel_size`),
+and canonical gate/up needs separate HF gate and up tensors in dense MLPs; a model or layout outside that fails at
+startup, so launch it with `--lora-type lora`.
