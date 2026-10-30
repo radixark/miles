@@ -270,6 +270,8 @@ class SessionCore:
         (v1: the post-rollback checkpoint; v2: the positioned attach node). The
         checkpoint's N - 1 rows must remain a causal prefix of the new prompt,
         so every persisted patch starts exactly where the previous one ended.
+        Both lists are in the engine's form (``token_space``), with media
+        placeholders expanded, as the engine counts rows.
         """
         if not (self.use_addition_r3 and request_body.get("return_routed_experts")):
             return
@@ -429,12 +431,18 @@ class SessionCore:
 
             # prepare_token_ids_and_request_args applied any retry rollback, so token_ids is
             # the checkpoint this request builds on.
-            self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
+            checkpoint_record = session.records[-1] if session.records else None
             prepare_engine_request(
                 request_body,
                 checkpoint_token_ids=session.token_ids,
-                checkpoint_record=session.records[-1] if session.records else None,
+                checkpoint_record=checkpoint_record,
                 token_space=self.config.multimodal_token_space_processing,
+            )
+            # R3 rows count the tokens the engine runs: the offset uses the engine's form.
+            self._maybe_request_addition_r3(
+                request_body,
+                engine_token_ids(session.token_ids, checkpoint_record),
+                request_body["input_ids"],
             )
 
             # orjson: the body carries the whole prompt's input_ids on every turn.

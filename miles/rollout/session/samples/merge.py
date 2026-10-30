@@ -218,6 +218,7 @@ def adopt_session_records(merged: Sample, records: list[SessionRecord]) -> None:
     next turn's incremental object starts after. Like ``merge_samples_with_addition_r3``, they are
     rebuilt from the untrimmed records, each continuing from its ``routed_experts_start_len``. The
     sample also owns every record's object, so objects of turns the merge dropped are deleted with it.
+    Rows are counted on the prompt the engine ran (``engine_prompt_ids``), media placeholders expanded.
     """
     plan = merged.rollout_store_plan
     if plan is None:
@@ -235,7 +236,7 @@ def adopt_session_records(merged: Sample, records: list[SessionRecord]) -> None:
             turn = StorePlan.from_response(
                 ref,
                 request=record.request,
-                num_tokens=len(record.request["input_ids"]) + num_output,
+                num_tokens=len(engine_prompt_ids(record)) + num_output,
                 response_length=num_output,
             )
             rows = rows.append(turn.fields[RoutedExpertsSegments.name])
@@ -250,7 +251,10 @@ def merge_samples_with_addition_r3(
     records: list[SessionRecord],
     tokenizer,
 ) -> Sample:
-    """Merge ordinary fields, then materialize the required append-only R3 prefix."""
+    """Merge ordinary fields, then materialize the required append-only R3 prefix.
+
+    A record's rows end at the length of the prompt the engine ran (``engine_prompt_ids``, media
+    placeholders expanded) plus its outputs, minus one, where the next record's offset starts."""
     merged = merge_samples(samples, tokenizer)
     if all(record.response["choices"][0]["meta_info"].get("routed_experts") is None for record in records):
         return merged
@@ -273,7 +277,7 @@ def merge_samples_with_addition_r3(
         if start != covered_rows:
             raise ValueError(f"additional R3: record {i} starts at row {start}; expected {covered_rows}")
 
-        end = len(record.request["input_ids"]) + len(choice["meta_info"]["output_token_logprobs"]) - 1
+        end = len(engine_prompt_ids(record)) + len(choice["meta_info"]["output_token_logprobs"]) - 1
         if end < start:
             raise ValueError(f"additional R3: record {i} has invalid offsets (start={start}, end={end})")
         delta_rows = end - start

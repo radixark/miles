@@ -14,6 +14,7 @@ import json
 import threading
 import uuid
 
+import numpy as np
 import pytest
 import torch
 from tests.fast.fixtures.session_fixtures import make_session_server_config
@@ -189,23 +190,28 @@ class TokenSpaceEngine:
         }
 
 
-def _make_core(version: str, tokenizer, engine, media_dir, *, token_space: bool = True):
+def _make_core(
+    version: str, tokenizer, engine, media_dir, *, token_space: bool = True, addition_r3: bool = False, **overrides
+):
     tito = get_tito_tokenizer(tokenizer, tokenizer_type="qwen38small")
     config = make_session_server_config(
-        use_session_server=version,
-        hf_checkpoint=MODEL,
-        tito_model="qwen38small",
-        instance_id=uuid.uuid4().hex,
-        session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
-        session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
-        multimodal_token_space_processing=token_space,
-        shared_media_dir=str(media_dir),
+        **{
+            "use_session_server": version,
+            "hf_checkpoint": MODEL,
+            "tito_model": "qwen38small",
+            "instance_id": uuid.uuid4().hex,
+            "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
+            "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
+            "multimodal_token_space_processing": token_space,
+            "shared_media_dir": str(media_dir),
+            **overrides,
+        }
     )
     if version == "v2":
         registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito)
-        return SessionCoreV2(engine, registry, config, config.instance_id), registry
+        return SessionCoreV2(engine, registry, config, config.instance_id, use_addition_r3=addition_r3), registry
     registry = SessionRegistry(tokenizer, tito_tokenizer=tito)
-    return SessionCore(engine, registry, config, config.instance_id), registry
+    return SessionCore(engine, registry, config, config.instance_id, use_addition_r3=addition_r3), registry
 
 
 async def _chat(core, session_id: str, messages: list[dict]):
@@ -384,3 +390,102 @@ async def test_the_samples_worker_builds_from_its_snapshot(tokenizer, processor_
     assert response.body == expected.body
     (sample,) = decode_samples_and_merge_input_sample(response.body, Sample(), fields=COMPUTED_FIELDS_V2).samples
     assert len(sample.multimodal_inputs["images"]) == 1
+
+
+class RoutedExpertsEngine(TokenSpaceEngine):
+    """The token-space engine with routed-experts capture: a request with ``return_routed_experts`` gets
+    rows [routed_experts_start_len, seqlen - 1) counted on the expanded prompt it ran, each row holding
+    its absolute position, so a sample's rows can be checked against its tokens."""
+
+    LAYERS, TOPK = 2, 2
+
+    async def do_proxy(self, request, path, *, body, headers):
+        result = await super().do_proxy(request, path, body=body, headers=headers)
+        payload = self.bodies[-1]
+        if not payload.get("return_routed_experts"):
+            return result
+        response = json.loads(result["response_body"])
+        seqlen = len(self.prompts[-1]) + len(self.output_ids)
+        rows = np.arange(payload.get("routed_experts_start_len", 0), seqlen - 1, dtype=np.int32)
+        patch = np.repeat(rows[:, None, None], self.LAYERS * self.TOPK, axis=1).reshape(-1, self.LAYERS, self.TOPK)
+        meta = response["choices"][0]["meta_info"]
+        meta["routed_experts"] = base64.b64encode(np.ascontiguousarray(patch).tobytes()).decode("ascii")
+        result["response_body"] = json.dumps(response)
+        return result
+
+
+def _r3_core(version, tokenizer, engine, media_dir, *, replay: bool = True, picker: str | None = None):
+    overrides = {"session_sample_picker_path": picker} if picker else {}
+    return _make_core(
+        version,
+        tokenizer,
+        engine,
+        media_dir,
+        addition_r3=True,
+        use_rollout_routing_replay=replay,
+        pause_generation_mode="in_place",
+        num_layers=RoutedExpertsEngine.LAYERS,
+        moe_router_topk=RoutedExpertsEngine.TOPK,
+        **overrides,
+    )
+
+
+def test_addition_r3_rows_follow_the_expanded_media_across_turns_and_branches(tokenizer, processor_core, tmp_path):
+    """Every turn asks for the rows after the checkpoint's expanded length; a branch off an earlier node
+    (a fold rewrites the second user turn) starts at that node's expanded length; each leaf's sample
+    reassembles exactly len(tokens) - 1 rows whose positions match its tokens."""
+    engine = RoutedExpertsEngine(processor_core, tokenizer)
+    # The fold picker keeps both leaves: a sibling with another prompt is a branch, not a retry.
+    picker = "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries"
+    core, registry = _r3_core("v2", tokenizer, engine, tmp_path, picker=picker)
+    session_id = registry.create_session()
+    turn1 = [_user("look", _data_url(64, 64, (200, 10, 10)))]
+    response = asyncio.run(_chat(core, session_id, turn1))
+    assert response.status_code == 200, response.body
+    assistant = json.loads(response.body)["choices"][0]["message"]
+    for text, color in (("next", (5, 5, 5)), ("after the fold", (9, 9, 9))):
+        message = _user(text, _data_url(96, 64, color))
+        assert asyncio.run(_chat(core, session_id, turn1 + [assistant, message])).status_code == 200
+
+    checkpoint1 = engine.prompts[0] + engine.output_ids
+    assert engine.bodies[0]["routed_experts_start_len"] == 0
+    assert [body["routed_experts_start_len"] for body in engine.bodies[1:]] == [len(checkpoint1) - 1] * 2
+
+    samples = _samples(core, session_id, "v2")
+    assert len(samples) == 2, "one sample per leaf"
+    pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
+    for sample in samples:
+        rows = sample.rollout_routed_experts
+        assert rows.shape == (len(sample.tokens) - 1, RoutedExpertsEngine.LAYERS, RoutedExpertsEngine.TOPK)
+        # Rows carry their absolute position: a correct assembly is 0, 1, 2, ...
+        assert rows[:, 0, 0].tolist() == list(range(len(sample.tokens) - 1))
+        assert sample.tokens.count(pad_id) > 2, "both images are expanded"
+        sample.validate()
+
+
+def test_addition_r3_rows_after_a_v1_rollback_follow_the_kept_checkpoint(tokenizer, processor_core, tmp_path):
+    engine = RoutedExpertsEngine(processor_core, tokenizer)
+    core, registry = _r3_core("v1", tokenizer, engine, tmp_path)
+    session_id = registry.create_session()
+    turn1 = [_user("look", _data_url(64, 64, (200, 10, 10)))]
+    assistant = json.loads(asyncio.run(_chat(core, session_id, turn1)).body)["choices"][0]["message"]
+    for color in ((5, 5, 5), (9, 9, 9)):
+        message = _user("next", _data_url(96, 64, color))
+        assert asyncio.run(_chat(core, session_id, turn1 + [assistant, message])).status_code == 200
+
+    checkpoint1 = engine.prompts[0] + engine.output_ids
+    assert [body["routed_experts_start_len"] for body in engine.bodies] == [0] + [len(checkpoint1) - 1] * 2
+    (sample,) = _samples(core, session_id, "v1")
+    assert sample.rollout_routed_experts[:, 0, 0].tolist() == list(range(len(sample.tokens) - 1))
+    assert sample.tokens == engine.prompts[2] + engine.output_ids
+
+
+def test_with_replay_off_no_offset_is_sent_with_media(tokenizer, processor_core, tmp_path):
+    """Without --use-rollout-routing-replay the request carries return_routed_experts=False, so no
+    offset is computed or sent, media or not."""
+    engine = RoutedExpertsEngine(processor_core, tokenizer)
+    core, registry = _r3_core("v2", tokenizer, engine, tmp_path, replay=False)
+    session_id = registry.create_session()
+    assert asyncio.run(_chat(core, session_id, [_user("look", _data_url(64, 64, (1, 2, 3)))])).status_code == 200
+    (body,) = engine.bodies
+    assert body["return_routed_experts"] is False and "routed_experts_start_len" not in body

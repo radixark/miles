@@ -8,7 +8,7 @@ session checkpoint has two forms:
   and rolls back in this form, exactly as for text.
 * the engine's form: the expanded prompt the engine returned for the checkpoint's turn, plus the
   completion. It is read from the turn's record (``engine_token_ids``), so it needs no state of its own.
-  Requests and samples use this form.
+  Requests, samples and R3 rows use this form.
 
 A request sends the checkpoint in the engine's form and only the new part in TITO's form, with
 ``mm_token_expansion_start_len`` at the boundary (``engine_input_ids``), so SGLang expands only the
