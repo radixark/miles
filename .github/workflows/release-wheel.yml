@@ -1,0 +1,137 @@
+# doc-dev: docs/developer/ci/04-release.md
+name: Release Wheel
+# Builds the miles wheel at v<version>, runs the wheel smoke on it, and uploads the sdist and
+# wheel to the GitHub release, where the pip index on radixark/miles-wheels lists them.
+# release-tag.yml dispatches this; the tag trigger stays for manually pushed tags.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, without v prefix (e.g., 0.3.0)'
+        required: true
+        type: string
+      ref:
+        description: 'Tag or branch to build from (defaults to v{version})'
+        required: false
+        type: string
+        default: ''
+      publish:
+        description: 'Upload to the release; off builds and smokes only'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    if: github.repository == 'radixark/miles'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+      - id: resolve
+        uses: ./.github/actions/resolve-release-version
+        with:
+          version: ${{ github.event.inputs.version }}
+          ref: ${{ github.event.inputs.ref }}
+      - name: The ref carries the wheel harness
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ steps.resolve.outputs.ref }}
+        run: |
+          # the pure wheel and its smoke arrived with v0.1.4; older tags have nothing to publish
+          gh api "repos/${GITHUB_REPOSITORY}/contents/tests/ci/wheel_smoke.py?ref=${REF}" --silent \
+            || { echo "::error::${REF} predates the pure wheel (tests/ci/wheel_smoke.py); wheels exist from v0.1.4 on"; exit 1; }
+
+  smoke:
+    needs: resolve
+    uses: ./.github/workflows/wheel-smoke.yml
+    with:
+      commit: ${{ needs.resolve.outputs.ref }}
+      version: ${{ needs.resolve.outputs.version }}
+
+  publish:
+    needs: [resolve, smoke]
+    if: github.event.inputs.publish != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      TAG: v${{ needs.resolve.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: miles-dist
+          path: dist
+
+      - name: The dist carries the exact version
+        shell: bash
+        run: |
+          ls dist
+          [ -f "dist/miles-${VERSION}-py3-none-any.whl" ] \
+            || { echo "::error::no miles-${VERSION} wheel in the smoke's dist"; exit 1; }
+
+      - name: Create the release if the tag has none
+        shell: bash
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+          FLAGS=()
+          case "$VERSION" in *rc*) FLAGS=(--prerelease --latest=false) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "${FLAGS[@]}"
+
+      - name: Name the sglang build the release was tested with
+        shell: bash
+        run: |
+          SGLANG_COMMIT=$(gh api "repos/${GITHUB_REPOSITORY}/contents/release-lock.json?ref=${TAG}" --jq .content 2>/dev/null \
+            | base64 -d | python3 -c 'import json, sys; print(json.load(sys.stdin)["sglang_commit"])') || SGLANG_COMMIT=""
+          [ -n "$SGLANG_COMMIT" ] || { echo "no release-lock.json at ${TAG}; the notes name no sglang build"; exit 0; }
+          # the sglang-miles wheel built from that commit, if the hourly job has published it
+          SGLANG_VERSION=$(gh api --paginate "repos/radixark/miles-wheels/releases?per_page=100" \
+            --jq ".[] | select(.tag_name | startswith(\"sglang-miles-\")) | .assets[].name
+              | select(contains(\"+miles.g${SGLANG_COMMIT:0:10}-\")) | split(\"-\")[1]" | head -1)
+          if [ -n "$SGLANG_VERSION" ]; then
+            LINE="Tested with \`sglang==${SGLANG_VERSION}\` from https://radixark.github.io/miles-wheels/simple/ (sglang-miles ${SGLANG_COMMIT})."
+          else
+            LINE="Tested with sglang-miles ${SGLANG_COMMIT}; its wheel version ends in \`+miles.g${SGLANG_COMMIT:0:10}\`."
+          fi
+          NOTES=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          case "$NOTES" in *"Tested with"*) exit 0 ;; esac
+          printf '%s\n\n%s' "$LINE" "$NOTES" > notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+
+      # a published file is never replaced: pinned hashes must keep matching
+      - name: Upload the sdist and wheel
+        shell: bash
+        run: |
+          PUBLISHED=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          for f in dist/*; do
+            if grep -qx "$(basename "$f")" <<<"$PUBLISHED"; then echo "keeping published $(basename "$f")"; continue; fi
+            gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY"
+          done
+
+      # The index rebuilds hourly anyway; this makes the new release installable right away.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        id: token
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: radixark
+          repositories: miles-wheels
+          permission-actions: write
+
+      - name: Rebuild the pip index
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: gh workflow run pages.yml --repo radixark/miles-wheels

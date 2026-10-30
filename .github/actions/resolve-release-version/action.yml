@@ -1,0 +1,36 @@
+name: Resolve release version
+description: The version and ref a release workflow builds, from its dispatch inputs or the pushed v* tag.
+inputs:
+  version:
+    description: 'Dispatch input: version without the v prefix'
+    default: ''
+  ref:
+    description: 'Dispatch input: tag or branch to build from (defaults to v{version})'
+    default: ''
+outputs:
+  version:
+    value: ${{ steps.resolve.outputs.version }}
+  ref:
+    value: ${{ steps.resolve.outputs.ref }}
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_REF: ${{ inputs.ref }}
+      run: |
+        if [ -n "$INPUT_VERSION" ]; then
+          VERSION="$INPUT_VERSION"
+          REF="${INPUT_REF:-v${VERSION}}"
+        else
+          VERSION="${GITHUB_REF_NAME#v}"
+          REF="${GITHUB_REF_NAME}"
+        fi
+        if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+          echo "::error::Invalid version: $VERSION"
+          exit 1
+        fi
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "ref=$REF" >> "$GITHUB_OUTPUT"

@@ -35,24 +35,17 @@ jobs:
     runs-on: ["docker-build"]
     timeout-minutes: 240
     steps:
+      - name: Checkout the release actions
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+          path: .ci-actions
       - name: Resolve version and ref
         id: resolve
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-            REF="${{ github.event.inputs.ref }}"
-            [ -z "$REF" ] && REF="v${VERSION}"
-          else
-            VERSION="${GITHUB_REF_NAME#v}"
-            REF="${GITHUB_REF_NAME}"
-          fi
-          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
-            echo "::error::Invalid version: $VERSION"
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+        uses: ./.ci-actions/.github/actions/resolve-release-version
+        with:
+          version: ${{ github.event.inputs.version }}
+          ref: ${{ github.event.inputs.ref }}
 
       - name: Checkout repository
         uses: actions/checkout@v4
