@@ -266,6 +266,10 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             else:
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
 
+        # The rollout producer owns raw_reward before filtering. Training sees only
+        # retained samples, possibly with post-processed rewards, so log it separately.
+        if "raw_reward" in log_dict:
+            log_dict["raw_reward_filtered"] = log_dict.pop("raw_reward")
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and not args.ci_disable_logprobs_checker and reduced_log_dict is not None:
             reduced_log_dict = strip_metrics_namespace(reduced_log_dict, trainer_model_id=args.trainer_model_id)

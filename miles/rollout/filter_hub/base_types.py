@@ -37,6 +37,8 @@ def call_dynamic_filter(fn, args, samples: list[Sample | list[Sample]], **kwargs
 
 
 class MetricGatherer:
+    """Collect generation rewards before training selection or reward post-processing."""
+
     def __init__(self):
         self._dynamic_filter_drop_reason_count = defaultdict(lambda: 0)
         self._unfiltered_reward_sum = 0.0
@@ -64,7 +66,7 @@ class MetricGatherer:
             for reason, count in self._dynamic_filter_drop_reason_count.items()
         }
         if self._unfiltered_reward_count:
-            metrics["rollout/raw_reward_unfiltered"] = self._unfiltered_reward_sum / self._unfiltered_reward_count
+            metrics["rollout/raw_reward"] = self._unfiltered_reward_sum / self._unfiltered_reward_count
         return metrics
 
 

@@ -59,12 +59,12 @@ def test_filter_effect(rollout_env, use_filter, expect_all_correct):
     ],
     indirect=["rollout_env"],
 )
-def test_unfiltered_raw_reward_still_sees_the_dropped_groups(rollout_env):
-    """The accepted-only raw_reward is pinned by the filter; this mean must count what was filtered away."""
+def test_raw_reward_still_sees_the_dropped_groups(rollout_env):
+    """The training batch contains only correct samples; raw_reward must still count the rejected samples."""
     env = rollout_env
 
     with function_registry.temporary("test:filter_by_reward", filter_by_reward):
         out = load_and_call_train(env.args, env.data_source)
 
     assert {group[0].reward for group in out.samples} == {1}
-    assert 0 < out.metrics["rollout/raw_reward_unfiltered"] < 1
+    assert 0 < out.metrics["rollout/raw_reward"] < 1

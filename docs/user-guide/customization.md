@@ -55,6 +55,8 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
 Plain functions with the signature above are wrapped in a legacy adapter. A class-based rollout
 function needs to subclass `miles.rollout.base_types.BaseRolloutFn`.
 
+`rollout/raw_reward` comes only from `RolloutFnTrainOutput.metrics`: the default rollouts fill it with `miles.rollout.filter_hub.base_types.MetricGatherer`, which collects rewards before dynamic sampling filters. A replacement must report it the same way; the trainer logs only the retained-batch mean, as `rollout/raw_reward_filtered`. A function that returns a bare sample list reports no metrics, so its run has no `rollout/raw_reward`.
+
 **Reference:** [`examples/experimental/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/experimental/multi_agent/rollout_with_multi_agents.py).
 
 ### `--custom-generate-function-path`

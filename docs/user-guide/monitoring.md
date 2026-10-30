@@ -46,6 +46,8 @@ should be supplied via Ray's `env_vars` rather than baked into the launch script
 | `rollout_time` / `train_time` | Roughly balanced | One ≫ other → resource imbalance |
 | `train/pg_clipfrac` | < 0.2 | > 0.5 means policy is moving fast → drop LR |
 
+`rollout/raw_reward` is the mean reward before dynamic sampling filters, including responses dropped from training. Earlier Miles versions logged the retained-batch mean under that name; it is now `rollout/raw_reward_filtered`, so dashboards and alerts built on the old meaning should switch to it.
+
 Panel names follow what `loss.py` and the rollout logger emit; Miles's wandb metrics
 live under `train/`, `rollout/`, `perf/`, `multi_turn/`, `passrate/` namespaces.
 

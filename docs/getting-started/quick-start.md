@@ -105,14 +105,14 @@ Once the engines warm up and the first rollout completes, the log settles into
 per-rollout metric lines (values illustrative, keys abridged):
 
 ```text
-perf 0: {'perf/rollout_time': 98.6, ...}
-rollout 0: {'rollout/raw_reward': 0.32, 'rollout/log_probs': -0.27, ...}
+perf 0: {'rollout/raw_reward': 0.32, 'perf/rollout_time': 98.6, ...}
+rollout 0: {'rollout/raw_reward_filtered': 0.32, 'rollout/log_probs': -0.27, ...}
 step 0: {'train/loss': 0.0021, 'train/pg_loss': 0.0018, 'train/grad_norm': 0.62, ...}
 perf 0: {'perf/train_wait_time': 101.2, 'perf/actor_train_time': 41.3, ...}
 ```
 
-`rollout/raw_reward` is the number to watch: the mean reward of the freshly scored
-responses, drifting upward as the policy improves. You have a live RL run.
+`rollout/raw_reward` is the number to watch: the mean reward before dynamic
+sampling filters, including responses dropped from training. You have a live RL run.
 
 ## What's happening
 

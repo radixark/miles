@@ -3,11 +3,15 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.training_utils import parallel
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.metrics import log_utils
+from miles.ray.rollout.metrics import log_rollout_data as log_generation_data
+from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.utils.metric_utils import strip_metrics_namespace
+from miles.utils.types import Sample
 
 
 def _capture(monkeypatch) -> list[tuple[dict, str]]:
@@ -75,6 +79,47 @@ class TestGatherLogData:
         [(payload, step_key)] = calls
         assert step_key == f"{namespace}rollout/step"
         assert reduced == payload == {f"{namespace}rollout/log_probs": -1.0, f"{namespace}rollout/step": 3}
+
+
+@pytest.mark.parametrize("trainer_model_id", [None, "alpha"])
+def test_training_logging_does_not_overwrite_generation_reward(monkeypatch, trainer_model_id):
+    calls = _capture(monkeypatch)
+    parallel_state = SimpleNamespace(
+        tp=SimpleNamespace(rank=0),
+        cp=SimpleNamespace(size=1),
+        is_pp_last_stage=True,
+        effective_dp_cp=SimpleNamespace(rank=0, size=1, gloo_groups_inner_to_outer=[]),
+    )
+    monkeypatch.setattr(log_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(log_utils.MultiPGUtil, "gather_object", staticmethod(lambda obj, groups_inner_to_outer: [obj]))
+    args = make_args(
+        trainer_model_id=trainer_model_id,
+        ci_test=False,
+        log_multi_turn=False,
+        log_correct_samples=False,
+        advantage_estimator="ppo",
+        rollout_num_gpus=0,
+    )
+    samples = [Sample(index=i, reward=reward, response="ok", response_length=2) for i, reward in enumerate([1, 0])]
+    gatherer = MetricGatherer()
+    gatherer.on_group_before_dynamic_filter(args, samples)
+    log_generation_data(0, args, [samples[0]], gatherer.collect(), 1.0, trainer_model_id=trainer_model_id)
+    # Custom reward post-processing may change the retained training reward too.
+    rollout_data = {
+        "raw_reward": [0.25],
+        "total_lengths": [3],
+        "response_lengths": [2],
+        "loss_masks": [torch.ones(2)],
+    }
+    log_utils.log_rollout_data(0, args, rollout_data)
+
+    namespace = "" if trainer_model_id is None else f"{trainer_model_id}/"
+    generation, training = [payload for payload, _ in calls]
+    assert generation[f"{namespace}rollout/raw_reward"] == 0.5
+    assert training[f"{namespace}rollout/raw_reward_filtered"] == 0.25
+    assert f"{namespace}rollout/raw_reward" not in training
+    assert f"{namespace}rollout/raw_reward_unfiltered" not in generation
+    assert rollout_data["raw_reward"] == [0.25]
 
 
 class TestLogCpuMemory:

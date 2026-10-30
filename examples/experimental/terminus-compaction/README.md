@@ -165,7 +165,7 @@ Useful per-step metrics are:
 - `rollout/episode_total_response_length/mean`: masked plus unmasked response
   tokens summed across every sample in each original rollout, then averaged
   across rollouts. Shared prefixes count each time they occur in a sample.
-- `rollout/raw_reward`: reward averaged over flattened samples; this can differ
+- `rollout/raw_reward_filtered`: training reward averaged over flattened samples; this can differ
   from the episode-level metric when rollouts produce different sample counts.
 - `rollout/truncated_ratio`: should stay low. A high value usually means a
   per-turn or total-context cap is too small.
