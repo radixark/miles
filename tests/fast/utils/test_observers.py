@@ -9,7 +9,7 @@ from miles.rollout.agentic.sandbox_reports import report_sandbox
 from miles.utils import observers as observers_module
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.misc import SingletonMeta
-from miles.utils.observers import Observer, Observers
+from miles.utils.observers import Observer, Observers, RunRefusedError
 from miles.utils.timer import Timer
 
 
@@ -92,6 +92,25 @@ def test_a_failing_observer_breaks_neither_the_run_nor_the_other_observers(insta
     assert [name for kind, name in recorder.calls if kind == "phase_end"] == ["actor_train", "actor_train"]
     warnings = [r for r in caplog.records if "failed in phase_end" in r.message]
     assert len(warnings) == 1, "a repeating failure must warn once per interval, not once per event"
+
+
+def test_only_start_run_can_refuse_the_run(install):
+    """A refusal stops the run before it starts; raised any later, it is isolated like any other failure."""
+
+    class _Refusing(Observer):
+        def start_run(self, run):
+            raise RunRefusedError("needs --dump-details")
+
+        def phase_end(self, name, t0, t1):
+            raise RunRefusedError("too late to refuse")
+
+    install(_Refusing())
+
+    with pytest.raises(RunRefusedError, match="needs --dump-details"):
+        observers_module.start_run(run_uuid="0123456789abcdef", args=SimpleNamespace(lr=1e-6))
+    observers_module.start_process("train", rank=0, gpus=lambda: [0])
+    Timer().start("actor_train")
+    Timer().end("actor_train")
 
 
 def test_start_run_reports_every_argument_as_plain_data(install):

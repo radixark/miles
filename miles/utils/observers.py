@@ -5,7 +5,8 @@ builtins and numpy arrays, never miles objects), so an observer keeps working
 across miles versions. Installing a package that registers an entry point in
 ``ENTRY_POINT_GROUP`` is all it takes; with none installed every report is a
 no-op. An observer that raises is logged at most once per ``WARN_INTERVAL_S``
-and never affects the run.
+and the run goes on, with one exception: ``RunRefusedError`` raised from
+``start_run`` stops the run before any worker starts.
 
 The order within one process: ``start_run`` (driver only) and
 ``start_process`` come first, then any events. The environment variables
@@ -31,6 +32,10 @@ from miles.utils.timer import Timer
 logger = logging.getLogger(__name__)
 
 ENTRY_POINT_GROUP = "miles.observers"
+
+
+class RunRefusedError(Exception):
+    """Raised from an observer's ``start_run`` to stop a run whose configuration it cannot serve."""
 
 
 class RunStart(TypedDict):
@@ -140,7 +145,8 @@ class Observer:
         return True
 
     def start_run(self, run: RunStart) -> dict[str, str]:
-        """Driver only, before any worker starts. Returns environment variables for every worker."""
+        """Driver only, before any worker starts. Returns environment variables for every worker;
+        raising ``RunRefusedError`` stops the run."""
         return {}
 
     def start_process(self, process: ProcessStart) -> None: ...
@@ -189,8 +195,13 @@ class Observers(metaclass=SingletonMeta):
 
     def start_run(self, run: RunStart) -> dict[str, str]:
         env: dict[str, str] = {}
-        for result in self._each("start_run", run):
-            env.update(result or {})
+        for name, observer in self._observers:
+            try:
+                env.update(observer.start_run(run) or {})
+            except RunRefusedError:
+                raise
+            except Exception:
+                self._warn(name, "start_run")
         return env
 
     def start_process(self, process: ProcessStart) -> None:
@@ -271,13 +282,15 @@ def _load_observers() -> list[tuple[str, Observer]]:
 
 
 def start_run(*, run_uuid: str, args) -> dict[str, str]:
-    """Report the run's start from the driver; returns the environment its workers need."""
+    """Report the run's start from the driver; returns the environment its workers need.
+    Raises ``RunRefusedError`` when an observer refuses the run."""
     observers = Observers()
     if not observers.active:
         return {}
+    run = None
     with observers.isolated("start_run"):
-        return observers.start_run(RunStart(run_uuid=run_uuid, start_ts=time.time(), args=_plain_args(args)))
-    return {}
+        run = RunStart(run_uuid=run_uuid, start_ts=time.time(), args=_plain_args(args))
+    return {} if run is None else observers.start_run(run)
 
 
 def start_process(role: str, *, rank: int = -1, gpus: Callable[[], Iterable[int]] = tuple) -> None:
