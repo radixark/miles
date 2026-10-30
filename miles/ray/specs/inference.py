@@ -194,6 +194,9 @@ class RouterSpec(BaseCommandSpec):
             backend.launch_argv(ctx, model_cfg=self.model_cfg, interpreter_prefix=self.interpreter_prefix)
         )
 
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        return make_router_backend(ctx.args).env_var(ctx)
+
 
 def compute_router_pool_id(model_idx: int) -> str:
     return f"inference-router-{model_idx}"
