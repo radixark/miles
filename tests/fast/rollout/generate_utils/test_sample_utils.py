@@ -1,9 +1,12 @@
+from copy import deepcopy
 from unittest.mock import MagicMock
 
 import numpy
 import pytest
+from tests.fast.utils.output_store.test_plan import response
 
 from miles.rollout.generate_utils.sample_utils import _merge_sample_pair, merge_samples
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
@@ -98,6 +101,27 @@ class TestMergeSamples:
         assert "response1" in merged.response
         assert "response2" in merged.response
         assert "<decoded:[20, 21]>" in merged.response
+        assert merged.rollout_store_plan is None
+
+    def test_merge_fills_omitted_per_token_lists_without_modifying_either_input(self, mock_tokenizer):
+        a = make_sample(tokens=[1, 2, 10, 11], response="r1", response_length=2)
+        b = make_sample(tokens=[1, 2, 10, 11, 20, 30], response="r2", response_length=1, loss_mask=[1])
+        a.metadata = {"messages": [{"role": "user", "content": "hi"}], "lifecycle": [{"turn": 0}], "k": [1]}
+        b.metadata = {"messages": [{"role": "user", "content": "hi"}], "lifecycle": [{"turn": 1}], "k": [1]}
+        before = (deepcopy(a), deepcopy(b))
+
+        merged = _merge_sample_pair(a, b, mock_tokenizer)
+
+        assert (a, b) == before
+        assert merged.loss_mask == [1, 1, 0, 1]
+        assert merged.rollout_log_probs == [0.0, 0.0, 0.0, 0.0]
+        assert merged.metadata == {
+            "k": [1],
+            "lifecycle": [{"turn": 0}, {"turn": 1}],
+            "messages": b.metadata["messages"],
+        }
+        merged.metadata["k"].append(2)
+        assert a.metadata["k"] == [1]
 
     def test_merge_concatenates_weight_versions_per_call(self, mock_tokenizer):
         """Merging concatenates per-call entries; spans are unchanged since the token space is shared."""
@@ -303,3 +327,27 @@ class TestMergeSamples:
         assert merged is t0
         assert merged.tokens == t0.tokens
         assert merged.rollout_routed_experts is not None
+
+    def test_merge_puts_the_observation_between_the_turns_store_plans(self, mock_tokenizer):
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.rollout_store_plan = response("a", prompt=2, output=1)
+        b.rollout_store_plan = response("b", prompt=4, output=1)
+
+        merged = _merge_sample_pair(a, b, mock_tokenizer)
+
+        assert merged.rollout_store_plan == a.rollout_store_plan.merge_turn(b.rollout_store_plan, observation_tokens=1)
+        merged.validate()
+
+    @pytest.mark.parametrize("planned", ["first", "second"])
+    def test_merge_rejects_a_turn_without_a_store_plan(self, mock_tokenizer, planned):
+        # A session's turns either all use the output store or none does; a mix fails instead of stopping early.
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        if planned == "first":
+            a.rollout_store_plan = response("a", prompt=2, output=1)
+        else:
+            b.rollout_store_plan = response("b", prompt=4, output=1)
+
+        with pytest.raises(StorePlanError, match="with output store data and one without"):
+            merge_samples([a, b], mock_tokenizer)

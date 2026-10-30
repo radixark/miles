@@ -182,6 +182,17 @@ def test_unknown_source_path_affects_every_runnable_gpu_stage():
     )
 
 
+@pytest.mark.parametrize(
+    ("changed_path", "skips_every_stage"),
+    [(".claude/skills/pr-ci-targeted/affected_tests.py", True), ("miles/trainer.py", False)],
+)
+def test_agent_tooling_under_dot_claude_affects_no_gpu_stage(changed_path, skips_every_stage):
+    registrations = [_registration(f"tests/e2e/{stage}.py", stage, labels=[]) for stage in PR_GPU_STAGES]
+    skipped = _select((ChangedFile("M", (changed_path,)),), registrations, raw_labels=())
+
+    assert (set(skipped) == PR_GPU_STAGES) is skips_every_stage
+
+
 def test_rename_from_unknown_source_path_affects_every_runnable_stage():
     changed_files = (ChangedFile("R100", ("miles/old.py", "docs/old-api.md")),)
 

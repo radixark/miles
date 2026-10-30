@@ -21,6 +21,7 @@ from tests.ci.ci_register import (
     _file_text_mentions_register,
     _is_implicit_fast_cpu_path,
     collect_tests,
+    file_timeout,
     register_cpu_ci,
     ut_parse_one_file,
 )
@@ -103,6 +104,12 @@ class TestRegisterPositive:
         r = ut_parse_one_file(path)[0]
         assert (r.suite, r.est_time, r.labels) == ("stage-b-cpu", 31, ["precision"])
 
+    def test_perf_label_accompanies_a_domain_label(self, tmp_path):
+        path = _make_fixture(
+            'register_cpu_ci(est_time=400, suite="stage-b-cpu", labels=["rollout", "perf"])', tmp_path
+        )
+        assert ut_parse_one_file(path)[0].labels == ["rollout", "perf"]
+
     def test_disabled_string_passthrough(self, tmp_path):
         path = _make_fixture(
             """
@@ -151,14 +158,14 @@ class TestRegisterNegative:
         with pytest.raises(ValueError, match="CPU est_time > 30 seconds requires suite='stage-b-cpu'"):
             ut_parse_one_file(path)
 
-    @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]"])
+    @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]", ', labels=["perf"]'])
     def test_slow_cpu_requires_domain_label(self, tmp_path, labels_arg):
         path = _make_fixture(f'register_cpu_ci(est_time=31, suite="stage-b-cpu"{labels_arg})', tmp_path)
         with pytest.raises(ValueError, match="labels.*must contain at least one domain label"):
             ut_parse_one_file(path)
 
     @pytest.mark.parametrize("func_name", ["register_cuda_ci", "register_rocm_ci"])
-    @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]"])
+    @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]", ', labels=["perf"]'])
     def test_gpu_labels_must_be_non_empty(self, tmp_path, func_name, labels_arg):
         path = _make_fixture(
             f"""
@@ -871,3 +878,16 @@ class TestNoSemanticDefaultRegisterCpuCi:
         # `None`; the predicate must keep its hands off the call.
         call = self._parse_call('register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=SOME_NAME)')
         assert not _is_semantic_default_register_cpu_ci(call)
+
+
+@pytest.mark.parametrize(
+    ("est_time", "labels", "expected"),
+    [
+        (400, ["rollout"], 1800),
+        (2000, ["megatron"], 2500),
+        (400, ["rollout", "perf"], 500),
+        (2000, ["megatron", "perf"], 2500),
+    ],
+)
+def test_file_timeout_skips_the_default_floor_only_for_perf(est_time, labels, expected):
+    assert file_timeout(est_time, labels, 1800) == expected

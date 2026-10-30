@@ -20,7 +20,9 @@ def quantize_params(args, megatron_name, converted_named_params, quantization_co
     if quantization_config is None:
         return converted_named_params
     elif quantization_config["quant_method"] == "fp8":
-        routed_expert_format = getattr(args, "rollout_routed_expert_format", None)
+        routed_expert_format = getattr(
+            args, "rollout_routed_expert_format", None
+        )  # config-access-exempt: offline checkpoint converters pass namespaces without rollout fields
         if (
             routed_expert_format is not None
             and is_routed_expert_param(megatron_name)

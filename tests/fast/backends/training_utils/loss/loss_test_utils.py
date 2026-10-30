@@ -22,16 +22,23 @@ Usage:
 from __future__ import annotations
 
 import copy
+import shutil
 import subprocess
+import tempfile
 from argparse import Namespace
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
 
+from tests.fast.fixtures.args_fixtures import ConfigNamespace
+
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 
-ARTIFACTS_REPO = "https://github.com/yueming-yuan/miles-artifacts.git"
+ARTIFACTS_REPO = "https://github.com/radixark/miles-wheels.git"
+# The miles-wheels commit whose miles-artifacts/loss_snapshots this test expects; regenerated snapshots land
+# there first, then this pin moves in the same PR as the code change that needed them.
+ARTIFACTS_COMMIT = "5ab4d72559e24dda08822774a9818e1fe67c3b65"
 ARTIFACTS_CACHE = Path.home() / ".cache" / "miles-test-artifacts"
 
 
@@ -105,27 +112,41 @@ _ARGS_DEFAULTS = dict(
     custom_pg_loss_reducer_function_path=None,
     use_opsm=False,
     opsm_delta=0.1,
-    calculate_per_token_loss=False,
+    eps_clip_c=None,
+    dump_details=None,
+    multi_lora=False,
+    custom_loss_function_path=None,
     # value_loss_function
     value_clip=0.2,
     # loss_function dispatcher
-    global_batch_size=1,  # overridden by make_inputs
     use_dynamic_global_batch_size=False,
     recompute_loss_function=False,
 )
 
 
+# fields a trainer reads from its backend namespace, kept flat in the stored snapshot args
+_BACKEND_ARGS_DEFAULTS = dict(
+    bf16=False,
+    fp16=False,
+    calculate_per_token_loss=False,
+    vocab_size=None,
+    global_batch_size=1,  # overridden by make_inputs
+)
+
+
 def make_args(**overrides) -> Namespace:
-    d = {**_ARGS_DEFAULTS, **overrides}
-    return Namespace(**d)
+    return args_from_dict(overrides)
 
 
 def args_to_dict(args: Namespace) -> dict:
-    return vars(args)
+    flat = {name: value for name, value in vars(args).items() if name not in {"backend", "train_backend"}}
+    return flat | vars(args.backend)
 
 
 def args_from_dict(d: dict) -> Namespace:
-    return Namespace(**{**_ARGS_DEFAULTS, **d})
+    values = {**_ARGS_DEFAULTS, **_BACKEND_ARGS_DEFAULTS, **d}
+    backend = {name: values.pop(name) for name in _BACKEND_ARGS_DEFAULTS}
+    return ConfigNamespace(**values, train_backend="megatron", backend=Namespace(**backend))
 
 
 # ---------------------------------------------------------------------------
@@ -309,22 +330,32 @@ def assert_outputs_equal(actual, expected, path: str = "root"):
 def ensure_snapshot_dir(snapshot_dir: Path) -> Path:
     """Return a directory containing .pt snapshots.
 
-    If *snapshot_dir* already has .pt files, return it as-is.
-    Otherwise, shallow-clone yueming-yuan/miles-artifacts into a cache
-    directory and return the path to loss_snapshots/ inside the clone.
+    If *snapshot_dir* already has .pt files, return it as-is. Otherwise fetch
+    ARTIFACTS_COMMIT of radixark/miles-wheels into a cache directory named after
+    the commit, so a moved pin never reads an older copy, and return
+    miles-artifacts/loss_snapshots/ inside it.
     """
     if snapshot_dir.exists() and any(snapshot_dir.glob("*.pt")):
         return snapshot_dir
-    repo_dir = ARTIFACTS_CACHE / "repo"
-    result_dir = repo_dir / "loss_snapshots"
-    if result_dir.exists() and any(result_dir.glob("*.pt")):
-        return result_dir
-    ARTIFACTS_CACHE.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "clone", "--depth=1", ARTIFACTS_REPO, str(repo_dir)],
-        check=True,
-    )
-    assert result_dir.exists(), f"Expected {result_dir} after clone"
+    repo_dir = ARTIFACTS_CACHE / ARTIFACTS_COMMIT
+    if not repo_dir.exists():
+        ARTIFACTS_CACHE.mkdir(parents=True, exist_ok=True)
+        # fetch into a scratch directory and rename it, so an interrupted fetch never looks complete
+        scratch = Path(tempfile.mkdtemp(dir=ARTIFACTS_CACHE))
+        try:
+            for git_args in (
+                ["init", "-q"],
+                ["fetch", "-q", "--depth=1", ARTIFACTS_REPO, ARTIFACTS_COMMIT],
+                ["checkout", "-q", "FETCH_HEAD"],
+            ):
+                subprocess.run(["git", "-C", str(scratch), *git_args], check=True)
+            scratch.rename(repo_dir)
+        except OSError:  # another test process finished the same fetch first
+            pass
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+    result_dir = repo_dir / "miles-artifacts" / "loss_snapshots"
+    assert any(result_dir.glob("*.pt")), f"No snapshots in {result_dir}"
     return result_dir
 
 

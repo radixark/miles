@@ -9,7 +9,7 @@ import json
 import numpy as np
 import pytest
 import safetensors.numpy
-from safetensors import SafetensorError
+from tests.fast.utils.output_store.test_plan import fake_store_refs, ref, response
 
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
@@ -200,6 +200,18 @@ class TestSamplesWireCodec:
         assert np.array_equal(out.rollout_routed_experts, routed)
         assert out.rollout_indexer_topk.dtype == np.int32 and np.array_equal(out.rollout_indexer_topk, indexer)
 
+    def test_tensor_fields_view_a_writable_payload_without_copying(self):
+        buffer = np.frombuffer(encode_samples([_computed_sample()], {}, None), dtype=np.uint8).copy()
+        (out,) = decode_samples_and_merge_input_sample(buffer, Sample()).samples
+        assert np.shares_memory(out.rollout_routed_experts, buffer)
+        np.testing.assert_array_equal(out.rollout_routed_experts, np.arange(24, dtype=np.int32).reshape(4, 3, 2))
+
+    def test_bytes_payload_decodes_to_writable_tensors(self):
+        (out,) = decode_samples_and_merge_input_sample(
+            encode_samples([_computed_sample()], {}, None), Sample()
+        ).samples
+        assert out.rollout_routed_experts.flags.writeable
+
     def test_default_fields_do_not_emit_sampling_mask(self):
         payload = encode_samples([_computed_sample()], {}, None)
         tensors = safetensors.numpy.load(payload)
@@ -242,8 +254,8 @@ class TestSamplesWireCodec:
     @pytest.mark.parametrize(
         ("build_payload", "expected_error", "match"),
         [
-            pytest.param(lambda p: p[: len(p) - 100], SafetensorError, None, id="truncated-container"),
-            pytest.param(lambda p: b"", SafetensorError, None, id="empty-container"),
+            pytest.param(lambda p: p[: len(p) - 100], ValueError, "invalid safetensors", id="truncated-container"),
+            pytest.param(lambda p: b"", ValueError, "invalid safetensors", id="empty-container"),
             pytest.param(
                 lambda p: safetensors.numpy.save({"tokens.0": np.arange(3, dtype=np.int64)}),
                 KeyError,
@@ -399,3 +411,36 @@ class TestWeightVersionsOnTheSamplesWire:
 
         with pytest.raises(expected_error, match=match):
             decode_samples_and_merge_input_sample(payload, Sample())
+
+
+class TestStorePlanOnTheSamplesWire:
+    @pytest.fixture(autouse=True)
+    def _fake_refs(self, monkeypatch):
+        fake_store_refs(monkeypatch)
+
+    @staticmethod
+    def _plan():
+        # A forced row and an unused ref, so the JSON carries a null key and an extra ref.
+        return response("a", prompt=3, output=1).insert_tokens(1).adopt_refs([ref("x")])
+
+    @pytest.mark.parametrize("fields", [COMPUTED_FIELDS, COMPUTED_FIELDS_V2])
+    def test_plan_crosses_the_wire_as_its_dict(self, fields):
+        plan = self._plan()
+        payload = encode_samples([_computed_sample(rollout_store_plan=plan)], {}, fields=fields)
+
+        meta = json.loads(safetensors.numpy.load(payload)["_samples_meta"].tobytes().decode("utf-8"))
+        assert meta["samples"][0]["rollout_store_plan"] == plan.to_dict()
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample(), fields=fields).samples
+        assert out.rollout_store_plan == plan
+
+    @pytest.mark.parametrize("fields", [COMPUTED_FIELDS, COMPUTED_FIELDS_V2])
+    def test_without_plans_the_payload_keeps_its_bytes(self, fields):
+        without_plan = tuple(field for field in fields if field != "rollout_store_plan")
+        assert encode_samples([_computed_sample()], {}, fields=fields) == encode_samples(
+            [_computed_sample()], {}, fields=without_plan
+        )
+
+    def test_no_plan_on_the_wire_replaces_the_input_samples_plan(self):
+        payload = encode_samples([_computed_sample()], {}, None)
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample(rollout_store_plan=self._plan())).samples
+        assert out.rollout_store_plan is None

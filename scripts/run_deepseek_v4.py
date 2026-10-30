@@ -145,7 +145,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # None lets Megatron resolve it: tilelang for --dsv4-impl miles, cuDNN for megatron.
     dsa_kernel_backend: Literal["none", "tilelang", "cudnn"] | None = None
     optimizer_offload: bool = True
-    use_fault_tolerance: bool = True
+    use_fault_tolerance: bool = False
     rollout_batch_size: int = 32
     n_samples_per_prompt: int = 8
     # None runs each recipe's own CP. Only the single-node miles impl lets it vary (TP takes the GPUs
@@ -786,7 +786,14 @@ def _train(args: ScriptArgs):
     if args.enable_mis:
         misc_args += (
             "--use-tis "
-            "--custom-config-path examples/infra_features/train_infer_mismatch_helper/mis.yaml "
+            "--use-rs "
+            "--tis-level token "
+            "--rs-level token "
+            "--tis-mode truncate "
+            "--tis-lower-bound 0.5 "
+            "--tis-upper-bound 2.0 "
+            "--rs-veto-threshold 1.0e-4 "
+            "--tis-batch-normalize "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 

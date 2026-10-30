@@ -1,6 +1,4 @@
-import hashlib
-
-import torch
+from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
 
 
 def record_lora_checksums(bucket, checksums) -> None:
@@ -9,7 +7,4 @@ def record_lora_checksums(bucket, checksums) -> None:
         if ":" not in name:
             continue
         lora_name, hf_key = name.split(":", 1)
-        digest = hashlib.sha256(
-            tensor.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()
-        ).hexdigest()
-        checksums[lora_name][hf_key] = digest
+        checksums[lora_name][hf_key] = hash_tensor_sha256(tensor)

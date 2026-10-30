@@ -117,11 +117,15 @@ def mxfp4_fake_quantize_ste(weight: torch.Tensor, *, wgrad_in_main_grad: bool = 
     backward marks that gradient as already added, as Transformer Engine does for the
     weights it receives directly.
     """
-    wgrad_in_main_grad = wgrad_in_main_grad and hasattr(weight, "grad_added_to_main_grad")
+    wgrad_in_main_grad = wgrad_in_main_grad and hasattr(
+        weight, "grad_added_to_main_grad"
+    )  # config-access-exempt: grad_added_to_main_grad is optional backend-attached tensor metadata
     output = _MXFP4FakeQuantizeSTE.apply(weight, wgrad_in_main_grad)
     for attr in _DDP_WEIGHT_ATTRS:
-        if hasattr(weight, attr):
-            setattr(output, attr, getattr(weight, attr))
+        if hasattr(weight, attr):  # config-access-exempt: attribute selected at runtime from attr
+            setattr(
+                output, attr, getattr(weight, attr)
+            )  # config-access-exempt: attribute selected at runtime from attr
     return output
 
 
@@ -129,11 +133,17 @@ def _wrap_get_weight_tensors(original: Callable) -> Callable:
     @wraps(original)
     def get_weight_tensors(module):
         weights = original(module)
-        if not getattr(module.config, _CONFIG_ATTR, False):
+        if not getattr(
+            module.config, _CONFIG_ATTR, False
+        ):  # config-access-exempt: only DeepSeek V4 Bridge providers define the QAT flag
             return weights
-        if any(hasattr(weight, "__fsdp_param__") or hasattr(weight, "get_main_grad") for weight in weights):
+        if any(
+            hasattr(weight, "__fsdp_param__") or hasattr(weight, "get_main_grad") for weight in weights
+        ):  # config-access-exempt: Megatron FSDP marks its weights with these attributes
             raise RuntimeError("DeepSeek V4 MXFP4 QAT does not support Megatron FSDP weights.")
-        wgrad_in_main_grad = getattr(module.config, "gradient_accumulation_fusion", False)
+        wgrad_in_main_grad = getattr(
+            module.config, "gradient_accumulation_fusion", False
+        )  # config-access-exempt: model configs outside Megatron-Core may omit gradient_accumulation_fusion
         return [mxfp4_fake_quantize_ste(weight, wgrad_in_main_grad=wgrad_in_main_grad) for weight in weights]
 
     return get_weight_tensors
@@ -141,11 +151,17 @@ def _wrap_get_weight_tensors(original: Callable) -> Callable:
 
 def validate_dsv4_mxfp4_qat_config(config) -> None:
     """Reject configurations whose routed experts would not reach the fake-quantization hook."""
-    if not getattr(config, "moe_grouped_gemm", False):
+    if not getattr(
+        config, "moe_grouped_gemm", False
+    ):  # config-access-exempt: Megatron-Core versions differ in which TransformerConfig fields exist
         raise ValueError("DeepSeek V4 MXFP4 QAT requires grouped-GEMM routed experts (moe_grouped_gemm).")
-    if getattr(config, "use_transformer_engine_op_fuser", False):
+    if getattr(
+        config, "use_transformer_engine_op_fuser", False
+    ):  # config-access-exempt: Megatron-Core versions differ in which TransformerConfig fields exist
         raise ValueError("DeepSeek V4 MXFP4 QAT does not support the Transformer Engine op fuser.")
-    if getattr(config, "delay_wgrad_compute", False):
+    if getattr(
+        config, "delay_wgrad_compute", False
+    ):  # config-access-exempt: Megatron-Core versions differ in which TransformerConfig fields exist
         raise ValueError("DeepSeek V4 MXFP4 QAT does not support delayed weight-gradient computation.")
 
 
@@ -153,7 +169,7 @@ def install_dsv4_mxfp4_qat() -> None:
     """Install the opt-in routed-expert MXFP4 fake-quantization hook."""
     from megatron.core.extensions.transformer_engine import TEGroupedLinear
 
-    if hasattr(TEGroupedLinear, _PATCH_ATTR):
+    if hasattr(TEGroupedLinear, _PATCH_ATTR):  # config-access-exempt: the patch marker exists only after installation
         return
 
     original = TEGroupedLinear._get_weight_tensors

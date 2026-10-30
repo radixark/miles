@@ -24,10 +24,10 @@ patched by our image. Remove unused host caches only while the host has no
 running jobs; later jobs rebuild missing entries.
 Every CI host must provide `/data/miles_ci` either as a real directory on its
 biggest disk or as a symlink to wherever the big disk is.
-[`tests/ci/skills/setup-ci-host`](skills/setup-ci-host/) automates this:
+[`setup-ci-host`](../../.claude/skills/setup-ci-host/) automates this:
 
 ```shell
-cd /root/miles/tests/ci/skills/setup-ci-host
+cd /root/miles/.claude/skills/setup-ci-host
 ./setup-host.sh
 ```
 
@@ -43,7 +43,7 @@ The token can be found at https://github.com/radixark/miles/settings/actions/run
 WARN: The `GITHUB_RUNNER_TOKEN` changes after a while.
 
 > Steps 1-3 cover the `docker-compose` flow. For hosts that use the
-> `gh-runner` image flow instead, see [`manage-gh-runners`](skills/manage-gh-runners/).
+> `gh-runner` image flow instead, see [`manage-gh-runners`](../../.claude/skills/manage-gh-runners/).
 
 ### Step 2: Prepare `/home/runner/externals`
 
@@ -63,7 +63,7 @@ docker compose up -d
 ```
 
 The base `docker-compose.yml` defines a template `runner` service; the per-host
-concrete runner services (e.g. `scitix-72-0`, `scitix-72-1`) live in
+concrete runner services (e.g. `<host>-0`, `<host>-1`) live in
 `docker-compose.override.yml`. The base service is set to `replicas: 1` so a
 stray `docker compose up` without the override never silently spins up many
 runners.
@@ -87,16 +87,13 @@ GPU exposure to inner CI job containers happens in two layers:
 
 Host conventions:
 
-* **scitix-72** (H200, 2 runners): `scitix-72-0` pins `CUDA_VISIBLE_DEVICES=0,1,2,3`;
-  `scitix-72-1` pins `4,5,6,7`. Per-runner CVD is defined in
-  `docker-compose.override.yml`.
-* **scitix-73** (H200, 3 runners, externally managed via `gh-runner` image):
-  `scitix-73-4gpu-0` pins `0,1,2,3` (label `4gpu`); `scitix-73-2gpu-0` pins
-  `4,5` and `scitix-73-2gpu-1` pins `6,7` (label `2gpu`). CVD is injected
-  via the container's `RUNNER_LABELS` + `CUDA_VISIBLE_DEVICES` env at
-  `docker run` time — see [`manage-gh-runners`](skills/manage-gh-runners/).
-* **novita-host2 / novita-host4** (H100, 1 runner each, externally managed):
-  CVD intentionally left unset so jobs see all 8 GPUs. The bare
+* **Fixed partitions**: each runner on a shared host pins a contiguous slice
+  that no other runner on the host uses, and the slices cover the host, e.g.
+  `0,1,2,3` + `4,5,6,7`, or `0,1,2,3` + `4,5` + `6,7` on an 8-GPU host. The
+  runner's `<N>gpu` label equals its slice size. Compose hosts set CVD in
+  `docker-compose.override.yml`; `gh-runner` hosts set it with
+  [`manage-gh-runners`](../../.claude/skills/manage-gh-runners/).
+* **Whole-host runners** leave CVD unset so jobs see every GPU. The bare
   `--env CUDA_VISIBLE_DEVICES` forwards the "unset" state, and CUDA defaults
   to seeing every visible device.
 * **b200-oma** (20 logical runners on one 8-GPU host): for each count `n` from 1 to 8,
@@ -108,6 +105,12 @@ Host conventions:
   The repository-wide `b200-oma` workflow queue keeps one PR's finite job set
   ahead of the next PR; B200 file reruns use the same queue. Within a run, mixes
   such as `4+2+1+1` and noncontiguous free sets can execute concurrently.
+
+This README does not track which runners live on which host. Query the live
+registrations and labels with
+`gh api --paginate repos/radixark/miles/actions/runners --jq '.runners[] | {name,status,labels:[.labels[].name]}'`,
+and a host's partition with `docker exec <runner> printenv CUDA_VISIBLE_DEVICES`
+(or `manage-runners.sh list` on a `gh-runner` host).
 
 ### Rolling out the B200 allocator
 
@@ -201,24 +204,23 @@ Logs
 docker compose logs -f
 
 # One container
-docker logs -f scitix-72-0
+docker logs -f <runner>
 ```
 
 Exec
 
 ```shell
-docker exec -it scitix-72-0 /bin/bash
+docker exec -it <runner> /bin/bash
 ```
 
 Verify a runner's CUDA partition
 
 ```shell
-docker exec scitix-72-0 printenv CUDA_VISIBLE_DEVICES   # -> 0,1,2,3
-docker exec scitix-72-1 printenv CUDA_VISIBLE_DEVICES   # -> 4,5,6,7
+docker exec <runner> printenv CUDA_VISIBLE_DEVICES   # e.g. 0,1,2,3
 ```
 
 Quickly iterate
 
 ```shell
-docker compose down -v && docker compose up -d && docker logs -f scitix-72-0
+docker compose down -v && docker compose up -d && docker logs -f <runner>
 ```

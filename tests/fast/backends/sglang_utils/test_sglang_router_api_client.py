@@ -1,5 +1,3 @@
-from argparse import Namespace
-
 import httpx
 import pytest
 
@@ -66,24 +64,9 @@ def client():
     return SGLangRouterApiClient(router_url=ROUTER_URL)
 
 
-async def test_add_worker_uses_the_query_string_api_when_legacy(client, recorder):
-    """Routers <= 0.2.1 and the miles router only understand /add_worker?url=."""
-    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=True)
-
-    assert recorder.calls == [
-        ("post", f"{ROUTER_URL}/add_worker?url={WORKER_URL}", {"timeout": ROUTER_REQUEST_TIMEOUT})
-    ]
-
-
-async def test_add_worker_rejects_pd_disaggregation_on_the_legacy_api(client, recorder):
-    """The legacy API has no worker_type concept, so prefill/decode workers must be refused."""
-    with pytest.raises(AssertionError, match="pd disaggregation is not supported"):
-        await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.PREFILL, use_legacy_api=True)
-
-
 async def test_add_worker_posts_the_worker_payload_on_the_modern_api(client, recorder):
-    """Modern routers take a JSON body on /workers."""
-    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=False)
+    """Routers take a JSON body on /workers."""
+    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR)
 
     assert len(recorder.calls) == 1
     verb, url, kwargs = recorder.calls[0]
@@ -93,9 +76,7 @@ async def test_add_worker_posts_the_worker_payload_on_the_modern_api(client, rec
 
 async def test_add_worker_includes_the_bootstrap_port_for_prefill_workers(client, recorder):
     """PD disaggregation needs the prefill worker's bootstrap port registered with the router."""
-    await client.add_worker(
-        worker_url=WORKER_URL, worker_type=WorkerType.PREFILL, use_legacy_api=False, bootstrap_port=8998
-    )
+    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.PREFILL, bootstrap_port=8998)
 
     assert len(recorder.calls) == 1
     assert recorder.calls[0][2]["json"] == {
@@ -105,20 +86,11 @@ async def test_add_worker_includes_the_bootstrap_port_for_prefill_workers(client
     }
 
 
-async def test_remove_worker_uses_the_query_string_api_when_legacy(client, recorder):
-    """Legacy routers unregister via /remove_worker?url=."""
-    await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=True)
-
-    assert recorder.calls == [
-        ("post", f"{ROUTER_URL}/remove_worker?url={WORKER_URL}", {"timeout": ROUTER_REQUEST_TIMEOUT})
-    ]
-
-
 async def test_remove_worker_deletes_by_url_on_pre_0_3_routers(client, recorder, monkeypatch):
     """Routers in [0.2.2, 0.3.0) address workers by percent-encoded url."""
     monkeypatch.setattr(sglang_router, "__version__", "0.2.5")
 
-    await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+    await client.remove_worker(worker_url=WORKER_URL)
 
     assert recorder.calls == [
         ("delete", f"{ROUTER_URL}/workers/http%3A%2F%2Ffake-host%3A1234", {"timeout": ROUTER_REQUEST_TIMEOUT})
@@ -131,7 +103,7 @@ async def test_remove_worker_resolves_the_worker_id_on_modern_routers(client, mo
     rec = _Recorder()
     rec.install(monkeypatch, responses=[_FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-7"}]})])
 
-    await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+    await client.remove_worker(worker_url=WORKER_URL)
 
     assert [(verb, url) for verb, url, _kwargs in rec.calls] == [
         ("get", f"{ROUTER_URL}/workers"),
@@ -145,45 +117,15 @@ async def test_remove_worker_tolerates_an_unknown_worker(client, monkeypatch):
     rec = _Recorder()
     rec.install(monkeypatch, responses=[_FakeResponse({"workers": []})])
 
-    await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+    await client.remove_worker(worker_url=WORKER_URL)
 
     assert [verb for verb, _url, _kwargs in rec.calls] == ["get"]
-
-
-async def test_add_worker_propagates_router_errors(client, monkeypatch):
-    """A router that rejects the registration must surface, not be swallowed."""
-    rec = _Recorder()
-    rec.install(monkeypatch, responses=[_FakeResponse(status_code=500)])
-
-    with pytest.raises(httpx.HTTPStatusError):
-        await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=True)
-
-
-async def test_remove_worker_propagates_router_errors(client, monkeypatch):
-    """Unregistration errors must surface on the legacy path too."""
-    rec = _Recorder()
-    rec.install(monkeypatch, responses=[_FakeResponse(status_code=500)])
-
-    with pytest.raises(httpx.HTTPStatusError):
-        await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=True)
-
-
-@pytest.mark.parametrize("worker_type", [WorkerType.PREFILL, WorkerType.DECODE])
-async def test_add_worker_rejects_pd_worker_types_before_any_request(client, monkeypatch, worker_type):
-    """The legacy API has no worker_type, so a pd worker must be refused without registering it."""
-    rec = _Recorder()
-    rec.install(monkeypatch)
-
-    with pytest.raises(AssertionError, match="pd disaggregation is not supported"):
-        await client.add_worker(worker_url=WORKER_URL, worker_type=worker_type, use_legacy_api=True)
-
-    assert rec.calls == []
 
 
 @pytest.mark.parametrize("worker_type", [WorkerType.REGULAR, WorkerType.DECODE])
 async def test_add_worker_omits_bootstrap_port_for_non_prefill_workers(client, recorder, worker_type):
     """Only a prefill worker exposes a bootstrap port for the decode side to dial."""
-    await client.add_worker(worker_url=WORKER_URL, worker_type=worker_type, use_legacy_api=False, bootstrap_port=8998)
+    await client.add_worker(worker_url=WORKER_URL, worker_type=worker_type, bootstrap_port=8998)
 
     assert len(recorder.calls) == 1
     assert recorder.calls[0][2]["json"] == {"url": WORKER_URL, "worker_type": worker_type.value}
@@ -198,7 +140,7 @@ async def test_remove_worker_switches_api_exactly_at_0_3_0(client, monkeypatch, 
     rec = _Recorder()
     rec.install(monkeypatch, responses=[_FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-1"}]})])
 
-    await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+    await client.remove_worker(worker_url=WORKER_URL)
 
     assert rec.calls[0][0] == expected_verb
 
@@ -209,7 +151,7 @@ async def test_add_worker_propagates_a_failing_modern_response(client, monkeypat
     rec.install(monkeypatch, responses=[_FakeResponse(status_code=500)])
 
     with pytest.raises(httpx.HTTPStatusError):
-        await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=False)
+        await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR)
 
 
 async def test_remove_worker_propagates_a_failing_url_addressed_delete(client, monkeypatch):
@@ -219,7 +161,7 @@ async def test_remove_worker_propagates_a_failing_url_addressed_delete(client, m
     rec.install(monkeypatch, responses=[_FakeResponse(status_code=500)])
 
     with pytest.raises(httpx.HTTPStatusError):
-        await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+        await client.remove_worker(worker_url=WORKER_URL)
 
 
 async def test_remove_worker_propagates_a_failing_id_addressed_delete(client, monkeypatch):
@@ -232,7 +174,7 @@ async def test_remove_worker_propagates_a_failing_id_addressed_delete(client, mo
     )
 
     with pytest.raises(httpx.HTTPStatusError):
-        await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+        await client.remove_worker(worker_url=WORKER_URL)
 
 
 async def test_remove_worker_warns_about_an_unknown_worker(client, monkeypatch, caplog):
@@ -242,50 +184,56 @@ async def test_remove_worker_warns_about_an_unknown_worker(client, monkeypatch, 
     rec.install(monkeypatch, responses=[_FakeResponse({"workers": []})])
 
     with caplog.at_level("WARNING"):
-        await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+        await client.remove_worker(worker_url=WORKER_URL)
 
     assert "not found in router" in caplog.text
 
 
-async def test_remove_worker_tolerates_a_broken_worker_lookup(client, monkeypatch, caplog):
-    """A router that cannot list its workers must not block the engine's shutdown."""
+async def test_remove_worker_propagates_a_broken_worker_lookup(
+    client: SGLangRouterApiClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed worker lookup reaches the caller so an unsuccessful removal can be retried."""
     monkeypatch.setattr(sglang_router, "__version__", "0.3.1")
+    error = httpx.ConnectError("router down")
 
     class _Refusing:
-        async def get(self, url, **kwargs):
-            raise httpx.ConnectError("router down")
+        async def get(self, url: str, **kwargs: object) -> _FakeResponse:
+            raise error
 
     monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: _Refusing())
 
-    with caplog.at_level("WARNING"):
-        await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+    with pytest.raises(httpx.ConnectError) as excinfo:
+        await client.remove_worker(worker_url=WORKER_URL)
 
-    assert "Failed to fetch workers list" in caplog.text
+    assert excinfo.value is error
 
 
-async def test_remove_worker_tolerates_a_transport_error_during_id_delete(client, monkeypatch, caplog):
-    """A router that answers the lookup but drops the delete connection must not block the engine's shutdown."""
+async def test_remove_worker_propagates_a_transport_error_during_id_delete(
+    client: SGLangRouterApiClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed delete reaches the caller after resolving the exact worker id, allowing removal to be retried."""
     monkeypatch.setattr(sglang_router, "__version__", "0.3.1")
+    error = httpx.ConnectError("router down")
 
     class _FailingDelete:
-        def __init__(self):
+        def __init__(self) -> None:
             self.deleted_urls: list[str] = []
 
-        async def get(self, url, **kwargs):
+        async def get(self, url: str, **kwargs: object) -> _FakeResponse:
             return _FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-1"}]})
 
-        async def delete(self, url, **kwargs):
+        async def delete(self, url: str, **kwargs: object) -> _FakeResponse:
             self.deleted_urls.append(url)
-            raise httpx.ConnectError("router down")
+            raise error
 
     fake = _FailingDelete()
     monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: fake)
 
-    with caplog.at_level("WARNING"):
-        await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+    with pytest.raises(httpx.ConnectError) as excinfo:
+        await client.remove_worker(worker_url=WORKER_URL)
 
     assert fake.deleted_urls == [f"{ROUTER_URL}/workers/w-1"]
-    assert "Failed to fetch workers list or remove worker" in caplog.text
+    assert excinfo.value is error
 
 
 def test_the_router_timeout_bounds_the_whole_request_not_just_the_connect():
@@ -296,10 +244,9 @@ def test_the_router_timeout_bounds_the_whole_request_not_just_the_connect():
     assert ROUTER_REQUEST_TIMEOUT.pool is not None
 
 
-@pytest.mark.parametrize("use_legacy_api", [True, False])
-async def test_add_worker_bounds_the_registration_request(client, recorder, use_legacy_api):
+async def test_add_worker_bounds_the_registration_request(client, recorder):
     """A router that accepts the connection but never answers would wedge the weight-update window forever."""
-    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=use_legacy_api)
+    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR)
 
     assert [kwargs.get("timeout") for _verb, _url, kwargs in recorder.calls] == [ROUTER_REQUEST_TIMEOUT]
 
@@ -311,25 +258,7 @@ async def test_remove_worker_bounds_every_request_it_makes(client, monkeypatch, 
     rec = _Recorder()
     rec.install(monkeypatch, responses=[_FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-1"}]})])
 
-    await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+    await client.remove_worker(worker_url=WORKER_URL)
 
     assert rec.calls
     assert all(kwargs.get("timeout") == ROUTER_REQUEST_TIMEOUT for _verb, _url, kwargs in rec.calls)
-
-
-@pytest.mark.parametrize(
-    "version, use_miles_router, expected",
-    [
-        ("0.2.1", False, True),
-        ("0.2.2", False, False),
-        ("0.3.1", False, False),
-        ("0.3.1", True, True),
-    ],
-)
-def test_legacy_router_api_decision(version, use_miles_router, expected, monkeypatch):
-    """0.2.1 is the last version with the query-string API; --use-miles-router pins it too."""
-    from miles.backends.sglang_utils.sglang_router_api_client import use_legacy_router_api
-
-    monkeypatch.setattr(sglang_router, "__version__", version)
-
-    assert use_legacy_router_api(Namespace(use_miles_router=use_miles_router)) is expected

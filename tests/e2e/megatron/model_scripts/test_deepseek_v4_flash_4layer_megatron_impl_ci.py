@@ -22,6 +22,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 
 def _args() -> ScriptArgs:
@@ -39,7 +40,17 @@ def _args() -> ScriptArgs:
         dsv4_impl="megatron",
         dsa_kernel_backend="cudnn",
         extra_args=(
-            "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
+            "--ci-test "
+            "--check-weight-update-allow-quant-error "
+            "--ci-disable-logprobs-checker "
+            "--num-rollout 2 "
+            # Megatron's mHC ops (hyper_connection.py) are torch.compile'd. Full recompute runs each layer under both
+            # no_grad and grad, so dynamo caches a graph per combination of grad mode, input requires_grad and view
+            # layout, and native_h_post_bda / native_h_aggregate hit recompile_limit (8) after the first rollout. A
+            # call that then misses the compile cache runs eagerly, so a separate log-prob forward and the training
+            # forward round differently and check_kl sees a non-zero first-step ppo_kl. Taking the old log probs from
+            # the training forward avoids it.
+            "--skip-actor-forward-only "
         ),
     )
     if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":

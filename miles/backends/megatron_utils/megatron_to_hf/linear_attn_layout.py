@@ -56,7 +56,9 @@ class LinearAttnHeads:
 
 def gdn_heads(hf_config) -> LinearAttnHeads:
     """Head layout of a Qwen3.5 / Qwen3-Next GDN layer; VLM configs nest it under ``text_config``."""
-    text_config = getattr(hf_config, "text_config", hf_config)
+    text_config = getattr(
+        hf_config, "text_config", hf_config
+    )  # config-access-exempt: HF VLM configurations nest text fields while text-only configurations do not
     return LinearAttnHeads(
         num_k_heads=text_config.linear_num_key_heads,
         num_v_heads=text_config.linear_num_value_heads,

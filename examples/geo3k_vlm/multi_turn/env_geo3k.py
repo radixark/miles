@@ -267,7 +267,7 @@ def build_env(sample: Sample | None = None, args: Any | None = None, **_: Any) -
     ground_truth = _extract_ground_truth(sample)
     max_turns = args.max_turns
     if max_turns is None:
-        raise ValueError("max_turns must be set via --custom-config-path in the custom config file.")
+        raise ValueError("max_turns must be set with --max-turns.")
     if ground_truth is None:
         logger.warning("Ground truth answer missing; calc_score tool will always return 0.")
     return Geo3kEnv(ground_truth=ground_truth, max_turns=max_turns)

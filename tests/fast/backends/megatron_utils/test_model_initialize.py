@@ -1,12 +1,13 @@
 import sys
 import types
-from argparse import Namespace
 from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+from megatron.core.packed_seq_params import PackedSeqParams
+from tests.fast.fixtures.args_fixtures import make_trainer_args, make_trainer_config
 
 if TYPE_CHECKING:
     from miles.backends.megatron_utils.model import LoadCheckpointOutput
@@ -106,7 +107,7 @@ def _mock_megatron_environment():
             },
         )
         _stub_module("megatron.core.optimizer_param_scheduler", {"OptimizerParamScheduler": _DummyScheduler})
-        _stub_module("megatron.core.packed_seq_params", {"PackedSeqParams": MagicMock()})
+        _stub_module("megatron.core.packed_seq_params", {"PackedSeqParams": PackedSeqParams})
         _stub_module("megatron.core.pipeline_parallel", {"get_forward_backward_func": MagicMock()})
         _stub_module("megatron.core.transformer", is_package=True)
         _stub_module("megatron.core.transformer.utils", {"sharded_state_dict_default": MagicMock()})
@@ -168,7 +169,12 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
 def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
-    args = Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8, finetune=False)
+    args = make_trainer_config(
+        use_checkpoint_opt_param_scheduler=True,
+        global_batch_size=8,
+        finetune=False,
+        pretrained_checkpoint="/checkpoint",
+    )
     model = [_FakeModelChunk()]
     optimizer = object()
     opt_param_scheduler = MagicMock()
@@ -180,11 +186,9 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
                 return_value=(model, optimizer, opt_param_scheduler),
             )
         )
-        stack.enter_context(
-            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True, False))
-        )
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True)))
         _patch_initialize_side_effects(stack)
-        result = initialize_model_and_optimizer(args)
+        result = initialize_model_and_optimizer(args, resume_from_ckpt=True)
 
     assert result == (
         model,
@@ -198,7 +202,12 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
 def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
-    args = Namespace(use_checkpoint_opt_param_scheduler=False, global_batch_size=8, finetune=False)
+    args = make_trainer_config(
+        use_checkpoint_opt_param_scheduler=False,
+        global_batch_size=8,
+        finetune=False,
+        pretrained_checkpoint="/checkpoint",
+    )
     model = [_FakeModelChunk()]
     optimizer = object()
     opt_param_scheduler = MagicMock()
@@ -210,11 +219,9 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
                 return_value=(model, optimizer, opt_param_scheduler),
             )
         )
-        stack.enter_context(
-            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True, False))
-        )
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True)))
         _patch_initialize_side_effects(stack)
-        result = initialize_model_and_optimizer(args)
+        result = initialize_model_and_optimizer(args, resume_from_ckpt=True)
 
     assert result == (
         model,
@@ -230,91 +237,205 @@ def _load_model_state_with(
     tmp_path: Path,
     finetune: bool,
     iteration: int,
-    lora_rank: int = 0,
     restored_trained_iteration: bool | None = None,
+    adapter_iteration: int | None = None,
+    lora_adapter_path: str | None = None,
+    write_tracker: bool = True,
+    ckpt_step: int | None = None,
+    exit_on_missing_checkpoint: bool = False,
+    resume_from_ckpt: bool,
+    megatron_to_hf_mode: str = "core",
 ) -> "LoadCheckpointOutput":
     from miles.backends.megatron_utils.model import load_model_state
 
     load_dir = tmp_path / "ckpt"
     load_dir.mkdir()
-    (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
     if restored_trained_iteration is None:
         restored_trained_iteration = not finetune or iteration > 0
+    if write_tracker:
+        (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
 
     with ExitStack() as stack:
         stack.enter_context(
             patch(
                 "miles.backends.megatron_utils.model.load_checkpoint",
-                return_value=(iteration, restored_trained_iteration, False),
+                return_value=(iteration, restored_trained_iteration),
             )
+        )
+        stack.enter_context(
+            patch("miles.backends.megatron_utils.model.restore_lora_adapter", return_value=adapter_iteration)
         )
         _patch_initialize_side_effects(stack)
         return load_model_state(
-            Namespace(
+            make_trainer_args(
                 use_checkpoint_opt_param_scheduler=True,
                 global_batch_size=8,
                 finetune=finetune,
-                lora_rank=lora_rank,
-                megatron_to_hf_mode="core",
-                lora_adapter_path=None,
+                lora_rank=0 if lora_adapter_path is None else 8,
+                megatron_to_hf_mode=megatron_to_hf_mode,
+                lora_adapter_path=lora_adapter_path,
                 load=str(load_dir),
+                ckpt_step=ckpt_step,
+                exit_on_missing_checkpoint=exit_on_missing_checkpoint,
             ),
             model=[_FakeModelChunk()],
             optimizer=None,
             opt_param_scheduler=None,
             role="actor",
             checkpointing_context=None,
+            resume_from_ckpt=resume_from_ckpt,
         )
 
 
 class TestWhereALoadSaysTheRunStarts:
     def test_a_finetune_load_starts_the_run_at_rollout_zero(self, tmp_path: Path):
         """--finetune means there is no run to continue, so rollout 0 is still ahead rather than behind."""
-        assert _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=0).start_rollout_id == 0
+        assert (
+            _load_model_state_with(
+                tmp_path=tmp_path, finetune=True, iteration=0, resume_from_ckpt=False
+            ).start_rollout_id
+            == 0
+        )
 
     def test_a_resumed_load_starts_the_run_after_the_checkpoint_it_read(self, tmp_path: Path):
         """The checkpoint's own rollout is done, so the run continues at the next one."""
-        assert _load_model_state_with(tmp_path=tmp_path, finetune=False, iteration=100).start_rollout_id == 101
+        assert (
+            _load_model_state_with(
+                tmp_path=tmp_path, finetune=False, iteration=100, resume_from_ckpt=True
+            ).start_rollout_id
+            == 101
+        )
 
     def test_a_run_that_restored_the_iteration_zero_checkpoint_it_wrote_starts_at_one(self, tmp_path: Path):
         """A real resume from the very first checkpoint must not be read as a finetune that starts over."""
-        output = _load_model_state_with(tmp_path=tmp_path, finetune=False, iteration=0)
+        output = _load_model_state_with(tmp_path=tmp_path, finetune=False, iteration=0, resume_from_ckpt=True)
 
         assert output.start_rollout_id == 1
+
+    def test_reference_checkpoint_iteration_does_not_resume_a_new_run(self, tmp_path: Path) -> None:
+        """Reference initialization retains the loaded iteration but starts new rollout state at zero."""
+        output = _load_model_state_with(
+            tmp_path=tmp_path, finetune=False, iteration=100, resume_from_ckpt=False, megatron_to_hf_mode="bridge"
+        )
+
+        assert output.loaded_rollout_id == 100
+        assert output.start_rollout_id == 0
 
     def test_weight_initialization_with_a_trained_iteration_is_refused(self, tmp_path: Path):
         """Weight initialization cannot claim a nonzero trained iteration."""
         with pytest.raises(AssertionError, match="Weight initialization returned a trained iteration"):
-            _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100, restored_trained_iteration=False)
+            _load_model_state_with(
+                tmp_path=tmp_path,
+                finetune=True,
+                iteration=100,
+                restored_trained_iteration=False,
+                resume_from_ckpt=False,
+            )
+
+    def test_explicit_reference_weights_still_start_at_zero(self, tmp_path: Path) -> None:
+        """Selecting reference weights by step does not turn finetuning into resumed training."""
+        output = _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=True,
+            iteration=0,
+            ckpt_step=7,
+            write_tracker=False,
+            resume_from_ckpt=False,
+        )
+
+        assert (output.loaded_rollout_id, output.start_rollout_id) == (0, 0)
+
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-step", "exit-on-missing"],
+    )
+    def test_an_explicit_selection_enters_the_checkpoint_loader_without_a_tracker(self, tmp_path, selector):
+        """Explicit selectors reach the loader even when no latest-checkpoint tracker exists."""
+        output = _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=False,
+            iteration=7,
+            write_tracker=False,
+            resume_from_ckpt=False,
+            **selector,
+        )
+
+        assert (output.loaded_rollout_id, output.start_rollout_id) == (7, 8)
 
 
 class TestALoraAdapterThatCarriesItsOwnIteration:
-    def test_a_lora_resume_at_iteration_zero_preserves_the_restored_training_state(self, tmp_path: Path) -> None:
-        """An adapter's saved iteration zero must restore the rollout state just like later iterations."""
-        output = _load_model_state_with(
-            tmp_path=tmp_path, finetune=True, iteration=0, lora_rank=8, restored_trained_iteration=True
+    """LoRA saves write no tracker, so a LoRA resume loads the base under --finetune (iteration 0, nothing
+    trained) and the adapter checkpoint alone says whether, and where, training stopped."""
+
+    def _start(self, tmp_path: Path, adapter_iteration: int | None) -> "LoadCheckpointOutput":
+        return _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=True,
+            iteration=0,
+            adapter_iteration=adapter_iteration,
+            lora_adapter_path=str(tmp_path / "adapter"),
+            resume_from_ckpt=False,
         )
 
-        assert output.start_rollout_id == 1
+    def test_a_resume_at_iteration_zero_continues_after_it(self, tmp_path: Path) -> None:
+        """An adapter's saved iteration zero is a trained iteration, not a missing training state."""
+        assert self._start(tmp_path, adapter_iteration=0).start_rollout_id == 1
 
-    def test_a_lora_resume_under_finetune_continues_after_the_iteration_the_adapter_names(self, tmp_path: Path):
-        """LoRA saves write no tracker, so a lora resume always arrives here with --finetune set."""
-        output = _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100, lora_rank=8)
+    def test_a_resume_continues_after_the_iteration_the_adapter_names(self, tmp_path: Path) -> None:
+        output = self._start(tmp_path, adapter_iteration=100)
 
-        assert output.start_rollout_id == 101
+        assert (output.loaded_rollout_id, output.start_rollout_id) == (100, 101)
 
-    def test_a_lora_run_that_really_starts_from_scratch_starts_at_rollout_zero(self, tmp_path: Path):
-        """An adapter with no training state starts a new run at rollout zero."""
-        assert _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=0, lora_rank=8).start_rollout_id == 0
+    def test_adapter_weights_without_training_state_start_at_rollout_zero(self, tmp_path: Path) -> None:
+        """An HF adapter or shards saved without training state carry no iteration to continue from."""
+        assert self._start(tmp_path, adapter_iteration=None).start_rollout_id == 0
 
-    def test_a_lora_run_that_really_starts_from_scratch_restored_no_trained_iteration(self, tmp_path: Path):
-        """Nothing was trained, so no rollout state was ever saved for the rollout side to restore."""
-        output = _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=0, lora_rank=8)
 
-        assert output.start_rollout_id == 0
+class TestCheckpointSourceRequirement:
+    def test_local_checkpoint_manager_allows_loading_without_disk_or_pretrained_path(self) -> None:
+        """An in-memory checkpoint supplies a valid source even when no disk path was requested."""
+        from miles.backends.megatron_utils.model import load_model_state
 
-    def test_a_lora_resume_restored_a_trained_iteration(self, tmp_path: Path):
-        """The adapter carries a trained iteration, so the rollout state saved beside it must be restored."""
-        output = _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100, lora_rank=8)
+        args = make_trainer_config(load=None, pretrained_checkpoint=None, lora_rank=0)
+        context = {"local_checkpoint_manager": object()}
+        model = [_FakeModelChunk()]
+        with ExitStack() as stack:
+            load = stack.enter_context(
+                patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(7, True))
+            )
+            _patch_initialize_side_effects(stack)
+            result = load_model_state(
+                args,
+                model=model,
+                optimizer=None,
+                opt_param_scheduler=None,
+                role="actor",
+                checkpointing_context=context,
+                resume_from_ckpt=True,
+            )
 
-        assert output.start_rollout_id == output.loaded_rollout_id + 1
+        assert (result.loaded_rollout_id, result.start_rollout_id) == (7, 8)
+        assert load.call_args.kwargs["checkpointing_context"] is context
+        assert load.call_args.kwargs["args"] is args
+        load.assert_called_once()
+
+    @pytest.mark.parametrize("context", [None, {}, {"unrelated": True}])
+    def test_loading_without_any_checkpoint_source_is_rejected(self, context: dict | None) -> None:
+        """An empty or unrelated checkpoint context cannot manufacture a valid model-loading source."""
+        from miles.backends.megatron_utils.model import load_model_state
+
+        args = make_trainer_config(load=None, pretrained_checkpoint=None, lora_rank=0)
+        with patch("miles.backends.megatron_utils.model.load_checkpoint") as load:
+            with pytest.raises(AssertionError):
+                load_model_state(
+                    args,
+                    model=[_FakeModelChunk()],
+                    optimizer=None,
+                    opt_param_scheduler=None,
+                    role="actor",
+                    checkpointing_context=context,
+                    resume_from_ckpt=False,
+                )
+
+        load.assert_not_called()

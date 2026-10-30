@@ -13,6 +13,7 @@ from miles.backends.training_utils.parallel import ParallelState, get_parallel_s
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
+from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.utils import async_utils
 from miles.utils.distributed_lock import create_world_ticket_lock
 from miles.utils.distributed_utils import init_process_group
@@ -44,6 +45,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
@@ -52,6 +54,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         Create NCCL "miles-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
         """
         self.rollout_engines = rollout_engines
+        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, self.rollout_engines, engine_cell_ids)
         self._selector = selector
         self._engine_gpu_counts = engine_gpu_counts
 
@@ -62,10 +65,10 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         if self.is_sender:
             self.group_name = f"miles-pp_{shard}"
             disconnect_rollout_engines_from_distributed(
-                self.args, self.group_name, self._model_update_groups, self.rollout_engines
+                self.group_name, self._model_update_groups, self.rollout_engines
             )
             self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.args, self.group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
+                self.group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
             )
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
@@ -77,14 +80,13 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
                 self.rollout_engines,
                 bucket,
                 selector=self._selector,
-                transfer_mode=getattr(self.args, "update_weight_transfer_mode", "broadcast"),
+                transfer_mode=self.args.update_weight_transfer_mode,
             )
             async_utils.wait_futures(futures)
             bucket.clear()
 
 
 def connect_rollout_engines_from_distributed(
-    args: Namespace,
     group_name: str,
     rollout_engines: Sequence[SGLangApiClient],
     engine_gpu_counts: Sequence[int] | None = None,
@@ -96,8 +98,7 @@ def connect_rollout_engines_from_distributed(
     have heterogeneous TP sizes (e.g. prefill TP=2, decode TP=4), each engine
     occupies a different number of ranks in the NCCL group.
     """
-    if engine_gpu_counts is None:
-        engine_gpu_counts = [args.rollout_num_gpus_per_engine] * len(rollout_engines)
+    assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
     master_address = ray._private.services.get_node_ip_address()
     with socket.socket() as sock:
         sock.bind(("", 0))
@@ -131,7 +132,7 @@ def connect_rollout_engines_from_distributed(
     return model_update_groups
 
 
-def disconnect_rollout_engines_from_distributed(args, group_name, model_update_groups, rollout_engines):
+def disconnect_rollout_engines_from_distributed(group_name, model_update_groups, rollout_engines):
     """
     Destroy NCCL on training and engines.
     """
@@ -192,7 +193,9 @@ def _flatten_weight_bucket(named_tensors: Sequence[tuple[str, torch.Tensor]]) ->
     # Keep SGLang optional for callers using the existing per-tensor protocol.
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket
 
-    if not getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
+    if not getattr(
+        FlattenedTensorBucket, "supports_multi_dtypes", False
+    ):  # config-access-exempt: tensor bucket versions differ in mixed-dtype support
         raise RuntimeError("Flattened broadcasts require SGLang's mixed-dtype FlattenedTensorBucket")
 
     # SGLang concatenates raw bytes without padding. Each reconstructed dtype

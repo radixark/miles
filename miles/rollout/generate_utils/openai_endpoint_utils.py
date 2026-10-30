@@ -8,6 +8,7 @@ import random
 from argparse import Namespace
 
 from miles.rollout.generate_utils.sampling_mask import should_return_sampling_mask
+from miles.rollout.session.errors import OutputStoreContractError
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
     COMPUTED_FIELDS_V2,
@@ -16,7 +17,8 @@ from miles.rollout.session.samples.codec import (
     decode_samples_and_merge_input_sample,
 )
 from miles.rollout.session.types import CreateSessionRequest
-from miles.utils.http_utils import post, post_bytes_no_retry
+from miles.utils.http_utils import PostStatusError, post, post_buffer_no_retry
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -57,7 +59,7 @@ class OpenAIEndpointTracer:
         sampling_params: dict | None = None,
         extra_key: str | None = None,
     ):
-        instances = getattr(args, "session_server_instances", None)
+        instances = args.session_server_instances
         if not instances:
             raise RuntimeError(
                 "session_server_instances is not set. Pass --use-session-server to start the session server."
@@ -73,7 +75,7 @@ class OpenAIEndpointTracer:
         body = CreateSessionRequest.model_validate(
             {**session_params, "evaluation": evaluation, "extra_key": extra_key}
         )
-        use_v2 = getattr(args, "use_session_server", None) == "v2"
+        use_v2 = args.use_session_server == "v2"
         samples_wire_fields = COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS
         if should_return_sampling_mask(args, sampling_params, evaluation=evaluation):
             samples_wire_fields += ROLLOUT_SAMPLING_MASK_FIELDS
@@ -94,25 +96,34 @@ class OpenAIEndpointTracer:
         body: dict = {"max_seq_len": max_seq_len}
         if agent_metadata is not None:
             body["metadata"] = agent_metadata
+        reply = None
         try:
             # Timeouts and transport errors propagate after cleanup, for `generate` to handle.
-            payload = await post_bytes_no_retry(
+            payload = await post_buffer_no_retry(
                 f"{self.base_url}/samples",
                 body,
                 timeout=_SESSION_REQUEST_TIMEOUT,
             )
+            reply = await asyncio.to_thread(
+                decode_samples_and_merge_input_sample,
+                payload,
+                input_sample,
+                fields=self.samples_wire_fields,
+            )
+        except PostStatusError as exc:
+            if exc.status == OutputStoreContractError.status_code:
+                # Raised again here so the rollout stops, as for a StorePlanError on /generate.
+                raise StorePlanError(f"session {self.session_id}: {exc.body}") from exc
+            raise
         finally:
+            # Without a decoded reply, the session's DELETE also deletes the objects it handed over.
+            delete_url = self.base_url if reply is not None else f"{self.base_url}?samples_received=false"
             try:
                 await asyncio.wait_for(
-                    post(self.base_url, {}, action="delete"),
+                    post(delete_url, {}, action="delete"),
                     timeout=_SESSION_REQUEST_TIMEOUT,
                 )
             except Exception as e:
                 logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
 
-        return await asyncio.to_thread(
-            decode_samples_and_merge_input_sample,
-            payload,
-            input_sample,
-            fields=self.samples_wire_fields,
-        )
+        return reply

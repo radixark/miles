@@ -1,6 +1,7 @@
-import { getMeta } from "./api.js";
+import { getMeta, refreshMeta } from "./api.js";
 import { renderMetrics } from "./views_metrics.js";
 import { renderRollout } from "./views_rollout.js";
+import { renderSandboxes } from "./views_sandboxes.js";
 import { renderTimeline } from "./views_timeline.js";
 import { renderTokens } from "./views_tokens.js";
 
@@ -46,6 +47,9 @@ function parseRoute() {
   if (segments[0] === "timeline") {
     return { view: "timeline", lanes: params.get("lanes") };
   }
+  if (segments[0] === "sandboxes") {
+    return { view: "sandboxes", staleMinutes: params.get("stale_min") };
+  }
   if (segments[0] === "rollout" && segments.length >= 2) {
     const evaluation = params.get("eval") === "1";
     // "latest" is resolved against the dump at render time rather than baked
@@ -85,6 +89,9 @@ function crumbs(route, meta) {
       location.replace("#/rollout/latest");
     };
     parts.push(nav("Rollouts", "#/rollout/latest", onRollout, onRollout ? replaceInPlace : null));
+  }
+  if (meta.capabilities.has_sandboxes) {
+    parts.push(nav("Sandboxes", "#/sandboxes", route.view === "sandboxes"));
   }
   if ((route.view === "rollout" || route.view === "tokens") && route.rolloutId !== null) {
     const evalSuffix = route.evaluation ? "?eval=1" : "";
@@ -128,11 +135,32 @@ async function render() {
     if (route.view === "metrics") await renderMetrics(view, meta);
     else if (route.view === "timeline") await renderTimeline(view, meta, route);
     else if (route.view === "rollout") await renderRollout(view, meta, route);
+    else if (route.view === "sandboxes") await renderSandboxes(view, meta, route);
     else await renderTokens(view, meta, route);
   } catch (err) {
     view.replaceChildren(el("div", { class: "error" }, [String(err)]));
   }
 }
 
+// a live run's first sandbox may report after the page has loaded:
+// poll until it does, then show the Sandboxes tab
+const SANDBOX_TAB_POLL_MS = 10000;
+
+async function showSandboxTabOnceReported() {
+  try {
+    const meta = await getMeta();
+    if (meta.mode !== "follow" || meta.capabilities.has_sandboxes) return;
+    const fresh = await refreshMeta();
+    if (fresh.capabilities.has_sandboxes) {
+      crumbs(parseRoute(), fresh);
+      return;
+    }
+  } catch (err) {
+    // the server may be restarting; try again on the next tick
+  }
+  setTimeout(showSandboxTabOnceReported, SANDBOX_TAB_POLL_MS);
+}
+
 window.addEventListener("hashchange", render);
 render();
+showSandboxTabOnceReported();

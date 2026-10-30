@@ -74,7 +74,9 @@ class RpcCall:
         ok = outcome.status != "failed"
         log_structured(logger.debug, op="call", phase="end", ok=ok, **self._log_fields, elapsed_s=round(elapsed, 3))
         if not ok:
-            raise RpcWorkerCallError(f"{self._method_label} failed remotely:\n{outcome.error}")
+            raise RpcWorkerCallError(
+                f"{self._method_label} failed remotely:\n{outcome.error}", error_type=outcome.error_type
+            )
         return self._spec.serializer.decode_result(outcome.result)
 
     async def submit(self) -> None:

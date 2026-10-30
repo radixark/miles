@@ -467,6 +467,16 @@ class TinkerService:
                 sampling_session.samples_by_seq[seq_id] = (request_id, sequence_ids)
                 return request_id, sequence_ids
         validate_sample_payload(payload, self.config)
+        params = payload["sampling_params"]
+        # the shared sampling/training window takes precedence over the requested generation maximum
+        payload = payload | {
+            "sampling_params": params
+            | {
+                "max_tokens": min(
+                    params["max_tokens"], self.config.max_tokens_per_sample - len(payload["prompt_tokens"])
+                )
+            }
+        }
         lora_name, lora_path = (
             resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
             if model_path

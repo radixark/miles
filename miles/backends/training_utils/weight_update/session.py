@@ -8,11 +8,12 @@ from argparse import Namespace
 from collections.abc import Mapping, Sequence
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.utils import async_utils
 from miles.utils.arguments import driver_owns_generation_pause
 
 
-def maybe_pause_engines(args: Namespace, rollout_engines: Sequence[SGLangApiClient]) -> None:
+def maybe_pause_engines(args: Namespace, cell_updaters: Sequence[_RolloutCellUpdater]) -> None:
     """Quiesce the engines for a weight write.
 
     in_place pausing freezes requests and resumes them against their existing
@@ -21,52 +22,54 @@ def maybe_pause_engines(args: Namespace, rollout_engines: Sequence[SGLangApiClie
     if driver_owns_generation_pause(args):
         return
     mode = args.pause_generation_mode
-    async_utils.wait_futures([async_utils.submit(client.pause_generation(mode=mode)) for client in rollout_engines])
+    async_utils.wait_futures([updater.submit_client_call("pause_generation", mode=mode) for updater in cell_updaters])
     if mode != "in_place":
-        async_utils.wait_futures([async_utils.submit(client.flush_cache()) for client in rollout_engines])
+        async_utils.wait_futures([updater.submit_client_call("flush_cache") for updater in cell_updaters])
 
 
-def maybe_resume_engines(args: Namespace, rollout_engines: Sequence[SGLangApiClient]) -> None:
+def maybe_resume_engines(args: Namespace, cell_updaters: Sequence[_RolloutCellUpdater]) -> None:
     if driver_owns_generation_pause(args):
         return
-    async_utils.wait_futures([async_utils.submit(client.continue_generation()) for client in rollout_engines])
+    async_utils.wait_futures([updater.submit_client_call("continue_generation") for updater in cell_updaters])
 
 
-def weight_update_selector(args: Namespace) -> str:
+def weight_update_selector(*, speculative_algorithm: str | None, enable_mtp_training: bool) -> str:
     """Engine runners a weight sync covers. A speculative draft is synced only when the
     trainer trains its MTP layers (--enable-mtp-training); any other draft keeps its startup weights."""
-    if args.sglang_speculative_algorithm and not args.enable_mtp_training:
+    if speculative_algorithm and not enable_mtp_training:
         return "target"
     return "all"
 
 
 def begin_weight_update(
-    rollout_engines: Sequence[SGLangApiClient], selector: str = "all", *, sync_base: bool = True
+    cell_updaters: Sequence[_RolloutCellUpdater], selector: str = "all", *, sync_base: bool = True
 ) -> None:
     """Open a weight-update session on the selected engines. ``sync_base=False``
     declares an adapter-only session: no quant unpack, base tensors rejected."""
     async_utils.wait_futures(
         [
-            async_utils.submit(client.begin_weight_update(selector=selector, sync_base=sync_base))
-            for client in rollout_engines
+            updater.submit_client_call("begin_weight_update", selector=selector, sync_base=sync_base)
+            for updater in cell_updaters
         ]
     )
 
 
 def end_weight_update(
-    rollout_engines: Sequence[SGLangApiClient], *, expected_lora_checksums: Mapping | None = None
+    cell_updaters: Sequence[_RolloutCellUpdater], *, expected_lora_checksums: Mapping | None = None
 ) -> None:
     """Close the session: re-finalize base weights (sync_base sessions) and apply
     the streamed LoRA stash (optionally verified against a sha256 manifest)."""
     results = async_utils.wait_futures(
         [
-            async_utils.submit(client.end_weight_update(expected_lora_checksums=expected_lora_checksums))
-            for client in rollout_engines
+            updater.submit_client_call("end_weight_update", expected_lora_checksums=expected_lora_checksums)
+            for updater in cell_updaters
         ]
     )
-    for result in results:
+    for updater, result in zip(cell_updaters, results, strict=True):
         if isinstance(result, Mapping) and result.get("success") is False:
-            raise RuntimeError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
+            updater.mark_errored(
+                RuntimeError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
+            )
 
 
 def register_lora_adapter(
@@ -83,11 +86,11 @@ def register_lora_adapter(
     check_weight_sync_results(async_utils.wait_futures(futures), is_lora=True)
 
 
-def set_weight_version(rollout_engines: Sequence[SGLangApiClient], weight_version: int) -> None:
+def set_weight_version(cell_updaters: Sequence[_RolloutCellUpdater], weight_version: int) -> None:
     async_utils.wait_futures(
         [
-            async_utils.submit(client.update_weight_version(weight_version=str(weight_version)))
-            for client in rollout_engines
+            updater.submit_client_call("update_weight_version", weight_version=str(weight_version))
+            for updater in cell_updaters
         ]
     )
 
@@ -99,9 +102,13 @@ def check_weight_sync_results(results: list, *, is_lora: bool) -> None:
         if isinstance(result, Mapping):
             success = result.get("success")
             error_msg = result.get("error_message") or result.get("error") or "unknown error"
-        elif hasattr(result, "success"):
+        elif hasattr(
+            result, "success"
+        ):  # config-access-exempt: weight-update transports return different result schemas
             success = result.success
-            error_msg = getattr(result, "error_message", "unknown error")
+            error_msg = getattr(
+                result, "error_message", "unknown error"
+            )  # config-access-exempt: weight-update transports return different result schemas
         else:
             continue
 

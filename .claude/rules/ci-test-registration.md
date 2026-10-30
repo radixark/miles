@@ -117,13 +117,19 @@ timeout, `max(1800 s, 1.25 × est_time)`, in stage runs and in `/rerun-test`
 alike. It is measured, never copied from a neighbouring test. CPU and ROCm
 registrations need no timing run.
 
+A performance benchmark adds `perf` to its `labels`: its timeout drops the
+1800 s floor, and a CPU stage runs it alone in its own `pytest`. Its `est_time`
+is the measured whole-file runtime, rounded up as in step 4 but without the 1.25
+factor; this applies to CPU files too. `perf` selects nothing and is not a
+domain label.
+
 An enabled `register_cuda_ci` test with neither `nightly=True` nor a `long` or
 `ft-long` label keeps `est_time` at or below 2400 s; cut its workload until it
 fits.
 
 1. Before the first run, use an upper bound that safely exceeds the expected
    runtime, so the timeout does not kill it. Up to 1440 s the 1800 s floor
-   applies anyway.
+   applies anyway, except with `perf`.
 2. Before the PR merges, comment `/rerun-test <path/to/test_file.py>` on it. It
    runs only that file, on its registered suite's runner, at the PR head; it
    needs no domain label and writes no performance baseline. Posting it takes a
@@ -148,8 +154,10 @@ fits.
    ```
 
 Repeat steps 2–5 when a test moves to another stage or its runtime clearly
-changes. A new `register_ci_gate(...)` stays inactive until nightly runs seed
-its history; `/rerun-test` never writes it.
+changes. A new `register_ci_gate(...)` fails CI at once on a missing or invalid
+metric, but on numerical drift only after nightly runs seed enough trusted
+history ("Rollout" in `docs/developer/ci/03-metric-history-gate.md`);
+`/rerun-test` never writes it.
 
 ## `disabled=`
 

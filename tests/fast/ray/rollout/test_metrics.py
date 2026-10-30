@@ -8,6 +8,7 @@ from miles.ray.rollout.metrics import (
     _compute_episode_response_length_metrics,
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
+    _compute_perf_metrics_from_samples,
     _compute_spec_metrics,
     _compute_training_sample_metrics,
     _compute_zero_std_metrics,
@@ -151,6 +152,15 @@ class TestComputeZeroStdMetrics:
         assert out[f"zero_std/count_{round(one, 1)}"] == 1
         assert out["zero_std/all_zero_percentage"] == pytest.approx(1 / 3)
         assert out["zero_std/all_one_percentage"] == pytest.approx(1 / 3)
+        assert out["zero_std/percentage"] == pytest.approx(2 / 3)
+
+    @pytest.mark.parametrize("reward", [0.5, 0.0])
+    def test_percentage_counts_every_uniform_group_not_only_binary(self, reward):
+        """Groups uniform at any reward give zero advantage, not only all-0 / all-1."""
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = make_samples_grouped(2, 2, rewards=[reward, reward, 0.0, 1.0])
+
+        assert _compute_zero_std_metrics(args, samples)["zero_std/percentage"] == pytest.approx(1 / 2)
 
     def test_mixed_numeric_types_and_unequal_group_sizes_count_groups_equally(self):
         args = make_args(advantage_estimator="grpo", reward_key=None)
@@ -200,7 +210,11 @@ class TestComputeZeroStdMetrics:
         args = make_args(advantage_estimator="grpo", reward_key=None)
         samples = make_samples_grouped(2, 4, rewards=[0.0, 0.5, 1.0, 0.7, 0.2, 0.8, 0.3, 0.6])
         out = _compute_zero_std_metrics(args, samples)
-        assert out == {"zero_std/all_zero_percentage": 0.0, "zero_std/all_one_percentage": 0.0}
+        assert out == {
+            "zero_std/all_zero_percentage": 0.0,
+            "zero_std/all_one_percentage": 0.0,
+            "zero_std/percentage": 0.0,
+        }
 
     def test_grpo_zero_std_groups_produce_bucket_counts_and_percentages(self):
         """1 group all-1, 1 group all-0, 1 group mixed → bucket counts plus the
@@ -756,3 +770,26 @@ class TestEvalMetrics:
         assert step_key == "eval/step"
         assert payload["eval/gsm8k"] == 0.5
         assert not any(key.startswith("alpha/") for key in payload)
+
+
+class TestObservedGpuThroughput:
+    @pytest.mark.parametrize("gpu_count", [0, 4])
+    def test_throughput_uses_observed_gpus_and_omits_gpu_rates_for_an_empty_fleet(self, gpu_count: int) -> None:
+        """Scaled fleets report rates per observed GPU while an empty fleet avoids invented denominators."""
+        args = make_args(rollout_num_gpus=16)
+        args.inference_runtime_mut_state.gpu_count = gpu_count
+        samples = [
+            make_sample(response_length=4, loss_mask=[1, 1, 0, 0], non_generation_time=0),
+            make_sample(response_length=8, loss_mask=[1] * 8, non_generation_time=0),
+        ]
+
+        metrics = _compute_perf_metrics_from_samples(args, samples, rollout_time=2)
+
+        assert metrics["longest_sample_tokens_per_sec"] == 4
+        assert metrics["longest_effective_sample_tokens_per_sec"] == 4
+        if gpu_count:
+            assert metrics["tokens_per_gpu_per_sec"] == 1.5
+            assert metrics["effective_tokens_per_gpu_per_sec"] == 1.25
+        else:
+            assert "tokens_per_gpu_per_sec" not in metrics
+            assert "effective_tokens_per_gpu_per_sec" not in metrics

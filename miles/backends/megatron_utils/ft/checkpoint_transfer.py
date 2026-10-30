@@ -12,6 +12,7 @@ except ImportError:
 from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 
 from miles.backends.megatron_utils.ft.in_memory_checkpoint import InMemoryCheckpointManager, save_to_memory
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -23,6 +24,7 @@ _DEFAULT_TIMEOUT = timedelta(seconds=600)
 
 def send_ckpt(
     *,
+    args: TrainerConfig,
     indep_dp: GroupInfo,
     model: Sequence,
     optimizer: object,
@@ -43,6 +45,7 @@ def send_ckpt(
         timeout: Timeout for the NCCL send operation.
     """
     state_dict = save_to_memory(
+        args=args,
         iteration=iteration,
         model=model,
         optimizer=optimizer,

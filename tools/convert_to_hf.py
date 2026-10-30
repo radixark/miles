@@ -45,7 +45,7 @@ def main(args):
     # Setup the model and optimizer
     args.no_load_optim = True
     args.no_load_rng = True
-    model, _, _, _ = megatron_utils.initialize_model_and_optimizer(args)
+    model, _, _, _ = megatron_utils.initialize_model_and_optimizer(args, resume_from_ckpt=True)
 
     hf_config = load_hf_config(args.hf_checkpoint)
     model_name = type(hf_config).__name__.lower()

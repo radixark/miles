@@ -2,15 +2,26 @@ import importlib
 import sys
 from argparse import Namespace
 from collections.abc import Iterator
+from contextlib import nullcontext
 from functools import partial
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import make_trainer_config
+from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
 
 from miles.backends.training_utils.model_companion import ModelCompanion
+from miles.utils.audit_utils.event_logger import logger as event_logger_module
+from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events
+from miles.utils.audit_utils.event_logger.models import FaultHookEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.tensor_backper import TensorBackuper
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookStatus
 from miles.utils.types import SampleLineage
 
 _ACTOR_MODULE_NAME = "miles.backends.megatron_utils.actor"
@@ -124,6 +135,72 @@ def test_actor_ref_actor_switch_restores_model_companion(
     assert torch.equal(weight, torch.tensor([2.0]))
 
 
+@pytest.mark.parametrize(("loss_coeff", "trains_indexers"), [(None, False), (0.0, False), (0.1, True)])
+def test_train_tflops_counts_indexer_backward_only_under_an_indexer_loss(
+    actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, loss_coeff: float | None, trains_indexers: bool
+) -> None:
+    """The indexer loss coefficient is a Megatron flag, so it is read off the trainer config's backend."""
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 1)
+    train_actor = object.__new__(actor_module.MegatronTrainRayActor)
+    train_actor.args = make_trainer_config(dsa_indexer_loss_coeff=loss_coeff)
+    train_actor._model_flops = SimpleNamespace(
+        has_indexers=True, train_flops=lambda seq_lens, trains_indexers: (2e12 if trains_indexers else 1e12)
+    )
+
+    assert train_actor._train_tflops([8]) == (2.0 if trains_indexers else 1.0)
+
+
+def _colocated_lora_actor(actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, **args) -> object:
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    real_empty_like = torch.empty_like
+    monkeypatch.setattr(
+        torch,
+        "empty_like",
+        lambda tensor, **kwargs: real_empty_like(
+            tensor, **{key: value for key, value in kwargs.items() if key != "pin_memory"}
+        ),
+    )
+    train_actor = object.__new__(actor_module.MegatronTrainRayActor)
+    train_actor.args = SimpleNamespace(
+        colocate=True,
+        offload_rollout=True,
+        offload_train_target="disk",
+        lora_rank=4,
+        keep_old_actor=False,
+        megatron_to_hf_mode="bridge",
+        **args,
+    )
+    train_actor.with_ref = False
+    train_actor.with_opd_teacher = False
+    train_actor._asleep = True
+    train_actor._active_model_tag = "actor"
+    train_actor.model = [torch.nn.Module()]
+    train_actor.model[0].add_module(
+        "model_companion", ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+    )
+    train_actor.model[0].register_parameter("frozen_base", torch.nn.Parameter(torch.ones(2), requires_grad=False))
+    train_actor.model[0].register_parameter("trained_base", torch.nn.Parameter(torch.ones(2)))
+    train_actor.model[0].register_parameter("adapter", torch.nn.Parameter(torch.ones(2)))
+    train_actor.weights_backuper = TensorBackuper.create(source_getter=train_actor._actor_weights_to_back_up)
+    train_actor.weights_backuper.backup("actor")
+    return train_actor
+
+
+@pytest.mark.parametrize("sync_sends_base", [False, True], ids=["sync-skips-base", "sync-sends-base"])
+def test_colocated_lora_host_backup_holds_the_frozen_base_only_when_the_sync_sends_it(
+    actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, sync_sends_base: bool
+) -> None:
+    """The weight sync reads this backup while the trainer is offloaded. A frozen base the sync
+    never sends would cost the whole model per rank in pinned host memory."""
+    train_actor = _colocated_lora_actor(actor_module, monkeypatch, lora_sync_sends_base=sync_sends_base)
+
+    backed_up = set(train_actor.weights_backuper.get("actor"))
+
+    assert {"vp_stages.0.adapter", "vp_stages.0.trained_base"} <= backed_up
+    assert any("model_companion" in name for name in backed_up)
+    assert ("vp_stages.0.frozen_base" in backed_up) is sync_sends_base
+
+
 class TestSendCheckpoint:
     def test_healing_before_the_first_train_step_is_refused_without_sending(
         self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch
@@ -194,3 +271,125 @@ def test_model_companion_info_records_only_normal_actor_representatives(
         assert calls[0]["cell_index"] == 2
         assert calls[0]["rollout_id"] == 7
         assert calls[0]["attempt"] == 3
+
+
+class _FakeWeightUpdater:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.weight_versions: list[int] = []
+        self.conn_status = SimpleNamespace(needs_reconnect=lambda snapshot: False)
+        self.protocol = SimpleNamespace(cell_updaters_of_cell_id={})
+
+    def receiver_pool(self, pool: str):
+        assert pool == "rollout"
+        return nullcontext()
+
+    def update_weights(self, *, weight_version: int) -> None:
+        self.weight_versions.append(weight_version)
+        reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
+        if self.error is not None:
+            raise self.error
+
+
+def _make_updating_actor(
+    actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, updater: _FakeWeightUpdater
+) -> object:
+    monkeypatch.setattr(actor_module, "print_memory", lambda *args, **kwargs: None)
+    train_actor = object.__new__(actor_module.MegatronTrainRayActor)
+    train_actor.args = Namespace(
+        debug_train_only=False,
+        debug_rollout_only=False,
+        offload_train=False,
+        debug_skip_weight_update=False,
+        ci_test=False,
+        keep_old_actor=False,
+        rematerialize_param_from_master_weight=False,
+    )
+    train_actor._heartbeat = Mock()
+    train_actor._asleep = False
+    train_actor.weight_updater = updater
+    train_actor._get_actor_weight_version = lambda: 7
+    return train_actor
+
+
+def _update(train_actor: object, *, rollout_id: int | None) -> object:
+    info = SimpleNamespace(
+        rollout_engines=[],
+        receiver_pool="rollout",
+        snapshot_cell_id_to_hashes={"rollout-0": "hash-a"},
+        engine_gpu_counts=[],
+        engine_gpu_offsets=[],
+        engine_cell_ids=[],
+    )
+    return train_actor.update_weights(info=info, debug_weight_update_id="update-1", rollout_id=rollout_id)
+
+
+class TestUpdateWeightsFaultHookContext:
+    def test_the_send_hook_inherits_the_rollout_version_and_update_of_this_update(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A hook reached inside the update must match on, and record, the update that reached it."""
+        log: list[object] = []
+        hooks = _arm_marker_hook(
+            monkeypatch,
+            log=log,
+            hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND,
+            rollout_id=3,
+            weight_version=7,
+        )
+        monkeypatch.setattr(actor_module, "fault_hook_controller", hooks)
+        monkeypatch.setattr(
+            event_logger_module,
+            "_event_logger",
+            EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")),
+        )
+        updater = _FakeWeightUpdater()
+
+        output = _update(_make_updating_actor(actor_module, monkeypatch, updater), rollout_id=3)
+
+        assert log == [("hook", FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND.value)]
+        assert updater.weight_versions == [7]
+        assert output.weight_version == 7
+        [fired] = [
+            event.record
+            for event in read_events(tmp_path)
+            if isinstance(event, FaultHookEvent) and event.record.status == FaultHookStatus.FIRED
+        ]
+        assert fired.context == FaultHookContext(
+            rollout_id=3,
+            weight_version=7,
+            debug_weight_update_id="update-1",
+            snapshot_cell_id_to_hashes={"rollout-0": "hash-a"},
+        )
+
+    @pytest.mark.parametrize("filters", [{"rollout_id": 4}, {"weight_version": 8}])
+    def test_a_hook_armed_for_another_rollout_or_version_does_not_fire(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, filters: dict[str, int]
+    ) -> None:
+        """A request for another step's update must not fire during this one."""
+        log: list[object] = []
+        hooks = _arm_marker_hook(
+            monkeypatch, log=log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND, **filters
+        )
+        monkeypatch.setattr(actor_module, "fault_hook_controller", hooks)
+
+        _update(_make_updating_actor(actor_module, monkeypatch, _FakeWeightUpdater()), rollout_id=3)
+
+        assert log == []
+
+    def test_the_context_is_dropped_when_the_update_fails(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed update must not leave its version for a later hook to match against."""
+        log: list[object] = []
+        hooks = _arm_marker_hook(
+            monkeypatch, log=log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER, weight_version=7
+        )
+        monkeypatch.setattr(actor_module, "fault_hook_controller", hooks)
+        updater = _FakeWeightUpdater(error=RuntimeError("send failed"))
+
+        with pytest.raises(RuntimeError, match="send failed"):
+            _update(_make_updating_actor(actor_module, monkeypatch, updater), rollout_id=3)
+        reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER)
+
+        assert log == []

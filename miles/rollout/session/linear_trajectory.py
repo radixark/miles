@@ -1,13 +1,13 @@
 import asyncio
 import logging
 import uuid
-from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
+from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcher,
@@ -70,7 +70,9 @@ class LinearTrajectory:
     but the agent may retry from an earlier point (e.g. re-running a tool call),
     in which case the session is rolled back at most one assistant step.
 
-    ``turn_args_history`` stores each successful generation's full resolved request.
+    ``turn_args_history`` stores each successful generation's full resolved request
+    by reference: every turn builds a fresh request and nothing mutates it once
+    the turn is committed, so no per-turn copy of its ``input_ids`` and ``messages``.
     Rollback slices it with the token checkpoints. Model rules decide which of
     these fields a continuation inherits or must keep unchanged.
 
@@ -82,6 +84,7 @@ class LinearTrajectory:
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
+    store_refs: SessionStoreRefs = field(default_factory=SessionStoreRefs, repr=False, compare=False)
     messages: list[dict[str, Any]] = field(default_factory=list)
     records: list[SessionRecord] = field(default_factory=list)
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
@@ -91,6 +94,17 @@ class LinearTrajectory:
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
+
+    def snapshot(self) -> "LinearTrajectory":
+        """Copy the mutable containers, sharing committed payloads read-only. Caller holds the lock."""
+        return replace(
+            self,
+            messages=list(self.messages),
+            records=list(self.records),
+            trajectory_token_ids=list(self.trajectory_token_ids),
+            generated_checkpoint_message_ends=list(self.generated_checkpoint_message_ends),
+            turn_args_history=list(self.turn_args_history),
+        )
 
     @property
     def turn_args(self) -> dict[str, Any]:
@@ -235,7 +249,7 @@ class LinearTrajectory:
         # no longer match its own session.
         self.messages = self.messages + request_messages[len(self.messages) :] + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
-        self.turn_args_history.append(deepcopy(turn_args or {}))
+        self.turn_args_history.append(turn_args or {})
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 

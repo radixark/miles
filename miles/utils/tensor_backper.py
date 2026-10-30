@@ -1,10 +1,11 @@
-import hashlib
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import torch
+
+from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
 
 _SourceGetter = Callable[[], Iterable[tuple[str, torch.Tensor]]]
 
@@ -75,7 +76,9 @@ class _TensorBackuperNormal(TensorBackuper):
                 target=backup_dict[name],
                 source=param.detach(),
                 non_blocking=True,
-                allow_resize=getattr(param, "miles_dynamic_shape", False),
+                allow_resize=getattr(
+                    param, "miles_dynamic_shape", False
+                ),  # config-access-exempt: miles_dynamic_shape is optional backend-attached tensor metadata
             )
         torch.cuda.synchronize()
 
@@ -87,7 +90,9 @@ class _TensorBackuperNormal(TensorBackuper):
                 target=self._backups[dst_tag][name],
                 source=self._backups[src_tag][name],
                 non_blocking=False,
-                allow_resize=getattr(model_tensors[name], "miles_dynamic_shape", False),
+                allow_resize=getattr(
+                    model_tensors[name], "miles_dynamic_shape", False
+                ),  # config-access-exempt: miles_dynamic_shape is optional backend-attached tensor metadata
             )
 
     @torch.no_grad()
@@ -99,7 +104,9 @@ class _TensorBackuperNormal(TensorBackuper):
                 target=param,
                 source=backup_dict[name],
                 non_blocking=True,
-                allow_resize=getattr(param, "miles_dynamic_shape", False),
+                allow_resize=getattr(
+                    param, "miles_dynamic_shape", False
+                ),  # config-access-exempt: miles_dynamic_shape is optional backend-attached tensor metadata
             )
         torch.cuda.synchronize()
 
@@ -141,7 +148,9 @@ class _TensorBackuperMainCast(TensorBackuper):
                 target=self._extras_backup[name],
                 source=tensor.detach(),
                 non_blocking=True,
-                allow_resize=getattr(tensor, "miles_dynamic_shape", False),
+                allow_resize=getattr(
+                    tensor, "miles_dynamic_shape", False
+                ),  # config-access-exempt: miles_dynamic_shape is optional backend-attached tensor metadata
             )
             self._extras_backup_by_id[id(tensor)] = self._extras_backup[name]
         torch.cuda.synchronize()
@@ -163,7 +172,9 @@ class _TensorBackuperMainCast(TensorBackuper):
                 target=tensor,
                 source=self._extras_backup[name],
                 non_blocking=True,
-                allow_resize=getattr(tensor, "miles_dynamic_shape", False),
+                allow_resize=getattr(
+                    tensor, "miles_dynamic_shape", False
+                ),  # config-access-exempt: miles_dynamic_shape is optional backend-attached tensor metadata
             )
         torch.cuda.synchronize()
         if self._expected_hashes is not None:
@@ -185,7 +196,7 @@ class _TensorBackuperMainCast(TensorBackuper):
         return out
 
     def _compute_hashes(self) -> dict[str, str]:
-        return {name: _hash_tensor_sha256(tensor) for name, tensor in self._source_getter()}
+        return {name: hash_tensor_sha256(tensor) for name, tensor in self._source_getter()}
 
     def _verify_hashes(self) -> None:
         actual = self._compute_hashes()
@@ -203,12 +214,6 @@ class _TensorBackuperMainCast(TensorBackuper):
                 f"backup time for {len(mismatches)}/{len(expected)} tensors "
                 f"(cycle {self._backup_count}): {mismatches[:20]}"
             )
-
-
-def _hash_tensor_sha256(x: torch.Tensor) -> str:
-    """Real (cryptographic) hash: a mismatch here has to mean a bug."""
-    data = x.detach().cpu().contiguous()
-    return hashlib.sha256(data.reshape(-1).view(torch.uint8).numpy().tobytes()).hexdigest()
 
 
 def _copy_and_maybe_resize(

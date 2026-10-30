@@ -4,8 +4,12 @@ from argparse import Namespace
 
 import pytest
 from pydantic import ValidationError
+from tests.fast.fixtures.args_fixtures import sglang_router_args
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
+from miles.backends.megatron_utils.megatron_config import MegatronConfig
 from miles.rollout.session.config import SessionServerConfig, compute_session_server_config
+from miles.utils.output_store.config import output_store_backend_config
 
 _ARGS_TO_CONFIG_FIELD = {
     "miles_router_timeout": "timeout",
@@ -15,6 +19,7 @@ _ARGS_TO_CONFIG_FIELD = {
     "apply_chat_template_kwargs": "apply_chat_template_kwargs",
     "use_rollout_routing_replay": "use_rollout_routing_replay",
     "use_rollout_indexer_replay": "use_rollout_indexer_replay",
+    "rollout_indexer_topk_num_streams": "rollout_indexer_topk_num_streams",
     "use_sampling_support_replay": "use_sampling_support_replay",
     "sglang_speculative_algorithm": "sglang_speculative_algorithm",
     "num_layers": "num_layers",
@@ -34,14 +39,9 @@ _ARGS_TO_CONFIG_FIELD = {
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
-_OPTIONAL_ARGS_ATTRS = (
-    "num_layers",
-    "pause_generation_mode",
-    "moe_router_topk",
-    "use_session_server",
-    "session_sample_picker_path",
-    "session_sample_postprocessor_path",
-)
+# Derived from several args, tested on their own below.
+_DERIVED_FIELDS = ("output_store_backend_config",)
+_ROUTER_DERIVED_FIELDS = ("routing_key_header",)
 
 _DISTINCT_ARGS_VALUES = dict(
     miles_router_timeout=31.5,
@@ -51,6 +51,7 @@ _DISTINCT_ARGS_VALUES = dict(
     apply_chat_template_kwargs={"enable_thinking": True},
     use_rollout_routing_replay=True,
     use_rollout_indexer_replay=True,
+    rollout_indexer_topk_num_streams=11,
     use_sampling_support_replay=True,
     sglang_speculative_algorithm="EAGLE",
     num_layers=61,
@@ -67,19 +68,31 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    use_output_store=False,
+    **sglang_router_args("manual"),
 )
 
 
 def _make_args(**overrides) -> Namespace:
-    defaults = dict(_DISTINCT_ARGS_VALUES)
-    defaults.update(overrides)
-    return Namespace(**defaults)
+    values = {**_DISTINCT_ARGS_VALUES, "use_output_store": False, **overrides}
+    speculative_algorithm = values.pop("sglang_speculative_algorithm")
+    moe_router_topk = values.pop("moe_router_topk")
+    return Namespace(
+        **values,
+        sglang=make_sglang_config(speculative_algorithm=speculative_algorithm),
+        raw_megatron=MegatronConfig(trainers=[], base_args={"moe_router_topk": moe_router_topk}),
+    )
 
 
 class TestComputeSessionServerConfig:
     def test_every_config_field_has_a_known_source(self):
         """Adding a config field without extending this test's mapping must fail here."""
-        covered = set(_CALL_SITE_FIELDS) | set(_ARGS_TO_CONFIG_FIELD.values())
+        covered = (
+            set(_CALL_SITE_FIELDS)
+            | set(_ARGS_TO_CONFIG_FIELD.values())
+            | set(_DERIVED_FIELDS)
+            | set(_ROUTER_DERIVED_FIELDS)
+        )
         assert covered == set(SessionServerConfig.model_fields)
 
     def test_call_site_fields_are_copied(self):
@@ -112,18 +125,50 @@ class TestComputeSessionServerConfig:
         )
         assert config.use_session_server is flag_value
 
-    def test_missing_optional_args_fall_back_to_none(self):
-        """An args object that omits the optional attributes yields None for them instead of failing."""
-        present = {name: value for name, value in _DISTINCT_ARGS_VALUES.items() if name not in _OPTIONAL_ARGS_ATTRS}
+    def test_the_output_store_config_deletes_only_and_leaves_the_host_to_the_server(self):
+        store_args = dict(
+            use_output_store=True,
+            mooncake_store_init_kwargs={"master_server_address": "10.0.0.1:50051", "local_hostname": "10.0.0.2"},
+            output_store_local_buffer_size="64mb",
+            mooncake_replica_num=1,
+            run_uuid="abcd",
+        )
         config = compute_session_server_config(
-            Namespace(**present), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://10.0.0.2:3000"
+            _make_args(**store_args), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://x:1"
         )
-        assert [getattr(config, name) for name in _OPTIONAL_ARGS_ATTRS] == [None] * len(_OPTIONAL_ARGS_ATTRS)
+        off = compute_session_server_config(
+            _make_args(), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://x:1"
+        )
 
-    def test_older_args_default_rollout_temperature(self):
-        args = Namespace(
-            **{key: value for key, value in _DISTINCT_ARGS_VALUES.items() if key != "rollout_temperature"}
-        )
+        assert config.output_store_backend_config == output_store_backend_config(_make_args(**store_args))
+        assert config.output_store_backend_config["local_buffer_size"] == 0
+        assert config.output_store_backend_config["local_hostname"] is None
+        assert off.output_store_backend_config is None
+
+    @pytest.mark.parametrize(
+        "router, policy, expected",
+        [("sglang", "manual", "X-SMG-Routing-Key"), ("sglang", "round_robin", None), ("miles", "manual", None)],
+        ids=["sgl-router-manual", "sgl-router-round-robin", "miles-router"],
+    )
+    def test_the_routing_key_header_is_set_only_when_the_router_routes_by_key(
+        self, router: str, policy: str, expected: str | None, caplog: pytest.LogCaptureFixture
+    ):
+        """A header the router ignores would pin nothing; losing session affinity is reported, not rejected."""
+        with caplog.at_level("WARNING"):
+            config = compute_session_server_config(
+                _make_args(router=router, sglang_router_policy=policy),
+                host="10.0.0.1",
+                port=5001,
+                instance_id="abc",
+                backend_url="http://10.0.0.2:3000",
+            )
+        assert config.routing_key_header == expected
+        assert ("does not route by session" in caplog.text) is (expected is None)
+
+    def test_older_args_default_rollout_temperature(self) -> None:
+        """Older session inputs retain the default temperature after owner migration."""
+        args = _make_args()
+        del args.rollout_temperature
         config = compute_session_server_config(
             args, host="127.0.0.1", port=5001, instance_id=None, backend_url="http://127.0.0.1:3000"
         )
@@ -135,6 +180,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     port=5001,
     instance_id=None,
     backend_url="http://127.0.0.1:3000",
+    routing_key_header=None,
     timeout=None,
     hf_checkpoint=None,
     chat_template_path=None,
@@ -142,6 +188,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     apply_chat_template_kwargs=None,
     use_rollout_routing_replay=False,
     use_rollout_indexer_replay=False,
+    rollout_indexer_topk_num_streams=None,
     use_sampling_support_replay=False,
     sglang_speculative_algorithm=None,
     num_layers=None,
@@ -158,6 +205,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_top_logprobs_num=0,
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
+    output_store_backend_config=None,
 )
 
 
@@ -209,3 +257,17 @@ class TestSessionServerConfig:
         config = SessionServerConfig(**_COMPLETE_CONFIG_KWARGS)
         with pytest.raises(ValidationError):
             config.port = 5002
+
+
+class TestOptionalBackendRoutingMetadata:
+    def test_missing_raw_router_topk_does_not_read_a_stale_flat_value(self) -> None:
+        """A backend without MoE routing metadata keeps session top-k unset despite stale flat fields."""
+        args = _make_args()
+        args.raw_megatron = MegatronConfig(trainers=[], base_args={})
+        args.moe_router_topk = 99
+
+        config = compute_session_server_config(
+            args=args, host="127.0.0.1", port=5001, instance_id=None, backend_url="http://127.0.0.1:3000"
+        )
+
+        assert config.moe_router_topk is None

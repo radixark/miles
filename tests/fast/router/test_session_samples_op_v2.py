@@ -25,9 +25,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.fast.fixtures.session_fixtures import make_session_server_config
-from tests.fast.rollout.session.test_samples import _make_record
+from tests.fast.rollout.session.test_samples import _make_record, _routed_experts, _store_record
+from tests.fast.utils.output_store.test_plan import fake_store_refs
 
-from miles.rollout.session.errors import TokenizationError
+from miles.rollout.session.errors import OutputStoreContractError, TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
@@ -35,6 +36,7 @@ from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.rollout.session.v2.session_state import SessionRegistryV2
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.function_registry import function_registry
+from miles.utils.output_store.plan import OUTPUT_STORE_REF_KEY
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
@@ -441,6 +443,47 @@ async def test_addition_branched_tree_materializes_each_leaf():
         assert np.array_equal(sample_b.rollout_routed_experts, np.concatenate([shared, leaf_b_rows]))
 
 
+async def test_store_branched_tree_materializes_each_leaf(monkeypatch):
+    """Each leaf's plan takes the root's rows plus its own; both own the shared root object."""
+    fake_store_refs(monkeypatch)
+    shared = _expected_r3(0, 4)
+    leaf_rows = {"a": _expected_r3(1000, 2), "b": _expected_r3(2000, 2)}
+    root_record, root_arrays = _store_record(
+        "root", [1, 2, 3], [10, 11], routed_experts=shared, routed_experts_start_len=0
+    )
+    objects = {"root": root_arrays}
+
+    with function_registry.temporary("test_hooks.keep_all", _keep_all_picker):
+        hooked = _build_core_with_hooks(session_sample_picker_path="test_hooks.keep_all", use_addition_r3=True)
+        sid, state = await _fresh_state(hooked)
+        root = _fabricate_node(state, None, root_record, [1, 2, 3, 10, 11], completion_span=(3, 5))
+        leaves = []
+        for name, env, out in (("a", 20, 30), ("b", 21, 31)):
+            record, objects[name] = _store_record(
+                name, [1, 2, 3, 10, 11, env], [out], routed_experts=leaf_rows[name], routed_experts_start_len=4
+            )
+            leaves.append(_fabricate_node(state, root, record, [1, 2, 3, 10, 11, env, out], completion_span=(6, 7)))
+
+        status, payload = await _collect_via_op(hooked, sid)
+        assert status == 200, payload
+        reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+
+    for sample, leaf, name in zip(reply.samples, leaves, ("a", "b"), strict=True):
+        assert sample.tokens == leaf.token_ids
+        assert np.array_equal(_routed_experts(sample, objects), np.concatenate([shared, leaf_rows[name]]))
+        assert [ref.key for ref in sample.rollout_store_plan.owned_refs] == ["root", name]
+
+
+async def test_missing_store_ref_is_an_output_store_contract_error(core, monkeypatch):
+    """A response that asked for the output store came back without a ref, as when the router drops the opt-in."""
+    fake_store_refs(monkeypatch)
+    record, _ = _store_record("turn1", [1, 2, 3], [10, 11])
+    del record.response["choices"][0]["meta_info"][OUTPUT_STORE_REF_KEY]
+    sid = await _make_session(core, [record], [1, 2, 3, 10, 11])
+    with pytest.raises(OutputStoreContractError, match="output store ref has none"):
+        await _collect_via_op(core, sid)
+
+
 async def test_addition_gap_returns_422(addition_core):
     # Turn 2 starts at row 5 while turn 1 retained only 4 rows: the per-leaf
     # assembler rejects the gap as a 422 instead of producing a corrupt tensor.
@@ -710,7 +753,7 @@ async def test_session_rollout_metrics_include_node_excluded_by_max_seq_len(spec
     (sample,) = reply.samples
 
     assert sample.tokens == [1, 2, 3, 10, 11]
-    assert sample.status == Sample.Status.COMPLETED
+    assert sample.status == Sample.Status.TRUNCATED  # turn 2 was dropped, so the session was cut short
     assert sample.spec_info.to_dict() == {
         "spec_num_correct_drafts": 1,
         "spec_num_proposed_drafts": 2,
@@ -808,6 +851,27 @@ async def test_two_roots_yield_two_samples(core):
     assert [n["parent"] for n in tree["nodes"]] == [None, None]
     assert [leaf["node_id"] for leaf in tree["leaves"]] == [main.seq, sub.seq]
     assert [first.reward, second.reward] == [None, None]
+
+
+async def test_each_leaf_path_mismatch_is_computed_once(core, monkeypatch):
+    """The latest generation is a leaf, so its sample reuses the session metadata's mismatch
+    instead of re-rendering and re-tokenizing the same path."""
+    sid, state = await _fresh_state(core)
+    _fabricate_node(state, None, _single_turn_record([1, 2, 3], [10, 11]), [1, 2, 3, 10, 11], completion_span=(3, 5))
+    _fabricate_node(state, None, _single_turn_record([7, 8], [70, 71]), [7, 8, 70, 71], completion_span=(2, 4))
+    rendered_paths = []
+    compute_mismatch = core.registry.compute_mismatch
+
+    def recording_compute_mismatch(messages, token_ids, *, turn_args):
+        rendered_paths.append(list(token_ids))
+        return compute_mismatch(messages, token_ids, turn_args=turn_args)
+
+    monkeypatch.setattr(core.registry, "compute_mismatch", recording_compute_mismatch)
+
+    status, _ = await _collect_via_op(core, sid)
+
+    assert status == 200
+    assert sorted(rendered_paths) == [[1, 2, 3, 10, 11], [7, 8, 70, 71]]
 
 
 @pytest.mark.parametrize("core_name", ["core", "same_prompt_core"])
@@ -1047,6 +1111,26 @@ def _exploding_postprocessor(picked_samples, session_metadata):
     raise RuntimeError("postprocess bug")
 
 
+def _clear_session_mismatch(picked_samples, session_metadata):
+    session_metadata["tito_session_mismatch"].clear()
+    return picked_samples
+
+
+async def test_postprocessor_editing_session_mismatch_keeps_the_latest_sample_mismatch(monkeypatch):
+    """The latest leaf reuses the session's mismatch; a hook editing the session's must not change the sample's."""
+    with function_registry.temporary("test_hooks.clear_mismatch", _clear_session_mismatch):
+        hooked = _build_core_with_hooks(session_sample_postprocessor_path="test_hooks.clear_mismatch")
+        monkeypatch.setattr(hooked.registry, "compute_mismatch", lambda *args, **kwargs: [{"type": "planted"}])
+        sid = await _rolled_back_session(hooked)
+
+        response = await hooked.collect_samples(sid, max_seq_len=None)
+
+        assert response.status_code == 200
+        reply = decode_samples_and_merge_input_sample(bytes(response.body), Sample(), fields=COMPUTED_FIELDS_V2)
+        (sample,) = reply.samples
+        assert sample.metadata["tito_session_mismatch"] == [{"type": "planted"}]
+
+
 class TestConfiguredPostprocessor:
     async def test_configured_postprocessor_failure_maps_to_422_with_identity(self):
         """A configured postprocessor is loaded and invoked, and its failure is a 422 naming that postprocessor."""
@@ -1131,8 +1215,9 @@ def test_samples_route_registered_before_catch_all_proxy(app_client):
 
 
 @pytest.mark.asyncio
-async def test_hooks_cannot_mutate_committed_turn_args():
+async def test_hooks_cannot_mutate_committed_state():
     def mutate_metadata(samples, metadata):
+        metadata["accumulated_token_ids"].append(-1)
         metadata["turn_args"]["chat_template_kwargs"]["nested"].append("session-hook")
         for node in metadata["tree"]["nodes"]:
             node["turn_args"]["chat_template_kwargs"]["nested"].append("tree-hook")
@@ -1147,9 +1232,11 @@ async def test_hooks_cannot_mutate_committed_turn_args():
         for node in nodes:
             node.turn_args = {"temperature": 0.7, "chat_template_kwargs": {"nested": [node.seq]}}
         before = [deepcopy(node.turn_args) for node in nodes]
+        tokens_before = [list(node.token_ids) for node in nodes]
         response = await hooked.collect_samples(sid, max_seq_len=None)
         assert response.status_code == 200, response.body
         assert [node.turn_args for node in nodes] == before
+        assert [node.token_ids for node in nodes] == tokens_before
 
 
 @pytest.mark.asyncio

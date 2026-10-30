@@ -11,11 +11,13 @@ from miles.rollout.session.request_args import (
     ClientResponseIntent,
     apply_session_sampling_defaults,
     filter_turn_args,
+    parse_chat_request,
     prepare_chat_request,
     resolve_request_args_by_config,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME
+from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY
 
 
 class TestResolveRequestArgsByConfig:
@@ -156,6 +158,34 @@ class TestPrepareChatRequest:
 
         assert prepared.body["return_sampling_mask"] is True
 
+    @pytest.mark.parametrize(
+        ("store", "routed_experts", "evaluation", "expected"),
+        [
+            (True, True, False, True),
+            (True, True, True, False),
+            (True, False, False, False),
+            (False, True, False, False),
+        ],
+        ids=["training-replay", "evaluation", "no-replay-field", "switch-off"],
+    )
+    def test_the_output_store_follows_the_launch_and_replaces_the_client_value(
+        self, store, routed_experts, evaluation, expected
+    ):
+        config = make_session_server_config(
+            use_rollout_routing_replay=routed_experts,
+            output_store_backend_config={"master_server_address": "unused"} if store else None,
+        )
+
+        prepared = prepare_chat_request(
+            {OUTPUT_STORE_REQUEST_KEY: not expected},
+            self._tito(),
+            config=config,
+            turn_args=None,
+            evaluation=evaluation,
+        )
+
+        assert prepared.body.get(OUTPUT_STORE_REQUEST_KEY, False) is expected
+
     def test_bounded_request_requires_session_sampling_replay(self):
         with pytest.raises(MessageValidationError, match="bounded training-request sampling"):
             prepare_chat_request(
@@ -236,6 +266,21 @@ class TestPrepareChatRequest:
         assert prepared.body["unknown"] == {"values": [1, 2]}
         assert prepared.template_args == {"model_option": True}
         assert prepared.response_intent.stream is True
+
+    def test_messages_are_shared_read_only_while_other_fields_are_owned(self):
+        messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "", "tool_calls": []}]
+        client_args = {"messages": messages, "tools": self.TOOLS, "unknown": {"values": [1]}}
+        original = deepcopy(client_args)
+        prepared = prepare_chat_request(
+            client_args,
+            self._tito(chat_template_kwargs=self.LAUNCH),
+            config=make_session_server_config(),
+            turn_args={"chat_template_kwargs": self.LAUNCH, "tools": self.TOOLS},
+        )
+        prepared.body["unknown"]["values"].append(2)
+        assert client_args == original
+        assert prepared.body["messages"] is messages
+        assert prepared.body["tools"] == self.TOOLS and prepared.body["tools"] is not client_args["tools"]
 
 
 def test_template_projection_only_selects_render_fields():
@@ -353,3 +398,14 @@ def test_template_compatibility_applies_to_train_and_eval(evaluation):
             turn_args={"chat_template_kwargs": {}},
             evaluation=evaluation,
         )
+
+
+@pytest.mark.parametrize("body", [b"{", b'{"value":NaN}', b'{"value":Infinity}', b'{"value":-Infinity}'])
+def test_parse_chat_request_rejects_invalid_json(body):
+    with pytest.raises(MessageValidationError, match="invalid JSON body"):
+        parse_chat_request(body)
+
+
+def test_parse_chat_request_preserves_unicode_and_empty_body():
+    assert parse_chat_request(b"") == {}
+    assert parse_chat_request(rb'{"content":"\u4f60\u597d \ud83d\ude00"}') == {"content": "你好 😀"}
