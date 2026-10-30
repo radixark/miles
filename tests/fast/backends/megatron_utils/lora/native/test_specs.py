@@ -315,7 +315,9 @@ class TestQwen35GDNTargets:
     def test_lora_serves_out_proj(self):
         assert _qwen3_5_resolve([f"{_GDN35}out_proj"], lora_type="lora") == [f"{_GDN35}out_proj"]
 
-    @pytest.mark.parametrize("leaves", [("in_proj_qkv",), ("in_proj_z",), ("in_proj_b",), ("in_proj_qkv", "in_proj_z", "in_proj_a")])
+    @pytest.mark.parametrize(
+        "leaves", [("in_proj_qkv",), ("in_proj_z",), ("in_proj_b",), ("in_proj_qkv", "in_proj_z", "in_proj_a")]
+    )
     def test_a_partial_stacked_group_is_rejected(self, leaves):
         """SGLang only stacks complete q/k/v/z and b/a groups, so any other subset would serve nothing."""
         with pytest.raises(AssertionError, match="selected together"):

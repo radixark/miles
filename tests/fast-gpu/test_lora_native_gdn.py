@@ -40,7 +40,9 @@ from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import (
 sys.path.insert(0, os.path.dirname(__file__))
 from linear_attn_reference import ReplicatedGDN, build_layer, packed, rel_err, shard  # noqa: E402
 
-register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper", "blackwell"], num_gpus=2)
+register_cuda_ci(
+    est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper", "blackwell"], num_gpus=2
+)
 
 HIDDEN = 256
 HEADS = LinearAttnHeads(num_k_heads=4, num_v_heads=8, head_k_dim=64, head_v_dim=64)
@@ -48,7 +50,14 @@ RANK, ALPHA = 8, 16
 PREFIX = "model.layers.0.linear_attn."
 ALL = ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
 TARGET_SETS = {"all": ALL, "qkvz": ("in_proj_qkv", "in_proj_z"), "ba+out": ("in_proj_b", "in_proj_a", "out_proj")}
-COMPONENTS = {"in_proj_q": "q", "in_proj_k": "k", "in_proj_v": "v", "in_proj_z": "z", "in_proj_b": "b", "in_proj_a": "a"}
+COMPONENTS = {
+    "in_proj_q": "q",
+    "in_proj_k": "k",
+    "in_proj_v": "v",
+    "in_proj_z": "z",
+    "in_proj_b": "b",
+    "in_proj_a": "a",
+}
 # floor of the head-sharded layer against the fla HF reference (bf16: test_linear_attn_head_sharded.py)
 HF_TOLERANCE = {torch.bfloat16: 2e-2, torch.float32: 1e-3}
 # fp32 against the same layer holding the merged weights. The recurrence's backward amplifies a 4e-7 relative
@@ -143,7 +152,7 @@ def check(name, targets, config, tp_group):
     base = build_layer(ref, config)
     layer = build_layer(ref, config)
     adapters = _attach(layer, config, targets)
-    sp, world = config.sequence_parallel, tp_group.size()
+    sp = config.sequence_parallel
 
     torch.manual_seed(11)
     x_full = torch.randn(512, 1, HIDDEN, device="cuda", dtype=dtype)
@@ -156,7 +165,9 @@ def check(name, targets, config, tp_group):
     for parameter in base.parameters():
         parameter.requires_grad = False
     with torch.no_grad():
-        noop = torch.equal(layer(x, packed_seq_params=packed(cu_seqlens))[0], base(x, packed_seq_params=packed(cu_seqlens))[0])
+        noop = torch.equal(
+            layer(x, packed_seq_params=packed(cu_seqlens))[0], base(x, packed_seq_params=packed(cu_seqlens))[0]
+        )
 
     _randomize(adapters, tp_group)
     out, dx = _run(layer, x, cu_seqlens, grad_out)
@@ -215,7 +226,9 @@ def check(name, targets, config, tp_group):
     fresh = build_layer(ref, config)
     fresh_adapters = _attach(fresh, config, targets)
     with tempfile.TemporaryDirectory() as tmp:
-        save_file({k: v.cpu().contiguous() for k, v in exported.items()}, os.path.join(tmp, "adapter_model.safetensors"))
+        save_file(
+            {k: v.cpu().contiguous() for k, v in exported.items()}, os.path.join(tmp, "adapter_model.safetensors")
+        )
         loaded = load_lora_adapter_hf([fresh], tmp)
     assert loaded == 2 * sum(len(a.projection_specs) for a in fresh_adapters)
     with torch.no_grad():
@@ -234,7 +247,9 @@ def check(name, targets, config, tp_group):
     }
     for param_name, full_weight in expected.items():
         errors[f"merge.{param_name.split('.')[1]}"] = rel_err(shard(full_weight, 0, tp_group), merged_view[param_name])
-    errors["merge.out_proj"] = rel_err(shard(merged.out_proj.weight, 1, tp_group), merged_view["linear_attn.out_proj.weight"])
+    errors["merge.out_proj"] = rel_err(
+        shard(merged.out_proj.weight, 1, tp_group), merged_view["linear_attn.out_proj.weight"]
+    )
     return errors
 
 
