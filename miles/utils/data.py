@@ -4,7 +4,7 @@ import logging
 import os
 import random
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -13,12 +13,14 @@ from miles.ray.rollout.train_data_conversion import split_train_data_by_dp
 from miles.utils import object_store
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig
-from miles.utils.output_store.trainer_columns import materialize_store_columns
+from miles.utils.output_store.trainer_columns import maybe_materialize_store_plans
 from miles.utils.pydantic_utils import StrictBaseModel
 
 from .audit_utils.witness.allocator import WitnessInfo
 
 if TYPE_CHECKING:
+    from radix_transfer_plugins import OutputStore
+
     from miles.backends.training_utils.types import TrainStepOutput
 
 try:
@@ -301,7 +303,7 @@ def process_rollout_data(
     train_parallel_config: TrainParallelConfig,
     witness_info: WitnessInfo | None,
     *,
-    output_store_read: Callable | None = None,
+    output_store: "OutputStore | None" = None,
 ) -> tuple[dict, object_store.ObjectStoreGetResult]:
     from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
 
@@ -329,7 +331,7 @@ def process_rollout_data(
 
     try:
         # In place on this shard's own dict: get_result.value stays as stored.
-        materialize_store_columns(args, rollout_data, read=output_store_read)
+        maybe_materialize_store_plans(args, rollout_data, store=output_store)
         return process_rollout_data_shard(args, rollout_data), get_result
     except BaseException as e:
         # The caller releases get_result only once it is returned: an FT retry would leak a buffer per attempt.

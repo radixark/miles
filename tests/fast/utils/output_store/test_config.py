@@ -12,9 +12,9 @@ from miles.utils.output_store.config import (
     check_output_store_args,
     connect_output_store,
     output_store_backend_config,
-    output_store_reader,
     sglang_output_store_server_args,
     sweep_output_store,
+    trainer_output_store,
 )
 
 MOONCAKE = {"master_server_address": "10.0.0.1:50051", "protocol": "tcp", "device_name": "mlx5_0"}
@@ -39,13 +39,14 @@ def make_args(**overrides) -> Namespace:
 @pytest.fixture
 def launch(monkeypatch):
     """What the checks read from the SGLang and Megatron configs, settable per test."""
-    state = SimpleNamespace(pd=False, multi_policy=False, sglang_has_store=True)
+    state = SimpleNamespace(pd=False, multi_policy=False, sglang_has_store=True, plugin_reads_ranges=True)
     state.check = lambda args: check_output_store_args(
         args,
         sglang=SimpleNamespace(has_pd_disaggregation=state.pd),
         megatron=SimpleNamespace(is_multi_policy=state.multi_policy),
     )
     monkeypatch.setattr(output_store_config, "_sglang_has_output_store", lambda: state.sglang_has_store)
+    monkeypatch.setattr(output_store_config, "_output_store_reads_ranges", lambda: state.plugin_reads_ranges)
     return state
 
 
@@ -110,13 +111,20 @@ class TestLaunchChecks:
 
     def test_the_launch_facts_owned_elsewhere_are_checked_and_reported_together(self, launch, monkeypatch):
         launch.pd = launch.multi_policy = True
-        launch.sglang_has_store = False
+        launch.sglang_has_store = launch.plugin_reads_ranges = False
         monkeypatch.setenv("MILES_USE_LEGACY_ROLLOUT_V1", "1")
 
         with pytest.raises(ValueError) as error:
             launch.check(make_args())
 
-        for reason in ("PD disaggregation", "multi-policy", "ServerArgs lacks output_store_backend", "legacy"):
+        reasons = (
+            "PD disaggregation",
+            "multi-policy",
+            "ServerArgs lacks output_store_backend",
+            "byte ranges",
+            "legacy",
+        )
+        for reason in reasons:
             assert reason in str(error.value)
 
 
@@ -181,8 +189,8 @@ class TestStoreClients:
             ("mooncake", "10.0.0.9", "mlx5_client"),
         ]
 
-    def test_no_reader_without_the_switch(self):
-        assert output_store_reader(make_args(use_output_store=False)) is None
+    def test_no_client_without_the_switch(self):
+        assert trainer_output_store(make_args(use_output_store=False)) is None
 
 
 class TestRunEndSweep:

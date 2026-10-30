@@ -181,7 +181,7 @@ class TestTrainParallelConfigWiring:
             rollout_data_ref: object,
             witness_info: object,
             train_parallel_config: TrainParallelConfig,
-            output_store_read: object,
+            output_store: object,
         ) -> tuple[dict[str, list], object]:
             received.append(train_parallel_config)
             return {"tokens": []}, nullcontext()
@@ -232,7 +232,7 @@ class TestTrainParallelConfigWiring:
             args: Namespace,
             rollout_data_ref: object,
             train_parallel_config: TrainParallelConfig,
-            output_store_read: object,
+            output_store: object,
         ) -> tuple[dict[str, list], object]:
             received.append(train_parallel_config)
             return {"tokens": []}, nullcontext()
