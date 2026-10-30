@@ -150,8 +150,12 @@ class TitanTrainer(Trainer):
             else:
                 for input_dict, label in zip(input_dicts, labels, strict=True):
                     inputs, label, extra = self.post_dataloading_process(input_dict, label)
-                    pred = self.model_parts[0](inputs, **extra)
-                    self.loss_fn(pred, label)
+                    # the training forward's path: torch.compile guards on grad mode, so a no-grad forward
+                    # compiles (and autotunes) flex_attention again, and FullAC wraps blocks only under grad;
+                    # either makes these log-probs differ from training's in the last bits (ppo_kl != 0)
+                    with torch.enable_grad():
+                        pred = self.model_parts[0](inputs, **extra)
+                    self.loss_fn(pred.detach(), label)
         return self.loss_fn.collect() if self.has_last_stage() else []
 
     def apply_optimizer_step(self) -> StepMetrics:
