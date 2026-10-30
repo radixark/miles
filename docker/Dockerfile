@@ -237,11 +237,12 @@ RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-t
 # ====================================== Install main package ============================================
 
 ARG MILES_COMMIT=main
+# the dashboard plugin is installed only when MILES_COMMIT already has it
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps && \
-    pip install -e plugins/miles-dashboard --no-deps
+    if [ -d plugins/miles-dashboard ]; then pip install -e plugins/miles-dashboard --no-deps; fi
 
 # int4 fake-quant extension (source: miles/kernels/quant/int4_fake)
 RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
