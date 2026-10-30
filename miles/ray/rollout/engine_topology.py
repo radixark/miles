@@ -78,7 +78,7 @@ class EngineTopologyReporter:
 
     async def report_if_changed(self, servers, *, provider: BaseWorkerProvider) -> None:
         observers = Observers()
-        if not observers.active:
+        if not observers.hears("engine_topology"):
             return
         with observers.isolated("engine_topology"):
             cells = alive_engine_cells(servers)

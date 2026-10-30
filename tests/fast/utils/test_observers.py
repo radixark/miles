@@ -4,6 +4,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from pydantic import BaseModel
 
 from miles.rollout.agentic.sandbox_reports import report_sandbox
 from miles.utils import observers as observers_module
@@ -136,14 +137,21 @@ def test_start_run_reports_every_argument_as_plain_data_without_secrets(install)
     recorder = _Recorder()
     install(recorder)
 
-    args = SimpleNamespace(lr=1e-6, sglang=object(), wandb_key="wandb-secret")
+    class _ServerConfig(BaseModel):
+        api_key: str
+        port: int
+
+    server = _ServerConfig(api_key="server-secret", port=30000)
+    args = SimpleNamespace(lr=1e-6, sglang=object(), wandb_key="wandb-secret", server=server)
     observers_module.start_run(run_uuid="0123456789abcdef", args=args)
 
     [(_, run)] = [call for call in recorder.calls if call[0] == "start_run"]
     assert run["run_uuid"] == "0123456789abcdef"
     assert run["args"]["lr"] == 1e-6
     assert isinstance(run["args"]["sglang"], str)
-    assert "wandb-secret" not in str(run["args"]), "observers must not receive the run's secrets"
+    assert run["args"]["server"]["port"] == 30000, "a nested config must arrive as data, not its repr"
+    for secret in ("wandb-secret", "server-secret"):
+        assert secret not in str(run["args"]), "observers must not receive the run's secrets"
 
 
 def _sample(**overrides):

@@ -234,6 +234,24 @@ async def test_report_without_observers_does_not_ask_the_worker_manager():
     assert reporter._reported_fingerprint is None
 
 
+async def test_an_observer_that_takes_no_topology_does_not_cost_a_probe(monkeypatch):
+    """Probing engines is paid only when some observer implements ``engine_topology``."""
+
+    class _MetricsOnly(Observer):
+        def metrics(self, metrics, *, step_key, step):
+            pass
+
+    monkeypatch.setattr(
+        observers_module, "entry_points", lambda group: [SimpleNamespace(name="metrics", load=lambda: _MetricsOnly)]
+    )
+    SingletonMeta._instances.pop(Observers, None)
+    provider = FakeWorkerProvider({})
+
+    await EngineTopologyReporter().report_if_changed(_servers([FakeCell("http://a:1")]), provider=provider)
+
+    assert provider.queried_cell_ids == []
+
+
 async def test_report_publishes_the_topology_from_a_running_event_loop(recorder, caplog):
     """Driven from inside a running asyncio loop (as prepare_rollout does), the topology is reported without warning."""
     infos_by_cell = {"inference-engine-0-0-0": [_worker_info("inference-engine-0-0-0", "node-a", [0, 1])]}

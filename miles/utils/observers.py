@@ -22,10 +22,12 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import asdict, is_dataclass
 from importlib.metadata import entry_points
 from typing import Any, ClassVar, Literal, TypedDict, get_args
 
 import numpy as np
+from pydantic import BaseModel
 
 from miles.utils.env_report.redaction import redact_config_values
 from miles.utils.lifecycle import TrajectoryLifecycle
@@ -321,7 +323,16 @@ def start_process(role: str, *, rank: int = -1, gpus: Callable[[], Iterable[int]
 
 def _plain_args(args) -> dict[str, Any]:
     fields = {name: value for name, value in vars(args).items() if not name.startswith("_")}
-    return redact_config_values(json.loads(json.dumps(fields, default=str)))
+    return redact_config_values(json.loads(json.dumps(fields, default=_plain_value)))
+
+
+def _plain_value(value) -> Any:
+    # nested configs become dicts, so redaction reaches the secrets inside them
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    return str(value)
 
 
 class _PhaseReporter:
