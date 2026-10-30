@@ -133,12 +133,34 @@ class TestMixedRolloutDataSource:
         assert [s.prompt for s in source.datasets["math"].samples] == ["short"]
         assert len(source.datasets["code"]) == 50
 
+    def test_non_mapping_metadata_fails_at_startup(self, tmp_path):
+        """A string metadata column would crash the first request when the mixer tags the sample."""
+        datasets = _two_datasets(tmp_path)
+        datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", ["p0", "p1"], metadata='{"a": 1}'))
+        with pytest.raises(ValueError, match="'math': row 0 has non-mapping metadata"):
+            _make_source(tmp_path, datasets)
+
     def test_a_dataset_empty_after_filtering_fails_at_startup(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         datasets["math"]["max_prompt_len"] = 1
         datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", ["two words"]))
         with pytest.raises(ValueError, match="'math'.*no prompts"):
             _make_source(tmp_path, datasets)
+
+    def test_resume_refuses_a_position_past_a_dataset_filtered_shorter(self, tmp_path):
+        """A saved offset beyond the end used to make every later request hang on empty slices."""
+        datasets = _two_datasets(tmp_path)
+        prompts = ["s0", "s1", "s2", "s3", "long prompt a", "long prompt b", "long prompt c"]
+        datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", prompts))
+        source = _make_source(tmp_path, datasets)
+        source.get_samples(8)
+        source.get_samples(8)
+        assert source.offsets["math"] == 6
+        source.save(tmp_path / "ckpt")
+
+        datasets["math"]["max_prompt_len"] = 1
+        with pytest.raises(ValueError, match="past the end"):
+            _make_source(tmp_path, datasets).load(tmp_path / "ckpt")
 
     def test_resume_refuses_a_different_dataset_list(self, tmp_path):
         datasets = _two_datasets(tmp_path)
