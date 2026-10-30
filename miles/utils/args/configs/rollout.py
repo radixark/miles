@@ -21,7 +21,7 @@ class RolloutRelatedConfig(BaseConfig):
                 "The huggingface checkpoint of the trained model. "
                 "This is used to initialize sglang and also provide the tokenizer. "
                 "Weight synchronization replaces startup weights with the loaded trainer weights before the first rollout. "
-                "Disk-delta uses this checkpoint as the common baseline for the initial delta."
+                "Disk-delta and GPU-delta use this checkpoint as the common baseline for the initial delta."
             )
         ),
     ] = None
@@ -251,12 +251,14 @@ class RolloutRelatedConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
+            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "gpu-delta"],
             help=(
                 "The method to transfer weights to remote rollout engines during update weight. "
                 "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                 "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                "them into a host-local checkpoint that the engine reloads from."
+                "them into a host-local checkpoint that the engine reloads from. "
+                "'gpu-delta' publishes canonical GPU-encoded frames using publication-selected "
+                "Snappy-Zstd, LZ4-Zstd or LZ4 for streaming SGLang GPU apply."
             ),
         ),
     ] = "broadcast"
@@ -266,7 +268,8 @@ class RolloutRelatedConfig(BaseConfig):
             help=(
                 "Filesystem directory disk-delta weight sync publishes to: one delta directory "
                 "(changed tensors only) per sync, written by the trainer and read by every "
-                "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                "rollout host. Also stores immutable framed publications for gpu-delta. "
+                "Required for disk-delta and gpu-delta."
             )
         ),
     ] = None
@@ -289,7 +292,8 @@ class RolloutRelatedConfig(BaseConfig):
             type_parser=None,
             choices=["xor", "overwrite"],
             help=(
-                "On-disk delta encoding for disk-delta weight sync. 'xor' (default): new ^ old — "
+                "Delta encoding: gpu-delta supports only xor; disk-delta supports xor and overwrite. "
+                "'xor' (default): new ^ old — "
                 "smallest wire and fastest, but an involution that must be applied exactly once "
                 "against the correct base (applying it twice reverts). 'overwrite': changed positions "
                 "+ new absolute values — larger, but idempotent. Both are byte-level and dtype-blind; "
@@ -313,7 +317,7 @@ class RolloutRelatedConfig(BaseConfig):
         CustomFunctionConfig | None,
         Arg(
             help=(
-                "Path to a custom function called on each trainer rank after a disk-delta sync's "
+                "Path to a custom function called on each trainer rank after a disk-delta or gpu-delta sync's "
                 "files are written, before the engines read them — to publish the writes on a "
                 "non-POSIX filesystem (no cross-host visibility without an explicit sync). "
                 "Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``; the hook gates itself."

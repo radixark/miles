@@ -49,6 +49,7 @@ class ReceiverPools:
     def _select(self, updater, pool_id):
         updater.protocol, updater.conn_status, updater._registered_adapters = self._states[pool_id]
         self.active = pool_id
+        updater._bind_protocol_iterator()
 
     def mark_trainer_stale(self, updater):
         """A rebuilt trainer group invalidates every pool's connection."""

@@ -37,8 +37,14 @@ from miles.utils.audit_utils.config_snapshot.generated_value_registry import gen
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
-from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from miles.utils.eval_config import (
+    EvalDatasetConfig,
+    build_eval_dataset_configs,
+    ensure_dataset_list,
+    uses_synced_eval,
+)
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.gpu_delta.admission import validate_gpu_delta_args
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
@@ -871,7 +877,7 @@ def miles_validate_args(args):
         _apply_custom_config(args, yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
 
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "gpu-delta"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1289,6 +1295,8 @@ def miles_validate_args(args):
         assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
 
+    validate_gpu_delta_args(args)
+
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
             "Disk-delta weight transfer mode is not compatible with --colocate. Colocate transfers "
@@ -1364,6 +1372,8 @@ def miles_validate_args(args):
         args.offload_rollout = False
     # One decision for both the colocated LoRA weight sync and the trainer's host backup.
     args.lora_sync_sends_base = lora_sync_sends_base(args)
+    if args.update_weight_transfer_mode == "gpu-delta":
+        assert not args.offload_rollout, "GPU delta requires resident original rollout weight storage"
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
@@ -1516,10 +1526,13 @@ def miles_validate_args(args):
             not use_legacy_rollout_v1()
         ), "Snapshot eval requires the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         assert args.eval_interval is not None, "Snapshot eval requires --eval-interval."
-        assert args.eval_hf_dir is not None or args.save_hf is not None, (
-            "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
-            "or --save-hf (reuse periodic HF checkpoints)."
-        )
+        if uses_synced_eval(args.update_weight_transfer_mode, args.eval_num_gpus > 0):
+            assert not args.debug_train_only, "Synchronized eval requires live trainer weight synchronization."
+        else:
+            assert args.eval_hf_dir is not None or args.save_hf is not None, (
+                "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
+                "or --save-hf (reuse periodic HF checkpoints)."
+            )
         assert not args.colocate, "Snapshot eval is not supported with --colocate."
         assert not args.debug_rollout_only, "Snapshot eval is not supported with debug_rollout_only."
         assert (
@@ -1530,7 +1543,7 @@ def miles_validate_args(args):
                 "Snapshot eval during --debug-train-only requires an explicit --eval-function-path; "
                 "the training rollout function cannot evaluate snapshots."
             )
-        if args.eval_hf_dir is None:
+        if args.eval_hf_dir is None and not uses_synced_eval(args.update_weight_transfer_mode, args.eval_num_gpus > 0):
             if not any(field == "rollout_id" for _, field, _, _ in Formatter().parse(args.save_hf)):
                 args.save_hf = os.path.join(args.save_hf, "step_{rollout_id}")
                 logger.info(f"Using per-step checkpoints for snapshot eval: --save-hf={args.save_hf}")
