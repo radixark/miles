@@ -40,6 +40,8 @@ class RolloutEngineProcessorArgs:
     def from_sglang_config(cls, sglang) -> "RolloutEngineProcessorArgs":
         """Read the values every rollout engine shares; ``common_value`` rejects one the engine groups disagree on."""
         model_path = sglang.common_value("model_path")
+        # Canonical JSON so the args can key the processor cache.
+        mm_process_config_json = json.dumps(sglang.common_value("mm_process_config") or {}, sort_keys=True)
         return cls(
             model_path=model_path,
             tokenizer_path=sglang.common_value("tokenizer_path") or model_path,
@@ -50,8 +52,7 @@ class RolloutEngineProcessorArgs:
             model_override_args_json=sglang.common_value("json_model_override_args") or "{}",
             image_processor_backend=sglang.common_value("image_processor_backend"),
             disable_fast_image_processor=sglang.common_value("disable_fast_image_processor"),
-            # Canonical JSON so the args can key the processor cache.
-            mm_process_config_json=json.dumps(sglang.common_value("mm_process_config") or {}, sort_keys=True),
+            mm_process_config_json=mm_process_config_json,
         )
 
 
@@ -98,11 +99,12 @@ def _trainer_processor(rollout_engine_args: RolloutEngineProcessorArgs, device: 
     from sglang.srt.multimodal.token_space_mm_process.registry import register_token_space_models, strategy_for
     from sglang.srt.utils.hf_transformers import get_config, get_processor
 
+    # Miles launches every rollout engine with trust_remote_code.
+    trust_remote_code = True
     register_token_space_models()
     hf_config = get_config(
         rollout_engine_args.model_path,
-        # Miles launches every engine with trust_remote_code.
-        trust_remote_code=True,
+        trust_remote_code=trust_remote_code,
         revision=rollout_engine_args.revision,
         model_override_args=json.loads(rollout_engine_args.model_override_args_json),
         model_config_parser=rollout_engine_args.model_config_parser,
@@ -116,12 +118,14 @@ def _trainer_processor(rollout_engine_args: RolloutEngineProcessorArgs, device: 
     hf_processor = get_processor(
         rollout_engine_args.tokenizer_path,
         tokenizer_mode=rollout_engine_args.tokenizer_mode,
-        trust_remote_code=True,
+        trust_remote_code=trust_remote_code,
         revision=rollout_engine_args.revision,
         image_processor_backend=image_processor_backend,
         tokenizer_backend=rollout_engine_args.tokenizer_backend,
         model_name=rollout_engine_args.model_path,
     )
+    # SGLang's worker threads decode on bare "cuda", which a new thread resolves to GPU 0.
+    worker_thread_device = device if device.type == "cuda" else None
     core = TokenSpaceProcessor.for_strategy(strategy_class)(
         hf_config,
         hf_processor,
@@ -130,8 +134,7 @@ def _trainer_processor(rollout_engine_args: RolloutEngineProcessorArgs, device: 
             disable_fast_image_processor=rollout_engine_args.disable_fast_image_processor,
             mm_process_config=json.loads(rollout_engine_args.mm_process_config_json),
         ),
-        # SGLang's worker threads decode on bare "cuda", which a new thread resolves to GPU 0.
-        worker_thread_device=device if device.type == "cuda" else None,
+        worker_thread_device=worker_thread_device,
     )
     image_device = _image_device(hf_processor, image_processor_backend=image_processor_backend, device=device)
     return _TrainerProcessor(core=core, image_device=image_device)
