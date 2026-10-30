@@ -71,10 +71,8 @@ class TestServe:
         assert http_utils._http_clients == {}
         assert http_utils._client_concurrency == 0
 
-    async def test_a_save_flag_merged_after_preprocessing_is_rejected_before_startup(
-        self, tinker_startup: SimpleNamespace
-    ) -> None:
-        """--custom-config-path merges after preprocessing, so the gateway checks the final arguments."""
+    async def test_a_save_flag_is_rejected_before_startup(self, tinker_startup: SimpleNamespace) -> None:
+        """serve() checks the final arguments, since --custom-config-path merges after preprocessing."""
         tinker_startup.args.save = "/ckpt"
 
         with pytest.raises(AssertionError, match="--save"):
