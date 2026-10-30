@@ -13,15 +13,16 @@ MILES_DASHBOARD=1 python train.py ... \
 ```
 
 A launcher sets `MILES_DASHBOARD=1` in its `extra_env_vars`. The settings are
-environment variables too:
+environment variables too; an unset one keeps its default in `CollectorConfig`
+(`collector.py`):
 
-| Variable | Default | Controls |
-|---|---|---|
-| `MILES_DASHBOARD_FLUSH_INTERVAL` | `5.0` | collector disk flush cadence (s) |
-| `MILES_DASHBOARD_GPU_SAMPLE_INTERVAL` | `1.0` | NVML sampling cadence (s) |
-| `MILES_DASHBOARD_SGLANG_SCRAPE_INTERVAL` | `2.0` | engine scrape cadence (s) |
-| `MILES_DASHBOARD_SGLANG_METRICS` | built-in list | comma-separated override of the scraped sglang metrics |
-| `MILES_DASHBOARD_FORWARD_PROMETHEUS` | off | `1` also pushes dashboard gauges to the `--use-prometheus` collector for external Grafana |
+| Variable | Controls |
+|---|---|
+| `MILES_DASHBOARD_FLUSH_INTERVAL` | collector disk flush cadence (s) |
+| `MILES_DASHBOARD_GPU_SAMPLE_INTERVAL` | NVML sampling cadence (s) |
+| `MILES_DASHBOARD_SGLANG_SCRAPE_INTERVAL` | engine scrape cadence (s) |
+| `MILES_DASHBOARD_SGLANG_METRICS` | comma-separated override of the scraped sglang metrics |
+| `MILES_DASHBOARD_FORWARD_PROMETHEUS` | `1` also pushes dashboard gauges to the `--use-prometheus` collector for external Grafana |
 
 `MILES_DASHBOARD=1` turns on the dashboard's run observer (`observer.py`). It starts a named collector actor on the
 driver node, which runs one NVML sampler per GPU node and an sglang

@@ -13,6 +13,11 @@ from miles.utils.observers import RunRefusedError
 logger = logging.getLogger(__name__)
 
 ENABLE_ENV = "MILES_DASHBOARD"
+_INTERVAL_ENVS = {
+    "flush_interval_seconds": "MILES_DASHBOARD_FLUSH_INTERVAL",
+    "gpu_sample_interval_seconds": "MILES_DASHBOARD_GPU_SAMPLE_INTERVAL",
+    "scrape_interval_seconds": "MILES_DASHBOARD_SGLANG_SCRAPE_INTERVAL",
+}
 
 # curated subset of args persisted into meta.json for the dashboard header
 _SNAPSHOT_KEYS = (
@@ -66,14 +71,16 @@ def collector_config_from_args(args: dict[str, Any], *, start_ts: float) -> Coll
         assert whitelist, f"empty MILES_DASHBOARD_SGLANG_METRICS: {metrics!r}"
     else:
         whitelist = DEFAULT_METRIC_WHITELIST
+    # an interval left unset keeps CollectorConfig's default
+    intervals = {
+        field: float(value) for field, name in _INTERVAL_ENVS.items() if (value := os.environ.get(name)) is not None
+    }
     return CollectorConfig(
         dashboard_dir=f"{args['dump_details']}/dashboard",
         run_name=args["wandb_group"] or "miles-run",
         start_ts=start_ts,
         args_snapshot={key: args[key] for key in _SNAPSHOT_KEYS if key in args},
-        flush_interval_seconds=float(os.environ.get("MILES_DASHBOARD_FLUSH_INTERVAL", 5.0)),
-        gpu_sample_interval_seconds=float(os.environ.get("MILES_DASHBOARD_GPU_SAMPLE_INTERVAL", 1.0)),
-        scrape_interval_seconds=float(os.environ.get("MILES_DASHBOARD_SGLANG_SCRAPE_INTERVAL", 2.0)),
         metric_whitelist=whitelist,
         forward_prometheus=os.environ.get("MILES_DASHBOARD_FORWARD_PROMETHEUS") == "1",
+        **intervals,
     )

@@ -6,7 +6,7 @@ import time
 import polars as pl
 import pytest
 import torch
-from tests.fast.dashboard.dummy_dump import dump_dummy_run
+from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
 
 from miles.dashboard.dump_reader import DumpReader
 
@@ -71,6 +71,15 @@ def test_the_mirror_goes_to_the_cache_dir_so_a_read_only_dump_still_serves(dumpe
     assert reader.tokens(0, 0, start=0, end=4)["token_ids"]
     assert _mirror(reader).exists()
     assert sorted(path for path in dumped.rglob("*")) == before
+
+
+def test_a_rewritten_rollout_rebuilds_its_mirror(dumped):
+    """A rerun that rewrites a step's ``.pt`` must not leave the token view serving the old samples."""
+    DumpReader(dumped).tokens(0, 0, start=0, end=1)
+    blank_samples(dumped, 0)
+
+    with pytest.raises(KeyError, match="unknown sample_index"):
+        DumpReader(dumped).tokens(0, 0, start=0, end=1)
 
 
 def test_concurrent_first_reads_build_the_mirror_once(dumped, monkeypatch):

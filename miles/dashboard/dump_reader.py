@@ -655,7 +655,7 @@ class DumpReader:
     # -------------------------- token-view point reads ----------------------
 
     # rollout-side per-token columns; the parquet mirror is built under
-    # cache_dir on first read (a schema mismatch also triggers the rebuild)
+    # cache_dir on first read and rebuilt when its .pt or these columns change
     ROLLOUT_COLUMNS: ClassVar[tuple[str, ...]] = (
         "sample_index",
         "response_length",
@@ -670,12 +670,20 @@ class DumpReader:
     ) -> dict:
         stem = ("eval_" if evaluation else "") + str(rollout_id)
         path = self.cache_dir / "columns" / f"rollout_{stem}.parquet"
+        stamp_path = path.with_suffix(".source.json")
+        source = self.rollout_dir / (f"eval_{rollout_id}.pt" if evaluation else f"{rollout_id}.pt")
+        # a rerun can rewrite the .pt, and one --cache-dir can serve several dumps
+        stamp = {
+            "source": str(source.resolve()),
+            "mtime": source.stat().st_mtime,
+            "columns": list(self.ROLLOUT_COLUMNS),
+        }
         # concurrent request handlers: build each step's mirror once
         with self._columns_lock:
-            if not path.exists() or set(pl.read_parquet_schema(path)) != set(self.ROLLOUT_COLUMNS):
-                name = f"eval_{rollout_id}.pt" if evaluation else f"{rollout_id}.pt"
-                pack = self._torch_load(self.rollout_dir / name)
+            if not path.exists() or not stamp_path.exists() or json.loads(stamp_path.read_text()) != stamp:
+                pack = self._torch_load(source)
                 save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)
+                stamp_path.write_text(json.dumps(stamp))
         frame = pl.scan_parquet(path).filter(pl.col("sample_index") == sample_index).collect()
         if not 0 <= sample_occurrence < len(frame):
             raise KeyError(

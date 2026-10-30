@@ -259,7 +259,6 @@ def blank_samples(dump_dir: Path, rollout_id: int, *, seconds: float = 100.0) ->
     pack["samples"] = []
     torch.save(pack, path)
 
-    (dump_dir / "dashboard" / "cache" / "columns" / f"rollout_{rollout_id}.parquet").unlink(missing_ok=True)
     (dump_dir / "trajectory" / f"{rollout_id}.jsonl").unlink(missing_ok=True)
     for shard in (dump_dir / "train_data").glob(f"{rollout_id}_*.pt"):
         shard.unlink()
