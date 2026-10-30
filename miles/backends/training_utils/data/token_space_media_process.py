@@ -39,12 +39,6 @@ class RolloutEngineProcessorArgs:
     @classmethod
     def from_sglang_config(cls, sglang) -> "RolloutEngineProcessorArgs":
         """Read the values every rollout engine shares; ``common_value`` rejects one the engine groups disagree on."""
-        for name in ("rl_on_policy_target", "true_on_policy_contract", "decrypted_config_file"):
-            if sglang.common_value(name) is not None:
-                raise ValueError(
-                    f"--multimodal-token-space-processing does not support --sglang-{name.replace('_', '-')}: "
-                    "the trainer cannot yet build its processor the way the engines then do."
-                )
         model_path = sglang.common_value("model_path")
         return cls(
             model_path=model_path,

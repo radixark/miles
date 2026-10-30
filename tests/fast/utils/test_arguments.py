@@ -31,6 +31,7 @@ from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import (
     CAKE_BACKEND_ARGS,
     FULLY_ASYNC_ROLLOUT_PATH,
+    _check_multimodal_token_space_processing_args,
     _check_stop_token_replace_streaming_session,
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,
@@ -4300,3 +4301,36 @@ class TestLoRATypeResolution:
         args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
         with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
             validate_lora_args_after_megatron(args)
+
+
+class TestMultimodalTokenSpaceProcessingArgs:
+    """The trainer rebuilds the rollout engines' media features, so it must reject settings it cannot follow."""
+
+    _SUPPORTED = {
+        "enable_token_space_processor": True,
+        "rl_on_policy_target": None,
+        "true_on_policy_contract": None,
+        "decrypted_config_file": None,
+    }
+
+    @pytest.mark.parametrize(
+        ("engine_overrides", "external_engines", "match"),
+        [
+            ({"enable_token_space_processor": False}, None, "--sglang-enable-token-space-processor"),
+            ({}, ["10.0.0.1:30000"], "external engines"),
+            ({"rl_on_policy_target": "fsdp"}, None, "--sglang-rl-on-policy-target"),
+            ({"true_on_policy_contract": "qwen3_dense_v1"}, None, "--sglang-true-on-policy-contract"),
+            ({"decrypted_config_file": "/ckpt/override.json"}, None, "--sglang-decrypted-config-file"),
+        ],
+    )
+    def test_settings_the_trainer_cannot_follow_are_rejected(self, engine_overrides, external_engines, match):
+        args = SimpleNamespace(multimodal_token_space_processing=True, rollout_external_engine_addrs=external_engines)
+        sglang = make_sglang_config(**{**self._SUPPORTED, **engine_overrides})
+
+        with pytest.raises(ValueError, match=match):
+            _check_multimodal_token_space_processing_args(args, sglang=sglang)
+
+    def test_supported_settings_pass(self):
+        args = SimpleNamespace(multimodal_token_space_processing=True, rollout_external_engine_addrs=None)
+
+        _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))

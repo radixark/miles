@@ -17,9 +17,6 @@ _ENGINE_VALUES = {
     "image_processor_backend": "auto",
     "disable_fast_image_processor": False,
     "mm_process_config": {"video": {"fps": 2}},
-    "rl_on_policy_target": None,
-    "true_on_policy_contract": None,
-    "decrypted_config_file": None,
 }
 
 
@@ -100,19 +97,6 @@ def test_rollout_engine_args_read_the_parsed_engine_config():
     assert rollout_engine_args.revision == "v1"
     assert rollout_engine_args.image_processor_backend == "pil"
     assert rollout_engine_args.mm_process_config_json == '{"video": {"fps": 2}}'
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"rl_on_policy_target": "fsdp"},
-        {"true_on_policy_contract": "qwen3_dense_v1"},
-        {"decrypted_config_file": "/ckpt/override.json"},
-    ],
-)
-def test_rollout_engine_args_the_trainer_cannot_follow_are_rejected(overrides):
-    with pytest.raises(ValueError, match="does not support"):
-        RolloutEngineProcessorArgs.from_sglang_config(_SglangConfig(**overrides))
 
 
 class _FastImageProcessor(BaseImageProcessor):
