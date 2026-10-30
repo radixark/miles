@@ -93,8 +93,6 @@ class TestTinkerServeParsing:
             "128",
             "--tinker-server-port",
             "11883",
-            "--tinker-checkpoint-root",
-            "/checkpoints/tinker",
         ]
         if independent:
             argv.append("--indep-dp")
