@@ -74,7 +74,7 @@ class Qwen35GDNSpec:
             count += 1
         return count + attach_layout(gdn, self.out_proj_layout, layer, context)
 
-    def served_targets(self, modules: list[str], hf_targets: list[str], *, lora_type: str) -> list[str]:
+    def served_targets(self, modules: list[str], hf_targets: list[str]) -> list[str]:
         """Check the in_proj selection and name its targets after the components native exports.
 
         SGLang stacks only complete groups and rejects a partial one at load.
@@ -84,11 +84,6 @@ class Qwen35GDNSpec:
             block, _, leaf = module.rpartition(".")
             if block.endswith(self.hf_block) or not block:
                 leaves_by_block.setdefault(block, set()).add(leaf)
-        selects_in_proj = any(leaves & self.in_proj_targets for leaves in leaves_by_block.values())
-        assert not selects_in_proj or lora_type == "canonical_lora", (
-            "native LoRA trains the GDN in_proj only as independent q/k/v/z/b/a components; pass "
-            "--lora-type canonical_lora (one shared A over the fused in_proj is Bridge's --lora-type lora)"
-        )
         for block, leaves in leaves_by_block.items():
             for group in GDN_IN_PROJ_SERVED_GROUPS:
                 assert leaves & group in (set(), group), (

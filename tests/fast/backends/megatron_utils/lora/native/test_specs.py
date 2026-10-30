@@ -282,9 +282,9 @@ def test_inkling_head_export_rows_follow_sglangs_served_vocab(tmp_path):
 _GDN35 = "model.language_model.layers.*.linear_attn."
 
 
-def _qwen3_5_resolve(targets, lora_type="canonical_lora"):
+def _qwen3_5_resolve(targets):
     return _resolve_adapter_targets(
-        {"model_type": "qwen3_5"}, targets, hf_modules=[], lora_type=lora_type, experts_shared_outer_loras=False
+        {"model_type": "qwen3_5"}, targets, hf_modules=[], lora_type="canonical_lora", experts_shared_outer_loras=False
     )
 
 
@@ -303,10 +303,6 @@ class TestQwen35GDNTargets:
         targets = resolve_hf_lora_targets(config, target_modules=["attn"])
         served = _qwen3_5_resolve(targets)
         assert f"{_GDN35}in_proj_q" in served and f"{_GDN35}in_proj_qkv" not in served
-
-    def test_lora_rejects_the_in_proj(self):
-        with pytest.raises(AssertionError, match="--lora-type canonical_lora"):
-            _qwen3_5_resolve([f"{_GDN35}in_proj_qkv", f"{_GDN35}in_proj_z"], lora_type="lora")
 
     @pytest.mark.parametrize(
         "leaves", [("in_proj_qkv",), ("in_proj_z",), ("in_proj_b",), ("in_proj_qkv", "in_proj_z", "in_proj_a")]

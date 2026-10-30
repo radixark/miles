@@ -195,7 +195,7 @@ def resolve_adapter_targets(
     _assert_shared_expert_up_proj_has_gate_proj(selected or hf_targets)
     if spec.linear_attention is None:
         return hf_targets
-    return spec.linear_attention.served_targets(selected or hf_targets, hf_targets, lora_type=lora_type)
+    return spec.linear_attention.served_targets(selected or hf_targets, hf_targets)
 
 
 def validate_native_lora_args(args) -> None:
