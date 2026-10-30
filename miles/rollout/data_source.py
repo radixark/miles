@@ -275,6 +275,13 @@ class MixedRolloutDataSource(DataSource):
             )
             if len(dataset) == 0:
                 raise ValueError(f"rollout dataset {config.name!r} ({config.path}) has no prompts after filtering")
+            # the mixer tags every sample's metadata, so a row whose metadata is not a mapping cannot be mixed
+            bad = next((i for i, prompt in enumerate(dataset.samples) if not isinstance(prompt.metadata, dict)), None)
+            if bad is not None:
+                raise ValueError(
+                    f"rollout dataset {config.name!r}: row {bad} has non-mapping metadata "
+                    f"({type(dataset.samples[bad].metadata).__name__}); --metadata-key must name a JSON object"
+                )
             self.datasets[config.name] = dataset
             logger.info(f"rollout dataset {config.name!r}: {len(dataset)} prompts, weight {config.samples_per_step}")
 
@@ -324,6 +331,12 @@ class MixedRolloutDataSource(DataSource):
                     f"rollout dataset {name!r} changed since the checkpoint was saved: sha256 was {saved}, "
                     f"now {self.dataset_sha256[name]}"
                 )
+        # a dataset filtered shorter since the save (e.g. a lower max_prompt_len) cannot resume at its position
+        if too_far := {n: o for n, o in state_dict["offsets"].items() if o > len(self.datasets[n])}:
+            raise ValueError(
+                f"the checkpoint resumes {too_far} past the end of datasets now holding "
+                f"{ {n: len(self.datasets[n]) for n in too_far} } prompts; keep the dataset and its filters unchanged"
+            )
         self.offsets = dict(state_dict["offsets"])
         self.epoch_ids = dict(state_dict["epoch_ids"])
         self.credits = [state_dict["credits"][name] for name in self.datasets]
@@ -345,7 +358,7 @@ class MixedRolloutDataSource(DataSource):
             prompts += chunk
             count -= len(chunk)
             self.offsets[name] += len(chunk)
-            if self.offsets[name] == len(dataset):
+            if self.offsets[name] >= len(dataset):
                 self.offsets[name] = 0
                 self.epoch_ids[name] += 1
                 if self.args.rollout_shuffle:
@@ -395,7 +408,7 @@ def _check_dataset_sha256(config: RolloutDatasetConfig) -> str | None:
             digest.update(chunk)
     actual = digest.hexdigest()
     if config.sha256 is None:
-        logger.warning(f"rollout dataset {config.name!r} has no sha256; add `sha256: {actual[:8]}` to pin it")
+        logger.warning(f'rollout dataset {config.name!r} has no sha256; add `sha256: "{actual[:8]}"` to pin it')
     elif config.sha256 != actual[:8]:
         raise ValueError(
             f"rollout dataset {config.name!r} ({path}) does not match its sha256: expected {config.sha256}, "

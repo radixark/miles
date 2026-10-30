@@ -58,9 +58,35 @@ def add_user_provided_function_arguments(
         if (
             function_config_class := info.config_class
         ) is not None and function_config_class not in registered_config_classes:
-            function_config_class.add_arguments(parser=parser)
+            _add_function_arguments(parser, function_config_class, path=info.path)
             registered_config_classes.add(function_config_class)
     return parser
+
+
+def _add_function_arguments(parser: argparse.ArgumentParser, config_class: type[BaseConfig], *, path: str) -> None:
+    """Register a hook's flags, skipping ones another hook already declared the same way."""
+    # two hooks can share flags, e.g. a wrapper reusing agentic_tool_call's add_arguments
+    scratch = argparse.ArgumentParser(add_help=False)
+    config_class.add_arguments(parser=scratch)
+    for action in scratch._actions:
+        existing = {
+            parser._option_string_actions[o] for o in action.option_strings if o in parser._option_string_actions
+        }
+        if not existing:
+            parser._add_action(action)
+            continue
+        (other,) = existing
+        if (other.dest, other.default, other.type, other.nargs) != (
+            action.dest,
+            action.default,
+            action.type,
+            action.nargs,
+        ):
+            raise ValueError(
+                f"{path} declares {'/'.join(action.option_strings)} differently from an earlier hook "
+                f"(dest/default/type/nargs {other.dest, other.default, other.type, other.nargs} vs "
+                f"{action.dest, action.default, action.type, action.nargs})"
+            )
 
 
 def resolve_custom_function_configs(args: argparse.Namespace, *, config_class: type[BaseConfig] | None = None) -> None:
