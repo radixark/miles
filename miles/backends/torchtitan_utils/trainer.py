@@ -6,10 +6,12 @@ import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.pipelining.schedules import PipelineScheduleSingle
+from torch.nn.attention.flex_attention import flex_attention
 from torchtitan.config import Configurable
 from torchtitan.config.validation import validate_model_training_config
 from torchtitan.distributed import ParallelismContext
 from torchtitan.models.base import BaseModel
+from torchtitan.models.common.attention import FlexInnerAttention
 from torchtitan.training_engine import TrainingEngine
 
 from miles import platforms
@@ -34,6 +36,16 @@ def _compile_blocks(model_parts: list[torch.nn.Module], *, backend: str) -> None
     for model in model_parts:
         for block in model.get_submodule("layers").children():
             block.forward = torch.compile(block.forward, backend=backend, fullgraph=True)
+
+
+def _compile_flex_attention_for_dynamic_shapes() -> None:
+    """torchtitan compiles flex_attention for the first shape it sees and dynamically from the second; the two
+    kernels round differently, so the log-prob pass's first microbatch and the same microbatch in training
+    disagree in the last bits (ppo_kl != 0 on step 0). One dynamic kernel serves every microbatch."""
+    # fullgraph and recompile_limit as in torchtitan's own compile
+    FlexInnerAttention._compiled_flex_attn = torch.compile(
+        flex_attention, dynamic=True, fullgraph=True, options=FlexInnerAttention.inductor_configs, recompile_limit=16
+    )
 
 
 class TitanTrainer(Configurable):
@@ -74,6 +86,8 @@ class TitanTrainer(Configurable):
             _force_sum_reduction(self.model_parts)
         if config.compile_backend is not None:
             _compile_blocks(self.model_parts, backend=config.compile_backend)
+        if platforms.current_platform.flex_attention:
+            _compile_flex_attention_for_dynamic_shapes()
         self.optimizers = self.engine.optim.optimizers
         self.device = self.engine.device
         self.loss_fn = self.engine.loss_fn
@@ -209,7 +223,13 @@ class TitanTrainer(Configurable):
                 self.engine.pp_schedule.eval(**self._pipeline_microbatches(prepared))
             else:
                 for inputs, labels, model_kwargs, _ in prepared:
-                    self.loss_fn(self.model_parts[0](inputs, **model_kwargs), labels)
+                    # where flex_attention is a compiled kernel, torch.compile guards on grad mode, so a no-grad
+                    # forward compiles (and autotunes) it again, and FullAC wraps blocks only under grad; either
+                    # makes these log-probs differ from the training forward's in the last bits (ppo_kl != 0)
+                    with torch.set_grad_enabled(platforms.current_platform.flex_attention):
+                        # detached at once: a bound prediction would keep its graph alive through the next forward
+                        pred = self.model_parts[0](inputs, **model_kwargs).detach()
+                    self.loss_fn(pred, labels)
                 self._reshard_kept_params()
         return self.loss_fn.collect() if self.has_last_stage() else []
 
