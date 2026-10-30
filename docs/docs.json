@@ -227,6 +227,7 @@
        "advanced/speculative-decoding",
        "advanced/sampling-support-replay",
        "advanced/lora",
+       "advanced/multi-lora",
        "advanced/on-policy-distillation"
       ]
      },

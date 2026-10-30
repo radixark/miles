@@ -1,4 +1,5 @@
 from tests.ci.ci_register import register_cpu_ci
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
@@ -118,6 +119,7 @@ def make_args(**overrides) -> Namespace:
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
         sglang_router_request_timeout_secs=14400,
+        **sglang_router_args(),
         eval_num_gpus=0,
         namespaced_radix_cache=True,
         use_critic=False,
@@ -490,7 +492,7 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
         return sample
 
     monkeypatch.setattr(rollout_common, "generate_and_rm", generate_sample)
-    monkeypatch.setattr(rollout_common, "policy_uses_routing_key", lambda args: False)
+    monkeypatch.setattr(rollout_common, "router_routes_by_key", lambda args: False)
     args = make_args(
         rollout_batch_size=1,
         async_max_concurrent_samples=N_SAMPLES_PER_PROMPT,
