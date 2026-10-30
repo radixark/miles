@@ -244,18 +244,21 @@ async def test_a_retried_finish_is_accepted_and_a_finish_after_lease_expiry_is_r
     assert late.status_code == 410
 
 
-async def test_ended_sessions_are_forgotten_one_lease_after_they_end(client):
-    """Retry records age out with the lease instead of being capped by the slot count."""
+async def test_a_finished_session_is_remembered_for_one_lease(client):
+    """A retried finish within a lease is accepted; once the record ages out the session is unknown."""
+    finish_body = {"reason": {"type": "success"}, "detail": None}
+    aged = (await _model_body(client))["session_id"]
+    fresh = (await _model_body(client))["session_id"]
+    for session_id in (aged, fresh):
+        await client.post(f"/api/v1/sessions/{session_id}/finish", json=finish_body, headers=_headers())
     service = client.service
-    sessions = [(await _model_body(client))["session_id"] for _ in range(4 * service.config.n_slots + 1)]
-    for session_id in sessions:
-        service.sessions[session_id].last_heartbeat -= service.config.lease_timeout_s + 1
+    service._ended_sessions[aged] = service._ended_sessions[aged]._replace(
+        ended_at=service._ended_sessions[aged].ended_at - service.config.lease_timeout_s
+    )
     await service._expire_sessions()
-    assert set(sessions) <= set(service._ended_sessions)
 
-    for ended in list(service._ended_sessions):
-        service._ended_sessions[ended] = service._ended_sessions[ended]._replace(
-            ended_at=service._ended_sessions[ended].ended_at - service.config.lease_timeout_s
-        )
-    await service._expire_sessions()
-    assert service._ended_sessions == {}
+    aged_retry = await client.post(f"/api/v1/sessions/{aged}/finish", json=finish_body, headers=_headers())
+    fresh_retry = await client.post(f"/api/v1/sessions/{fresh}/finish", json=finish_body, headers=_headers())
+
+    assert aged_retry.status_code == 400
+    assert fresh_retry.status_code == 204
