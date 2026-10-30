@@ -16,6 +16,7 @@ surfacing as corruption.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -665,21 +666,21 @@ class DumpReader:
         "rollout_log_probs",
     )
 
+    def _columns_mirror_path(self, source: Path) -> Path:
+        # one --cache-dir can serve several dumps
+        dump_key = hashlib.sha256(str(source.resolve()).encode()).hexdigest()[:12]
+        return self.cache_dir / "columns" / f"rollout_{source.stem}.{dump_key}.parquet"
+
     def _rollout_columns(
         self, rollout_id: int, sample_index: int, *, sample_occurrence: int, evaluation: bool
     ) -> dict:
-        stem = ("eval_" if evaluation else "") + str(rollout_id)
-        path = self.cache_dir / "columns" / f"rollout_{stem}.parquet"
-        stamp_path = path.with_suffix(".source.json")
         source = self.rollout_dir / (f"eval_{rollout_id}.pt" if evaluation else f"{rollout_id}.pt")
-        # a rerun can rewrite the .pt, and one --cache-dir can serve several dumps
-        stamp = {
-            "source": str(source.resolve()),
-            "mtime": source.stat().st_mtime,
-            "columns": list(self.ROLLOUT_COLUMNS),
-        }
+        path = self._columns_mirror_path(source)
+        stamp_path = path.with_suffix(".source.json")
+        # a rerun can rewrite the .pt
+        stamp = {"mtime": source.stat().st_mtime, "columns": list(self.ROLLOUT_COLUMNS)}
         # concurrent request handlers: build each step's mirror once, without holding up other steps
-        with self._columns_locks.setdefault(stem, threading.Lock()):
+        with self._columns_locks.setdefault(path.name, threading.Lock()):
             if not path.exists() or _read_stamp(stamp_path) != stamp:
                 pack = self._torch_load(source)
                 save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)

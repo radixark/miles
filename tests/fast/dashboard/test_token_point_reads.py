@@ -18,7 +18,7 @@ def dumped(tmp_path):
 
 
 def _mirror(reader: DumpReader):
-    return reader.cache_dir / "columns" / "rollout_0.parquet"
+    return reader._columns_mirror_path(reader.rollout_dir / "0.pt")
 
 
 def test_the_first_point_read_writes_the_parquet_mirror(dumped):
@@ -71,6 +71,20 @@ def test_the_mirror_goes_to_the_cache_dir_so_a_read_only_dump_still_serves(dumpe
     assert reader.tokens(0, 0, start=0, end=4)["token_ids"]
     assert _mirror(reader).exists()
     assert sorted(path for path in dumped.rglob("*")) == before
+
+
+def test_dumps_sharing_a_cache_dir_keep_their_own_mirrors(tmp_path_factory):
+    """Two viewers sharing one ``--cache-dir`` must not overwrite each other's mirror of the same step."""
+    cache = tmp_path_factory.mktemp("cache")
+    first, second = tmp_path_factory.mktemp("first"), tmp_path_factory.mktemp("second")
+    dump_dummy_run(first, steps=1)
+    dump_dummy_run(second, steps=1)
+    blank_samples(second, 0)
+
+    assert DumpReader(first, cache_dir=cache).tokens(0, 0, start=0, end=1)["token_ids"]
+    with pytest.raises(KeyError, match="unknown sample_index"):
+        DumpReader(second, cache_dir=cache).tokens(0, 0, start=0, end=1)
+    assert len(list((cache / "columns").glob("*.parquet"))) == 2
 
 
 def test_a_stamp_cut_short_rebuilds_the_mirror(dumped):
