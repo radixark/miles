@@ -5,13 +5,12 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from miles.utils.external_utils import command_utils
 
 # MoE-expert LoRA smoke test on gpt-oss-20b (expert-only targets, bridge mode; CI-sized
-# version of examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh). Runs both serving
-# combinations — {canonical shared-outer + virtual-experts, canonical per-expert + no-virtual-experts} —
-# and every combination must pass. Functionality, not accuracy; 2 GPUs (TP=2, EP=1).
+# version of examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh). Runs every combination in
+# _CONFIGS and each must pass. Functionality, not accuracy; 2 GPUs (TP=2, EP=1).
 
 
 register_cuda_ci(
-    est_time=1600,
+    est_time=2000,
     suite="stage-c-2-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
@@ -25,7 +24,8 @@ NUM_GPUS = 2
 
 # (name, lora_type, experts_shared_outer_loras, virtual_experts_serving)
 _CONFIGS = [
-    # `lora` runs in test_qwen3_5_35b_a3b_lora_ci.py (per-expert, shared-outer)
+    # the only PR-tier model whose HF gate_up_proj is row-interleaved
+    ("lora + shared-outer + virtual-experts", "lora", True, True),
     ("canonical + shared-outer + virtual-experts", "canonical_lora", True, True),
     ("canonical + per-expert + no-virtual-experts", "canonical_lora", False, False),
 ]
