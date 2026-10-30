@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import uuid
+from typing import NamedTuple
 
 from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
@@ -40,6 +41,12 @@ from miles.tinker.core.utils import (
 logger = logging.getLogger(__name__)
 
 
+class _EndedSession(NamedTuple):
+    tenant: str
+    lease_expired: bool
+    ended_at: float
+
+
 class TinkerService:
     def __init__(self, backend, config: GatewayConfig) -> None:
         self.backend = backend
@@ -59,8 +66,8 @@ class TinkerService:
         self._background_error: BaseException | None = None
         # why each model closed, so later requests get the reason instead of "unknown model"
         self._close_reasons: dict[str, str] = {}
-        # session_id -> (tenant, lease_expired) of ended sessions, so a retried SDK finish is answered
-        self._ended_sessions: dict[str, tuple[str, bool]] = {}
+        # ended sessions, kept one lease long so a retried SDK finish is answered
+        self._ended_sessions: dict[str, _EndedSession] = {}
 
     async def run(self) -> None:
         sweep_task = asyncio.create_task(self._run_lease_sweeper())
@@ -542,6 +549,10 @@ class TinkerService:
                 if now - session.last_heartbeat >= self.config.lease_timeout_s
             }
             await self._end_sessions(expired_sessions, "lease expired", lease_expired=True)
+            # a client silent for longer than a lease would have lost the session anyway
+            for session_id, ended in list(self._ended_sessions.items()):
+                if now - ended.ended_at >= self.config.lease_timeout_s:
+                    del self._ended_sessions[session_id]
 
     async def finish_session(self, tenant: str, session_id: str, reason: str, detail: str | None) -> bool:
         """SDK close(): reclaim the session now instead of at lease expiry. False if its lease already expired.
@@ -550,8 +561,8 @@ class TinkerService:
         """
         async with self._trainer_lock:
             ended = self._ended_sessions.get(session_id)
-            if ended is not None and ended[0] == tenant:
-                return not ended[1]
+            if ended is not None and ended.tenant == tenant:
+                return not ended.lease_expired
             self._session_for(tenant, session_id)
             logger.info(f"session {session_id} finished ({reason}): {detail}")
             await self._end_sessions({session_id}, f"session finished ({reason})", lease_expired=False)
@@ -559,10 +570,9 @@ class TinkerService:
 
     async def _end_sessions(self, session_ids: set[str], error: str, *, lease_expired: bool) -> None:
         """Drop sessions with their sampling sessions and models; requires the trainer lock."""
+        now = time.monotonic()
         for session_id in session_ids:
-            self._ended_sessions[session_id] = (self.sessions.pop(session_id).tenant, lease_expired)
-        while len(self._ended_sessions) > 4 * self.config.n_slots:
-            self._ended_sessions.pop(next(iter(self._ended_sessions)))
+            self._ended_sessions[session_id] = _EndedSession(self.sessions.pop(session_id).tenant, lease_expired, now)
         for sampling_session_id, record in list(self.sampling_sessions.items()):
             if record.session_id in session_ids:
                 del self.sampling_sessions[sampling_session_id]
