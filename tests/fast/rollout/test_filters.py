@@ -54,7 +54,11 @@ def test_legacy_filters_forward_without_runtime_deprecation_warnings(monkeypatch
     assert canonical.__name__ in legacy.__deprecated__
     assert not hasattr(canonical, "__deprecated__")
 
-    args, samples, extra = Namespace(reward_key=None), [make_sample()], object()
+    args, samples, extra = (
+        Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key=None),
+        [make_sample()],
+        object(),
+    )
     result = FilterOutput(keep=False, reason="unchanged")
 
     def replacement(forwarded_args, forwarded_samples, **kwargs):
@@ -102,7 +106,9 @@ def test_legacy_filters_forward_without_runtime_deprecation_warnings(monkeypatch
 )
 def test_legacy_filters_preserve_structured_results(legacy_name, samples, expected):
     legacy = load_function(f"miles.rollout.filter_hub.dynamic_sampling_filters.{legacy_name}")
-    result = legacy(Namespace(reward_key=None), samples, ignored=True)
+    result = legacy(
+        Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key=None), samples, ignored=True
+    )
     assert isinstance(result, DynamicFilterOutput)
     assert result == expected
 
@@ -130,7 +136,12 @@ def test_iter_samples_preserves_flat_and_mixed_nested_order():
     ],
 )
 def test_common_filters_return_structured_drop(filter_fn, group, expected):
-    assert filter_fn(Namespace(reward_key=None), group, ignored=True) == expected
+    assert (
+        filter_fn(
+            Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key=None), group, ignored=True
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize("reward", [None, 1.0], ids=["missing-reward", "numeric-reward"])
@@ -142,7 +153,7 @@ def test_preput_aborted_wins_before_missing_reward_and_dynamic_filter(reward):
         return True
 
     output = apply_preput_filters(
-        Namespace(reward_key=None),
+        Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key=None),
         dynamic_filter,
         [make_sample(reward=reward, status=Sample.Status.ABORTED)],
     )
@@ -168,7 +179,7 @@ def test_preput_missing_reward_wins_before_dynamic_filter(reward_key, group):
         return True
 
     output = apply_preput_filters(
-        Namespace(reward_key=reward_key),
+        Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key=reward_key),
         dynamic_filter,
         group,
     )
@@ -186,7 +197,7 @@ def test_preput_selected_reward_missing_key_propagates():
 
     with pytest.raises(KeyError, match="score"):
         apply_preput_filters(
-            Namespace(reward_key="score"),
+            Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key="score"),
             dynamic_filter,
             [make_sample(reward={"other": 1.0})],
         )
@@ -197,17 +208,28 @@ def test_preput_selected_reward_missing_key_propagates():
 def test_preput_preserves_filter_output_identity():
     output = FilterOutput(keep=False, reason="custom_reason")
 
-    assert apply_preput_filters(Namespace(reward_key=None), lambda *args, **kwargs: output, [make_sample()]) is output
+    assert (
+        apply_preput_filters(
+            Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key=None),
+            lambda *args, **kwargs: output,
+            [make_sample()],
+        )
+        is output
+    )
 
 
 def test_preput_normalizes_legacy_false():
-    output = apply_preput_filters(Namespace(reward_key=None), lambda *args, **kwargs: False, [make_sample()])
+    output = apply_preput_filters(
+        Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key=None),
+        lambda *args, **kwargs: False,
+        [make_sample()],
+    )
 
     assert output == FilterOutput(keep=False)
 
 
 def test_preput_passes_kwargs_and_returns_keep_output():
-    args = Namespace(reward_key=None)
+    args = Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key=None)
     group = [make_sample()]
     marker = object()
     calls = []
@@ -233,7 +255,7 @@ def test_preput_propagates_dynamic_filter_exception():
 
     with pytest.raises(RuntimeError, match="dynamic filter failed"):
         apply_preput_filters(
-            Namespace(reward_key=None),
+            Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key=None),
             dynamic_filter,
             [make_sample()],
         )

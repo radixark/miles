@@ -327,4 +327,6 @@ ROLLOUT_ARGS+=(
 
 That is the entire delta from the stock GRPO recipe, with no source changes to Miles.
 
+For built-in group-relative reward shaping, see [Length penalties](/advanced/algorithms/length-penalties).
+
 → Next: [Server arguments reference](/user-guide/cli-reference)

@@ -42,6 +42,8 @@ def _args(**overrides) -> Namespace:
         "lora_adapter_path": None,
         "lora_rank": 0,
         "reward_key": None,
+        "length_penalty_coeff": 0.0,
+        "length_penalty_min_tokens": 1,
         "num_rollout": None,
         "use_miles_router": False,
         "rollout_max_context_len": 64,

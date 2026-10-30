@@ -26,6 +26,14 @@ class RewardModelConfig(BaseConfig):
 
 
 class RewardModelRolloutOnlyConfig(BaseConfig):
+    length_penalty_coeff: A[
+        float,
+        Arg(help="Non-negative exponent for correct-trajectory length penalties; zero disables shaping."),
+    ] = 0.0
+    length_penalty_min_tokens: A[
+        int,
+        Arg(help="Positive floor on the shortest correct trajectory's generated-token count."),
+    ] = 1
     eval_reward_key: A[str | None, Arg(help="The eval variant for --reward-key")] = None
     group_rm: A[bool, Arg(help="Whether to do rm on a whole group.")] = False
     rm_url: A[

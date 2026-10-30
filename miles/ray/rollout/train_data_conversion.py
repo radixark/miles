@@ -4,7 +4,12 @@ from typing import Any
 import torch
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
-from miles.rollout.reward_shaping import reward_group_segments, rollout_segments
+from miles.rollout.reward_shaping import (
+    apply_length_penalty,
+    is_correct_reward,
+    reward_group_segments,
+    rollout_segments,
+)
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
@@ -77,6 +82,18 @@ def convert_samples_to_train_data(
         fn_args = compute_custom_function_config(args, args.custom_convert_samples_to_train_data_path)
         return f(fn_args, samples)
 
+    # Finalize masks before shaping: only tokens used by the training loss count.
+    loss_masks = []
+    for sample in samples:
+        if sample.loss_mask is None:
+            sample.loss_mask = [1] * sample.response_length
+        assert (
+            len(sample.loss_mask) == sample.response_length
+        ), f"loss mask length {len(sample.loss_mask)} != response length {sample.response_length}"
+        if sample.remove_sample:
+            sample.loss_mask = [0] * sample.response_length
+        loss_masks.append(sample.loss_mask)
+
     raw_rewards, rewards = _post_process_rewards(
         args,
         samples,
@@ -104,20 +121,6 @@ def convert_samples_to_train_data(
         "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
 
-    # loss mask
-    # TODO: compress the loss mask
-    loss_masks = []
-    for sample in samples:
-        # always instantiate loss_mask if not provided
-        if sample.loss_mask is None:
-            sample.loss_mask = [1] * sample.response_length
-
-        assert (
-            len(sample.loss_mask) == sample.response_length
-        ), f"loss mask length {len(sample.loss_mask)} != response length {sample.response_length}"
-        if sample.remove_sample:
-            sample.loss_mask = [0] * sample.response_length
-        loss_masks.append(sample.loss_mask)
     train_data["loss_masks"] = loss_masks
 
     train_data["rollout_mask_sums"] = _compute_rollout_mask_sums(train_data["rollout_ids"], loss_masks)
@@ -322,6 +325,8 @@ def _normalize_rewards_by_rollout(
     samples: list[Sample],
     raw_rewards: list[float],
     prompt_group_sizes: list[int] | None,
+    *,
+    unshaped_rewards: list[float] | None = None,
 ) -> list[float]:
     """Normalize one shared reward per rollout, then broadcast it to siblings."""
     if not samples:
@@ -342,7 +347,17 @@ def _normalize_rewards_by_rollout(
 
         rollout_rewards = torch.tensor(shared_rewards, dtype=torch.float)
         normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
-        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(rollout_rewards) > 1:
+        # In all-correct groups the only signal is length. Standardizing it would
+        # amplify arbitrarily small penalties into full-strength advantages.
+        length_only = unshaped_rewards is not None and all(
+            is_correct_reward(unshaped_rewards[row]) for row in prompt_segments
+        )
+        if (
+            args.advantage_estimator in ["grpo", "gspo"]
+            and args.grpo_std_normalization
+            and len(rollout_rewards) > 1
+            and not length_only
+        ):
             rollout_std = rollout_rewards.std()
             if rollout_std > 0:
                 normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
@@ -367,11 +382,18 @@ def _post_process_rewards(
         return f(fn_args, samples)
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
+    rewards = raw_rewards
+    if args.length_penalty_coeff > 0:
+        rewards = apply_length_penalty(
+            args, samples, raw_rewards, reward_group_segments(args, samples, prompt_group_sizes)
+        )
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
-        normalized_rewards = _normalize_rewards_by_rollout(args, samples, raw_rewards, prompt_group_sizes)
+        normalized_rewards = _normalize_rewards_by_rollout(
+            args, samples, rewards, prompt_group_sizes, unshaped_rewards=raw_rewards
+        )
         return raw_rewards, normalized_rewards
 
-    return raw_rewards, raw_rewards
+    return raw_rewards, rewards
 
 
 def split_train_data_by_dp(
