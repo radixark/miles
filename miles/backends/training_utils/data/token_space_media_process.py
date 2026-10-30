@@ -107,9 +107,6 @@ def _token_space_processor(rollout_engine_args: RolloutEngineProcessorArgs, devi
         model_override_args=json.loads(rollout_engine_args.model_override_args_json),
         model_config_parser=rollout_engine_args.model_config_parser,
     )
-    if hf_config.architectures == ["Qwen3_5Model"]:
-        # SGLang's ModelConfig renames a bare backbone that carries a decision config, which get_config does not.
-        raise ValueError("--multimodal-token-space-processing does not support a bare Qwen3_5Model checkpoint")
     strategy_class = strategy_for(hf_config)
     if strategy_class is None:
         raise ValueError(f"--multimodal-token-space-processing does not support {hf_config.architectures}")
