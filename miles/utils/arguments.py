@@ -26,6 +26,7 @@ from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespa
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.router.backend import RouterKind
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.rollout import UPDATE_WEIGHT_TRANSFER_MODES
 from miles.utils.args.configs.router import RouterConfig
@@ -851,18 +852,24 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         )
 
 
+def _apply_custom_config(args, data: dict) -> None:
+    # configs written before --router
+    if data.pop("use_miles_router", False):
+        data["router"] = RouterKind.MILES
+    for k, v in data.items():
+        if hasattr(args, k):  # config-access-exempt: attribute selected at runtime from k
+            logger.info(
+                f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}."
+            )  # config-access-exempt: attribute selected at runtime from k
+        setattr(args, k, v)
+
+
 def miles_validate_args(args):
     from miles.backends.training_utils.weight_update.session import weight_update_selector
 
     if args.custom_config_path:
         logger.warning("--custom-config-path is deprecated; use the custom function's declared CLI arguments instead.")
-        data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
-        for k, v in data.items():
-            if hasattr(args, k):  # config-access-exempt: attribute selected at runtime from k
-                logger.info(
-                    f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}."
-                )  # config-access-exempt: attribute selected at runtime from k
-            setattr(args, k, v)
+        _apply_custom_config(args, yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
 
     mode = args.update_weight_transfer_mode
     # --custom-config-path overrides above bypass the parser's choices
