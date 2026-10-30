@@ -151,7 +151,10 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             await offload_train()
             if args.offload_rollout:
                 await inference_controller.onload_weights()
-        if weight_update_due:
+        eval_due = should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout)
+        # Like train.py, skip an update nothing would read: it pauses health monitoring with no prepare
+        # left to resume it.
+        if weight_update_due and (has_next_rollout or eval_due):
             if not args.fully_async:
                 # sync generate before update weights to prevent update weight in the middle of generation
                 rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
@@ -166,7 +169,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             if rollout_id + 1 < args.num_rollout:
                 rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
-        if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
+        if eval_due:
             await inference_controller.prepare_eval()
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 

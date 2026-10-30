@@ -212,6 +212,27 @@ class TestPipelinedGeneration:
         assert "generate_start:2" not in events
         assert components.actor_model.trained == [0, 1]
 
+    @pytest.mark.parametrize("eval_interval", [None, 1])
+    async def test_the_final_rollout_updates_weights_only_for_its_eval(
+        self, monkeypatch: pytest.MonkeyPatch, eval_interval: int | None
+    ):
+        """No prepare follows the last update, so without an eval it would leave health monitoring paused."""
+        events: list[str] = []
+        args = _make_args(fully_async=True, num_rollout=2, update_weights_interval=1, eval_interval=eval_interval)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        async def dispatch(self, rollout_id: int, **kwargs) -> None:
+            events.append(f"eval_dispatch:{rollout_id}")
+
+        monkeypatch.setattr(train_async_driver.EvalDispatcher, "dispatch", dispatch)
+
+        await with_disposer(train_async_driver.train, _startup_info(args))
+
+        assert "update_weights:0" in events
+        assert ("update_weights:1" in events) == (eval_interval is not None)
+        if eval_interval is not None:
+            assert events.index("update_weights:1") < events.index("eval_dispatch:1")
+
     async def test_fully_async_keeps_lookahead_between_weight_updates(self, monkeypatch: pytest.MonkeyPatch):
         """A drain may still overlap training when that step cannot change the current weight version."""
         events: list[str] = []

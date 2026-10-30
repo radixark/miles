@@ -958,3 +958,51 @@ class TestShippedRolloutConfig:
         assert checker.status == TriState.FALSE
         assert checker._consecutive_failures == 1
         checker.stop()
+
+
+class TestVerdictAfterActivenessChange:
+    async def test_a_resume_gets_a_verdict_without_waiting_out_the_interval(self):
+        """A weight update every few seconds would otherwise keep a long-interval checker Unknown."""
+        call_count = 0
+
+        async def check_fn() -> None:
+            nonlocal call_count
+            call_count += 1
+
+        activeness = _Activeness()
+        checker, clock = _make_checker(check_fn=check_fn, interval=30.0, activeness=activeness)
+        checker.start()
+        await _settle(clock)
+        assert call_count == 1
+
+        await clock.elapse(2.0)
+        activeness.active = False
+        activeness.active = True
+        assert checker.status == TriState.UNKNOWN
+
+        await clock.elapse(1.0)
+        assert call_count == 2
+        assert checker.status == TriState.TRUE
+        checker.stop()
+
+    async def test_a_discarded_probe_is_retried_without_waiting_out_the_interval(self):
+        """The pause that discarded a probe has already ended, so the next probe is due now."""
+        call_count = 0
+        activeness = _Activeness()
+
+        async def check_fn() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                activeness.active = False
+                activeness.active = True
+
+        checker, clock = _make_checker(check_fn=check_fn, interval=30.0, activeness=activeness)
+        checker.start()
+        await _settle(clock)
+        assert checker.status == TriState.UNKNOWN
+
+        await clock.elapse(1.0)
+        assert call_count == 2
+        assert checker.status == TriState.TRUE
+        checker.stop()
