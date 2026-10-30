@@ -16,6 +16,7 @@ import pytest
 import torch
 from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.backends.fsdp_utils.arguments import build_fsdp_parser
 from miles.backends.megatron_utils.megatron_config import MegatronConfig, get_megatron_arg_parser
@@ -26,6 +27,7 @@ from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import (
     FULLY_ASYNC_ROLLOUT_PATH,
+    _check_multimodal_token_space_processing_args,
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,
     _maybe_apply_dumper_overrides,
@@ -3986,3 +3988,36 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
     assert native_args is not None
     assert native_args.mtp_detach_heads is detach_heads
     assert "mtp_detach_heads" not in args.model_fields
+
+
+class TestMultimodalTokenSpaceProcessingArgs:
+    """The trainer rebuilds the rollout engines' media features, so it must reject settings it cannot follow."""
+
+    _SUPPORTED = {
+        "enable_token_space_processor": True,
+        "rl_on_policy_target": None,
+        "true_on_policy_contract": None,
+        "decrypted_config_file": None,
+    }
+
+    @pytest.mark.parametrize(
+        ("engine_overrides", "external_engines", "match"),
+        [
+            ({"enable_token_space_processor": False}, None, "--sglang-enable-token-space-processor"),
+            ({}, ["10.0.0.1:30000"], "external engines"),
+            ({"rl_on_policy_target": "fsdp"}, None, "--sglang-rl-on-policy-target"),
+            ({"true_on_policy_contract": "qwen3_dense_v1"}, None, "--sglang-true-on-policy-contract"),
+            ({"decrypted_config_file": "/ckpt/override.json"}, None, "--sglang-decrypted-config-file"),
+        ],
+    )
+    def test_settings_the_trainer_cannot_follow_are_rejected(self, engine_overrides, external_engines, match):
+        args = SimpleNamespace(multimodal_token_space_processing=True, rollout_external_engine_addrs=external_engines)
+        sglang = make_sglang_config(**{**self._SUPPORTED, **engine_overrides})
+
+        with pytest.raises(ValueError, match=match):
+            _check_multimodal_token_space_processing_args(args, sglang=sglang)
+
+    def test_supported_settings_pass(self):
+        args = SimpleNamespace(multimodal_token_space_processing=True, rollout_external_engine_addrs=None)
+
+        _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))

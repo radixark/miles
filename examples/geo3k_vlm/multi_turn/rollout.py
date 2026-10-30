@@ -11,6 +11,7 @@ from examples.geo3k_vlm.multi_turn.base_env import BaseInteractionEnv
 
 # When executed as a module: python -m examples.geo3k_vlm.multi_turn.rollout
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.generate_utils.generate_endpoint_utils import adopt_expanded_prompt_ids, token_space_request_fields
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.http_utils import post
 from miles.utils.media_refs import collect_media_refs, load_media_for_processor
@@ -165,8 +166,8 @@ def _prepare_initial_inputs(sample: Sample, processor, tokenizer):
     return prompt_ids, image_data, sample.multimodal_train_inputs
 
 
-def _prepare_start_state(sample: Sample, state, args: Any, sampling_params: dict):
-    prompt_ids, image_data, init_mm_train = _prepare_initial_inputs(sample, state.processor, state.tokenizer)
+def _prepare_start_state(sample: Sample, state, processor, args: Any, sampling_params: dict):
+    prompt_ids, image_data, init_mm_train = _prepare_initial_inputs(sample, processor, state.tokenizer)
     current_image_data = image_data
     multimodal_train_inputs_buffer: list[dict | None] = []
     if init_mm_train:
@@ -187,16 +188,21 @@ def _prepare_start_state(sample: Sample, state, args: Any, sampling_params: dict
     return current_image_data, response_tokens, budget, multimodal_train_inputs_buffer
 
 
-async def _run_inference_step(url: str, tokens: list[int], sampling_params: dict, image_data, tokenizer):
+async def _run_inference_step(
+    url: str, sample: Sample, sampling_params: dict, image_data, mm_token_expansion_start_len: int | None
+):
     payload = {
-        "input_ids": tokens,
+        "input_ids": sample.tokens,
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
     if image_data:
         payload["image_data"] = image_data
+    if mm_token_expansion_start_len is not None:
+        payload.update(token_space_request_fields(mm_token_expansion_start_len))
 
     output = await post(url, payload)
+    adopt_expanded_prompt_ids(sample, payload, output)
     response_text = output["text"]
     if "output_token_logprobs" in output["meta_info"]:
         new_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
@@ -313,8 +319,11 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     state = input.state
     env, env_module, config, url = _initialize_resources(args, sample)
     sampling_params = sampling_params.copy()
+    # In token space SGLang expands the media placeholders and the trainer builds the processor tensors.
+    processor = None if args.multimodal_token_space_processing else state.processor
+    mm_token_expansion_start_len = 0 if args.multimodal_token_space_processing else None
     current_image_data, response_tokens, budget, multimodal_train_inputs_buffer = _prepare_start_state(
-        sample, state, args, sampling_params
+        sample, state, processor, args, sampling_params
     )
     try:
         env.reset()
@@ -327,9 +336,14 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             if budget is not None:
                 cur_sampling_params["max_new_tokens"] = budget
 
+            tokens_before_expansion = len(sample.tokens)
             response_text, new_response_tokens, new_response_log_probs, finish_type = await _run_inference_step(
-                url, sample.tokens, cur_sampling_params, current_image_data, state.tokenizer
+                url, sample, cur_sampling_params, current_image_data, mm_token_expansion_start_len
             )
+            if num_expanded_tokens := len(sample.tokens) - tokens_before_expansion:
+                # SGLang expanded the prompt, or on a later turn the latest observation inside the response.
+                response_tokens[:] = sample.tokens[len(sample.tokens) - sample.response_length :]
+                budget = _update_budget(budget, num_expanded_tokens)
             _append_to_sample(sample, response_tokens, new_response_tokens, new_response_log_probs, loss_mask_val=1)
             budget = _update_budget(budget, len(new_response_tokens))
 
@@ -340,12 +354,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 break
 
             obs_prompt_ids, obs_image_data, obs_multimodal_inputs, obs_multimodal_train_inputs, done = (
-                _process_env_step(env, response_text, state.tokenizer, state.processor, args, sample.metadata)
+                _process_env_step(env, response_text, state.tokenizer, processor, args, sample.metadata)
             )
             if done:
                 sample.status = Sample.Status.COMPLETED
                 break
 
+            if mm_token_expansion_start_len is not None:
+                # Only the new observation still holds unexpanded media placeholders.
+                mm_token_expansion_start_len = len(sample.tokens)
             obs_log_probs = [0.0] * len(obs_prompt_ids)
             _append_to_sample(sample, response_tokens, obs_prompt_ids, obs_log_probs, loss_mask_val=0)
             budget = _update_budget(budget, len(obs_prompt_ids))

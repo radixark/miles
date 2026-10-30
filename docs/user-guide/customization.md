@@ -257,6 +257,7 @@ def convert_samples_to_train_data(args, samples) -> dict:
         "rollout_routed_experts":  [...],
         "metadata":                [...],
         "multimodal_train_inputs": [...],
+        "multimodal_inputs":       [...],
         "teacher_log_probs":       [...],
     }
 ```

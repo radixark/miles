@@ -175,6 +175,7 @@ Sections mirror the launch-script argument groups.
 | `--metadata-key` | str | `metadata` | JSONL key to `Sample.metadata`. |
 | `--apply-chat-template` | flag | off | Apply tokenizer chat template. |
 | `--shared-media-dir` | path | – | Directory shared with every SGLang engine; media that is not a file path yet (data URL, bytes, PIL image) is written here. |
+| `--multimodal-token-space-processing` | flag | off | SGLang expands media placeholders and the trainer builds the processor inputs (models with an SGLang token-space strategy). Needs `--sglang-enable-token-space-processor`; the trainer builds its processor from the rollout engines' server args, so external engines, `--sglang-rl-on-policy-target`, `--sglang-true-on-policy-contract` and `--sglang-decrypted-config-file` are rejected. `--rollout-max-prompt-len` counts text tokens only. |
 | `--rollout-shuffle` | flag | on | Shuffle prompts once per epoch (seeded by `--rollout-seed`). `--no-rollout-shuffle` keeps file order. |
 | `--num-rollout` | int | – | Total rollout iterations. If unset, derived from dataset size. |
 | `--rollout-batch-size` | int | – | Prompts per rollout. |
