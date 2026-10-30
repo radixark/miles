@@ -1075,9 +1075,14 @@ def load_model_state(
 
     check_model_hashes(args, model, iteration)
 
-    # Megatron checkpoint loads can restore scheduler state directly. In that
-    # case, stepping by the checkpoint iteration here would double-count.
-    if opt_param_scheduler is not None and not (args.backend.use_checkpoint_opt_param_scheduler and iteration > 0):
+    # Megatron checkpoint loads and native LoRA adapter restores can restore scheduler state
+    # directly (the adapter's training state already counts its iterations). In that case,
+    # stepping by the checkpoint iteration here would double-count.
+    if (
+        opt_param_scheduler is not None
+        and adapter_iteration is None
+        and not (args.backend.use_checkpoint_opt_param_scheduler and iteration > 0)
+    ):
         opt_param_scheduler.step(increment=iteration * args.backend.global_batch_size)
 
     if not restored_trained_iteration:

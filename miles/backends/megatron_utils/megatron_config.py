@@ -395,6 +395,9 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
 
     # TODO: a --use-critic critic keeps the actor's requested_load, so a hot restart reads the actor's checkpoint.
 
+    if ans.train_backend == "megatron":
+        ans.lora_adapter_path = native_lora_resume_adapter_path(ans)
+
     ans.trainer_init_expected_num_cells = _resolve_trainer_init_expected_num_cells(ans, base=args, trainer=trainer)
 
     return ans
@@ -476,7 +479,11 @@ def resolve_args_checkpoint_load(args: Namespace, *, role: str) -> bool:
         args.load = args.ref_load or args.hf_checkpoint
         args.start_rollout_id = 0
     else:
-        args.no_load_optim = True
+        # A native LoRA run saves adapter shards with their optimizer state under --load (iter_*/adapter)
+        # and no Megatron tracker. Its resume loads the base weights from --ref-load and the adapter,
+        # optimizer and iteration from the newest save (restore_lora_adapter), so the optimizer stays on.
+        if not (args.lora_rank > 0 and latest_native_lora_save(args.load) is not None):
+            args.no_load_optim = True
         args.no_load_rng = True
         args.finetune = True
         args.load = args.ref_load
@@ -485,6 +492,27 @@ def resolve_args_checkpoint_load(args: Namespace, *, role: str) -> bool:
         args.start_rollout_id = 0
 
     return resume_from_ckpt
+
+
+def latest_native_lora_save(load_dir: str | None) -> Path | None:
+    """The newest ``iter_*/adapter`` directory with native LoRA rank shards under ``load_dir``, or None."""
+    if load_dir is None or not os.path.isdir(load_dir):
+        return None
+    saves = sorted(
+        path
+        for path in Path(load_dir).glob("iter_*/adapter")
+        if re.fullmatch(r"iter_\d{7}", path.parent.name) and (path / "adapter_megatron_rank0.pt").is_file()
+    )
+    return saves[-1] if saves else None
+
+
+def native_lora_resume_adapter_path(args: Namespace) -> str | None:
+    """``--lora-adapter-path`` for a LoRA run: as given, or else the newest native LoRA save under a
+    ``--load`` that holds no Megatron checkpoint (a resume of a native LoRA run)."""
+    if args.lora_adapter_path is not None or args.lora_rank == 0 or has_megatron_checkpoint(args.load):
+        return args.lora_adapter_path
+    save = latest_native_lora_save(args.load)
+    return None if save is None else str(save)
 
 
 def has_megatron_checkpoint(load_dir: str | None, ckpt_step: int | None = None) -> bool:
