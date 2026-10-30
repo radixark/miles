@@ -15,6 +15,7 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge impor
     _process_conversion_tasks,
     _select_bridge_checkpoint,
 )
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
 
 def test_bridge_uses_direct_hf_trainer_seed_for_export_mappings(tmp_path):
@@ -135,6 +136,25 @@ def test_bridge_canonicalizes_adapter_names_before_postprocessing(monkeypatch):
     postprocess.assert_called_once_with(
         args=iterator.args, megatron_param_name=None, hf_param_name=hf_name, param=weight
     )
+
+
+def test_bridge_stages_adapter_on_cpu_only_for_the_snapshot_writer(monkeypatch):
+    weight = Mock()
+    hf_name = "model.layers.0.self_attn.q_proj.lora_A.weight"
+    iterator = object.__new__(HfWeightIteratorBridge)
+    iterator.args = Namespace()
+    iterator.model = []
+    iterator.placement = WeightUpdatePlacement(gather_pp=False)
+    iterator._bridge = Mock()
+    iterator._bridge.export_adapter_weights.side_effect = lambda *args, **kwargs: iter([(hf_name, weight)])
+    iterator._remap_hf_name = lambda name: name
+    monkeypatch.setattr(bridge_iterator, "postprocess_hf_param", lambda *, param, **kwargs: param)
+    monkeypatch.setattr(bridge_iterator.megatron_bridge_utils, "patch_megatron_model", lambda model: nullcontext())
+
+    assert iterator.materialize_adapter(None, materialize=False) == {}
+    weight.cpu.assert_not_called()
+    assert iterator.materialize_adapter(None) == {hf_name: weight.cpu.return_value}
+    assert iterator._export_current_adapter() == [(hf_name, weight)]
 
 
 @dataclass

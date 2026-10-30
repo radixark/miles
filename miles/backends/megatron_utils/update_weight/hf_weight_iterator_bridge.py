@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
+    _export_adapter_to_cpu = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -37,6 +39,15 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         # all use SGLang's model namespace.
         self._remap_hf_name = _load_checkpoint_name_remap(bridge_checkpoint)
         self._export_dtypes = None
+
+    def materialize_adapter(self, adapter, *, materialize=True):
+        # Snapshots are written from CPU. Moving each tensor as it is exported keeps
+        # the whole adapter from collecting on the GPU before the writer copies it.
+        self._export_adapter_to_cpu = materialize
+        try:
+            return super().materialize_adapter(adapter, materialize=materialize)
+        finally:
+            self._export_adapter_to_cpu = False
 
     def _iter_hf_param_units(self, weights, *, materialize):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
@@ -113,7 +124,11 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 **self._source_name_kwargs(self._bridge.export_adapter_weights),
             )
             named_weights = self._postprocess_and_quantize(named_weights, "lora")
-            return [(h, w) for h, w, _m in named_weights if is_lora_weight_name(h)]
+            return [
+                (h, w.cpu() if self._export_adapter_to_cpu else w)
+                for h, w, _m in named_weights
+                if is_lora_weight_name(h)
+            ]
 
     @staticmethod
     def _source_name_kwargs(export_fn) -> dict:
