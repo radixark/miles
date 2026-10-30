@@ -251,15 +251,35 @@ class RolloutRelatedConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
+            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "http-lora"],
             help=(
                 "The method to transfer weights to remote rollout engines during update weight. "
                 "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                 "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                "them into a host-local checkpoint that the engine reloads from."
+                "them into a host-local checkpoint that the engine reloads from. "
+                "'http-lora' is LoRA-only: rank 0 hands the adapter to each engine's LoRA load route over "
+                "HTTP (see --http-lora-ship), so the trainer and the engines need not share a vendor, an "
+                "interconnect, or a host."
             ),
         ),
     ] = "broadcast"
+    http_lora_ship: A[
+        str,
+        Arg(
+            type_parser=None,
+            choices=["path", "tensors"],
+            help=(
+                "How http-lora hands the adapter to the engines. 'path': write a versioned PEFT "
+                "directory under --update-weight-disk-dir and POST its path to load_lora_adapter; "
+                "the directory must be visible to the engine hosts, or "
+                "--custom-update-weight-post-write-path copies it there. 'tensors': stream the "
+                "adapter through the engine's weight-update session (register_lora_adapter, "
+                "update_weights_from_tensor, end_weight_update), so the engines need nothing but "
+                "an HTTP port and each version is installed in place; --update-weight-disk-dir "
+                "is not used."
+            ),
+        ),
+    ] = "path"
     update_weight_disk_dir: A[
         str | None,
         Arg(
