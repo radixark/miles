@@ -185,8 +185,8 @@ class DebugConfig(BaseConfig):
             action=argparse.BooleanOptionalAction,
             help="Ask every inference engine for a full weight checksum after each weight update and record it "
             "in the event log. The engines materialize all weights to answer, which costs a large transient "
-            "allocation, so this defaults on only when --save-debug-event-data was passed; the event "
-            "directories --dump-details and --save imply do not count.",
+            "allocation, so this defaults on only under --enable-event-analyzer, which checks the checksums; "
+            "an event directory alone does not turn it on.",
         ),
     ] = None
     enable_sample_ownership_checker: A[

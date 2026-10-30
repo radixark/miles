@@ -784,8 +784,6 @@ def validate_log_probs_backend_args(args) -> None:
 
 
 def _resolve_event_logging(args: argparse.Namespace) -> None:
-    event_directory_was_requested = args.save_debug_event_data is not None
-
     if args.dump_details is not None:
         args.save_debug_event_data = f"{args.dump_details}/{EVENTS_DIRNAME}"
     if args.save_debug_event_data is None and args.save is not None:
@@ -795,7 +793,7 @@ def _resolve_event_logging(args: argparse.Namespace) -> None:
         args.save_debug_event_data = str(root / "miles-ci" / args.run_uuid / EVENTS_DIRNAME)
 
     if args.log_inference_engine_weight_checksums is None:
-        args.log_inference_engine_weight_checksums = event_directory_was_requested or args.enable_event_analyzer
+        args.log_inference_engine_weight_checksums = args.enable_event_analyzer
     if args.enable_event_analyzer and not args.log_inference_engine_weight_checksums:
         raise ValueError(
             "--enable-event-analyzer (also implied by train fault tolerance) requires every published weight "

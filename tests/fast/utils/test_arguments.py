@@ -414,9 +414,25 @@ class TestEventDirectoryDefaults:
         assert defaulted.save_debug_event_data == "/checkpoints/run/events"
         assert explicit.save_debug_event_data == "/audit/events"
 
-    def test_an_explicit_event_directory_asks_for_engine_weight_checksums(self) -> None:
-        """Requesting an event dump opts into the engine checksum event it is meant to collect."""
+    def test_an_explicit_event_directory_does_not_ask_for_engine_weight_checksums(self) -> None:
+        """Nothing checks the checksums without the analyzer, so an event dump alone must not pay for them."""
         args = self._parse(["--save-debug-event-data", "/audit/events"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is False
+
+    def test_an_event_analyzer_collects_engine_weight_checksums(self) -> None:
+        """The analyzer checks every publication's checksums, so it turns their collection on."""
+        args = self._parse(["--save-debug-event-data", "/audit/events", "--enable-event-analyzer"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
+    def test_engine_weight_checksums_can_be_requested_explicitly(self) -> None:
+        """A harness that compares checksums itself asks for them with the flag."""
+        args = self._parse(["--save-debug-event-data", "/audit/events", "--log-inference-engine-weight-checksums"])
 
         miles_validate_args(args)
 
