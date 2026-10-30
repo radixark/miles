@@ -132,7 +132,7 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 | `--lora-rank` | `0` | Adapter rank; a positive value enables LoRA. Supplying an adapter path also marks LoRA enabled, but still requires matching positive-rank configuration. |
 | `--lora-alpha` | `16` | Adapter scaling factor. |
 | `--lora-dropout` | `0.0` | Dropout on the adapter path. |
-| `--lora-type` | `lora` | `lora` uses fused Megatron projections; `canonical_lora` uses split Q/K/V and gate/up projections. The canonical path is implemented and covered by fast name-mapping tests, but has no maintained recipe or E2E validation. |
+| `--lora-type` | `lora` | `lora` uses fused Megatron projections; `canonical_lora` uses split Q/K/V and gate/up projections. The gpt-oss MoE LoRA CI test trains both expert layouts with `canonical_lora`; `serve_tinker.py` defaults to it. |
 | `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, `attn/mlp/unembed` groups, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
 | `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
 | `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
