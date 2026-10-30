@@ -27,7 +27,7 @@ from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
-from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
+from miles.utils.megatron_bridge_utils import apply_dsa_backend_args, load_auto_bridge
 
 logger = logging.getLogger(__name__)
 
@@ -153,13 +153,12 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
     Returns:
         List of DDP-wrapped model chunks with LoRA applied.
     """
-    from megatron.bridge import AutoBridge
     from megatron.bridge.models.conversion.model_bridge import _megatron_local_name_to_global
     from megatron.bridge.training.config import DistributedDataParallelConfig
     from megatron.bridge.utils.fusions import validate_rope_fusion_compatibility
 
     hf_config = load_hf_config(args.hf_checkpoint)
-    bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    bridge = load_auto_bridge(args.hf_checkpoint)
     provider = bridge.to_megatron_provider(load_weights=False)
 
     provider.tensor_model_parallel_size = args.backend.tensor_model_parallel_size
