@@ -123,7 +123,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
     @functools.cached_property
     def _fixed_shape_loss(self) -> bool:
         enabled = fixed_shape_loss_enabled(self.args)
-        if platforms.IS_TPU and not enabled:
+        if not platforms.current_platform.dynamic_shapes and not enabled:
             logger.warning("this loss configuration takes the per-sample path, which recompiles per response length")
         return enabled
 
