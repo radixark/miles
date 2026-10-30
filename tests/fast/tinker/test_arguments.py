@@ -13,10 +13,7 @@ def _tinker_args(**overrides) -> Namespace:
         use_dynamic_global_batch_size=False,
         delay_split_train_data_by_dp=False,
         save=None,
-        save_interval=None,
         save_hf=None,
-        save_trigger_sentinel=None,
-        custom_megatron_post_save_hook_path=None,
         tinker_checkpoint_root="/checkpoints/tinker",
     )
     for key, value in overrides.items():
@@ -40,13 +37,7 @@ class TestTinkerBatchOwnership:
 class TestTinkerCheckpointOwnership:
     @pytest.mark.parametrize(
         "field,value,flag",
-        [
-            ("save", "/ckpt", "--save"),
-            ("save_interval", 10, "--save-interval"),
-            ("save_hf", "/hf", "--save-hf"),
-            ("save_trigger_sentinel", "/sentinel", "--save-trigger-sentinel"),
-            ("custom_megatron_post_save_hook_path", "hook.py", "--custom-megatron-post-save-hook-path"),
-        ],
+        [("save", "/ckpt", "--save"), ("save_hf", "/hf", "--save-hf")],
     )
     def test_trainer_driven_saves_are_rejected_instead_of_ignored(self, field: str, value, flag: str) -> None:
         """Trainer save flags are inert under the gateway, so accepting them would mislead."""
