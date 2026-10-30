@@ -73,10 +73,10 @@ def compute_multimodal_train_inputs(
     Returns:
         Each sample's ``multimodal_train_inputs``, or None for a text-only sample.
     """
-    processor = _token_space_processor(rollout_engine_args, device)
+    trainer_processor = _trainer_processor(rollout_engine_args, device)
     return [
         (
-            _sample_train_inputs(processor, sample_multimodal_inputs, sample_tokens, device=device)
+            _sample_train_inputs(trainer_processor, sample_multimodal_inputs, sample_tokens, device=device)
             if sample_multimodal_inputs
             else None
         )
@@ -91,7 +91,7 @@ class _TrainerProcessor(NamedTuple):
 
 
 @functools.cache
-def _token_space_processor(rollout_engine_args: RolloutEngineProcessorArgs, device: torch.device) -> _TrainerProcessor:
+def _trainer_processor(rollout_engine_args: RolloutEngineProcessorArgs, device: torch.device) -> _TrainerProcessor:
     # Deferred: only SGLang builds with the token-space processor provide these modules.
     from sglang.srt.multimodal.processors.processor_config import MultimodalProcessorConfig
     from sglang.srt.multimodal.token_space_mm_process.processor import TokenSpaceProcessor
@@ -156,7 +156,7 @@ def _image_device(hf_processor, *, image_processor_backend: str, device: torch.d
 
 
 def _sample_train_inputs(
-    processor: _TrainerProcessor,
+    trainer_processor: _TrainerProcessor,
     multimodal_inputs: dict[str, list[str]],
     tokens: torch.Tensor,
     *,
@@ -165,13 +165,13 @@ def _sample_train_inputs(
     input_ids = tokens.tolist()
     # No video device, as the engine's wrapper: the core takes it from the image device or the mm_process_config.
     batch_feature = asyncio.run(
-        processor.core.process(
+        trainer_processor.core.process(
             image_data=multimodal_inputs.get("images"),
             video_data=multimodal_inputs.get("videos"),
             audio_data=multimodal_inputs.get("audios"),
             input_ids=input_ids,
             mm_token_expansion_start_len=len(input_ids),
-            image_device=processor.image_device,
+            image_device=trainer_processor.image_device,
         )
     )
     # mm_modalities and mm_spans tell SGLang where each media's tower output goes; the model does not take them.

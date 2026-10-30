@@ -102,14 +102,14 @@ def adopt_expanded_prompt_ids(sample: Sample, payload: dict, output: dict) -> No
     if not payload.get("return_prompt_token_ids"):
         return
     prompt_token_ids = output["prompt_token_ids"]
-    added_prompt_tokens = len(prompt_token_ids) - len(sample.tokens)
+    num_added_prompt_tokens = len(prompt_token_ids) - len(sample.tokens)
     if sample.response_length:
         # Expansion after the first response belongs to the zero-loss input suffix of a later turn.
-        sample.response_length += added_prompt_tokens
+        sample.response_length += num_added_prompt_tokens
         if sample.loss_mask is not None:
-            sample.loss_mask += [0] * added_prompt_tokens
+            sample.loss_mask += [0] * num_added_prompt_tokens
         if sample.rollout_log_probs is not None:
-            sample.rollout_log_probs += [0.0] * added_prompt_tokens
+            sample.rollout_log_probs += [0.0] * num_added_prompt_tokens
     sample.tokens = list(prompt_token_ids)
 
 

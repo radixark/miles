@@ -28,7 +28,7 @@ def test_trainer_rebuilds_tensors_without_expanding_the_rollout_tokens(monkeypat
     processor = _RecordingProcessor()
     monkeypatch.setattr(
         token_space_media_process,
-        "_token_space_processor",
+        "_trainer_processor",
         lambda rollout_engine_args, device: token_space_media_process._TrainerProcessor(
             core=processor, image_device="cuda:3"
         ),
@@ -78,14 +78,14 @@ def test_rollout_engine_args_read_the_parsed_engine_config():
     assert rollout_engine_args.mm_process_config_json == '{"video": {"fps": 2}}'
 
 
-class _FastImageProcessor(BaseImageProcessor):
+class _ImageProcessor(BaseImageProcessor):
     pass
 
 
 @pytest.mark.parametrize(
     ("backend", "image_processor", "expected"),
-    [("auto", _FastImageProcessor(), "cuda:3"), ("pil", _FastImageProcessor(), None), ("auto", object(), None)],
-    ids=["fast", "pil-backend", "slow-image-processor"],
+    [("auto", _ImageProcessor(), "cuda:3"), ("pil", _ImageProcessor(), None), ("auto", object(), None)],
+    ids=["image-processor", "pil-backend", "not-an-image-processor"],
 )
 def test_image_device_follows_the_engine_wrapper(monkeypatch, backend, image_processor, expected):
     from sglang.srt.multimodal import serving_preprocessing

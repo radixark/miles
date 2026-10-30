@@ -340,10 +340,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             response_text, new_response_tokens, new_response_log_probs, finish_type = await _run_inference_step(
                 url, sample, cur_sampling_params, current_image_data, mm_token_expansion_start_len
             )
-            if expanded_tokens := len(sample.tokens) - tokens_before_expansion:
+            if num_expanded_tokens := len(sample.tokens) - tokens_before_expansion:
                 # SGLang expanded the prompt, or on a later turn the latest observation inside the response.
                 response_tokens[:] = sample.tokens[len(sample.tokens) - sample.response_length :]
-                budget = _update_budget(budget, expanded_tokens)
+                budget = _update_budget(budget, num_expanded_tokens)
             _append_to_sample(sample, response_tokens, new_response_tokens, new_response_log_probs, loss_mask_val=1)
             budget = _update_budget(budget, len(new_response_tokens))
 
