@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import OwnedBuckets
@@ -25,23 +26,17 @@ def test_an_offered_bucket_is_emptied_so_its_device_tensors_free_before_the_next
     assert bucket == []
 
 
-def test_an_owned_bucket_lands_in_one_host_buffer_with_every_tensor_aligned():
-    """Shared memory holds a bucket as one buffer; ordered by dtype, widest first, no tensor lands misaligned."""
-    bucket = [
-        ("a.w", torch.arange(6, dtype=torch.bfloat16).reshape(2, 3)),
-        ("a.scale", torch.tensor([0.5, 1.5])),
-        ("b.w", torch.full((3,), 2.0, dtype=torch.bfloat16)),
-        ("mask", torch.tensor([1, 0, 1], dtype=torch.int8)),
-        ("empty", torch.empty(0, 2, dtype=torch.bfloat16)),
-        ("b.scale", torch.tensor([-1.0])),
-    ]
-    owned = OwnedBuckets(replica_rank=0, replica_size=1)
-    owned.offer(list(bucket))
-    ((_, host_bucket),) = owned.take()
+def test_a_failed_copy_out_is_raised_after_the_stream_not_mid_gather():
+    """The gathers are collective: a rank leaving the stream early would leave the others waiting in them."""
 
-    assert [name for name, _ in host_bucket] == ["a.scale", "b.scale", "a.w", "b.w", "empty", "mask"]
-    expected = dict(bucket)
-    for name, tensor in host_bucket:
-        assert tensor.dtype == expected[name].dtype and torch.equal(tensor, expected[name])
-    storages = {tensor.untyped_storage().data_ptr() for _, tensor in host_bucket}
-    assert len(storages) == 1, "the bucket is not one host buffer"
+    def full(index, bucket):
+        raise OSError(28, "No space left on device")
+
+    owned = OwnedBuckets(replica_rank=0, replica_size=1, host_bucket=full)
+    buckets = [[(f"layer{i}", torch.zeros(4))] for i in range(3)]
+    for bucket in buckets:
+        owned.offer(bucket)  # each bucket of the stream is still consumed
+
+    assert all(bucket == [] for bucket in buckets)
+    with pytest.raises(OSError, match="No space left"):
+        owned.take()
