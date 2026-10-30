@@ -45,6 +45,7 @@ from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTra
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
 from miles.utils.output_store.dropped import record_dropped_samples
+from miles.utils.rollout_data_config import AGENT_FUNCTION_METADATA_KEY, MAX_SEQ_LEN_METADATA_KEY
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -65,14 +66,19 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         extra_key=input.sample.kv_cache_namespace,
     )
 
-    custom_agent_function: Callable = load_function(input.args.custom_agent_function_path)
-    assert (
-        custom_agent_function is not None
-    ), f"Custom agent function {input.args.custom_agent_function_path} not found"
+    # a mixed dataset may name its own agent and a lower length limit
+    agent_function_path = (
+        input.sample.metadata.get(AGENT_FUNCTION_METADATA_KEY) or input.args.custom_agent_function_path
+    )
+    custom_agent_function: Callable = load_function(agent_function_path)
+    assert custom_agent_function is not None, f"Custom agent function {agent_function_path} not found"
 
-    max_seq_len = getattr(
-        input.args, "max_seq_len", None
-    )  # config-access-exempt: optional length limit registered by custom agent hooks
+    max_seq_len = _lower_limit(
+        getattr(
+            input.args, "max_seq_len", None
+        ),  # config-access-exempt: optional length limit registered by custom agent hooks
+        input.sample.metadata.get(MAX_SEQ_LEN_METADATA_KEY),
+    )
 
     metadata = input.sample.metadata
     if max_seq_len is not None:
@@ -188,6 +194,11 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     (sample,) = samples
     sample.metadata.update(result.session_metadata)
     return GenerateFnOutput(samples=sample)
+
+
+def _lower_limit(*limits: int | None) -> int | None:
+    known = [limit for limit in limits if limit is not None]
+    return min(known) if known else None
 
 
 def _add_arguments(parser: argparse.ArgumentParser):

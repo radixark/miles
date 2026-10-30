@@ -238,5 +238,13 @@ class TestDatasetHookSettings:
         assert args.rollout_dataset_functions["test3947.typed_generate"].config.typed_marker == 7
         assert view.typed_marker == 7
 
+    def test_a_dataset_max_seq_len_above_the_agentic_limit_fails_at_startup(self):
+        """--max-seq-len is registered by the dataset's agentic generate function itself, then bounds the dataset."""
+        document = _with_dataset(
+            generate_function="miles.rollout.generate_hub.agentic_tool_call.generate", max_seq_len=70000
+        )
+        with pytest.raises(ValueError, match="exceeds --max-seq-len 65536"):
+            _parse("--rollout-data-yaml-config", _inline(document), "--max-seq-len", "65536")
+
     def test_a_run_without_yaml_hooks_has_none(self):
         assert _parse("--prompt-data", "/dev/null").rollout_dataset_functions == {}

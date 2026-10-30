@@ -155,7 +155,7 @@ def _compute_custom_function_field_infos(
     return infos
 
 
-_ROLLOUT_DATASET_FUNCTION_FIELDS = ("generate_function",)
+_ROLLOUT_DATASET_FUNCTION_FIELDS = ("generate_function", "agent_function")
 
 
 def _compute_rollout_dataset_function_infos(

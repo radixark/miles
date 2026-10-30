@@ -144,6 +144,16 @@ class TestMixedRolloutDataSource:
         assert by_name["code"][0].metadata["agent_config"] is not by_name["code"][1].metadata["agent_config"]
         assert all("agent_config" not in sample.metadata for sample in by_name["math"])
 
+    def test_a_dataset_agent_function_and_max_seq_len_reach_its_samples_only(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        datasets["code"] |= {"agent_function": "json.loads", "max_seq_len": 4096}
+        source = _make_source(tmp_path, datasets)
+
+        by_name = {group[0].metadata["dataset_name"]: group for group in source.get_samples(8)}
+        code, math = by_name["code"][0], by_name["math"][0]
+        assert (code.metadata["agent_function_path"], code.metadata["dataset_max_seq_len"]) == ("json.loads", 4096)
+        assert "agent_function_path" not in math.metadata and "dataset_max_seq_len" not in math.metadata
+
     def test_max_prompt_len_filters_only_its_dataset(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", ["short", "a much longer prompt"]))
