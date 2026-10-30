@@ -43,8 +43,8 @@ def has_media(multimodal_inputs: dict[str, list[str]] | None) -> bool:
     return bool(multimodal_inputs) and any(multimodal_inputs.values())
 
 
-def resolve_media_refs(messages: Iterable[dict[str, Any]], media_dir: str | None) -> dict[str, list[str]] | None:
-    """Resolve every media part of ``messages`` to a shared-path reference, in conversation order.
+def collect_media_refs(messages: Iterable[dict[str, Any]], media_dir: str | None) -> dict[str, list[str]] | None:
+    """Collect every media part of ``messages`` as a shared-path reference, in conversation order.
 
     Args:
         messages: Chat messages whose list contents may hold image, audio or video parts.
@@ -66,12 +66,12 @@ def resolve_media_refs(messages: Iterable[dict[str, Any]], media_dir: str | None
             source = next((part[field] for field in fields if part.get(field) is not None), None)
             if isinstance(source, dict) and "url" in source:
                 source = source["url"]
-            multimodal_inputs.setdefault(key, []).append(resolve_media_ref(source, media_dir))
+            multimodal_inputs.setdefault(key, []).append(materialize_media_ref(source, media_dir))
     return multimodal_inputs or None
 
 
-def resolve_media_ref(source: Any, media_dir: str | None) -> str:
-    """Resolve one media source to an absolute shared path.
+def materialize_media_ref(source: Any, media_dir: str | None) -> str:
+    """Materialize one media source as an absolute shared path; one not yet a file is written under ``media_dir``.
 
     Args:
         source: A path or file:// URL, a data URL, raw bytes, a PIL image, or an HF {"bytes", "path"} feature.

@@ -27,7 +27,7 @@ except ImportError:
     pq = None
 
 from miles.utils import chat_template_utils
-from miles.utils.media_refs import has_media, load_media_for_processor, resolve_media_refs
+from miles.utils.media_refs import collect_media_refs, has_media, load_media_for_processor
 from miles.utils.processing_utils import call_processor
 from miles.utils.types import MultimodalTypes, Sample
 
@@ -240,8 +240,8 @@ class Dataset:
             else:
                 output_prompt = prompt
 
-            # Resolved before the chat template turns the messages into text, so the references survive it.
-            multimodal_inputs = resolve_media_refs(prompt, media_dir) if isinstance(prompt, list) else None
+            # Collected before the chat template turns the messages into text, so the references survive it.
+            multimodal_inputs = collect_media_refs(prompt, media_dir) if isinstance(prompt, list) else None
 
             origin_samples.append(
                 Sample(

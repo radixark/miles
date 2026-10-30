@@ -13,7 +13,7 @@ from examples.geo3k_vlm.multi_turn.base_env import BaseInteractionEnv
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.http_utils import post
-from miles.utils.media_refs import load_media_for_processor, resolve_media_refs
+from miles.utils.media_refs import collect_media_refs, load_media_for_processor
 from miles.utils.types import Sample
 
 DEFAULT_ENV_MODULE = "examples.geo3k_vlm.multi_turn.env_geo3k"
@@ -95,7 +95,7 @@ def _encode_observation_for_generation(
     else:
         formatted_prompt = [message]
 
-    multimodal_inputs = resolve_media_refs([message], media_dir)
+    multimodal_inputs = collect_media_refs([message], media_dir)
     multimodal_train_inputs = None
     if processor:
         processor_output = processor(text=formatted_prompt, **load_media_for_processor(multimodal_inputs))

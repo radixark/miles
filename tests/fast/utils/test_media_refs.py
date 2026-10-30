@@ -1,6 +1,6 @@
 """Media references: how a dataset's media reaches SGLang as shared paths.
 
-    chat messages ──resolve_media_refs──▶ {"images": [p0, p1], "audios": [p2], "videos": [p3]}
+    chat messages ──collect_media_refs──▶ {"images": [p0, p1], "audios": [p2], "videos": [p3]}
          │                                           │                        │
          │ path / file:// URL ─▶ as is               ├─rollout_media_payload─▶ {"image_data": [...], ...}  (SGLang)
          │ data URL / bytes / PIL ─▶ written         └─load_media_for_processor─▶ PIL images, audio bytes   (Miles)
@@ -18,10 +18,10 @@ import pytest
 from PIL import Image
 
 from miles.utils.media_refs import (
+    collect_media_refs,
     has_media,
     load_media_for_processor,
-    resolve_media_ref,
-    resolve_media_refs,
+    materialize_media_ref,
     rollout_media_payload,
 )
 
@@ -51,7 +51,7 @@ def test_refs_keep_conversation_order_across_messages_and_modalities(tmp_path):
         {"role": "user", "content": [{"type": "input_image", "image": str(paths["b.png"])}]},
     ]
 
-    multimodal_inputs = resolve_media_refs(messages, media_dir=None)
+    multimodal_inputs = collect_media_refs(messages, media_dir=None)
 
     # A repeated image is a second reference: one reference per placeholder, never deduplicated.
     assert multimodal_inputs == {
@@ -65,7 +65,7 @@ def test_refs_keep_conversation_order_across_messages_and_modalities(tmp_path):
 
 
 def test_text_only_messages_have_no_media():
-    multimodal_inputs = resolve_media_refs(
+    multimodal_inputs = collect_media_refs(
         [{"role": "user", "content": [{"type": "text", "text": "hi"}]}], media_dir=None
     )
 
@@ -87,8 +87,8 @@ def test_text_only_messages_have_no_media():
 def test_non_path_sources_are_written_once_by_content_hash(tmp_path, make_source):
     data = _png_bytes("red")
 
-    first = resolve_media_ref(make_source(data), media_dir=str(tmp_path))
-    second = resolve_media_ref(make_source(data), media_dir=str(tmp_path))
+    first = materialize_media_ref(make_source(data), media_dir=str(tmp_path))
+    second = materialize_media_ref(make_source(data), media_dir=str(tmp_path))
 
     assert first == second
     assert Path(first).is_absolute() and Path(first).is_relative_to(tmp_path)
@@ -97,19 +97,19 @@ def test_non_path_sources_are_written_once_by_content_hash(tmp_path, make_source
 
 def test_non_path_source_without_media_dir_is_rejected():
     with pytest.raises(ValueError, match="--shared-media-dir"):
-        resolve_media_ref(_png_bytes("red"), media_dir=None)
+        materialize_media_ref(_png_bytes("red"), media_dir=None)
 
 
 def test_missing_file_is_rejected(tmp_path):
     with pytest.raises(FileNotFoundError):
-        resolve_media_ref(str(tmp_path / "missing.png"), media_dir=None)
+        materialize_media_ref(str(tmp_path / "missing.png"), media_dir=None)
 
 
 def test_video_refs_reach_the_engine_payload_but_not_the_miles_processor(tmp_path):
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"mp4")
 
-    multimodal_inputs = resolve_media_refs(
+    multimodal_inputs = collect_media_refs(
         [{"role": "user", "content": [{"type": "video", "video": str(video)}]}], media_dir=None
     )
 
