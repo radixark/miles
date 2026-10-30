@@ -19,9 +19,12 @@ def validate_length_penalty_args(args: Namespace) -> None:
     if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 1:
         raise ValueError("--length-penalty-min-tokens must be a positive integer")
     if coeff > 0:
-        for field in ("custom_reward_post_process_path", "custom_convert_samples_to_train_data_path"):
-            if getattr(args, field, None):
-                raise ValueError(f"--length-penalty-coeff cannot be combined with --{field.replace('_', '-')}")
+        if args.custom_reward_post_process_path:
+            raise ValueError("--length-penalty-coeff cannot be combined with --custom-reward-post-process-path")
+        if args.custom_convert_samples_to_train_data_path:
+            raise ValueError(
+                "--length-penalty-coeff cannot be combined with --custom-convert-samples-to-train-data-path"
+            )
 
 
 def reward_group_segments(
