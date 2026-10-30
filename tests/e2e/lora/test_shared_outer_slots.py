@@ -102,6 +102,15 @@ class ExpertModel(MegatronModule):
         return inputs
 
 
+def assert_ep_replicas_equal(expert_model):
+    for layer in expert_model.layers:
+        for adapter in layer.adapters:
+            shared = adapter.linear_out.weight if layer.input_is_parallel else adapter.linear_in.weight
+            replicas = [torch.empty_like(shared) for _ in range(2)]
+            dist.all_gather(replicas, shared, group=parallel_state.get_expert_model_parallel_group())
+            torch.testing.assert_close(replicas[0], replicas[1], atol=0, rtol=0)
+
+
 def forward_backward(model, inputs):
     with accumulate_gradients(model):
         model[0](inputs).float().square().sum().backward()
@@ -145,12 +154,7 @@ def run_worker(directory, tp):
     )
     optimizers = {slot: SlotOptimizer(args, model, slot) for slot in range(3)}
     params = [p for slot in range(3) for p in adapter_slot_parameters(model, slot)]
-    for layer in expert_model.layers:
-        for adapter in layer.adapters:
-            shared = adapter.linear_out.weight if layer.input_is_parallel else adapter.linear_in.weight
-            replicas = [torch.empty_like(shared) for _ in range(2)]
-            dist.all_gather(replicas, shared, group=parallel_state.get_expert_model_parallel_group())
-            torch.testing.assert_close(replicas[0], replicas[1], atol=0, rtol=0)
+    assert_ep_replicas_equal(expert_model)
 
     inputs = torch.randn(32, 32, device="cuda", dtype=torch.bfloat16)
     forward_backward(model, inputs)
@@ -171,6 +175,8 @@ def run_worker(directory, tp):
     untouched = snapshot(model, optimizers[1])
     slot1_grads = [p.main_grad.clone() for p in adapter_slot_parameters(model, 1)]
     outcome = step_slot_optimizers(optimizers, {0: ADAM})
+    # replicas stay equal only if finalize summed the shared grads over EP
+    assert_ep_replicas_equal(expert_model)
     torch.testing.assert_close(
         torch.tensor(outcome[0]["grad_norm"], device="cuda"), expected_norm_sq.sqrt(), rtol=1e-5, atol=1e-7
     )
