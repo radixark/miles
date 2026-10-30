@@ -19,7 +19,7 @@ from miles.rollout.base_types import (
     compute_kv_cache_namespace,
 )
 from miles.rollout.generate_hub.single_turn import generate
-from miles.rollout.generate_utils.generate_endpoint_utils import router_routes_by_key
+from miles.rollout.generate_utils.generate_endpoint_utils import apply_sample_max_response_len, router_routes_by_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import DynamicLimitSemaphore
@@ -78,6 +78,8 @@ async def generate_and_rm(
         if not args.group_rm:
             assert sample.reward is not None
         return sample
+
+    sampling_params = apply_sample_max_response_len(sampling_params, sample)
 
     # dashboard lifecycle probe: the semaphore wait is the queue; attempt_end fires before reward
     sink = None if evaluation else TrajectoryLifecycle().sink
