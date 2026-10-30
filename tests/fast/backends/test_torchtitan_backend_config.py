@@ -73,3 +73,22 @@ def test_torchtitan_rejects_backend_optimizer_before_loading_assets() -> None:
         build_trainer_config(
             _config_args(optimizer="sgd"), hf_assets_path="/missing", lr_total_steps=1, dump_subdir="actor"
         )
+
+
+def test_torchtitan_optimizer_cpu_offload_builds_a_trainer_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """torchtitan refuses CPU offload unless each FSDP shard draws its own init RNG stream."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda group=None: 8)
+    config = build_trainer_config(
+        _config_args(optimizer_cpu_offload=True),
+        hf_assets_path=_checkpoint_dir(tmp_path / "hf", tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="actor",
+    )
+
+    assert config.training.enable_cpu_offload
+    assert "dp_shard" in config.debug.distinct_seed_mesh_axes
