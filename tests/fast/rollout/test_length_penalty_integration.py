@@ -110,6 +110,8 @@ def test_zero_coefficient_disables_shaping_in_training() -> None:
 def test_cli_defaults_and_explicit_penalty_settings() -> None:
     parser = ArgumentParser()
     RewardModelRolloutOnlyConfig.add_arguments(parser)
+    # The full rollout parser also registers the custom conversion hook.
+    parser.set_defaults(custom_convert_samples_to_train_data_path=None)
     args = parser.parse_args([])
     assert (args.length_penalty_coeff, args.length_penalty_min_tokens) == (0.0, 1)
     args = parser.parse_args(["--length-penalty-coeff", "0.1", "--length-penalty-min-tokens", "1000"])
