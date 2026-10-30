@@ -7,7 +7,7 @@ datasets:
     samples_per_step: 3
   agentic:
     path: /data/agentic.jsonl
-    sha256: 51b7...0c3d
+    sha256: 51b70c3d
     samples_per_step: 5
     max_prompt_len: 8192
     max_response_len: 32768
@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from miles.utils.file_arg_utils import resolve_file_arg
 
-_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_SHA256_PREFIX_PATTERN = re.compile(r"[0-9a-f]{8}")
 
 
 class RolloutDatasetConfig(BaseModel):
@@ -40,6 +40,7 @@ class RolloutDatasetConfig(BaseModel):
     name: str = Field(min_length=1)
     path: str = Field(min_length=1)
     samples_per_step: int = Field(ge=1)
+    # first 8 hex characters of the file's SHA-256
     sha256: str | None = None
     max_prompt_len: int | None = Field(default=None, ge=1)
     max_response_len: int | None = Field(default=None, ge=1)
@@ -50,8 +51,8 @@ class RolloutDatasetConfig(BaseModel):
     @field_validator("sha256")
     @classmethod
     def _check_sha256(cls, value: str | None) -> str | None:
-        if value is not None and not _SHA256_PATTERN.fullmatch(value):
-            raise ValueError("must be 64 lowercase hex characters (the SHA-256 of the dataset file)")
+        if value is not None and not _SHA256_PREFIX_PATTERN.fullmatch(value):
+            raise ValueError("must be the first 8 lowercase hex characters of the dataset file's SHA-256")
         return value
 
 
