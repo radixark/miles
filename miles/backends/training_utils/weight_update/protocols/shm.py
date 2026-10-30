@@ -48,7 +48,6 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
         super().__init__(args)
         # this sync's engine calls; the next sync rewrites the shared buckets only once every engine has loaded them
         self._in_flight: list[Future] = []
-        self._send_error: Exception | None = None
 
     def connect(
         self,
@@ -76,32 +75,24 @@ class UpdateWeightFromSharedMemory(WeightTransferProtocol):
         self._image = _SharedImage(_SHM_DIR)
         replica_rank, replica_size = get_data_replica_rank_and_size(parallel_state, placement)
         self._owned_buckets = OwnedBuckets(
-            replica_rank=replica_rank, replica_size=replica_size, host_buffer=self._image.host_buffer
+            replica_rank=replica_rank, replica_size=replica_size, host_bucket=self._image.host_bucket
         )
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
         self._owned_buckets.reset()
-        self._send_error = None
         return True
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
-        # raising mid-stream would strand the other ranks in its gathers; every rank raises it after the stream
-        if self._send_error is not None:
-            bucket.clear()
-            return
-        try:
-            self._owned_buckets.offer(bucket)
-        except Exception as error:
-            self._send_error = error
+        self._owned_buckets.offer(bucket)
 
     def after_base_weights(self) -> None:
         # after the stream: take() is where the non-blocking device copies are known to have landed
         cell_updaters = list(self.cell_updaters_of_cell_id.values())
         with fail_on_every_rank("[shm] bucket publish"):
-            if self._send_error is not None:
-                raise self._send_error
             for index, host_bucket in self._owned_buckets.take():
-                metadata = flatten_weight_bucket([(name, tensor.to("meta")) for name, tensor in host_bucket])
+                # in the order the image lays the bucket out
+                packed = _pack_by_dtype(host_bucket)
+                metadata = flatten_weight_bucket([(name, tensor.to("meta")) for name, tensor in packed])
                 payload = {"flattened_tensor": self._image.flat(index), "metadata": metadata.get_metadata()}
                 with _file_system_sharing():
                     self._in_flight += self._publish(cell_updaters, payload)
@@ -180,20 +171,27 @@ class _SharedImage:
         self._buckets: dict[int, torch.Tensor] = {}
         self._files: list[str] = []
 
-    def host_buffer(self, index: int, nbytes: int) -> torch.Tensor:
+    def host_bucket(self, index: int, bucket: list[tuple[str, torch.Tensor]]) -> list[torch.Tensor]:
+        """A view per tensor of `bucket` into its shared tensor, laid out back to back by `_pack_by_dtype`."""
+        nbytes = sum(tensor.nbytes for _, tensor in bucket)
         flat = self._buckets.get(index)
         if flat is None or flat.nbytes != max(nbytes, 1):
             if flat is not None:
                 current_platform.unpin_host_memory(flat)
             flat = self._buckets[index] = self._allocate(nbytes)
-        return flat[:nbytes]
+        views, offset = {}, 0
+        for name, tensor in _pack_by_dtype(bucket):
+            views[name] = flat[offset : offset + tensor.nbytes].view(tensor.dtype).view(tensor.shape)
+            offset += tensor.nbytes
+        return [views[name] for name, _ in bucket]
 
     def flat(self, index: int) -> torch.Tensor:
         return self._buckets[index]
 
     def _allocate(self, nbytes: int) -> torch.Tensor:
         with _file_system_sharing():
-            # created shared, not moved there: nothing is written before the pages are reserved below
+            # torch's own file_system allocation, private: the public share_memory_() writes every page before
+            # posix_fallocate can reserve them. test_shm exercises both calls, so a torch rename fails there
             storage = torch.UntypedStorage._new_shared(max(nbytes, 1))  # a zero-size mapping is rejected
             name = os.fsdecode(storage._share_filename_cpu_()[1])
         flat = torch.empty(0, dtype=torch.uint8).set_(storage)
@@ -211,6 +209,14 @@ class _SharedImage:
             os.close(fd)
         current_platform.pin_host_memory(flat)
         return flat
+
+
+def _pack_by_dtype(bucket: list[tuple[str, torch.Tensor]]) -> list[tuple[str, torch.Tensor]]:
+    """The bucket ordered by dtype, widest first, so no tensor of the flattened layout lands misaligned.
+
+    Engines load a bucket by name, so its order is free.
+    """
+    return sorted(bucket, key=lambda item: (-item[1].element_size(), str(item[1].dtype)))
 
 
 def _delete_listed_files(manifest: str) -> None:

@@ -93,8 +93,7 @@ class UpdateWeightFromDisk(WeightTransferProtocol):
         # written only after the collective gathers finish, so the ranks' file writes run in parallel
         with fail_on_every_rank("[disk] shard write"):
             for bucket_index, bucket in self._owned_buckets.take():
-                # safetensors refuses tensors sharing a buffer, which the packed host bucket's views do
-                tensors = {name: tensor.clone() for name, tensor in bucket}
+                tensors = dict(bucket)
                 shard = f"rank{dist.get_rank():03d}-shard{bucket_index:05d}.safetensors"
                 safetensors.torch.save_file(tensors, os.path.join(self._version_dir, shard))
                 self._weight_map.update({name: shard for name in tensors})

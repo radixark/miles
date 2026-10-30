@@ -14,7 +14,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.weight_update.protocols import shm
 from miles.backends.training_utils.weight_update.protocols.shm import UpdateWeightFromSharedMemory
 from miles.backends.training_utils.weight_update.protocols.utils import rank_errors
-from miles.backends.training_utils.weight_update.protocols.utils.data_replica import OwnedBuckets, pack_by_dtype
+from miles.backends.training_utils.weight_update.protocols.utils.data_replica import OwnedBuckets
 from miles.backends.training_utils.weight_update.protocols.utils.owner import owner_tag
 
 _BUCKETS = [
@@ -98,7 +98,7 @@ def _protocol(
     (tmp_path / f"rank{replica_rank}").mkdir(exist_ok=True)
     protocol._image = shm._SharedImage(str(tmp_path / f"rank{replica_rank}"))
     protocol._owned_buckets = OwnedBuckets(
-        replica_rank=replica_rank, replica_size=replica_size, host_buffer=protocol._image.host_buffer
+        replica_rank=replica_rank, replica_size=replica_size, host_bucket=protocol._image.host_bucket
     )
     return protocol
 
@@ -116,7 +116,7 @@ def _published(updater: _RecordingCellUpdater) -> list[str]:
 
 def _expected(buckets: list) -> list:
     # each bucket arrives ordered by dtype
-    return [[[n, str(t.dtype), t.float().tolist()] for n, t in pack_by_dtype(bucket)] for bucket in buckets]
+    return [[[n, str(t.dtype), t.float().tolist()] for n, t in shm._pack_by_dtype(bucket)] for bucket in buckets]
 
 
 def _rebuild_in_another_process(payloads: list[str]) -> list:
