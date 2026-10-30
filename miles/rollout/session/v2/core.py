@@ -20,6 +20,7 @@ from miles.rollout.session.core import (
 from miles.rollout.session.errors import OutputStoreContractError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
+from miles.rollout.session.token_space import check_engine_prompt, prepare_engine_request
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
 from miles.rollout.session.v2.session_state import (
@@ -204,7 +205,7 @@ class SessionCoreV2(SessionCore):
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            client_args = parse_chat_request(body)
+            client_args = self._store_message_media(parse_chat_request(body))
             prepared, attach_parent = prepare_token_ids_and_request_args(
                 session,
                 client_args,
@@ -220,6 +221,12 @@ class SessionCoreV2(SessionCore):
 
             checkpoint_token_ids = attach_parent.token_ids if attach_parent is not None else []
             self._maybe_request_addition_r3(request_body, checkpoint_token_ids, prompt_token_ids)
+            prepare_engine_request(
+                request_body,
+                checkpoint_token_ids=checkpoint_token_ids,
+                checkpoint_record=attach_parent.record if attach_parent is not None else None,
+                token_space=self.config.multimodal_token_space_processing,
+            )
             _add_session_extra_key(request_body, session)
 
             # orjson: the body carries the whole prompt's input_ids on every turn.
@@ -239,6 +246,7 @@ class SessionCoreV2(SessionCore):
             return proxy_result_to_response(result)
 
         response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        check_engine_prompt(request_body, choice)
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,

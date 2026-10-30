@@ -38,6 +38,13 @@ from miles.rollout.session.samples.merge import (
     truncate_samples_by_total_tokens,
 )
 from miles.rollout.session.store_refs import response_store_ref
+from miles.rollout.session.token_space import (
+    check_engine_prompt,
+    engine_token_ids,
+    lcp_len,
+    prepare_engine_request,
+    store_message_media,
+)
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.output_store.plan import StorePlanError
 
@@ -64,15 +71,6 @@ class ProxyRequest:
 def _render_json(payload) -> bytes:
     """Encode like Starlette's JSONResponse (compact, non-ASCII preserved)."""
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
-
-
-def _lcp_len(a: list[int], b: list[int]) -> int:
-    """Length of the longest common prefix of two token-ID lists."""
-    n = min(len(a), len(b))
-    for i in range(n):
-        if a[i] != b[i]:
-            return i
-    return n
 
 
 def _samples_response(payload: bytes) -> Response:
@@ -111,12 +109,16 @@ def _response_to_stream_chunk(response: dict) -> dict:
 
 
 def _client_response_body(response: dict, response_intent: ClientResponseIntent) -> dict:
-    """The non-streaming reply without ``meta_info``, and without ``logprobs`` unless the client asked.
+    """The non-streaming reply without ``meta_info``, and without ``logprobs`` or ``prompt_token_ids``
+    unless the client asked.
 
     The session server asks for logprobs on every turn for TITO, and top-k logprobs for training make
     one long reply very large. A client that never asked for them would still have to parse them.
     """
     omitted = {"meta_info"} if response_intent.logprobs else {"meta_info", "logprobs"}
+    if not response_intent.prompt_token_ids:
+        # The server asks for the expanded prompt of a request with media (token_space).
+        omitted.add("prompt_token_ids")
     return {
         **response,
         "choices": [{k: v for k, v in choice.items() if k not in omitted} for choice in response.get("choices", [])],
@@ -274,7 +276,7 @@ class SessionCore:
         previous_rows = max(0, len(checkpoint_token_ids) - 1)
         assert prompt_token_ids[:previous_rows] == checkpoint_token_ids[:previous_rows], (
             f"additional R3 requires {previous_rows} stable prefix tokens, "
-            f"got {_lcp_len(checkpoint_token_ids, prompt_token_ids)}"
+            f"got {lcp_len(checkpoint_token_ids, prompt_token_ids)}"
         )
         request_body["routed_experts_start_len"] = previous_rows
 
@@ -350,7 +352,7 @@ class SessionCore:
                 self.config,
                 session.records,
                 tokenizer,
-                accumulated_token_ids=metadata.get("accumulated_token_ids"),
+                accumulated_token_ids=engine_token_ids(session.token_ids, session.records[-1]),
                 max_trim_tokens=metadata.get("max_trim_tokens", 0),
                 use_addition_r3=self.use_addition_r3,
                 evaluation=session.evaluation,
@@ -412,7 +414,7 @@ class SessionCore:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            client_args = parse_chat_request(body)
+            client_args = self._store_message_media(parse_chat_request(body))
             prepared = session.prepare_token_ids_and_request_args(
                 client_args,
                 config=self.config,
@@ -428,6 +430,12 @@ class SessionCore:
             # prepare_token_ids_and_request_args applied any retry rollback, so token_ids is
             # the checkpoint this request builds on.
             self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
+            prepare_engine_request(
+                request_body,
+                checkpoint_token_ids=session.token_ids,
+                checkpoint_record=session.records[-1] if session.records else None,
+                token_space=self.config.multimodal_token_space_processing,
+            )
 
             # orjson: the body carries the whole prompt's input_ids on every turn.
             proxy_body = orjson.dumps(request_body)
@@ -447,6 +455,7 @@ class SessionCore:
             return proxy_result_to_response(result)
 
         response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        check_engine_prompt(request_body, choice)
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,
@@ -493,6 +502,13 @@ class SessionCore:
         # --- lock released ---
 
         return _chat_client_response(result, response, response_intent)
+
+    def _store_message_media(self, client_args: dict) -> dict:
+        return store_message_media(
+            client_args,
+            token_space=self.config.multimodal_token_space_processing,
+            media_dir=self.config.shared_media_dir,
+        )
 
     def _with_routing_key(self, headers: dict, session_id: str) -> dict:
         header = self.config.routing_key_header

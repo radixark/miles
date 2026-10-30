@@ -55,6 +55,8 @@ class ClientResponseIntent:
 
     stream: bool
     logprobs: bool
+    # The server asks for the expanded prompt of a request with media (token_space).
+    prompt_token_ids: bool = False
 
 
 @dataclass
@@ -151,6 +153,7 @@ def resolve_request_args_by_config(
     """
     # the client's own value decides whether its reply carries logprobs
     client_logprobs = bool(request_args.get("logprobs"))
+    client_prompt_token_ids = bool(request_args.get("return_prompt_token_ids"))
     # TITO needs these on every request: agent-side overrides would break token accumulation.
     request_args["logprobs"] = True
     request_args["return_meta_info"] = True
@@ -189,6 +192,12 @@ def resolve_request_args_by_config(
             f"routed_experts_start_len={value!r} is not accepted: R3 offsets are computed by the session server"
         )
     request_args.pop("routed_experts_start_len", None)
+    if (value := request_args.get("mm_token_expansion_start_len")) is not None:
+        raise MessageValidationError(
+            f"mm_token_expansion_start_len={value!r} is not accepted: media expansion offsets are computed by the "
+            "session server"
+        )
+    request_args.pop("mm_token_expansion_start_len", None)
     if (value := request_args.get("logprob_start_len")) is not None:
         raise MessageValidationError(
             f"logprob_start_len={value!r} is not accepted: not supported on the session chat path"
@@ -203,4 +212,6 @@ def resolve_request_args_by_config(
         raise MessageValidationError("chat_template_kwargs must be an object")
     if kwargs is not None and "tools" in kwargs:
         raise MessageValidationError("tools belongs at the top level of the request, not in chat_template_kwargs")
-    return request_args, ClientResponseIntent(stream=client_stream, logprobs=client_logprobs)
+    return request_args, ClientResponseIntent(
+        stream=client_stream, logprobs=client_logprobs, prompt_token_ids=client_prompt_token_ids
+    )
