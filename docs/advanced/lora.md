@@ -398,6 +398,9 @@ stability evidence rather than a released benchmark.
 
 ## Multi-LoRA training
 
+For what the service does, how it batches tenants, and the supported models, see the
+[Multi-LoRA Training Service](/advanced/multi-lora) overview.
+
 Multi-LoRA training is served through the Tinker protocol: `serve_tinker.py`
 turns a miles deployment into a training service where each client drives its
 own adapter slot with explicit forward_backward / optim_step operations (the

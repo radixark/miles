@@ -295,8 +295,9 @@ can still store an object for one after that. A periodic sweep during the run is
 
 Rejected at launch: no replay array enabled, `--cluster-backend kubernetes`, PD
 disaggregation, external rollout engines, the legacy rollout, a custom convert function,
-multi-policy training, split deployments, `--debug-rollout-only`, `--multimodal-keys`, and
-saving (including `--dump-details`), loading or injecting debug rollout data.
+a custom `DataBuffer` (`--custom-async-data-buffer-path`), multi-policy training, split
+deployments, `--debug-rollout-only`, `--multimodal-keys`, and saving (including
+`--dump-details`), loading or injecting debug rollout data.
 
 Stored objects may not survive a restart, so on resume Miles does not replay untrained
 rollout batches that carry refs, or inline replay arrays saved without the option. It
