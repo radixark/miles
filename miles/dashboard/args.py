@@ -29,7 +29,7 @@ _SNAPSHOT_KEYS = (
     "sglang_max_running_requests",
     "sglang_mem_fraction_static",
     "sglang_load_balance_method",
-    "use_miles_router",
+    "router",
     "router_dp_aware",
     "router_policy",
     "sglang_router_policy",
