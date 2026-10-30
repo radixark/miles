@@ -261,12 +261,7 @@ async def test_sample_failure_preserves_the_snapshot_and_training_model_queue(se
     assert future.state == FAILED
     assert future.error == "engine down"
     assert (
-        resolve_sampler_checkpoint(
-            service.config.checkpoint_root,
-            "tenant",
-            f"tinker://{model_id}/sampler_weights/1",
-            service.config.base_model,
-        )[0]
+        resolve_sampler_checkpoint(service.config, "tenant", f"tinker://{model_id}/sampler_weights/1")[0]
         == f"{model_id}@1"
     )
     fb = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
@@ -522,15 +517,17 @@ async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_
         await service._expire_sessions()
         assert model_id not in service.models
         service.create_session("tenant")
-    lora_name, lora_path = resolve_sampler_checkpoint(
-        service.config.checkpoint_root, "tenant", path, service.config.base_model
-    )
+    lora_name, lora_path = resolve_sampler_checkpoint(service.config, "tenant", path)
     assert lora_name == f"{model_id}@1" and lora_path.endswith("/sampler_weights/1")
     with pytest.raises((UserInputError, OwnershipError)):
-        resolve_sampler_checkpoint(service.config.checkpoint_root, "thief", path, service.config.base_model)
+        resolve_sampler_checkpoint(service.config, "thief", path)
+    service.config.experts_shared_outer_loras = not service.config.experts_shared_outer_loras
+    with pytest.raises(UserInputError, match="experts_shared_outer_loras"):
+        resolve_sampler_checkpoint(service.config, "tenant", path)
+    service.config.experts_shared_outer_loras = not service.config.experts_shared_outer_loras
     service.config.base_model = "other"
     with pytest.raises(UserInputError, match="base_model"):
-        resolve_sampler_checkpoint(service.config.checkpoint_root, "tenant", path, service.config.base_model)
+        resolve_sampler_checkpoint(service.config, "tenant", path)
 
 
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
