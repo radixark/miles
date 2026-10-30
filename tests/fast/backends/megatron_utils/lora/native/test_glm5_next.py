@@ -13,6 +13,7 @@ from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.lora import _attach_layer
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 from miles.utils.lora.arguments import _native_serving_targets, _resolve_lora_targets
@@ -179,7 +180,7 @@ def test_the_launcher_trains_every_projection_native_lora_runs(launcher_targets)
 
 def test_adapters_carry_the_hf_names_the_targets_select(launcher_targets):
     """An adapter named outside the selected namespace is never attached, so the run trains nothing there."""
-    exported = dict(export_lora_hf_named([_model(launcher_targets)]))
+    exported = dict(export_lora_hf_named(iter_adapters([_model(launcher_targets)])))
 
     assert set(get_adapter_target_modules(exported)) == set(launcher_targets)
     assert exported[f"{PREFIX}0.self_attn.forget_gate.f_b_proj.lora_A.weight"].shape == (RANK, 4)

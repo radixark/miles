@@ -11,6 +11,7 @@ from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named, load_lora_adapter_hf
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.modules.moe import _grouped_linear
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
@@ -161,7 +162,7 @@ def test_export_names_and_shapes_match_sglang(include_fc2):
     targets = resolve_hf_lora_targets(_k3_hf_config())
     if not include_fc2:
         targets = [target for target in targets if not target.endswith(".experts.*.w2")]
-    exported = dict(export_lora_hf_named([_model(include_fc2=include_fc2)]))
+    exported = dict(export_lora_hf_named(iter_adapters([_model(include_fc2=include_fc2)])))
 
     served = _resolve(targets)
     for module in get_adapter_target_modules(exported):
@@ -185,7 +186,7 @@ def test_hf_import_round_trips_the_export(tmp_path):
     with torch.no_grad():
         for parameter in target.parameters():
             parameter.zero_()
-    save_file(dict(export_lora_hf_named([source])), str(tmp_path / "adapter_model.safetensors"))
+    save_file(dict(export_lora_hf_named(iter_adapters([source]))), str(tmp_path / "adapter_model.safetensors"))
 
     load_lora_adapter_hf([target], str(tmp_path))
 
