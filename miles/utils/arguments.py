@@ -1664,11 +1664,24 @@ def miles_validate_args(args):
         args.sglang_config is not None and args.prefill_num_servers is not None
     ), "sglang_config and prefill_num_servers are mutually exclusive. Use server_groups in the YAML config instead."
 
+    assert args.bshd_padding_mode in (
+        "rollout",
+        "per-sample",
+    ), f"Invalid --bshd-padding-mode {args.bshd_padding_mode!r}; expected 'rollout' or 'per-sample'."
+    if args.bshd_padding_mode == "per-sample":
+        assert args.qkv_format == "bshd", "--bshd-padding-mode per-sample requires --qkv-format bshd."
+
     if args.qkv_format == "bshd":
         assert args.train_backend == "megatron", "bshd format is only supported for megatron backend."
         assert (
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
+        if args.bshd_padding_mode == "per-sample" and args.micro_batch_size > 1:
+            logger.warning(
+                "bshd with --micro-batch-size > 1 requires every sample in a microbatch to pad to the same "
+                "length; microbatches with multiple padded lengths are rejected during batch preparation. "
+                "Use --micro-batch-size 1 unless samples are bucketed by padded length."
+            )
 
     if args.skip_actor_forward_only:
         validate_skip_actor_forward_only(args)

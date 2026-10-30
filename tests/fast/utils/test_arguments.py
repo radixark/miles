@@ -2167,6 +2167,42 @@ class TestMtpTrainingValidation:
         assert warned is expect_warning
 
 
+@pytest.mark.parametrize("mode", ["rollout", "per-sample"])
+def test_bshd_multi_sample_microbatch_warning_is_opt_in(caplog, mode):
+    args = _parse_megatron_args(["--qkv-format", "bshd", "--bshd-padding-mode", mode, "--micro-batch-size", "2"])
+
+    with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+        miles_validate_args(args)
+
+    warning = "Use --micro-batch-size 1 unless samples are bucketed by padded length."
+    assert (warning in caplog.text) == (mode == "per-sample")
+
+
+def test_bshd_padding_defaults_to_rollout_maximum():
+    args = _parse_megatron_args(["--qkv-format", "bshd"])
+
+    miles_validate_args(args)
+
+    assert args.bshd_padding_mode == "rollout"
+
+
+def test_per_sample_padding_rejects_thd():
+    args = _parse_megatron_args(["--bshd-padding-mode", "per-sample"])
+
+    with pytest.raises(AssertionError, match="requires --qkv-format bshd"):
+        miles_validate_args(args)
+
+
+@pytest.mark.parametrize("mode", [None, "per_sample", "unknown"])
+def test_bshd_padding_rejects_invalid_config_override(mode):
+    args = _parse_megatron_args(["--qkv-format", "bshd"])
+    # YAML config overrides are applied after argparse has checked its choices.
+    args.bshd_padding_mode = mode
+
+    with pytest.raises(AssertionError, match="Invalid --bshd-padding-mode"):
+        miles_validate_args(args)
+
+
 class TestCriticSaveDerivation:
     def _validate(self, extra):
         parser = get_megatron_arg_parser()

@@ -26,6 +26,7 @@ class TestBackendRolloutSizes:
         args = Namespace(
             backend=Namespace(compress_ratios=ratios),
             qkv_format="bshd",
+            bshd_padding_mode="rollout",
             data_pad_size_multiplier=1,
             delay_split_train_data_by_dp=False,
             enable_witness=False,

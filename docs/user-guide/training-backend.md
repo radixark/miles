@@ -121,6 +121,34 @@ set of supported combinations depends on the Megatron Core kernels and model spe
 [Argument Groups](/user-guide/argument-groups#perf-args) lists the flags that belong in
 `perf_args`.
 
+#### BSHD padding geometry
+
+With `--qkv-format bshd`, `--bshd-padding-mode rollout` (the default) pads every
+sample to the aligned maximum in its rollout partition. This preserves existing
+kernel geometry. `--bshd-padding-mode per-sample` opts into each sample's own
+aligned length, reducing padded token work and memory when lengths are skewed.
+Both modes retain the TP, CP and compression alignment requirements and use
+`max_seq_lens` as the geometry for tokens, log probabilities and replay tensors.
+Per-sample mode requires one shared padded length within each microbatch; use
+`--micro-batch-size 1` or bucket samples by padded length. Mixed padded lengths
+are rejected before batch/replay preparation can silently misalign CP slices.
+More sequence shapes can also increase kernel setup and compilation costs.
+
+Changing padded length is not numerically neutral for every backend. A
+[downstream Qwen3.5 Gated DeltaNet report](https://github.com/radixark/miles/pull/2698#issuecomment-6475101739)
+found that automatic internal sequence splitting in its pinned FLA/FlashQLA
+stack changed log probabilities and gradients even at Megatron CP1. Its 32k
+floor was an empirical workaround, not a general safe threshold; Miles does not
+apply it automatically. Keep `rollout` mode for unqualified model/kernel stacks.
+
+Before opting in, replay fixed tokens, loss masks, model weights and optimizer
+state on the exact GPU/kernel stack. Compare per-token log probabilities on loss
+tokens and gradients across padding layouts, and repeat the identical baseline
+to measure its own numerical variation. Include physical microbatch 1, lengths
+crossing internal split boundaries and an entirely short rollout. The existing
+CP-layout guards and CPU padding-policy tests do not establish GPU numerical
+equivalence.
+
 ### 3. Choosing the GPU layout
 
 Parallelism says how the trainer splits the model. This says where the trainer sits relative
