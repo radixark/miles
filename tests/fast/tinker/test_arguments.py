@@ -2,7 +2,7 @@ from argparse import Namespace
 
 import pytest
 
-from miles.tinker.arguments import configure_tinker_args
+from miles.tinker.arguments import configure_tinker_args, validate_tinker_args
 
 
 def _tinker_args(**overrides) -> Namespace:
@@ -51,8 +51,8 @@ class TestTinkerCheckpointOwnership:
     def test_trainer_driven_saves_are_rejected_instead_of_ignored(self, field: str, value, flag: str) -> None:
         """Trainer save flags are inert under the gateway, so accepting them would mislead."""
         with pytest.raises(AssertionError, match=flag):
-            configure_tinker_args(_tinker_args(**{field: value}))
+            validate_tinker_args(_tinker_args(**{field: value}))
 
     def test_checkpoint_root_is_required(self) -> None:
         with pytest.raises(AssertionError, match="--tinker-checkpoint-root"):
-            configure_tinker_args(_tinker_args(tinker_checkpoint_root=None))
+            validate_tinker_args(_tinker_args(tinker_checkpoint_root=None))
