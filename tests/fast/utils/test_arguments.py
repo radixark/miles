@@ -2913,13 +2913,24 @@ class TestMultiLoRAValidation:
 
         miles_validate_args(args)
 
-    def test_rejects_allgather_cp(self):
-        # get_batch cannot route adapter slots under the allgather CP layout; fail at launch.
+    def test_rejects_allgather_cp_with_thd(self):
+        # get_batch cannot split the packed thd stream per adapter under allgather CP; fail at launch.
         args = self._parse([])
         args.context_parallel_size = 2
         args.allgather_cp = True
-        with pytest.raises(AssertionError, match="--allgather-cp"):
+        with pytest.raises(AssertionError, match="--allgather-cp only with --qkv-format bshd"):
             miles_validate_args(args)
+
+    @pytest.mark.parametrize("allgather_cp", [False, True])
+    def test_accepts_single_sample_bshd(self, allgather_cp):
+        # One row per micro-batch keeps each adapter's tokens contiguous on every CP rank.
+        args = self._parse([])
+        args.qkv_format = "bshd"
+        args.micro_batch_size = 1
+        args.context_parallel_size = 2
+        args.allgather_cp = allgather_cp
+
+        miles_validate_args(args)
 
     def test_rejects_pipeline_parallelism(self):
         # Adapter routing is not recompute-safe under a pipelined schedule.
@@ -2928,11 +2939,12 @@ class TestMultiLoRAValidation:
         with pytest.raises(AssertionError, match="pipeline-model-parallel-size 1"):
             miles_validate_args(args)
 
-    def test_rejects_bshd_qkv_format(self):
+    def test_rejects_multi_sample_bshd(self):
         # bshd interleaves samples in the sequence-major flattening the spans assume.
         args = self._parse([])
         args.qkv_format = "bshd"
-        with pytest.raises(AssertionError, match="qkv-format thd"):
+        args.micro_batch_size = 2
+        with pytest.raises(AssertionError, match="bshd with --micro-batch-size 1"):
             miles_validate_args(args)
 
     def test_rejects_shared_outer_expert_loras(self):

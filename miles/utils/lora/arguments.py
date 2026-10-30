@@ -129,18 +129,20 @@ def validate_multi_lora_args(args: Any) -> None:
 
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
-    assert (
-        not args.allgather_cp
-    ), "Multi-LoRA does not support --allgather-cp: per-adapter token spans assume the zigzag CP layout."
     # Adapter routing is only recompute-safe without pipelining; enforce at launch.
     assert args.pipeline_model_parallel_size == 1, (
         "Multi-LoRA requires --pipeline-model-parallel-size 1: a pipelined schedule would "
         "recompute activations against a later micro-batch's adapter routing."
     )
-    # Per-slot token spans assume sequence-major contiguous sample packing, which only 'thd' provides.
-    assert args.qkv_format == "thd", (
-        "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "
-        f"micro-batch packs samples contiguously, which bshd does not (got {args.qkv_format!r})."
+    # Per-slot token spans assume sequence-major contiguous sample packing: thd, or bshd with one sample.
+    single_sample_bshd = args.qkv_format == "bshd" and args.micro_batch_size == 1
+    assert args.qkv_format == "thd" or single_sample_bshd, (
+        "Multi-LoRA requires --qkv-format thd, or bshd with --micro-batch-size 1: per-adapter token spans "
+        f"assume the micro-batch packs samples contiguously (got {args.qkv_format!r})."
+    )
+    assert not args.allgather_cp or single_sample_bshd, (
+        "Multi-LoRA supports --allgather-cp only with --qkv-format bshd and --micro-batch-size 1: "
+        "each CP rank then holds one contiguous chunk of the row."
     )
     assert not args.experts_shared_outer_loras, (
         "Multi-LoRA does not support --experts-shared-outer-loras; MoE expert adapters "
