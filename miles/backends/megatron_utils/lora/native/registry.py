@@ -180,8 +180,6 @@ def resolve_adapter_targets(
     ), f"native {spec.name} LoRA trains shared-outer expert adapters; pass --experts-shared-outer-loras"
     if spec.fixed_targets is not None:
         _assert_fixed_target_layout(spec, hf_config, hf_targets)
-        if lora_type == "canonical_lora":
-            _assert_independent_a(spec, sorted(spec.mlp.shared_a_targets))
         return spec.fixed_targets.serving(hf_targets)
 
     selected = [module for module in hf_modules if any(matches_lora_target(module, t) for t in hf_targets)]
@@ -192,11 +190,6 @@ def resolve_adapter_targets(
         f"--target-modules {attention_target_modules_csv(hf_config)}) or use --megatron-to-hf-mode bridge."
     )
     _assert_shared_expert_up_proj_has_gate_proj(selected or hf_targets)
-    if lora_type == "canonical_lora":
-        _assert_independent_a(
-            spec,
-            [module for module in selected or hf_targets if module.rpartition(".")[2] in spec.mlp.shared_a_targets],
-        )
     if spec.linear_attention is None:
         return hf_targets
     return spec.linear_attention.served_targets(selected or hf_targets, hf_targets, lora_type=lora_type)
@@ -220,13 +213,6 @@ def validate_native_lora_args(args) -> None:
     assert (
         spec.experts is None or args.expert_tensor_parallel_size == 1
     ), f"native {spec.name} expert LoRA assumes --expert-tensor-parallel-size 1"
-
-
-def _assert_independent_a(spec: LoRAArchSpec, shared_a_modules: list[str]) -> None:
-    assert not shared_a_modules, (
-        f"native {spec.name} LoRA trains {shared_a_modules[:4]} with one A shared by its projections; "
-        "--lora-type canonical_lora needs an independent A per projection. Use --lora-type lora"
-    )
 
 
 def _assert_fixed_target_layout(spec: LoRAArchSpec, hf_config: dict, hf_targets: list[str]) -> None:

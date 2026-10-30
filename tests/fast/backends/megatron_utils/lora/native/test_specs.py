@@ -130,24 +130,6 @@ class TestResolveAdapterTargets:
         }
         assert served["lora"] == served["canonical_lora"] == targets
 
-    def test_canonical_lora_refuses_a_gate_up_proj_native_trains_with_one_a(self):
-        """GLM-4's HF gate_up_proj gets one shared A natively, which is not what canonical asks for."""
-        with pytest.raises(AssertionError, match="independent A per projection"):
-            _resolve_adapter_targets(
-                {"model_type": "glm4"},
-                ["model.layers.*.mlp.gate_up_proj"],
-                hf_modules=[],
-                lora_type="canonical_lora",
-                experts_shared_outer_loras=False,
-            )
-        assert _resolve_adapter_targets(
-            {"model_type": "glm4"},
-            ["model.layers.*.self_attn.q_proj", "model.layers.*.mlp.down_proj"],
-            hf_modules=[],
-            lora_type="canonical_lora",
-            experts_shared_outer_loras=False,
-        ) == ["model.layers.*.self_attn.q_proj", "model.layers.*.mlp.down_proj"]
-
     def test_unregistered_model_type_fails_closed(self):
         with pytest.raises(AssertionError, match="no spec registered"):
             resolve_adapter_targets({"model_type": "gpt_oss"}, ["q_proj"], hf_modules=[])

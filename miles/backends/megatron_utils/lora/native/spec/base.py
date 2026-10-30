@@ -85,14 +85,10 @@ class AttentionLoRASpec(Protocol):
 
 
 class MLPLoRASpec(Protocol):
-    """Architecture-specific dense/shared-MLP attachment contract.
-
-    ``shared_a_targets`` are HF modules holding several projections that native trains with one shared A.
-    """
+    """Architecture-specific dense/shared-MLP attachment contract."""
 
     name: str
     supported_targets: frozenset[str]
-    shared_a_targets: frozenset[str]
 
     def attach(self, mlp: nn.Module, layer: nn.Module, context: AttachContext) -> int: ...
 
