@@ -52,7 +52,7 @@ Each CUDA test declares `num_gpus`, the minimum count preserving all cases, and 
 | both | a test supporting both generations runs **twice**, once per generation |
 | `run-ci-blackwell-only` | every test that can *only* run on Blackwell, across all domains |
 
-`run-on-*` is what permits a test to execute outside its home stage. Without one — a plain PR, nightly, weekly, release, or a called workflow — nothing moves, so those runs select exactly what they always did.
+`run-on-*` is what permits a test to execute outside its home stage. Without one, a plain PR, nightly, or a called workflow moves nothing and selects exactly what it always did. Weekly and release runs behave as if both `run-on-hopper` and `run-on-blackwell` were set: every test runs on each generation it supports, so the full Hopper suite and the full Blackwell suite both run. An explicit `run-on-*` label on such a run narrows it to the named generations.
 
 `run-ci-blackwell-only` and `run-on-blackwell` are one preposition apart and mean different things. The first runs the Blackwell-exclusive tests; the second moves whatever it can onto Blackwell. The `-only` suffix is the reminder.
 
