@@ -34,6 +34,119 @@ Reference-KL tokens with non-finite probabilities or absolute log-probability ra
 
 Training logs include `train/train_rollout_logprob_abs_diff` and `train/train_rollout_kl`. The latter uses the same masked, sampled-token k3 estimator of KL(rollout || train) as the policy loss. It is a detached diagnostic and is emitted even when reference-KL regularization is disabled.
 
+## Sampler KL (demo)
+
+A main motivation is to help maintain policy entropy while limiting drift from
+the generating policy. The preliminary observations below suggest this effect
+in our math/Adam setup; the task, reward, optimizer, learning rate, precision
+and sampler/KL schedule can all affect it.
+
+Add `--sampler-kl-coef 0.03` to optimize `KL(q_sampler || p_trainer)` alongside
+score function centering (SFC). Here q is the distribution that generated the
+token, and p is the current trainer distribution. The coefficient defaults to
+zero and is constant when enabled, including
+fresh rollouts. Sampler probabilities are detached; the trainer remains
+differentiable. KL is independent of reward advantages, TIS/MIS and reference
+KL, and uses the existing token or equal-response reduction.
+
+Choose `--sampler-kl-estimator`:
+
+- `head_tail` (default): exact transported top-k head plus a sampler tail modeled
+  as proportional to the trainer tail. This approximates an arbitrary true tail.
+- `sampled_k1`: `-log_r`, where `log_r = log(p[token]) - stop_gradient(log(q[token]))`.
+- `sampled_k3`: `expm1(log_r) - log_r`, with gradients through the uncapped ratio.
+
+Both sampled choices use actual generated-token probabilities. Masked tokens are
+zeroed before arithmetic; active nonfinite sampled ratios or k3 overflow raise
+an error (including the companion k3 calculation in k1 mode). A single k1 value
+can be negative and its gradient need not vanish when p=q; both sampled
+estimators match fixed-history KL in expectation over q. k3 has zero per-token
+loss and gradient when p=q. SFC still needs its candidate head in all modes.
+
+`train/sampler_kl_loss` and `train/sampler_kl_weighted_loss` report the raw and
+weighted term. `train/train_rollout_kl` remains a separate detached diagnostic.
+Inspired by the [SFC + trainer-generator KL proposal](https://huggingface.co/blog/NormalUhr/sfc-kl);
+this demo uses constant beta rather than the proposal's age-dependent schedule.
+
+### Preliminary 32-update experiments
+
+Qwen3.6-35B-A3B (BF16 trainer / FP8 sampler), INTELLECT-2 verifiable math,
+SFC K128, equal-response reduction, GBS256 (32 prompts x 8 responses),
+Adam (LR 1e-6, betas 0.9/0.98, weight decay 0.1), seed 1234. Each arm starts
+fresh and uses the same first 1,024 training prompts once (8,192 responses).
+Greedy held-out evaluation uses 128 questions at updates 0/16/32. Where enabled,
+TIS is detached min(p/q, 2), and sampler KL has constant beta 0.03 including
+age zero. The combined arm adds KL independently of the TIS-weighted SFC term.
+
+| Recipe | Update 0 | Update 16 | Update 32 |
+| --- | ---: | ---: | ---: |
+| SFC + TIS | 75/128 (58.59%) | 75/128 (58.59%) | 84/128 (65.62%) |
+| SFC + sampler KL (top-k) | 80/128 (62.50%) | 86/128 (67.19%) | 91/128 (71.09%) |
+| SFC + sampler KL (k1) | 76/128 (59.38%) | 79/128 (61.72%) | 91/128 (71.09%) |
+| SFC + sampler KL (k3) | 75/128 (58.59%) | 85/128 (66.41%) | 90/128 (70.31%) |
+| SFC + TIS + sampler KL (top-k) | 77/128 (60.16%) | 83/128 (64.84%) | 87/128 (67.97%) |
+
+Entropy is the native masked equal-response trainer entropy in nats. The
+entropy regularization coefficient is zero in every arm. Compare nonoverlapping
+eight-update means to reduce batch noise:
+
+| Recipe | Updates 1-8 | Updates 25-32 | Relative change |
+| --- | ---: | ---: | ---: |
+| SFC + TIS | 0.12993 | 0.11728 | -9.7% |
+| SFC + sampler KL (top-k) | 0.13115 | 0.12766 | -2.7% |
+| SFC + sampler KL (k1) | 0.13214 | 0.13221 | +0.1% |
+| SFC + sampler KL (k3) | 0.13090 | 0.13302 | +1.6% |
+| SFC + TIS + sampler KL (top-k) | 0.13275 | 0.12637 | -4.8% |
+
+Sampler KL appears to help maintain entropy here: its arms show smaller drops
+or nearly flat entropy over this horizon compared with SFC + TIS. The combined
+SFC + TIS + top-k KL arm has a smaller drop than SFC + TIS and reaches 87/128
+at update 32 versus 84/128. This is a preliminary observation with differing
+generated histories, not evidence of a universal improvement or causal proof.
+The [reference proposal](https://huggingface.co/blog/NormalUhr/sfc-kl) motivates
+the feature; these task/Adam/fresh-sampler results do not establish that its
+empirical conclusions transfer unchanged, or that TIS must always be removed.
+
+### Longer runs: 96 updates and one full epoch
+
+SFC + TIS and SFC + sampler KL (top-k) each completed 128 updates: one epoch
+of 4,096 distinct training prompts and 32,768 responses. The combined
+SFC + TIS + sampler KL (top-k) run completed 96 updates: 3,072 training prompts
+and 24,576 responses. All use the same settings described above. The sampled
+k1/k3 runs ended at 32 updates.
+
+| Recipe | Update 96 | Update 128 (one epoch) |
+| --- | ---: | ---: |
+| SFC + TIS | 92/128 (71.88%) | 102/128 (79.69%) |
+| SFC + sampler KL (top-k) | 93/128 (72.66%) | 101/128 (78.91%) |
+| SFC + TIS + sampler KL (top-k) | 98/128 (76.56%) | Ended at update 96 |
+
+The entropy pattern persists over the longer runs. The table compares the mean
+of updates 1-8 with the final eight updates at each stated horizon:
+
+| Recipe | Through update | First eight | Last eight | Relative change |
+| --- | ---: | ---: | ---: | ---: |
+| SFC + TIS | 96 | 0.12993 | 0.10200 | -21.5% |
+| SFC + TIS | 128 | 0.12993 | 0.09085 | -30.1% |
+| SFC + sampler KL (top-k) | 96 | 0.13115 | 0.15019 | +14.5% |
+| SFC + sampler KL (top-k) | 128 | 0.13115 | 0.13642 | +4.0% |
+| SFC + TIS + sampler KL (top-k) | 96 | 0.13275 | 0.13684 | +3.1% |
+
+In the one-epoch runs, entropy stays higher with sampler KL, while held-out
+accuracy differs by one question. At the matched 96-update point, the combined run scores
+98/128, compared with 92/128 for SFC + TIS and 93/128 for SFC + sampler KL.
+These results support investigating entropy preservation; they do not establish
+a reliable accuracy ranking or transfer across tasks and optimizers.
+
+All runs use one seed and independently generated responses, with different
+baseline scores. They used a separate experiment implementation; validation of
+this PR on the complete training runtime remains pending. [Evaluation results,
+entropy summaries and source-receipt hashes](sampler_kl_results.json) preserve
+all reported points. [Per-update metrics for the first 32 updates](sampler_kl_32_updates.csv)
+cover all five recipes: raw/weighted KL, policy-gradient/total loss, entropy,
+sampler/trainer mismatch and gradient norm. Missing KL fields in the control
+are blank.
+
 ## How it works
 
 When the rollout distribution differs from the current trainer, even a constant reward can produce an unwanted average policy update. Score centering subtracts the expected weighted score under the rollout distribution.
