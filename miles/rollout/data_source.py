@@ -312,6 +312,12 @@ class MixedRolloutDataSource(DataSource):
                 f"the checkpoint mixed datasets {sorted(state_dict['offsets'])}, but --rollout-data-yaml-config now "
                 f"lists {sorted(self.datasets)}"
             )
+        # a dataset filtered shorter since the save (e.g. a lower max_prompt_len) cannot resume at its position
+        if too_far := {n: o for n, o in state_dict["offsets"].items() if o > len(self.datasets[n])}:
+            raise ValueError(
+                f"the checkpoint resumes {too_far} past the end of datasets now holding "
+                f"{ {n: len(self.datasets[n]) for n in too_far} } prompts; keep the dataset and its filters unchanged"
+            )
         self.offsets = dict(state_dict["offsets"])
         self.epoch_ids = dict(state_dict["epoch_ids"])
         self.credits = [state_dict["credits"][name] for name in self.datasets]
@@ -333,7 +339,7 @@ class MixedRolloutDataSource(DataSource):
             prompts += chunk
             count -= len(chunk)
             self.offsets[name] += len(chunk)
-            if self.offsets[name] == len(dataset):
+            if self.offsets[name] >= len(dataset):
                 self.offsets[name] = 0
                 self.epoch_ids[name] += 1
                 if self.args.rollout_shuffle:
