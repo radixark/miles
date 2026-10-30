@@ -12,7 +12,7 @@ from miles.utils.rollout_data_config import (
     parse_rollout_datasets,
 )
 
-_SHA = "9f2c" + "0" * 60
+_SHA = "9f2c0e41"
 
 _DOCUMENT = {
     "datasets": {
@@ -92,6 +92,7 @@ class TestRejects:
             {"agent": ["max_turns", 50]},
             {"sha256": _SHA.upper()},
             {"sha256": _SHA[:-1]},
+            {"sha256": _SHA + "0" * 56},
         ],
     )
     def test_a_bad_dataset_field(self, fields):
