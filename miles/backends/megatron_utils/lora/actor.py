@@ -55,11 +55,23 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
 
     @with_logs
     def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+        self,
+        slot: int,
+        rank: int,
+        alpha: float,
+        ckpt_path: str | None = None,
+        load_optimizer: bool = True,
+        adapter_path: str | None = None,
     ) -> None:
+        """Claim the slot, then restore it from a ``save_slot`` checkpoint or the weights of an ``export_slot`` dir."""
         self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, slot, rank, alpha)
         if ckpt_path is not None:
             lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
+        if adapter_path is not None:
+            self._heartbeat.bump()
+            self.snapshot_publisher.read_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), adapter_path)
+            # the exported BF16 weights become the FP32 masters; Adam state stays fresh from the slot init
+            self.slot_optimizers[slot].reload_masters()
 
     @with_logs
     def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> None:

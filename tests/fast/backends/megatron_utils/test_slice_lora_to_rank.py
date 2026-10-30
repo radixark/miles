@@ -1,10 +1,11 @@
 """slice_lora_to_rank trims max-rank-padded LoRA tensors to the adapter's real rank;
-used by weight-sync and HF PEFT export (PEFT rejects tensors padded past the declared rank)."""
+used by weight-sync and HF PEFT export (PEFT rejects tensors padded past the declared rank).
+pad_lora_to_rank inverts it when an exported adapter is loaded back into a slot."""
 
 import pytest
 import torch
 
-from miles.backends.megatron_utils.lora.slots import slice_lora_to_rank
+from miles.backends.megatron_utils.lora.slots import pad_lora_to_rank, slice_lora_to_rank
 
 
 def _padded(shape, live_rows=None, live_cols=None):
@@ -81,3 +82,24 @@ def test_packed_expert_fewer_experts_than_rank_is_not_confused():
     tensor[:, :4] = 1.0
     out = slice_lora_to_rank("x.experts.gate_proj.lora_A.weight", tensor, 4)
     assert out.shape == (2, 4, 8)
+
+
+@pytest.mark.parametrize(
+    ("name", "shape"),
+    [
+        ("x.q_proj.lora_A.weight", (16, 8)),
+        ("x.q_proj.lora_B.weight", (8, 16)),
+        ("x.experts.gate_proj.lora_A.weight", (4, 16, 8)),
+        ("x.experts.gate_proj.lora_B.weight", (4, 8, 16)),
+    ],
+)
+def test_padding_zero_fills_the_rank_axis_and_slicing_undoes_it(name, shape):
+    tensor = torch.randn(shape)
+    padded = pad_lora_to_rank(name, tensor, 16, 32)
+    assert padded.shape[-2 if "lora_A" in name else -1] == 32
+    assert torch.equal(slice_lora_to_rank(name, padded, 16), tensor)
+
+
+def test_padding_rejects_a_tensor_of_another_rank():
+    with pytest.raises(AssertionError, match="not a rank-16 LoRA tensor"):
+        pad_lora_to_rank("x.lora_A.weight", torch.ones(8, 8), 16, 32)

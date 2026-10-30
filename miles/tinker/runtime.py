@@ -53,10 +53,18 @@ class MilesBackend:
         return await self.trainer.has_errored_cell()
 
     async def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+        self,
+        slot: int,
+        rank: int,
+        alpha: float,
+        ckpt_path: str | None = None,
+        load_optimizer: bool = True,
+        adapter_path: str | None = None,
     ) -> dict | None:
         return _slot_failure(
-            await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer)
+            await self.trainer.load_slot(
+                slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer, adapter_path=adapter_path
+            )
         )
 
     async def unload_slot(self, slot: int) -> dict | None:

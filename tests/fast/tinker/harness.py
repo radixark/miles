@@ -1,6 +1,7 @@
 """Shared fakes for the tinker gateway suite."""
 
 import asyncio
+import json
 
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, PENDING, RequestFuture
@@ -43,9 +44,15 @@ class FakeBackend:
     async def trainer_dead(self):
         return self.dead
 
-    async def load_slot(self, slot, rank, alpha, ckpt_path=None, load_optimizer=True):
+    async def load_slot(self, slot, rank, alpha, ckpt_path=None, load_optimizer=True, adapter_path=None):
         return self._record(
-            "load_slot", slot=slot, rank=rank, alpha=alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
+            "load_slot",
+            slot=slot,
+            rank=rank,
+            alpha=alpha,
+            ckpt_path=ckpt_path,
+            load_optimizer=load_optimizer,
+            adapter_path=adapter_path,
         )
 
     async def unload_slot(self, slot):
@@ -81,12 +88,21 @@ class FakeBackend:
         return self._write_checkpoint("save_slot", path, metadata, slot=slot)
 
     async def export_slot(self, slot, rank, alpha, path, metadata=None):
-        return self._write_checkpoint("export_slot", path, metadata, slot=slot, rank=rank, alpha=alpha)
+        adapter_config = json.dumps({"r": rank, "lora_alpha": alpha})
+        return self._write_checkpoint(
+            "export_slot",
+            path,
+            metadata,
+            lambda directory: (directory / "adapter_config.json").write_text(adapter_config),
+            slot=slot,
+            rank=rank,
+            alpha=alpha,
+        )
 
-    def _write_checkpoint(self, name, path, metadata, **kwargs):
+    def _write_checkpoint(self, name, path, metadata, write_files=lambda _: None, **kwargs):
         failure = self._record(name, path=path, metadata=metadata, **kwargs)
         if failure is None and metadata is not None:
-            write_checkpoint_dir(path, lambda _: None, metadata=metadata, overwrite=name == "save_slot")
+            write_checkpoint_dir(path, write_files, metadata=metadata, overwrite=name == "save_slot")
         return failure
 
     async def sample(self, payload, lora_name, lora_path=None):

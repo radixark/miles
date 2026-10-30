@@ -10,6 +10,7 @@ import uuid
 
 from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
+    validate_adapter_compatibility,
     validate_batch_payload,
     validate_checkpoint_compatibility,
     validate_checkpoint_segment,
@@ -32,6 +33,7 @@ from miles.tinker.core.types import (
 from miles.tinker.core.utils import (
     build_checkpoint_metadata,
     parse_tinker_path,
+    read_adapter_config,
     read_checkpoint_metadata,
     resolve_checkpoint_dir,
     resolve_sampler_checkpoint,
@@ -346,22 +348,23 @@ class TinkerService:
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
+        """Restore a save_state checkpoint, or load only the weights of a save_weights_for_sampler export."""
         source_id, kind, name = parse_tinker_path(payload["path"])
-        if kind != "weights":
-            raise UserInputError("cannot load sampler weights into a training model; use a save_state checkpoint")
+        if kind == "sampler_weights" and payload["optimizer"]:
+            raise UserInputError("sampler weights hold no optimizer state; load them without the optimizer")
         checkpoint_dir = os.path.realpath(resolve_checkpoint_dir(self.config.checkpoint_root, source_id, kind, name))
         source_tenant = payload.get("weights_access_token")
         if source_tenant is None:
             source_tenant = record.tenant
         meta = read_checkpoint_metadata(checkpoint_dir, source_tenant, payload["path"])
         validate_checkpoint_compatibility(meta, record, self.config, payload["path"])
-        failure = await self.backend.load_slot(
-            record.slot,
-            record.lora_rank,
-            record.lora_alpha,
-            ckpt_path=checkpoint_dir,
-            load_optimizer=payload["optimizer"],
-        )
+        if kind == "sampler_weights":
+            adapter_config = read_adapter_config(checkpoint_dir, payload["path"])
+            validate_adapter_compatibility(adapter_config, record, payload["path"])
+            source = {"adapter_path": checkpoint_dir}
+        else:
+            source = {"ckpt_path": checkpoint_dir, "load_optimizer": payload["optimizer"]}
+        failure = await self.backend.load_slot(record.slot, record.lora_rank, record.lora_alpha, **source)
         if failure is not None:
             return failure
         return {"op": "load_state"}

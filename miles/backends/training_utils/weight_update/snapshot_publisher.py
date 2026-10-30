@@ -58,6 +58,11 @@ class SnapshotPublisher:
             (path / "adapter_config.json").write_text(json.dumps(adapter_config))
             (path / "adapter_model.safetensors").write_bytes(adapter_bytes)
 
+    def read_adapter(self, adapter: AdapterSpec, path: str | Path) -> None:
+        """Collectively load the weights of an adapter dir written by ``write_adapter`` into ``adapter``'s slot."""
+        with safetensors.safe_open(str(Path(path) / "adapter_model.safetensors"), framework="pt") as hf_tensors:
+            self._iterator.load_adapter(adapter, hf_tensors)
+
     def write_model(self, path: str | Path, *, weights: Mapping[str, torch.Tensor], hf_checkpoint: str) -> None:
         """Collectively write HF model shards into the caller's checkpoint directory."""
         path = Path(path)

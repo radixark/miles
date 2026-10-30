@@ -134,6 +134,71 @@ async def test_save_then_load_roundtrip_paths(service):
     assert weights_only["ckpt_path"] == str(checkpoint.resolve())
 
 
+async def _sampler_weights(service, model_id: str) -> str:
+    request_id = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": "v1"}
+    )
+    return (await await_settled(service, "tenant", request_id)).result["path"]
+
+
+async def _load_state(service, tenant: str, model_id: str, path: str, seq_id: int = 1, **options):
+    payload = {"model_id": model_id, "seq_id": seq_id, "path": path, "optimizer": False} | options
+    return await await_settled(service, tenant, service.submit(tenant, "load_state", payload))
+
+
+async def test_sampler_weights_load_into_a_fresh_model_without_optimizer_state(service):
+    path = await _sampler_weights(service, await created_model(service))
+    fresh_id = await created_model(service)
+    assert (await _load_state(service, "tenant", fresh_id, path)).state == DONE
+
+    loaded = service.backend.named("load_slot")[-1]
+    exported = Path(resolve_checkpoint_dir(service.config.checkpoint_root, *path.removeprefix("tinker://").split("/")))
+    assert (loaded["adapter_path"], loaded["ckpt_path"]) == (str(exported.resolve()), None)
+
+
+@pytest.mark.parametrize(
+    ("path", "options", "error"),
+    [
+        ("tinker://{model_id}/sampler_weights/v1", {"optimizer": True}, "no optimizer state"),
+        ("tinker://{model_id}/sampler_weights/v2", {}, "unknown checkpoint"),
+        ("tinker://{model_id}/adapters/v1", {}, "malformed tinker path"),
+    ],
+)
+async def test_unloadable_sampler_weights_are_rejected(service, path, options, error):
+    model_id = await created_model(service)
+    await _sampler_weights(service, model_id)
+    future = await _load_state(service, "tenant", model_id, path.format(model_id=model_id), seq_id=2, **options)
+    assert (future.state, future.error_category) == (FAILED, "user")
+    assert error in future.error
+    assert len(service.backend.named("load_slot")) == 1, "only create_model may touch the slot"
+
+
+@pytest.mark.parametrize("access_token", [None, "tenant"])
+async def test_foreign_sampler_weights_need_the_owners_access_token(service, access_token):
+    path = await _sampler_weights(service, await created_model(service))
+    thief_model = await created_model(service, tenant="thief")
+    future = await _load_state(service, "thief", thief_model, path, weights_access_token=access_token)
+    if access_token is None:
+        assert (future.state, future.error_category) == (FAILED, "user") and "belong" in future.error
+    else:
+        assert future.state == DONE
+
+
+@pytest.mark.parametrize("key", ["r", "lora_alpha"])
+async def test_sampler_weights_of_another_adapter_shape_do_not_load(service, key):
+    import json
+
+    model_id = await created_model(service)
+    path = await _sampler_weights(service, model_id)
+    config_path = Path(service.config.checkpoint_root) / model_id / "sampler_weights" / "v1" / "adapter_config.json"
+    adapter_config = json.loads(config_path.read_text())
+    config_path.write_text(json.dumps(adapter_config | {key: adapter_config[key] * 2}))
+
+    future = await _load_state(service, "tenant", model_id, path, seq_id=2)
+    assert (future.state, future.error_category) == (FAILED, "user") and f"{key}=" in future.error
+    assert len(service.backend.named("load_slot")) == 1, "nothing may touch the slot on a mismatch"
+
+
 async def test_sampler_save_publishes_successive_versions(service):
     model_id = await created_model(service)
     for seq_id in (1, 2):

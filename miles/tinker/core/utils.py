@@ -53,6 +53,13 @@ def read_checkpoint_metadata(checkpoint_dir: str, tenant: str, shown_path: str) 
     return meta
 
 
+def read_adapter_config(checkpoint_dir: str, shown_path: str) -> dict:
+    try:
+        return json.loads((Path(checkpoint_dir) / "adapter_config.json").read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise UserInputError(f"cannot read the adapter config of {shown_path!r}: {error}") from error
+
+
 def resolve_sampler_checkpoint(checkpoint_root: str, tenant: str, model_path: str, base_model: str) -> tuple[str, str]:
     """Return the adapter name and directory so engines can reload evicted snapshots."""
     model_id, kind, name = parse_tinker_path(model_path)

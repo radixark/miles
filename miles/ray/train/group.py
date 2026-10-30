@@ -565,10 +565,22 @@ class TrainerController:
         return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
 
     async def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+        self,
+        slot: int,
+        rank: int,
+        alpha: float,
+        ckpt_path: str | None = None,
+        load_optimizer: bool = True,
+        adapter_path: str | None = None,
     ) -> list:
         return await self._execute_slots(
-            "load_slot", slot=slot, rank=rank, alpha=alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
+            "load_slot",
+            slot=slot,
+            rank=rank,
+            alpha=alpha,
+            ckpt_path=ckpt_path,
+            load_optimizer=load_optimizer,
+            adapter_path=adapter_path,
         )
 
     async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> list:

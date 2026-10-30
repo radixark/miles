@@ -141,6 +141,18 @@ def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: G
             )
 
 
+def validate_adapter_compatibility(adapter_config, record: ModelRecord, shown_path: str) -> None:
+    """Reject sampler weights whose rank or scaling differ from the model's slot."""
+    if not isinstance(adapter_config, dict):
+        raise UserInputError(f"sampler weights {shown_path!r} have an invalid adapter config")
+    for key, value in (("r", record.lora_rank), ("lora_alpha", record.lora_alpha)):
+        if adapter_config.get(key) != value:
+            raise UserInputError(
+                f"sampler weights {shown_path!r} were exported with {key}={adapter_config.get(key)!r}; "
+                f"this model expects {key}={value!r}"
+            )
+
+
 def validate_save_options(payload: dict) -> None:
     if payload.get("ttl_seconds") is not None:
         raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")

@@ -2,11 +2,13 @@ import dataclasses
 import inspect
 import itertools
 import logging
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
 
+from miles.backends.megatron_utils.lora.slots import pad_lora_to_rank, slice_lora_to_rank
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
@@ -14,7 +16,7 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils import megatron_bridge_utils
 from miles.utils.hf_utils.weight_mapping import get_param_name_remap_for_checkpoint
-from miles.utils.lora.utils import is_lora_weight_name
+from miles.utils.lora.utils import AdapterSpec, is_lora_weight_name
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..megatron_to_hf.processors import quantize_params
@@ -96,13 +98,50 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
         from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
 
-        from ..lora.slots import slice_lora_to_rank
-
         with expose_adapter_slot(self.model, adapter.slot):
             named_tensors = self._export_current_adapter()
         return [(h, slice_lora_to_rank(h, w, adapter.rank)) for h, w in named_tensors]
 
+    @torch.no_grad()
+    def load_adapter(self, adapter: AdapterSpec, hf_tensors) -> None:
+        """Inverse of ``_export_pp_local_lora``: write an adapter's HF tensors into its slot.
+
+        The export layout (TP/EP shards, fused q/k/v and gate/up splits, per-expert names,
+        the vocab-split lm_head) is traced instead of restated: exporting the slot while its
+        parameters hold world-unique element ids yields, at every HF position, the id of the
+        slot element the export copied there. ``hf_tensors`` (a safetensors handle) must hold
+        exactly the tensors the slot exports, at ``adapter.rank``. Collective."""
+        from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
+
+        with expose_adapter_slot(self.model, adapter.slot):
+            owned_params = [
+                (module, attr, param)
+                for chunk in self.model
+                for module_name, module in chunk.named_modules()
+                for attr, param in module.named_parameters(recurse=False)
+                if ".adapter." in f"{module_name}.{attr}"
+            ]
+            params = [param for _, _, param in owned_params]
+            values = torch.zeros(
+                sum(param.numel() for param in params), dtype=params[0].dtype, device=params[0].device
+            )
+            with _element_ids(owned_params) as first_id:
+                _scatter_traced_adapter(
+                    values,
+                    self._iter_current_adapter(),
+                    hf_tensors,
+                    adapter=adapter,
+                    max_rank=self.args.lora_rank,
+                    first_id=first_id,
+                )
+            for param, param_values in zip(params, values.split([param.numel() for param in params]), strict=True):
+                param.copy_(param_values.view_as(param))
+
     def _export_current_adapter(self) -> list:
+        return list(self._iter_current_adapter())
+
+    def _iter_current_adapter(self):
+        """The exposed adapter's HF-named tensors, streamed one adapter projection at a time."""
         with megatron_bridge_utils.patch_megatron_model(self.model):
             named_weights = self._bridge.export_adapter_weights(
                 self.model,
@@ -110,8 +149,9 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 show_progress=False,
                 **self._source_name_kwargs(self._bridge.export_adapter_weights),
             )
-            named_weights = self._postprocess_and_quantize(named_weights, "lora")
-            return [(h, w) for h, w, _m in named_weights if is_lora_weight_name(h)]
+            for h, w, _m in self._postprocess_and_quantize(named_weights, "lora"):
+                if is_lora_weight_name(h):
+                    yield h, w
 
     @staticmethod
     def _source_name_kwargs(export_fn) -> dict:
@@ -158,6 +198,67 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     yield q_hf_name, q_weight, megatron_param_names
             else:
                 yield hf_name, weight, megatron_param_names
+
+
+@contextmanager
+def _element_ids(owned_params: list[tuple[torch.nn.Module, str, torch.nn.Parameter]]):
+    """Put float64 parameters holding element ids unique across the world (exact below 2**53)
+    in place of each ``(module, attr, param)`` and yield this rank's first id; the originals
+    are put back on exit. The parameter objects are swapped, not their ``.data``: a dtype
+    change through ``.data`` resets the parameter's gradient accumulator, which detaches the
+    DDP hook that fills ``main_grad`` and leaves the slot untrainable."""
+    params = [param for _, _, param in owned_params]
+    assert len({param.dtype for param in params}) == 1, "slot parameters must share one dtype"
+    counts = [None] * dist.get_world_size()
+    dist.all_gather_object(counts, sum(param.numel() for param in params))
+    assert sum(counts) < 2**53, "element ids would not be exact in float64"
+    first_id = sum(counts[: dist.get_rank()])
+    next_id = first_id
+    for module, attr, param in owned_params:
+        ids = torch.arange(next_id, next_id + param.numel(), dtype=torch.float64, device=param.device)
+        traced = torch.nn.Parameter(ids.view(param.shape), requires_grad=param.requires_grad)
+        # keep the Megatron parallel attributes the export may read
+        traced.__dict__.update(param.__dict__)
+        setattr(module, attr, traced)
+        next_id += param.numel()
+    try:
+        yield first_id
+    finally:
+        for module, attr, param in owned_params:
+            setattr(module, attr, param)
+
+
+def _scatter_traced_adapter(values, traced, hf_tensors, *, adapter: AdapterSpec, max_rank: int, first_id: int) -> None:
+    """Fill ``values`` (this rank's slot elements, flattened) from the HF tensors at the positions
+    the traced export maps to them."""
+    filled = torch.zeros_like(values, dtype=torch.bool)
+    names, exported = set(hf_tensors.keys()), set()
+    for hf_name, ids in traced:
+        exported.add(hf_name)
+        if hf_name not in names:
+            continue
+        ids = ids.to(torch.int64) - first_id
+        mine = (ids >= 0) & (ids < values.numel())
+        if not mine.any():
+            continue
+        tensor = pad_lora_to_rank(hf_name, hf_tensors.get_tensor(hf_name), adapter.rank, max_rank)
+        if tensor.shape != ids.shape or tensor.dtype != values.dtype:
+            raise ValueError(
+                f"{hf_name}: the adapter holds {tensor.dtype} {tuple(tensor.shape)} at max rank, "
+                f"slot {adapter.slot} exports {values.dtype} {tuple(ids.shape)}"
+            )
+        positions, tensor = ids[mine], tensor.to(values.device)[mine]
+        # the export copies one element to several HF positions, e.g. a fused linear_qkv's lora_A to q/k/v
+        repeated = filled[positions]
+        if not torch.equal(values[positions[repeated]], tensor[repeated]):
+            raise ValueError(f"{hf_name} disagrees with another HF tensor exported from the same slot parameter")
+        values[positions] = tensor
+        filled[positions] = True
+    if exported != names:
+        raise ValueError(
+            f"the adapter's tensors are not slot {adapter.slot}'s layout: "
+            f"missing {sorted(exported - names)[:3]}, unexpected {sorted(names - exported)[:3]}"
+        )
 
 
 def _load_checkpoint_name_remap(checkpoint):
