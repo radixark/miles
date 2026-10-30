@@ -186,7 +186,7 @@ def _replace_backend_values(config: AllConfig | TrainerConfig, **updates: Any) -
 def sglang_router_args(policy: str | None = None) -> dict[str, Any]:
     """Every arg the sgl-router backend reads, for an args fake built by hand."""
     return dict(
-        use_miles_router=False,
+        router="sglang",
         sglang_router_policy=policy,
         router_args=dict(policy=None, prefill_policy=None, decode_policy=None),
         rollout_external_router_pd=False,

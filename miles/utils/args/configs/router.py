@@ -3,6 +3,7 @@ from typing import Any, ClassVar
 
 from sglang_router.launch_router import RouterArgs
 
+from miles.router.backend import RouterKind
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
@@ -29,10 +30,14 @@ class RouterConfig(BaseConfig):
 
     router_args: dict[str, Any]
 
-    use_miles_router: A[
-        bool,
-        Arg(help="Whether to use MilesRouter for text-based routing instead of SGLang token-based routing"),
-    ] = False
+    router: A[
+        RouterKind,
+        Arg(
+            choices=list(RouterKind),
+            type_parser=RouterKind,
+            help="The router in front of each model's inference engines: sgl-router or the Miles router.",
+        ),
+    ] = RouterKind.SGLANG
     miles_router_timeout: A[float | None, Arg(help="Timeout for MilesRouter HTTP requests in seconds.")] = None
     miles_router_max_connections: A[
         int | None,
@@ -46,6 +51,13 @@ class RouterConfig(BaseConfig):
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         super().add_arguments(parser=parser)
+        parser.add_argument(
+            "--use-miles-router",
+            dest="router",
+            action="store_const",
+            const=RouterKind.MILES,
+            help="Alias for --router miles.",
+        )
         RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
 
     @classmethod

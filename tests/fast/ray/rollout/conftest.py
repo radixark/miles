@@ -112,7 +112,7 @@ def make_args(**overrides: Any) -> Namespace:
         prefill_num_servers=None,
         # routers / session server
         use_miles_dashboard=False,
-        use_miles_router=False,
+        router="sglang",
         miles_router_timeout=None,
         miles_router_max_connections=None,
         miles_router_health_check_failure_threshold=3,

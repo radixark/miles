@@ -137,5 +137,4 @@ _BACKEND_CLASSES: dict[RouterKind, type[RouterBackend]] = {
 
 
 def make_router_backend(args: Namespace) -> RouterBackend:
-    kind = RouterKind.MILES if args.use_miles_router else RouterKind.SGLANG
-    return _BACKEND_CLASSES[kind](args)
+    return _BACKEND_CLASSES[RouterKind(args.router)](args)
