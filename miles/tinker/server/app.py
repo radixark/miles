@@ -92,7 +92,8 @@ def build_app(service: TinkerService) -> FastAPI:
         reason = payload["reason"]["type"]
         if reason not in ("success", "errored", "interrupted"):
             raise UserInputError(f"unknown session finish reason {reason!r}")
-        await service.finish_session(_tenant(request), session_id, reason)
+        if not await service.finish_session(_tenant(request), session_id, reason, payload["detail"]):
+            return JSONResponse(status_code=410, content={"error": "session lease expired before it finished"})
         return Response(status_code=204)
 
     @app.post("/api/v1/get_server_capabilities")
