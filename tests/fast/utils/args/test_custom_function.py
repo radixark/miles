@@ -124,6 +124,37 @@ class TestCustomArgumentRegistration:
         assert result is parser
         assert parser.parse_args(["--threshold", "0.9"]).threshold == 0.9
 
+    def test_distinct_legacy_hooks_may_declare_the_same_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Two legacy hooks get separate adapted classes; an identical shared flag must not hit an argparse conflict."""
+        from miles.utils.args.custom_function import add_user_provided_function_arguments
+
+        def add_max_turns(parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--max-turns", type=int, default=8)
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--first", default="first-legacy")
+        parser.add_argument("--second", default="second-legacy")
+        monkeypatch.setattr("sys.argv", ["test"])
+        with function_registry.temporary("first-legacy", SimpleNamespace(add_arguments=add_max_turns)):
+            with function_registry.temporary("second-legacy", SimpleNamespace(add_arguments=add_max_turns)):
+                add_user_provided_function_arguments(parser, config_class=_RunConfig)
+
+        assert parser.parse_args(["--max-turns", "3"]).max_turns == 3
+
+    def test_a_flag_declared_differently_by_two_hooks_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from miles.utils.args.custom_function import add_user_provided_function_arguments
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--first", default="first-legacy")
+        parser.add_argument("--second", default="second-legacy")
+        monkeypatch.setattr("sys.argv", ["test"])
+        first = SimpleNamespace(add_arguments=lambda p: p.add_argument("--max-turns", type=int, default=8))
+        second = SimpleNamespace(add_arguments=lambda p: p.add_argument("--max-turns", type=int, default=50))
+        with function_registry.temporary("first-legacy", first):
+            with function_registry.temporary("second-legacy", second):
+                with pytest.raises(ValueError, match="--max-turns differently"):
+                    add_user_provided_function_arguments(parser, config_class=_RunConfig)
+
     def test_partial_discovery_defers_missing_modules_until_final_resolution(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
