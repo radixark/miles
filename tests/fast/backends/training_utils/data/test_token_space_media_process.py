@@ -106,7 +106,7 @@ class _FastImageProcessor(BaseImageProcessor):
 @pytest.mark.parametrize(
     ("backend", "image_processor", "expected"),
     [("auto", _FastImageProcessor(), "cuda:3"), ("pil", _FastImageProcessor(), None), ("auto", object(), None)],
-    ids=["fast", "pil-backend", "no-image-processor"],
+    ids=["fast", "pil-backend", "slow-image-processor"],
 )
 def test_image_device_follows_the_engine_wrapper(monkeypatch, backend, image_processor, expected):
     from sglang.srt.multimodal import serving_preprocessing

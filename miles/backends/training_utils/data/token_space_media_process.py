@@ -145,10 +145,7 @@ def _image_device(hf_processor, *, image_processor_backend: str, device: torch.d
     )
     from transformers import BaseImageProcessor
 
-    image_processor = getattr(
-        hf_processor, "image_processor", None
-    )  # config-access-exempt: HF processors without images lack this attribute
-    if image_processor_backend == "pil" or not isinstance(image_processor, BaseImageProcessor):
+    if image_processor_backend == "pil" or not isinstance(hf_processor.image_processor, BaseImageProcessor):
         return None
     image_device = fast_image_processor_device(
         hf_processor, base_gpu_id=device.index, rl_on_policy_target=None, true_on_policy_enabled=False
