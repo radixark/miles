@@ -181,3 +181,46 @@ async def test_retrieve_long_polls_until_settlement(client):
     client.service.futures.resolve(future.request_id, {"op": "optim_step", "metrics": {"grad_norm": 1.0}})
     response = await asyncio.wait_for(poll, timeout=2)
     assert response.json() == {"type": "optim_step", "metrics": {"grad_norm": 1.0}}
+
+
+async def test_sdk_close_frees_the_slot_without_waiting_for_the_lease(client):
+    """SDK ServiceClient.close(status) POSTs this body and expects 204; the lease sweep must not be needed."""
+    body = await _model_body(client)
+    session_id = body["session_id"]
+    created = (await client.post("/api/v1/create_model", json=body, headers=_headers())).json()
+    await _poll(client, created["request_id"])
+    model_id = created["model_id"]
+    slot = client.service.models[model_id].slot
+    sampler = (
+        await client.post(
+            "/api/v1/create_sampling_session",
+            json={"session_id": session_id, "sampling_session_seq_id": 0, "base_model": "base"},
+            headers=_headers(),
+        )
+    ).json()["sampling_session_id"]
+
+    finished = await client.post(
+        f"/api/v1/sessions/{session_id}/finish",
+        json={"reason": {"type": "success"}, "detail": None},
+        headers=_headers(),
+    )
+
+    assert finished.status_code == 204
+    assert slot in client.service.free_slots
+    assert client.service.backend.named("unload_slot") == [{"slot": slot}]
+    assert (await client.get(f"/api/v1/samplers/{sampler}", headers=_headers())).status_code == 400
+    info = await client.post("/api/v1/get_info", json={"model_id": model_id}, headers=_headers())
+    assert "session finished (success)" in info.json()["error"]
+
+
+async def test_finishing_another_tenants_session_is_refused(client):
+    session_id = (await _model_body(client))["session_id"]
+
+    finished = await client.post(
+        f"/api/v1/sessions/{session_id}/finish",
+        json={"reason": {"type": "success"}, "detail": None},
+        headers=_headers("tenant-b"),
+    )
+
+    assert finished.status_code == 400
+    assert session_id in client.service.sessions

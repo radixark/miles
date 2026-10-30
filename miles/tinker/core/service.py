@@ -539,18 +539,28 @@ class TinkerService:
                 for session_id, session in self.sessions.items()
                 if now - session.last_heartbeat >= self.config.lease_timeout_s
             }
-            for session_id in expired_sessions:
-                del self.sessions[session_id]
-            for sampling_session_id, record in list(self.sampling_sessions.items()):
-                if record.session_id in expired_sessions:
-                    del self.sampling_sessions[sampling_session_id]
+            await self._end_sessions(expired_sessions, "lease expired")
 
-            for request_id, (task, session_id) in list(self._sample_tasks.items()):
-                if session_id in expired_sessions:
-                    logger.warning(f"lease expired for session of sample {request_id}; cancelling")
-                    self.futures.fail(request_id, "lease expired", "user")
-                    task.cancel()
-            for model_id, record in list(self.models.items()):
-                if record.session_id in expired_sessions:
-                    logger.warning(f"lease expired for {model_id}; freeing slot {record.slot}")
-                    await self._close_model(model_id, "lease expired", "user")
+    async def finish_session(self, tenant: str, session_id: str, reason: str) -> None:
+        """SDK close(): reclaim the session now instead of at lease expiry."""
+        async with self._trainer_lock:
+            self._session_for(tenant, session_id)
+            await self._end_sessions({session_id}, f"session finished ({reason})")
+
+    async def _end_sessions(self, session_ids: set[str], error: str) -> None:
+        """Drop sessions with their sampling sessions and models; requires the trainer lock."""
+        for session_id in session_ids:
+            del self.sessions[session_id]
+        for sampling_session_id, record in list(self.sampling_sessions.items()):
+            if record.session_id in session_ids:
+                del self.sampling_sessions[sampling_session_id]
+
+        for request_id, (task, session_id) in list(self._sample_tasks.items()):
+            if session_id in session_ids:
+                logger.warning(f"{error} for session of sample {request_id}; cancelling")
+                self.futures.fail(request_id, error, "user")
+                task.cancel()
+        for model_id, record in list(self.models.items()):
+            if record.session_id in session_ids:
+                logger.warning(f"{error} for {model_id}; freeing slot {record.slot}")
+                await self._close_model(model_id, error, "user")
