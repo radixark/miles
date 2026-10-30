@@ -60,10 +60,12 @@ COMPONENTS = {
 }
 # floor of the head-sharded layer against the fla HF reference (bf16: test_linear_attn_head_sharded.py)
 HF_TOLERANCE = {torch.bfloat16: 2e-2, torch.float32: 1e-3}
-# fp32 against the same layer holding the merged weights. The recurrence's backward amplifies a 4e-7 relative
-# perturbation of its decay input into a 1.8e-3 change of dL/d(decay), so in_proj_a's factors reach 2.8e-3; a
-# misplaced row is O(1) (adapter_effect)
-TOLERANCE = 5e-3
+# fp32 against the same layer holding the merged weights, about 4x the measured maxima (out 6.5e-5, dx 5.4e-4,
+# factor grads 1.1e-4). The recurrence's backward amplifies a 4e-7 relative perturbation of its decay input into
+# a 1.8e-3 change of dL/d(decay), so in_proj_a's factors reach 2.8e-3; a misplaced row is O(1) (adapter_effect)
+TOLERANCE = {"out": 3e-4, "dx": 2e-3, "grad": 5e-4, "in_proj_a_grad": 5e-3}
+# the merged-weight view against the reference merge (measured <= 4e-8)
+MERGE_TOLERANCE = 1e-6
 
 
 class _Layer:
@@ -268,13 +270,19 @@ def _bad(name, value, dtype):
         return value != 0.0
     if name == "adapter_effect":
         return -value < 0.1  # the adapter must move the output far beyond the tolerance
-    if name.startswith("merge.") or name == "export_rank_spread":
-        return value > 1e-3
+    if name == "export_rank_spread":  # every rank exports the same gathered tensors
+        return value != 0.0
+    if name.startswith("merge."):
+        return value > MERGE_TOLERANCE
     if name == "out_vs_hf":
         return value > HF_TOLERANCE[dtype]
     # bf16 rounds the rank-r intermediate and the merged weights, which the recurrence amplifies past any
     # bound that would still catch a misplaced row; fp32 separates the two
-    return dtype == torch.float32 and value > TOLERANCE
+    if name in ("out", "dx"):
+        bound = TOLERANCE[name]
+    else:
+        bound = TOLERANCE["in_proj_a_grad" if name.startswith("in_proj_a.") else "grad"]
+    return dtype == torch.float32 and value > bound
 
 
 def main():
