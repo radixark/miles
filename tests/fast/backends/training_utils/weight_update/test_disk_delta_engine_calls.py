@@ -9,8 +9,18 @@ import torch
 import zstandard
 
 from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
+from miles.backends.training_utils.weight_update.protocols.utils import rank_errors
 
 _MODULE = "miles.backends.training_utils.weight_update.protocols.delta"
+
+
+@pytest.fixture(autouse=True)
+def _one_rank_error_gather(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the tests patch delta's dist; the cross-rank error gather lives in rank_errors
+    fake_dist = MagicMock(get_world_size=lambda: 1)
+    fake_dist.all_gather_object.side_effect = lambda values, value, **kwargs: values.__setitem__(0, value)
+    monkeypatch.setattr(rank_errors, "dist", fake_dist)
+    monkeypatch.setattr(rank_errors, "get_gloo_group", lambda: None)
 
 
 class _RecordingApiClient:
