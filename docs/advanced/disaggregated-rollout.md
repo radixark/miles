@@ -108,7 +108,7 @@ miles-managed path:
 | `p2p` | Convert and re-shard weights, then write them directly to rollout-rank memory over RDMA | miles-managed, in-cluster jobs with direct rank-to-rank connectivity; see [P2P Weight Transfer](/advanced/p2p-weight-transfer) |
 | `disk-delta` | Publish changed canonical checkpoint bytes to shared storage, let rollout hosts materialize them locally, then reload | Trainer and rollout cannot share an NCCL fabric, or model-sized full-weight transfer dominates the update |
 | `disk` | Write the full HF checkpoint to shared storage on every sync, then reload it via `/update_weights_from_disk` | Engines on another accelerator stack (e.g. TPU) with no NCCL, CUDA IPC or `/pull_weights` |
-| `shm` | Copy each weight bucket into a host shared-memory tensor and hand the engines its handle via `/update_weights_from_tensor` | Like `disk`, with a single-node trainer and the engines on the same host |
+| `shm` | Copy each weight bucket into a `/dev/shm` file kept for the run and hand the engines its path via `/update_weights_from_tensor` | Like `disk`, with a single-node trainer and the engines on the same host; `/dev/shm` must hold the trainer's copy of the model |
 
 These are weight synchronization choices, not different rollout APIs. In the
 broadcast and P2P modes, miles transfers tensors into known engine ranks directly.
