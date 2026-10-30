@@ -680,10 +680,12 @@ class DumpReader:
         }
         # concurrent request handlers: build each step's mirror once, without holding up other steps
         with self._columns_locks.setdefault(stem, threading.Lock()):
-            if not path.exists() or not stamp_path.exists() or json.loads(stamp_path.read_text()) != stamp:
+            if not path.exists() or _read_stamp(stamp_path) != stamp:
                 pack = self._torch_load(source)
                 save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)
-                stamp_path.write_text(json.dumps(stamp))
+                tmp = stamp_path.with_suffix(f".{os.getpid()}.tmp")
+                tmp.write_text(json.dumps(stamp))
+                tmp.replace(stamp_path)
         frame = pl.scan_parquet(path).filter(pl.col("sample_index") == sample_index).collect()
         if not 0 <= sample_occurrence < len(frame):
             raise KeyError(
@@ -928,6 +930,14 @@ def _max(values: torch.Tensor | None) -> float | None:
 
 def _std(values: torch.Tensor | None) -> float | None:
     return None if values is None else float(values.std())
+
+
+def _read_stamp(path: Path) -> dict | None:
+    # missing, or cut short by an interrupted write: either way the mirror is rebuilt
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def save_dashboard_columns(samples: list[Sample], path: Path) -> None:

@@ -73,6 +73,15 @@ def test_the_mirror_goes_to_the_cache_dir_so_a_read_only_dump_still_serves(dumpe
     assert sorted(path for path in dumped.rglob("*")) == before
 
 
+def test_a_stamp_cut_short_rebuilds_the_mirror(dumped):
+    """An interrupted stamp write must not break the step's token view for good."""
+    reader = DumpReader(dumped)
+    reader.tokens(0, 0, start=0, end=1)
+    _mirror(reader).with_suffix(".source.json").write_text('{"sour')
+
+    assert DumpReader(dumped).tokens(0, 0, start=0, end=4)["token_ids"]
+
+
 def test_a_rewritten_rollout_rebuilds_its_mirror(dumped):
     """A rerun that rewrites a step's ``.pt`` must not leave the token view serving the old samples."""
     DumpReader(dumped).tokens(0, 0, start=0, end=1)
