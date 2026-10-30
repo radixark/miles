@@ -2,7 +2,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.rollout.generate_utils import generate_endpoint_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload
 from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, StorePlanError
 
@@ -63,12 +62,11 @@ class TestComputeRequestPayloadOutputStore:
 
         assert OUTPUT_STORE_REQUEST_KEY not in payload
 
-    def test_a_multimodal_prompt_is_refused(self, monkeypatch):
-        monkeypatch.setattr(generate_endpoint_utils, "encode_image_for_rollout_engine", lambda image: "image")
+    def test_a_multimodal_prompt_is_refused(self):
         with pytest.raises(StorePlanError, match="multimodal"):
             compute_request_payload(
                 self.make_args(use_rollout_routing_replay=True),
                 input_ids=[1, 2],
                 sampling_params={},
-                multimodal_inputs={"images": [object()]},
+                multimodal_inputs={"images": ["/shared/media/image.png"]},
             )
