@@ -17,6 +17,7 @@ from miles.utils.output_store.plan import (
     MASK_TOKEN_IDS,
     IndexerTopkSegments,
     RoutedExpertsSegments,
+    RowRead,
     SamplingMaskSegments,
     Seg,
     StorePlan,
@@ -235,21 +236,20 @@ class TestReads:
 
         reads = store_reads([plan, plan], support_topk=2)
 
-        # "a"'s forward rows were replaced by "b"'s; "x" is owned but unused.
+        # Forward fields are read per micro batch, not here; "x" is owned but unused.
         assert {key: names for key, (_, names) in reads.items()} == {
-            "b": [R3, INDEXER, MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS],
             "a": [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS],
+            "b": [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS],
         }
-        assert reads["b"][0] is plan.fields[R3].segs[0].ref
+        assert reads["b"][0] is plan.fields[MASK].segs[-1].ref
 
-    def test_plans_sharing_an_object_read_the_union_of_their_arrays(self):
+    def test_plans_sharing_an_object_read_it_once(self):
         merged = response("a", prompt=3, output=2).merge_turn(response("b", prompt=8, output=1), observation_tokens=3)
-        # Another sample whose forward rows still come from "a".
         alone = response("a", prompt=3, output=2)
 
         reads = store_reads([merged, alone], support_topk=2)
 
-        assert reads["a"][1] == [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS, R3, INDEXER]
+        assert reads["a"][1] == [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS]
 
     def test_support_log_probs_are_read_only_in_support_mode(self):
         # A selected-mode request: SGLang stores no support log-probs.
@@ -346,32 +346,74 @@ def rows_of(name: str, *segs: tuple[str, int, int]):
     return cls(tuple(Seg(None if key is None else ref(key), start, end) for key, start, end in segs))
 
 
+def seq_rows_of(name: str, *segs: tuple[str | None, int, int], rows: int = 6):
+    """Segments over objects that each hold ``rows`` forward rows."""
+    cls = {cls.name: cls for cls in FIELDS}[name]
+    return cls(tuple(Seg(None if key is None else ref(key, seq_rows=rows), start, end) for key, start, end in segs))
+
+
 class TestMaterializeForward:
-    def test_rows_are_concatenated_across_objects_in_plan_order(self):
-        a, b = r3(4, 1), r3(6, 2)
-        objects = {"a": {R3: a}, "b": {R3: b}}
+    def test_the_column_is_the_segments_and_nothing_is_read_whole(self):
+        segments = seq_rows_of(R3, ("a", 0, 4), ("b", 0, 6))
 
-        columns = rows_of(R3, ("a", 0, 4), ("b", 0, 6)).materialize(objects, response_tokens=np.empty(0), **opts())
+        columns = segments.materialize({}, response_tokens=np.empty(0), **opts())
 
-        np.testing.assert_array_equal(columns["rollout_routed_experts"], np.concatenate([a, b]))
-        assert columns["rollout_routed_experts"].dtype == np.int32
-        partial = rows_of(R3, ("b", 1, 3)).materialize(objects, response_tokens=np.empty(0), **opts())
-        np.testing.assert_array_equal(partial["rollout_routed_experts"], b[1:3])
+        assert columns == {"rollout_routed_experts": segments}
+        plan = StorePlan(fields={R3: segments}, owned_refs=())
+        assert store_reads([plan], support_topk=0) == {}
 
-    def test_all_zero_routed_experts_are_rejected_per_object(self):
-        objects = {"a": {R3: r3(4, 1)}, "b": {R3: np.zeros((3, 2, 4), dtype=np.int32)}}
+    def test_all_zero_routed_experts_are_rejected_per_read(self):
+        segments = seq_rows_of(R3, ("a", 0, 4))
         with pytest.raises(StorePlanError, match="all zeros"):
-            rows_of(R3, ("a", 0, 4), ("b", 0, 3)).materialize(objects, response_tokens=np.empty(0), **opts())
-        # Expert 0 is valid: only a whole object of zeros is rejected, not the zero rows a plan keeps.
-        objects["b"][R3] = np.concatenate([np.zeros((2, 2, 4), dtype=np.int32), r3(1, 2)])
-        rows_of(R3, ("a", 0, 4), ("b", 0, 2)).materialize(objects, response_tokens=np.empty(0), **opts())
+            segments.check_rows(np.zeros((3, 2, 4), dtype=np.int32))
+        # Expert 0 is valid: only rows that are all zeros are rejected.
+        segments.check_rows(np.concatenate([np.zeros((2, 2, 4), dtype=np.int32), r3(1, 2)]))
 
     def test_indexer_streams_must_match_the_model(self):
-        objects = {"a": {INDEXER: r3(3, 3, streams=2)}}
-        columns = rows_of(INDEXER, ("a", 0, 3)).materialize(objects, response_tokens=np.empty(0), **opts())
-        assert columns["rollout_indexer_topk"].shape == (3, 2, 4)
+        segments = seq_rows_of(INDEXER, ("a", 0, 3))
+        assert segments.row_format(indexer_streams=2) == (np.dtype("int32"), (2, 8))
         with pytest.raises(StorePlanError, match="2 streams but the model has 4"):
-            rows_of(INDEXER, ("a", 0, 3)).materialize(objects, response_tokens=np.empty(0), **opts(indexer_streams=4))
+            segments.materialize({}, response_tokens=np.empty(0), **opts(indexer_streams=4))
+
+
+class TestRangeReads:
+    ROW = 2 * 4 * 4  # bytes of an R3 row of ref(): 2 streams x 4 ids x int32
+
+    def test_a_ranks_rows_come_from_each_segment_and_positions_past_the_rows_are_padding(self):
+        # A two-turn session sample with T = 10: rows 0-5 in object a, rows 6-8 in object b.
+        # cp 2 zigzag in chunks of 3: rank 0 holds positions [0, 3) and [9, 12), rank 1 [3, 6) and [6, 9).
+        segments = seq_rows_of(R3, ("a", 0, 6), ("b", 0, 3))
+        a, b = segments.segs[0].ref, segments.segs[1].ref
+        row = self.ROW
+
+        assert segments.range_reads([(0, 3), (9, 12)], dst_offset=0) == ([RowRead(a, 0, 3 * row, 0)], [(3, 6)])
+        assert segments.range_reads([(3, 6), (6, 9)], dst_offset=64) == (
+            [RowRead(a, 3 * row, 3 * row, 64), RowRead(b, 0, 3 * row, 64 + 3 * row)],
+            [],
+        )
+
+    def test_adjacent_rows_of_one_object_are_one_read(self):
+        segments = seq_rows_of(R3, ("a", 1, 6), rows=8)
+        a, row = segments.segs[0].ref, self.ROW
+        # Local positions 2-3 then 3-5 (the last zigzag rank's two chunks) are object rows 3-6.
+        assert segments.range_reads([(2, 3), (3, 5)], dst_offset=0) == ([RowRead(a, 3 * row, 3 * row, 0)], [])
+        # Out of local order, two reads.
+        assert segments.range_reads([(3, 5), (2, 3)], dst_offset=0) == (
+            [RowRead(a, 4 * row, 2 * row, 0), RowRead(a, 3 * row, row, 2 * row)],
+            [],
+        )
+
+    def test_rows_no_object_holds_or_of_two_formats_cannot_be_read(self):
+        with pytest.raises(StorePlanError, match="no object to read"):
+            seq_rows_of(R3, ("a", 0, 2), (None, 0, 2)).range_reads([(0, 4)], dst_offset=0)
+        mixed = RoutedExpertsSegments(
+            (
+                Seg(ref("a", seq_rows=2), 0, 2),
+                Seg(ref("b", seq_rows=2)._replace(fields=(Spec(R3, "int16", (2, 2, 4)),)), 0, 2),
+            )
+        )
+        with pytest.raises(StorePlanError, match="2 formats"):
+            mixed.range_reads([(0, 4)], dst_offset=0)
 
 
 class TestMaterializeMask:

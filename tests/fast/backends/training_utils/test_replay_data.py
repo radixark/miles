@@ -2,14 +2,19 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["replay"])
 
+import sys
+import types
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
+from tests.fast.utils.output_store.test_plan import Ref, Spec
 
 from miles.backends.training_utils import parallel
 from miles.backends.training_utils.data.rollout import DataIterator
 from miles.backends.training_utils.replay.data import attach_replay_data, register_replay_list_sequential
+from miles.utils.output_store.plan import IndexerTopkSegments, RoutedExpertsSegments, Seg, StorePlanError
 from miles.utils.replay_base import BaseReplayManager
 
 
@@ -367,3 +372,168 @@ class TestNativeReplayOwnership:
 
         assert len(replay.recorded) == 1
         torch.testing.assert_close(replay.recorded[0], torch.tensor([[11], [12], [-1], [-1]]))
+
+
+# ============================== output store columns ==============================
+
+
+class _FakeOutputStore:
+    """``read_buffer`` / ``read_ranges`` over plain arrays, recording buffers and the bytes read."""
+
+    def __init__(self, objects):
+        self.objects, self.buffers, self.read_bytes = objects, [], 0
+
+    def read_buffer(self, nbytes):
+        buffer = SimpleNamespace(nbytes=nbytes, view=memoryview(bytearray(nbytes)), closed=False)
+        buffer.close = lambda: setattr(buffer, "closed", True)
+        self.buffers.append(buffer)
+        return buffer
+
+    def read_ranges(self, reads, *, into):
+        assert not into.closed
+        for read in reads:
+            stored = self.objects[read.ref.key][read.field].reshape(-1).view(np.uint8)
+            into.view[read.dst_offset : read.dst_offset + read.nbytes] = stored[
+                read.src_offset : read.src_offset + read.nbytes
+            ].tobytes()
+            self.read_bytes += read.nbytes
+
+
+@pytest.fixture
+def fake_plugin(monkeypatch):
+    """CPU CI has no radix_transfer_plugins; replay builds its RangeReads from it."""
+    module = types.ModuleType("radix_transfer_plugins")
+    module.RangeRead = lambda **fields: SimpleNamespace(**fields)
+    monkeypatch.setitem(sys.modules, "radix_transfer_plugins", module)
+
+
+def _stored(routes, *, indexer):
+    """Each sample's rows as segments of two objects (a two-turn session), and the objects."""
+    cls = IndexerTopkSegments if indexer else RoutedExpertsSegments
+    (name,) = cls.stored
+    column, objects = [], {}
+    for i, rows in enumerate(routes):
+        rows = rows.numpy().astype(np.int32)
+        cut = len(rows) // 2
+        segs = []
+        for key, part in ((f"{i}/a", rows[:cut]), (f"{i}/b", rows[cut:])):
+            if len(part):
+                objects[key] = {name: part}
+                segs.append(Seg(Ref(key, (Spec(name, "int32", part.shape),)), 0, len(part)))
+        column.append(cls(tuple(segs)))
+    return column, objects
+
+
+def _attach_both(monkeypatch, args, *, state, lengths, max_seq_len, indexer, store, manager=None, dump=False):
+    """Recorded entries and the column left behind, filling 2 micro batches from inline or store rows."""
+    monkeypatch.setattr(parallel, "_parallel_state", state)
+    routes = [
+        100 * (i + 1) + torch.arange((n - 1) * 2 * 2, dtype=torch.int32).reshape(n - 1, 2, 2)
+        for i, n in enumerate(lengths)
+    ]
+    column, objects = _stored(routes, indexer=indexer) if store is not None else (routes, None)
+    if store is not None:
+        store.objects.update(objects)
+    rollout_data = {
+        "routes": column,
+        "tokens": [torch.arange(n) for n in lengths],
+        "max_seq_lens": [max_seq_len] * len(lengths),
+    }
+    replays = [_Replay(), _Replay()]
+    manager = manager or _manager(replays, indexer=indexer, kept_in_train_dump=dump)
+    manager.replays = replays
+    attach_replay_data(
+        manager,
+        args=args,
+        models=None,
+        data_iterator=[DataIterator(rollout_data, micro_batch_size=2)],
+        num_microbatches=[(len(lengths) + 1) // 2],
+        rollout_data=rollout_data,
+        output_store=store,
+    )
+    return [replay.recorded for replay in replays], rollout_data.get("routes")
+
+
+@pytest.mark.parametrize("indexer", [False, True], ids=["moe", "indexer"])
+@pytest.mark.parametrize(
+    "qkv_format,cp_size,allgather_cp",
+    [
+        ("thd", 1, False),
+        ("thd", 2, False),
+        ("thd", 2, True),
+        ("bshd", 1, False),
+        ("bshd", 2, False),
+        ("bshd", 2, True),
+    ],
+)
+def test_store_rows_fill_the_inline_entries(monkeypatch, fake_plugin, qkv_format, cp_size, allgather_cp, indexer):
+    lengths, max_seq_len = (5, 3, 8, 2), 8
+    args = SimpleNamespace(
+        qkv_format=qkv_format,
+        allgather_cp=allgather_cp,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=False),
+        data_pad_size_multiplier=2,
+        save_debug_train_data="/tmp/{rollout_id}_{rank}.pt",
+    )
+    read_bytes = 0
+    for cp_rank in range(cp_size):
+        state = SimpleNamespace(cp=SimpleNamespace(size=cp_size, rank=cp_rank), tp=SimpleNamespace(size=1, rank=0))
+        common = dict(state=state, lengths=lengths, max_seq_len=max_seq_len, indexer=indexer, dump=True)
+        inline, inline_dump = _attach_both(monkeypatch, args, store=None, **common)
+        store = _FakeOutputStore({})
+        stored, stored_dump = _attach_both(monkeypatch, args, store=store, **common)
+        # Nothing recorded refers to the slot: overwriting it changes no entry (B2, AS5).
+        for buffer in store.buffers:
+            buffer.view[:] = b"\xff" * buffer.nbytes
+        for inline_entries, stored_entries in zip(inline, stored, strict=True):
+            assert len(inline_entries) == len(stored_entries) == 2
+            for a, b in zip(inline_entries, stored_entries, strict=True):
+                assert a.dtype == b.dtype and torch.equal(a, b)
+        # A dump holds each sample's local rows, the same both ways.
+        for a, b in zip(inline_dump, stored_dump, strict=True):
+            assert torch.equal(a, b)
+        read_bytes += store.read_bytes
+    # Each real row is read once across the CP ranks.
+    assert read_bytes == sum(n - 1 for n in lengths) * 2 * 2 * 4
+
+
+def test_the_read_slot_is_kept_across_steps_and_replaced_when_too_small(monkeypatch, fake_plugin):
+    args = SimpleNamespace(
+        qkv_format="thd",
+        allgather_cp=False,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=False),
+        data_pad_size_multiplier=1,
+        save_debug_train_data=None,
+    )
+    state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
+    store = _FakeOutputStore({})
+    manager = _manager([], indexer=False)
+    attach = lambda lengths, store: _attach_both(  # noqa: E731
+        monkeypatch, args, state=state, lengths=lengths, max_seq_len=None, indexer=False, store=store, manager=manager
+    )
+
+    attach((5, 3), store)
+    attach((5, 3), store)
+    assert len(store.buffers) == 1 and not store.buffers[0].closed
+    attach((9, 3), store)
+    assert len(store.buffers) == 2 and store.buffers[0].closed and not store.buffers[1].closed
+    other = _FakeOutputStore({})
+    attach((5, 3), other)
+    assert store.buffers[1].closed and len(other.buffers) == 1
+
+
+def test_store_rows_need_an_output_store_client(monkeypatch, fake_plugin):
+    args = SimpleNamespace(qkv_format="thd", save_debug_train_data=None)
+    column, _ = _stored([torch.ones(2, 2, 2, dtype=torch.int32)], indexer=False)
+    rollout_data = {"routes": column, "tokens": [torch.arange(3)], "max_seq_lens": None}
+    with pytest.raises(StorePlanError, match="no output store client"):
+        attach_replay_data(
+            _manager([_Replay()]),
+            args=args,
+            models=None,
+            data_iterator=[DataIterator(rollout_data, micro_batch_size=1)],
+            num_microbatches=[1],
+            rollout_data=rollout_data,
+        )

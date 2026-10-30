@@ -1083,11 +1083,9 @@ def _merge_store(records, accumulated, *, use_addition_r3=True, max_trim_tokens=
 
 
 def _routed_experts(merged: Sample, objects: dict) -> np.ndarray:
-    tokens = np.asarray(merged.tokens[len(merged.tokens) - merged.response_length :])
-    columns = merged.rollout_store_plan.materialize(
-        objects, response_tokens=tokens, support_topk=0, indexer_streams=None
-    )
-    return columns["rollout_routed_experts"]
+    """The rows the plan's routed experts segments take from ``objects``, as replay reads them."""
+    segments = merged.rollout_store_plan.fields[R3]
+    return np.concatenate([objects[seg.ref.key][R3][seg.start : seg.end] for seg in segments.segs])
 
 
 class TestStoreSessionAssembly:
