@@ -132,6 +132,13 @@ class TestMixedRolloutDataSource:
         assert [s.prompt for s in source.datasets["math"].samples] == ["short"]
         assert len(source.datasets["code"]) == 50
 
+    def test_non_mapping_metadata_fails_at_startup(self, tmp_path):
+        """A string metadata column would crash the first request when the mixer tags the sample."""
+        datasets = _two_datasets(tmp_path)
+        datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", ["p0", "p1"], metadata='{"a": 1}'))
+        with pytest.raises(ValueError, match="'math': row 0 has non-mapping metadata"):
+            _make_source(tmp_path, datasets)
+
     def test_a_dataset_empty_after_filtering_fails_at_startup(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         datasets["math"]["max_prompt_len"] = 1

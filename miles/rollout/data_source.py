@@ -263,6 +263,13 @@ class MixedRolloutDataSource(DataSource):
             )
             if len(dataset) == 0:
                 raise ValueError(f"rollout dataset {config.name!r} ({config.path}) has no prompts after filtering")
+            # the mixer tags every sample's metadata, so a row whose metadata is not a mapping cannot be mixed
+            bad = next((i for i, prompt in enumerate(dataset.samples) if not isinstance(prompt.metadata, dict)), None)
+            if bad is not None:
+                raise ValueError(
+                    f"rollout dataset {config.name!r}: row {bad} has non-mapping metadata "
+                    f"({type(dataset.samples[bad].metadata).__name__}); --metadata-key must name a JSON object"
+                )
             self.datasets[config.name] = dataset
             logger.info(f"rollout dataset {config.name!r}: {len(dataset)} prompts, weight {config.samples_per_step}")
 
