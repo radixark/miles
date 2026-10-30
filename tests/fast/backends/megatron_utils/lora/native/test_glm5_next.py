@@ -128,7 +128,11 @@ def _launcher_targets(monkeypatch) -> list[str]:
         parser.add_argument(flag)
     (train_command,) = train_commands
     launch_args, _ = parser.parse_known_args(shlex.split(train_command))
-    launch_args.multi_lora, launch_args.lora_type, launch_args.experts_shared_outer_loras = False, "lora", False
+    launch_args.multi_lora, launch_args.lora_type, launch_args.experts_shared_outer_loras = (
+        False,
+        "canonical_lora",
+        False,
+    )
     hf_targets, served_targets = _resolve_lora_targets(launch_args, _hf_config())
     assert served_targets == hf_targets
     return hf_targets
@@ -202,7 +206,7 @@ def test_kv_b_proj_is_rejected_since_the_absorbed_dsa_never_calls_it():
         exclude_modules=None,
         multi_lora=False,
         megatron_to_hf_mode="raw",
-        lora_type="lora",
+        lora_type="canonical_lora",
         experts_shared_outer_loras=False,
     )
     with pytest.raises(AssertionError, match=r"does not implement adapters for .*kv_b_proj"):

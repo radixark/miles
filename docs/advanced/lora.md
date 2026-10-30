@@ -134,7 +134,7 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 | `--lora-rank` | `0` | Adapter rank; a positive value enables LoRA. Supplying an adapter path also marks LoRA enabled, but still requires matching positive-rank configuration. |
 | `--lora-alpha` | `16` | Adapter scaling factor. |
 | `--lora-dropout` | `0.0` | Dropout on the adapter path. |
-| `--lora-type` | `lora` | Bridge: `lora` shares one A across a fused Megatron projection; `canonical_lora` uses split Q/K/V and gate/up projections. Native trains one A per HF projection under both; `canonical_lora` adds the GDN input-projection components. The canonical path is implemented and covered by fast name-mapping tests, but has no maintained recipe or E2E validation. |
+| `--lora-type` | per backend | `lora` shares one `lora_A` across each fused Megatron projection; `canonical_lora` gives Q/K/V and gate/up their own. Bridge defaults to `lora`; native and torchtitan train one `lora_A` per HF projection, so they default to and accept only `canonical_lora`. Bridge canonical is covered by fast name-mapping tests but has no maintained recipe or E2E validation. |
 | `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, `attn/mlp/unembed` groups, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
 | `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
 | `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
@@ -226,7 +226,9 @@ unsupported.
 Native LoRA validates the resolved HF selection against the architecture spec
 before injection and matches each adapter by its full HF path, so layer-scoped
 selections work. Native Inkling uses a fixed adapter schema: defaults select that
-complete schema, and partial/custom layouts are rejected.
+complete schema, and partial/custom layouts are rejected. Native LoRA gives every HF
+projection its own `lora_A` (an HF module that is itself fused, such as GLM-4's `gate_up_proj`,
+gets one), which is `--lora-type canonical_lora`; `--lora-type lora` is rejected.
 
 ### Rollout topology
 

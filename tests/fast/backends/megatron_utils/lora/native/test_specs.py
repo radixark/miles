@@ -48,7 +48,7 @@ class TestArchitectureGuards:
 
 def resolve_adapter_targets(hf_config, targets, *, hf_modules):
     return _resolve_adapter_targets(
-        hf_config, targets, hf_modules=hf_modules, lora_type="lora", experts_shared_outer_loras=True
+        hf_config, targets, hf_modules=hf_modules, lora_type="canonical_lora", experts_shared_outer_loras=True
     )
 
 
@@ -115,20 +115,16 @@ class TestResolveAdapterTargets:
         with pytest.raises(AssertionError, match=r"layers\.1\.mlp\.experts\.3\.gate_proj"):
             resolve_adapter_targets({"model_type": "qwen3"}, ["gate_proj", "up_proj"], hf_modules=modules)
 
-    def test_canonical_lora_serves_the_targets_lora_does(self):
-        """Native has always trained one A per HF projection, so canonical changes no non-GDN adapter."""
-        targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-        served = {
-            lora_type: _resolve_adapter_targets(
+    def test_shared_a_lora_is_refused(self):
+        """Native gives every HF projection its own lora_A, so a request for Bridge's shared-A lora is refused."""
+        with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
+            _resolve_adapter_targets(
                 {"model_type": "qwen3"},
-                targets,
+                ["q_proj"],
                 hf_modules=_qwen3_modules(),
-                lora_type=lora_type,
+                lora_type="lora",
                 experts_shared_outer_loras=False,
             )
-            for lora_type in ("lora", "canonical_lora")
-        }
-        assert served["lora"] == served["canonical_lora"] == targets
 
     def test_unregistered_model_type_fails_closed(self):
         with pytest.raises(AssertionError, match="no spec registered"):
@@ -311,9 +307,6 @@ class TestQwen35GDNTargets:
     def test_lora_rejects_the_in_proj(self):
         with pytest.raises(AssertionError, match="--lora-type canonical_lora"):
             _qwen3_5_resolve([f"{_GDN35}in_proj_qkv", f"{_GDN35}in_proj_z"], lora_type="lora")
-
-    def test_lora_serves_out_proj(self):
-        assert _qwen3_5_resolve([f"{_GDN35}out_proj"], lora_type="lora") == [f"{_GDN35}out_proj"]
 
     @pytest.mark.parametrize(
         "leaves", [("in_proj_qkv",), ("in_proj_z",), ("in_proj_b",), ("in_proj_qkv", "in_proj_z", "in_proj_a")]
