@@ -86,6 +86,15 @@ def build_app(service: TinkerService) -> FastAPI:
             return JSONResponse(status_code=410, content={"error": "unknown or expired session"})
         return {"type": "session_heartbeat"}
 
+    @app.post("/api/v1/sessions/{session_id}/finish")
+    async def finish_session(session_id: str, request: Request):
+        payload = await request.json()
+        reason = payload["reason"]["type"]
+        if reason not in ("success", "errored", "interrupted"):
+            raise UserInputError(f"unknown session finish reason {reason!r}")
+        await service.finish_session(_tenant(request), session_id, reason)
+        return Response(status_code=204)
+
     @app.post("/api/v1/get_server_capabilities")
     @app.get("/api/v1/get_server_capabilities")
     async def get_server_capabilities():
