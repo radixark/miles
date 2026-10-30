@@ -369,7 +369,10 @@ def _lower_limit(*limits: int | None) -> int | None:
 
 
 def _check_dataset_sha256(config: RolloutDatasetConfig) -> str | None:
-    """Hash the dataset file; stop on a mismatch with the configured `sha256`."""
+    """Hash the dataset file; stop when its first 8 hex characters differ from the configured `sha256`.
+
+    Returns the full digest, which the checkpoint keeps for an exact check on resume.
+    """
     path, _ = _parse_generalized_path(config.path)
     if not os.path.isfile(path):
         if config.sha256 is not None:
@@ -383,10 +386,10 @@ def _check_dataset_sha256(config: RolloutDatasetConfig) -> str | None:
             digest.update(chunk)
     actual = digest.hexdigest()
     if config.sha256 is None:
-        logger.warning(f"rollout dataset {config.name!r} has no sha256; add `sha256: {actual}` to pin it")
-    elif config.sha256 != actual:
+        logger.warning(f"rollout dataset {config.name!r} has no sha256; add `sha256: {actual[:8]}` to pin it")
+    elif config.sha256 != actual[:8]:
         raise ValueError(
             f"rollout dataset {config.name!r} ({path}) does not match its sha256: expected {config.sha256}, "
-            f"got {actual}"
+            f"got {actual[:8]}"
         )
     return actual

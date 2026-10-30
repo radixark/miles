@@ -164,11 +164,11 @@ class TestSha256:
         datasets = _two_datasets(tmp_path)
         actual = hashlib.sha256(Path(datasets["math"]["path"]).read_bytes()).hexdigest()
 
-        datasets["math"]["sha256"] = actual
+        datasets["math"]["sha256"] = actual[:8]
         _make_source(tmp_path, datasets)
 
-        datasets["math"]["sha256"] = "0" * 64
-        with pytest.raises(ValueError, match=f"expected {'0' * 64}, got {actual}"):
+        datasets["math"]["sha256"] = "0" * 8
+        with pytest.raises(ValueError, match=f"expected {'0' * 8}, got {actual[:8]}"):
             _make_source(tmp_path, datasets)
 
     def test_a_missing_hash_logs_the_value_to_pin(self, tmp_path, caplog):
@@ -177,7 +177,7 @@ class TestSha256:
 
         with caplog.at_level("WARNING", logger="miles.rollout.data_source"):
             _make_source(tmp_path, datasets)
-        assert f"sha256: {actual}" in caplog.text
+        assert f"sha256: {actual[:8]}`" in caplog.text
 
     def test_resume_refuses_a_dataset_that_changed_since_the_checkpoint(self, tmp_path):
         datasets = _two_datasets(tmp_path)
