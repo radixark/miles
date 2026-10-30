@@ -31,7 +31,7 @@ from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger, rebind_env_reporting
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
+from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port, visible_gpu_ids
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.output_store.config import output_store_reader
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -126,7 +126,8 @@ class TrainRayActor(NodeProbeMixin):
 
         object_store.init_instance(args)
         self.output_store_read = output_store_reader(args)
-        observers.start_process("train", rank=rank, gpus=ray.get_gpu_ids)
+        # a train rank in a Kubernetes pod runs outside any Ray worker
+        observers.start_process("train", rank=rank, gpus=ray.get_gpu_ids if ray.is_initialized() else visible_gpu_ids)
 
     @functools.cached_property
     def _model_flops(self) -> ModelFlops | None:

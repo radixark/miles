@@ -71,6 +71,7 @@ class TestRun:
                 f'"$COMMAND_ACTOR_OVERRIDDEN_VAR" > {output_path}'
             ),
             envs={"COMMAND_ACTOR_TEST_VAR": "hello", "COMMAND_ACTOR_OVERRIDDEN_VAR": "from-envs"},
+            gpu_ids=[],
         )
         fake_exit.wait()
 
@@ -80,10 +81,10 @@ class TestRun:
         """Calling run a second time on the same actor is rejected."""
         fake_exit = _FakeExit(monkeypatch)
         actor = CommandActor()
-        actor.run(cmd="true", envs={})
+        actor.run(cmd="true", envs={}, gpu_ids=[])
 
         with pytest.raises(AssertionError):
-            actor.run(cmd="true", envs={})
+            actor.run(cmd="true", envs={}, gpu_ids=[])
         fake_exit.wait()
 
     def test_a_launch_error_propagates_without_consuming_the_actor(self, monkeypatch: pytest.MonkeyPatch):
@@ -106,11 +107,11 @@ class TestRun:
             failing_launch.setattr(process_utils, "launch_bound_subprocess", _fail_to_launch)
             failing_launch.setattr(threading, "Thread", _FakeThread)
             with pytest.raises(OSError):
-                actor.run(cmd="true", envs={})
+                actor.run(cmd="true", envs={}, gpu_ids=[])
 
         assert thread_creations == []
 
-        actor.run(cmd="exit 7", envs={})
+        actor.run(cmd="exit 7", envs={}, gpu_ids=[])
         fake_exit.wait()
 
         assert fake_exit.codes == [7]
@@ -121,7 +122,7 @@ class TestLifecycleBinding:
         """The actor process exits with code 0 when the subprocess succeeds."""
         fake_exit = _FakeExit(monkeypatch)
 
-        CommandActor().run(cmd="true", envs={})
+        CommandActor().run(cmd="true", envs={}, gpu_ids=[])
         fake_exit.wait()
 
         assert fake_exit.codes == [0]
@@ -130,7 +131,7 @@ class TestLifecycleBinding:
         """The actor process exits with the subprocess returncode when it fails."""
         fake_exit = _FakeExit(monkeypatch)
 
-        CommandActor().run(cmd="exit 7", envs={})
+        CommandActor().run(cmd="exit 7", envs={}, gpu_ids=[])
         fake_exit.wait()
 
         assert fake_exit.codes == [7]
@@ -141,7 +142,7 @@ class TestLifecycleBinding:
         """A signal-killed subprocess (negative returncode) maps to exit code 128+signal, as a shell reports it."""
         fake_exit = _FakeExit(monkeypatch)
 
-        CommandActor().run(cmd='kill -TERM "$$"', envs={})
+        CommandActor().run(cmd='kill -TERM "$$"', envs={}, gpu_ids=[])
         fake_exit.wait()
 
         assert fake_exit.codes == [128 + signal.SIGTERM]
@@ -151,7 +152,7 @@ class TestLifecycleBinding:
         fake_exit = _FakeExit(monkeypatch)
         flag_path = tmp_path / "flag"
 
-        CommandActor().run(cmd=f'while [ ! -f "{flag_path}" ]; do sleep 0.01; done', envs={})
+        CommandActor().run(cmd=f'while [ ! -f "{flag_path}" ]; do sleep 0.01; done', envs={}, gpu_ids=[])
 
         assert not fake_exit.event.wait(timeout=0.3)
         flag_path.touch()
@@ -164,7 +165,7 @@ class TestShutdown:
         """A deliberate shutdown must not look like a crash to the babysitter."""
         fake_exit = _FakeExit(monkeypatch)
         actor = CommandActor()
-        actor.run(cmd="sleep 300", envs={})
+        actor.run(cmd="sleep 300", envs={}, gpu_ids=[])
 
         actor.shutdown()
 
@@ -181,7 +182,7 @@ class TestShutdown:
         actor = CommandActor()
 
         actor.shutdown()
-        actor.run(cmd="exit 7", envs={})
+        actor.run(cmd="exit 7", envs={}, gpu_ids=[])
         fake_exit.wait()
 
         assert fake_exit.codes == [7]
@@ -190,7 +191,7 @@ class TestShutdown:
         """A second shutdown of an already-stopped subprocess is a harmless no-op."""
         fake_exit = _FakeExit(monkeypatch)
         actor = CommandActor()
-        actor.run(cmd="sleep 300", envs={})
+        actor.run(cmd="sleep 300", envs={}, gpu_ids=[])
 
         actor.shutdown()
         actor._process.wait(timeout=10)
@@ -202,7 +203,7 @@ class TestShutdown:
         """Shutting down after a natural subprocess exit must not raise."""
         fake_exit = _FakeExit(monkeypatch)
         actor = CommandActor()
-        actor.run(cmd="true", envs={})
+        actor.run(cmd="true", envs={}, gpu_ids=[])
         fake_exit.wait()
 
         actor.shutdown()
@@ -214,7 +215,7 @@ class TestShutdown:
         _FakeExit(monkeypatch)
         ready_path, drained_path = tmp_path / "ready", tmp_path / "drained"
         actor = CommandActor()
-        actor.run(cmd=_exec_command(_DRAINING_SOURCE, ready_path, drained_path), envs={})
+        actor.run(cmd=_exec_command(_DRAINING_SOURCE, ready_path, drained_path), envs={}, gpu_ids=[])
         _wait_for_path(ready_path)
 
         actor.shutdown()
@@ -227,7 +228,7 @@ class TestKillSubprocess:
         """A killed subprocess must take the actor down, as a real crash would."""
         fake_exit = _FakeExit(monkeypatch)
         actor = CommandActor()
-        actor.run(cmd="sleep 300", envs={})
+        actor.run(cmd="sleep 300", envs={}, gpu_ids=[])
 
         actor.kill_subprocess()
 
@@ -272,7 +273,9 @@ class TestControlFaultHook:
         fake_exit = _FakeExit(monkeypatch)
         child_pid_path = tmp_path / "child-pid"
         actor = CommandActor()
-        actor.run(cmd=f"sleep 300 & printf '%s' \"$!\" > {shlex.quote(str(child_pid_path))}; wait", envs={})
+        actor.run(
+            cmd=f"sleep 300 & printf '%s' \"$!\" > {shlex.quote(str(child_pid_path))}; wait", envs={}, gpu_ids=[]
+        )
         _wait_for_path(child_pid_path)
         child_pid = int(child_pid_path.read_text())
 

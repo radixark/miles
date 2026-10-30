@@ -855,13 +855,14 @@ class MegatronTrainRayActor(TrainRayActor):
             self.prof.step(rollout_id=rollout_id)
 
         train_dump.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
-        observer_reports.report_train_tokens(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
         for m in all_replay_managers:
             if m.enabled:
                 m.clear_all()
 
         if train_step_outcome == TrainStepOutcome.NORMAL:
+            # a discarded attempt is retried under the same rollout_id; only the applied one is reported
+            observer_reports.report_train_tokens(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
             # update the cpu actor weight to the latest model
             if self._enable_weight_backup:
                 self.weights_backuper.backup("actor")

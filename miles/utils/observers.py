@@ -10,7 +10,9 @@ and the run goes on, with one exception: ``RunRefusedError`` raised from
 
 The order within one process: ``start_run`` (driver only) and
 ``start_process`` come first, then any events. The environment variables
-``start_run`` returns are set in every worker process the driver launches.
+``start_run`` returns are set in every worker process the driver launches; they
+are logged and kept in Ray's job metadata, so they must not carry secrets, and
+workers the driver does not launch (a Kubernetes run's) never see them.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from typing import Any, ClassVar, Literal, TypedDict, get_args
 
 import numpy as np
 
+from miles.utils.env_report.redaction import redact_config_values
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.misc import SingletonMeta, get_current_node_ip
 from miles.utils.timer import Timer
@@ -41,7 +44,7 @@ class RunRefusedError(Exception):
 class RunStart(TypedDict):
     run_uuid: str
     start_ts: float
-    args: dict[str, Any]  # every argument, JSON-safe
+    args: dict[str, Any]  # every argument, JSON-safe, with secrets redacted
 
 
 class ProcessStart(TypedDict):
@@ -145,8 +148,8 @@ class Observer:
         return True
 
     def start_run(self, run: RunStart) -> dict[str, str]:
-        """Driver only, before any worker starts. Returns environment variables for every worker;
-        raising ``RunRefusedError`` stops the run."""
+        """Driver only, before any worker starts. Returns environment variables for the workers
+        the driver launches, which must not carry secrets; raising ``RunRefusedError`` stops the run."""
         return {}
 
     def start_process(self, process: ProcessStart) -> None: ...
@@ -195,13 +198,21 @@ class Observers(metaclass=SingletonMeta):
 
     def start_run(self, run: RunStart) -> dict[str, str]:
         env: dict[str, str] = {}
+        started: list[tuple[str, Observer]] = []
         for name, observer in self._observers:
             try:
                 env.update(observer.start_run(run) or {})
             except RunRefusedError:
+                # the run never starts, so close what the observers before this one opened
+                for started_name, started_observer in started:
+                    try:
+                        started_observer.end_run(succeeded=False)
+                    except Exception:
+                        self._warn(started_name, "end_run")
                 raise
             except Exception:
                 self._warn(name, "start_run")
+            started.append((name, observer))
         return env
 
     def start_process(self, process: ProcessStart) -> None:
@@ -310,7 +321,7 @@ def start_process(role: str, *, rank: int = -1, gpus: Callable[[], Iterable[int]
 
 def _plain_args(args) -> dict[str, Any]:
     fields = {name: value for name, value in vars(args).items() if not name.startswith("_")}
-    return json.loads(json.dumps(fields, default=str))
+    return redact_config_values(json.loads(json.dumps(fields, default=str)))
 
 
 class _PhaseReporter:

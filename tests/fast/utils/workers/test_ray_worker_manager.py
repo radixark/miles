@@ -1183,6 +1183,20 @@ class TestGpuPlacement:
         asked = {call.handle.index: call.kwargs["gpu_ids"] for call in fake_ray_cluster.calls_of("_to_local_gpu_ids")}
         assert asked == {0: [4, 5], 1: [6, 7]}
 
+    async def test_each_command_is_told_the_physical_gpus_it_runs_on(self, fake_ray_cluster: FakeRayCluster):
+        """Engines do not see their GPUs through CUDA_VISIBLE_DEVICES, so only the manager can say which they hold."""
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=2,
+            num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=2,
+            pg_name="rollout",
+        )
+        await _launch([spec], _make_pgs(num_slots=8, first_gpu_id=4))
+
+        told = {call.handle.index: call.kwargs["gpu_ids"] for call in fake_ray_cluster.calls_of("run")}
+        assert told == {0: [4, 5], 1: [6, 7]}
+
     async def test_a_worker_that_owns_no_gpu_is_launched_with_an_empty_local_gpu_id_list(
         self, fake_ray_cluster: FakeRayCluster
     ):

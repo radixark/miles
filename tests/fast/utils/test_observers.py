@@ -113,16 +113,37 @@ def test_only_start_run_can_refuse_the_run(install):
     Timer().end("actor_train")
 
 
-def test_start_run_reports_every_argument_as_plain_data(install):
+def test_a_refused_run_still_ends_the_observers_that_started_it(install):
+    """A run record an earlier observer opened must not stay open when a later observer refuses the run."""
+    ended: list[bool] = []
+
+    class _Starting(Observer):
+        def end_run(self, *, succeeded):
+            ended.append(succeeded)
+
+    class _Refusing(Observer):
+        def start_run(self, run):
+            raise RunRefusedError("needs --dump-details")
+
+    install(_Starting(), _Refusing())
+
+    with pytest.raises(RunRefusedError):
+        observers_module.start_run(run_uuid="0123456789abcdef", args=SimpleNamespace(lr=1e-6))
+    assert ended == [False]
+
+
+def test_start_run_reports_every_argument_as_plain_data_without_secrets(install):
     recorder = _Recorder()
     install(recorder)
 
-    observers_module.start_run(run_uuid="0123456789abcdef", args=SimpleNamespace(lr=1e-6, sglang=object()))
+    args = SimpleNamespace(lr=1e-6, sglang=object(), wandb_key="wandb-secret")
+    observers_module.start_run(run_uuid="0123456789abcdef", args=args)
 
     [(_, run)] = [call for call in recorder.calls if call[0] == "start_run"]
     assert run["run_uuid"] == "0123456789abcdef"
     assert run["args"]["lr"] == 1e-6
     assert isinstance(run["args"]["sglang"], str)
+    assert "wandb-secret" not in str(run["args"]), "observers must not receive the run's secrets"
 
 
 def _sample(**overrides):

@@ -91,7 +91,7 @@ class RayWorkerManager:
 
         self.scaling = ScalingConfig.slice_from(args)
         self.comm_backend = comm_backend
-        # set in every worker on top of its spec's env, e.g. what run observers need
+        # set in every worker on top of its spec's env, e.g. what run observers need; never secrets
         self.worker_env = dict(worker_env or {})
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
@@ -490,7 +490,7 @@ class _CommandActorManager(_BaseActorManager[BaseCommandSpec]):
         launch_cmd = self.spec.launch_command(ctx)
         # exec lets the command replace /bin/sh, so parent death and Ray's child cleanup kill the
         # command itself rather than a shell that would leave it orphaned with its ports.
-        self.actor_handle.run.remote(cmd=f"exec {launch_cmd}", envs={})
+        self.actor_handle.run.remote(cmd=f"exec {launch_cmd}", envs={}, gpu_ids=self.gpu_ids)
 
     async def _shutdown_gracefully(self) -> None:
         try:

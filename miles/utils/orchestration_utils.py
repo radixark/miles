@@ -1,3 +1,4 @@
+import logging
 import sys
 from dataclasses import dataclass
 from functools import partial
@@ -24,6 +25,8 @@ from miles.utils.workers.connection_config import StaticConnConfig
 from miles.utils.workers.serving.utils import parse_orchestrator_argv
 from miles.utils.workers.serving.worker_config import OrchestratorWorkerConfig
 from miles.utils.workers.types import ClusterBackend
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,11 @@ def init_orchestration_script(startup_info: OrchestratorStartupInfo, *, disposer
     disposer.add(finish_tracking)
     init_tracking(args)
     worker_env = observers.start_run(run_uuid=args.run_uuid, args=args)
+    if worker_env and ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES:
+        logger.warning(
+            f"run observers set {sorted(worker_env)} for the workers, but the launcher starts a Kubernetes "
+            "run's workers, so they will not see these variables"
+        )
     observers.start_process("driver")
     # registered before the worker manager, so it runs after the workers are gone
     disposer.add_exit(lambda succeeded: observers.Observers().end_run(succeeded=succeeded))
