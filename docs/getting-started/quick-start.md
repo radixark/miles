@@ -47,7 +47,7 @@ Megatron-LM at `/root/Megatron-LM`. Refresh the editable install so you run the
 latest main:
 
 ```bash
-cd /root/miles && git pull && pip install -e . --no-deps
+cd /root/miles && git pull && pip install -e . --no-deps && pip install -e plugins/miles-dashboard --no-deps
 ```
 
 **Everything from here on runs inside the container.**

@@ -43,6 +43,7 @@ git remote add me git@github.com:<your_user>/miles.git
 git checkout -b feat/awesome
 
 pip install -e . --no-deps       # editable install, deps come from the image
+pip install -e plugins/miles-dashboard --no-deps  # the dashboard plugin, also editable
 pre-commit install               # optional, runs the hooks on every commit
 
 pytest tests/fast                # CPU suite, no GPU needed
