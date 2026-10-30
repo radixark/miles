@@ -1868,6 +1868,11 @@ def miles_validate_args(args):
                 "--multimodal-token-space-processing needs the SGLang engines to expand media placeholders in token "
                 "space; set --sglang-enable-token-space-processor."
             )
+        if args.rollout_external_engine_addrs:
+            raise ValueError(
+                "--multimodal-token-space-processing builds the trainer's processor from the server args Miles "
+                "launches its engines with, which external engines do not share."
+            )
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
