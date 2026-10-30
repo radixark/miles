@@ -1,14 +1,12 @@
 """torchtitan 0.4.0 is released against torch 2.15; these shims run it on the torch 2.14 sglang links.
 
 `backport_torch_apis` must run before torchtitan is first imported, so the package `__init__` runs it;
-`install` patches torchtitan itself.
+`install` patches FSDP once the trainer starts.
 """
 
 import inspect
 import logging
-import types
 
-import torch.distributed.config as dist_config
 import torch.distributed.fsdp as torch_fsdp
 import torch.distributed.pipelining as torch_pipelining
 
@@ -24,7 +22,6 @@ def backport_torch_apis() -> None:
 
 def install() -> None:
     _patch_fsdp2_grad_accumulation_attr_error()
-    _declare_pipeline_per_edge_p2p()
 
 
 def _stub_dist_moe_pipelining_apis() -> None:
@@ -48,15 +45,6 @@ def _accept_unset_param_dtype_override() -> None:
 
     torch_fsdp.MixedPrecisionPolicy = mixed_precision_policy
     logger.info("Let MixedPrecisionPolicy accept the unset param_dtype_override_fn torchtitan passes")
-
-
-def _declare_pipeline_per_edge_p2p() -> None:
-    import torchtitan.distributed.utils as titan_dist_utils
-
-    if hasattr(dist_config, "pipeline_per_edge_p2p"):  # config-access-exempt: torch 2.15 adds this c10d option
-        return
-    titan_dist_utils.dist_config = types.SimpleNamespace(pipeline_per_edge_p2p=False)
-    logger.info("Declared torch.distributed.config.pipeline_per_edge_p2p for torchtitan's pipeline check")
 
 
 def _patch_fsdp2_grad_accumulation_attr_error() -> None:
