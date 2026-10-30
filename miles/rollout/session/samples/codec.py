@@ -49,6 +49,9 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "spec_info": ValueSpec("json"),
     "prefix_cache_info": ValueSpec("json"),
     "metadata": ValueSpec("json"),
+    # The sample's images in the trainer's PNG format (miles.rollout.session.media.train_inputs):
+    # a dict of arrays, each shipped as its own tensor; None for a text sample.
+    "multimodal_train_inputs": ValueSpec("tensor_dict"),
 }
 
 # Tree-serving v2 adds `Sample.reward` to the wire.
@@ -64,7 +67,8 @@ COMPUTED_FIELDS = tuple(field for field in SAMPLES_VALUE_SPEC if field not in RO
 COMPUTED_FIELDS_V2 = tuple(field for field in SAMPLES_VALUE_SPEC_V2 if field not in ROLLOUT_SAMPLING_MASK_FIELDS)
 
 assert all(
-    spec.codec in ("tensor", "tensor_list", "sampling_mask", "json") for spec in SAMPLES_VALUE_SPEC_V2.values()
+    spec.codec in ("tensor", "tensor_list", "sampling_mask", "json", "tensor_dict")
+    for spec in SAMPLES_VALUE_SPEC_V2.values()
 ), "unknown codec in SAMPLES_VALUE_SPEC"
 
 _TENSOR_FIELDS = frozenset(field for field, spec in SAMPLES_VALUE_SPEC_V2.items() if spec.codec != "json")
@@ -178,6 +182,14 @@ def encode_samples(
                 tensors[f"{field}.ids.{sample_index}"] = np.ascontiguousarray(ids.numpy())
                 tensors[f"{field}.offsets.{sample_index}"] = np.ascontiguousarray(offsets.numpy())
                 continue
+            if spec.codec == "tensor_dict":
+                if not isinstance(value, dict):
+                    raise TypeError(f"{field} must be a dict of arrays, got {type(value).__name__}")
+                sample_meta[f"{field}_keys"] = list(value)
+                for key, item in value.items():
+                    arr = item.detach().cpu().numpy() if isinstance(item, torch.Tensor) else np.asarray(item)
+                    tensors[f"{field}.{key}.{sample_index}"] = np.ascontiguousarray(arr)
+                continue
             if spec.strict:
                 arr = np.asarray(value)
                 if arr.dtype != spec.dtype:
@@ -258,6 +270,19 @@ def decode_samples_and_merge_input_sample(
                 # Older producers have no candidate fields; training validates
                 # their presence when the new loss is actually selected.
                 setattr(sample, field, None)
+                continue
+            if spec.codec == "tensor_dict":
+                keys = sample_meta.get(f"{field}_keys")
+                if not isinstance(keys, list):
+                    raise ValueError(f"{field} keys missing from the sample metadata")
+                setattr(
+                    sample,
+                    field,
+                    {
+                        key: torch.from_numpy(np.ascontiguousarray(tensors.pop(f"{field}.{key}.{sample_index}")))
+                        for key in keys
+                    },
+                )
                 continue
             if spec.codec == "sampling_mask":
                 ids = tensors.pop(f"{field}.ids.{sample_index}")

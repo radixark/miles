@@ -20,6 +20,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 from miles.rollout.generate_utils.rollout_topk_logprobs import append_rollout_topk_logprobs
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata, read_sampled_logprobs
+from miles.rollout.session.media import MediaStore, expand_image_placeholders, media_references, train_inputs
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
 from miles.utils.output_store.plan import (
@@ -41,9 +42,16 @@ def compute_samples_from_openai_records(
     *,
     use_addition_r3: bool = False,
     evaluation: bool = False,
+    media: MediaStore | None = None,
 ) -> list[Sample]:
     """Convert per-turn session records into training Samples, aligning each
     turn's output tokens against the TITO accumulated token sequence.
+
+    ``media`` is the session's image store: a turn whose messages carry
+    images gets its image placeholders expanded to the processor's counts
+    (the form the trainer runs) and the images attached as
+    ``multimodal_train_inputs``; the alignment below runs on the unexpanded
+    ids, which is what the engine was sent and what the session stores.
 
     Each record carries its own ``prompt_token_ids`` and ``output_token_ids``
     (with logprobs).  We want to reuse those per-turn logprobs directly
@@ -93,7 +101,13 @@ def compute_samples_from_openai_records(
             cursor += matched
 
         sample = _compute_sample_from_openai_record(
-            args, record, tokenizer, trim_count, use_addition_r3=use_addition_r3, evaluation=evaluation
+            args,
+            record,
+            tokenizer,
+            trim_count,
+            use_addition_r3=use_addition_r3,
+            evaluation=evaluation,
+            media=media,
         )
         attach_lifecycle_metadata(sample, record, records[i - 1] if i else None, turn=i + 1)
         if is_last and args.save_debug_trajectory_data is not None:
@@ -113,6 +127,37 @@ def compute_samples_from_openai_records(
     return samples
 
 
+def expand_prompt_images(
+    record: SessionRecord, prompt_token_ids: list[int], media: MediaStore | None
+) -> tuple[list[int], dict | None]:
+    """The record's prompt as the trainer runs it: each image placeholder
+    expanded to the processor's token count for that image, plus the images
+    in the trainer's PNG format. A record without images, or a text-only
+    server, returns the ids unchanged and None.
+
+    The engine reports the prompt length it ran (``meta_info.prompt_tokens``);
+    when present it must equal the expanded length, otherwise the engine did
+    not run the client's ids (it re-tokenized, or dropped the images) and the
+    sample would train on a prompt the model never saw."""
+    refs = media_references(record.request.get("messages") or [])
+    if not refs:
+        return prompt_token_ids, None
+    if media is None or not media.enabled:
+        raise ValueError("the record carries images but this session server has no image processor")
+    entries = [media.get(ref) for ref in refs]
+    if media.expands:
+        expanded = expand_image_placeholders(prompt_token_ids, [e.num_tokens for e in entries], media.image_pad_id)
+    else:
+        expanded = list(prompt_token_ids)
+    reported = record.response["choices"][0].get("meta_info", {}).get("prompt_tokens")
+    if isinstance(reported, int) and reported != len(expanded):
+        raise ValueError(
+            f"the engine ran {reported} prompt tokens but the session's expanded prompt has {len(expanded)} "
+            f"({len(prompt_token_ids)} sent, {len(entries)} image(s)): the engine did not run the request ids as sent"
+        )
+    return expanded, train_inputs(entries)
+
+
 def _compute_sample_from_openai_record(
     args: Namespace,
     record: SessionRecord,
@@ -121,6 +166,7 @@ def _compute_sample_from_openai_record(
     *,
     use_addition_r3: bool = False,
     evaluation: bool = False,
+    media: MediaStore | None = None,
 ) -> Sample:
     choice = record.response["choices"][0]
     finish_reason = choice.get("finish_reason")
@@ -128,6 +174,7 @@ def _compute_sample_from_openai_record(
     prompt_token_ids = record.request.get("input_ids")
     if prompt_token_ids is None:
         raise ValueError("input_ids not found in request — the session server should populate it")
+    prompt_token_ids, image_inputs = expand_prompt_images(record, prompt_token_ids, media)
 
     output_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
@@ -152,6 +199,7 @@ def _compute_sample_from_openai_record(
                 sampling_logprobs_mode=sampling_logprobs_mode,
             )
     sample.tokens = prompt_token_ids + output_token_ids
+    sample.multimodal_train_inputs = image_inputs
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)

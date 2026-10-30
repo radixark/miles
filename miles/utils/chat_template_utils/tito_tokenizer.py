@@ -90,6 +90,37 @@ def _build_dummy_assistant(stored_assistant: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class ImageTokens:
+    """How a family's chat template writes one image: an optional begin
+    marker, the placeholder, an optional end marker; and whether the model's
+    processor (and so an exact-token engine) expands that one placeholder into
+    the image's token count. The session server and the generate path read
+    this table instead of a model-specific token name: one placeholder goes on
+    the wire per image, the record keeps the expansion, and a family without
+    an entry refuses images with a message that names the table.
+    """
+
+    begin: str | None
+    placeholder: str
+    end: str | None
+    expands: bool = True
+
+    @property
+    def tokens(self) -> tuple[str, ...]:
+        return tuple(t for t in (self.begin, self.placeholder, self.end) if t is not None)
+
+
+#: Qwen3-VL family (Qwen3.5 / 3.6 / 3.8 vision models): the processor
+#: replaces ``<|image_pad|>`` with one copy per merged patch (336 for a
+#: 1024x576 screenshot).
+QWEN3_VL_IMAGE_TOKENS = ImageTokens("<|vision_start|>", "<|image_pad|>", "<|vision_end|>")
+#: GLM-V family (GLM-4.1V / 4.6V / 5.3 vision models): the processor replaces
+#: ``<|image|>`` with one copy per merged patch; the position math of the
+#: model needs the begin and end markers around each run.
+GLM_V_IMAGE_TOKENS = ImageTokens("<|begin_of_image|>", "<|image|>", "<|end_of_image|>")
+
+
 # ---------------------------------------------------------------------------
 # Base / default tokenizer
 # ---------------------------------------------------------------------------
@@ -101,6 +132,11 @@ class TITOTokenizer:
 
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
+    #: The family's image tokens (``ImageTokens``): what its template writes
+    #: once per image and whether the engine expands it. The session server
+    #: expands the recorded prompt the same way when it builds samples
+    #: (miles.rollout.session.media). None: the family carries no images.
+    image_tokens: ImageTokens | None = None
 
     # The family's fixed renderer contract. DEFAULT uses the model's native
     # template with the maximal best-effort append surface.
@@ -283,6 +319,36 @@ class TITOTokenizer:
     def _encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
 
+    def image_token_ids(self) -> dict[str, int] | None:
+        """The ids of the family's image tokens in this tokenizer, keyed
+        ``begin`` / ``placeholder`` / ``end`` (markers only when the family
+        writes them), or None when the family carries no images. A family
+        that declares a token this tokenizer does not have is a
+        misconfiguration (wrong ``--tito-model`` for the checkpoint) and
+        raises."""
+        if self.image_tokens is None:
+            return None
+        unk = self.tokenizer.unk_token_id
+        ids: dict[str, int] = {}
+        marks = self.image_tokens
+        for name, token in (("begin", marks.begin), ("placeholder", marks.placeholder), ("end", marks.end)):
+            if token is None:
+                continue
+            token_id = self.tokenizer.convert_tokens_to_ids(token)
+            if not isinstance(token_id, int) or token_id == unk:
+                raise ValueError(
+                    f"TITO family {type(self).__name__} writes {token!r} for images but this tokenizer "
+                    f"has no such token; is --tito-model right for this checkpoint?"
+                )
+            ids[name] = token_id
+        return ids
+
+    def image_pad_id(self) -> int | None:
+        """The id of the family's image placeholder, or None when the family
+        carries no images (``image_token_ids``)."""
+        ids = self.image_token_ids()
+        return None if ids is None else ids["placeholder"]
+
     def _tokenize_rendered_suffix(
         self,
         base_messages: list[dict[str, Any]],
@@ -431,6 +497,8 @@ class Qwen35TITOTokenizer(Qwen3TITOTokenizer):
 
     tool_call_parser = "qwen3_coder"
 
+    image_tokens = QWEN3_VL_IMAGE_TOKENS
+
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3.5_fixed.jinja",
         extra_kwargs={"preserve_thinking": True},
@@ -444,6 +512,8 @@ class Qwen36TITOTokenizer(Qwen3TITOTokenizer):
 
     tool_call_parser = "qwen3_coder"
 
+    image_tokens = QWEN3_VL_IMAGE_TOKENS
+
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3.6_fixed.jinja",
         extra_kwargs={"preserve_thinking": True},
@@ -456,6 +526,8 @@ class Qwen38SmallTITOTokenizer(Qwen3TITOTokenizer):
     """Qwen3.8 reasoning-effort template with the Qwen3 token boundary."""
 
     tool_call_parser = "qwen3_coder"
+
+    image_tokens = QWEN3_VL_IMAGE_TOKENS
 
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3.8_small_and_flash_next_fixed.jinja",
@@ -539,8 +611,10 @@ class GLM47TITOTokenizer(TITOTokenizer):
 class GLM53TITOTokenizer(GLM47TITOTokenizer):
     """GLM-5.3 native text renderer with the shared GLM token boundary.
 
-    The GLM-5.3 and GLM-5.3-Flash templates start generation with ``<think>`` even when ``enable_thinking=False``, so this family pins ``enable_thinking=True``. Flash support covers tokenizer text inputs, not multimodal processor inputs.
+    The GLM-5.3 and GLM-5.3-Flash templates start generation with ``<think>`` even when ``enable_thinking=False``, so this family pins ``enable_thinking=True``. The native template writes ``<|begin_of_image|><|image|><|end_of_image|>`` per image (GLM-V tokens).
     """
+
+    image_tokens = GLM_V_IMAGE_TOKENS
 
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
@@ -1245,3 +1319,8 @@ def resolve_reasoning_and_tool_call_parser(
         _resolve_one("reasoning_parser", cls.reasoning_parser, user_reasoning_parser),
         _resolve_one("tool_call_parser", cls.tool_call_parser, user_tool_call_parser),
     )
+
+
+def image_token_table() -> dict[TITOTokenizerType, ImageTokens | None]:
+    """Every TITO family and its image tokens (None for a text family)."""
+    return {t: TITOTokenizerType.get_tokenizer_class(t).image_tokens for t in TITOTokenizerType}

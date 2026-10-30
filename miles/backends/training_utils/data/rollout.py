@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from miles.backends.training_utils.data import png_images
 from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -69,6 +70,9 @@ def get_rollout_data(
         ]
 
     if "multimodal_train_inputs" in rollout_data:
+        # Images shipped as PNG bytes are rebuilt per micro-batch (get_batch)
+        # with this checkpoint's image processor.
+        png_images.configure(args.hf_checkpoint)
         # Move multimodal training tensors to the device in advance
         rollout_data["multimodal_train_inputs"] = [
             (
@@ -381,8 +385,8 @@ def get_batch(
                     else:
                         multimodal_data[key] = torch.cat([multimodal_data[key], mm_tensor], dim=0)
                         multimodal_num_items[key].append(mm_tensor.size(0))
-        batch["multimodal_train_inputs"] = multimodal_data
-        batch["multimodal_num_items"] = multimodal_num_items
+        batch["multimodal_train_inputs"] = png_images.rebuild_png_images(multimodal_data)
+        batch["multimodal_num_items"] = {k: v for k, v in multimodal_num_items.items() if k not in png_images.PNG_KEYS}
 
     return batch
 

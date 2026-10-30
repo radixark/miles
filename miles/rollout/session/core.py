@@ -22,6 +22,7 @@ from starlette.responses import Response
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
+    MessageValidationError,
     OutputStoreContractError,
     SessionNotFoundError,
     TokenizationError,
@@ -29,6 +30,7 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionRegistry
+from miles.rollout.session.media import MediaStore, media_references, normalize_messages, restore_messages
 from miles.rollout.session.request_args import ClientResponseIntent, filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.samples.merge import (
@@ -201,6 +203,38 @@ def extract_completion(result: dict) -> tuple:
     return response, choice, assistant_message, completion_token_ids
 
 
+def store_request_media(client_args: dict, media: MediaStore | None) -> dict:
+    """Register the request's images in the session's store and reference
+    them from the messages as ``mm://`` URLs (miles.rollout.session.media),
+    so stored history and records carry each image once. A text-only server
+    (``media`` None) passes the request through; an image on it is a 400."""
+    messages = client_args.get("messages")
+    if not isinstance(messages, list):
+        return client_args
+    if media is None:
+        if media_references(messages):
+            raise MessageValidationError("this session server carries no images (no image processor)")
+        return client_args
+    try:
+        normalized = normalize_messages(messages, media)
+    except ValueError as e:
+        raise MessageValidationError(str(e)) from e
+    if normalized is messages:
+        return client_args
+    return {**client_args, "messages": normalized}
+
+
+def engine_request_body(request_body: dict, media: MediaStore | None) -> bytes:
+    """The proxied body: the stored ``mm://`` references become the client's
+    data URLs again, so the engine receives the images with the ids."""
+    if media is None:
+        return orjson.dumps(request_body)
+    messages = request_body.get("messages")
+    if isinstance(messages, list) and media_references(messages):
+        request_body = {**request_body, "messages": restore_messages(messages, media)}
+    return orjson.dumps(request_body)
+
+
 class SessionCore:
     """HTTP session operations over one ``SessionRegistry``."""
 
@@ -354,6 +388,7 @@ class SessionCore:
                 max_trim_tokens=metadata.get("max_trim_tokens", 0),
                 use_addition_r3=self.use_addition_r3,
                 evaluation=session.evaluation,
+                media=session.media,
             )
             if max_seq_len is not None:
                 samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
@@ -412,7 +447,7 @@ class SessionCore:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            client_args = parse_chat_request(body)
+            client_args = store_request_media(parse_chat_request(body), session.media)
             prepared = session.prepare_token_ids_and_request_args(
                 client_args,
                 config=self.config,
@@ -430,7 +465,7 @@ class SessionCore:
             self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
 
             # orjson: the body carries the whole prompt's input_ids on every turn.
-            proxy_body = orjson.dumps(request_body)
+            proxy_body = engine_request_body(request_body, session.media)
             expected_num_assistant = session.num_assistant
         # --- lock released ---
 

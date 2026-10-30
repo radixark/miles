@@ -6,6 +6,7 @@ from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session.media import MediaStore
 from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
@@ -94,6 +95,9 @@ class LinearTrajectory:
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
+    # The session's images (miles.rollout.session.media): stored messages and
+    # records reference them as ``mm://`` URLs; None on a text-only server.
+    media: MediaStore | None = field(default=None, repr=False, compare=False)
 
     def snapshot(self) -> "LinearTrajectory":
         """Copy the mutable containers, sharing committed payloads read-only. Caller holds the lock."""
@@ -104,6 +108,7 @@ class LinearTrajectory:
             trajectory_token_ids=list(self.trajectory_token_ids),
             generated_checkpoint_message_ends=list(self.generated_checkpoint_message_ends),
             turn_args_history=list(self.turn_args_history),
+            media=self.media.snapshot() if self.media is not None else None,
         )
 
     @property
@@ -389,10 +394,14 @@ class SessionRegistry:
         *,
         tito_tokenizer: TITOTokenizer,
         message_matcher: SessionMessageMatcher | None = None,
+        processor: Any = None,
     ):
         self.sessions: dict[str, LinearTrajectory] = {}
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
+        # The model's image processor (None for a text-only model): every
+        # session's MediaStore counts and grids its images with it.
+        self.processor = processor
         self.comparator = tito_tokenizer.create_comparator()
         self.message_matcher: SessionMessageMatcher = (
             message_matcher if message_matcher is not None else strict_message_matches
@@ -415,8 +424,21 @@ class SessionRegistry:
             evaluation=evaluation,
             sampling_defaults=dict(sampling_defaults or {}),
             sampling_support_replay=sampling_support_replay,
+            media=self.new_media_store(),
         )
         return session_id
+
+    def new_media_store(self) -> MediaStore:
+        # Duck-typed TITO stubs (tests/fast/rollout/session/test_score_centering.py) carry no image table.
+        tito = self.tito_tokenizer
+        tokens = getattr(tito, "image_tokens", None)  # config-access-exempt: TITO stubs omit the image table
+        pad_lookup = getattr(tito, "image_pad_id", None)  # config-access-exempt: TITO stubs omit the image table
+        return MediaStore(
+            self.processor,
+            pad_lookup() if pad_lookup is not None else None,
+            expands=tokens.expands if tokens is not None else True,
+            family=type(tito).__name__,
+        )
 
     def get_session(self, session_id: str) -> LinearTrajectory:
         session = self.sessions.get(session_id)
