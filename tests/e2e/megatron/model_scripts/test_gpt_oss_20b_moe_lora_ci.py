@@ -16,7 +16,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     num_gpus=2,
 )
-register_rocm_ci(est_time=1600, suite="nightly-stage-c-2-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
+register_rocm_ci(est_time=2000, suite="nightly-stage-c-2-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
 MODEL_NAME = "gpt-oss-20b-bf16"
 MODEL_TYPE = "gpt-oss-20b"
