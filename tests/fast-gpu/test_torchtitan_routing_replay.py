@@ -19,6 +19,8 @@ register_cuda_ci(
     est_time=60, suite="stage-b-2-gpu-h200", labels=["torchtitan", "replay"], hardware=["hopper"], num_gpus=2
 )
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.nn as nn
@@ -161,14 +163,105 @@ def test_a_stray_forward_is_reported(part):
                 part(scores)
 
 
-def test_the_reference_model_is_left_alone(part):
-    """Only the actor's routers replay; a second trainer's parts must not be
-    held to the actor's queues."""
+def test_a_record_pass_queues_one_entry_per_microbatch(part):
+    """Plain --use-routing-replay runs the log-prob pass in the record stage:
+    nothing is popped, one entry lands per microbatch, and the train pass
+    replays them. The guard held every pass to a pop per microbatch, so that
+    first pass raised before any entry existed."""
+    scores = torch.rand(1, 4, 8, device="cuda")
+    replay = routing_replay_manager.replays[0]
+
+    with shared_replay.stage(shared_replay.RECORD), routing_replay.consumption_guard([part], 2):
+        for _ in range(2):
+            part(scores)
+
+    assert len(replay.top_indices_list) == 2
+    assert replay.forward_index == 0
+    with routing_replay.consumption_guard([part], 2):
+        for _ in range(2):
+            part(scores)
+
+
+def test_a_record_pass_short_of_an_entry_is_reported(part):
+    scores = torch.rand(1, 4, 8, device="cuda")
+
+    with pytest.raises(RuntimeError, match="recorded 1 entries and popped 0 over a record pass of 2"):
+        with shared_replay.stage(shared_replay.RECORD), routing_replay.consumption_guard([part], 2):
+            part(scores)
+
+
+def test_a_fallthrough_pass_leaves_the_queues_alone(part):
+    """The reference model's pass and a probe forward fall through: the router
+    chooses for itself and the queues stay as they were."""
+    _queue_microbatches(2)
+    scores = torch.rand(1, 4, 8, device="cuda")
+    replay = routing_replay_manager.replays[0]
+
+    with shared_replay.stage(shared_replay.FALLTHROUGH), routing_replay.consumption_guard([part], 3):
+        for _ in range(3):
+            part(scores)
+
+    assert (replay.forward_index, replay.backward_index, len(replay.top_indices_list)) == (0, 0, 2)
+    with pytest.raises(RuntimeError, match="touched its queue"):
+        with shared_replay.stage(shared_replay.FALLTHROUGH), routing_replay.consumption_guard([part], 1):
+            replay.pop_forward()
+
+
+def test_an_uninstalled_second_trainer_is_left_alone(part):
+    """A second trainer's parts without replay hooks are not held to the
+    actor's queues."""
     _queue_microbatches(1)
     other = _Part()
 
     with routing_replay.consumption_guard([other], 7):
         pass
+
+
+def test_the_reference_model_replays_the_same_routes_as_the_actor(part):
+    """The reference trainer's routers are installed too (torchtitan actor
+    _build_ref_runner) and register under the same layer index, so fill()
+    records the rollout's stream into both queues and the reference pass
+    replays the routes the actor replays: identical weights then give
+    identical log-probs and a step-0 KL of 0 to the reference. Before, the
+    reference fell through and routed on its own (kl_loss 0.0096 at step 0 on
+    GLM-5.3-Flash with identical weights). The guard around each pass holds
+    only that trainer's queues: the reference pass leaves the actor's queue
+    where it was and must not be reported for it."""
+    reference = _Part()
+    routing_replay.install([reference])
+    actor_replay, reference_replay = routing_replay_manager.replays
+    assert actor_replay is not reference_replay
+    assert actor_replay.stream_idx == reference_replay.stream_idx == 0
+    for replay in (actor_replay, reference_replay):
+        for k in range(2):
+            replay.record(torch.full((4, 2), k, dtype=torch.long))
+    scores = torch.rand(1, 4, 8, device="cuda")
+
+    args = SimpleNamespace(use_rollout_routing_replay=True)
+    with shared_replay.stage(shared_replay.ref_log_prob_stage(args)):
+        with routing_replay.consumption_guard([reference], 2):
+            reference_routes = [reference(scores).unique().tolist() for _ in range(2)]
+    with shared_replay.stage(shared_replay.log_prob_stage(args)):
+        with routing_replay.consumption_guard([part], 2):
+            actor_routes = [part(scores).unique().tolist() for _ in range(2)]
+    assert reference_routes == actor_routes == [[0], [1]]
+    # the reference pass consumed its own queue, not the actor's
+    assert (reference_replay.forward_index, actor_replay.forward_index) == (2, 2)
+
+
+def test_the_reference_pass_falls_through_without_rollout_replay():
+    """Recording-only routing replay (no rollout routes) leaves the reference
+    pass as it was: the stage is FALLTHROUGH, and so is the disabled case."""
+    args = SimpleNamespace(use_rollout_routing_replay=False)
+    routing_replay_manager.enabled = True
+    try:
+        assert shared_replay.ref_log_prob_stage(args) == shared_replay.FALLTHROUGH
+        assert shared_replay.log_prob_stage(args) == shared_replay.RECORD
+        on = SimpleNamespace(use_rollout_routing_replay=True)
+        assert shared_replay.ref_log_prob_stage(on) == shared_replay.REPLAY_FORWARD
+    finally:
+        routing_replay_manager.enabled = False
+    assert shared_replay.ref_log_prob_stage(on) == shared_replay.FALLTHROUGH
 
 
 if __name__ == "__main__":

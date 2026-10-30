@@ -8,8 +8,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed.tensor import DTensor
 
-from miles.backends.training_utils.replay.routing_replay import FALLTHROUGH, REPLAY_BACKWARD, REPLAY_FORWARD, stage
-from miles.utils.replay_base import routing_replay_manager
+from miles.backends.training_utils.replay.routing_replay import (
+    FALLTHROUGH,
+    RECORD,
+    REPLAY_BACKWARD,
+    REPLAY_FORWARD,
+    stage,
+)
+from miles.utils.replay_base import Replay, routing_replay_manager
 
 logger = logging.getLogger(__name__)
 
@@ -137,25 +143,63 @@ def _end_initialization() -> None:
     _initializing = None
 
 
+def _replays_of(model_parts: list[nn.Module]) -> list[Replay]:
+    """The queues of these parts' routers. The manager holds every installed
+    trainer's queues (the reference model's routers register under the same
+    layer indices as the actor's), and a pass only moves its own."""
+    return [
+        module.routing_replay
+        for part in model_parts
+        for module in part.modules()
+        if isinstance(
+            getattr(module, "routing_replay", None), Replay
+        )  # config-access-exempt: only MoE router modules carry it
+    ]
+
+
 @contextlib.contextmanager
 def consumption_guard(model_parts: list[nn.Module], expected: int):
+    """Hold a pass of ``expected`` microbatches to what its stage does to the
+    queues: a replay pass pops one entry per microbatch (and a recompute pass
+    pops one more per microbatch), a record pass appends one entry per
+    microbatch and pops nothing, a fallthrough pass touches nothing."""
     if not _is_installed(model_parts):
         yield
         return
-    before = {id(replay): (replay.forward_index, replay.backward_index) for replay in routing_replay_manager.replays}
+    pass_stage = routing_replay_manager.stage
+    replays = _replays_of(model_parts)
+    before = {
+        id(replay): (replay.forward_index, replay.backward_index, len(replay.top_indices_list)) for replay in replays
+    }
     try:
         yield
     finally:
         _end_initialization()
-    for replay in routing_replay_manager.replays:
-        forward_before, backward_before = before[id(replay)]
+    for replay in replays:
+        forward_before, backward_before, queued_before = before[id(replay)]
         advance = replay.forward_index - forward_before
+        recompute = replay.backward_index - backward_before
+        recorded = len(replay.top_indices_list) - queued_before
+        if pass_stage == RECORD:
+            if advance or recompute or recorded != expected:
+                raise RuntimeError(
+                    f"routing replay stream {replay.stream_idx} recorded {recorded} entries and popped "
+                    f"{advance + recompute} over a record pass of {expected} microbatches; the queues no "
+                    "longer line up with the microbatches"
+                )
+            continue
+        if pass_stage == FALLTHROUGH:
+            if advance or recompute or recorded:
+                raise RuntimeError(
+                    f"routing replay stream {replay.stream_idx} touched its queue (popped {advance + recompute}, "
+                    f"recorded {recorded}) over a fallthrough pass of {expected} microbatches"
+                )
+            continue
         if advance != expected:
             raise RuntimeError(
                 f"routing replay stream {replay.stream_idx} advanced {advance} times over a pass "
                 f"of {expected} microbatches; the queues no longer line up with the microbatches"
             )
-        recompute = replay.backward_index - backward_before
         if recompute not in (0, expected):
             raise RuntimeError(
                 f"routing replay stream {replay.stream_idx} recomputed {recompute} times over a "

@@ -87,6 +87,7 @@ def step(monkeypatch):
         stage=lambda name: _recording(stages, name),
         fill=MagicMock(side_effect=lambda *a, **k: stages.append("fill")),
         log_prob_stage=lambda args: "replay_forward",
+        ref_log_prob_stage=lambda args: "fallthrough",
         rewind=MagicMock(side_effect=lambda: stages.append("rewind")),
         reset=MagicMock(side_effect=lambda: stages.append("reset")),
     )
