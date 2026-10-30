@@ -103,7 +103,7 @@ class TestResolveAdapterTargets:
         [
             ("qwen3_moe", "model.layers.*.mlp.experts.gate_up_proj"),
             ("kimi_k2", "model.layers.*.mlp.experts.*.gate_proj"),
-            ("qwen3_5", "model.language_model.layers.*.linear_attn.in_proj_qkv"),
+            ("qwen3_next", "model.layers.*.linear_attn.in_proj_qkvz"),
         ],
     )
     def test_unimplemented_projections_fail_closed(self, model_type, target):
@@ -282,3 +282,41 @@ def test_inkling_head_export_rows_follow_sglangs_served_vocab(tmp_path):
     with pytest.raises(FileNotFoundError):
         _read_unpadded_vocab_size(str(tmp_path / "missing"))
 
+
+_GDN35 = "model.language_model.layers.*.linear_attn."
+
+
+def _qwen3_5_resolve(targets, lora_type="canonical_lora"):
+    return _resolve_adapter_targets(
+        {"model_type": "qwen3_5"}, targets, hf_modules=[], lora_type=lora_type, experts_shared_outer_loras=False
+    )
+
+
+class TestQwen35GDNTargets:
+    def test_canonical_serves_the_in_proj_components(self):
+        """SGLang stacks in_proj_q/k/v/z and in_proj_b/a, each with its own A, as official Tinker trains them."""
+        targets = [f"{_GDN35}{leaf}" for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")]
+        assert _qwen3_5_resolve(targets) == [
+            f"{_GDN35}{leaf}"
+            for leaf in ("in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+        ]
+
+    def test_the_attn_group_is_attachable(self):
+        """Tinker's attn group covers the GDN layers too; base native rejected every linear_attn target."""
+        config = {"model_type": "qwen3_5", "text_config": {"layer_types": ["linear_attention", "full_attention"]}}
+        targets = resolve_hf_lora_targets(config, target_modules=["attn"])
+        served = _qwen3_5_resolve(targets)
+        assert f"{_GDN35}in_proj_q" in served and f"{_GDN35}in_proj_qkv" not in served
+
+    def test_lora_rejects_the_in_proj(self):
+        with pytest.raises(AssertionError, match="--lora-type canonical_lora"):
+            _qwen3_5_resolve([f"{_GDN35}in_proj_qkv", f"{_GDN35}in_proj_z"], lora_type="lora")
+
+    def test_lora_serves_out_proj(self):
+        assert _qwen3_5_resolve([f"{_GDN35}out_proj"], lora_type="lora") == [f"{_GDN35}out_proj"]
+
+    @pytest.mark.parametrize("leaves", [("in_proj_qkv",), ("in_proj_z",), ("in_proj_b",), ("in_proj_qkv", "in_proj_z", "in_proj_a")])
+    def test_a_partial_stacked_group_is_rejected(self, leaves):
+        """SGLang only stacks complete q/k/v/z and b/a groups, so any other subset would serve nothing."""
+        with pytest.raises(AssertionError, match="selected together"):
+            _qwen3_5_resolve([f"{_GDN35}{leaf}" for leaf in leaves])

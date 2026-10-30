@@ -128,16 +128,20 @@ class LoRAArchSpec:
     experts: ExpertsLoRASpec | None = None
     lm_head: Any = None
     has_linear_attention_layers: bool = False
+    # adapters of the linear-attention mixer layers; None leaves those layers unadapted
+    linear_attention: Any = None
     fixed_targets: FixedTargets | None = None
     # None names adapters after the raw-mode converter's HF weight names
     declared_naming: Any = None
 
     def attaches(self, hf_module: str) -> bool:
         """Whether this spec implements an adapter for the HF module (``*`` stands for any layer)."""
-        blocks = (
+        blocks = [
             (re.escape(self.attention.hf_block), self.attention.supported_targets),
             (r"mlp(?:\.shared_experts?)?", self.mlp.supported_targets),
-        )
+        ]
+        if self.linear_attention is not None:
+            blocks.append((re.escape(self.linear_attention.hf_block), self.linear_attention.supported_targets))
         # a target may nest below its block (GLM-5.3-Flash's forget_gate.f_a_proj)
         return any(
             re.search(rf"{_HF_LAYER}{block}\.{re.escape(target)}$", hf_module)
