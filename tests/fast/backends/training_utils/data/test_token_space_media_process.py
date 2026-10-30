@@ -88,6 +88,7 @@ class _ImageProcessor(BaseImageProcessor):
     ids=["image-processor", "pil-backend", "not-an-image-processor"],
 )
 def test_image_device_follows_the_engine_wrapper(monkeypatch, backend, image_processor, expected):
+    """A trainer that preprocesses images on another device than the engines computes other pixels."""
     from sglang.srt.multimodal import serving_preprocessing
 
     calls = []

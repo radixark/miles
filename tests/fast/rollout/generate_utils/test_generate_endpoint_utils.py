@@ -2,6 +2,8 @@
 
     compute_request_payload  ──▶ {"input_ids", "sampling_params", ..., "extra_key"?}
         token space + media  ──▶ + {"mm_token_expansion_start_len": n, "return_prompt_token_ids": True}
+        output store         ──▶ + {store request} for a training request with a replay field;
+                                 none in evaluation or with the switch off; StorePlanError for media
 
     adopt_expanded_prompt_ids(sample, payload, output)
         sample.tokens   [prompt ... | response ... | new turn <img> ...]
@@ -9,8 +11,8 @@
         sample          tokens = engine prompt; tokens added after the first response extend
                         response_length, with loss_mask 0 and rollout_log_probs 0.0
 
-The tests pin the extra-key passthrough, that only media requests in token space ask for expansion, and how the
-engine's expanded prompt replaces the sample's tokens.
+The tests pin the extra-key passthrough, when the output store is asked for, that only media requests in token
+space ask for expansion, and how the engine's expanded prompt replaces the sample's tokens.
 """
 
 from types import SimpleNamespace
