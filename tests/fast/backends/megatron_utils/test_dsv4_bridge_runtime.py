@@ -37,12 +37,12 @@ def _runtime_args(**overrides):
         "decoder_last_pipeline_num_layers": 3,
         "moe_router_bias_update_rate": None,
         "moe_aux_loss_coeff": None,
-        "freeze_vision_model": False,
     }
     values.update(overrides)
     return SimpleNamespace(
         backend=SimpleNamespace(**values),
         enable_mtp_training=False,
+        freeze_vision_model=False,
         dsa_attention_backend=values.get("dsa_attention_backend"),
     )
 
