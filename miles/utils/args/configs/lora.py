@@ -34,12 +34,15 @@ class LoraConfig(BaseConfig):
         ),
     ] = "xavier"
     lora_type: A[
-        str,
+        str | None,
         Arg(
             choices=["lora", "canonical_lora"],
-            help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (split Q/K/V) (default: lora)",
+            help=(
+                "LoRA variant: 'lora' shares one lora_A across a fused projection, 'canonical_lora' gives each "
+                "projection its own (default: lora on Bridge, canonical_lora on native raw mode)"
+            ),
         ),
-    ] = "lora"
+    ] = None
     # TODO: Remove this temporary override after separating CLI input types from normalized config types.
     target_modules: A[
         str | list[str] | None,

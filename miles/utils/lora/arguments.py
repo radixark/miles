@@ -25,6 +25,9 @@ def validate_lora_args(args):
         return
     assert args.train_backend == "megatron", "LoRA injection is not implemented for FSDP; use --train-backend megatron"
     assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
+    # native trains one lora_A per HF projection; Bridge's default shares one across a fused projection
+    if args.lora_type is None:
+        args.lora_type = "canonical_lora" if args.megatron_to_hf_mode == "raw" else "lora"
     hf_config = load_hf_config(args.hf_checkpoint)
     args.hf_lora_targets, args.lora_adapter_targets = _resolve_lora_targets(args, hf_config)
 

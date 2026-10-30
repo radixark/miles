@@ -146,7 +146,7 @@ def _k3_hf_config():
 
 
 def _resolve(targets, **overrides):
-    kwargs = dict(hf_modules=[], lora_type="lora", experts_shared_outer_loras=True) | overrides
+    kwargs = dict(hf_modules=[], lora_type="canonical_lora", experts_shared_outer_loras=True) | overrides
     return resolve_adapter_targets(_k3_hf_config(), targets, **kwargs)
 
 
@@ -219,7 +219,7 @@ def test_merged_weights_reproduce_the_adapter_forward():
     )
 
 
-@pytest.mark.parametrize("case", ["missing", "extra", "canonical", "per-expert"])
+@pytest.mark.parametrize("case", ["missing", "extra", "shared-a", "per-expert"])
 def test_target_contract_rejects_unverified_layouts(case):
     targets = resolve_hf_lora_targets(_k3_hf_config())
     overrides = {}
@@ -227,14 +227,14 @@ def test_target_contract_rejects_unverified_layouts(case):
         targets = [target for target in targets if not target.endswith(".q_a_proj")]
     elif case == "extra":
         targets.append(f"{PREFIX}*.self_attn.q_b_proj")
-    elif case == "canonical":
-        overrides["lora_type"] = "canonical_lora"
+    elif case == "shared-a":
+        overrides["lora_type"] = "lora"
     else:
         overrides["experts_shared_outer_loras"] = False
     message = {
         "missing": r"missing=\[.*q_a_proj",
         "extra": r"unexpected=\[.*q_b_proj",
-        "canonical": "canonical_lora",
+        "shared-a": "--lora-type lora shares one lora_A",
         "per-expert": "shared-outer",
     }[case]
     with pytest.raises(AssertionError, match=message):
