@@ -21,13 +21,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     assert fmt == "e4m3", f"Unsupported FP8 format: {fmt}"
     assert quantization_config["activation_scheme"] == "dynamic"
     weight_block_size = quantization_config.get("weight_block_size", None)
-    is_skipped = _build_layer_skip_predicate(
-        tuple(quantization_config.get("ignored_layers", quantization_config.get("modules_to_not_convert", [])) or []),
-        tuple(
-            (name, tuple(members))
-            for name, members in (quantization_config.get("packed_modules_mapping") or {}).items()
-        ),
-    )
+    is_skipped = _layer_skip_predicate(quantization_config)
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, megatron_name)
@@ -124,6 +118,21 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     return converted_named_params
 
 
+def is_kept_in_high_precision(name: str, quantization_config: dict) -> bool:
+    """Whether the rollout checkpoint's exclusions keep this HF weight unquantized."""
+    return _layer_skip_predicate(quantization_config)(_skip_prefix(name))
+
+
+def _layer_skip_predicate(quantization_config: dict) -> Callable[[str], bool]:
+    return _build_layer_skip_predicate(
+        tuple(quantization_config.get("ignored_layers", quantization_config.get("modules_to_not_convert", [])) or []),
+        tuple(
+            (name, tuple(members))
+            for name, members in (quantization_config.get("packed_modules_mapping") or {}).items()
+        ),
+    )
+
+
 @functools.lru_cache(maxsize=8)
 def _build_layer_skip_predicate(
     ignored_names: tuple[str, ...], packed_modules_mapping: tuple[tuple[str, tuple[str, ...]], ...]
@@ -143,15 +152,19 @@ def _build_layer_skip_predicate(
     return is_skipped
 
 
-def _quantize_param(args, name, weight, weight_block_size, is_skipped):
-    assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
+def _skip_prefix(name: str) -> str:
     prefix = name.removesuffix(".weight")
     if ".experts." in prefix:
         # SGLang chooses one precision for the entire FusedMoE module.
         prefix = prefix.split(".experts.", 1)[0] + ".experts"
+    return prefix
+
+
+def _quantize_param(args, name, weight, weight_block_size, is_skipped):
+    assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
     # Honor the checkpoint's exclusions: rollout layers kept at their original
     # precision must receive unquantized weights, without FP8 scales.
-    if is_skipped(prefix):
+    if is_skipped(_skip_prefix(name)):
         return [(name, weight)]
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max

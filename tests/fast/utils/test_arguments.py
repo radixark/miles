@@ -3685,6 +3685,16 @@ class TestWeightTransferModeSelection:
         with pytest.raises(ValueError, match=error):
             miles_validate_args(args)
 
+    def test_mxfp4_routed_experts_cross_nccl_only_in_packed_buckets(self):
+        """NCCL rejects float8_e8m0fnu, so the MXFP4 scales can only travel as bucket bytes."""
+        with pytest.raises(ValueError, match="use --update-weight-transfer-mode broadcast_packed"):
+            miles_validate_args(self._parse(["--rollout-routed-expert-format", "mxfp4"]))
+
+        for extra in (["--colocate"], ["--update-weight-transfer-mode", "broadcast_packed"]):
+            args = self._parse(["--rollout-routed-expert-format", "mxfp4", *extra])
+            _set_megatron_parallel_sizes(args)
+            miles_validate_args(args)
+
 
 def test_fully_async_warns_that_over_sampling_batch_size_is_ignored(caplog):
     """Fully-async never reads --over-sampling-batch-size; passing it silently does nothing."""

@@ -165,6 +165,16 @@ class RolloutRelatedConfig(BaseConfig):
     ] = None
 
     # update weight
+    rollout_routed_expert_format: A[
+        str | None,
+        Arg(
+            choices=["mxfp8", "mxfp4"],
+            help=(
+                "Format of the routed experts in a rollout model whose other weights are block-wise FP8. "
+                "Online updates encode the routed experts in this format instead of block-wise FP8."
+            ),
+        ),
+    ] = None
     update_weight_buffer_size: A[
         int,
         Arg(

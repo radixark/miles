@@ -1,8 +1,10 @@
 from argparse import ArgumentParser, Namespace
+from types import SimpleNamespace
 
 import pytest
 
 from miles.utils.args.configs.custom_megatron_plugins import Dsv4MegatronPluginsConfig
+from miles.utils.arguments import validate_routed_expert_quantization_args
 from miles_plugins.models.deepseek_v4.arguments import DSV4_SPEC_MODULE, is_dsv4_model, normalize_dsv4_args
 
 
@@ -55,3 +57,30 @@ def test_unsupported_combinations_fail_at_parse_time(argv, message):
     """Megatron would only assert deep inside config post-init, or silently mis-run."""
     with pytest.raises(ValueError, match=message):
         normalize_dsv4_args(_parse(*argv))
+
+
+def _quantization_args(**overrides):
+    return Namespace(
+        **(
+            {"dsv4_mxfp4_qat": False, "megatron_to_hf_mode": "bridge", "rollout_routed_expert_format": None}
+            | overrides
+        )
+    )
+
+
+def test_routed_expert_quantization_flags_reach_a_consumer():
+    fp8 = SimpleNamespace(quantization_config={"quant_method": "fp8"})
+
+    validate_routed_expert_quantization_args(
+        _quantization_args(dsv4_mxfp4_qat=True, rollout_routed_expert_format="mxfp4"), fp8
+    )
+
+    with pytest.raises(ValueError, match="Megatron-Bridge provider"):
+        validate_routed_expert_quantization_args(
+            _quantization_args(dsv4_mxfp4_qat=True, megatron_to_hf_mode="raw"), fp8
+        )
+    with pytest.raises(ValueError, match="block-wise FP8 rollout checkpoint"):
+        validate_routed_expert_quantization_args(
+            _quantization_args(rollout_routed_expert_format="mxfp8"),
+            SimpleNamespace(quantization_config={"quant_method": "mxfp8"}),
+        )

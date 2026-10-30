@@ -5,7 +5,7 @@ Supports:
   - DeepSeek-V4-Flash             Official Preview release from deepseek-ai
                                   (FP8 attention/shared weights and packed-MXFP4
                                   routed experts). Supports direct-HF RL with
-                                  trainer-owned MXFP8 rollout.
+                                  MXFP8 or packed-MXFP4 routed experts.
   - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
                                   (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
                                   Verified full-model profiles: 8 nodes x 8 GPUs on H200
@@ -25,11 +25,13 @@ Usage patterns:
            --model-name DeepSeek-V4-Flash-FP8-4layer \
            --num-nodes 1 --num-gpus-per-node 8
 
-  2. Direct-HF initialization with MXFP8 rollout (no offline weight conversion):
+  2. Direct-HF initialization serving the release's MXFP4 routed experts, trained
+     with MXFP4 QAT (no offline weight conversion):
        python scripts/run_deepseek_v4.py full-train \
            --model-name DeepSeek-V4-Flash \
            --init-model-source hf --rollout-weight-source trainer \
-           --no-train-fp8 --train-mxfp8 --no-rollout-fp8 --rollout-mxfp8
+           --train-precision mxfp8-mxfp4-routed-expert \
+           --rollout-precision mxfp8-mxfp4-routed-expert
 
   3. Individual converted-checkpoint steps:
        python scripts/run_deepseek_v4.py prepare-download --model-name DeepSeek-V4-Flash-FP8
@@ -77,6 +79,16 @@ _MEGATRON_MODEL_TYPE = {
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 _MXFP4_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-4layer", "DeepSeek-V4-Flash-0731")
 _FLASH_FULL_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-FP8", "DeepSeek-V4-Flash-0731")
+
+Precision = Literal["bf16", "blockwise-fp8", "mxfp8", "mxfp8-mxfp4-routed-expert"]
+_MXFP8_PRECISIONS = ("mxfp8", "mxfp8-mxfp4-routed-expert")
+# Format of the rollout routed experts for each rollout precision.
+_ROLLOUT_ROUTED_EXPERT_FORMAT = {
+    "bf16": "bf16",
+    "blockwise-fp8": "fp8",
+    "mxfp8": "mxfp8",
+    "mxfp8-mxfp4-routed-expert": "mxfp4",
+}
 
 _DSV4_TE_PRECISION_CONFIG = """
 configs:
@@ -147,18 +159,29 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     debug_data_root: str = "/root/shared_data"
     skip_saving: bool = False
 
-    # precision configs
+    # Training/rollout reproducibility and routing replay.
     enable_r3: bool = True
     train_deterministic: bool = True
-    # Train and rollout precision are selected independently. The defaults
-    # preserve the previous fp8_training=True behavior on both sides.
-    train_fp8: bool = True
-    rollout_fp8: bool = True
-    train_mxfp8: bool = False
-    rollout_mxfp8: bool = False
-    # Empty keeps the backend implied by the rollout precision.
+
+    # Both precisions take the same values, each naming the routed-expert format, so
+    # equal values align the routed experts between training and rollout.
+    # Training: the value selects the Transformer Engine recipe for every GEMM;
+    # mxfp8-mxfp4-routed-expert adds MXFP4 fake quantization of the routed-expert
+    # weights (STE backward) to the MXFP8 recipe. Model parameters remain BF16, with
+    # sensitive parameters in FP32, and the FP8 recipes keep the DSA indexer's
+    # weights projection in BF16.
+    # Rollout: bf16 and blockwise-fp8 apply to every weight; mxfp8 and
+    # mxfp8-mxfp4-routed-expert keep block-wise FP8 and override only the routed
+    # experts, to MXFP8 or to MXFP4 weights with MXFP8 activations.
+    train_precision: Precision = "blockwise-fp8"
+    rollout_precision: Precision = "blockwise-fp8"
+
+    # SGLang backend overrides. Empty selects the launcher default for the rollout
+    # precision; a nonempty value wins, and explicit "auto" delegates to SGLang.
     sglang_moe_runner_backend: str = ""
     sglang_fp8_gemm_backend: str = ""
+
+    # Training-side importance sampling to correct the train/rollout mismatch.
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -173,10 +196,11 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
             self.model_local_dir = self.model_dir
         if self.model_name in _PRO_MODEL_NAMES:
             self.enable_r3 = False
-        assert not (self.train_fp8 and self.train_mxfp8), "train_fp8 and train_mxfp8 are mutually exclusive"
-        assert not (self.rollout_fp8 and self.rollout_mxfp8), "rollout_fp8 and rollout_mxfp8 are mutually exclusive"
         if self.hardware in ("H100", "H200"):
-            assert not (self.train_mxfp8 or self.rollout_mxfp8), "train_mxfp8/rollout_mxfp8 require Blackwell"
+            assert (
+                self.train_precision not in _MXFP8_PRECISIONS and self.rollout_precision not in _MXFP8_PRECISIONS
+            ), "MXFP8 and MXFP4 precisions require Blackwell"
+        _validate_precisions(self)
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
         assert self.cp_size is None or self.cp_size >= 1, f"cp_size must be at least 1, got {self.cp_size}"
@@ -209,20 +233,41 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         return f"{self.model_name}-bf16"
 
     @property
-    def mxfp8_name(self):
-        return f"{self.model_name}-MXFP8"
+    def mxfp8_expert_schema_name(self):
+        return f"{self.model_name}-MXFP8-experts-schema"
 
     @property
-    def mxfp8_schema_name(self):
-        return f"{self.mxfp8_name}-schema"
+    def rollout_routed_expert_format(self):
+        return _ROLLOUT_ROUTED_EXPERT_FORMAT[self.rollout_precision]
 
     @property
     def rollout_name(self):
-        if self.rollout_mxfp8:
-            return self.mxfp8_name
-        if self.rollout_fp8:
+        if self.rollout_precision == "blockwise-fp8":
             return self.fp8_name
-        return self.bf16_name
+        if self.rollout_precision == "bf16":
+            return self.bf16_name
+        return self.model_name
+
+
+def _validate_precisions(args: ScriptArgs) -> None:
+    """Reject precision pairs without a matching rollout layout or training path."""
+    if args.rollout_precision == "bf16" and args.rollout_weight_source != "checkpoint":
+        raise ValueError("BF16 rollout loads a BF16 checkpoint; use --rollout-weight-source checkpoint.")
+    if args.rollout_precision == "mxfp8" and args.rollout_weight_source != "trainer":
+        raise ValueError("No checkpoint has the mxfp8 rollout layout; use --rollout-weight-source trainer.")
+    if args.rollout_precision == "mxfp8-mxfp4-routed-expert":
+        if args.model_name not in _MXFP4_MODEL_NAMES:
+            raise ValueError(f"{args.model_name} has no MXFP4 routed experts to serve.")
+        if args.train_precision not in _MXFP8_PRECISIONS:
+            raise ValueError("MXFP4 routed-expert rollout pairs with MXFP8 training.")
+    if args.train_precision == "mxfp8-mxfp4-routed-expert":
+        if args.rollout_precision != "mxfp8-mxfp4-routed-expert":
+            raise ValueError("MXFP4 routed-expert training requires the same --rollout-precision.")
+        if args.init_model_source != "hf":
+            raise ValueError(
+                "MXFP4 routed-expert training requires --init-model-source hf to configure the "
+                "Megatron-Bridge provider."
+            )
 
 
 def _download_dataset(args: ScriptArgs):
@@ -248,9 +293,9 @@ def _local_hf_checkpoint_path(args: ScriptArgs) -> str:
     return str(Path(args.model_local_dir) / source.name)
 
 
-def _mxfp8_schema_path(args: ScriptArgs, *, local: bool) -> str:
+def _mxfp8_expert_schema_path(args: ScriptArgs, *, local: bool) -> str:
     root = args.model_local_dir if local else args.model_dir
-    return str(Path(root) / args.mxfp8_schema_name)
+    return str(Path(root) / args.mxfp8_expert_schema_name)
 
 
 def _trainer_checkpoint_path(args: ScriptArgs) -> str:
@@ -260,12 +305,16 @@ def _trainer_checkpoint_path(args: ScriptArgs) -> str:
 
 
 def _rollout_checkpoint_path(args: ScriptArgs) -> str:
-    if args.rollout_weight_source == "trainer":
-        if not args.rollout_mxfp8:
-            raise ValueError("Trainer-owned DeepSeek-V4 rollout requires --rollout-mxfp8.")
-        return _mxfp8_schema_path(args, local=True)
-    if args.rollout_fp8 and args.hf_checkpoint is not None:
+    """Checkpoint SGLang loads, or whose layout it allocates when the trainer owns the weights."""
+    if args.rollout_precision == "mxfp8":
+        return _mxfp8_expert_schema_path(args, local=True)
+    if args.rollout_weight_source == "trainer" or args.rollout_precision == "mxfp8-mxfp4-routed-expert":
         return _local_hf_checkpoint_path(args)
+    if args.rollout_precision == "blockwise-fp8":
+        if args.model_name in _MXFP4_MODEL_NAMES:
+            return str(Path(args.model_local_dir) / args.fp8_name)
+        if args.hf_checkpoint is not None:
+            return _local_hf_checkpoint_path(args)
     return str(Path(args.model_local_dir) / args.rollout_name)
 
 
@@ -343,39 +392,16 @@ def prepare_single(args: ScriptArgs):
     _prepare_single(args)
 
 
-def _prepare_mxfp8(args: ScriptArgs):
-    """BF16 -> MXFP8 conversion for sglang rollout (Blackwell only).
-
-    head/wo_a/ffn.gate/compressor/norms/embed and the DSA indexer weights_proj
-    are all kept BF16 by SKIP_WEIGHT_SUBSTRINGS in tools/convert_hf_to_mxfp8.py.
-    """
-    U = args.create_backend()
-    if not args.rollout_mxfp8:
-        return
-    assert command_utils.GENERATION_HARDWARE[args.hardware] == "Blackwell", "rollout_mxfp8 requires Blackwell"
-    U.exec_command_gpu(
-        f"python tools/convert_hf_to_mxfp8.py "
-        f"--model-dir {args.model_dir}/{args.bf16_name} "
-        f"--save-dir {args.model_dir}/{args.mxfp8_name} "
-    )
-
-
-def _prepare_mxfp8_schema(args: ScriptArgs) -> None:
-    if args.rollout_weight_source != "trainer" or not args.rollout_mxfp8:
+def _prepare_mxfp8_expert_schema(args: ScriptArgs) -> None:
+    """Write the weightless schema that overrides the rollout's routed experts to MXFP8."""
+    if args.rollout_precision != "mxfp8":
         return
     U = args.create_backend()
     U.exec_command_cpu(
-        f"python tools/convert_hf_to_mxfp8.py --metadata-only "
+        f"python -m miles.utils.hf_rollout_schema "
         f"--model-dir {_hf_checkpoint_path(args)} "
-        f"--save-dir {_mxfp8_schema_path(args, local=False)} "
+        f"--save-dir {_mxfp8_expert_schema_path(args, local=False)} "
     )
-
-
-@app.command()
-@command_utils.dataclass_cli
-def prepare_mxfp8(args: ScriptArgs):
-    """BF16 -> MXFP8 conversion (needs prepare-single done first). One node."""
-    _prepare_mxfp8(args)
 
 
 def _prepare_spmd(args: ScriptArgs):
@@ -455,8 +481,8 @@ def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
                 str(Path(args.model_local_dir) / args.torch_dist_name),
             )
         )
-    if args.rollout_weight_source == "trainer" and args.rollout_mxfp8:
-        copies.append((_mxfp8_schema_path(args, local=False), _mxfp8_schema_path(args, local=True)))
+    if args.rollout_precision == "mxfp8":
+        copies.append((_mxfp8_expert_schema_path(args, local=False), _mxfp8_expert_schema_path(args, local=True)))
     elif args.rollout_weight_source == "checkpoint":
         copies.append(
             (
@@ -535,22 +561,34 @@ def _parallel_flags(
     return "".join(f"{flag} " for flag in flags)
 
 
+def _default_moe_runner_backend(args: ScriptArgs) -> str:
+    """MoE runner for the rollout's routed-expert format; dense GEMMs default to SGLang's choice."""
+    match args.rollout_routed_expert_format:
+        case "mxfp8":
+            return "flashinfer_trtllm_routed"
+        case "mxfp4":
+            return "flashinfer_mxfp4"
+    if args.model_name == "DeepSeek-V4-Pro-FP8":
+        return "deep_gemm"
+    return "auto"
+
+
 def _train(args: ScriptArgs):
     U = args.create_backend()
-    if args.train_mxfp8 or args.rollout_mxfp8:
+    if args.train_precision in _MXFP8_PRECISIONS or args.rollout_precision in _MXFP8_PRECISIONS:
         assert command_utils.GENERATION_HARDWARE[args.hardware] == "Blackwell", "MXFP8 requires Blackwell"
     if args.init_model_source == "hf" and args.dsv4_impl != "megatron":
         raise ValueError("Direct-HF DeepSeek-V4 training requires --dsv4-impl megatron.")
 
     rollout_checkpoint = _rollout_checkpoint_path(args)
     trainer_checkpoint = _trainer_checkpoint_path(args)
+    rollout_expert_format = args.rollout_routed_expert_format
 
     print(f"[checkpoint] trainer initialization ({args.init_model_source}): {trainer_checkpoint}")
     print(f"[checkpoint] rollout layout ({args.rollout_weight_source}): {rollout_checkpoint}")
-    args.hf_checkpoint = rollout_checkpoint
     print(
-        f"[precision] train_fp8={args.train_fp8}, rollout_fp8={args.rollout_fp8}, "
-        f"train_mxfp8={args.train_mxfp8}, rollout_mxfp8={args.rollout_mxfp8}"
+        f"[precision] train={args.train_precision}, rollout={args.rollout_precision}, "
+        f"rollout_routed_experts={rollout_expert_format}"
     )
     print(
         f"running on {args.num_nodes} nodes "
@@ -665,20 +703,8 @@ def _train(args: ScriptArgs):
     assert (
         sglang_world_size <= args.rollout_num_gpus
     ), f"a {sglang_world_size}-GPU engine cannot start on {args.rollout_num_gpus} rollout GPUs"
-    # MXFP8 rollout dense GEMM uses the cutlass backend and routed MoE uses
-    # FlashInfer's TRT-LLM kernel (mirrors the pre-rebase MXFP8 recipe).
-    if args.rollout_mxfp8:
-        sglang_fp8_gemm_backend = "flashinfer_cutlass"
-    else:
-        sglang_fp8_gemm_backend = "auto"
-    if args.rollout_mxfp8:
-        sglang_moe_runner_backend = "flashinfer_trtllm_routed"
-    elif args.model_name == "DeepSeek-V4-Pro-FP8":
-        sglang_moe_runner_backend = "deep_gemm"
-    else:
-        sglang_moe_runner_backend = "auto"
-    sglang_moe_runner_backend = args.sglang_moe_runner_backend or sglang_moe_runner_backend
-    sglang_fp8_gemm_backend = args.sglang_fp8_gemm_backend or sglang_fp8_gemm_backend
+    sglang_moe_runner_backend = args.sglang_moe_runner_backend or _default_moe_runner_backend(args)
+    sglang_fp8_gemm_backend = args.sglang_fp8_gemm_backend or "auto"
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         f"--sglang-fp8-gemm-backend {sglang_fp8_gemm_backend} "
@@ -706,7 +732,7 @@ def _train(args: ScriptArgs):
         )
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
-        "SGLANG_DSV4_FP4_EXPERTS": "0",
+        "SGLANG_DSV4_FP4_EXPERTS": "1" if rollout_expert_format == "mxfp4" else "0",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
@@ -742,10 +768,17 @@ def _train(args: ScriptArgs):
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
     )
+    if rollout_expert_format in ("mxfp8", "mxfp4"):
+        misc_args += f"--rollout-routed-expert-format {rollout_expert_format} "
+    if args.train_precision == "mxfp8-mxfp4-routed-expert":
+        misc_args += "--dsv4-mxfp4-qat "
     if args.colocate:
         misc_args += "--colocate "
     else:
         misc_args += f"--rollout-num-gpus {args.rollout_num_gpus} "
+        if rollout_expert_format == "mxfp4":
+            # NCCL cannot broadcast the float8_e8m0fnu MXFP4 scales as tensors of their own.
+            misc_args += "--update-weight-transfer-mode broadcast_packed "
 
     if args.dump_details:
         misc_args += f"--dump-details {args.debug_data_root}/{args.run_id}/dump_details "
@@ -787,12 +820,14 @@ def _train(args: ScriptArgs):
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }
 
-    if args.train_mxfp8:
+    if args.train_precision in _MXFP8_PRECISIONS:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe mxfp8 "
-    elif args.train_fp8:
+    elif args.train_precision == "blockwise-fp8":
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
+    else:
+        misc_args += "--bf16 "
 
-    if (args.train_fp8 or args.train_mxfp8) and "--te-precision-config-file" not in args.extra_args:
+    if args.train_precision != "bf16" and "--te-precision-config-file" not in args.extra_args:
         misc_args += f"--te-precision-config-file " f"{command_utils.encode_pseudo_file(_DSV4_TE_PRECISION_CONFIG)} "
 
     train_args = (
@@ -828,9 +863,10 @@ def train(args: ScriptArgs):
 def _full_train(args: ScriptArgs) -> None:
     _prepare_download(args)
 
-    needs_converted_rollout = args.rollout_weight_source == "checkpoint" and not args.rollout_fp8
-    needs_bf16 = args.init_model_source == "torch_dist" or needs_converted_rollout
-    if args.model_name in _MXFP4_MODEL_NAMES and needs_bf16:
+    checkpoint_rollout = args.rollout_weight_source == "checkpoint"
+    needs_bf16 = args.init_model_source == "torch_dist" or (checkpoint_rollout and args.rollout_precision == "bf16")
+    needs_fp8 = needs_bf16 or (checkpoint_rollout and args.rollout_precision == "blockwise-fp8")
+    if args.model_name in _MXFP4_MODEL_NAMES and needs_fp8:
         fp8_sentinel = Path(f"{args.model_dir}/{args.fp8_name}") / "model.safetensors.index.json"
         if not fp8_sentinel.exists():
             _prepare_fp8(args)
@@ -845,13 +881,6 @@ def _full_train(args: ScriptArgs) -> None:
         else:
             print(f"[full_train] Skipping FP8->BF16 cast: {bf16_sentinel} already exists.")
 
-    if args.rollout_weight_source == "checkpoint" and args.rollout_mxfp8:
-        mxfp8_sentinel = Path(f"{args.model_dir}/{args.mxfp8_name}") / "model.safetensors.index.json"
-        if not mxfp8_sentinel.exists():
-            _prepare_mxfp8(args)
-        else:
-            print(f"[full_train] Skipping BF16->MXFP8 conversion: {mxfp8_sentinel} already exists.")
-
     if args.init_model_source == "torch_dist":
         torch_dist_dir = Path(f"{args.model_dir}/{args.torch_dist_name}")
         torch_dist_sentinel = torch_dist_dir / "latest_checkpointed_iteration.txt"
@@ -860,7 +889,7 @@ def _full_train(args: ScriptArgs) -> None:
         else:
             print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")
 
-    _prepare_mxfp8_schema(args)
+    _prepare_mxfp8_expert_schema(args)
 
     _train(args)
 
