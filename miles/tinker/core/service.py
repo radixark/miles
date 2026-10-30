@@ -59,6 +59,8 @@ class TinkerService:
         self._background_error: BaseException | None = None
         # why each model closed, so later requests get the reason instead of "unknown model"
         self._close_reasons: dict[str, str] = {}
+        # session_id -> (tenant, lease_expired) of ended sessions, so a retried SDK finish is answered
+        self._ended_sessions: dict[str, tuple[str, bool]] = {}
 
     async def run(self) -> None:
         sweep_task = asyncio.create_task(self._run_lease_sweeper())
@@ -539,18 +541,28 @@ class TinkerService:
                 for session_id, session in self.sessions.items()
                 if now - session.last_heartbeat >= self.config.lease_timeout_s
             }
-            await self._end_sessions(expired_sessions, "lease expired")
+            await self._end_sessions(expired_sessions, "lease expired", lease_expired=True)
 
-    async def finish_session(self, tenant: str, session_id: str, reason: str) -> None:
-        """SDK close(): reclaim the session now instead of at lease expiry."""
+    async def finish_session(self, tenant: str, session_id: str, reason: str, detail: str | None) -> bool:
+        """SDK close(): reclaim the session now instead of at lease expiry. False if its lease already expired.
+
+        The first finish wins; a repeat (an SDK retry) is accepted without effect.
+        """
         async with self._trainer_lock:
+            ended = self._ended_sessions.get(session_id)
+            if ended is not None and ended[0] == tenant:
+                return not ended[1]
             self._session_for(tenant, session_id)
-            await self._end_sessions({session_id}, f"session finished ({reason})")
+            logger.info(f"session {session_id} finished ({reason}): {detail}")
+            await self._end_sessions({session_id}, f"session finished ({reason})", lease_expired=False)
+            return True
 
-    async def _end_sessions(self, session_ids: set[str], error: str) -> None:
+    async def _end_sessions(self, session_ids: set[str], error: str, *, lease_expired: bool) -> None:
         """Drop sessions with their sampling sessions and models; requires the trainer lock."""
         for session_id in session_ids:
-            del self.sessions[session_id]
+            self._ended_sessions[session_id] = (self.sessions.pop(session_id).tenant, lease_expired)
+        while len(self._ended_sessions) > 4 * self.config.n_slots:
+            self._ended_sessions.pop(next(iter(self._ended_sessions)))
         for sampling_session_id, record in list(self.sampling_sessions.items()):
             if record.session_id in session_ids:
                 del self.sampling_sessions[sampling_session_id]

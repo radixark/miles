@@ -224,3 +224,19 @@ async def test_finishing_another_tenants_session_is_refused(client):
 
     assert finished.status_code == 400
     assert session_id in client.service.sessions
+
+
+async def test_a_retried_finish_is_accepted_and_a_finish_after_lease_expiry_is_refused(client):
+    """SDK close() retries on timeouts, so a repeat finish must not fail; a lost lease must not pass silently."""
+    finish_body = {"reason": {"type": "success"}, "detail": None}
+    finished = (await _model_body(client))["session_id"]
+    expired = (await _model_body(client))["session_id"]
+    await client.post(f"/api/v1/sessions/{finished}/finish", json=finish_body, headers=_headers())
+    client.service.sessions[expired].last_heartbeat -= client.service.config.lease_timeout_s + 1
+    await client.service._expire_sessions()
+
+    retried = await client.post(f"/api/v1/sessions/{finished}/finish", json=finish_body, headers=_headers())
+    late = await client.post(f"/api/v1/sessions/{expired}/finish", json=finish_body, headers=_headers())
+
+    assert retried.status_code == 204
+    assert late.status_code == 410
