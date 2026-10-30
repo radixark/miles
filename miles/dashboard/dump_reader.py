@@ -421,7 +421,7 @@ class DumpReader:
         self._trajectory_cache: OrderedDict[tuple[int, bool], dict[SampleKey, dict]] = OrderedDict()
         self._tokenizer = None
         self._tokenizer_loaded = False
-        self._columns_lock = threading.Lock()
+        self._columns_locks: dict[str, threading.Lock] = {}
 
     def rollout_ids(self) -> RolloutIds:
         ids = RolloutIds(train=[], eval=[])
@@ -678,8 +678,8 @@ class DumpReader:
             "mtime": source.stat().st_mtime,
             "columns": list(self.ROLLOUT_COLUMNS),
         }
-        # concurrent request handlers: build each step's mirror once
-        with self._columns_lock:
+        # concurrent request handlers: build each step's mirror once, without holding up other steps
+        with self._columns_locks.setdefault(stem, threading.Lock()):
             if not path.exists() or not stamp_path.exists() or json.loads(stamp_path.read_text()) != stamp:
                 pack = self._torch_load(source)
                 save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)

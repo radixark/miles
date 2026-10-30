@@ -82,6 +82,35 @@ def test_a_rewritten_rollout_rebuilds_its_mirror(dumped):
         DumpReader(dumped).tokens(0, 0, start=0, end=1)
 
 
+def test_building_one_steps_mirror_does_not_hold_up_another_step(tmp_path, monkeypatch):
+    """A slow first read of a new step must not block token views of a step that is already built."""
+    dump_dummy_run(tmp_path, steps=2)
+    reader = DumpReader(tmp_path)
+    new_index, ready_index = reader.joined(0).samples[0].index, reader.joined(1).samples[0].index
+    reader.tokens(1, ready_index, start=0, end=1)
+    building, release = threading.Event(), threading.Event()
+    real_load = reader._torch_load
+
+    def held_load(path, **kwargs):
+        if path.name == "0.pt" and "rollout_data" in str(path):
+            building.set()
+            release.wait(timeout=10)
+        return real_load(path, **kwargs)
+
+    monkeypatch.setattr(reader, "_torch_load", held_load)
+    builder = threading.Thread(target=lambda: reader.tokens(0, new_index, start=0, end=1))
+    builder.start()
+    assert building.wait(timeout=10)
+    reader_of_ready_step = threading.Thread(target=lambda: reader.tokens(1, ready_index, start=0, end=1))
+    reader_of_ready_step.start()
+    reader_of_ready_step.join(timeout=5)
+    finished_while_building = not reader_of_ready_step.is_alive()
+    release.set()
+    builder.join(timeout=10)
+
+    assert finished_while_building, "a ready step waited for another step's mirror build"
+
+
 def test_concurrent_first_reads_build_the_mirror_once(dumped, monkeypatch):
     """Two handlers reading a new step at once must not both rebuild its mirror through the same temp file."""
     reader = DumpReader(dumped)
