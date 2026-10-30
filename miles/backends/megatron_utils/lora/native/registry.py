@@ -166,7 +166,7 @@ def resolve_adapter_targets(
     ``hf_modules`` lists the HF model's module names; when it is empty (custom HF
     implementations) the target selectors themselves are checked.
     """
-    assert lora_type == "lora", "native LoRA does not implement --lora-type canonical_lora; use bridge mode"
+    assert lora_type in ("lora", "canonical_lora"), f"native LoRA does not implement --lora-type {lora_type}"
     _model_type, spec = resolve_config_spec(hf_config)
     assert (
         spec.experts is None or experts_shared_outer_loras

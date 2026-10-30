@@ -115,15 +115,20 @@ class TestResolveAdapterTargets:
         with pytest.raises(AssertionError, match=r"layers\.1\.mlp\.experts\.3\.gate_proj"):
             resolve_adapter_targets({"model_type": "qwen3"}, ["gate_proj", "up_proj"], hf_modules=modules)
 
-    def test_canonical_lora_is_bridge_only(self):
-        with pytest.raises(AssertionError, match="canonical_lora"):
-            _resolve_adapter_targets(
+    def test_canonical_lora_serves_the_targets_lora_does(self):
+        """Native has always trained one A per HF projection, so canonical changes no non-GDN adapter."""
+        targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        served = {
+            lora_type: _resolve_adapter_targets(
                 {"model_type": "qwen3"},
-                ["q_proj"],
+                targets,
                 hf_modules=_qwen3_modules(),
-                lora_type="canonical_lora",
+                lora_type=lora_type,
                 experts_shared_outer_loras=False,
             )
+            for lora_type in ("lora", "canonical_lora")
+        }
+        assert served["lora"] == served["canonical_lora"] == targets
 
     def test_unregistered_model_type_fails_closed(self):
         with pytest.raises(AssertionError, match="no spec registered"):
@@ -276,3 +281,4 @@ def test_inkling_head_export_rows_follow_sglangs_served_vocab(tmp_path):
     assert _read_unpadded_vocab_size(str(tmp_path)) is None
     with pytest.raises(FileNotFoundError):
         _read_unpadded_vocab_size(str(tmp_path / "missing"))
+
