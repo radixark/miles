@@ -29,7 +29,12 @@ def dump_dir(tmp_path):
             ts=102.0,
             step_key="rollout/step",
             step=1,
-            metrics={"rollout/rewards_mean": 0.6, "perf/actor_train_mfu": 0.3, "perf/mfu_peak_tflops": 989.0},
+            metrics={
+                "rollout/rewards_mean": 0.6,
+                "rollout/truncated_ratio": 0.25,
+                "perf/actor_train_mfu": 0.3,
+                "perf/mfu_peak_tflops": 989.0,
+            },
         )
     )
     writer.append(MetricsRecord(ts=103.0, step_key="train/step", step=7, metrics={"train/loss": 1.5}))
@@ -104,8 +109,8 @@ def test_meta_reports_latest_data_buffer_length(dump_dir):
 def test_advisory_endpoint(client):
     resp = client.get("/api/advisory")
     assert resp.status_code == 200
-    # no engine series in the fixture, but the reader-side rules see the
-    # dummy dump's newest rollout, where a quarter of the samples truncate
+    # no engine series in the fixture, but the rollout rules see the newest
+    # step's logged truncated_ratio: a quarter of the samples truncate
     [advisory] = resp.json()["advisories"]
     assert advisory["level"] == "warning"
     assert "truncated" in advisory["message"]

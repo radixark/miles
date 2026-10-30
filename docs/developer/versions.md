@@ -163,7 +163,7 @@ half a day. When you need that to stop moving underneath you, pin `ci-image-tag:
 timestamped tag; the scheduled prune keeps every timestamped tag for at least 14 days.
 
 **The ROCm images move daily too.** The sgl-project/sglang nightlies rebuild the undated
-`rocm/sgl-dev:miles-rocm*-mi35x` and `miles-rocm10-mi30x` tags from Miles `main` every day and publish a dated
+`rocm/sgl-dev:miles-rocm10-mi35x` and `miles-rocm10-mi30x` tags from Miles `main` every day and publish a dated
 `-YYYYMMDD` sibling; an out-of-band rebuild is a `workflow_dispatch` on the variant you want.
 
 ## After a bump, the usual suspects

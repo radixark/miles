@@ -309,9 +309,9 @@ def compute_log_probs(
 class _VocabParallelCrossEntropy(torch.autograd.Function):
     """Cross entropy over logits split along the vocabulary over ``group``, in plain torch.
 
-    Megatron's vocab-parallel cross entropy, bit for bit, so every backend and install runs one
+    Megatron's unfused vocab-parallel cross entropy, bit for bit, so every backend and install runs one
     implementation. Like it, the forward works in place on fp32 ``logits`` (callers pass a copy).
-    The gradient comes back in the input's dtype.
+    The gradient comes back in the input's dtype; Megatron's fused version always rounds it to bf16.
     """
 
     @staticmethod

@@ -15,8 +15,7 @@ workflows and published to Docker Hub under
 
 | Image | ROCm | GPUs | Notes |
 |---|---|---|---|
-| `rocm/sgl-dev:miles-rocm10-mi35x` | 10 | MI350X / MI355X | Python 3.12 — the image the nightly tests run on |
-| `rocm/sgl-dev:miles-rocm724-mi35x` | 7.2.4 | MI350X / MI355X | Python 3.12 |
+| `rocm/sgl-dev:miles-rocm10-mi35x` | 10 | MI350X / MI355X | Python 3.12 — the image the nightly and the Miles ROCm CI run on |
 | `rocm/sgl-dev:miles-rocm10-mi30x` | 10 | MI300X / MI325X | Python 3.12 — the image the MI300X nightly tests run on |
 
 Each undated tag moves with every build; append `-YYYYMMDD` (e.g.
