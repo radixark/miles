@@ -36,7 +36,7 @@ index b36dac537..587a8c6f2 100644
  
  
 diff --git a/torchtitan/models/common/moe.py b/torchtitan/models/common/moe.py
-index d61720380..edc6b7fc9 100644
+index d61720380..40b8e9cef 100644
 --- a/torchtitan/models/common/moe.py
 +++ b/torchtitan/models/common/moe.py
 @@ -19,6 +19,7 @@ from torchtitan.distributed.utils import get_spmd_backend
@@ -56,7 +56,7 @@ index d61720380..edc6b7fc9 100644
          if (
              get_spmd_backend() == "spmd_types"
              and spmd.is_type_checking()
-@@ -117,9 +118,53 @@ class GroupedExperts(Module):
+@@ -117,9 +118,58 @@ class GroupedExperts(Module):
          op here -- rather than behind a tensor-subclass ``__torch_function__`` --
          means it is captured by FX tracers such as graph_trainer's make_fx path.
          """
@@ -90,20 +90,25 @@ index d61720380..edc6b7fc9 100644
 +        grad_a = torch._grouped_mm(grad_out, b_t.transpose(-2, -1), offs=offs)
 +
 +        num_groups, num_rows = offs.shape[0], a.shape[0]
-+        sizes = torch.diff(offs, prepend=offs.new_zeros(1)).long()
++        rows = torch.arange(num_rows, device=a.device)
++        # Rows past offs[-1] (a dispatcher's padding) belong to no expert: they form one more group, laid out
++        # like the others and dropped from the result. Indexing past the last group instead would be clamped,
++        # not raised, and add them to the last expert's gradient.
++        ends = torch.cat([offs.long(), offs.new_full((1,), num_rows).long()])
++        sizes = torch.diff(ends, prepend=ends.new_zeros(1))
 +        padded = (sizes + _TPU_GROUP_ROWS - 1) // _TPU_GROUP_ROWS * _TPU_GROUP_ROWS
-+        capacity = -(-(num_rows + num_groups * (_TPU_GROUP_ROWS - 1)) // _TPU_GROUP_ROWS) * _TPU_GROUP_ROWS
-+        # Row r is in group g iff offs[g-1] <= r < offs[g]: g is the number of offsets at or below r. A
++        capacity = -(-(num_rows + (num_groups + 1) * (_TPU_GROUP_ROWS - 1)) // _TPU_GROUP_ROWS) * _TPU_GROUP_ROWS
++        # Row r is in group g iff ends[g-1] <= r < ends[g]: g is the number of group ends at or below r. A
 +        # repeat_interleave would lower through an integer cumsum, which torch_tpu cannot lower under
 +        # the trainer's --xla_tpu_use_associative_scan_emitter=false (see integer_cumsum).
-+        group = (torch.arange(num_rows, device=a.device)[:, None] >= offs[None, :]).sum(1)
-+        dest = (integer_cumsum(padded) - padded)[group] + torch.arange(num_rows, device=a.device) - (offs.long() - sizes)[group]
++        group = (rows[:, None] >= ends[None, :num_groups]).sum(1)
++        dest = (integer_cumsum(padded) - padded)[group] + rows - (ends - sizes)[group]
 +        a_padded = a.new_zeros(capacity, a.shape[1]).index_copy(0, dest, a)
 +        grad_padded = grad_out.new_zeros(capacity, grad_out.shape[1]).index_copy(0, dest, grad_out)
-+        # Rows past the padded groups form a last group whose result is dropped.
++        # Rows past the padded groups form a last group whose result is dropped too.
 +        group_sizes = torch.cat([padded, (capacity - padded.sum()).reshape(1)]).to(torch.int32)
 +        grad_b = torch.tpu.ops.ragged_dot_weight_grad(a_padded, grad_padded, group_sizes)[:num_groups]
-+        grad_b = torch.where((sizes > 0)[:, None, None], grad_b, 0).to(b_t.dtype)
++        grad_b = torch.where((sizes[:num_groups] > 0)[:, None, None], grad_b, 0).to(b_t.dtype)
 +        return grad_a, grad_b, None
 +
 +
@@ -142,7 +147,7 @@ index 031f6423c..08f656413 100644
          # already created by repeat_interleave above.
          permuted_indices = (
 diff --git a/torchtitan/tools/utils.py b/torchtitan/tools/utils.py
-index b5303b020..c9e11953b 100644
+index b5303b020..47f55e1ca 100644
 --- a/torchtitan/tools/utils.py
 +++ b/torchtitan/tools/utils.py
 @@ -51,9 +51,140 @@ def has_rocm_capability(major: int, minor: int) -> bool:

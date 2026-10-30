@@ -42,7 +42,7 @@ def fixed_shape_loss_enabled(args: Namespace) -> bool:
     padded row a whole packed sample. Features this module does not implement keep the per-sample path.
     """
     return (
-        platforms.IS_TPU
+        not platforms.current_platform.dynamic_shapes
         and args.train_backend == "torchtitan"
         and args.qkv_format == "thd"
         and args.context_parallel_size == 1
