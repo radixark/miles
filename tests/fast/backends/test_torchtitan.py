@@ -27,7 +27,6 @@ def _args(**overrides) -> Namespace:
         rollout_max_context_len=8192,
         rollout_max_response_len=4096,
         ref_update_interval=None,
-        save_debug_train_data=None,
         optimizer_cpu_offload=False,
         stream_optimizer_state_to_disk=False,
         stream_optimizer_state_moment_dtype="fp32",
@@ -74,8 +73,6 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
     with pytest.raises(ValueError, match="ref-update-interval"):
         validate_torchtitan_args(_args(ref_update_interval=4))
-    with pytest.raises(ValueError, match="save-debug-train-data"):
-        validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
 
 
 def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
