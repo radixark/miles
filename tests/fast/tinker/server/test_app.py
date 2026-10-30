@@ -224,3 +224,41 @@ async def test_finishing_another_tenants_session_is_refused(client):
 
     assert finished.status_code == 400
     assert session_id in client.service.sessions
+
+
+async def test_a_retried_finish_is_accepted_and_a_finish_after_lease_expiry_is_refused(client):
+    """SDK close() retries on timeouts, so a repeat finish must not fail; a lost lease must not pass silently."""
+    finish_body = {"reason": {"type": "success"}, "detail": None}
+    finished = (await _model_body(client))["session_id"]
+    expired = (await _model_body(client))["session_id"]
+    await client.post(f"/api/v1/sessions/{finished}/finish", json=finish_body, headers=_headers())
+    client.service.sessions[expired].last_heartbeat -= client.service.config.lease_timeout_s + 1
+    await client.service._expire_sessions()
+
+    retried = await client.post(f"/api/v1/sessions/{finished}/finish", json=finish_body, headers=_headers())
+    foreign = await client.post(f"/api/v1/sessions/{finished}/finish", json=finish_body, headers=_headers("tenant-b"))
+    late = await client.post(f"/api/v1/sessions/{expired}/finish", json=finish_body, headers=_headers())
+
+    assert retried.status_code == 204
+    assert foreign.status_code == 400
+    assert late.status_code == 410
+
+
+async def test_a_finished_session_is_remembered_for_one_lease(client):
+    """A retried finish within a lease is accepted; once the record ages out the session is unknown."""
+    finish_body = {"reason": {"type": "success"}, "detail": None}
+    aged = (await _model_body(client))["session_id"]
+    fresh = (await _model_body(client))["session_id"]
+    for session_id in (aged, fresh):
+        await client.post(f"/api/v1/sessions/{session_id}/finish", json=finish_body, headers=_headers())
+    service = client.service
+    service._ended_sessions[aged] = service._ended_sessions[aged]._replace(
+        ended_at=service._ended_sessions[aged].ended_at - service.config.lease_timeout_s
+    )
+    await service._expire_sessions()
+
+    aged_retry = await client.post(f"/api/v1/sessions/{aged}/finish", json=finish_body, headers=_headers())
+    fresh_retry = await client.post(f"/api/v1/sessions/{fresh}/finish", json=finish_body, headers=_headers())
+
+    assert aged_retry.status_code == 400
+    assert fresh_retry.status_code == 204

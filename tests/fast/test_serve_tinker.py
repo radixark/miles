@@ -71,6 +71,15 @@ class TestServe:
         assert http_utils._http_clients == {}
         assert http_utils._client_concurrency == 0
 
+    async def test_a_save_flag_is_rejected_before_startup(self, tinker_startup: SimpleNamespace) -> None:
+        """serve() checks the final arguments, since --custom-config-path merges after preprocessing."""
+        tinker_startup.args.save = "/ckpt"
+
+        with pytest.raises(AssertionError, match="--save"):
+            await with_disposer(serve_tinker.serve, tinker_startup.args)
+
+        assert tinker_startup.orchestration_calls == []
+
     async def test_different_resolved_trainer_base_is_rejected_before_startup(
         self, tinker_startup: SimpleNamespace
     ) -> None:

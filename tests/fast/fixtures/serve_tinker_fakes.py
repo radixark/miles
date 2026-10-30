@@ -33,6 +33,8 @@ async def tinker_startup(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Simpl
         load=None,
         hf_checkpoint="base-model",
         tinker_checkpoint_root="checkpoints",
+        save=None,
+        save_hf=None,
         max_tokens_per_gpu=None,
         inference_runtime_mut_state=InferenceRuntimeMutState(),
         eval_uses_snapshots=False,

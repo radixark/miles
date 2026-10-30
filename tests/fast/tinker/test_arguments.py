@@ -2,7 +2,7 @@ from argparse import Namespace
 
 import pytest
 
-from miles.tinker.arguments import configure_tinker_args
+from miles.tinker.arguments import configure_tinker_args, validate_tinker_args
 
 
 def _tinker_args(**overrides) -> Namespace:
@@ -13,7 +13,6 @@ def _tinker_args(**overrides) -> Namespace:
         use_dynamic_global_batch_size=False,
         delay_split_train_data_by_dp=False,
         save=None,
-        save_interval=None,
         save_hf=None,
         tinker_checkpoint_root="/checkpoints/tinker",
     )
@@ -38,13 +37,13 @@ class TestTinkerBatchOwnership:
 class TestTinkerCheckpointOwnership:
     @pytest.mark.parametrize(
         "field,value,flag",
-        [("save", "/ckpt", "--save"), ("save_interval", 10, "--save-interval"), ("save_hf", "/hf", "--save-hf")],
+        [("save", "/ckpt", "--save"), ("save_hf", "/hf", "--save-hf")],
     )
     def test_trainer_driven_saves_are_rejected_instead_of_ignored(self, field: str, value, flag: str) -> None:
-        """The gateway never runs the RL save loop, so a trainer save flag would silently write nothing."""
+        """Trainer save flags are inert under the gateway, so accepting them would mislead."""
         with pytest.raises(AssertionError, match=flag):
-            configure_tinker_args(_tinker_args(**{field: value}))
+            validate_tinker_args(_tinker_args(**{field: value}))
 
     def test_checkpoint_root_is_required(self) -> None:
         with pytest.raises(AssertionError, match="--tinker-checkpoint-root"):
-            configure_tinker_args(_tinker_args(tinker_checkpoint_root=None))
+            validate_tinker_args(_tinker_args(tinker_checkpoint_root=None))
