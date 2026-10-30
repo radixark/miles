@@ -108,6 +108,9 @@ def validate_torchtitan_args(args) -> None:
             f"{' or '.join(sorted(modes))} to disaggregated engines; got "
             f"{args.update_weight_transfer_mode!r}{' with --colocate' if args.colocate else ''}"
         )
+    # tpu-sync links torch_tpu, so a platform must list it; None (every mode) does not cover it
+    if args.update_weight_transfer_mode == "tpu-sync" and (modes is None or "tpu-sync" not in modes):
+        raise ValueError(f"--update-weight-transfer-mode tpu-sync needs a TPU trainer, not {platform.device_type}")
     if args.titan_fsdp_gather_once and args.pipeline_model_parallel_size > 1:
         raise ValueError("--titan-fsdp-gather-once does not apply to the pipeline schedule; drop it under PP")
     if args.ref_update_interval is not None:

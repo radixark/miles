@@ -168,18 +168,10 @@ class WeightUpdater:
                 self._hf_weight_iterator.placement.gather_pp
             ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
         with timer("update_weights_implementation"):
-            pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
-            for bucket in self._hf_weight_iterator.iter_hf_weights(
-                self.weights_getter(),
-                include_base=sync_base,
-                adapters=adapters,
-                materialize=protocol.is_sender,
-            ):
-                if protocol.is_sender:
-                    if driver and checksums is not None:
-                        record_lora_checksums(bucket, checksums)
-                    protocol.send_bucket(bucket)
-                    pbar.update(1)
+            if protocol.streams_buckets:
+                self._stream_buckets(sync_base=sync_base, adapters=adapters, checksums=checksums, driver=driver)
+            else:
+                protocol.transfer(self._hf_weight_iterator)
             protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
 
@@ -194,6 +186,21 @@ class WeightUpdater:
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
         return True
+
+    def _stream_buckets(self, *, sync_base: bool, adapters, checksums, driver: bool) -> None:
+        protocol = self.protocol
+        pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
+        for bucket in self._hf_weight_iterator.iter_hf_weights(
+            self.weights_getter(),
+            include_base=sync_base,
+            adapters=adapters,
+            materialize=protocol.is_sender,
+        ):
+            if protocol.is_sender:
+                if driver and checksums is not None:
+                    record_lora_checksums(bucket, checksums)
+                protocol.send_bucket(bucket)
+                pbar.update(1)
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)

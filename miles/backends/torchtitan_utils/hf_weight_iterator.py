@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 import safetensors
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor, Shard
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param
 from miles.backends.torchtitan_utils import lora_names
@@ -54,11 +55,54 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
             return groups
         return [replace(group, optional=True) for group in groups]
 
+    def iter_local_weights(self) -> Iterator[tuple[str, torch.Tensor, tuple[int, int] | None]]:
+        """Every HF weight as this rank holds it, for transfers that reshard themselves (tpu-sync).
+
+        Yields ``(name, tensor, block)``: an even dim-0 FSDP shard stays local with ``block = (count, index)``;
+        anything else is gathered whole, with ``block = None``, as every rank holds the same tensor.
+        """
+        trainer = self.model
+        if trainer.parallel_dims.get_optional_mesh("pp") is not None:
+            raise NotImplementedError("local weight export does not support pipeline parallelism")
+        state = {
+            k: v
+            for part in trainer.model_parts
+            for k, v in part.state_dict().items()
+            if not lora_names.is_adapter_key(k)
+        }
+        if any(_GROUPED_EXPERTS in k for k in state):
+            raise NotImplementedError("local weight export does not support grouped MoE experts")
+        for name, tensor in sorted(_state_dict_adapter(trainer).to_hf(state).items()):
+            block = fsdp_dim0_block(tensor)
+            local = tensor.to_local() if block is not None else gather_full_param(tensor)
+            # a registered buffer must own its storage, so views are copied
+            local = self._to_engine_dtype(name, local).contiguous()
+            if local._base is not None or local.storage_offset() != 0:
+                local = local.clone()
+            yield name, local, block
+
     def _iter_hf_adapter_units(self, adapter, *, materialize):
         assert adapter is None, "the torchtitan backend trains a single LoRA adapter"
         for name, tensor in hf_adapter_weights(self.model, complete_across_pp=self.placement.gather_pp):
             if materialize:
                 yield [(name, tensor)]
+
+
+def fsdp_dim0_block(param: torch.Tensor) -> tuple[int, int] | None:
+    """``(count, index)`` if this rank holds block ``index`` of ``count`` equal dim-0 blocks of ``param``, else None.
+
+    FSDP on a 1-D mesh shards dim 0 this way when it divides evenly. 1-D tensors, uneven cuts, 2-D meshes and
+    ``_StridedShard`` (a ``Shard`` subclass that permutes the blocks) are not plain blocks.
+    """
+    if not isinstance(param, DTensor) or param.ndim < 2 or param.device_mesh.ndim != 1:
+        return None
+    (placement,) = param.placements
+    if type(placement) is not Shard or placement.dim != 0:
+        return None
+    count = param.device_mesh.size(0)
+    if count <= 1 or param.shape[0] % count or param.to_local().shape[0] != param.shape[0] // count:
+        return None
+    return count, param.device_mesh.get_local_rank()
 
 
 def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[str, torch.Tensor]]:
