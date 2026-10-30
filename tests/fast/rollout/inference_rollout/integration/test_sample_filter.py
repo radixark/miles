@@ -9,12 +9,14 @@ from tests.fast.rollout.inference_rollout.integration.utils import (
 
 from miles.utils.function_registry import function_registry
 
-# Data with only 2 reward=1 samples out of 4.
-# This ensures all 4 samples must be generated to collect 2 valid ones.
+# The first over-sampling batch (rows 0-3) holds only one reward=1 group, so it cannot fill
+# --rollout-batch-size 2. The next batch is submitted only after all three reward=0 groups
+# finish and are filtered out, so all_samples_process sees them whatever the completion order.
 _FILTER_TEST_DATA_ROWS = [
     {"input": "What is 1+7?", "label": "8"},  # reward=1
     {"input": "What is 1+8?", "label": "wrong"},  # reward=0
     {"input": "What is 1+9?", "label": "wrong"},  # reward=0
+    {"input": "What is 1+5?", "label": "wrong"},  # reward=0
     {"input": "What is 1+6?", "label": "7"},  # reward=1
 ]
 
@@ -29,6 +31,7 @@ _FILTER_TEST_DATA_ROWS = [
                     "2",
                     "--over-sampling-batch-size",
                     "4",
+                    "--no-rollout-shuffle",
                     "--dynamic-sampling-filter-path",
                     "test:filter_by_reward",
                     "--rollout-sample-filter-path",

@@ -25,9 +25,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.fast.fixtures.session_fixtures import make_session_server_config
-from tests.fast.rollout.session.test_samples import _make_record
+from tests.fast.rollout.session.test_samples import _make_record, _routed_experts, _store_record
+from tests.fast.utils.output_store.test_plan import fake_store_refs
 
-from miles.rollout.session.errors import TokenizationError
+from miles.rollout.session.errors import OutputStoreContractError, TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
@@ -35,6 +36,7 @@ from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.rollout.session.v2.session_state import SessionRegistryV2
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.function_registry import function_registry
+from miles.utils.output_store.plan import OUTPUT_STORE_REF_KEY
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
@@ -439,6 +441,47 @@ async def test_addition_branched_tree_materializes_each_leaf():
         assert sample_b.tokens == leaf_b.token_ids
         assert np.array_equal(sample_a.rollout_routed_experts, np.concatenate([shared, leaf_a_rows]))
         assert np.array_equal(sample_b.rollout_routed_experts, np.concatenate([shared, leaf_b_rows]))
+
+
+async def test_store_branched_tree_materializes_each_leaf(monkeypatch):
+    """Each leaf's plan takes the root's rows plus its own; both own the shared root object."""
+    fake_store_refs(monkeypatch)
+    shared = _expected_r3(0, 4)
+    leaf_rows = {"a": _expected_r3(1000, 2), "b": _expected_r3(2000, 2)}
+    root_record, root_arrays = _store_record(
+        "root", [1, 2, 3], [10, 11], routed_experts=shared, routed_experts_start_len=0
+    )
+    objects = {"root": root_arrays}
+
+    with function_registry.temporary("test_hooks.keep_all", _keep_all_picker):
+        hooked = _build_core_with_hooks(session_sample_picker_path="test_hooks.keep_all", use_addition_r3=True)
+        sid, state = await _fresh_state(hooked)
+        root = _fabricate_node(state, None, root_record, [1, 2, 3, 10, 11], completion_span=(3, 5))
+        leaves = []
+        for name, env, out in (("a", 20, 30), ("b", 21, 31)):
+            record, objects[name] = _store_record(
+                name, [1, 2, 3, 10, 11, env], [out], routed_experts=leaf_rows[name], routed_experts_start_len=4
+            )
+            leaves.append(_fabricate_node(state, root, record, [1, 2, 3, 10, 11, env, out], completion_span=(6, 7)))
+
+        status, payload = await _collect_via_op(hooked, sid)
+        assert status == 200, payload
+        reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+
+    for sample, leaf, name in zip(reply.samples, leaves, ("a", "b"), strict=True):
+        assert sample.tokens == leaf.token_ids
+        assert np.array_equal(_routed_experts(sample, objects), np.concatenate([shared, leaf_rows[name]]))
+        assert [ref.key for ref in sample.rollout_store_plan.owned_refs] == ["root", name]
+
+
+async def test_missing_store_ref_is_an_output_store_contract_error(core, monkeypatch):
+    """A response that asked for the output store came back without a ref, as when the router drops the opt-in."""
+    fake_store_refs(monkeypatch)
+    record, _ = _store_record("turn1", [1, 2, 3], [10, 11])
+    del record.response["choices"][0]["meta_info"][OUTPUT_STORE_REF_KEY]
+    sid = await _make_session(core, [record], [1, 2, 3, 10, 11])
+    with pytest.raises(OutputStoreContractError, match="output store ref has none"):
+        await _collect_via_op(core, sid)
 
 
 async def test_addition_gap_returns_422(addition_core):

@@ -249,3 +249,57 @@ Mooncake stores one replica by default. Request additional replicas with:
 ```
 
 Additional replicas require additional Store capacity.
+
+## Replay data through the output store
+
+With `--use-output-store`, SGLang writes the replay arrays of each training response to
+this Mooncake and returns a ref instead: routed experts (`--use-rollout-routing-replay`),
+indexer top-k (`--use-rollout-indexer-replay`) and the sampling mask (a positive
+`--rollout-top-k`). The trainer reads them back and receives the same columns as without
+the option. Miles deletes the objects once nothing can read them, at the latest after the
+rollout's `train` step.
+
+```bash
+--object-store-backend mooncake \
+--use-output-store \
+--output-store-local-buffer-size 16gb
+```
+
+Requirements:
+
+- SGLang with the output store, including
+  [sgl-project/sglang#46288](https://github.com/sgl-project/sglang/pull/46288), on every
+  engine, trainer and the session server. Miles configures each engine's store; do not
+  set `output_store_backend` through `--sglang-*` flags or `sglang_overrides`.
+- `--use-miles-router`, or an `sgl-router` from `radixark/sgl-router-for-miles` that
+  forwards `return_outputs_via_store`; a router that drops it fails the rollout.
+- An engine buffer (`--output-store-local-buffer-size`, default 16gb) that holds one
+  response's arrays. Indexer top-k dominates, about 0.5 MB per token on DeepSeek-V3.2, so
+  16gb fits a 32k-token response. A buffer too small for the longest sequence that
+  `--rollout-max-context-len`, or else `--rollout-max-response-len`, allows is rejected at
+  launch. Under RDMA, each engine pins its whole buffer in
+  host memory when it starts.
+- For RDMA engines, `device_name` in `--mooncake-store-init-kwargs`: SGLang reads no
+  `MOONCAKE_*` variable.
+- Store capacity for max staleness + 1 batches of these arrays, times
+  `--mooncake-replica-num`, next to Miles' own rollout data. Mooncake never evicts them,
+  so puts fail once only they are left.
+
+Known defect: an object stored by a request attempt that was then retried, or whose delete
+failed (Miles logs it), leaks and stays until the run ends. When the run ends, Miles removes
+every object left under the run's key prefix and logs how many keys it removed, or that the
+removal failed. Under `--ci-test`, a run that trained every rollout it generated fails if the
+removal failed or found any object, unless it is fully async or uses `--partial-rollout`: those
+end with groups still buffered. A fully-async run ends with requests in flight, and an engine
+can still store an object for one after that. A periodic sweep during the run is planned (TODO).
+
+Rejected at launch: no replay array enabled, `--cluster-backend kubernetes`, PD
+disaggregation, external rollout engines, the legacy rollout, a custom convert function,
+a custom `DataBuffer` (`--custom-async-data-buffer-path`), multi-policy training, split
+deployments, `--debug-rollout-only`, `--multimodal-keys`, and saving (including
+`--dump-details`), loading or injecting debug rollout data.
+
+Stored objects may not survive a restart, so on resume Miles does not replay untrained
+rollout batches that carry refs, or inline replay arrays saved without the option. It
+drops such a batch without returning its prompts to the data source, and hands such a
+fully-async buffer group to `--async-unused-samples-handler`.

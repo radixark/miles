@@ -27,6 +27,7 @@ CASE = CaseConfig(
     use_int4_rollout=False,
     use_bridge=False,
     use_r3=True,
+    use_output_store=True,
     num_gpus_per_node=4,
     cp_size=2,
     pp_size=1,

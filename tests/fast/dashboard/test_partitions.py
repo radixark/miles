@@ -6,9 +6,20 @@ import pytest
 from fastapi.testclient import TestClient
 from tests.fast.dashboard.dummy_telemetry import dump_dummy_telemetry
 
+import miles.dashboard.store as store_module
 from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.server import make_app
-from miles.dashboard.store import GpuSample, Meta, MetricStore, PhaseEvent, Role, Stream, _hour_key, _PartitionReader
+from miles.dashboard.store import (
+    GpuProcessSample,
+    GpuSample,
+    Meta,
+    MetricStore,
+    PhaseEvent,
+    Role,
+    Stream,
+    _hour_key,
+    _PartitionReader,
+)
 
 # hour-aligned base so partition boundaries land where the test says they do
 BASE = ((1_000_000 // 3600) + 1) * 3600.0
@@ -250,3 +261,161 @@ def test_concurrent_refresh_does_not_duplicate_records(tmp_path):
     for thread in threads:
         thread.join()
     assert reader.window(None, None) == list(range(150))
+
+
+def _hourly_phases_with_old_stall(tmp_path, *, hours: int) -> MetricStore:
+    """One closed train_wait per hour for ``hours`` hours, plus a train_wait
+    opened in hour 0 that never closes: a stall older than any query window."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="day", start_ts=BASE, args={}))
+    writer.append(
+        PhaseEvent(name="train_wait", t0=BASE + 10, t1=PhaseEvent.OPEN_T1, node="n", gpus=[1], rank=1, role=Role.TRAIN)
+    )
+    for hour in range(hours):
+        t0 = BASE + hour * HOUR + 100
+        writer.append(PhaseEvent(name="train_wait", t0=t0, t1=t0 + 10, node="n", gpus=[0], rank=0, role=Role.TRAIN))
+        writer.append(GpuSample(ts=t0, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
+    writer.flush()
+    return MetricStore.load(tmp_path)
+
+
+def test_windowed_phase_query_stays_within_its_partitions_past_the_cache_size(tmp_path, monkeypatch):
+    """More hours than the partition cache holds must not turn every request
+    into a re-parse of the whole history."""
+    hours = MetricStore.PARTITION_CACHE_BLOCKS + 6
+    store = _hourly_phases_with_old_stall(tmp_path, hours=hours)
+    parsed_partitions = []
+    parse = store._parse_object_lines
+    monkeypatch.setattr(store, "_parse_object_lines", lambda *a: parsed_partitions.append(a[2].stem) or parse(*a))
+
+    last_hour = (BASE + (hours - 1) * HOUR, BASE + hours * HOUR)
+    store.phases_by_lane(t0=last_hour[0], t1=last_hour[1])
+    first = len(parsed_partitions)
+    store.phases_by_lane(t0=last_hour[0], t1=last_hour[1])
+    assert first <= 6, f"a 1 h window parsed {first} partitions"
+    assert len(parsed_partitions) == first, "a repeated window re-parsed partitions it had cached"
+
+
+def test_phase_opened_before_the_window_is_still_open_in_it(tmp_path):
+    hours = MetricStore.PARTITION_CACHE_BLOCKS + 6
+    store = _hourly_phases_with_old_stall(tmp_path, hours=hours)
+    phases = store.phases_by_lane(t0=BASE + (hours - 1) * HOUR, t1=BASE + hours * HOUR)
+    stalled = [p for p in phases if p["gpu"] == 1]
+    assert [p["name"] for p in stalled] == ["train_wait"]
+    assert stalled[0]["t0"] == BASE + 10
+
+
+def test_phase_longer_than_the_window_slack_shows_once_in_every_window_it_spans(tmp_path):
+    """A 10 h stall closes past any window's upper slack: the hours it spanned
+    must still show it after it closes, and the window holding its close once."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="long", start_ts=BASE, args={}))
+    stall = dict(name="train_wait", t0=BASE + 10, node="n", gpus=[1], rank=1, role=Role.TRAIN)
+    writer.append(PhaseEvent(**stall, t1=PhaseEvent.OPEN_T1))
+    for hour in range(12):
+        t0 = BASE + hour * HOUR + 100
+        writer.append(PhaseEvent(name="train_wait", t0=t0, t1=t0 + 10, node="n", gpus=[0], rank=0, role=Role.TRAIN))
+    writer.append(PhaseEvent(**stall, t1=BASE + 10 * HOUR + 10))
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+
+    for t0, t1 in [(BASE + HOUR, BASE + 2 * HOUR), (BASE + 9.5 * HOUR, BASE + 10.5 * HOUR)]:
+        stalled = [p for p in store.phases_by_lane(t0=t0, t1=t1) if p["gpu"] == 1]
+        assert [p["t0"] for p in stalled] == [BASE + 10], (t0, stalled)
+
+
+def test_iter_records_returns_every_phase_row_as_written(tmp_path):
+    """Tools replay the stream through the sinks: an open marker whose close
+    landed is still a row, unlike in the phase_events() query view."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="raw", start_ts=BASE, args={}))
+    interval = dict(name="train_wait", t0=BASE + 10, node="n", gpus=[0], rank=0, role=Role.TRAIN)
+    writer.append(PhaseEvent(**interval, t1=PhaseEvent.OPEN_T1))
+    writer.append(PhaseEvent(**interval, t1=BASE + 20))
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+    assert [event.t1 for event in store.iter_records(Stream.PHASES)] == [PhaseEvent.OPEN_T1, BASE + 20]
+    assert [event.t1 for event in store.phase_events()] == [BASE + 20]
+
+
+def test_close_landing_mid_read_in_a_newer_partition_still_pairs_its_open(tmp_path, monkeypatch):
+    """A flush between reading hour 0 and hour 1 writes an open marker into
+    hour 0 and its close into hour 1: the close must not be read before its
+    open, or the open stays in the index forever."""
+
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="race", start_ts=BASE, args={}))
+    for t0 in (BASE + 10, BASE + HOUR + 10):
+        writer.append(PhaseEvent(name="actor_train", t0=t0, t1=t0 + 5, node="n", gpus=[0], rank=0, role=Role.TRAIN))
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+
+    crossing = dict(name="train_wait", t0=BASE + HOUR - 1, node="n", gpus=[1], rank=1, role=Role.TRAIN)
+    read = store_module._read_complete_lines
+    flushed = []
+
+    def flush_after_reading_hour_0(path, *args):
+        lines = read(path, *args)
+        if path.stem == _hour_key(BASE) and not flushed:
+            flushed.append(True)
+            writer.append(PhaseEvent(**crossing, t1=PhaseEvent.OPEN_T1))
+            writer.append(PhaseEvent(**crossing, t1=BASE + HOUR + 1))
+            writer.flush()
+        return lines
+
+    monkeypatch.setattr(store_module, "_read_complete_lines", flush_after_reading_hour_0)
+    store.open_phase_events()
+    assert flushed
+    assert store.open_phase_events() == []
+
+
+def test_time_range_edge_is_the_newest_row_not_the_last_written(tmp_path):
+    """One flush writes a batch in arrival order: its last line need not be its newest."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="edge", start_ts=BASE, args={}))
+    for ts in (BASE + 20, BASE + 30, BASE + 10):
+        writer.append(GpuSample(ts=ts, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
+    writer.flush()
+    assert MetricStore.load(tmp_path).time_range()[1] == BASE + 30
+
+
+def test_time_range_edge_ignores_a_newest_partition_still_being_written(tmp_path):
+    """The first write into a new hour can be polled mid-line: the edge is the
+    newest complete row, not the run's first."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="edge", start_ts=BASE, args={}))
+    for ts in (BASE + 10, BASE + 2 * HOUR - 10):
+        writer.append(GpuSample(ts=ts, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
+    writer.flush()
+    (tmp_path / Stream.GPU_UTIL.value / f"{_hour_key(BASE + 2 * HOUR)}.jsonl").write_bytes(b'{"ts":')
+    assert MetricStore.load(tmp_path).time_range()[1] == BASE + 2 * HOUR - 10
+
+
+def test_gpu_processes_window_and_lane_filter_match_the_written_rows(tmp_path):
+
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="procs", start_ts=BASE, args={}))
+    written = [
+        GpuProcessSample(
+            ts=BASE + h * HOUR + s, node=node, gpu=gpu, pid=100 + gpu, name=f"proc-{gpu}", mem_mb=1000 * gpu
+        )
+        for h in range(3)
+        for s in (5.0, 3000.0)
+        for node in ("a", "b")
+        for gpu in (0, 1)
+    ]
+    for sample in written:
+        writer.append(sample)
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+
+    t0, t1 = BASE + 2000, BASE + HOUR + 3500
+    expected = [
+        dict(ts=p.ts, node=p.node, gpu=p.gpu, pid=p.pid, name=p.name, mem_mb=p.mem_mb)
+        for p in written
+        if t0 <= p.ts <= t1 and (p.node, p.gpu) in {("a", 1), ("b", 0)}
+    ]
+    got = store.gpu_processes(t0=t0, t1=t1, lanes={("a", 1), ("b", 0)})
+    assert sorted(got, key=lambda r: (r["ts"], r["node"], r["gpu"])) == sorted(
+        expected, key=lambda r: (r["ts"], r["node"], r["gpu"])
+    )

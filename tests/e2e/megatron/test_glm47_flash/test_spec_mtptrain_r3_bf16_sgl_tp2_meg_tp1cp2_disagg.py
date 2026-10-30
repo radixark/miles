@@ -24,6 +24,7 @@ register_ci_gate(metric_key="perf/actor_train_mfu")
 # engine, with R3, MTP training and EAGLE on. Each train GPU holds the dense part plus half the
 # experts, so the response cap and max_tokens_per_gpu keep each CP rank to about 2k tokens.
 CASE = CaseConfig(
+    use_output_store=True,
     use_deepep=False,
     num_gpus_per_node=2,
     cp_size=2,

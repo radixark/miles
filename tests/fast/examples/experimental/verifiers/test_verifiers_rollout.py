@@ -28,6 +28,7 @@ from examples.experimental.verifiers.verifiers_rollout import (
     trace_to_sample,
     trace_to_samples,
 )
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
@@ -51,7 +52,7 @@ def _args(**overrides) -> Namespace:
         "rollout_stop_token_ids": None,
         "sglang_model_routers": None,
         "sglang_router_ip": "127.0.0.1",
-        "sglang_router_policy": "round_robin",
+        **sglang_router_args("round_robin"),
         "sglang_router_port": 30000,
         "sglang": SglangConfig(models=[], base_args={"tokenizer_path": None, "enable_deterministic_inference": False}),
     }
