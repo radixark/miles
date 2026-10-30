@@ -1,9 +1,13 @@
 """Prompt-group reward shaping before advantage normalization."""
 
+import logging
 import math
 from argparse import Namespace
 
 from miles.utils.types import Sample
+
+
+logger = logging.getLogger(__name__)
 
 
 def is_correct_reward(reward: float) -> bool:
@@ -70,6 +74,8 @@ def apply_length_penalty(
     samples: list[Sample],
     rewards: list[float],
     prompt_groups: list[list[int]],
+    *,
+    log_penalties: bool = False,
 ) -> list[float]:
     """Shape correct rollout rewards without mutating samples or raw rewards."""
     coeff = args.length_penalty_coeff
@@ -78,24 +84,41 @@ def apply_length_penalty(
     minimum = args.length_penalty_min_tokens
     shaped = list(rewards)
     for rows in prompt_groups:
+        rollouts: list[tuple[list[int], int]] = []
         correct: list[tuple[list[int], int]] = []
         for siblings in rollout_segments(samples, rows):
             reward = rewards[siblings[0]]
             if any(rewards[row] != reward for row in siblings[1:]):
                 raise ValueError("all samples in a rollout must share one reward")
+            length = sum(
+                0 if samples[row].remove_sample else samples[row].effective_response_length for row in siblings
+            )
+            rollouts.append((siblings, length))
             if is_correct_reward(reward):
-                length = sum(
-                    sample.effective_response_length for row in siblings if not (sample := samples[row]).remove_sample
-                )
                 if length < 0:
                     raise ValueError("generated token count must be non-negative")
                 if length > 0:
                     correct.append((siblings, length))
-        if not correct:
-            continue
-        reference = max(minimum, min(length for _, length in correct))
+        reference = max(minimum, min(length for _, length in correct)) if correct else None
+        multipliers = {siblings[0]: 1.0 for siblings, _ in rollouts}
         for siblings, length in correct:
             reward = max(1.0, length / reference) ** (-coeff)
+            multipliers[siblings[0]] = reward
             for row in siblings:
                 shaped[row] = reward
+        if log_penalties:
+            for siblings, length in rollouts:
+                row = siblings[0]
+                sample = samples[row]
+                logger.info(
+                    "Length penalty: session_id=%s rollout_id=%s generated_tokens=%d "
+                    "multiplier=%.12g reward_reduction=%.12g raw_reward=%.12g shaped_reward=%.12g",
+                    sample.metadata.get("session_id"),
+                    sample.rollout_id if sample.rollout_id is not None else sample.index,
+                    length,
+                    multipliers[row],
+                    rewards[row] - shaped[row],
+                    rewards[row],
+                    shaped[row],
+                )
     return shaped

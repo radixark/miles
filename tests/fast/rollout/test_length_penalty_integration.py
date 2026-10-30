@@ -1,7 +1,9 @@
+import logging
 from argparse import ArgumentParser, Namespace
 
 import pytest
 
+from miles.ray.rollout import train_data_conversion
 from miles.ray.rollout.train_data_conversion import _post_process_rewards, convert_samples_to_train_data
 from miles.rollout.filter_hub.common_filters import apply_reward_nonzero_std_filter
 from miles.rollout.reward_shaping import validate_length_penalty_args
@@ -172,3 +174,87 @@ def test_partial_rollout_masked_prefix_is_not_penalized() -> None:
     out = convert_samples_to_train_data(_args(rewards_normalization=False), samples, {}, None, None)
     assert out["rewards"] == [0.5, 1.0]
     assert [sum(mask) for mask in out["loss_masks"]] == [1000, 500]
+
+
+def test_logs_actual_penalty_once_per_session_before_normalization(caplog, monkeypatch) -> None:
+    samples = [
+        Sample(
+            index=0,
+            rollout_id=10,
+            group_index=0,
+            response_length=400,
+            loss_mask=[1] * 400,
+            reward=1.0,
+            metadata={"session_id": "a"},
+        ),
+        Sample(
+            index=1,
+            rollout_id=10,
+            group_index=0,
+            response_length=600,
+            loss_mask=[1] * 600,
+            reward=1.0,
+            metadata={"session_id": "a"},
+        ),
+        Sample(
+            index=2,
+            rollout_id=11,
+            group_index=0,
+            response_length=2000,
+            loss_mask=[1] * 2000,
+            reward=1.0,
+            metadata={"session_id": "b"},
+        ),
+        Sample(
+            index=3,
+            rollout_id=12,
+            group_index=0,
+            response_length=3000,
+            loss_mask=[1] * 3000,
+            reward=0.0,
+            metadata={"session_id": "c"},
+        ),
+    ]
+    args = _args(length_penalty_coeff=1.0, grpo_std_normalization=True)
+    caplog.set_level(logging.INFO, logger="miles.rollout.reward_shaping")
+    apply_reward_nonzero_std_filter(args, samples)
+    assert not caplog.records  # Candidate filtering must not report an applied penalty.
+    token_reads = dict.fromkeys(map(id, samples), 0)
+    original_generated_tokens = Sample.effective_response_length.fget
+
+    def counted_generated_tokens(sample: Sample) -> int:
+        token_reads[id(sample)] += 1
+        return original_generated_tokens(sample)
+
+    monkeypatch.setattr(Sample, "effective_response_length", property(counted_generated_tokens))
+    _post_process_rewards(args, samples, None)
+    assert list(token_reads.values()) == [1, 1, 1, 1]
+    records = [r for r in caplog.records if r.name == "miles.rollout.reward_shaping"]
+    assert len(records) == 3
+    assert [r.args[:3] for r in records] == [("a", 10, 1000), ("b", 11, 2000), ("c", 12, 3000)]
+    multiplier = 0.5
+    assert records[1].args[3:] == pytest.approx((multiplier, 1 - multiplier, 1.0, multiplier))
+    assert records[2].args[3:] == (1.0, 0.0, 0.0, 0.0)
+
+
+def test_logs_no_penalty_when_group_has_no_correct_session(caplog) -> None:
+    samples = [
+        Sample(index=i, group_index=0, response_length=length, loss_mask=[1] * length, reward=0.0)
+        for i, length in enumerate([1000, 2000])
+    ]
+    caplog.set_level(logging.INFO, logger="miles.rollout.reward_shaping")
+    _post_process_rewards(_args(), samples, None)
+    assert len(caplog.records) == 2
+    assert [record.args[3] for record in caplog.records] == [1.0, 1.0]
+
+
+def test_disabled_penalty_skips_logging_grouping_and_token_counting(caplog, monkeypatch) -> None:
+    def unexpected(*args, **kwargs) -> None:
+        pytest.fail("disabled penalty must not group rollouts or count tokens")
+
+    monkeypatch.setattr(train_data_conversion, "reward_group_segments", unexpected)
+    monkeypatch.setattr(Sample, "effective_response_length", property(unexpected))
+    samples = [Sample(index=0, response_length=100, reward=1.0)]
+    args = _args(length_penalty_coeff=0.0, rewards_normalization=False)
+    assert _post_process_rewards(args, samples, None) == ([1.0], [1.0])
+    assert not caplog.records
