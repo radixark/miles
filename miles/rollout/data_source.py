@@ -1,10 +1,12 @@
 import abc
 import copy
+import hashlib
 import logging
+import os
 import random
 from pathlib import Path
 
-from miles.utils.data import Dataset
+from miles.utils.data import Dataset, _parse_generalized_path
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.rollout_data_config import RolloutDatasetConfig, load_rollout_data_config
@@ -250,6 +252,7 @@ class MixedRolloutDataSource(DataSource):
     def __init__(self, args):
         self.args = args
         self.dataset_configs = load_rollout_data_config(args.rollout_data_yaml_config)
+        self.dataset_sha256 = {config.name: _check_dataset_sha256(config) for config in self.dataset_configs}
 
         tokenizer, processor = _load_prompt_tokenizer_and_processor(args)
         self.datasets = {}
@@ -302,6 +305,7 @@ class MixedRolloutDataSource(DataSource):
             "num_requests": self.num_requests,
             "sample_group_index": self.sample_group_index,
             "sample_index": self.sample_index,
+            "sha256": self.dataset_sha256,
         }
         save_simple_checkpoint(directory=directory, data=state_dict)
 
@@ -312,6 +316,12 @@ class MixedRolloutDataSource(DataSource):
                 f"the checkpoint mixed datasets {sorted(state_dict['offsets'])}, but --rollout-data-yaml-config now "
                 f"lists {sorted(self.datasets)}"
             )
+        for name, saved in state_dict["sha256"].items():
+            if saved != self.dataset_sha256[name]:
+                raise ValueError(
+                    f"rollout dataset {name!r} changed since the checkpoint was saved: sha256 was {saved}, "
+                    f"now {self.dataset_sha256[name]}"
+                )
         # a dataset filtered shorter since the save (e.g. a lower max_prompt_len) cannot resume at its position
         if too_far := {n: o for n, o in state_dict["offsets"].items() if o > len(self.datasets[n])}:
             raise ValueError(
@@ -362,3 +372,30 @@ class MixedRolloutDataSource(DataSource):
 def _lower_limit(*limits: int | None) -> int | None:
     known = [limit for limit in limits if limit is not None]
     return min(known) if known else None
+
+
+def _check_dataset_sha256(config: RolloutDatasetConfig) -> str | None:
+    """Hash the dataset file; stop when its first 8 hex characters differ from the configured `sha256`.
+
+    Returns the full digest, which the checkpoint keeps for an exact check on resume.
+    """
+    path, _ = _parse_generalized_path(config.path)
+    if not os.path.isfile(path):
+        if config.sha256 is not None:
+            raise ValueError(
+                f"rollout dataset {config.name!r}: sha256 is only supported for a single file, not {path}"
+            )
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if config.sha256 is None:
+        logger.warning(f'rollout dataset {config.name!r} has no sha256; add `sha256: "{actual[:8]}"` to pin it')
+    elif config.sha256 != actual[:8]:
+        raise ValueError(
+            f"rollout dataset {config.name!r} ({path}) does not match its sha256: expected {config.sha256}, "
+            f"got {actual[:8]}"
+        )
+    return actual
