@@ -17,6 +17,8 @@ datasets:
     samples_per_step: 5
     max_prompt_len: 8192
     generate_function: my_pkg.science_generate
+    agent:
+      max_turns: 50
 ```
 
 The flag also accepts an inline `base64:<payload>`, like `--eval-config`.
@@ -30,6 +32,7 @@ The flag also accepts an inline `base64:<payload>`, like `--eval-config`.
 | `sha256` | no | First 8 hex characters of the file's SHA-256. A mismatch stops the run at startup; when unset, the value to pin is logged. |
 | `max_prompt_len` | no | Drop this dataset's longer prompts. At most `--rollout-max-prompt-len`. |
 | `generate_function` | no | Generate function for this dataset's samples. Unset: `--custom-generate-function-path`, or Miles' default `miles.rollout.generate_hub.single_turn.generate` when that is unset too. |
+| `agent` | no | Free-form settings for this dataset's agent, passed as `metadata["agent_config"]`. |
 
 Unknown fields are rejected, so a typo fails at startup instead of being ignored. A `generate_function` that
 declares its own options (`config_class` or `add_arguments`) gets them registered as flags, just like one
