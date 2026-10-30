@@ -202,8 +202,9 @@ targets; they do not overwrite the HF selection. Arbitrary layer/expert subsets
 within a registry template are not implemented and are rejected.
 Standard LoRA requires all projections of a fused weight together;
 `canonical_lora` supports individual Q/K/V and dense gate/up selections.
-Grouped-expert FC1 and GDN input projections remain fused and require all of
-their HF projections even in canonical mode.
+Grouped-expert FC1 requires both gate and up; in canonical mode each gets its
+own adapter. GDN input projections remain fused and require all of their HF
+projections even in canonical mode.
 
 Tinker uses `--target-modules attn,mlp,unembed` by default; for example,
 `--target-modules attn,mlp` disables output-head training. Client SDK flags must
