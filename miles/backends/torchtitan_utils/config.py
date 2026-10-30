@@ -69,6 +69,7 @@ def build_model_config(
     return model
 
 
+# not FreezeMoERoutingTransform: it also freezes the router gate, which RL trains
 def _disable_load_balancing(model: BaseModel.Config) -> None:
     for _, moe, _, _ in model.traverse(MoE.Config):
         moe.router.aux_loss = None
@@ -195,5 +196,5 @@ def build_trainer_config(
         checkpointer=_checkpointer_config(args, dump_subdir=dump_subdir),
         activation_remat=FullActivationRematConfig() if args.backend.gradient_checkpointing else None,
         loss=RLLossAdapter.Config(),
-        debug=DebugConfig(seed=args.backend.seed),
+        debug=DebugConfig(seed=args.backend.seed, distinct_seed_mesh_axes=["pp", "dp_shard"]),
     )
