@@ -4042,5 +4042,8 @@ class TestLoRATypeResolution:
         assert self._parse(tmp_path, ["--megatron-to-hf-mode", mode]).lora_type == lora_type
 
     def test_native_refuses_shared_a_lora(self, tmp_path):
+        from miles.utils.lora.arguments import validate_lora_args_after_megatron
+
+        args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
         with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
-            self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
+            validate_lora_args_after_megatron(args)
