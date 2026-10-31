@@ -443,6 +443,10 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
                 )
         return ok
 
+    def after_engines_resumed(self) -> None:
+        torch.cuda.ipc_collect()
+        torch.cuda.empty_cache()
+
     def _log_ring_debug(self, serialized: list) -> None:
         """After the engine's reply: did the engine's release of this bucket reach the producer's IPC ref counter?
         The counter of a shared storage starts at 1 and every consumer release decrements it (cached share: one counter
