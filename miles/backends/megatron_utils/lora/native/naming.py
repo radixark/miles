@@ -56,6 +56,14 @@ class ConverterNaming:
         )
         return f"{block_prefixes.pop()}."
 
+    def output_head_prefix(self, weight: nn.Parameter) -> str:
+        """HF prefix of the output head, which the converter names whether or not its weight is tied."""
+        from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf_names
+
+        meta_weight = torch.empty(self._global_shape(weight), dtype=weight.dtype, device="meta")
+        (hf_weight_name,) = convert_to_hf_names(self.args, self.model_name, "module.module.output_layer.weight", meta_weight)
+        return f"{hf_weight_name.removesuffix('.weight')}."
+
     def _global_shape(self, weight: nn.Parameter) -> list[int]:
         shape = list(weight.shape)
         # MCore marks only expert params allreduce=False; they shard over expert TP, pinned to 1 here

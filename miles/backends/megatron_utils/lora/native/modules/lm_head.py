@@ -23,11 +23,13 @@ class LoRAOutputHead(NativeLoRAAdapter):
         vocab_local: int,
         mup_width_multiplier: float | None = None,
         unpadded_vocab_size: int | None = None,
+        tied: bool = False,
     ):
         super().__init__(hf_prefix, (), context.tp_rank)
         self.context = context
         self.mup = float(mup_width_multiplier) if mup_width_multiplier else None
         self.unpadded_vocab_size = unpadded_vocab_size
+        self.tied = tied
         self.register_parameter(
             "head_A",
             new_lora_parameter(
@@ -47,6 +49,10 @@ class LoRAOutputHead(NativeLoRAAdapter):
     def weight_deltas(self):
         """The host divides its input by muP too, so the merged head carries the full delta."""
         (host,) = self._hosts
+        assert not self.tied, (
+            f"cannot merge the {self.hf_prefix!r} adapter: the output head shares the input embedding's weight, "
+            "and the adapter applies to the output side only"
+        )
         yield host.weight, lambda: self.context.lora.scale * (self.head_B.float() @ self.head_A.float())
 
     def export_plan(self, gather) -> list:
@@ -54,9 +60,7 @@ class LoRAOutputHead(NativeLoRAAdapter):
 
         def trimmed() -> torch.Tensor:
             full = head_b()
-            if self.unpadded_vocab_size and self.unpadded_vocab_size < full.shape[0]:
-                full = full[: self.unpadded_vocab_size]
-            return full
+            return full[: self._served_rows(full.shape[0])]
 
         return [
             (f"{self.hf_prefix}lora_A.weight", self.head_A),
@@ -66,7 +70,16 @@ class LoRAOutputHead(NativeLoRAAdapter):
     def load_plan(self, take) -> list:
         vocab_local = self.head_B.shape[0]
         lo = self.tp_rank * vocab_local
+        padded_rows = vocab_local * self.context.tp_size
+        served_rows = self._served_rows(padded_rows)
+        head_b = take(f"{self.hf_prefix}lora_B.weight")
+        assert head_b.shape[0] == served_rows, f"{self.hf_prefix}lora_B has {head_b.shape[0]} rows, not {served_rows}"
+        # Megatron's vocab padding rows get no logit delta
+        head_b = F.pad(head_b, (0, 0, 0, padded_rows - head_b.shape[0]))
         return [
             (self.head_A, take(f"{self.hf_prefix}lora_A.weight")),
-            (self.head_B, take(f"{self.hf_prefix}lora_B.weight")[lo : lo + vocab_local]),
+            (self.head_B, head_b[lo : lo + vocab_local]),
         ]
+
+    def _served_rows(self, padded_rows: int) -> int:
+        return min(self.unpadded_vocab_size or padded_rows, padded_rows)

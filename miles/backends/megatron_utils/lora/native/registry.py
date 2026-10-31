@@ -21,7 +21,7 @@ from miles.backends.megatron_utils.lora.native.spec.attention import (
 from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, LoRAArchSpec
 from miles.backends.megatron_utils.lora.native.spec.gdn import Qwen35GDNSpec
 from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
-from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec
+from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec, LMHeadSpec
 from miles.backends.megatron_utils.lora.native.spec.mlp import (
     DeepSeekV4SharedExpertSpec,
     FusedGateUpMLPSpec,
@@ -43,6 +43,7 @@ def _arch_spec(
         name=attention.name,
         attention=attention,
         mlp=mlp or SplitGateUpMLPSpec(),
+        lm_head=LMHeadSpec(),
         has_linear_attention_layers=has_linear_attention_layers,
         linear_attention=linear_attention,
     )
