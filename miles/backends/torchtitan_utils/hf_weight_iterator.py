@@ -2,12 +2,14 @@ import functools
 import glob
 import json
 import os
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 
 import safetensors
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param
 from miles.backends.torchtitan_utils import lora_names
@@ -37,7 +39,11 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         )
 
     def _iter_hf_param_units(self, weights, *, materialize):
-        for name, tensor in hf_weights(self.model, complete_across_pp=self.placement.gather_pp):
+        # an engine sharing the slice over ICI takes each EP rank's experts from the paired trainer rank
+        local_experts = self.args.update_weight_transfer_mode == "ici"
+        for name, tensor in hf_weights(
+            self.model, complete_across_pp=self.placement.gather_pp, local_experts=local_experts
+        ):
             if materialize:
                 yield [(name, self._to_engine_dtype(name, tensor))]
         yield from iter_checkpoint_tower_units(self.args.hf_checkpoint, materialize=materialize)
@@ -61,7 +67,9 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
                 yield [(name, tensor)]
 
 
-def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[str, torch.Tensor]]:
+def hf_weights(
+    trainer, *, complete_across_pp: bool = True, local_experts: bool = False
+) -> Iterator[tuple[str, torch.Tensor]]:
     # FSDP2 CPU offload keeps the shards on the host; gather_full_param moves one tensor at a time
     offloaded = (
         not trainer.config.training.enable_cpu_offload
@@ -71,7 +79,7 @@ def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[st
         for part in trainer.model_parts:
             part.to(current_platform.current_device())
     try:
-        yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp)
+        yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp, local_experts=local_experts)
     finally:
         if offloaded:
             for part in trainer.model_parts:
@@ -105,7 +113,9 @@ def _stage_process_groups(stage_ranks: tuple[tuple[int, ...], ...]) -> tuple:
 _GROUPED_EXPERTS = ".routed_experts."
 
 
-def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
+def _hf_weights_on_device(
+    trainer, *, complete_across_pp: bool, local_experts: bool
+) -> Iterator[tuple[str, torch.Tensor]]:
     sd_adapter = _state_dict_adapter(trainer)
     state = {
         k: v for part in trainer.model_parts for k, v in part.state_dict().items() if not lora_names.is_adapter_key(k)
@@ -116,10 +126,42 @@ def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tupl
     yield from layout.stream(sd_adapter.to_hf(dense))
 
     mine = sorted(k for k in state if _GROUPED_EXPERTS in k)
+    if local_experts:
+        yield from _local_experts(sd_adapter, state, mine)
+        return
     everyone: list = [None] * layout.world
     dist.all_gather_object(everyone, mine)
     for key in sorted(set().union(*everyone)):
         yield from layout.stream(sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {})
+
+
+def _local_experts(sd_adapter, state, keys: list[str]) -> Iterator[tuple[str, torch.Tensor]]:
+    """This rank's experts as whole HF tensors on its device, named by their global expert ids."""
+    rank, world = dist.get_rank(), dist.get_world_size()
+    device = current_platform.current_device()
+    for key in keys:
+        # under FSDP CPU offload the shards live on the host; the bucket goes out from the device
+        converted = sd_adapter.to_hf({key: _on_device(state[key], device)})
+        assert not any(isinstance(v, DTensor) for v in converted.values()), f"{key} is sharded within an expert"
+        num_experts = state[key].shape[0]
+        start, end = sd_adapter.local_experts_indices[re.sub(r"(\d+)", "{}", key, count=1)]
+        # the engine skips experts it does not own, so a different split would leave them stale silently
+        assert (start, end) == (
+            rank * num_experts // world,
+            (rank + 1) * num_experts // world,
+        ), f"rank {rank} holds experts [{start}, {end}) of {key}, not the engine's even split over {world} ranks"
+        yield from converted.items()
+
+
+def _on_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """``tensor`` with its local shard on ``device``; a DTensor keeps its mesh and placements."""
+    local = tensor.to_local() if isinstance(tensor, DTensor) else tensor
+    local = local.detach().to(device)
+    if not isinstance(tensor, DTensor):
+        return local
+    return DTensor.from_local(
+        local, tensor.device_mesh, tensor.placements, shape=tensor.shape, stride=tensor.stride(), run_check=False
+    )
 
 
 @dataclass(frozen=True)

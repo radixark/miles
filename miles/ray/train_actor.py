@@ -15,7 +15,7 @@ import torch.distributed as dist
 import miles.utils.eval_config
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.training_utils.types import TrainStepOutput
-from miles.platforms import current_platform
+from miles.platforms import current_platform, tpu_shared_slice
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.utils import object_store
 from miles.utils.args.runtime import TrainerConfig
@@ -114,6 +114,10 @@ class TrainRayActor(NodeProbeMixin):
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
+        if (shared_slice := tpu_shared_slice.spec()) is not None:
+            # at construction, not in init(): the engine sharing the slice cannot finish starting (and be
+            # discovered) until the trainer joins it, and init() runs after discovery
+            tpu_shared_slice.join(shared_slice, job_rank=self._rank, job_size=self._world_size)
 
         configure_logger(
             args,

@@ -251,12 +251,15 @@ class RolloutRelatedConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
+            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "ici"],
             help=(
                 "The method to transfer weights to remote rollout engines during update weight. "
                 "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                 "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                "them into a host-local checkpoint that the engine reloads from."
+                "them into a host-local checkpoint that the engine reloads from. "
+                "'ici' sends each bucket device to device over the ICI links of a TPU slice the trainer "
+                "shares with one engine (MILES_TPU_SHARED_SLICE on the trainer, SGLANG_TPU_SHARED_SLICE "
+                "on the engine)."
             ),
         ),
     ] = "broadcast"
