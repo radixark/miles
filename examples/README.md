@@ -39,6 +39,7 @@ data and weights around.
 Not fully verified — for experimental and development use.
 
 - **[agentenv](./experimental/agentenv)**: Rollouts against AgentENV, a self-hosted platform running agent sandboxes on Firecracker microVMs.
+- **[clef](./experimental/clef)**: Supervised Brier-loss training of a Clef-style decision model: a Qwen backbone with a joint schema head that outputs calibrated option probabilities.
 - **[DrGRPO](./experimental/DrGRPO)**: Custom reducer for Dr.GRPO algorithm.
 - **[eval](./experimental/eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
 - **[eval_multi_task](./experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.
