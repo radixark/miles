@@ -31,7 +31,7 @@ def test_actual_mtp_loss_selects_intended_targets(
     monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
     monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: state)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
-    monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *args, **kwargs: self)
+    monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
     monkeypatch.setattr(mtp.MTPLossAutoScaler, "main_loss_backward_scale", torch.tensor(1.0))
 
     token_ids = [torch.arange(1, 13), torch.arange(101, 111)]

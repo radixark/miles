@@ -22,8 +22,7 @@ def test_the_host_cu_seqlens_match_the_device_tensor(
         "total_lengths": lengths,
         "response_lengths": [n // 2 for n in lengths],
     }
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
-    monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *args, **kwargs: self)
+    monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
     for cp_rank in range(cp_size):
         state = SimpleNamespace(cp=SimpleNamespace(rank=cp_rank, size=cp_size), tp=SimpleNamespace(rank=0, size=1))
         monkeypatch.setattr(data_utils, "get_parallel_state", lambda state=state: state)

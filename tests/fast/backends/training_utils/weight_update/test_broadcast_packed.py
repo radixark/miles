@@ -199,13 +199,6 @@ def test_both_broadcast_modes_share_protocol_and_preserve_selection(monkeypatch,
     assert protocol.args.update_weight_transfer_mode == mode
 
 
-def test_direct_caller_without_mode_keeps_legacy_protocol(monkeypatch):
-    monkeypatch.setattr(broadcast, "get_parallel_state", lambda: SimpleNamespace(pp=SimpleNamespace(size=1)))
-    args = Namespace(train_backend="megatron", colocate=False)
-    assert isinstance(get_weight_transfer_protocol(args), broadcast.UpdateWeightFromDistributed)
-    assert not hasattr(args, "update_weight_transfer_mode")
-
-
 def test_low_level_helper_rejects_non_broadcast_mode_before_receiver_dispatch(monkeypatch):
     client = SimpleNamespace(update_weights_from_distributed=Mock())
     collective = Mock()

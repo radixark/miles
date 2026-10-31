@@ -1,13 +1,18 @@
 import itertools
 import logging
+from typing import Any
 
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.output_store.dropped import record_dropped_samples
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
 
-def postprocess_rollout_data(args, data, train_parallel_config):
+def postprocess_rollout_data(
+    args: Any, data: list[Any], train_parallel_config: TrainParallelConfig | None
+) -> tuple[list[Sample], dict[str, Any]]:
     metadata = {}
 
     validate_compact_rollout_ids(data)
@@ -35,6 +40,7 @@ def postprocess_rollout_data(args, data, train_parallel_config):
             if trim_len == 0:
                 raise ValueError(f"Not enough samples {len(data)} for global_batch_size {global_batch_size}")
             origin_data_length = len(data)
+            record_dropped_samples(data[trim_len:])
             SampleOwnershipRecorder.log_dropped_groups(args=args, before=data, after=data[:trim_len], reason="trim")
             data = data[:trim_len]
             logger.info(f"trim number of samples from {origin_data_length} to {trim_len}")
@@ -74,13 +80,16 @@ def _nested_sample_count(group) -> int:
     return sum(_nested_sample_count(item) for item in group)
 
 
-def _compute_dynamic_global_batch_size(args, train_parallel_config, num_samples: int) -> int:
+def _compute_dynamic_global_batch_size(
+    args: Any, train_parallel_config: TrainParallelConfig | None, num_samples: int
+) -> int:
     """Calculate dynamic global_batch_size to ensure only one training step.
 
     Strategy: global_batch_size = num_samples rounded down to a multiple of dp_size
     This ensures num_steps_per_rollout = num_samples // global_batch_size = 1
     """
-    dp_size = train_parallel_config["dp_size"]
+    assert train_parallel_config is not None
+    dp_size = train_parallel_config.dp_size
     original_gbs = args.global_batch_size
 
     # Round down to a multiple of dp_size to ensure only one training step

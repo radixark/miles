@@ -59,7 +59,9 @@ class ConverterNaming:
     def _global_shape(self, weight: nn.Parameter) -> list[int]:
         shape = list(weight.shape)
         # MCore marks only expert params allreduce=False; they shard over expert TP, pinned to 1 here
-        if weight.tensor_model_parallel and getattr(weight, "allreduce", True):
+        if weight.tensor_model_parallel and getattr(
+            weight, "allreduce", True
+        ):  # config-access-exempt: distributed parameters may carry an optional allreduce marker
             shape[weight.partition_dim] *= self.tp_size
         return shape
 

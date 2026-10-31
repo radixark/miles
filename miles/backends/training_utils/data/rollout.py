@@ -1,6 +1,6 @@
 import logging
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import torch
 import torch.distributed as dist
@@ -9,8 +9,10 @@ import torch.nn.functional as F
 from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.platforms import current_platform
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.object_store import ObjectStoreGetResult
 from miles.utils.ray_utils import Box
@@ -21,10 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
-    if getattr(args, "true_on_policy_mode", False):
-        if getattr(args, "bf16", False):
+    if args.true_on_policy_mode:
+        if args.backend.bf16:
             return torch.bfloat16
-        if getattr(args, "fp16", False):
+        if args.backend.fp16:
             return torch.float16
     return torch.float32
 
@@ -33,6 +35,9 @@ def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
     witness_info: WitnessInfo | None = None,
+    *,
+    train_parallel_config: TrainParallelConfig,
+    output_store_read: Callable | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
@@ -40,33 +45,34 @@ def get_rollout_data(
     rollout_data, store_get_result = process_rollout_data(
         args,
         rollout_data_ref,
-        parallel_state.effective_dp.rank,
-        parallel_state.effective_dp.size,
+        dp_rank=parallel_state.effective_dp.rank,
+        train_parallel_config=train_parallel_config,
         witness_info=witness_info,
+        output_store_read=output_store_read,
     )
-    # move tokens to GPU in advance
+    # move tokens to the device in advance
     rollout_data["tokens"] = [
-        torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
+        torch.tensor(t, dtype=torch.long, device=current_platform.current_device()) for t in rollout_data["tokens"]
     ]
     rollout_data["loss_masks"] = [
-        torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
+        torch.tensor(t, dtype=torch.int, device=current_platform.current_device()) for t in rollout_data["loss_masks"]
     ]
     if "rollout_mask_sums" in rollout_data:
         rollout_data["rollout_mask_sums"] = torch.tensor(
-            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=torch.cuda.current_device()
+            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=current_platform.current_device()
         )
     if args.enable_witness:
         seq_witness_ids = rollout_data.pop("seq_witness_ids")
         rollout_data["witness_ids"] = [
-            torch.full((len(t),), fill_value=sid, dtype=torch.long, device=torch.cuda.current_device())
+            torch.full((len(t),), fill_value=sid, dtype=torch.long, device=current_platform.current_device())
             for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
         ]
 
     if "multimodal_train_inputs" in rollout_data:
-        # Move multimodal training tensors to GPU in advance
+        # Move multimodal training tensors to the device in advance
         rollout_data["multimodal_train_inputs"] = [
             (
-                {key: tensor.to(device=torch.cuda.current_device()) for key, tensor in mm_dict.items()}
+                {key: tensor.to(device=current_platform.current_device()) for key, tensor in mm_dict.items()}
                 if mm_dict is not None
                 else None
             )
@@ -79,7 +85,7 @@ def get_rollout_data(
 
         # pad to reduce memory fragmentation and maybe make the computation faster
         pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
-        max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
+        max_compress_ratio = max(args.backend.compress_ratios) if args.backend.compress_ratios else 0
         if max_compress_ratio:
             local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
             pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
@@ -100,7 +106,7 @@ def get_rollout_data(
                         args.qkv_format,
                         rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
                     ),
-                    device=torch.cuda.current_device(),
+                    device=current_platform.current_device(),
                     dtype=dtype,
                 )
                 for i, (value, total_length, response_length) in enumerate(
@@ -265,7 +271,7 @@ def get_batch(
                 cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
 
             cu_seqlens_host = tuple(cu_seqlens_list)
-            cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=torch.cuda.current_device())
+            cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=current_platform.current_device())
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
@@ -285,7 +291,7 @@ def get_batch(
 
             # thd requires the cu_seqlens to be of the origin length
             cu_seqlens_host = tuple(boundary * cp_size for boundary in cu_seqlens)
-            cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
+            cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int, device=current_platform.current_device()) * cp_size
 
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
 
@@ -307,7 +313,7 @@ def get_batch(
         ), f"adapter_slots not sorted in micro-batch: {adapter_slots}"
         n_adapters = data_iterator.rollout_data["n_adapters"]
         total_tokens = tokens.numel()
-        counts = torch.zeros(n_adapters, dtype=torch.int32, device=torch.cuda.current_device())
+        counts = torch.zeros(n_adapters, dtype=torch.int32, device=current_platform.current_device())
         for slot, length in zip(adapter_slots, sample_token_lengths, strict=True):
             counts[slot] += length
         counts[adapter_slots[-1]] += total_tokens - counts.sum().item()
@@ -449,7 +455,7 @@ def get_num_rollouts(args: Namespace, rollout_data: RolloutBatch, num_steps: int
     """Per-step rollout counts (total across DP); one entry per training step."""
     if "num_rollouts" in rollout_data:
         return rollout_data["num_rollouts"]
-    return [rollout_data.get("dynamic_global_batch_size", args.global_batch_size)] * num_steps
+    return [rollout_data.get("dynamic_global_batch_size", args.backend.global_batch_size)] * num_steps
 
 
 def get_data_iterator(
@@ -492,13 +498,16 @@ def get_data_iterator(
 
     num_local_samples = len(rollout_data["total_lengths"])
     assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
-    global_batch_size = rollout_data.get("dynamic_global_batch_size", args.global_batch_size)
+    global_batch_size = rollout_data.get("dynamic_global_batch_size", args.backend.global_batch_size)
+    assert (
+        global_batch_size % dp_size == 0
+    ), f"global_batch_size ({global_batch_size}) must be divisible by dp_size ({dp_size}) for the training-side schedule"
     num_local_gbs = global_batch_size // dp_size
     num_steps_per_rollout = num_local_samples // num_local_gbs
 
-    if global_batch_size != args.global_batch_size:
+    if global_batch_size != args.backend.global_batch_size:
         logger.info(
-            f"Using dynamic global_batch_size={global_batch_size} (original={args.global_batch_size}), "
+            f"Using dynamic global_batch_size={global_batch_size} (original={args.backend.global_batch_size}), "
             f"num_local_samples={num_local_samples}, num_steps_per_rollout={num_steps_per_rollout}"
         )
 
@@ -509,14 +518,14 @@ def get_data_iterator(
         return data_iterator
 
     if not args.use_dynamic_batch_size:
-        if "adapter_slots" in rollout_data and num_local_gbs % args.micro_batch_size != 0:
+        if "adapter_slots" in rollout_data and num_local_gbs % args.backend.micro_batch_size != 0:
             raise ValueError(
                 "A multi-LoRA local batch must be divisible by --micro-batch-size; "
-                f"got local_batch_size={num_local_gbs}, micro_batch_size={args.micro_batch_size}. "
+                f"got local_batch_size={num_local_gbs}, micro_batch_size={args.backend.micro_batch_size}. "
                 "Use --use-dynamic-batch-size or choose compatible adapter batch shapes."
             )
-        num_microbatches = [num_local_gbs // args.micro_batch_size for _ in range(num_steps_per_rollout)]
-        data_iterator = _generate_data_iterator(rollout_data, args.micro_batch_size)
+        num_microbatches = [num_local_gbs // args.backend.micro_batch_size for _ in range(num_steps_per_rollout)]
+        data_iterator = _generate_data_iterator(rollout_data, args.backend.micro_batch_size)
     else:
         assert args.max_tokens_per_gpu is not None
         # calculate the number of mirobatches for each step
@@ -529,7 +538,7 @@ def get_data_iterator(
                 get_minimum_num_micro_batch_size(samples[start:end], args.max_tokens_per_gpu * cp_size)
             )
 
-        num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=torch.cuda.current_device())
+        num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=current_platform.current_device())
         GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
 
         if vpp_size > 1:

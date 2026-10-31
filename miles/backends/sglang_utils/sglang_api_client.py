@@ -98,7 +98,9 @@ class SGLangApiClient:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            if hasattr(e, "add_note"):
+            if hasattr(
+                e, "add_note"
+            ):  # config-access-exempt: exception notes are unavailable on older Python versions
                 e.add_note(f"{response.text=}")
             raise
         if not response.content:
@@ -310,12 +312,19 @@ class SGLangApiClient:
         )
 
     async def check_weights(
-        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+        self,
+        action: str,
+        allow_quant_error: bool = False,
+        selector: str = "all",
+        skip_list: list[str] | None = None,
+        names: list[str] | None = None,
     ):
         payload = {"action": action, "allow_quant_error": allow_quant_error, "selector": selector}
         if skip_list is not None:
             # sglang's CheckWeightsReqInput names this field `skip_tensor_list`.
             payload["skip_tensor_list"] = skip_list
+        if names is not None:
+            payload["names"] = names
         return await self._make_request("weights_checker", payload)
 
     async def pull_weights(self, target_version: int, local_checkpoint_dir: str, source_dir: str):

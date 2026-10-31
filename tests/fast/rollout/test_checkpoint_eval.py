@@ -1,4 +1,5 @@
 from tests.ci.ci_register import register_cpu_ci
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["eval"])
 
@@ -11,13 +12,15 @@ import pytest
 import miles.ray.rollout.rollout_executor as rollout_executor_mod
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip, retarget_args
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
+from miles.utils.args.custom_view import ImmutableNamespace
 
 
 def make_args(**overrides) -> Namespace:
     defaults = dict(
         sglang_router_ip="10.0.0.1",
         sglang_router_port=30000,
-        sglang_router_policy=None,
+        **sglang_router_args(),
         rollout_num_gpus=4,
         rollout_num_gpus_per_engine=2,
         eval_num_gpus=1,
@@ -29,21 +32,29 @@ def make_args(**overrides) -> Namespace:
         ci_test=False,
         namespaced_radix_cache=False,
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
+        starts_inference_engines=True,
+        inference_runtime_mut_state=InferenceRuntimeMutState(),
     )
     defaults.update(overrides)
     return Namespace(**defaults)
 
 
+def _as_rollout_function_config(args: Namespace) -> ImmutableNamespace:
+    return ImmutableNamespace.model_validate(vars(args))
+
+
 def test_retarget_args_swaps_router_and_sizing():
-    args = make_args()
-    eval_args = retarget_args(args, "10.0.0.9", 39000, num_gpus=2, num_gpus_per_engine=2)
+    args = _as_rollout_function_config(make_args())
+    eval_args = retarget_args(args=args, router_ip="10.0.0.9", router_port=39000, engine_gpu_counts=[2])
 
     assert (eval_args.sglang_router_ip, eval_args.sglang_router_port) == ("10.0.0.9", 39000)
-    assert eval_args.rollout_num_gpus == 2
-    assert eval_args.rollout_num_gpus_per_engine == 2
+    assert (eval_args.inference_runtime_mut_state.engine_count, eval_args.inference_runtime_mut_state.gpu_count) == (
+        1,
+        2,
+    )
     # The original namespace is untouched.
     assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.1", 30000)
-    assert args.rollout_num_gpus == 4
+    assert args.inference_runtime_mut_state == InferenceRuntimeMutState()
 
 
 # ---------------- RolloutManager._eval_checkpoint (the single snapshot path) ----------------
@@ -65,6 +76,14 @@ class CheckpointFnStub(CheckpointEvalFn):
         self.disposed = True
 
 
+class _FakeInferenceControllerProvider:
+    def get_handle(self, name: str) -> "_FakeInferenceControllerProvider":
+        return self
+
+    async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+        return InferenceRuntimeImmutState(engine_count=2, gpu_count=4)
+
+
 def make_manager(args, eval_fn=None, fleet=None):
     mgr = object.__new__(
         getattr(rollout_executor_mod.RolloutExecutor, "__ray_actor_class__", rollout_executor_mod.RolloutExecutor)
@@ -77,6 +96,7 @@ def make_manager(args, eval_fn=None, fleet=None):
     mgr._metric_checker = None
     mgr.eval_generate_rollout = eval_fn
     mgr._eval_fleet = fleet
+    mgr._inference_controller_provider = _FakeInferenceControllerProvider()
     args.eval_uses_snapshots = eval_fn is not None and (fleet is not None or isinstance(eval_fn, CheckpointEvalFn))
     return mgr
 
@@ -135,7 +155,8 @@ async def test_debug_train_only_runs_snapshot_eval(controller_env, tmp_path):
     assert fn.inputs[0].weight_version == "5"
 
 
-async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, monkeypatch, tmp_path):
+@pytest.mark.parametrize("weight_version", [None, "3"])
+async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, monkeypatch, tmp_path, weight_version):
     """The fleet only delivers weights — the configured eval fn still generates, and it
     is the same object the shared posture would call."""
     snapshot = tmp_path / "step_5"
@@ -151,21 +172,50 @@ async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, mon
     class FakeFleet:
         def __init__(self):
             self.pins = []
+            self.current_versions = []
 
         async def pin(self, checkpoint_dir, weight_version):
             self.pins.append((checkpoint_dir, weight_version))
+            return "fleet-state"
+
+        async def current(self, weight_version):
+            self.current_versions.append(weight_version)
             return "fleet-state"
 
     fleet = FakeFleet()
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path))
     mgr = make_manager(args, eval_fn=eval_generate_rollout, fleet=fleet)
 
-    await mgr.eval(5, hf_dir=str(snapshot))
+    if weight_version is not None:
+        monkeypatch.setattr(
+            rollout_executor_mod,
+            "is_complete_hf_export",
+            lambda _path: pytest.fail("live evaluation must not inspect a checkpoint"),
+        )
+    hf_dir = str(snapshot) if weight_version is None else None
+    await mgr.eval(5, hf_dir=hf_dir, weight_version=weight_version)
 
-    assert fleet.pins == [(str(snapshot), "5")]
+    assert fleet.pins == ([(str(snapshot), "5")] if weight_version is None else [])
+    assert fleet.current_versions == ([] if weight_version is None else [weight_version])
     assert seen_inputs[0].generate_state == "fleet-state"
-    assert seen_inputs[0].hf_dir == str(snapshot)
-    assert seen_inputs[0].weight_version == "5"
+    assert seen_inputs[0].hf_dir == hf_dir
+    assert seen_inputs[0].weight_version == ("5" if weight_version is None else weight_version)
+
+
+async def test_unconfirmed_current_version_never_generates(controller_env):
+    class UnconfirmedFleet:
+        async def current(self, weight_version):
+            assert weight_version == "3"
+            raise EvalSkip("pin_violation")
+
+    def eval_generate_rollout(_input):
+        pytest.fail("unconfirmed weights must not generate")
+
+    mgr = make_manager(make_args(), eval_fn=eval_generate_rollout, fleet=UnconfirmedFleet())
+    await mgr.eval(5, weight_version="3")
+
+    assert controller_env.logged["skip"] == (5, "pin_violation")
+    assert "eval" not in controller_env.logged
 
 
 async def test_eval_checkpoint_missing_marker_skips(controller_env, tmp_path):
@@ -232,6 +282,15 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
 
 
 class TestSnapshotEvalGuards:
+    @pytest.mark.parametrize("debug_train_only", [False, True])
+    async def test_explicit_version_requires_a_dedicated_pool(self, controller_env, debug_train_only):
+        mgr = make_manager(make_args(eval_num_gpus=0, debug_train_only=debug_train_only))
+
+        with pytest.raises(ValueError, match="requires a dedicated synchronized fleet"):
+            await mgr.eval(5, weight_version="3")
+
+        assert controller_env.logged == {}
+
     async def test_snapshot_eval_without_an_hf_dir_is_rejected(self, controller_env):
         """Snapshot eval has no checkpoint to evaluate without a dir, so it must fail loudly."""
         fn = CheckpointFnStub()
@@ -606,7 +665,7 @@ def make_external_fn(external_fn_env, **env):
 
     for var, value in env.items():
         external_fn_env.monkeypatch.setenv(f"MILES_EXTERNAL_EVAL_{var}", value)
-    args = make_args(hf_checkpoint="/base")
+    args = _as_rollout_function_config(make_args(hf_checkpoint="/base"))
     return external_fn_env.mod.ExternalSglangEvalFn(RolloutFnConstructorInput(args=args, data_source=None))
 
 

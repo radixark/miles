@@ -1,3 +1,4 @@
+from . import patch  # noqa: F401
 from .deepseek_v4 import DeepseekV4Bridge
 from .deepseek_v4_1 import DeepseekV41Bridge
 from .deepseek_v32 import DeepseekV32Bridge

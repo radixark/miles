@@ -33,7 +33,9 @@ def run_and_compare(args: RunAndCompareArgs) -> None:
     baseline_output: Path = args.output_base_dir / baseline_config.dir_name()
     target_output: Path = args.output_base_dir / target_config.dir_name()
 
-    common_fields: dict[str, object] = {f.name: getattr(args, f.name) for f in dataclasses.fields(CommonRunArgs)}
+    common_fields: dict[str, object] = {
+        f.name: getattr(args, f.name) for f in dataclasses.fields(CommonRunArgs)
+    }  # config-access-exempt: attribute selected at runtime from f.name
 
     replay_dir: Path | None = args.output_base_dir / "routing_replay" if args.routing_replay else None
 

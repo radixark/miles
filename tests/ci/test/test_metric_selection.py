@@ -3,6 +3,7 @@ parsing (including the canonical declaration keys)."""
 
 from __future__ import annotations
 
+import json
 import textwrap
 from pathlib import Path
 
@@ -488,14 +489,12 @@ def test_constraint_name_key_is_gone(tmp_path):
 @pytest.mark.parametrize(
     "literal,match",
     [
-        ('{"rel_down": 0.2}', "upper band param"),
+        ("{}", "lower band param"),
         ('{"rel_up": 0.2}', "lower band param"),
     ],
-    ids=["missing-up", "missing-down"],
+    ids=["empty", "missing-down"],
 )
-def test_constraint_missing_side_rejected(tmp_path, literal, match):
-    # An all-default side has band 0 and fails on any deviation; the parser
-    # demands at least one written band param per side.
+def test_constraint_missing_lower_side_rejected(tmp_path, literal, match):
     path = _make_fixture(
         f"""
         from tests.ci.metric_history import register_ci_gate
@@ -506,6 +505,29 @@ def test_constraint_missing_side_rejected(tmp_path, literal, match):
     )
     with pytest.raises(ValueError, match=match):
         parse_ci_gate_specs(path)
+
+
+@pytest.mark.parametrize("constraint", [{"rel_down": 0.2}, {"abs_floor_down": 0.05}])
+def test_constraint_without_upper_bound(tmp_path, constraint):
+    path = _make_fixture(
+        f'register_ci_gate(metric_key="train/x", steps="last", constraint={constraint!r})',
+        tmp_path,
+    )
+    spec = parse_ci_gate_specs(path)[0]
+    assert spec.constraint == {"rel_down": 0.0, "abs_floor_down": 0.0, **constraint}
+    assert spec.constraint_key == json.dumps(constraint, sort_keys=True, separators=(",", ":"))
+
+
+@pytest.mark.parametrize("upper_param", ["rel_up", "abs_floor_up"])
+def test_explicit_zero_upper_band_is_enforced(tmp_path, upper_param):
+    path = _make_fixture(
+        f'register_ci_gate(metric_key="train/x", steps="last", '
+        f'constraint={{"{upper_param}": 0, "rel_down": 0.2}})',
+        tmp_path,
+    )
+    constraint = parse_ci_gate_specs(path)[0].constraint
+    assert evaluate_constraint(constraint, 0.5, 0.5).ok
+    assert not evaluate_constraint(constraint, 0.6, 0.5).ok
 
 
 def test_non_string_non_list_steps_rejected(tmp_path):
@@ -541,9 +563,7 @@ def test_bad_steps_list_rejected(tmp_path, steps_literal):
 
 
 def test_direction_key_is_gone(tmp_path):
-    # The one-sided direction abstraction was removed: every constraint is
-    # two-sided, a lenient side gets a wide band. A stale declaration must
-    # fail loud, not silently drop its direction.
+    # A stale direction declaration must fail loud, not silently drop its rule.
     path = _make_fixture(
         """
         from tests.ci.metric_history import register_ci_gate
@@ -645,3 +665,26 @@ def test_register_ci_gate_runtime_is_noop():
         )
         is None
     )
+
+
+def test_mfu_is_tracked_at_the_last_step_and_never_enforced(tmp_path):
+    assert GATE_DEFAULTS["perf/actor_train_mfu"] == {"steps": "last", "constraint": None}
+    path = _make_fixture(
+        'from tests.ci.metric_history import register_ci_gate\nregister_ci_gate(metric_key="perf/actor_train_mfu")',
+        tmp_path,
+    )
+    (spec,) = parse_ci_gate_specs(path)
+    assert spec.constraint is None
+    assert spec.enforce is False
+
+
+def test_every_training_e2e_with_a_history_gate_also_gates_mfu():
+    e2e_dir = Path(__file__).parents[2] / "e2e"
+    training_files = [
+        path
+        for path in sorted(e2e_dir.rglob("test_*.py"))
+        if "train/grad_norm" in {spec.metric_key for spec in parse_ci_gate_specs(str(path))}
+    ]
+    assert training_files
+    for path in training_files:
+        assert "perf/actor_train_mfu" in {spec.metric_key for spec in parse_ci_gate_specs(str(path))}, path

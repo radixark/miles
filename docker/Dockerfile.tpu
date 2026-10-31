@@ -1,0 +1,86 @@
+# doc-dev: docs/developer/ci/02-docker-build.md
+# miles on TPU v7x through torch_tpu. Build via docker/build.py:
+#       python docker/build.py --variant tpu --image-tag dev --push   # radixark/miles:dev-tpu (amd64)
+#
+# One Python environment for the sglang-torchtpu engine and the torchtitan trainer, on the CUDA image's torch.
+# sglang-torchtpu releases on torch 2.11, but the torchtitan backend needs torch >= 2.13; torch_tpu carries
+# builds for torch 2.11-2.15.
+
+ARG SGLANG_TPU_IMAGE_TAG=v0.1.0-tpu
+FROM lmsysorg/sglang:${SGLANG_TPU_IMAGE_TAG}
+
+# ======================================== Arguments =============================================
+
+ARG SGLANG_TPU_REPO=sgl-project/sglang-torchtpu
+# sglang-torchtpu main (2026-10-23), which carries sgl-project/sglang-torchtpu#1578 (weight checksum) and #1609 (MoE
+# weight reload); swap it for a release image tag once one ships.
+ARG SGLANG_TPU_COMMIT=424eda39093ad8f1906bbefa295fa3da50e8da11
+ARG TORCH_VERSION=2.14.1
+ARG TORCHVISION_VERSION=0.29.1
+# the triton torch 2.14 pairs with; torchtitan imports triton unconditionally
+ARG TRITON_VERSION=3.8.0
+ARG TORCHTITAN_REPO=pytorch/torchtitan
+# TORCHTITAN_COMMIT and WHEELS_TAG equal docker/Dockerfile's (tests/fast/test_training_images.py checks it)
+ARG TORCHTITAN_COMMIT=086bf6c166ec85c1298eb5596fa9bf95f6a2d840
+ARG MILES_COMMIT=main
+ARG WHEELS_REPO=radixark/miles-wheels
+ARG WHEELS_TAG=cu130-torch214-x86_64
+ARG TARGETARCH
+
+# ====================================== Install sglang-torchtpu ============================================
+
+# The base image's /sgl-workspace/sglang is a source tree without git history, installed editable. The commit
+# pins the same python/pyproject_tpu.toml stack as the release (torch_tpu, libtpu, jax), so only the source
+# changes and the reinstall needs no dependencies.
+RUN SGLANG_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang"))') && \
+    SGLANG_TPU_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang-tpu"))') && \
+    rm -rf /sgl-workspace/sglang && git init -q /sgl-workspace/sglang && cd /sgl-workspace/sglang && \
+    git fetch -q --depth 1 https://github.com/${SGLANG_TPU_REPO}.git ${SGLANG_TPU_COMMIT} && git checkout -q FETCH_HEAD && \
+    cp python/pyproject_tpu.toml python/pyproject.toml && \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION} pip install --no-deps -e python && \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG_TPU=${SGLANG_TPU_VERSION} pip install --no-deps -e .
+
+# ====================================== Torch ============================================
+
+# torch_tpu and libtpu stay the release's; the constraints keep every later install on this torch and them
+RUN TORCH_TPU_PIN=$(python3 -c 'import importlib.metadata as m; print(m.version("torch_tpu"))') && \
+    LIBTPU_PIN=$(python3 -c 'import importlib.metadata as m; print(m.version("libtpu"))') && \
+    printf "torch==${TORCH_VERSION}\ntorchvision==${TORCHVISION_VERSION}\ntorch_tpu==${TORCH_TPU_PIN}\nlibtpu==${LIBTPU_PIN}\ntriton==${TRITON_VERSION}\n" \
+        > /opt/torch-constraints.txt && \
+    pip install --extra-index-url https://download.pytorch.org/whl/cpu -c /opt/torch-constraints.txt \
+        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}"
+
+# ====================================== Install torchtitan ============================================
+
+# with its own dependencies (the constraints keep torch)
+RUN git clone https://github.com/${TORCHTITAN_REPO}.git /root/torchtitan && \
+    cd /root/torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
+    pip install -c /opt/torch-constraints.txt -e .
+
+# ====================================== Install main package ============================================
+
+# miles, without the CUDA-only requirements; its transformers and ray pins replace the release's
+RUN git clone https://github.com/radixark/miles.git /root/miles && \
+    cd /root/miles && git checkout ${MILES_COMMIT} && \
+    pip install --no-deps -e . && \
+    grep -vE '^\s*(#|$)|nvidia-resiliency-ext|ring_flash_attn|torchft-nightly' requirements.txt > /tmp/requirements-tpu.txt && \
+    pip install -c /opt/torch-constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu -r /tmp/requirements-tpu.txt && \
+    rm /tmp/requirements-tpu.txt
+
+# miles' router build: the PyPI sglang-router drops return_routed_experts, which rollout routing replay needs
+RUN url=$(curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
+    | python3 -c "import json, sys; print(next(a['browser_download_url'] for a in json.load(sys.stdin)['assets'] \
+if a['name'].startswith('sglang_router-') and a['name'].endswith('.whl')))") && \
+    curl -fsSL -o "/tmp/$(basename "$url")" "$url" && \
+    pip install --no-deps --force-reinstall /tmp/sglang_router-*.whl && rm /tmp/sglang_router-*.whl
+
+COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
+RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
+
+# imports only, before MILES_ACCELERATOR=tpu: the build host has no TPU
+RUN python3 -c 'import sglang.srt.entrypoints.http_server, sglang_tpu, torch, ray, torchtitan.trainer, \
+miles.backends.torchtitan_utils.actor; assert torch.__version__.startswith("'"${TORCH_VERSION}"'"), torch.__version__'
+
+ENV MILES_ACCELERATOR=tpu
+WORKDIR /root/miles
+CMD ["/bin/bash"]

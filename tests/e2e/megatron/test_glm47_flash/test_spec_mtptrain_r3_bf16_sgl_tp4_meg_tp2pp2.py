@@ -14,8 +14,10 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
+    use_output_store=True,
     use_deepep=False,
     # tp2/pp2/cp1/ep2 on 4 GPUs, the same shape as test_amd_spec_mtptrain_r3_bf16_sgl_tp4_meg_tp2pp2.
     num_gpus_per_node=4,

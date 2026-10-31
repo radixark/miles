@@ -16,7 +16,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.utils import dp_schedule
+from miles.utils.args.runtime import RolloutConfig, TrainerConfig
+from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
+from miles.utils.flops_utils import KeyTerm, LayerFlops, ModelFlops
 
 
 def make_args(
@@ -26,37 +29,29 @@ def make_args(
     max_tokens_per_gpu=None,
     balance_data=False,
     balance_by_flops=False,
+    allow_partial_train_step=False,
 ):
-    return SimpleNamespace(
+    return RolloutConfig.model_construct(
         micro_batch_size=micro_batch_size,
         use_dynamic_batch_size=use_dynamic_batch_size,
         max_tokens_per_gpu=max_tokens_per_gpu,
         balance_data=balance_data,
         balance_by_flops=balance_by_flops,
-        # Minimal model config for calculate_fwd_flops (balance_by_flops path).
-        hidden_size=16,
-        num_attention_heads=2,
-        num_query_groups=2,
-        vocab_size=32,
-        ffn_hidden_size=64,
-        num_experts=None,
-        num_layers=2,
-        kv_channels=8,
-        q_lora_rank=None,  # no MLA in the stub config
-        kv_lora_rank=None,
-        qk_pos_emb_head_dim=0,
-        qk_head_dim=8,
-        v_head_dim=8,
+        hf_checkpoint="unused",
+        allow_partial_train_step=allow_partial_train_step,
+        train_backend="megatron",
     )
 
 
 def make_tp(dp_size=1, cp_size=1, vpp_size=1, microbatch_group_size_per_vp_stage=None):
-    return {
-        "dp_size": dp_size,
-        "cp_size": cp_size,
-        "vpp_size": vpp_size,
-        "microbatch_group_size_per_vp_stage": microbatch_group_size_per_vp_stage,
-    }
+    return TrainParallelConfig(
+        dp_size=dp_size,
+        cp_size=cp_size,
+        vpp_size=vpp_size,
+        microbatch_group_size_per_vp_stage=microbatch_group_size_per_vp_stage,
+        independent_dp=False,
+        supports_precomputed_schedule=True,
+    )
 
 
 def assert_invariants(
@@ -301,8 +296,7 @@ def test_partial_final_step_opt_in():
     step of the trailing rollout, covering every sample."""
     rollout_indices = [0, 0, 1, 2, 2, 3, 4, 4]
     total_lengths = [3] * 8
-    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
-    args.allow_partial_train_step = True
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12, allow_partial_train_step=True)
     tp = make_tp(dp_size=1)
 
     partitions, mbi, nmb, num_rollouts_per_step = build_dp_schedule(
@@ -326,8 +320,7 @@ def test_partial_final_step_skipped_when_below_dp_size():
     """A trailing rollout with fewer samples than dp_size cannot form a step."""
     rollout_indices = [0, 0, 1, 1, 2]
     total_lengths = [3] * 5
-    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
-    args.allow_partial_train_step = True
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12, allow_partial_train_step=True)
     tp = make_tp(dp_size=2)
 
     _, _, nmb, num_rollouts_per_step = build_dp_schedule(
@@ -390,7 +383,14 @@ def test_randomized_invariants_dynamic():
         )
 
 
-def test_balance_by_flops_packs_and_distributes():
+@pytest.fixture
+def quadratic_model_flops(monkeypatch):
+    """A model whose cost grows with the square of the sequence length, so FLOPs and tokens disagree."""
+    model_flops = ModelFlops(layers=(LayerFlops(10.0, (KeyTerm(1.0),)),), lm_head=0.0)
+    monkeypatch.setattr(dp_schedule, "_model_flops", lambda hf_checkpoint: model_flops)
+
+
+def test_balance_by_flops_packs_and_distributes(quadratic_model_flops):
     """balance_by_flops: KK-on-FLOPs packing, invariants preserved (the token cap
     is intentionally NOT enforced in this mode)."""
     total_lengths = [10, 200, 30, 400, 50, 600, 70, 800]
@@ -414,7 +414,7 @@ def test_balance_by_flops_packs_and_distributes():
     )
 
 
-def test_balance_by_flops_singleton_fallback():
+def test_balance_by_flops_singleton_fallback(quadratic_model_flops):
     """When ceil(total/cap) >= n samples, every sample gets its own micro_batch."""
     total_lengths = [100] * 4
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=100, balance_by_flops=True)
@@ -429,12 +429,34 @@ def test_balance_by_flops_singleton_fallback():
             assert len(micro_batch) == 1
 
 
-def test_has_full_schedule_config():
-    assert has_full_schedule_config(make_tp())
-    assert not has_full_schedule_config({})
-    assert not has_full_schedule_config(None)
-    assert not has_full_schedule_config({"dp_size": 4})  # fsdp/torchtitan shape
+def test_train_parallel_config_declares_schedule_support() -> None:
+    """The model carries an explicit backend scheduling capability."""
+    assert make_tp().supports_precomputed_schedule
+    assert (
+        not make_tp(dp_size=4)
+        .model_copy(update={"supports_precomputed_schedule": False})
+        .supports_precomputed_schedule
+    )  # fsdp/torchtitan shape
 
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+def test_balance_by_flops_balances_by_tokens_when_the_model_cannot_be_sized(monkeypatch):
+    unsized = SimpleNamespace(model_type="mystery", hidden_size=8, vocab_size=8, num_hidden_layers=1)
+    unsized.layer_types = ["chunked_attention"]
+    monkeypatch.setattr(dp_schedule, "load_hf_config", lambda hf_checkpoint: unsized)
+    dp_schedule._model_flops.cache_clear()
+    try:
+        assert dp_schedule._calculate_workloads([3, 1, 2], make_args(balance_by_flops=True)) == [3, 1, 2]
+    finally:
+        dp_schedule._model_flops.cache_clear()
+
+
+@pytest.mark.parametrize("config_cls", [TrainerConfig, RolloutConfig])
+def test_flops_workloads_size_from_the_hf_checkpoint_of_either_config(quadratic_model_flops, config_cls):
+    """Trainer and rollout scheduling both size workloads from `hf_checkpoint`, not backend model dimensions."""
+    config = config_cls.model_construct(hf_checkpoint="unused")
+
+    assert dp_schedule._calculate_workloads([1, 2, 3], config) == [11.0, 23.0, 36.0]

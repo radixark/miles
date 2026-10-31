@@ -3,33 +3,37 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-import ray
 import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
+from tests.fast.ray.rollout.conftest import make_args, make_rollout_config, make_sample, make_samples_grouped
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
+from tests.fast.utils.output_store.test_plan import ALL, INDEXER, MASK, R3, fake_store_refs, response
 
 from miles.ray.rollout import train_data_conversion
 from miles.ray.rollout.train_data_conversion import (
+    ROLLOUT_DATA_VALUE_SPEC,
     _post_process_rewards,
-    can_schedule_on_rollout_side,
+    can_precompute_dp_schedule,
     convert_samples_to_train_data,
     split_train_data_by_dp,
     split_train_data_by_dp_raw,
     split_train_data_by_dp_scheduled_raw,
 )
-from miles.utils import object_store
+from miles.utils.object_store import RayObjectStore
+from miles.utils.output_store.plan import StorePlan, StorePlanError
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _ray_minicluster(ray_local_mode):
-    """split_train_data_by_dp uses ray.put(...) so we need Ray."""
-    yield
-
-
 # ----------------------------- convert_samples_to_train_data -----------------------------
+
+
+def _store_sample(index: int, *, requested=ALL) -> Sample:
+    """2 prompt and 4 output tokens, whose replay arrays are in the output store."""
+    sample = make_sample(index=index, tokens=list(range(6)), rollout_log_probs=[-0.1] * 4)
+    sample.rollout_store_plan = response(f"k{index}", prompt=2, output=4, requested=requested)
+    return sample
 
 
 class TestConvertSamplesToTrainData:
@@ -38,7 +42,7 @@ class TestConvertSamplesToTrainData:
         converted = {"custom_payload": [1, 2]}
 
         out = convert_samples_to_train_data(
-            make_args(enable_sample_ownership_checker=False),
+            make_rollout_config(enable_sample_ownership_checker=False),
             [make_sample()],
             metadata={},
             custom_convert_samples_to_train_data_func=lambda args, samples: converted,
@@ -188,6 +192,71 @@ class TestConvertSamplesToTrainData:
                 custom_convert_samples_to_train_data_func=None,
                 custom_reward_post_process_func=None,
             )
+
+    def test_store_plans_become_a_column_that_satisfies_the_replay_flags(self):
+        args = make_args(rewards_normalization=False, use_rollout_routing_replay=True, use_rollout_indexer_replay=True)
+        samples = [_store_sample(0), _store_sample(1)]
+
+        out = convert_samples_to_train_data(args, samples, {}, None, None)
+
+        assert out["rollout_store_plan"] == [sample.rollout_store_plan.to_dict() for sample in samples]
+        assert not {"rollout_routed_experts", "rollout_indexer_topk", "rollout_sampling_mask_ids"} & out.keys()
+
+    @pytest.mark.parametrize("missing", [0, 1])
+    def test_store_plans_are_all_or_none(self, missing: int):
+        samples = [make_sample(index=i) if i == missing else _store_sample(i) for i in range(2)]
+        with pytest.raises(StorePlanError, match=rf"missing at position={missing}, sample_index={missing}"):
+            convert_samples_to_train_data(make_args(rewards_normalization=False), samples, {}, None, None)
+        inline = [make_sample(index=0), make_sample(index=1)]
+        assert "rollout_store_plan" not in convert_samples_to_train_data(
+            make_args(rewards_normalization=False), inline, {}, None, None
+        )
+
+    def test_store_plans_must_match_their_samples(self):
+        short = _store_sample(1)
+        short.rollout_store_plan = response("k1", prompt=2, output=3)
+        with pytest.raises(StorePlanError, match="routed_experts has 4 rows; expected 5"):
+            convert_samples_to_train_data(
+                make_args(rewards_normalization=False), [_store_sample(0), short], {}, None, None
+            )
+
+    def test_store_plans_must_share_their_fields(self):
+        samples = [_store_sample(0), _store_sample(1, requested={MASK})]
+        with pytest.raises(StorePlanError, match="must have the same fields"):
+            convert_samples_to_train_data(make_args(rewards_normalization=False), samples, {}, None, None)
+
+    @pytest.mark.parametrize(
+        ("flag", "field"), [("use_rollout_routing_replay", R3), ("use_rollout_indexer_replay", INDEXER)]
+    )
+    def test_a_replay_flag_requires_its_field_in_the_store_plans(self, flag: str, field: str):
+        args = make_args(rewards_normalization=False, **{flag: True})
+        with pytest.raises(StorePlanError, match=rf"--{flag.replace('_', '-')} is set .* no {field}"):
+            convert_samples_to_train_data(args, [_store_sample(0, requested=ALL - {field})], {}, None, None)
+
+    def test_support_mode_store_plans_leave_the_candidates_to_the_trainer(self):
+        args = make_args(
+            rewards_normalization=False,
+            rollout_top_logprobs_num=2,
+            rollout_sampling_logprobs_mode="support",
+            ci_test=True,
+        )
+
+        out = convert_samples_to_train_data(args, [_store_sample(0)], {}, None, None)
+
+        assert out["rollout_log_probs"] == [[-0.1] * 4]
+        assert not {"rollout_topk_token_ids", "rollout_topk_log_probs", "rollout_topk_lengths"} & out.keys()
+        # The trainer does not produce the sampled log-probs, and builds the candidates from the stored mask.
+        without_log_probs = _store_sample(0)
+        without_log_probs.rollout_log_probs = None
+        with pytest.raises(ValueError, match="requires rollout_log_probs"):
+            convert_samples_to_train_data(args, [without_log_probs], {}, None, None)
+        with pytest.raises(StorePlanError, match="stored sampling mask"):
+            convert_samples_to_train_data(args, [_store_sample(0, requested={R3})], {}, None, None)
+
+    def test_selected_mode_store_plans_still_need_the_inline_candidates(self):
+        args = make_args(rewards_normalization=False, rollout_top_logprobs_num=2)
+        with pytest.raises(ValueError, match="requires rollout_topk_token_ids"):
+            convert_samples_to_train_data(args, [_store_sample(0)], {}, None, None)
 
     def test_optional_field_round_number_from_metadata(self):
         args = make_args(rewards_normalization=False)
@@ -636,7 +705,7 @@ class TestPostProcessRewards:
         assert raw == processed == []
 
     def test_custom_reward_post_process_short_circuits(self):
-        args = make_args(advantage_estimator="grpo", rewards_normalization=True)
+        args = make_rollout_config(advantage_estimator="grpo", rewards_normalization=True)
         sentinel = ([0.0], [1.0])
         raw, processed = _post_process_rewards(
             args, [make_sample()], custom_reward_post_process_func=lambda a, s: sentinel
@@ -759,11 +828,6 @@ class TestPostProcessRewardsProperties:
 
 
 class TestSplitTrainDataByDp:
-    @pytest.fixture(autouse=True)
-    def _init_object_store(self):
-        """split_train_data_by_dp puts through the object store singleton."""
-        object_store.init_instance(make_args())
-
     def test_strided_partition_when_balance_data_off(self):
         args = make_args(balance_data=False)
         data = {
@@ -774,8 +838,9 @@ class TestSplitTrainDataByDp:
             "loss_masks": [[1, 1]] * 4,
             "sample_indices": [0, 1, 2, 3],
         }
-        refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.payload) for r in refs]
+        parts = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=2)
+        )
         # stride: dp=0 takes [0, 2], dp=1 takes [1, 3]
         assert list(parts[0]["partition"]) == [0, 2]
         assert list(parts[1]["partition"]) == [1, 3]
@@ -792,8 +857,9 @@ class TestSplitTrainDataByDp:
             "loss_masks": [[1] * n for n in (1, 2, 3, 4)],
             "sample_indices": [0, 1, 2, 3],
         }
-        refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.payload) for r in refs]
+        parts = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=2)
+        )
         sizes = [len(p["tokens"]) for p in parts]
         assert max(sizes) - min(sizes) <= 1
 
@@ -809,8 +875,9 @@ class TestSplitTrainDataByDp:
             "rollout_log_probs": [[-0.1], [-0.2]],
             "round_number": [1, 2],
         }
-        refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.payload) for r in refs]
+        parts = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=2)
+        )
         assert "rollout_log_probs" in parts[0]
         assert "round_number" in parts[0]
 
@@ -827,13 +894,14 @@ class TestSplitTrainDataByDp:
             "raw_reward": [9.0, 8.0, 7.0, 6.0],
             "dynamic_global_batch_size": 4,
         }
-        refs = split_train_data_by_dp(args, data, {"dp_size": 2})
-        parts = [ray.get(r.payload) for r in refs]
+        parts = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=2)
+        )
         for p in parts:
             assert p["raw_reward"] == [9.0, 8.0, 7.0, 6.0]
             assert p["dynamic_global_batch_size"] == 4
 
-    def test_weight_versions_survive_the_object_store_with_their_prefill_spans(self):
+    def test_weight_versions_survive_the_object_store_with_their_prefill_spans(self, ray_local_mode: None) -> None:
         """Per-call prefill spans reach a DP shard through the store and read back as the same typed calls."""
         args = make_args(balance_data=False)
         calls = [
@@ -862,10 +930,28 @@ class TestSplitTrainDataByDp:
             "weight_versions": [[call.to_dict() for call in calls]],
         }
 
-        refs = split_train_data_by_dp(args, data, {"dp_size": 1})
-        (part,) = [ray.get(r.payload) for r in refs]
+        [shard] = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=1)
+        )
+        store = RayObjectStore(frees_objects=False)
+        ref = store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+        with store.get(ref) as part:
+            assert [WeightVersionsPerCall.from_dict(call) for call in part["weight_versions"][0]] == calls
 
-        assert [WeightVersionsPerCall.from_dict(call) for call in part["weight_versions"][0]] == calls
+    def test_store_plans_survive_the_object_store(self, ray_local_mode: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A converted, split and stored plan reads back as the sample's plan."""
+        fake_store_refs(monkeypatch)
+        samples = [_store_sample(0), _store_sample(1)]
+        data = convert_samples_to_train_data(make_args(rewards_normalization=False), samples, {}, None, None)
+
+        [shard] = split_train_data_by_dp(
+            args=make_args(balance_data=False), data=data, train_parallel_config=make_train_parallel_config(dp_size=1)
+        )
+        store = RayObjectStore(frees_objects=False)
+        stored = store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+        with store.get(stored) as part:
+            plans = [StorePlan.from_dict(value) for value in part["rollout_store_plan"]]
+        assert plans == [samples[i].rollout_store_plan for i in shard["partition"]]
 
     def test_partition_indices_form_a_partition(self):
         """All partition indices together cover [0, N) exactly once."""
@@ -879,8 +965,9 @@ class TestSplitTrainDataByDp:
             "loss_masks": [[1]] * n,
             "sample_indices": list(range(n)),
         }
-        refs = split_train_data_by_dp(args, data, {"dp_size": 4})
-        parts = [ray.get(r.payload) for r in refs]
+        parts = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=4)
+        )
         all_indices = sorted(i for p in parts for i in p["partition"])
         assert all_indices == list(range(n))
 
@@ -905,7 +992,7 @@ class TestSplitTrainDataRaw:
         args = MagicMock()
         args.balance_data = False
 
-        result = split_train_data_by_dp_raw(args, data, dp_size=2)
+        result = split_train_data_by_dp_raw(args=args, data=data, dp_size=2)
 
         assert len(result) == 2
         assert "seq_witness_ids" in result[0]
@@ -926,7 +1013,7 @@ class TestSplitTrainDataRaw:
         args = MagicMock()
         args.balance_data = False
 
-        result = split_train_data_by_dp_raw(args, data, dp_size=2)
+        result = split_train_data_by_dp_raw(args=args, data=data, dp_size=2)
 
         assert len(result) == 2
         for part in result:
@@ -944,16 +1031,18 @@ class TestSplitTrainDataRaw:
         args = MagicMock()
         args.balance_data = False
 
-        result = split_train_data_by_dp_raw(args, data, dp_size=1)
+        result = split_train_data_by_dp_raw(args=args, data=data, dp_size=1)
         assert "seq_witness_ids" not in result[0]
 
 
-FULL_SCHEDULE_CONFIG = {
-    "dp_size": 2,
-    "cp_size": 1,
-    "vpp_size": 1,
-    "microbatch_group_size_per_vp_stage": None,
-}
+FULL_SCHEDULE_CONFIG = make_train_parallel_config(
+    dp_size=2,
+    cp_size=1,
+    vpp_size=1,
+    microbatch_group_size_per_vp_stage=None,
+    independent_dp=False,
+    supports_precomputed_schedule=True,
+)
 
 
 def _make_split_data(n: int, *, lengths: list[int] | None = None, rollout_ids: list[int] | None = None) -> dict:
@@ -973,42 +1062,53 @@ def _make_split_data(n: int, *, lengths: list[int] | None = None, rollout_ids: l
     }
 
 
-class TestCanScheduleOnRolloutSide:
+class TestCanPrecomputeDpSchedule:
     def test_eligible_with_full_megatron_config(self):
         args = make_args(balance_data=False, micro_batch_size=1, use_dynamic_batch_size=False, multi_lora=False)
-        assert can_schedule_on_rollout_side(args, _make_split_data(8), FULL_SCHEDULE_CONFIG)
+        assert can_precompute_dp_schedule(
+            args=args, data=_make_split_data(8), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
     def test_rejects_partial_config(self):
-        """fsdp / torchtitan advertise only dp_size; indep_dp advertises {}."""
+        """Reject backends without precomputed schedule support or an advertised config."""
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
-        assert not can_schedule_on_rollout_side(args, _make_split_data(8), {"dp_size": 2})
-        assert not can_schedule_on_rollout_side(args, _make_split_data(8), {})
-        assert not can_schedule_on_rollout_side(args, _make_split_data(8), None)
+        assert not can_precompute_dp_schedule(
+            args=args,
+            data=_make_split_data(8),
+            train_parallel_config=make_train_parallel_config(dp_size=2, supports_precomputed_schedule=False),
+        )
+        assert not can_precompute_dp_schedule(args=args, data=_make_split_data(8), train_parallel_config=None)
 
     def test_rejects_multi_lora(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=True)
-        assert not can_schedule_on_rollout_side(args, _make_split_data(8), FULL_SCHEDULE_CONFIG)
+        assert not can_precompute_dp_schedule(
+            args=args, data=_make_split_data(8), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
     def test_rejects_multimodal(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
         data = _make_split_data(8)
         data["multimodal_train_inputs"] = [None] * 8
-        assert not can_schedule_on_rollout_side(args, data, FULL_SCHEDULE_CONFIG)
+        assert not can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
     def test_rejects_fewer_rollouts_than_gbs(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
-        assert not can_schedule_on_rollout_side(args, _make_split_data(6), FULL_SCHEDULE_CONFIG)
+        assert not can_precompute_dp_schedule(
+            args=args, data=_make_split_data(6), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
     def test_accepts_trailing_partial_step(self):
         """Extra rollouts beyond a full step are fine — the schedule drops them."""
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
-        assert can_schedule_on_rollout_side(args, _make_split_data(10), FULL_SCHEDULE_CONFIG)
+        assert can_precompute_dp_schedule(
+            args=args, data=_make_split_data(10), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
     def test_dynamic_gbs_overrides_args_gbs(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
         data = _make_split_data(6)
         data["dynamic_global_batch_size"] = 6
-        assert can_schedule_on_rollout_side(args, data, FULL_SCHEDULE_CONFIG)
+        assert can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
 
 class TestSplitTrainDataByDpScheduled:
@@ -1047,7 +1147,9 @@ class TestSplitTrainDataByDpScheduled:
         tiles each shard's rows exactly, and shard rows match their partition."""
         args = make_args(balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False)
         data = _make_split_data(8)
-        scheduled = split_train_data_by_dp_scheduled_raw(args, dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG)
+        scheduled = split_train_data_by_dp_scheduled_raw(
+            args=args, data=dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
         assert len(scheduled) == 2
         seen = []
@@ -1069,7 +1171,9 @@ class TestSplitTrainDataByDpScheduled:
         rollout_ids = [0, 1, 1, 1, 2, 3]  # rollout 1 emits 3 samples
         data = _make_split_data(6, rollout_ids=rollout_ids)
         data["dynamic_global_batch_size"] = 2
-        shards = split_train_data_by_dp_scheduled_raw(args, dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG)
+        shards = split_train_data_by_dp_scheduled_raw(
+            args=args, data=dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG
+        )
 
         assert shards[0]["num_rollouts"] == [2, 2]
         assert len(shards[0]["num_microbatches"]) == 2
@@ -1085,7 +1189,7 @@ class TestSplitTrainDataByDpScheduled:
         )
         lengths = [5, 1, 4, 2, 3, 3, 2, 4]
         data = _make_split_data(8, lengths=lengths)
-        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        shards = split_train_data_by_dp_scheduled_raw(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
         nmb = shards[0]["num_microbatches"]
         for shard in shards:
@@ -1101,7 +1205,7 @@ class TestSplitTrainDataByDpScheduled:
         args = make_args(balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False)
         data = _make_split_data(16)
         data["dynamic_global_batch_size"] = 8
-        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        shards = split_train_data_by_dp_scheduled_raw(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
         assert shards[0]["num_microbatches"] == [2, 2]
         assert shards[0]["dynamic_global_batch_size"] == 8
@@ -1124,3 +1228,41 @@ def test_delayed_dp_split_preserves_the_tinker_loss_vectors():
     for shard in shards:
         assert shard["loss_weights"] and shard["advantages"] and shard["rollout_log_probs"]
     assert shards[0]["advantages"] == [[0.5], [0.5]]
+
+
+@pytest.mark.parametrize("scheduled", [False, True])
+def test_dp_splits_carry_the_store_plans_per_row(scheduled: bool):
+    """A key missing from the shard whitelist disappears silently; the trainer needs each row's plan."""
+    data = _make_split_data(8)
+    data["rollout_store_plan"] = [{"fields": {}, "refs": [{"key": f"k{i}"}]} for i in range(8)]
+    args = make_args(balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False)
+
+    if scheduled:
+        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+    else:
+        shards = split_train_data_by_dp_raw(args, data, dp_size=2)
+
+    assert len(shards) == 2
+    for shard in shards:
+        assert shard["rollout_store_plan"] == [data["rollout_store_plan"][j] for j in shard["partition"]]
+
+
+class TestOutputStoreTookEffect:
+    def _convert(self, samples, **args):
+        return convert_samples_to_train_data(
+            make_args(rewards_normalization=False, **args),
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+    def test_inline_replay_under_the_switch_means_the_requests_never_opted_in(self):
+        sample = make_sample()
+        sample.rollout_sampling_mask = RolloutSamplingMask(ids=[1], offsets=[0, 1])
+
+        with pytest.raises(StorePlanError, match="builds its own SGLang requests"):
+            self._convert([sample], use_output_store=True)
+
+    def test_without_replay_there_is_nothing_to_store(self):
+        assert "rollout_store_plan" not in self._convert([make_sample()], use_output_store=True)

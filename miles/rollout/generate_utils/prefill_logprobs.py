@@ -4,7 +4,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
 
-from miles.rollout.generate_utils.generate_endpoint_utils import compute_routing_headers, policy_uses_routing_key
+from miles.rollout.generate_utils.generate_endpoint_utils import compute_routing_headers, router_routes_by_key
 from miles.utils.http_utils import post
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine
@@ -56,7 +56,7 @@ def _build_prefill_scoring_payload(
 
 
 def _can_batch_prefill_score(args: Any, samples: list[Sample]) -> bool:
-    if policy_uses_routing_key(args):
+    if router_routes_by_key(args):
         return False
     return not any(sample.multimodal_inputs and sample.multimodal_inputs.get("images") for sample in samples)
 
@@ -117,7 +117,7 @@ async def recompute_rollout_logprobs_via_prefill(
     sampling_params: Mapping[str, Any],
     headers: Mapping[str, str] | None = None,
 ) -> None:
-    if not getattr(args, "recompute_logprobs_via_prefill", False):
+    if not args.recompute_logprobs_via_prefill:
         return
     if sample.response_length == 0:
         sample.rollout_log_probs = []
@@ -138,7 +138,7 @@ async def recompute_samples_rollout_logprobs_via_prefill(
     url: str,
     sampling_params: Mapping[str, Any],
 ) -> None:
-    if not getattr(args, "recompute_logprobs_via_prefill", False):
+    if not args.recompute_logprobs_via_prefill:
         return
 
     samples_to_score = [

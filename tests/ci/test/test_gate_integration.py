@@ -57,7 +57,7 @@ _GITHUB_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _clear_github_env(monkeypatch):
+def _clear_github_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test starts from a clean GitHub environment so leftovers from the
     real CI runner (or a prior test) cannot leak in."""
     for var in _GITHUB_ENV_VARS:
@@ -673,6 +673,23 @@ def _run_hook(test_file, record, store, *, write_baseline=False):
 
 
 class TestEnforcement:
+    @pytest.mark.parametrize(
+        "baseline,current,allowed",
+        [(0.040625, 0.09375, True), (0.6, 0.47, False)],
+    )
+    @pytest.mark.parametrize("write_baseline", [False, True], ids=["pr", "nightly"])
+    def test_default_reward_has_no_upper_gate(self, tmp_path, store, baseline, current, allowed, write_baseline):
+        test_file = _write_test_file(tmp_path, 'register_ci_gate(metric_key="rollout/raw_reward")')
+        registry = _registry(test_file)
+        samples = [MetricSample("rollout/raw_reward", '"all"', REL20_KEY, 0, baseline)]
+        _seed_history(store, registry, 10, values=samples)
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, current]]}, name="m.jsonl")
+
+        assert _run_hook(test_file, record, store, write_baseline=write_baseline) is allowed
+        assert _count_runs(store) == 10 + int(write_baseline)
+        history = store.recent_trusted_values(registry.filename, "cuda", registry.suite, "rollout/raw_reward", 0, 20)
+        assert len(history) == 10 + int(write_baseline and allowed)
+
     @pytest.mark.parametrize("enforce", [False, True])
     def test_summary_error_does_not_change_gate_verdict(self, tmp_path, store, monkeypatch, enforce):
         test_file = _write_test_file(
@@ -859,6 +876,7 @@ class TestHarnessEnforcement:
         with caplog.at_level("INFO"):
             rc = ci_utils.run_unittest_files(
                 files,
+                snapshot_hardware="cpu",
                 timeout_per_file=10,
                 continue_on_error=continue_on_error,
                 enable_retry=True,
@@ -915,6 +933,7 @@ class TestHarnessEnforcement:
         with caplog.at_level("INFO"):
             rc = ci_utils.run_unittest_files(
                 [registry],
+                snapshot_hardware="cpu",
                 timeout_per_file=10,
                 enable_retry=True,
                 max_attempts=3,

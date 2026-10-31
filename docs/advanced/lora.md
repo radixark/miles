@@ -3,7 +3,7 @@ title: LoRA Training and Serving
 description: Train LoRA adapters with miles, synchronize them to SGLang, and run dense, MoE, quantized-rollout, multi-LoRA, and agentic recipes.
 ---
 
-miles trains the adapter matrices in Megatron and serves the same live adapter
+miles trains the adapter matrices in Megatron or torchtitan and serves the same live adapter
 from SGLang. The base model stays frozen; at each configured weight-update
 boundary, miles exports and synchronizes the updated LoRA weights. The default
 boundary is once per rollout/train iteration. No merge-to-base or checkpoint
@@ -36,14 +36,16 @@ instead of assuming that any checkpoint with familiar module names will work.
 
 ## LoRA training implementations
 
-Both implementations use `--train-backend megatron`. The difference is how
-LoRA is attached to the Megatron model and converted for serving; this is
-separate from SGLang's serving-side `--sglang-lora-backend` choice.
+The first two implementations use `--train-backend megatron` and differ in how
+LoRA is attached to the Megatron model and converted for serving; the third is
+the torchtitan backend's. All are separate from SGLang's serving-side
+`--sglang-lora-backend` choice.
 
 | Implementation | How the adapter is built | Model coverage on current `main` | Status |
 |---|---|---|---|
 | **Megatron-Bridge PEFT** | `AutoBridge` builds the provider, applies Bridge LoRA before DDP, and exports HF-named adapter tensors. Select it with `--megatron-to-hf-mode bridge`. | Qwen2.5, Qwen3, GPT-OSS, Kimi K2.5, GLM-5/5.1/5.2/5.3, and Qwen3.5/3.6, subject to the evidence and module caveats below. | General production path. Current multi-LoRA also requires this path. |
 | **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles.backends.megatron_utils.lora.native` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles/backends/megatron_utils/lora/native/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6/Next hybrids (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), Inkling, and Kimi K3. | Single-LoRA, colocated. Unregistered models fail at startup. |
+| **torchtitan LoRA** | Under `--train-backend torchtitan`, torchtitan's own `LoRAConverter` adapts the Linear projections the HF targets name before the model is built and parallelized; the model's state-dict adapter names the adapters back as HF PEFT tensors. | Single-adapter LoRA on Linear projections of `--titan-model-name qwen3` (other torchtitan models are refused): dense attention and MLP; attention-only on Qwen3 MoE is checked at config level but not yet run end to end. Routed experts are grouped weights the pinned torchtitan cannot adapt, and a target set must name a projection in every layer (K and V together on Qwen3); upstream torchtitan lifts both, which needs a torchtitan version bump in miles. Defaults to `--lora-type canonical_lora` (every projection gets its own `lora_A`) and `--lora-A-init-method kaiming` (torchtitan's init); other values are refused. No dropout, no `--lora-adapter-path`. | New; covered by the Qwen3-4B E2E below. |
 
 <Note>
 The planned maintenance direction is native-first: after the generalized native plugin
@@ -79,6 +81,7 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Implementation | Model family | Architecture exercised | Evidence | Notes |
 |---|---|---|---|---|
 | Bridge | Qwen2.5 0.5B / 3B | Dense | [0.5B CUDA and ROCm E2E](https://github.com/radixark/miles/blob/main/tests/e2e/lora/test_lora_qwen2.5_0.5B.py), [3B disaggregated recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen2.5-3B-megatron-lora-disaggregated.sh) | The simplest starting point; `all-linear` works. |
+| torchtitan | Qwen3 4B | Dense | [TP=2 colocated E2E](https://github.com/radixark/miles/blob/main/tests/e2e/torchtitan/test_qwen3_4B_lora.py) | The megatron Qwen3-4B recipe's model, parallelism and adapter on torchtitan; the target translation refuses sets the converter cannot express before the model is built. |
 | Bridge | Qwen3 4B | Dense | [Single-LoRA recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen3-4B-megatron-lora.sh), [AMD launcher](https://github.com/radixark/miles/blob/main/scripts/amd/run_qwen3_4b_lora.py) | The AMD launcher uses Triton attention and LoRA backends. |
 | Bridge | Qwen3-30B-A3B | MoE | [Multi-LoRA gateway example](https://github.com/radixark/miles/tree/main/examples/multi_lora) | Disaggregated Tinker training and versioned sampling. |
 | Bridge | GPT-OSS 20B | MoE | [Recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh), [AMD launcher](https://github.com/radixark/miles/blob/main/scripts/amd/run_gpt_oss_20b_lora.py), [MoE LoRA E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_gpt_oss_20b_moe_lora_ci.py) | Uses the SGLang `triton` LoRA backend; the AMD launcher also uses Triton attention and MoE backends. |
@@ -88,6 +91,8 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Native / raw | Inkling / Inkling-Small | Native multimodal MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_inkling.py), [Inkling-Small 6-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_inkling_small_6layer_lora_ci.py) | Larger profiles are launcher/experiment evidence rather than LoRA CI. |
 | Native / raw | Qwen3 0.6B, Qwen3.5-35B-A3B | Dense GQA; gated-GQA + GDN hybrid MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_qwen3_lora_native.py), [Qwen3 0.6B E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_0_6b_lora_native_ci.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_5_35b_a3b_lora_native_ci.py) | Attention (+ dense/shared MLP) adapters; GDN layers carry none. |
 | Native / raw | GLM-4.7-Flash, GLM-5.2, Kimi K2.5 | MLA MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_lora_native.py), [GLM-5.2 5-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_glm5_2_5layer_lora_native_ci.py), [Kimi K2.5 2-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_kimi_k25_2layer_lora_native_ci.py) | MLA attention adapters; routed experts require Bridge. |
+| Native / raw | GLM-5.3-Flash | Hybrid KDA + DSA MoE + mHC | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_3_flash_lora.py), [model page](/models/glm/glm5-3-flash) | KDA, DSA (except `kv_b_proj`) and dense/shared MLP adapters; routed experts stay frozen. Serving needs SGLang LoRA on the KDA projections. |
+| Native / raw | DeepSeek-V4.1-Flash | MoE + compressed sparse attention + mHC + engram | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_deepseek_v4_1.py) (`--train-mode lora`), [model page](/models/deepseek/deepseek-v4-1-flash) | Attention adapters, including the grouped `wo_a`, and the shared expert; routed experts, the compressor, the indexer and engram stay frozen. Serving needs SGLang LoRA on the V4 attention. |
 
 ## Quick start
 
@@ -230,6 +235,13 @@ Bridge-only.
 | Disaggregated, including multi-node | NCCL broadcast to remote SGLang engines | Use `--update-weight-transfer-mode broadcast`, Bridge mode, and `--pipeline-model-parallel-size 1`. |
 
 Native LoRA is colocated only. Remote/disaggregated LoRA sync requires Bridge.
+
+On SGLang attention DP (`--sglang-attn-dp-size N`, or the deprecated
+`--sglang-enable-dp-attention --sglang-dp-size N`), SGLang serves LoRA only from
+pinned adapters and requires the attention DP size to equal the engine's TP size
+(sgl-project/sglang#36389). miles pins the rollout adapter there and gives the engine
+a second LoRA slot, which SGLang keeps for the base model. Multi-LoRA cannot run on
+attention DP: pinned adapters are never evicted.
 
 LoRA is not supported by the P2P/RDMA or disk-delta weight-transfer modes. A
 hybrid job with both colocated and additional remote rollout engines also cannot
@@ -384,6 +396,9 @@ change ([PR #2199](https://github.com/radixark/miles/pull/2199)), so treat it as
 stability evidence rather than a released benchmark.
 
 ## Multi-LoRA training
+
+For what the service does, how it batches tenants, and the supported models, see the
+[Multi-LoRA Training Service](/advanced/multi-lora) overview.
 
 Multi-LoRA training is served through the Tinker protocol: `serve_tinker.py`
 turns a miles deployment into a training service where each client drives its

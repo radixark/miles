@@ -13,7 +13,6 @@ Vision weights are also excluded (--check-weight-update-skip-list visual): miles
 VLM/vision implementation on the training side, so they are never synced.
 """
 
-import dataclasses
 import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
@@ -32,6 +31,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     # tp2/cp2/ep4: TP=4 hits a Qwen3.5 attention-output-gate sharding bug, so stay at TP=2.
@@ -41,6 +41,7 @@ CASE = CaseConfig(
     pp_size=1,
     tp_size=2,
     ep_size=4,
+    megatron_dispatcher="alltoall" if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" else "flex",
     # 4096 (the CP=1 cases keep 8192): CP=2 routes the GatedDeltaNet backward through the heavier
     # fla CP kernel, whose Triton autotune OOMs at 8192 even with PP=2; halve the budget for headroom.
     max_tokens_per_gpu=4096,
@@ -60,6 +61,4 @@ if __name__ == "__main__":
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     prepare(CASE)
-    if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
-        CASE = dataclasses.replace(CASE, megatron_dispatcher="alltoall")
     execute(CASE, wandb_file=__file__)

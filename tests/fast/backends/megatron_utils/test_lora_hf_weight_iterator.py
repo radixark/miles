@@ -54,7 +54,7 @@ class TestHfWeightIteratorFactory:
 
         iterator = object.__new__(HfWeightIteratorBridge)
         iterator.model_name = "deepseekv4"
-        iterator.args = Namespace(q_lora_rank=None)
+        iterator.args = Namespace(backend=Namespace(q_lora_rank=None))
 
         groups = {group.key: group.suffixes for group in iterator._hf_atomic_update_groups()}
         assert groups["wqkv_a"] == (".self_attn.wq_a.weight", ".self_attn.wkv.weight")

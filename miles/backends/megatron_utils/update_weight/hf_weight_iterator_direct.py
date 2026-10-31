@@ -20,6 +20,8 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.types import ParamInfo
 
 
@@ -52,7 +54,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             edp = parallel.edp
             assert edp is not None, "Expert data parallel state is required for MoE weight updates"
             owner_infos = _partition_expert_infos(
-                expert_infos, num_local_experts=self.args.num_experts // ep_size, edp_size=edp.size
+                expert_infos, num_local_experts=self.args.backend.num_experts // ep_size, edp_size=edp.size
             )
             # At ETP1, TP x DP x CP is exactly EP x EDP. Borrow Megatron's
             # combined group to avoid repacking between EP and EDP gathers.
@@ -226,6 +228,7 @@ def _gather_megatron_expert_batch(
     handles = []
     for i, param in enumerate(etp_gathered):
         buffers = [torch.empty_like(param, device=torch.cuda.current_device()) for _ in range(ep.size)]
+        reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER)
         handles.append(dist.all_gather(buffers, param, group=ep.group, async_op=True))
         for ep_rank, ep_names in enumerate(all_names):
             all_gathered[ep_rank].append((ep_names[i], buffers[ep_rank]))
@@ -298,10 +301,18 @@ def _get_megatron_local_param_infos(
             dtype=param.dtype,
             shape=param.shape,
             attrs={
-                "tensor_model_parallel": getattr(param, "tensor_model_parallel", False),
-                "partition_dim": getattr(param, "partition_dim", -1),
-                "partition_stride": getattr(param, "partition_stride", 1),
-                "parallel_mode": getattr(param, "parallel_mode", None),
+                "tensor_model_parallel": getattr(
+                    param, "tensor_model_parallel", False
+                ),  # config-access-exempt: tensor_model_parallel is optional backend-attached tensor metadata
+                "partition_dim": getattr(
+                    param, "partition_dim", -1
+                ),  # config-access-exempt: partition_dim is optional backend-attached tensor metadata
+                "partition_stride": getattr(
+                    param, "partition_stride", 1
+                ),  # config-access-exempt: partition_stride is optional backend-attached tensor metadata
+                "parallel_mode": getattr(
+                    param, "parallel_mode", None
+                ),  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             },
             size=param.numel() * param.element_size(),
             src_rank=rank,
@@ -318,7 +329,7 @@ def _get_megatron_local_param_infos(
             for name, info in infos.items():
                 if name in param_infos:
                     # Duplicates across PP only exist for MTP virtual-PP layers.
-                    assert args.mtp_num_layers is not None
+                    assert args.backend.mtp_num_layers is not None
                     if param_infos[name].src_rank > src_rank:
                         param_infos[name] = info
                 else:
@@ -391,7 +402,7 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     (GLU/SwiGLU interleaved [gate, up]), so assert partition_stride==2 is removed.
     But TEGroupedLinear still does not set partition_stride/partition_dim correctly for grouped moe gemm
     """
-    if "linear_fc1.weight" in name and args.swiglu:
+    if "linear_fc1.weight" in name and args.backend.swiglu:
         partition_stride = 2
         if partition_dim < 0:
             partition_dim = 0
@@ -422,7 +433,9 @@ def all_gather_params_async(
         if "expert_bias" in info.name:
             gather_tasks.append((info, param, None, None, None, None))
             handles.append(None)
-        elif getattr(param, "parallel_mode", None) == "duplicated" or (
+        elif getattr(
+            param, "parallel_mode", None
+        ) == "duplicated" or (  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(info.name, param)
         ):
             gather_tasks.append((info, param.data, None, None, None, None))
@@ -442,6 +455,7 @@ def all_gather_params_async(
                 continue
 
             param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
+            reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER)
             handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
             gather_tasks.append((info, None, handle, param_partitions, param.partition_dim, param.partition_stride))
             handles.append(handle)

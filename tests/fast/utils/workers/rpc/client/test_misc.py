@@ -344,3 +344,72 @@ class TestRestoringThePin:
     def test_unpinning_an_unpinned_pin_answers_nothing(self):
         """A handle that never handshook has nothing to restore, and must not invent a baseline."""
         assert BootUuidPin(required=True, worker_cls_name="Worker").unpin() is None
+
+
+class TestObservedBootUuidPin:
+    def test_an_observed_boot_uuid_is_expected_before_any_response(self) -> None:
+        """A pin built from an observation fences the very first request and needs no handshake."""
+        pin = BootUuidPin(required=False, worker_cls_name="Worker", expected="boot-a")
+
+        assert pin.expected == "boot-a"
+        assert pin.needs_handshake() is False
+
+    def test_an_observed_pin_refuses_a_first_response_from_another_boot(self) -> None:
+        """The first answer is checked against the observation instead of being adopted."""
+        pin = BootUuidPin(required=False, worker_cls_name="Worker", expected="boot-a")
+
+        with pytest.raises(ServerRestartedError, match="boot-b"):
+            pin.verify(_response(boot_uuid="boot-b"))
+
+        assert pin.expected == "boot-a"
+
+    def test_an_observed_pin_refuses_a_response_without_a_boot_uuid(self) -> None:
+        """A response that cannot prove its boot does not pass for the observed one."""
+        pin = BootUuidPin(required=False, worker_cls_name="Worker", expected="boot-a")
+
+        with pytest.raises(ServerRestartedError):
+            pin.verify(_response())
+
+    def test_an_observed_pin_cannot_be_unpinned(self) -> None:
+        """A targeted handle may never be opened up to follow a replacement process."""
+        pin = BootUuidPin(required=False, worker_cls_name="Worker", expected="boot-a")
+
+        with pytest.raises(ValueError):
+            pin.unpin()
+
+        assert pin.expected == "boot-a"
+
+    def test_an_observed_pin_cannot_be_moved_to_another_boot(self) -> None:
+        """Restoring a different or empty value would silently retarget the handle."""
+        pin = BootUuidPin(required=False, worker_cls_name="Worker", expected="boot-a")
+
+        for value in ("boot-b", None):
+            with pytest.raises(ValueError):
+                pin.repin(value)
+
+        assert pin.expected == "boot-a"
+
+    def test_an_observed_pin_accepts_being_restored_to_itself(self) -> None:
+        """Restoring the observed value is a no-op, so shared restore paths keep working."""
+        pin = BootUuidPin(required=False, worker_cls_name="Worker", expected="boot-a")
+
+        pin.repin("boot-a")
+        pin.verify(_response(boot_uuid="boot-a"))
+
+        assert pin.expected == "boot-a"
+
+    async def test_an_observed_pin_is_sent_on_the_first_request(self) -> None:
+        """The server sees the observed boot uuid before it has answered this client once."""
+        seen: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers.get(EXPECTED_BOOT_UUID_HEADER))
+            return httpx.Response(200, json={"status": "ok"}, headers={BOOT_UUID_HEADER: "boot-a"})
+
+        transport, client = _transport_over(
+            handler, pin=BootUuidPin(required=False, worker_cls_name="Worker", expected="boot-a")
+        )
+        async with client:
+            await transport.request("GET", "/v1/health", seconds=1.0, response_model=HealthResponse)
+
+        assert seen == ["boot-a"]

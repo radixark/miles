@@ -1,4 +1,3 @@
-import functools
 import logging
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, nullcontext
@@ -12,6 +11,7 @@ from transformers import PretrainedConfig, PreTrainedTokenizerBase
 
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch, get_data_iterator, get_rollout_data
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.loss.hub.logit_processors import get_rollout_topk_mismatch
 from miles.backends.training_utils.loss.objective import (
     compute_advantages_and_returns,
     count_loss_tokens,
@@ -33,10 +33,11 @@ from miles.backends.training_utils.torch_native.step_runner import StepRunner
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.ray.train_actor import TrainRayActor
+from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
+from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.lora.utils import build_lora_config, lora_rollout_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.profile_utils import TrainProfiler
@@ -52,15 +53,14 @@ FORWARD_ONLY_KEYS = [
     "response_lengths",
     "max_seq_lens",
 ]
+ROLLOUT_TOPK_KEYS = ["rollout_topk_token_ids", "rollout_topk_lengths", "rollout_topk_log_probs"]
 TRAIN_KEYS = FORWARD_ONLY_KEYS + [
     "log_probs",
     "advantages",
     "returns",
     "ref_log_probs",
     "rollout_log_probs",
-    "rollout_topk_token_ids",
-    "rollout_topk_lengths",
-    "rollout_topk_log_probs",
+    *ROLLOUT_TOPK_KEYS,
 ]
 SAMPLING_MASK_KEYS = ["rollout_sampling_mask_ids", "rollout_sampling_mask_offsets"]
 
@@ -82,42 +82,42 @@ class TorchNativeTrainRayActor(TrainRayActor):
     def _ref_context(self) -> AbstractContextManager:
         return nullcontext()
 
+    def _before_train(self) -> None:
+        pass
+
     def _after_rollout(self, rollout_id: int, rollout_data: dict) -> None:
         pass
 
     @property
-    def train_parallel_config(self) -> dict:
-        return {"dp_size": get_parallel_state().intra_dp.size}
+    def train_parallel_config(self) -> TrainParallelConfig:
+        return get_parallel_state().train_parallel_config(supports_precomputed_schedule=False)
 
     def _build_weight_updater(self, model, iterator_factory: Callable) -> WeightUpdater:
         self._published_weight_version = 0
         model_name = self.args.model_name
         if model_name is None:
             model_name = type(self.hf_config).__name__.lower()
+        is_lora = lora_rollout_enabled(self.args)
         return WeightUpdater(
             self.args,
             model,
             weights_getter=lambda: None,
             model_name=model_name,
-            quantization_config=getattr(self.hf_config, "quantization_config", None),
+            quantization_config=getattr(
+                self.hf_config, "quantization_config", None
+            ),  # config-access-exempt: unquantized HF checkpoints omit quantization_config
             iterator_factory=iterator_factory,
             parallel_state=get_parallel_state(),
-            is_lora=False,
+            is_lora=is_lora,
+            lora_sync_config=(
+                build_lora_config(self.args, target_modules=self.args.lora_adapter_targets) if is_lora else None
+            ),
         )
 
-    @functools.cached_property
-    def _fwd_tflops(self) -> Callable[[list[int]], float] | None:
-        try:
-            flops_args = flops_args_from_hf_config(self.hf_config)
-        except Exception as e:
-            logger.warning(f"MFU will not be reported, {type(self.hf_config).__name__} could not be sized: {e}")
-            return None
-        return lambda seq_lens: fwd_tflops_per_gpu(seq_lens, flops_args, dist.get_world_size())
-
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
-        if self.args.debug_rollout_only or self.args.save is None:
+        if self.args.debug_rollout_only or self.args.backend.save is None:
             return
-        assert not self.args.async_save, f"{type(self).__name__} does not support async_save yet."
+        assert not self.args.backend.async_save, f"{type(self).__name__} does not support async_save yet."
         self._save_checkpoint(rollout_id)
 
     def _save_checkpoint(self, rollout_id: int) -> None:
@@ -126,19 +126,20 @@ class TorchNativeTrainRayActor(TrainRayActor):
     @timer
     def sleep(self) -> None:
         if self.args.offload_train:
-            self._move_to("cpu")
+            self._move_train_state(to_host=True)
 
     @timer
     def wake_up(self) -> None:
         if self.args.offload_train:
-            self._move_to("cuda")
+            self._move_train_state(to_host=False)
 
-    def _move_to(self, device: str) -> None:
-        print_memory(f"before moving the model to {device}")
-        move_train_state(self.model_parts, self.optimizers, device)
+    def _move_train_state(self, *, to_host: bool) -> None:
+        where = "host" if to_host else "device"
+        print_memory(f"before moving the model to {where}")
+        move_train_state(self.model_parts, self.optimizers, to_host=to_host)
         clear_memory()
         dist.barrier(group=get_gloo_group())
-        print_memory(f"after moving the model to {device}")
+        print_memory(f"after moving the model to {where}")
 
     def train(
         self,
@@ -152,12 +153,19 @@ class TorchNativeTrainRayActor(TrainRayActor):
         assert (
             external_data is None
         ), f"the {self.backend_name} backend trains no critic, so it is never handed critic values"
+        self._before_train()
         self._heartbeat.bump()
         if self.args.offload_train:
             self.wake_up()
 
         with inverse_timer("train_wait"), timer("train"):
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
+            rollout_data, store_get_result = get_rollout_data(
+                args=self.args,
+                rollout_data_ref=rollout_data_ref,
+                output_store_read=self.output_store_read,
+                witness_info=None,
+                train_parallel_config=self.train_parallel_config,
+            )
             with store_get_result:
                 if self.args.debug_rollout_only:
                     return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
@@ -168,6 +176,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,
             compute_total_fwd_flops=self._fwd_tflops,
+            compute_total_train_flops=self._train_tflops,
         )
         self._heartbeat.bump()
         return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
@@ -212,6 +221,12 @@ class TorchNativeTrainRayActor(TrainRayActor):
         data_iterator.reset()
         use_rollout_sampling_mask = store_prefix == "" and args.use_sampling_support_replay
         keys = FORWARD_ONLY_KEYS + SAMPLING_MASK_KEYS if use_rollout_sampling_mask else FORWARD_ONLY_KEYS
+        # Scored here, with the weights that generated the rollout: after the first optimizer step they differ.
+        check_rollout_topk = (
+            store_prefix == "" and args.ci_test and args.true_on_policy_mode and args.rollout_top_logprobs_num > 0
+        )
+        if check_rollout_topk:
+            keys = keys + ROLLOUT_TOPK_KEYS
 
         def compute(logits: torch.Tensor, batch: dict) -> dict:
             result = get_log_probs_and_entropy(
@@ -227,6 +242,8 @@ class TorchNativeTrainRayActor(TrainRayActor):
             entry = {f"{store_prefix}log_probs": result["log_probs"]}
             if "entropy" in result:
                 entry["entropy"] = result["entropy"]
+            if check_rollout_topk:
+                entry.update(get_rollout_topk_mismatch(logits, args=args, batch=batch))
             return entry
 
         with timer(f"{store_prefix}log_probs"):
@@ -287,21 +304,24 @@ class TorchNativeTrainRayActor(TrainRayActor):
             )
 
     @timer
-    def update_weights(self, info: UpdatableEngines) -> int | None:  # type: ignore[override]
+    def update_weights(
+        self, info: UpdatableEngines, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
         if self.args.debug_train_only or self.args.debug_rollout_only:
-            return None
+            return WeightUpdateOutput(weight_version=None, failed_cell_ids=())
         self.weight_updater.reconnect_if_needed(info)
         print_memory("before update_weights")
         next_version = self._published_weight_version + 1
         if self.weight_updater.update_weights(weight_version=next_version):
             self._published_weight_version = next_version
         print_memory("after update_weights")
+
         if self.args.ci_test and self._published_weight_version > 0:
             self.weight_updater.verify_engine_version(
                 info.rollout_engines, weight_version=self._published_weight_version
             )
         clear_memory()
-        return self._published_weight_version
+        return WeightUpdateOutput(weight_version=self._published_weight_version, failed_cell_ids=())
 
 
 def _count_step_loss_tokens(data_iterator: DataIterator, num_microbatches: list[int]) -> torch.Tensor:

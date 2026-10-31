@@ -15,6 +15,7 @@ from miles.backends.training_utils.torch_native import actor as base_module
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
 from miles.backends.training_utils.torch_native.offload import _map_optimizer_state
 from miles.backends.training_utils.torch_native.step_runner import LinearStepRunner, StepMetrics
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 
 register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
@@ -271,10 +272,13 @@ class TestPublishedWeightVersion:
         monkeypatch.setattr(base_module, "print_memory", lambda message: None)
         monkeypatch.setattr(base_module, "clear_memory", lambda: None)
 
-        result = TorchNativeTrainRayActor.update_weights.__wrapped__(actor, info)
+        result = TorchNativeTrainRayActor.update_weights.__wrapped__(
+            actor, info, debug_weight_update_id="update-1", rollout_id=1
+        )
 
         expected_version = previous_version + int(completed)
-        assert result == expected_version
+        assert result.weight_version == expected_version
+        assert result.failed_cell_ids == ()
         assert actor._published_weight_version == expected_version
         actor.weight_updater.update_weights.assert_called_once_with(weight_version=previous_version + 1)
         if expected_version:
@@ -294,7 +298,42 @@ class TestPublishedWeightVersion:
         monkeypatch.setattr(base_module, "print_memory", lambda message: None)
 
         with pytest.raises(RuntimeError, match="transfer failed"):
-            TorchNativeTrainRayActor.update_weights.__wrapped__(actor, SimpleNamespace(rollout_engines=[]))
+            TorchNativeTrainRayActor.update_weights.__wrapped__(
+                actor, SimpleNamespace(rollout_engines=[]), debug_weight_update_id="update-1", rollout_id=1
+            )
 
         assert actor._published_weight_version == 3
+        actor.weight_updater.verify_engine_version.assert_not_called()
+
+
+class TestFailedTargetStopsTraining:
+    @pytest.mark.parametrize("ci_test", [False, True])
+    @pytest.mark.parametrize("failed_cell_ids", [("cell-b",), ("cell-a", "cell-b")])
+    def test_any_failed_target_raises_before_verification(
+        self, monkeypatch: pytest.MonkeyPatch, ci_test: bool, failed_cell_ids: tuple[str, ...]
+    ) -> None:
+        """TorchNative must stop on target failures even when another target succeeds."""
+        actor = _Provider()
+        actor.args.debug_train_only = False
+        actor.args.ci_test = ci_test
+        actor._published_weight_version = 3
+        actor.weight_updater = MagicMock()
+        error = ConnectionError(f"Failed update targets: {failed_cell_ids}")
+        cell_updater = _RolloutCellUpdater(
+            args=SimpleNamespace(ft_components=[]), cell_id=failed_cell_ids[0], api_client=None
+        )
+        actor.weight_updater.update_weights.side_effect = lambda **kwargs: cell_updater.mark_errored(error)
+        monkeypatch.setattr(base_module, "print_memory", lambda message: None)
+
+        with pytest.raises(ConnectionError) as raised:
+            TorchNativeTrainRayActor.update_weights.__wrapped__(
+                actor,
+                SimpleNamespace(rollout_engines=[object(), object()]),
+                debug_weight_update_id="update-4",
+                rollout_id=1,
+            )
+
+        assert raised.value is error
+        assert actor._published_weight_version == 3
+        assert all(cell_id in str(raised.value) for cell_id in failed_cell_ids)
         actor.weight_updater.verify_engine_version.assert_not_called()

@@ -1,5 +1,6 @@
 import logging
 from argparse import Namespace
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -7,9 +8,12 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import make_trainer_args, with_backend_values
+from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
 
 from miles.backends.training_utils.data.rollout import DataIterator
 from miles.backends.training_utils.model_companion import ModelCompanion
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 
 
 class FakeModelChunk(torch.nn.Module):
@@ -108,7 +112,7 @@ def make_train_one_step_args(**overrides: Any) -> Namespace:
         enable_witness=False,
         save_local_weight_checksum=False,
     )
-    return Namespace(**{**defaults, **overrides})
+    return make_trainer_args(**{**defaults, **overrides})
 
 
 @pytest.fixture
@@ -132,7 +136,6 @@ def train_one_step_env(monkeypatch) -> TrainOneStepEnv:
         forward_backward_engine=FakeForwardBackwardEngine(),
     )
 
-    monkeypatch.setattr(model_module, "get_args", lambda: env.args)
     monkeypatch.setattr(model_module, "get_parallel_state", lambda: env.parallel_state)
     monkeypatch.setattr("miles.backends.training_utils.parallel.get_parallel_state", lambda: env.parallel_state)
     monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: env.forward_backward_engine)
@@ -166,6 +169,124 @@ class TestTrainOneStepStructuredLog:
         assert "train op=train_step rollout=7 step=3 attempt=2 outcome=NORMAL valid_step=true" in caplog.messages
 
 
+class TestMtpGradientGate:
+    @pytest.mark.parametrize(
+        ("detach", "response_length", "checked"), [(True, 128, True), (False, 128, False), (True, 129, False)]
+    )
+    def test_non_mtp_gradients_are_checked_only_for_detached_truncated_training(
+        self, train_one_step_env: TrainOneStepEnv, detach: bool, response_length: int, checked: bool
+    ) -> None:
+        """The backend detach flag preserves the real gradient check and its truncation boundary."""
+        from miles.backends.megatron_utils.model import train_one_step
+
+        env = train_one_step_env
+        env.args = make_train_one_step_args(
+            ci_test=True, enable_mtp_training=True, mtp_detach_heads=detach, rollout_max_response_len=response_length
+        )
+        assert "mtp_detach_heads" not in vars(env.args)
+        parameter = torch.nn.Parameter(torch.ones(1))
+        parameter.grad = torch.ones(1)
+        env.model[0].register_parameter("non_mtp_weight", parameter)
+
+        with pytest.raises(AssertionError, match="Expected all non-MTP parameters") if checked else nullcontext():
+            train_one_step(
+                args=env.args,
+                rollout_id=7,
+                step_id=3,
+                data_iterator=env.data_iterator,
+                model=env.model,
+                optimizer=None,
+                opt_param_scheduler=None,
+                num_microbatches=1,
+                num_rollouts=1,
+                witness_info=None,
+                attempt=0,
+            )
+
+
+class TestTrainOneStepFaultHook:
+    @pytest.fixture
+    def allreduce_log(self, train_one_step_env: TrainOneStepEnv, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        from miles.backends.megatron_utils import model as model_module
+
+        log: list[object] = []
+        train_one_step_env.args.enable_sample_ownership_checker = False
+        train_one_step_env.parallel_state.indep_dp = FakeParallelGroup(size=2)
+
+        def allreduce(*args: Any, **kwargs: Any) -> tuple[bool, dict[str, float]]:
+            log.append("allreduce")
+            return True, {}
+
+        monkeypatch.setattr(model_module, "allreduce_grads_and_losses_across_replicas", allreduce)
+        return log
+
+    def _train(self, env: TrainOneStepEnv) -> None:
+        from miles.backends.megatron_utils.model import train_one_step
+
+        train_one_step(
+            args=env.args,
+            rollout_id=7,
+            step_id=0,
+            data_iterator=env.data_iterator,
+            model=env.model,
+            optimizer=None,
+            opt_param_scheduler=None,
+            num_microbatches=1,
+            num_rollouts=1,
+            witness_info=None,
+            attempt=2,
+        )
+
+    def test_the_hook_of_this_step_fires_before_the_cross_replica_allreduce(
+        self, train_one_step_env: TrainOneStepEnv, allreduce_log: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fault armed for this rollout and attempt must strike before replicas exchange gradients."""
+        _arm_marker_hook(
+            monkeypatch,
+            log=allreduce_log,
+            hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+            rollout_id=7,
+            attempt=2,
+        )
+        self._train(train_one_step_env)
+        assert allreduce_log == [("hook", FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE.value), "allreduce"]
+
+    @pytest.mark.parametrize("filters", [{"rollout_id": 6}, {"attempt": 1}])
+    def test_a_hook_armed_for_another_step_or_attempt_does_not_fire(
+        self,
+        train_one_step_env: TrainOneStepEnv,
+        allreduce_log: list[object],
+        monkeypatch: pytest.MonkeyPatch,
+        filters: dict[str, int],
+    ) -> None:
+        """The hook must be reached with this step's rollout and attempt so other steps are spared."""
+        _arm_marker_hook(
+            monkeypatch, log=allreduce_log, hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, **filters
+        )
+        self._train(train_one_step_env)
+        assert allreduce_log == ["allreduce"]
+
+    def test_a_failing_hook_stops_the_step_before_the_allreduce(
+        self, train_one_step_env: TrainOneStepEnv, allreduce_log: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hook failure must surface instead of letting the gradients be exchanged."""
+        _arm_marker_hook(
+            monkeypatch, log=allreduce_log, hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, fail=True
+        )
+        with pytest.raises(RuntimeError, match="failed"):
+            self._train(train_one_step_env)
+        assert allreduce_log == [("hook", FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE.value)]
+
+    def test_a_single_replica_step_never_reaches_the_hook(
+        self, train_one_step_env: TrainOneStepEnv, allreduce_log: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without independent replicas there is no allreduce, so the hook must not fire."""
+        train_one_step_env.parallel_state.indep_dp = FakeParallelGroup(size=1)
+        _arm_marker_hook(monkeypatch, log=allreduce_log, hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE)
+        self._train(train_one_step_env)
+        assert allreduce_log == []
+
+
 def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampling_support(monkeypatch):
     from miles.backends.megatron_utils import model as model_module
 
@@ -179,7 +300,7 @@ def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampl
         callback_kwargs.update(kwargs)
         return {}
 
-    args = Namespace(
+    args = make_trainer_args(
         data_pad_size_multiplier=1,
         qkv_format="thd",
         allgather_cp=False,
@@ -268,7 +389,7 @@ class TestTrainOneStepModelCompanion:
         identity_fields["lineage_source_sample_indices"] = [7]
         identity_fields["lineage_output_indices"] = [0]
         identity_fields["lineage_output_counts"] = [1]
-        train_one_step_env.args.check_for_nan_in_loss_and_grad = False
+        train_one_step_env.args = with_backend_values(train_one_step_env.args, check_for_nan_in_loss_and_grad=False)
 
         def forward_backward_engine(**kwargs: Any) -> list[dict[str, Any]]:
             kwargs["data_iterator"][0].offset = 1
@@ -307,7 +428,7 @@ class TestTrainOneStepModelCompanion:
         identity_fields["lineage_source_sample_indices"] = [7]
         identity_fields["lineage_output_indices"] = [1]
         identity_fields["lineage_output_counts"] = [2]
-        train_one_step_env.args.check_for_nan_in_loss_and_grad = False
+        train_one_step_env.args = with_backend_values(train_one_step_env.args, check_for_nan_in_loss_and_grad=False)
         train_one_step_env.forward_backward_engine = FakeForwardBackwardEngine()
 
         def forward_backward_engine(**kwargs: Any) -> list[dict[str, Any]]:
@@ -348,7 +469,7 @@ class TestTrainOneStepModelCompanion:
         identity_fields["lineage_output_indices"] = [0]
         identity_fields["lineage_output_counts"] = [1]
         train_one_step_env.parallel_state.indep_dp.size = 2
-        train_one_step_env.args.check_for_nan_in_loss_and_grad = False
+        train_one_step_env.args = with_backend_values(train_one_step_env.args, check_for_nan_in_loss_and_grad=False)
 
         def forward_backward_engine(**kwargs: Any) -> list[dict[str, Any]]:
             kwargs["data_iterator"][0].offset = 1
@@ -391,8 +512,8 @@ def test_ft_discard_stays_invalid_with_finite_gradient_norm(
 
     env = train_one_step_env
     env.args.enable_sample_ownership_checker = False
-    env.args.check_for_nan_in_loss_and_grad = False
-    env.args.calculate_per_token_loss = False
+    env.args = with_backend_values(env.args, check_for_nan_in_loss_and_grad=False)
+    env.args = with_backend_values(env.args, calculate_per_token_loss=False)
     env.parallel_state.indep_dp.size = 2
 
     def reject_optimizer_step() -> None:

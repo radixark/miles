@@ -1,5 +1,7 @@
 from tests.ci.ci_register import register_cpu_ci
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["fully-async"])
 
@@ -13,7 +15,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
 from tests.fast.rollout.inference_rollout.conftest import (
     StampRecordingGenerate,
     make_eval_args,
@@ -23,6 +24,7 @@ from tests.fast.rollout.inference_rollout.conftest import (
 import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 import miles.rollout.inference_rollout.inference_rollout_common as rollout_common
+from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
@@ -117,11 +119,17 @@ def make_args(**overrides) -> Namespace:
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
         sglang_router_request_timeout_secs=14400,
+        **sglang_router_args(),
         eval_num_gpus=0,
         namespaced_radix_cache=True,
+        use_critic=False,
+        use_output_store=False,
+        sglang=make_sglang_config(enable_deterministic_inference=False),
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    args = Namespace(**defaults)
+    args.raw_megatron = resolve_megatron_config(args, base_args={})
+    return args
 
 
 def train_input(**overrides) -> RolloutFnTrainInput:
@@ -484,7 +492,7 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
         return sample
 
     monkeypatch.setattr(rollout_common, "generate_and_rm", generate_sample)
-    monkeypatch.setattr(rollout_common, "policy_uses_routing_key", lambda args: False)
+    monkeypatch.setattr(rollout_common, "router_routes_by_key", lambda args: False)
     args = make_args(
         rollout_batch_size=1,
         async_max_concurrent_samples=N_SAMPLES_PER_PROMPT,

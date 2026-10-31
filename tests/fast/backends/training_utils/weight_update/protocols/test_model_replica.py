@@ -483,3 +483,21 @@ def test_server_args_drop_fields_this_sglang_does_not_know(
 
     assert isinstance(server_args, server_args_type)
     assert server_args.model_path == "/model"
+
+
+def test_server_args_leave_out_the_watermark_fields_server_info_redacts(
+    model_replica_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ServerArgs resolution reads a "<redacted>" watermark_config as a file path and fails."""
+    server_args_type = msgspec.defstruct(
+        "ServerArgs",
+        [("model_path", str), ("watermark_config", str | None, None), ("watermark_key", str | None, None)],
+    )
+    monkeypatch.setattr(model_replica_module, "ServerArgs", server_args_type)
+
+    server_args = model_replica_module.create_server_args_from_dict(
+        {"model_path": "/model", "watermark_config": "<redacted>", "watermark_key": "<redacted>"}
+    )
+
+    assert server_args.watermark_config is None
+    assert server_args.watermark_key is None

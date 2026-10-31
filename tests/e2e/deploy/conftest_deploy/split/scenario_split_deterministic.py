@@ -8,13 +8,14 @@ from examples.infra_features.split_deployment.run_qwen3_0_6b_split import (
     build_train_args,
     compute_deployment_identities,
 )
+from tests.e2e.deploy.conftest_deploy.common.comparisons import compare_deterministic_sides
 from tests.e2e.deploy.conftest_deploy.common.example_args import (
     assert_example_parallelism_matches,
     build_deterministic_test_args,
     build_script_args,
     without_weight_decay,
 )
-from tests.e2e.deploy.conftest_deploy.common.utils import compare_deterministic_sides, run_on_cluster
+from tests.e2e.deploy.conftest_deploy.common.utils import run_on_cluster
 from tests.e2e.deploy.conftest_deploy.split.split_deployment import RunDeployment, create_split_run_side
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, RunSideRequest, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
@@ -49,11 +50,6 @@ def _build_script_args(
         f"{TEST_NAME} deploys the engines of a run as releases of their own, and mode {mode.model_name} has no "
         f"engines to deploy"
     )
-    assert not mode.colocate, (
-        f"{TEST_NAME} deploys the trainer and the engines separately, and mode {mode.model_name} colocates them "
-        f"on shared gpus"
-    )
-
     return build_script_args(
         config if config is not None else command_utils.default_config(),
         script_args_class=ScriptArgs,
@@ -108,6 +104,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
         target_dir=f"{dump_dir}/{TARGET_SIDE}",
         expected_engine_count=mode.rollout_num_engines,
         min_trained_rollouts=MIN_TRAINED_ROLLOUTS,
+        expected_target_reconfigures=[],
     )
 
     print("Split deployment deterministic comparison test PASSED")

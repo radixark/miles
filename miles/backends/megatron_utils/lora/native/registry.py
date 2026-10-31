@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 from miles.backends.megatron_utils.lora.native.naming import DeclaredNaming
 from miles.backends.megatron_utils.lora.native.spec.attention import (
+    DeepSeekV41AttentionSpec,
+    Glm5NextAttentionSpec,
     GQAAttentionSpec,
     HybridGQAGDNAttentionSpec,
     InklingAttentionSpec,
@@ -19,7 +21,11 @@ from miles.backends.megatron_utils.lora.native.spec.attention import (
 from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, LoRAArchSpec
 from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
 from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec
-from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGateUpMLPSpec, SplitGateUpMLPSpec
+from miles.backends.megatron_utils.lora.native.spec.mlp import (
+    DeepSeekV4SharedExpertSpec,
+    FusedGateUpMLPSpec,
+    SplitGateUpMLPSpec,
+)
 from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import lora_rollout_enabled, matches_lora_target
@@ -75,6 +81,20 @@ def _kimi_k3_arch_spec() -> LoRAArchSpec:
     )
 
 
+def _glm5_next_arch_spec() -> LoRAArchSpec:
+    attention = Glm5NextAttentionSpec()
+    return LoRAArchSpec(
+        name=attention.name,
+        attention=attention,
+        mlp=SplitGateUpMLPSpec(),
+        # the checkpoint nests the text stack under model.language_model., which the raw converter drops
+        declared_naming=DeclaredNaming(
+            "model.language_model.layers.",
+            {"self_attention.": "self_attn.", "mlp.": "mlp.", "mlp.shared_experts.": "mlp.shared_experts."},
+        ),
+    )
+
+
 def _shared_outer_serving_targets(targets: list[str]) -> list[str]:
     """Shared-outer export stores the expert dimension in each tensor, not in its name."""
     return [target.replace(".experts.*.", ".experts.") for target in targets]
@@ -102,8 +122,10 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "qwen3_next": hybrid,
         "deepseek_v3": mla,
         "deepseek_v32": mla,
+        "deepseek_v41": _arch_spec(DeepSeekV41AttentionSpec(), mlp=DeepSeekV4SharedExpertSpec()),
         "glm4_moe_lite": mla,
         "glm_moe_dsa": mla,
+        "glm5_next": _glm5_next_arch_spec(),
         "kimi_k2": mla,
         "kimi_k25": mla,
         "joyai_llm_flash": mla,

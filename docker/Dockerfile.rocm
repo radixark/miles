@@ -2,20 +2,20 @@
 # ROCm image for Miles (built on a prebuilt sglang base):
 #
 # 1. rocm724-mi35x  (gfx950, ROCm 7.2.4 / MI350 / MI355X, Python 3.12 base)
-#    build-arg:SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.21-rocm724-mi35x
+#    build-arg:SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.22-rocm724-mi35x
 #                WHEELS_TAG_ROCM=rocm724-gfx950-v0.5.20  TE_USE_WHEEL=1  APPLY_ROCR_VMMFIX=1
 #
 # 2. rocm10-mi35x   (gfx950, ROCm 10 / MI350 / MI355X, Python 3.12 base)
-#    build-arg:SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.21-rocm10-mi35x
+#    build-arg:SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.22-rocm10-mi35x
 #                WHEELS_TAG_ROCM=rocm10-gfx950-v0.5.18  TE_USE_WHEEL=1  APEX_USE_PREBUILT=1   (cp312 shelf)
 #
 # 3. rocm10-mi30x   (gfx942, ROCm 10 / MI300X / MI325X, Python 3.12 base)
-#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.21-rocm10-mi30x
+#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.22-rocm10-mi30x
 #                WHEELS_TAG_ROCM=rocm10-gfx942-v0.5.20  TE_USE_WHEEL=1  APEX_USE_PREBUILT=1   (cp312 shelf)
 #                AITER_PREBUILD_JIT=1
 
 ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
-ARG SGLANG_IMAGE_TAG=v0.5.21-rocm724-mi35x
+ARG SGLANG_IMAGE_TAG=v0.5.22-rocm724-mi35x
 FROM ${SGLANG_IMAGE_REPO}:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
@@ -148,7 +148,8 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3
 # (<name>.cu -> <name>.hip, headers -> <name>_hip.<ext>) as untracked files. The checkout below aborts as
 # soon as one of them sits where the new revision tracks a real file, so drop them first. Keep this off
 # ignored files (-x): those include the compiled rust extension and _version.py that the editable sglang
-# install in this image depends on.
+# install in this image depends on. radix_transfer_plugins, the output store package SGLang imports, sits
+# beside python/ in the same checkout, as in the CUDA image.
 RUN cd /sgl-workspace/sglang && \
     git reset --hard && \
     git clean -fd && \
@@ -158,7 +159,9 @@ RUN cd /sgl-workspace/sglang && \
     else \
       git checkout FETCH_HEAD; \
     fi && \
-    pip install -e "python[all_hip]" --no-deps
+    pip install -e "python[all_hip]" --no-deps && \
+    pip install -e radix_transfer_plugins --no-deps && \
+    python3 -c "import radix_transfer_plugins.stashes.token_output"
 
 # SGLang is installed without dependencies, but its Inkling multimodal processor imports numba.
 RUN pip install "numba==0.65.1"
@@ -177,7 +180,7 @@ RUN --mount=type=bind,source=docker/amd/prebuild_aiter_jit.py,target=/tmp/prebui
       echo "[aiter] JIT prebuild skipped (AITER_PREBUILD_JIT=${AITER_PREBUILD_JIT})"; \
     fi
 
-RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@06caa534822c5b980b61733a5d79ac731f9a5f9c --no-cache-dir --force-reinstall --no-build-isolation
+RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@118b09b3bc7b0cf386745db1eac2601d4aa7e681 --no-cache-dir --force-reinstall --no-build-isolation
 
 # Fix the ROCm 7.2.4 ROCr VMM-pause leak.
 RUN if [ "$APPLY_ROCR_VMMFIX" = "1" ]; then \
@@ -232,7 +235,7 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps
 
-RUN python -c "import miles.backends.fsdp_utils; import miles.backends.megatron_utils; print('miles backends: OK')"
+RUN python -c "import miles.backends.fsdp_utils.actor; import miles.backends.fsdp_utils.arguments; import miles.backends.megatron_utils; print('miles backends: OK')"
 
 # ====================================== Install sgl-model-gateway ============================================
 # SGL_ROUTER_USE_WHEELS=1 (default): prebuilt sgl-router wheel + gateway binary; 0: build from source.

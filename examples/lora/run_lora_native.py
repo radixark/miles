@@ -145,8 +145,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if not self.target_modules:
             self.target_modules = self.registry.target_modules
         for name in ("tensor_model_parallel_size", "expert_model_parallel_size", "rollout_num_gpus_per_engine"):
-            if getattr(self, name) == 0:
-                setattr(self, name, getattr(self.registry, name))
+            if (
+                getattr(self, name) == 0
+            ):  # config-access-exempt: iterate the explicit parallelism field names shared by args and registry
+                setattr(
+                    self, name, getattr(self.registry, name)
+                )  # config-access-exempt: copy the named parallelism default from the selected model registry
 
     @property
     def megatron_model_type(self) -> str:
