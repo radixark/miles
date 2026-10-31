@@ -626,6 +626,22 @@ class TestInferenceEngineEnvVars:
         assert _value_for(colocate=True, num_gpus_per_engine=1) == "1"
         assert _value_for(colocate=False, num_gpus_per_engine=2) == "1"
 
+    def test_nccl_graph_registration_is_disabled_only_for_offloaded_multi_gpu_engines(self, monkeypatch):
+        """A woken engine's graph pool sits on new pages that NCCL's capture-time registrations do not follow;
+        engines that never sleep, or capture no collectives, keep NCCL's zero-copy default."""
+        monkeypatch.delenv("NCCL_GRAPH_REGISTER", raising=False)
+
+        def _value_for(*, offload_rollout: bool, num_gpus_per_engine: int) -> str | None:
+            args = make_args(offload_rollout=offload_rollout, rollout_num_gpus_per_engine=num_gpus_per_engine)
+            return compute_inference_engine_env_vars(args).get("NCCL_GRAPH_REGISTER")
+
+        assert _value_for(offload_rollout=True, num_gpus_per_engine=8) == "0"
+        assert _value_for(offload_rollout=True, num_gpus_per_engine=1) is None
+        assert _value_for(offload_rollout=False, num_gpus_per_engine=8) is None
+
+        monkeypatch.setenv("NCCL_GRAPH_REGISTER", "1")
+        assert _value_for(offload_rollout=True, num_gpus_per_engine=8) == "1"
+
 
 class TestSpecsInferenceEngine:
     def test_pg_slot_offsets_accumulate_and_placeholder_groups_keep_their_slots(self, tmp_path):
