@@ -16,7 +16,7 @@ class TestRestoredArgumentContracts:
         self, backend: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Native parsing and trainer serialization retain the selected backend and settings."""
-        monkeypatch.setattr(torch, "__version__", "2.13.0")
+        monkeypatch.setattr(torch, "__version__", "2.14.0")
         config = parse_fsdp_test_config(
             "--train-backend", backend, "--ci-event-root", "/events", "--rollout-max-response-len", "128"
         )

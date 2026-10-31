@@ -434,7 +434,7 @@ class TinkerService:
 
     def _new_sampling_session(self, tenant: str, session_id: str, model_path: str | None) -> str:
         if model_path is not None:
-            resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
+            resolve_sampler_checkpoint(self.config, tenant, model_path)
         sampling_session_id = f"sampling-{uuid.uuid4().hex}"
         self.sampling_sessions[sampling_session_id] = SamplingSessionRecord(
             tenant=tenant, model_path=model_path, session_id=session_id
@@ -487,9 +487,7 @@ class TinkerService:
             }
         }
         lora_name, lora_path = (
-            resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
-            if model_path
-            else (None, None)
+            resolve_sampler_checkpoint(self.config, tenant, model_path) if model_path else (None, None)
         )
         future = self.futures.create(model_path or "base", tenant)
         sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]

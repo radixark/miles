@@ -7,10 +7,12 @@ import dataclasses
 import torch.nn as nn
 
 from miles.backends.megatron_utils.lora.native.modules.linear import (
+    LoRAGroupedColumnLinear,
     LoRAReplicatedPlainLinear,
     LoRASplitAdapter,
     LoRASplitQKV,
     LoRAUnreducedRowLinear,
+    attach_adapter_forward,
 )
 from miles.backends.megatron_utils.lora.native.spec import layout as L
 from miles.backends.megatron_utils.lora.native.spec.base import (
@@ -278,6 +280,83 @@ class KimiK3AttentionSpec(AttentionSpecBase):
         if block.is_kda:
             return attach_layout(block.linear_attn, self.kda_layout, layer, context)
         return attach_layout(block, self.layout, layer, context)
+
+
+class DeepSeekV41AttentionSpec(AttentionSpecBase):
+    """DeepSeek-V4.1's attention: replicated ``wq_a``/``wkv``, column ``wq_b``, grouped ``wo_a``, row ``wo_b``.
+
+    The block gathers the sequence-parallel input once, so its linears run without SP. ``wo_a`` is a
+    parameter that ``o_group_matmul`` applies one head group at a time, and its adapter keeps that
+    grouping. The compressor and indexer are not adapted; the indexer scores under ``no_grad``.
+    """
+
+    name = "deepseek_v41"
+    family = AttentionFamily.MLA
+    o_group_projection = ProjectionSpec("wo_a", "o_a", ShardLayout.COLUMN)
+    layout = ModuleLayout(
+        name="deepseek_v41_attention",
+        present_when_attr="linear_o_group_proj",
+        hf_block_prefix="attn.",
+        full_sequence=True,
+        singles=(
+            ProjectionBinding(
+                projection=ProjectionSpec("wq_a", "q_a", ShardLayout.REPLICATED),
+                module_attr="linear_q_down_proj",
+                in_dim=L.hidden_size,
+                out_dim=L.config_dim("q_lora_rank"),
+                adapter_attr="lora_q_a_adapter",
+                guard=_replicated_guard,
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("wq_b", "q_b", ShardLayout.COLUMN),
+                module_attr="linear_q_up_proj",
+                in_dim=L.config_dim("q_lora_rank"),
+                out_dim=L.host_out_local("linear_q_up_proj"),
+                adapter_attr="lora_q_b_adapter",
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("wkv", "kv", ShardLayout.REPLICATED),
+                module_attr="linear_kv_proj",
+                in_dim=L.hidden_size,
+                out_dim=L.host_out_local("linear_kv_proj"),
+                adapter_attr="lora_kv_adapter",
+                guard=_replicated_guard,
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("wo_b", "o_b", ShardLayout.ROW),
+                module_attr="linear_proj",
+                in_dim=L.host_in_local("linear_proj"),
+                out_dim=L.hidden_size,
+                adapter_attr="lora_o_b_adapter",
+            ),
+        ),
+    )
+
+    @property
+    def supported_targets(self) -> frozenset[str]:
+        return self.layout.targets | {self.o_group_projection.hf_leaf}
+
+    @property
+    def canonical_targets_csv(self) -> str:
+        return f"{super().canonical_targets_csv},{self.o_group_projection.hf_leaf}"
+
+    def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
+        count = attach_layout(block, self.layout, layer, context)
+        leaf = self.o_group_projection.hf_leaf
+        weight = block.linear_o_group_proj
+        hf_prefix = context.naming.block_prefix(layer, weight, [leaf])
+        if not context.lora.selects(f"{hf_prefix}{leaf}"):
+            return count
+        block.lora_o_a_adapter = LoRAGroupedColumnLinear(
+            hf_prefix=hf_prefix,
+            projection=self.o_group_projection,
+            reference=weight,
+            context=context,
+            in_features=weight.shape[1],
+            out_features=weight.shape[0],
+        )
+        attach_adapter_forward(block.o_group_matmul, block.lora_o_a_adapter, context.lora.scale)
+        return count + 1
 
 
 class HybridGQAGDNAttentionSpec(GQAAttentionSpec):

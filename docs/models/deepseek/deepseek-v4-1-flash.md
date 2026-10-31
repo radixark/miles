@@ -218,7 +218,26 @@ DAPO on dapo-math-17k, 16 GB300 GPUs, 2K response cap, 16 prompts x 8 samples pe
 | `train/train_rollout_kl` | 0.0012-0.0017 |
 | `train/grad_norm` at step 0 | 0.13-0.18 |
 
-## 6. Pairs Well With
+## 6. LoRA RL
+
+`--train-mode lora` trains a rank-16 adapter through native LoRA (`miles/backends/megatron_utils/lora/native`) instead of the full model:
+
+| Block | Adapted HF projections |
+|---|---|
+| Attention | `wq_a`, `wkv` (replicated), `wq_b`, `wo_a`, `wo_b` |
+| Shared expert | `w1` / `w3` (gate / up), `w2` |
+
+`wo_a` multiplies each head group by its own `[o_lora_rank, d]` block of the weight, and its adapter does the same: one `lora_A` for every group and `lora_B` split by group, which makes the adapter a plain LoRA on `wo_a.weight`. Routed experts, the compressor, the indexer (it scores under `no_grad`) and engram stay frozen; the launcher passes `--exclude-modules "*.ffn.experts.*"`. The rollout base stays in a host mirror (`--lora-base-cpu-backup`), so each step syncs only the adapter, and lr is 1e-5.
+
+Serving needs SGLang LoRA on the V4 attention projections, in [sgl-project/sglang#45231](https://github.com/sgl-project/sglang/pull/45231).
+
+```bash
+python scripts/run_deepseek_v4_1.py train --train-mode lora \
+   --model-name DeepSeek-V4.1-4layer --hf-checkpoint /root/models/DeepSeek-V4.1-4layer --load-from-hf \
+   --num-nodes 1 --num-gpus-per-node 8
+```
+
+## 7. Pairs Well With
 
 - [DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash) - the parent architecture and the `torch_dist` conversion flow.
 - [Architecture Support](/advanced/architecture-support) - the plugin lives under `miles_plugins/models/deepseek_v4_1/` (`deepseek_v4_1.py`, `engram.py`, `ops/{compressor,indexer,kvnorm}.py`); its RoPE, fake-quant and hyper-connection kernels are in `miles/kernels/{position,quant,hyper_connection}`.

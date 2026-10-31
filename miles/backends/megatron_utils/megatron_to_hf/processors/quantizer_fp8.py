@@ -1,5 +1,7 @@
+import functools
 import os
 import re
+from collections.abc import Callable
 
 import torch
 
@@ -19,11 +21,13 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     assert fmt == "e4m3", f"Unsupported FP8 format: {fmt}"
     assert quantization_config["activation_scheme"] == "dynamic"
     weight_block_size = quantization_config.get("weight_block_size", None)
-    ignored_layers = []
-    for name in quantization_config.get("ignored_layers", quantization_config.get("modules_to_not_convert", [])) or []:
-        name = name.removeprefix("model.")
-        ignored_layers.extend((name, f"model.{name}"))
-    packed_modules_mapping = quantization_config.get("packed_modules_mapping") or {}
+    is_skipped = _build_layer_skip_predicate(
+        tuple(quantization_config.get("ignored_layers", quantization_config.get("modules_to_not_convert", [])) or []),
+        tuple(
+            (name, tuple(members))
+            for name, members in (quantization_config.get("packed_modules_mapping") or {}).items()
+        ),
+    )
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, megatron_name)
@@ -55,9 +59,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
                 if converted_name.endswith("_scale"):
                     continue
                 quantize_named_params.extend(
-                    _quantize_param(
-                        args, converted_name, param, weight_block_size, ignored_layers, packed_modules_mapping
-                    )
+                    _quantize_param(args, converted_name, param, weight_block_size, is_skipped)
                 )
 
             return quantize_named_params
@@ -74,9 +76,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
             quantize_named_params = []
             for converted_name, param in converted_named_params:
                 quantize_named_params.extend(
-                    _quantize_param(
-                        args, converted_name, param, weight_block_size, ignored_layers, packed_modules_mapping
-                    )
+                    _quantize_param(args, converted_name, param, weight_block_size, is_skipped)
                 )
 
             return quantize_named_params
@@ -116,9 +116,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     if rest in fp8_param_names:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
-            quantize_named_params.extend(
-                _quantize_param(args, converted_name, param, weight_block_size, ignored_layers, packed_modules_mapping)
-            )
+            quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size, is_skipped))
 
         return quantize_named_params
 
@@ -126,7 +124,26 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     return converted_named_params
 
 
-def _quantize_param(args, name, weight, weight_block_size, ignored_layers, packed_modules_mapping):
+@functools.lru_cache(maxsize=8)
+def _build_layer_skip_predicate(
+    ignored_names: tuple[str, ...], packed_modules_mapping: tuple[tuple[str, tuple[str, ...]], ...]
+) -> Callable[[str], bool]:
+    """Matching a prefix against the checkpoint's ignore list costs one pass over it, and every sync asks again for
+    the same prefixes, so each decision is made once per quantization config."""
+    ignored_layers = []
+    for name in ignored_names:
+        name = name.removeprefix("model.")
+        ignored_layers.extend((name, f"model.{name}"))
+    fused_mapping = {name: list(members) for name, members in packed_modules_mapping}
+
+    @functools.cache
+    def is_skipped(prefix: str) -> bool:
+        return bool(ignored_layers) and is_layer_skipped(prefix, ignored_layers, fused_mapping=fused_mapping)
+
+    return is_skipped
+
+
+def _quantize_param(args, name, weight, weight_block_size, is_skipped):
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
     prefix = name.removesuffix(".weight")
     if ".experts." in prefix:
@@ -134,7 +151,7 @@ def _quantize_param(args, name, weight, weight_block_size, ignored_layers, packe
         prefix = prefix.split(".experts.", 1)[0] + ".experts"
     # Honor the checkpoint's exclusions: rollout layers kept at their original
     # precision must receive unquantized weights, without FP8 scales.
-    if ignored_layers and is_layer_skipped(prefix, ignored_layers, fused_mapping=packed_modules_mapping):
+    if is_skipped(prefix):
         return [(name, weight)]
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max

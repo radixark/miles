@@ -341,6 +341,48 @@ def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampl
     assert "rollout_sampling_mask" not in callback_kwargs
 
 
+@pytest.mark.parametrize(
+    ("loss_type", "fetched"),
+    [("policy_loss", True), ("score_centering", True), ("custom_loss", True), ("sft_loss", False)],
+)
+def test_sampling_support_replay_fetches_sampling_masks_for_losses_that_score_the_support(
+    monkeypatch, loss_type: str, fetched: bool
+):
+    """A custom loss reads the replayed sampling support like the built-in policy losses."""
+    from miles.backends.megatron_utils import model as model_module
+
+    class BatchFetched(Exception):
+        pass
+
+    def get_batch(_data_iterator, keys, *_args, **_kwargs):
+        raise BatchFetched(keys)
+
+    def forward_backward(**kwargs):
+        kwargs["forward_step_func"](kwargs["data_iterator"][0], kwargs["model"][0])
+
+    args = make_trainer_args(
+        loss_type=loss_type,
+        use_sampling_support_replay=True,
+        data_pad_size_multiplier=1,
+        qkv_format="thd",
+        allgather_cp=False,
+        seq_length=8,
+        decoder_seq_length=8,
+        micro_batch_size=1,
+    )
+    dumper = Mock()
+    dumper.wrap_forward_step.side_effect = lambda fn: fn
+    monkeypatch.setattr(model_module, "get_batch", get_batch)
+    monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward)
+
+    with pytest.raises(BatchFetched) as fetched_keys:
+        model_module.run_forward_backward_pass(args, dumper, [Mock()], [Mock()], 1, 1)
+
+    keys = fetched_keys.value.args[0]
+    assert ("rollout_sampling_mask_ids" in keys) is fetched
+    assert ("rollout_sampling_mask_offsets" in keys) is fetched
+
+
 class TestTrainOneStepModelCompanion:
     def test_disabled_check_skips_witness_identity_collection(
         self, train_one_step_env: TrainOneStepEnv, monkeypatch: pytest.MonkeyPatch
