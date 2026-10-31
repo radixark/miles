@@ -18,13 +18,11 @@ Each test asserts that our ``apply_chat_template`` produces identical token IDs.
 from __future__ import annotations
 
 import copy
-import json
 from collections import OrderedDict
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from sglang.srt.entrypoints.openai.chat_encoding import resolve_dsv4_reasoning_effort_profile
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 from transformers import AutoTokenizer
@@ -69,7 +67,6 @@ def _make_serving(tokenizer) -> OpenAIServingChat:
     serving.is_gemma4 = False
     serving.tool_call_parser = None
     serving.reasoning_parser = None
-    serving._dsv4_reasoning_effort_profile = None
     # sglang v0.5.16 added server-level default chat-template kwargs, merged into
     # the request's chat_template_kwargs at the top of _process_messages.
     # __init__ always sets it (to `... or {}`); mirror the empty default so the
@@ -133,39 +130,15 @@ def sglang_dsv32_prompt_ids(
     return result.prompt_ids
 
 
-def sglang_dsv4_prompt_ids(
-    tokenizer,
-    messages: list[dict],
-    tools: list[dict] | None = None,
-    **kwargs,
-) -> list[int]:
-    """Get DeepSeek-V4 prompt_ids through SGLang's DSv4 encoder path."""
-    request_data: dict = {"messages": copy.deepcopy(messages), "model": "test"}
-    if tools:
-        request_data["tools"] = copy.deepcopy(tools)
-    if kwargs:
-        request_data["chat_template_kwargs"] = kwargs
-    request = ChatCompletionRequest(**request_data)
-
-    serving = _make_serving(tokenizer)
-    serving.chat_encoding_spec = "dsv4"
-    serving.reasoning_parser = "deepseek-v4"
-    serving.tool_call_parser = "deepseekv4"
-    serving._dsv4_reasoning_effort_profile = resolve_dsv4_reasoning_effort_profile(model_path=_DEEPSEEK_V4_MODEL)
-    result = serving._process_messages(request, is_multimodal=False)
-    return result.prompt_ids
-
-
 # ---------------------------------------------------------------------------
 # Tokenizer cache & fixed-template loader
 # ---------------------------------------------------------------------------
 
 _TOK_CACHE: dict[str, AutoTokenizer] = {}
 
-# DeepSeek V4/V3.2 HF repos are huge and not pulled in CI; tests use the
+# DeepSeek V3.2 HF repos are huge and not pulled in CI; tests use the
 # cluster-mounted copy when present and skip otherwise (Stage 2 only needs the
 # tokenizer).
-_DEEPSEEK_V4_MODEL = "/cluster-storage/models/deepseek-ai/DeepSeek-V4-Flash"
 _DEEPSEEK_V32_MODEL = "/cluster-storage/models/deepseek-ai/DeepSeek-V3.2"
 
 
@@ -179,12 +152,6 @@ def _get_deepseek_v32_tokenizer() -> AutoTokenizer:
     if not Path(_DEEPSEEK_V32_MODEL).exists():
         pytest.skip(f"DeepSeek V3.2 tokenizer not found: {_DEEPSEEK_V32_MODEL}")
     return _get_tokenizer(_DEEPSEEK_V32_MODEL)
-
-
-def _get_deepseek_v4_tokenizer() -> AutoTokenizer:
-    if not Path(_DEEPSEEK_V4_MODEL).exists():
-        pytest.skip(f"DeepSeek V4 tokenizer not found: {_DEEPSEEK_V4_MODEL}")
-    return _get_tokenizer(_DEEPSEEK_V4_MODEL)
 
 
 def _load_fixed_or_none(tito_model: TITOTokenizerType | None) -> str | None:
@@ -501,91 +468,6 @@ class TestDeepSeekV32TITOAlignWithSGLang:
         )
         actual = tito.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=True, template_args=tito.default_template_args(self._TOOLS)
-        )
-        assert actual == expected
-
-
-# ---------------------------------------------------------------------------
-# DeepSeek V4 TITO alignment
-# ---------------------------------------------------------------------------
-
-
-class TestDeepSeekV4TITOAlignWithSGLang:
-    """DeepSeek V4 TITO prompt tokenization must match SGLang's DSv4 encoder."""
-
-    @pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
-    def test_prompt_ids_match_sglang_dsv4_with_tools(self, thinking):
-        tokenizer = _get_deepseek_v4_tokenizer()
-        messages = [{"role": "user", "content": "What is 1+1?"}]
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_year",
-                    "description": "Get current year",
-                    "parameters": {"type": "object", "properties": {}, "required": []},
-                },
-            }
-        ]
-
-        expected = sglang_dsv4_prompt_ids(tokenizer, messages, tools, thinking=thinking)
-        tito = get_tito_tokenizer(
-            tokenizer,
-            tokenizer_type=TITOTokenizerType.DEEPSEEKV4,
-            chat_template_kwargs={"enable_thinking": thinking},
-        )
-
-        actual = tito.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=True, template_args=tito.default_template_args(tools)
-        )
-        assert actual == expected
-
-    @pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
-    def test_prompt_ids_match_sglang_dsv4_with_tool_history(self, thinking):
-        tokenizer = _get_deepseek_v4_tokenizer()
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "description": "Get weather",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"city": {"type": "string"}},
-                        "required": ["city"],
-                    },
-                },
-            }
-        ]
-        messages = [
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "What's the weather in Beijing?"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": json.dumps({"city": "Beijing"}, ensure_ascii=False),
-                        },
-                    }
-                ],
-            },
-            {"role": "tool", "content": '{"temperature": 25}', "tool_call_id": "call_1"},
-        ]
-
-        expected = sglang_dsv4_prompt_ids(tokenizer, messages, tools, thinking=thinking)
-        tito = get_tito_tokenizer(
-            tokenizer,
-            tokenizer_type=TITOTokenizerType.DEEPSEEKV4,
-            chat_template_kwargs={"enable_thinking": thinking},
-        )
-
-        actual = tito.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=True, template_args=tito.default_template_args(tools)
         )
         assert actual == expected
 

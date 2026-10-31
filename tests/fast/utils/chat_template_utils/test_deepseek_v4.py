@@ -1,7 +1,7 @@
 """Tests for the DeepSeek V4 chat-template bridge and its dispatch through
 ``apply_chat_template``.
 
-Mirrors ``test_deepseek_v32.py``: the bridge renders via sglang's
+Mirrors ``test_deepseek_v32.py``: the bridge renders via the vendored
 ``encoding_dsv4.encode_messages`` (a pure string operation, no tokenizer
 needed), so most cases use plain message lists. Detection and the
 ``tokenize=True`` dispatch use a tiny tokenizer stub backed by a temporary
@@ -22,6 +22,7 @@ import pytest
 from pydantic import ValidationError
 
 from miles.utils.chat_template_utils import apply_chat_template, deepseek
+from miles.utils.chat_template_utils.templates import encoding_dsv4
 
 _MSGS_BASIC = [{"role": "user", "content": "Hello"}]
 
@@ -59,8 +60,6 @@ def _tok_with_model_type(tmp_path, model_type: str, **extra) -> _FakeTokenizer:
 def _reference_encode(messages, *, thinking: bool = False, drop_thinking: bool = True, **extra) -> str:
     """The canonical V4 rendering: a direct ``encode_messages`` call. Locks
     ``render_messages`` to this thin-bridge contract (no preprocessing of its own)."""
-    from sglang.srt.entrypoints.openai import encoding_dsv4
-
     return encoding_dsv4.encode_messages(
         messages, thinking_mode="thinking" if thinking else "chat", drop_thinking=drop_thinking, **extra
     )

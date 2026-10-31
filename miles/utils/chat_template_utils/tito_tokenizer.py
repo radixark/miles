@@ -867,12 +867,12 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
 
 
 class DeepSeekV4TITOTokenizer(TITOTokenizer):
-    """DeepSeek V4 — official encoder via sglang's ``encoding_dsv4``.
+    """DeepSeek V4 — official encoder via miles' vendored ``encoding_dsv4``.
 
     Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
     routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
     TITO incremental tokenization rides that same bridge to stay byte-aligned
-    with what the runtime serves.
+    with what the session server sends as TITO input ids.
     """
 
     reasoning_parser = "deepseek-v4"
@@ -970,7 +970,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
 
 
 class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):
-    """DeepSeek V4.1 — official encoder via sglang's ``encoding_dsv41``; the
+    """DeepSeek V4.1 — official encoder via miles' vendored ``encoding_dsv41``; the
     V4 incremental-render machinery applies unchanged."""
 
     reasoning_parser = "deepseek-v41"
