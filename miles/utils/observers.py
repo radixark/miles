@@ -38,7 +38,7 @@ from pydantic import BaseModel
 
 from miles.utils.env_report.redaction import redact_config_values
 from miles.utils.lifecycle import TrajectoryLifecycle
-from miles.utils.misc import SingletonMeta, get_current_node_ip
+from miles.utils.misc import NodeProbeMixin, SingletonMeta
 from miles.utils.timer import Timer
 
 logger = logging.getLogger(__name__)
@@ -330,7 +330,9 @@ def start_process(role: str, *, rank: int = -1, gpus: Callable[[], Iterable[int]
     if not observers.active:
         return
     with observers.isolated("start_process"):
-        process = ProcessStart(role=role, node=get_current_node_ip(), rank=rank, gpus=[int(gpu) for gpu in gpus()])
+        # named as the worker manager publishes it, so a process and its engines name one node alike
+        node = NodeProbeMixin._get_node_ip()
+        process = ProcessStart(role=role, node=node, rank=rank, gpus=[int(gpu) for gpu in gpus()])
         observers.start_process(process)
     Timer().event_sinks.append(_PhaseReporter(observers))
     if role == "rollout_manager" and observers.hears("trajectory_event"):

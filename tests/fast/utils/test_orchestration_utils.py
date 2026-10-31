@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import miles.utils.orchestration_utils as orchestration_utils
-from miles.utils import observers
+from miles.utils import misc, observers
 from miles.utils.async_utils import Disposer
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo, PayloadOrchestratorStartupInfo
@@ -288,7 +288,7 @@ async def _run_driver_with(
     monkeypatch.setattr(
         observers, "entry_points", lambda group: [SimpleNamespace(name="observer", load=lambda: observer_class)]
     )
-    monkeypatch.setattr(observers, "get_current_node_ip", lambda: "10.0.0.1")
+    monkeypatch.setattr(misc, "get_current_node_ip", lambda: "10.0.0.1")
     monkeypatch.setattr(Timer(), "event_sinks", [])
     monkeypatch.setattr(orchestration_utils.event_logger_checkpoint, "restore", lambda _args: None)
     monkeypatch.setattr(orchestration_utils, "configure_logger", lambda _args, *, source: None)
