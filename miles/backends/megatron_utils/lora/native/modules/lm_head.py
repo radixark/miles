@@ -53,7 +53,7 @@ class LoRAOutputHead(NativeLoRAAdapter):
         (host,) = self._hosts
         assert not self.tied, (
             f"cannot merge the {self.hf_prefix!r} adapter: the output head shares the input embedding's weight, "
-            "and the adapter applies to the output side only"
+            "and the adapter applies to the output side only; export the adapter, not merged weights"
         )
         yield host.weight, lambda: self.context.lora.scale * (self.head_B.float() @ self.head_A.float())
 
