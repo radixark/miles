@@ -16,9 +16,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
+from miles.utils import dp_schedule
 from miles.utils.args.runtime import RolloutConfig, TrainerConfig
-from miles.utils.dp_schedule import TrainParallelConfig, _calculate_workloads, build_dp_schedule
+from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
+from miles.utils.flops_utils import KeyTerm, LayerFlops, ModelFlops
 
 
 def make_args(
@@ -36,26 +37,9 @@ def make_args(
         max_tokens_per_gpu=max_tokens_per_gpu,
         balance_data=balance_data,
         balance_by_flops=balance_by_flops,
+        hf_checkpoint="unused",
         allow_partial_train_step=allow_partial_train_step,
         train_backend="megatron",
-        # Minimal model config for calculate_fwd_flops (balance_by_flops path).
-        raw_megatron=SimpleNamespace(
-            base_args=dict(
-                hidden_size=16,
-                num_attention_heads=2,
-                num_query_groups=2,
-                vocab_size=32,
-                ffn_hidden_size=64,
-                num_experts=None,
-                num_layers=2,
-                kv_channels=8,
-                q_lora_rank=None,  # no MLA in the stub config
-                kv_lora_rank=None,
-                qk_pos_emb_head_dim=0,
-                qk_head_dim=8,
-                v_head_dim=8,
-            )
-        ),
     )
 
 
@@ -399,7 +383,14 @@ def test_randomized_invariants_dynamic():
         )
 
 
-def test_balance_by_flops_packs_and_distributes():
+@pytest.fixture
+def quadratic_model_flops(monkeypatch):
+    """A model whose cost grows with the square of the sequence length, so FLOPs and tokens disagree."""
+    model_flops = ModelFlops(layers=(LayerFlops(10.0, (KeyTerm(1.0),)),), lm_head=0.0)
+    monkeypatch.setattr(dp_schedule, "_model_flops", lambda hf_checkpoint: model_flops)
+
+
+def test_balance_by_flops_packs_and_distributes(quadratic_model_flops):
     """balance_by_flops: KK-on-FLOPs packing, invariants preserved (the token cap
     is intentionally NOT enforced in this mode)."""
     total_lengths = [10, 200, 30, 400, 50, 600, 70, 800]
@@ -423,7 +414,7 @@ def test_balance_by_flops_packs_and_distributes():
     )
 
 
-def test_balance_by_flops_singleton_fallback():
+def test_balance_by_flops_singleton_fallback(quadratic_model_flops):
     """When ceil(total/cap) >= n samples, every sample gets its own micro_batch."""
     total_lengths = [100] * 4
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=100, balance_by_flops=True)
@@ -452,25 +443,20 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
 
 
-def test_trainer_flops_workloads_read_backend_model_dimensions() -> None:
-    """Delayed trainer scheduling computes actual FLOPs using its backend-owned model dimensions."""
-    backend = MegatronArgsNamespace(
-        hidden_size=2,
-        num_attention_heads=1,
-        num_query_groups=1,
-        vocab_size=3,
-        ffn_hidden_size=4,
-        num_experts=None,
-        num_layers=1,
-        kv_channels=2,
-        q_lora_rank=None,
-        kv_lora_rank=None,
-        qk_pos_emb_head_dim=0,
-        qk_head_dim=2,
-        v_head_dim=2,
-    )
-    config = TrainerConfig.model_construct(train_backend="megatron", backend=backend)
-    before = vars(backend).copy()
+def test_balance_by_flops_balances_by_tokens_when_the_model_cannot_be_sized(monkeypatch):
+    unsized = SimpleNamespace(model_type="mystery", hidden_size=8, vocab_size=8, num_hidden_layers=1)
+    unsized.layer_types = ["chunked_attention"]
+    monkeypatch.setattr(dp_schedule, "load_hf_config", lambda hf_checkpoint: unsized)
+    dp_schedule._model_flops.cache_clear()
+    try:
+        assert dp_schedule._calculate_workloads([3, 1, 2], make_args(balance_by_flops=True)) == [3, 1, 2]
+    finally:
+        dp_schedule._model_flops.cache_clear()
 
-    assert _calculate_workloads([0, 1, 3], config) == [0, 96, 312]
-    assert vars(backend) == before
+
+@pytest.mark.parametrize("config_cls", [TrainerConfig, RolloutConfig])
+def test_flops_workloads_size_from_the_hf_checkpoint_of_either_config(quadratic_model_flops, config_cls):
+    """Trainer and rollout scheduling both size workloads from `hf_checkpoint`, not backend model dimensions."""
+    config = config_cls.model_construct(hf_checkpoint="unused")
+
+    assert dp_schedule._calculate_workloads([1, 2, 3], config) == [11.0, 23.0, 36.0]

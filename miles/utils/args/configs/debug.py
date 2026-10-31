@@ -265,9 +265,8 @@ class DebugConfig(BaseConfig):
         bool,
         Arg(
             help=(
-                "Debug/test only: compute the stored log probabilities through the same grad-enabled fused "
-                "cross entropy the training step uses, then detach the result, so the two invocations of the "
-                "fused kernel take one execution path instead of two."
+                "Debug/test only: compute the stored log probabilities through the same grad-enabled "
+                "cross entropy the training step uses, then detach the result."
             )
         ),
     ] = False

@@ -25,6 +25,7 @@ def _resolve_sync_dtype(name, checkpoint_dtype):
 class Qwen3Adapter(ArchAdapter):
     model_types = frozenset({"qwen3"})
     verified = True
+    passes_attention_packing_kwargs = True
 
     def resolve_precision(self, base, args):
         if not _uses_formal_contract(args):

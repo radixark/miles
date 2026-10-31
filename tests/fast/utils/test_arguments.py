@@ -22,6 +22,7 @@ from miles.backends.megatron_utils.megatron_config import MegatronConfig, get_me
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
+from miles.router.backend import RouterKind
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import (
@@ -164,6 +165,42 @@ class TestAddArgumentsSupport:
         ):
             parser = argparse.ArgumentParser()
             get_miles_extra_args_provider()(parser)
+
+
+class TestRouterFlag:
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            ([], RouterKind.SGLANG),
+            (["--router", "miles"], RouterKind.MILES),
+            (["--use-miles-router"], RouterKind.MILES),
+        ],
+        ids=["default", "router-flag", "alias"],
+    )
+    def test_the_alias_selects_the_same_router_as_the_flag(self, argv: list[str], expected: RouterKind):
+        """Existing launchers pass --use-miles-router; it must land in the one field the backend reads."""
+        assert parse_megatron_test_config(*argv).router is expected
+
+    def test_an_unknown_router_is_rejected_at_parse_time(self):
+        with pytest.raises(SystemExit):
+            parse_megatron_test_config("--router", "dynamo")
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [("use_miles_router: true", RouterKind.MILES), ("use_miles_router: false", RouterKind.SGLANG)],
+        ids=["legacy-key", "legacy-key-off"],
+    )
+    def test_a_legacy_config_file_key_selects_the_router(self, tmp_path: Path, config: str, expected: RouterKind):
+        """A config written before --router must not silently fall back to sgl-router."""
+        path = tmp_path / "config.yaml"
+        path.write_text(config)
+        assert parse_megatron_test_config("--custom-config-path", str(path)).router is expected
+
+    def test_an_unknown_router_in_a_config_file_is_rejected(self, tmp_path: Path):
+        path = tmp_path / "config.yaml"
+        path.write_text("router: dynamo")
+        with pytest.raises(ValueError, match="router"):
+            parse_megatron_test_config("--custom-config-path", str(path))
 
 
 class TestFullyAsyncDataBufferFlags:
@@ -1069,6 +1106,13 @@ class TestClusterBackend:
         args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1", "--use-distributed-post"])
 
         with pytest.raises(AssertionError, match="--use-distributed-post"):
+            miles_validate_args(args)
+
+    def test_refuses_a_kubernetes_run_that_uses_the_output_store(self):
+        """Its launcher renders engine commands before it points Mooncake at the in-cluster master."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1", "--use-output-store"])
+
+        with pytest.raises(AssertionError, match="--use-output-store"):
             miles_validate_args(args)
 
     def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path) -> None:
@@ -2038,6 +2082,29 @@ def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
         miles_validate_args(args)
 
 
+def test_debug_rollout_only_drops_the_disk_offload_target_of_the_trainer_it_skips():
+    """A colocated disk-offload recipe reused for a rollout-only run failed on the trainer's offload target."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--debug-rollout-only",
+            "--colocate",
+            "--offload-train-target",
+            "disk",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    _set_megatron_parallel_sizes(args)
+
+    miles_validate_args(args)
+
+    assert args.offload_train is False
+    assert args.offload_train_target == "cpu"
+
+
 @pytest.mark.parametrize(
     ("megatron_args", "match"),
     [
@@ -2054,6 +2121,43 @@ def test_stream_optimizer_state_to_disk_rejects_reading_grads_outside_the_step(m
     args.optimizer = "adam"
     args.use_distributed_optimizer = True
     args.fp16, args.loss_scale, args.log_num_zeros_in_grad = False, None, False
+    vars(args).update(megatron_args)
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(AssertionError, match=match):
+        miles_validate_args(args)
+
+
+@pytest.mark.parametrize(
+    ("extra", "megatron_args", "match"),
+    [
+        (["--stream-optimizer-state-page-cache-mb", "1024"], {}, "needs --stream-optimizer-state-to-disk"),
+        (
+            ["--stream-optimizer-state-to-disk", "--stream-optimizer-state-page-cache-mb", "1024"],
+            {"train_backend": "torchtitan"},
+            "not supported on other backends",
+        ),
+        (
+            ["--stream-optimizer-state-to-disk", "--stream-optimizer-state-page-cache-mb", "-1"],
+            {"optimizer": "adam"},
+            "must be >= 0",
+        ),
+        (
+            ["--stream-optimizer-state-to-disk", "--stream-optimizer-state-page-cache-mb", "1024"],
+            {
+                "optimizer": "dist_muon",
+                "chunked_optimizer_state_offload": True,
+                "optimizer_state_offload_fraction": 1.0,
+            },
+            "caps the Adam bucket store",
+        ),
+    ],
+)
+def test_stream_optimizer_state_page_cache_mb_reaches_only_the_adam_store(extra, megatron_args, match):
+    """The cap is read only by the Adam bucket store, so anything else would make it a silent no-op."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
     vars(args).update(megatron_args)
     _set_megatron_parallel_sizes(args)
 
@@ -2835,13 +2939,6 @@ class TestMultiLoRAValidation:
         with pytest.raises(AssertionError, match="qkv-format thd"):
             miles_validate_args(args)
 
-    def test_rejects_shared_outer_expert_loras(self):
-        # Per-expert layout only; the flag would switch sglang to a layout training never produces.
-        args = self._parse([])
-        args.experts_shared_outer_loras = True
-        with pytest.raises(AssertionError, match="experts-shared-outer-loras"):
-            miles_validate_args(args)
-
     def test_accepts_expert_leaf_targets_without_expert_tp_flag(self):
         # --expert-tensor-parallel-size stays None until Megatron's own validate_args;
         # comparing the raw value here rejected every run that omitted the flag.
@@ -3023,6 +3120,7 @@ class TestValidateRematerializeParamFromMasterWeight:
             compute_advantages_and_returns=True,
             num_critic_only_steps=0,
             debug_train_only=False,
+            debug_rollout_only=False,
             ci_test=False,
             check_rematerialize_param_from_master_weight=False,
             disable_param_buffers_cpu_backup=False,
@@ -3061,6 +3159,13 @@ class TestValidateRematerializeParamFromMasterWeight:
         assert args.rematerialize_param_from_master_weight is False
         assert args.disable_param_buffers_cpu_backup is False
 
+    def test_debug_rollout_only_silently_disables(self):
+        # --debug-rollout-only has already turned colocate and offload_train off, which tripped the asserts.
+        args = self._make_args(debug_rollout_only=True, colocate=False, offload_train=False)
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.rematerialize_param_from_master_weight is False
+        assert args.disable_param_buffers_cpu_backup is False
+
     def test_noop_when_disabled(self):
         args = self._make_args(rematerialize_param_from_master_weight=False, colocate=False)
         _validate_rematerialize_param_from_master_weight(args)
@@ -3095,6 +3200,7 @@ class TestValidateRematerializeParamFromMasterWeight:
             rematerialize_param_from_master_weight=True,
             train_backend="fsdp",
             debug_train_only=False,
+            debug_rollout_only=False,
         )
         with pytest.raises(AssertionError, match="Megatron"):
             _validate_rematerialize_param_from_master_weight(args)
@@ -3888,7 +3994,7 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
     monkeypatch: pytest.MonkeyPatch, backend: str, detach_heads: bool
 ) -> None:
     """Native backend parsing preserves the MTP option without an unowned argument error."""
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     argv = [
         "test",
         "--train-backend",

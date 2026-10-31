@@ -2,14 +2,13 @@ from dataclasses import dataclass
 from functools import partial
 
 from torch import nn
-from torchtitan.distributed.pipeline_parallel import pipeline_llm
-from torchtitan.models.common import Embedding, Linear
+from torchtitan.config.parallelism import ParallelismConfig
+from torchtitan.models.common import Embedding, Linear, Sigmoid
 from torchtitan.models.common.config_utils import make_moe_config, make_routed_experts_config, make_router_config
-from torchtitan.protocols.model_spec import ModelSpec
+from torchtitan.models.common.feed_forward import DenseFeedForward
 
 from miles.backends.torchtitan_utils.models.glm5_next.layers import (
-    ClampedFeedForward,
-    ClampedGroupedExperts,
+    ClampedSwiGLU,
     DSAAttention,
     GatedRMSNorm,
     Glm5NextLayerNorm,
@@ -21,12 +20,11 @@ from miles.backends.torchtitan_utils.models.glm5_next.layers import (
     ShortConv,
 )
 from miles.backends.torchtitan_utils.models.glm5_next.model import Glm5NextBlock, Glm5NextModel
-from miles.backends.torchtitan_utils.models.glm5_next.parallelize import parallelize_glm5_next
-from miles.backends.torchtitan_utils.models.glm5_next.state_dict_adapter import Glm5NextStateDictAdapter
 
-__all__ = ["model_registry"]
+__all__ = ["build_model_config"]
 
-_EXPERTS_INIT = {name: partial(nn.init.trunc_normal_, std=0.02) for name in ("w1_EFD", "w2_EDF", "w3_EFD")}
+_TRUNC_NORMAL_INIT = partial(nn.init.trunc_normal_, std=0.02)
+_EXPERTS_INIT = {name: _TRUNC_NORMAL_INIT for name in ("w1_EFD", "w2_EDF", "w3_EFD")}
 # Megatron hardcodes the indexer's key LayerNorm eps; the HF config does not carry it
 _INDEXER_K_NORM_EPS = 1e-6
 
@@ -138,44 +136,41 @@ def _linear(in_features: int, out_features: int) -> Linear.Config:
     return Linear.Config(in_features=in_features, out_features=out_features)
 
 
-def _ffn(arch: _Architecture, hidden_dim: int) -> ClampedFeedForward.Config:
-    return ClampedFeedForward.Config(
-        w1=_linear(arch.dim, hidden_dim),
+def _ffn(arch: _Architecture, hidden_dim: int) -> DenseFeedForward.Config:
+    return DenseFeedForward.Config(
+        w13=Linear.Config(
+            in_features=arch.dim, out_features=hidden_dim, num_linears=2, param_init={"weight": _TRUNC_NORMAL_INIT}
+        ),
         w2=_linear(hidden_dim, arch.dim),
-        w3=_linear(arch.dim, hidden_dim),
-        swiglu_limit=arch.swiglu_limit,
+        activation_fn=ClampedSwiGLU.Config(swiglu_limit=arch.swiglu_limit),
     )
 
 
-def _moe(arch: _Architecture):
+def _moe(arch: _Architecture, *, enable_ep: bool):
     routed = make_routed_experts_config(
         dim=arch.dim,
         hidden_dim=arch.moe_hidden_dim,
         num_experts=arch.num_experts,
         top_k=arch.top_k,
         param_init=_EXPERTS_INIT,
-        comm_backend="standard",
+        enable_ep=enable_ep,
     )
-    routed.inner_experts = ClampedGroupedExperts.Config(
-        dim=arch.dim,
-        hidden_dim=arch.moe_hidden_dim,
-        num_experts=arch.num_experts,
-        param_init=_EXPERTS_INIT,
-        swiglu_limit=arch.swiglu_limit,
-    )
+    routed.activation_fn = ClampedSwiGLU.Config(swiglu_limit=arch.swiglu_limit)
     return make_moe_config(
         num_experts=arch.num_experts,
         router=make_router_config(
             dim=arch.dim,
             num_experts=arch.num_experts,
-            gate_param_init={"weight": partial(nn.init.trunc_normal_, std=0.02)},
+            gate_param_init={"weight": _TRUNC_NORMAL_INIT},
             top_k=arch.top_k,
-            score_func="sigmoid",
+            score_func=Sigmoid.Config(),
             route_norm=arch.route_norm,
             route_scale=arch.route_scale,
         ),
         routed_experts=routed,
         shared_experts=_ffn(arch, arch.moe_hidden_dim * arch.num_shared_experts),
+        load_balance_coeff=1e-3,
+        enable_sp=False,
     )
 
 
@@ -240,7 +235,7 @@ def _hyper_connection(arch: _Architecture) -> HyperConnection.Config:
     )
 
 
-def _block(arch: _Architecture, *, layer_type: str, mlp_type: str) -> Glm5NextBlock.Config:
+def _block(arch: _Architecture, *, layer_type: str, mlp_type: str, enable_ep: bool) -> Glm5NextBlock.Config:
     linear_attention = layer_type == "linear_attention"
     dense_mlp = mlp_type == "dense"
     return Glm5NextBlock.Config(
@@ -250,36 +245,30 @@ def _block(arch: _Architecture, *, layer_type: str, mlp_type: str) -> Glm5NextBl
         ffn_norm=Glm5NextRMSNorm.Config(dim=arch.dim, eps=arch.norm_eps),
         kda=_kda(arch) if linear_attention else None,
         attention=None if linear_attention else _dsa(arch),
-        feed_forward=_ffn(arch, arch.dense_hidden_dim) if dense_mlp else None,
-        moe=None if dense_mlp else _moe(arch),
+        feed_forward=_ffn(arch, arch.dense_hidden_dim) if dense_mlp else _moe(arch, enable_ep=enable_ep),
     )
 
 
-def build_model_config(hf_config) -> Glm5NextModel.Config:
+def build_model_config(
+    flavor: str, *, parallelism: ParallelismConfig, seq_len: int, attn_backend: str = "flex", hf_config
+) -> Glm5NextModel.Config:
+    """Sized from the checkpoint's config.json, as Megatron is; ``flavor`` only names the run."""
+    if parallelism.tensor_parallel_degree > 1:
+        raise NotImplementedError("GLM-5.3-Flash on torchtitan does not support tensor parallelism yet")
     arch = _Architecture.from_hf_config(hf_config)
+    if seq_len > arch.max_position_embeddings:
+        raise ValueError(f"--seq-length {seq_len} exceeds max_position_embeddings {arch.max_position_embeddings}")
+    enable_ep = parallelism.expert_parallel_degree > 1
     return Glm5NextModel.Config(
+        max_context_length=seq_len,
         dim=arch.dim,
         vocab_size=arch.vocab_size,
         num_streams=arch.num_streams,
-        max_position_embeddings=arch.max_position_embeddings,
         tok_embeddings=Embedding.Config(num_embeddings=arch.vocab_size, embedding_dim=arch.dim),
         norm=Glm5NextRMSNorm.Config(dim=arch.dim, eps=arch.norm_eps),
         lm_head=_linear(arch.dim, arch.vocab_size),
         layers=[
-            _block(arch, layer_type=layer_type, mlp_type=mlp_type)
+            _block(arch, layer_type=layer_type, mlp_type=mlp_type, enable_ep=enable_ep)
             for layer_type, mlp_type in zip(arch.layer_types, arch.mlp_layer_types, strict=True)
         ],
-    )
-
-
-def model_registry(flavor: str, attn_backend: str = "flex", *, hf_config) -> ModelSpec:
-    """Sized from the checkpoint's config.json, as Megatron is; ``flavor`` only names the run."""
-    return ModelSpec(
-        name="glm5_next",
-        flavor=flavor,
-        model=build_model_config(hf_config),
-        parallelize_fn=parallelize_glm5_next,
-        pipelining_fn=pipeline_llm,
-        post_optimizer_build_fn=None,
-        state_dict_adapter=Glm5NextStateDictAdapter,
     )

@@ -9,7 +9,7 @@ from miles.utils.arguments import parse_args_and_get_parser
 
 def test_torchtitan_returns_its_parser_after_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Parser capture must preserve TorchTitan startup and expose backend options."""
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     monkeypatch.setattr(
         sys,
         "argv",

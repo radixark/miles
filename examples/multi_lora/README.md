@@ -123,3 +123,16 @@ Training checkpoint saves and loads are serialized within the gateway. Overwriti
 deletes the previous checkpoint before writing the new one; a failed overwrite does
 not preserve the previous checkpoint. Checkpoints are ordinary directories;
 overwriting does not retain hidden versions.
+
+### Adapter layout
+
+`--lora-type canonical_lora` gives Q, K, V, gate and up independent factors in each slot,
+matching PEFT and the Tinker cookbook; it is the default for `serve_tinker.py`.
+`--lora-type lora` keeps one adapter for each fused QKV or gate/up linear.
+It can be combined with `--experts-shared-outer-loras`: expert gate and up then each
+have their own A matrix shared across experts; their B matrices remain per expert.
+These settings are fixed for the gateway, and training checkpoints must use the same layout.
+GDN projections keep their existing fused layout; this does not promise full Tinker-hosted model equivalence.
+Canonical Q/K/V needs every TP rank to hold whole KV heads (`num_query_groups >= tensor_model_parallel_size`),
+and canonical gate/up needs separate HF gate and up tensors in dense MLPs; a model or layout outside that fails at
+startup, so launch it with `--lora-type lora`.
