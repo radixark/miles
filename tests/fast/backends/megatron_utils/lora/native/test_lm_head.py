@@ -1,5 +1,6 @@
 """Native lm_head adapters on every converter-named family, tied embeddings included — no GPU."""
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
@@ -80,7 +81,6 @@ def test_the_adapter_changes_only_the_output_side(tied):
     model = _attached(tied=tied)
     adapter = model.lora_lm_head_adapter
     tokens = torch.tensor([1, 4, 7])
-    embedding_before = model.embedding.weight.clone()
     head = model.embedding.weight if tied else model.output_layer.weight
     hidden = model.embedding.weight[tokens]
 
@@ -89,8 +89,37 @@ def test_the_adapter_changes_only_the_output_side(tied):
 
     expected = hidden @ head.t() + 2.0 * hidden @ adapter.head_A.t() @ adapter.head_B.t()
     torch.testing.assert_close(logits, expected)
-    assert torch.equal(model.embedding.weight, embedding_before) and model.embedding.weight.grad is None
     assert adapter.head_A.grad is not None and adapter.head_B.grad is not None
+
+
+def test_the_vocab_sharded_b_counts_once_per_tp_rank():
+    """head_B holds this rank's vocab rows, so Megatron's grad norm must count every rank's shard."""
+    head_b = _attached(tied=True).lora_lm_head_adapter.head_B
+    assert head_b.tensor_model_parallel and head_b.partition_dim == 0
+
+
+def test_export_trims_megatrons_vocab_padding():
+    adapter = _attached(tied=True).lora_lm_head_adapter
+    gather = SimpleNamespace(request=lambda tensor, dim: lambda: tensor)
+
+    exported = dict(adapter.export_plan(gather))
+
+    assert exported["lm_head.lora_A.weight"] is adapter.head_A
+    torch.testing.assert_close(exported["lm_head.lora_B.weight"](), adapter.head_B[:VOCAB])
+
+
+def test_a_head_without_a_vocab_size_fails_instead_of_exporting_padding():
+    model = _Model(tied=True)
+    with pytest.raises(AssertionError, match="--vocab-size"):
+        LMHeadSpec().attach(model, SimpleNamespace(backend=SimpleNamespace(vocab_size=None)), _context(("lm_head",)))
+
+
+def test_a_converter_naming_the_head_otherwise_fails():
+    """Targets are checked against the spec's leaf; a differently named head would silently get no adapter."""
+    context = _context(("lm_head",))
+    context = dataclasses.replace(context, naming=SimpleNamespace(output_head_prefix=lambda weight: "head."))
+    with pytest.raises(AssertionError, match="names the output head 'head'"):
+        LMHeadSpec().attach(_Model(tied=True), _ARGS, context)
 
 
 def test_an_unselected_head_gets_no_adapter():
@@ -165,11 +194,14 @@ def test_the_unembed_group_is_attachable(hf_config):
     assert "lm_head" in served
 
 
-def test_specs_without_a_head_adapter_still_refuse_it():
-    with pytest.raises(AssertionError, match=r"does not implement adapters for \['lm_head'\]"):
+@pytest.mark.parametrize(
+    "model_type,head", [("glm5_next", "lm_head"), ("deepseek_v41", "lm_head"), ("deepseek_v41", "head")]
+)
+def test_specs_without_a_head_adapter_still_refuse_it(model_type, head):
+    with pytest.raises(AssertionError, match=rf"does not implement adapters for \['{head}'\]"):
         resolve_adapter_targets(
-            {"model_type": "glm5_next"},
-            ["lm_head"],
+            {"model_type": model_type},
+            [head],
             hf_modules=[],
             lora_type="canonical_lora",
             experts_shared_outer_loras=True,

@@ -39,7 +39,9 @@ class LoRAOutputHead(NativeLoRAAdapter):
                 grad_sum_group="tp",
             ),
         )
-        self.register_parameter("head_B", new_lora_parameter(reference, (vocab_local, context.lora.rank), init="zero"))
+        self.register_parameter(
+            "head_B", new_lora_parameter(reference, (vocab_local, context.lora.rank), init="zero", partition_dim=0)
+        )
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         scaled = x / self.mup if self.mup else x
@@ -51,7 +53,7 @@ class LoRAOutputHead(NativeLoRAAdapter):
         (host,) = self._hosts
         assert not self.tied, (
             f"cannot merge the {self.hf_prefix!r} adapter: the output head shares the input embedding's weight, "
-            "and the adapter applies to the output side only"
+            "and the adapter applies to the output side only; export the adapter, not merged weights"
         )
         yield host.weight, lambda: self.context.lora.scale * (self.head_B.float() @ self.head_A.float())
 
