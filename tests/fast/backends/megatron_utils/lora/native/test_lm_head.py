@@ -6,12 +6,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
+import transformers
 from tests.fast.fixtures.args_fixtures import make_trainer_config
 
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
-from miles.backends.megatron_utils.lora.native.registry import resolve_adapter_targets
+from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 from miles.backends.megatron_utils.lora.native.spec.lm_head import LMHeadSpec
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
@@ -178,6 +179,30 @@ def test_the_converter_names_the_head(model_name, head):
     weight = nn.Parameter(torch.empty(PADDED_VOCAB // 2, HIDDEN))
     weight.tensor_model_parallel, weight.partition_dim = True, 0
     assert naming.output_head_prefix(weight) == head
+
+
+# converter-named head families whose config class transformers itself defines (remote-code ones need --model-name)
+_TRANSFORMERS_HEAD_FAMILIES = sorted(
+    model_type
+    for model_type, spec in MODEL_SPECS.items()
+    if isinstance(spec.lm_head, LMHeadSpec)
+    and model_type in transformers.models.auto.configuration_auto.CONFIG_MAPPING
+    and transformers.models.auto.configuration_auto.CONFIG_MAPPING[model_type].__module__.startswith("transformers.")
+)
+
+
+@pytest.mark.parametrize("model_type", _TRANSFORMERS_HEAD_FAMILIES)
+def test_every_head_family_converter_names_the_declared_leaf(model_type):
+    """Attach asserts this on GPU; checking it here keeps a converter change from failing only at run time."""
+    model_name = type(transformers.AutoConfig.for_model(model_type)).__name__.lower()
+    args = make_trainer_config(hidden_size=HIDDEN, num_attention_heads=2, hf_checkpoint="/ckpt")
+    naming = ConverterNaming(args, model_name, tp_size=1, is_hf_name=lambda name: True)
+    weight = nn.Parameter(torch.empty(PADDED_VOCAB, HIDDEN))
+    weight.tensor_model_parallel, weight.partition_dim = True, 0
+    assert (
+        naming.output_head_prefix(weight).removesuffix(".").rpartition(".")[2]
+        == MODEL_SPECS[model_type].lm_head.hf_leaf
+    )
 
 
 _QWEN3_5 = {
