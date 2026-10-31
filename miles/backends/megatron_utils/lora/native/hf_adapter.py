@@ -81,15 +81,23 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
     )
     with safe_open(path, framework="pt") as adapter_file:
         keys = {re.sub(r"^base_model\.model\.", "", key): key for key in adapter_file.keys()}
+        taken: set[str] = set()
 
         def take(name: str) -> torch.Tensor:
             if name not in keys:
                 raise KeyError(f"[lora-native] adapter tensor missing: {name}")
+            taken.add(name)
             return adapter_file.get_tensor(keys[name])
 
         load_plan: list[tuple[torch.Tensor, torch.Tensor]] = []
         for adapter in iter_adapters(model_chunks):
             load_plan.extend(_load_adapter(adapter, take))
+        # a tensor no attached adapter takes would silently leave the restored model unlike the saved one
+        untaken = sorted(set(keys) - taken)
+        assert not untaken, (
+            f"[lora-native] {adapter_path} holds adapter tensors no selected module takes: {untaken[:8]}"
+            f"{' ...' if len(untaken) > 8 else ''}; add their modules to --target-modules"
+        )
 
     with torch.no_grad():
         for parameter, tensor in load_plan:

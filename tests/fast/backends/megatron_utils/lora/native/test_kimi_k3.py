@@ -197,6 +197,16 @@ def test_hf_import_round_trips_the_export(tmp_path):
             torch.testing.assert_close(parameter, exported_value, msg=name)
 
 
+def test_hf_import_refuses_tensors_no_selected_module_takes(tmp_path):
+    """An adapter saved with modules the current targets leave out would otherwise restore without them."""
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    stray = "model.layers.0.linear_attn.in_proj_b.lora_A.weight"
+    save_file({**exported, stray: torch.zeros(RANK, 4)}, str(tmp_path / "adapter_model.safetensors"))
+
+    with pytest.raises(AssertionError, match=rf"no selected module takes: \['{stray}'\]"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
+
+
 def test_merged_weights_reproduce_the_adapter_forward():
     model = _model()
     weights = {name: parameter for name, parameter in model.named_parameters() if "lora" not in name}
