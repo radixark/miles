@@ -17,6 +17,12 @@ class Platform:
     dynamic_shapes = True
     # NVML sees the devices, so each training rank is pinned to its GPU's NUMA node
     nvml_numa_affinity = True
+    # the torch.compile backend for model code
+    compile_backend = "inductor"
+    # Triton kernels (e.g. --log-probs-backend fused) run here
+    triton_kernels = True
+    # the --update-weight-transfer-mode values an engine on this platform can receive; None: all of them
+    weight_transfer_modes: frozenset[str] | None = None
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         torch.cuda.set_device(f"cuda:{local_rank}")
@@ -26,6 +32,9 @@ class Platform:
 
     def current_device(self) -> torch.device:
         return torch.device(self.device_type, torch.accelerator.current_device_index())
+
+    def install_titan_attention(self) -> None:
+        """Route torchtitan's document-masked attention to this platform's kernel; CUDA keeps FlexAttention."""
 
     @functools.cache  # noqa: B019 -- one instance per process
     def device_name(self) -> str | None:
