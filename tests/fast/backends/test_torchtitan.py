@@ -494,7 +494,7 @@ def test_sleep_and_wake_leave_cpu_offloaded_training_state_on_the_host(monkeypat
     monkeypatch.setattr(native_actor, "move_train_state", lambda *_args, to_host: moved.append(to_host))
     monkeypatch.setattr(titan_actor.dist, "barrier", lambda **_kwargs: None)
     for module in (titan_actor, native_actor):
-        monkeypatch.setattr(module, "clear_memory", lambda: None)
+        monkeypatch.setattr(module, "clear_memory", lambda **_kwargs: None)
         monkeypatch.setattr(module, "print_memory", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(module, "get_gloo_group", lambda: None)
     actor = titan_actor.TorchtitanTrainRayActor.__new__(titan_actor.TorchtitanTrainRayActor)
