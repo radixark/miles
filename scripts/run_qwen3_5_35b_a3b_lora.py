@@ -70,7 +70,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
-    target_modules: str = "all-linear"
+    # Bridge's shared-A LoRA adapts the fused GDN in_proj only whole, and attn leaves in_proj_b / in_proj_a out
+    target_modules: str = "attn,mlp,in_proj_b,in_proj_a"
     # required for true on-policy under colocate (OFF -> KL ~1.0 vs ~1e-3)
     lora_base_cpu_backup: bool = True
     # MoE-expert LoRA layout: shared-outer when True, per-expert when False

@@ -1119,7 +1119,7 @@ class TestClusterBackend:
         """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
         from transformers import Qwen3Config
 
-        Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
+        Qwen3Config(num_hidden_layers=1, architectures=["Qwen3ForCausalLM"]).save_pretrained(tmp_path)
         args = self._parse(
             [
                 "--cluster-backend",
@@ -1133,7 +1133,7 @@ class TestClusterBackend:
                 "--megatron-to-hf-mode",
                 "bridge",
                 "--target-modules",
-                "q_proj",
+                "q_proj,k_proj,v_proj",
                 "--hf-checkpoint",
                 str(tmp_path),
             ]
@@ -2769,6 +2769,11 @@ class TestDataSourceSelection:
 class TestMultiLoRAValidation:
     @pytest.fixture(autouse=True)
     def _bridge_selector(self, monkeypatch):
+        self.fused_checks = []
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection",
+            lambda checkpoint, targets, *, canonical: self.fused_checks.append((list(targets), canonical)),
+        )
         monkeypatch.setattr(
             "miles.utils.lora.arguments.HfWeightMapping.from_config",
             lambda config: SimpleNamespace(parameter_names=frozenset()),
@@ -2884,6 +2889,11 @@ class TestMultiLoRAValidation:
         args = self._parse(["--target-modules", "in_proj_qkv,in_proj_z,out_proj", "--lora-type", lora_type])
         miles_validate_args(args)
         assert args.lora_adapter_targets == served
+
+    @pytest.mark.parametrize("lora_type", ["lora", "canonical_lora"])
+    def test_bridge_checks_fused_modules_at_argument_time(self, lora_type):
+        miles_validate_args(self._parse(["--target-modules", "q_proj", "--lora-type", lora_type]))
+        assert self.fused_checks == [(["q_proj"], lora_type == "canonical_lora")]
 
     def test_bridge_canonical_refuses_a_partial_gdn_group(self, monkeypatch):
         monkeypatch.setattr(
@@ -4060,9 +4070,10 @@ class TestLoRATypeResolution:
     def _parse(self, tmp_path, extra):
         from transformers import Qwen3Config
 
-        Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
+        Qwen3Config(num_hidden_layers=1, architectures=["Qwen3ForCausalLM"]).save_pretrained(tmp_path)
         args = get_megatron_arg_parser().parse_args(
-            ["--lora-rank", "8", "--target-modules", "q_proj", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"]
+            ["--lora-rank", "8", "--target-modules", "q_proj,k_proj,v_proj", "--hf-checkpoint", str(tmp_path)]
+            + ["--num-rollout", "1"]
             + extra
             + REQUIRED_ARGS
         )

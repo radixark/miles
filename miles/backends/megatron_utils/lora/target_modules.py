@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE
@@ -114,6 +115,47 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
         ), f"LoRA cannot select different projections across parameters in {mapping.megatron_param!r}"
     assert adapter_targets, "LoRA targets have no Megatron modules"
     return list(adapter_targets)
+
+
+def check_fused_lora_selection(hf_checkpoint, hf_targets, *, canonical):
+    """Refuse a target set that adapts only some of the HF projections Bridge fuses into one module.
+
+    A fused module shares one lora_A across its projections, so it is adapted for all of them or none;
+    under canonical_lora a fused qkv / fc1 / Qwen3.5 GDN in_proj gives each projection its own adapter instead.
+    """
+    from miles.utils.megatron_bridge_utils import load_auto_bridge
+
+    bridge = load_auto_bridge(hf_checkpoint)
+    hf_mapping = HfWeightMapping.from_config(bridge.hf_pretrained.config)
+    modules = sorted(name.removesuffix(".weight") for name in hf_mapping.parameter_names)
+    model_bridge = bridge._model_bridge
+    model_bridge.hf_pretrained = bridge.hf_pretrained
+    for mapping in model_bridge.mapping_registry().get_all_mappings():
+        megatron_module, weight = mapping.megatron_param.rsplit(".", 1)
+        checkpoint_parameters = _checkpoint_parameters(mapping)
+        if weight not in ("weight", "weight*") or len(checkpoint_parameters) < 2:
+            continue
+        splittable = _splits_canonically(megatron_module, checkpoint_parameters)
+        if canonical and splittable:
+            continue
+        # one fused module per wildcard capture (layer, expert)
+        fused = defaultdict(list)
+        for parameter in sorted(checkpoint_parameters):
+            pattern = re.compile(
+                re.escape(hf_mapping.model_parameter(parameter).removesuffix(".weight")).replace(r"\*", "(.*)")
+            )
+            for module in modules:
+                match = pattern.fullmatch(module)
+                if match is not None:
+                    fused[match.groups()].append(module)
+        for names in fused.values():
+            selected = [name for name in names if any(matches_lora_target(name, target) for target in hf_targets)]
+            missing = [name for name in names if name not in selected]
+            assert not (selected and missing), (
+                f"Bridge fuses {names} into {megatron_module}, which shares one lora_A across them, so it cannot "
+                f"adapt only {selected}: add {missing} to --target-modules"
+                + (" or pass --lora-type canonical_lora" if splittable else "")
+            )
 
 
 def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, exclude_modules, explicit_targets=()):
