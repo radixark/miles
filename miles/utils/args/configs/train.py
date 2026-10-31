@@ -140,6 +140,21 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = None
+    mm_tower_sync: A[
+        list[str] | None,
+        Arg(
+            type_parser=str,
+            nargs="*",
+            metavar="TOWER",
+            help=(
+                "Re-send the frozen multimodal tower weights from --hf-checkpoint to the "
+                "engines on every weight update, so the engines can release their weights "
+                "during training. Each TOWER is a module name matched against checkpoint "
+                "weight names as '.TOWER.' (e.g. 'visual audio' selects model.visual.* and "
+                "model.audio.*). Off by default; the Inkling MM provider implies 'visual audio'."
+            ),
+        ),
+    ] = None
     recompute_loss_function: A[
         bool,
         Arg(help="Whether to enable recompute loss function to save memory during training."),

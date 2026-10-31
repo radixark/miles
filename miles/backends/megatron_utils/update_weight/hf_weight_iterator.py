@@ -17,6 +17,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWei
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import (
     iter_checkpoint_tower_units,
+    mm_tower_names,
 )
 from miles.utils.lora.utils import is_lora_weight_name
 
@@ -135,6 +136,14 @@ def _gather_pp_full_adapter(
 
 
 def _iter_mm_tower_units(args, *, materialize):
-    if (provider := args.custom_model_provider_path) is None or "inkling_mm_model_provider" not in provider.path:
+    towers = mm_tower_names(args)
+    if not towers:
         return
-    yield from iter_checkpoint_tower_units(args.hf_checkpoint, materialize=materialize)
+    count = 0
+    for unit in iter_checkpoint_tower_units(args.hf_checkpoint, materialize=materialize, towers=towers):
+        count += len(unit)
+        yield unit
+    if materialize:
+        logger.info(
+            "mm tower sync: re-sent %d tower tensor(s) for towers=%s from %s", count, list(towers), args.hf_checkpoint
+        )
