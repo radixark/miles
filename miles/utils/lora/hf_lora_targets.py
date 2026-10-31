@@ -374,10 +374,13 @@ def gdn_in_proj_served_targets(modules: list[str], hf_targets: list[str], hf_blo
                 f"GDN LoRA needs {sorted(group)} selected together in {block or hf_block} "
                 f"(got {sorted(leaves & group)}): SGLang serves the components only as a stacked group"
             )
+    gdn_modules = [module for module in modules if module.rpartition(".")[0].endswith(hf_block)]
     served = []
     for target in hf_targets:
         block, dot, leaf = target.rpartition(".")
-        if leaf in GDN_IN_PROJ_COMPONENTS_BY_MODULE and (block.endswith(hf_block) or not block):
+        # a wildcard block (``*.in_proj_qkv``) is a GDN target when it reaches a GDN module
+        in_gdn = any(matches_lora_target(module, target) for module in gdn_modules) or block.endswith(hf_block)
+        if leaf in GDN_IN_PROJ_COMPONENTS_BY_MODULE and (in_gdn or not block):
             served.extend(f"{block}{dot}{component}" for component in GDN_IN_PROJ_COMPONENTS_BY_MODULE[leaf])
         else:
             served.append(target)

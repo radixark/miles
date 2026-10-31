@@ -2885,6 +2885,19 @@ class TestMultiLoRAValidation:
         miles_validate_args(args)
         assert args.lora_adapter_targets == served
 
+    def test_bridge_canonical_serves_wildcard_gdn_targets_by_component(self, monkeypatch):
+        """A target whose block is a wildcard still reaches the GDN modules Bridge splits into components."""
+        prefix = "model.language_model.layers.0.linear_attn."
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: HfWeightMapping(
+                frozenset(f"{prefix}{leaf}.weight" for leaf in ("in_proj_qkv", "in_proj_z"))
+            ),
+        )
+        args = self._parse(["--target-modules", "*.in_proj_qkv,*.in_proj_z", "--lora-type", "canonical_lora"])
+        miles_validate_args(args)
+        assert args.lora_adapter_targets == [f"*.in_proj_{component}" for component in ("q", "k", "v", "z")]
+
     def test_bridge_canonical_refuses_a_partial_gdn_group(self, monkeypatch):
         monkeypatch.setattr(
             "miles.utils.lora.arguments.HfWeightMapping.from_config",
