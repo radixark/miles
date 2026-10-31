@@ -207,6 +207,36 @@ def test_hf_import_refuses_tensors_no_selected_module_takes(tmp_path):
         load_lora_adapter_hf([_model()], str(tmp_path))
 
 
+def test_hf_import_counts_the_tensors_other_pipeline_stages_take(tmp_path, monkeypatch):
+    """Under PP every stage holds some layers; a tensor another stage takes is not left over."""
+    from megatron.core import parallel_state
+
+    from miles.backends.megatron_utils.lora.native import hf_adapter
+
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    other_stage = "model.layers.9.self_attn.o_proj.lora_A.weight"
+    save_file({**exported, other_stage: torch.zeros(RANK, 12)}, str(tmp_path / "adapter_model.safetensors"))
+
+    def all_gather_object(stages, taken, group):
+        stages[:] = [taken, {other_stage}]
+
+    monkeypatch.setattr(hf_adapter.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(hf_adapter.dist, "all_gather_object", all_gather_object)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_group", lambda: None)
+
+    load_lora_adapter_hf([_model()], str(tmp_path))
+
+
+def test_hf_import_refuses_peft_tensors_it_cannot_load(tmp_path):
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    dora = "model.layers.0.self_attn.o_proj.lora_magnitude_vector"
+    save_file({**exported, dora: torch.zeros(12)}, str(tmp_path / "adapter_model.safetensors"))
+
+    with pytest.raises(AssertionError, match="native LoRA loads only lora_A / lora_B"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
+
+
 def test_merged_weights_reproduce_the_adapter_forward():
     model = _model()
     weights = {name: parameter for name, parameter in model.named_parameters() if "lora" not in name}
