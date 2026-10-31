@@ -145,6 +145,11 @@ def _compute_server_args(
         kwargs["enable_return_routed_experts"] = True
     if args.use_rollout_indexer_replay:
         kwargs["enable_return_indexer_topk"] = True
+    # SGLang v0.5.23 turns DeepSeek-V4.1 decoder SWA bounded replay on when this is unset; it is not
+    # numerically equivalent to full prefill, so rollout logprobs and replayed routing would drift
+    # from the trainer. Keep full prefill unless --sglang-enable-decoder-swa-bounded-replay is set.
+    if base_args.get("enable_decoder_swa_bounded_replay") is None:
+        kwargs["enable_decoder_swa_bounded_replay"] = False
     if args.use_output_store:
         # Every engine, eval included: an eval request never asks for the store.
         kwargs.update(sglang_output_store_server_args(args, local_hostname=host.strip("[]")))

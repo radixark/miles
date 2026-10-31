@@ -1,6 +1,6 @@
 """The DeepSeek V4.1 bridge must render exactly what sglang's ``serving_chat``
-dsv41 branch renders: the ``encoding_dsv41`` encoder, the server's default
-``reasoning_effort``, client-only tool payloads, and no empty system message
+dsv41 branch rendered before v0.5.23: the ``encoding_dsv41`` encoder, the
+server's default ``reasoning_effort``, client-only tool payloads, and no empty system message
 unless tools need a host.
 """
 
@@ -13,10 +13,10 @@ register_cpu_ci(est_time=25, suite="stage-a-cpu", labels=[])
 import json
 
 import pytest
-from sglang.srt.entrypoints.openai import chat_encoding, encoding_dsv4, encoding_dsv41
 from sglang.srt.entrypoints.openai.protocol import Tool
 
 from miles.utils.chat_template_utils import apply_chat_template, deepseek
+from miles.utils.chat_template_utils.templates import encoding_dsv4, encoding_dsv41
 from miles.utils.chat_template_utils.tito_tokenizer import (
     DeepSeekV4TITOTokenizer,
     DeepSeekV41TITOTokenizer,
@@ -74,7 +74,7 @@ def _tok_with_model_type(tmp_path, model_type: str) -> _FakeTokenizer:
 
 
 def _server_default_effort(monkeypatch=None):
-    return chat_encoding.default_dsv41_reasoning_effort_from_env("high")
+    return deepseek.default_dsv41_reasoning_effort_from_env("high")
 
 
 def test_detect_by_config(tmp_path):
@@ -127,7 +127,7 @@ def test_reasoning_effort_env_default_and_request_override(monkeypatch):
 
 def test_tools_use_client_only_payload(monkeypatch):
     monkeypatch.delenv("SGLANG_DSV41_REASONING_EFFORT", raising=False)
-    payload = chat_encoding.dsv41_tool_payload(Tool.model_validate(_TOOLS[0]))
+    payload = deepseek.dsv41_tool_payload(Tool.model_validate(_TOOLS[0]))
     assert payload != Tool.model_validate(_TOOLS[0]).model_dump()
     expected = encoding_dsv41.encode_messages(
         [{"role": "system", "content": "", "tools": [payload]}, *_MSGS["no_system"]],

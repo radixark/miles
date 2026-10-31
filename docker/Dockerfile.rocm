@@ -21,7 +21,7 @@ FROM ${SGLANG_IMAGE_REPO}:${SGLANG_IMAGE_TAG} AS sglang
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
 # ======================================== Arguments ============================================
-ARG SGLANG_BRANCH=sglang-miles
+ARG SGLANG_BRANCH=sglang-miles-v0.5.22-final
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
