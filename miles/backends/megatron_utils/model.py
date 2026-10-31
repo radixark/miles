@@ -299,8 +299,8 @@ def forward_only(
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
-    The model stays in train mode unless it has dropout, a forward-only pipeline
-    pass is executed, and relevant outputs are aggregated and returned.
+    Runs a forward-only pipeline pass (in train mode unless the model has
+    dropout) and aggregates and returns the relevant outputs.
 
     Args:
         f: Post-forward callback used to compute and package outputs to collect.
