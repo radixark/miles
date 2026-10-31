@@ -53,7 +53,8 @@ def validate_compact_rollout_ids(node, depth=0):
     if isinstance(node, Sample):
         return
     assert isinstance(node, list), f"unexpected rollout output node type: {type(node).__name__}"
-    if node and isinstance(node[0], Sample):
+    # a mixed-dataset group can hold bare samples next to compact lists; only an all-sample list is a leaf
+    if node and all(isinstance(item, Sample) for item in node):
         if depth >= 2 and len(node) > 1:
             rids = [s.rollout_id for s in node]
             missing = [i for i, r in enumerate(rids) if r is None]

@@ -118,6 +118,12 @@ class TestPostprocessRolloutData:
 
 
 class TestValidateRolloutIdAnnotated:
+    def test_compact_siblings_next_to_a_bare_sample_are_still_validated(self):
+        """A bare sample first in a mixed-dataset group used to skip the check for the compact list after it."""
+        group = [make_sample(index=0), [make_sample(index=1), make_sample(index=2)]]
+        with pytest.raises(AssertionError, match="rollout_id is unset"):
+            validate_compact_rollout_ids([group])
+
     def test_flat_list_skips_validation(self):
         """Depth-1 leaf (flat list[Sample]) is the default rollout shape — no rollout_id required."""
         validate_compact_rollout_ids([make_sample(index=i) for i in range(4)])
