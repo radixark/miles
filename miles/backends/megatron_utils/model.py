@@ -299,8 +299,8 @@ def forward_only(
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
-    The model is put into evaluation mode, a forward-only pipeline pass is
-    executed, and relevant outputs are aggregated and returned.
+    The model stays in train mode unless it has dropout, a forward-only pipeline
+    pass is executed, and relevant outputs are aggregated and returned.
 
     Args:
         f: Post-forward callback used to compute and package outputs to collect.
@@ -389,8 +389,9 @@ def forward_only(
 
         return output_tensor, partial(f, **callback_kwargs)
 
-    # eval() also selects inference kernels (TE attention), so it only switches off train-only behavior
-    if args.backend.train_only_forward_options:
+    # eval() switches off dropout but also selects inference kernels (TE attention), so the log probs
+    # would come from a different function than the training forward; call it only for dropout
+    if config.hidden_dropout or config.attention_dropout or args.lora_dropout:
         for model_module in model:
             model_module.eval()
 

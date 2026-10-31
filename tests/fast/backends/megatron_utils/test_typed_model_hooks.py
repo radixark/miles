@@ -57,7 +57,7 @@ class TestTypedModelHooks:
         hook = _hook()
         args = make_trainer_config(custom_megatron_before_log_prob_hook_path=hook, dumper_enable=False)
         chunk = torch.nn.Linear(1, 1)
-        chunk.config = SimpleNamespace()
+        chunk.config = SimpleNamespace(hidden_dropout=0.1, attention_dropout=0.1)
         models = [chunk]
 
         def callback(view: ImmutableNamespace, received: list[torch.nn.Module], prefix: str) -> None:

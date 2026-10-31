@@ -309,7 +309,6 @@ def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampl
         custom_megatron_before_log_prob_hook_path=None,
         seq_length=8,
         micro_batch_size=1,
-        train_only_forward_options=[],
     )
     batch = {
         "tokens": None,
