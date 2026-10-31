@@ -305,32 +305,33 @@ class TestQwen35GDNTargets:
         assert f"{_GDN35}in_proj_q" in served and f"{_GDN35}in_proj_qkv" not in served
 
     def test_concrete_modules_are_checked_per_layer(self):
-        """With the model's module list, each layer's selection must hold complete groups on its own."""
+        """With the model's module list, groups are checked on each layer's selected modules, not per selector."""
         modules = [
             f"model.language_model.layers.{layer}.linear_attn.{leaf}"
             for layer in range(2)
             for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
         ]
-        targets = [f"{_GDN35}in_proj_qkv", f"{_GDN35}in_proj_z"]
-        served = _resolve_adapter_targets(
-            {"model_type": "qwen3_5"},
-            targets,
-            hf_modules=modules,
-            lora_type="canonical_lora",
-            experts_shared_outer_loras=False,
-        )
-        assert served == [f"{_GDN35}{leaf}" for leaf in ("in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z")]
-        layer0 = "model.language_model.layers.0.linear_attn."
-        with pytest.raises(
-            AssertionError, match=r"selected together in model\.language_model\.layers\.0\.linear_attn "
-        ):
-            _resolve_adapter_targets(
+
+        def resolve(targets):
+            return _resolve_adapter_targets(
                 {"model_type": "qwen3_5"},
-                [f"{layer0}in_proj_qkv", f"{_GDN35}in_proj_z".replace("*", "1")],
+                targets,
                 hf_modules=modules,
                 lora_type="canonical_lora",
                 experts_shared_outer_loras=False,
             )
+
+        # a leaf selector and a scoped one complete the group only once both reach the same layer
+        assert resolve(["in_proj_qkv", f"{_GDN35}in_proj_z"]) == [
+            "in_proj_q",
+            "in_proj_k",
+            "in_proj_v",
+            f"{_GDN35}in_proj_z",
+        ]
+        with pytest.raises(
+            AssertionError, match=r"selected together in model\.language_model\.layers\.0\.linear_attn "
+        ):
+            resolve(["model.language_model.layers.0.linear_attn.in_proj_qkv", f"{_GDN35}in_proj_z".replace("*", "1")])
 
     @pytest.mark.parametrize(
         "leaves", [("in_proj_qkv",), ("in_proj_z",), ("in_proj_b",), ("in_proj_qkv", "in_proj_z", "in_proj_a")]
