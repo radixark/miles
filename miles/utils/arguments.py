@@ -487,6 +487,9 @@ def _validate_rollout_data_yaml_config(args) -> None:
         datasets,
         rollout_max_prompt_len=args.rollout_max_prompt_len,
         rollout_max_response_len=args.rollout_max_response_len,
+        max_seq_len=getattr(
+            args, "max_seq_len", None
+        ),  # config-access-exempt: optional length limit registered by custom agent hooks
     )
     for dataset in datasets:
         # TODO(#3947): pass these settings on to the dataset's samples

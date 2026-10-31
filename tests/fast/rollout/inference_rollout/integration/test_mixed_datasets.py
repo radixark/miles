@@ -123,3 +123,53 @@ def test_a_dataset_agent_block_reaches_the_agent_function(rollout_env):
     assert sorted(_AGENT_CONFIGS, key=str) == sorted(
         [("math", None)] * 2 + [("science", {"max_turns": 3})] * 6, key=str
     )
+
+
+_AGENT_CALLS: Counter = Counter()
+
+
+async def swe_agent(**kwargs):
+    _AGENT_CALLS["swe"] += 1
+    return await mock_tools.run_agentic_tool_call(**kwargs)
+
+
+async def web_agent(**kwargs):
+    _AGENT_CALLS["web"] += 1
+    return await mock_tools.run_agentic_tool_call(**kwargs)
+
+
+_AGENTIC_DATASETS = {
+    "swe": (
+        [{"input": "What is 1+7?", "label": "8"}] * 3,
+        {"samples_per_step": 1, "agent_function": f"{_THIS_MODULE}.swe_agent"},
+    ),
+    "web": (
+        [{"input": "What is 1+7?", "label": "8"}] * 3,
+        {"samples_per_step": 1, "agent_function": f"{_THIS_MODULE}.web_agent"},
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "rollout_env",
+    [
+        pytest.param(
+            RolloutEnvConfig(
+                extra_argv=MODULAR_ROLLOUT_BASE_ARGV + extra_argv_for_variant("agentic_tool_call") + _BATCH_ARGV,
+                mixed_datasets=_AGENTIC_DATASETS,
+            ),
+            id="two_agents",
+        )
+    ],
+    indirect=True,
+)
+def test_two_agentic_datasets_each_run_their_own_agent(rollout_env):
+    _AGENT_CALLS.clear()
+    out = load_and_call_train(rollout_env.args, rollout_env.data_source)
+
+    names = Counter(
+        group[0].metadata["dataset_name"] if not isinstance(group[0], list) else group[0][0].metadata["dataset_name"]
+        for group in out.samples
+    )
+    assert names == {"swe": 2, "web": 2}
+    assert _AGENT_CALLS == {"swe": 4, "web": 4}

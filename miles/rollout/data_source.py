@@ -9,7 +9,12 @@ from pathlib import Path
 from miles.utils.data import Dataset, _parse_generalized_path
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
-from miles.utils.rollout_data_config import RolloutDatasetConfig, load_rollout_data_config
+from miles.utils.rollout_data_config import (
+    AGENT_FUNCTION_METADATA_KEY,
+    MAX_SEQ_LEN_METADATA_KEY,
+    RolloutDatasetConfig,
+    load_rollout_data_config,
+)
 from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import Sample
 
@@ -254,8 +259,9 @@ class MixedRolloutDataSource(DataSource):
         self.dataset_configs = load_rollout_data_config(args.rollout_data_yaml_config)
         self.dataset_sha256 = {config.name: _check_dataset_sha256(config) for config in self.dataset_configs}
         for config in self.dataset_configs:
-            if config.generate_function is not None:
-                load_function(config.generate_function)
+            for function_path in (config.generate_function, config.agent_function):
+                if function_path is not None:
+                    load_function(function_path)
 
         tokenizer, processor = _load_prompt_tokenizer_and_processor(args)
         self.datasets = {}
@@ -369,6 +375,10 @@ class MixedRolloutDataSource(DataSource):
             sample.metadata["dataset_name"] = config.name
             if config.agent is not None:
                 sample.metadata["agent_config"] = copy.deepcopy(config.agent)
+            if config.agent_function is not None:
+                sample.metadata[AGENT_FUNCTION_METADATA_KEY] = config.agent_function
+            if config.max_seq_len is not None:
+                sample.metadata[MAX_SEQ_LEN_METADATA_KEY] = config.max_seq_len
             sample.generate_function_path = config.generate_function
             group.append(sample)
         self.sample_group_index += 1

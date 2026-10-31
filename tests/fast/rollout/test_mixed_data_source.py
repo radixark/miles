@@ -144,6 +144,16 @@ class TestMixedRolloutDataSource:
         assert by_name["code"][0].metadata["agent_config"] is not by_name["code"][1].metadata["agent_config"]
         assert all("agent_config" not in sample.metadata for sample in by_name["math"])
 
+    def test_a_dataset_agent_function_and_max_seq_len_reach_its_samples_only(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        datasets["code"] |= {"agent_function": "json.loads", "max_seq_len": 4096}
+        source = _make_source(tmp_path, datasets)
+
+        by_name = {group[0].metadata["dataset_name"]: group for group in source.get_samples(8)}
+        code, math = by_name["code"][0], by_name["math"][0]
+        assert (code.metadata["agent_function_path"], code.metadata["dataset_max_seq_len"]) == ("json.loads", 4096)
+        assert "agent_function_path" not in math.metadata and "dataset_max_seq_len" not in math.metadata
+
     def test_max_prompt_len_filters_only_its_dataset(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", ["short", "a much longer prompt"]))
@@ -158,6 +168,15 @@ class TestMixedRolloutDataSource:
         datasets = _two_datasets(tmp_path)
         datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", ["p0", "p1"], metadata='{"a": 1}'))
         with pytest.raises(ValueError, match="'math': row 0 has non-mapping metadata"):
+            _make_source(tmp_path, datasets)
+
+    def test_a_prompt_row_cannot_choose_the_agent(self, tmp_path):
+        """Row metadata is copied into samples, so a data row could otherwise name the agent code that runs."""
+        datasets = _two_datasets(tmp_path)
+        datasets["math"]["path"] = str(
+            _write_jsonl(tmp_path / "math.jsonl", ["p0"], metadata={"agent_function_path": "evil.run"})
+        )
+        with pytest.raises(ValueError, match="reserved keys \\['agent_function_path'\\]"):
             _make_source(tmp_path, datasets)
 
     def test_a_dataset_empty_after_filtering_fails_at_startup(self, tmp_path):
