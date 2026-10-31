@@ -708,7 +708,6 @@ def _train(args: ScriptArgs):
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
-        "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
         # Colocated multi-engine init can deadlock in the multimem all-gather rendezvous (sgl-project/sglang#36110).
         "SGLANG_DISABLE_MULTIMEM_AG": "1",
