@@ -1,5 +1,6 @@
 import functools
 import os
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -14,6 +15,7 @@ from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_fp4
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.deepseek_v4.ops.norm import RMSNorm
+from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout
 
 
 def select_candidate_blocks(
@@ -129,6 +131,75 @@ def indexer_select(
     return idx, candidates
 
 
+@dataclass(frozen=True)
+class SegmentSpan:
+    """One segment's share of this rank: its local rows and its sequence-major compressed keys."""
+
+    row_start: int
+    row_end: int
+    key_start: int
+    key_end: int
+
+
+def segment_spans(thd: ThdLayout, *, ratio: int, seqlen_local: int) -> list[SegmentSpan]:
+    """The segments this rank holds rows of, read off the host lengths so nothing syncs."""
+    spans, start, key_start = [], 0, 0
+    lo, hi = thd.global_start, thd.global_start + seqlen_local
+    for n in thd.seq_lens:
+        first, last = max(start, lo), min(start + n, hi)
+        if first < last:
+            spans.append(SegmentSpan(first - lo, last - lo, key_start, key_start + n // ratio))
+        start += n
+        key_start += n // ratio
+    return spans
+
+
+def indexer_select_segments(
+    q: torch.Tensor,
+    index_k: torch.Tensor,
+    weights: torch.Tensor,
+    compress_lens: torch.Tensor,
+    candidates: torch.Tensor | None,
+    spans: list[SegmentSpan],
+    **select_kwargs,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """``indexer_select`` over a THD-packed stream, one segment at a time.
+
+    Each segment is scored against its own keys, as if it ran alone, so no pick lands in another
+    sample and the candidate blocks start at the segment's first key. The picks come back as
+    sequence-major key ids of the whole stream. The candidate mask stays segment-relative: column
+    ``c`` of a row is key ``key_start + c`` of that row's segment.
+
+    Args:
+        index_k: [b, n_kv, d] every compressed key of the stream, sequence-major
+        compress_lens: [s] keys each row may see, counted from its segment's first key
+    """
+    bsz, seqlen = q.shape[:2]
+    is_candidate_source = select_kwargs["is_candidate_source"]
+    uses_candidates = select_kwargs["uses_candidates"]
+    idx = torch.full((bsz, seqlen, select_kwargs["topk"]), -1, dtype=torch.int64, device=q.device)
+    if is_candidate_source:
+        width = max(span.key_end - span.key_start for span in spans)
+        candidates = torch.zeros(bsz, seqlen, width, dtype=torch.bool, device=q.device)
+    for span in spans:
+        n_kv = span.key_end - span.key_start
+        if n_kv == 0:
+            continue  # shorter than the ratio: these rows keep the window alone
+        rows = slice(span.row_start, span.row_end)
+        seg_idx, seg_candidates = indexer_select(
+            q[:, rows],
+            index_k[:, span.key_start : span.key_end],
+            weights[:, rows],
+            compress_lens[rows],
+            candidates[:, rows, :n_kv] if uses_candidates else None,
+            **select_kwargs,
+        )
+        idx[:, rows] = torch.where(seg_idx >= 0, seg_idx + span.key_start, -1)
+        if is_candidate_source:
+            candidates[:, rows, :n_kv] = seg_candidates
+    return idx, candidates
+
+
 class DeepSeekV41Indexer(MegatronModule):
     def __init__(
         self,
@@ -199,7 +270,9 @@ class DeepSeekV41Indexer(MegatronModule):
         freqs_cis: torch.Tensor,
         compress_lens: torch.Tensor,
         candidates: torch.Tensor | None,
+        spans: list[SegmentSpan] | None = None,
     ):
+        """``spans`` marks a THD-packed stream, scored one segment at a time; None for BSHD."""
         bsz, seqlen, _ = x.shape
         rd = self.rope_head_dim
         q, _ = self.linear_wq_b(qr)
@@ -210,12 +283,7 @@ class DeepSeekV41Indexer(MegatronModule):
         weights = weights * (self.softmax_scale * self.index_n_heads**-0.5)
 
         topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
-        idx, candidates = indexer_select(
-            q,
-            index_k,
-            weights,
-            compress_lens,
-            candidates,
+        options = dict(
             is_candidate_source=self.is_candidate_source,
             uses_candidates=self.uses_candidates,
             candidate_topk_blocks=self.candidate_topk_blocks,
@@ -227,4 +295,9 @@ class DeepSeekV41Indexer(MegatronModule):
             and (not indexer_replay_manager.enabled or indexer_replay_manager.stage == "fallthrough"),
             query_chunk=INDEXER_QUERY_CHUNK,
         )
-        return idx, candidates
+        if spans is None:
+            return indexer_select(q, index_k, weights, compress_lens, candidates, **options)
+        if len(spans) > 1 and indexer_replay_manager.enabled and indexer_replay_manager.stage != "fallthrough":
+            # One replay entry covers a micro-batch's rows, while each segment is selected on its own.
+            raise NotImplementedError("DeepSeek-V4.1 indexer replay of a THD-packed stream: use --qkv-format bshd")
+        return indexer_select_segments(q, index_k, weights, compress_lens, candidates, spans, **options)

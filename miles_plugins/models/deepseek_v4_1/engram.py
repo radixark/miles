@@ -16,6 +16,8 @@ from megatron.core.tensor_parallel.mappings import (
 from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 
+from miles_plugins.models.deepseek_v4.ops.thd_utils import get_q_positions_thd
+
 logger = logging.getLogger(__name__)
 
 _TOKEN_MAP_CACHE: dict[str, tuple[list[int], int]] = {}
@@ -277,14 +279,17 @@ class DeepSeekV41Engram(MegatronModule):
         )
         self._table_loaded = True
 
-    def hash_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def hash_ids(self, input_ids: torch.Tensor, seq_positions: torch.Tensor | None = None) -> torch.Tensor:
+        """``seq_positions`` [seqlen] counts from each segment's start in a THD-packed stream, so an
+        n-gram never reaches into the previous sample; None counts from the start of each row."""
         batch, seqlen = input_ids.shape
         compressed = self.token_map[input_ids]
         positions = torch.arange(seqlen, device=input_ids.device).expand(batch, seqlen)
+        in_segment = positions if seq_positions is None else seq_positions.expand(batch, seqlen)
         tokens, blocked = [], torch.zeros_like(positions, dtype=torch.bool)
         for shift in range(self.max_ngram_size):
             source = compressed.gather(1, (positions - shift).clamp_min(0))
-            blocked = blocked | (positions < shift)
+            blocked = blocked | (in_segment < shift)
             tokens.append(torch.where(blocked, self.pad_id, source))
         tokens = torch.stack(tokens, dim=-1)
         products = tokens * self.multipliers
@@ -336,7 +341,7 @@ class DeepSeekV41Engram(MegatronModule):
             torch.distributed.all_reduce(values, group=self.tp_group)
         return values
 
-    def forward(self, hidden_states: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, input_ids: torch.Tensor, packed_seq_params=None) -> torch.Tensor:
         if self.sequence_parallel:
             hidden_states = gather_from_sequence_parallel_region(
                 hidden_states, tensor_parallel_output_grad=False, group=self.tp_group
@@ -344,13 +349,17 @@ class DeepSeekV41Engram(MegatronModule):
         seqlen, bsz, _ = hidden_states.shape
         assert input_ids is not None and input_ids.shape[0] == bsz and input_ids.shape[1] == seqlen
         with torch.no_grad():
+            seq_positions = None
+            if packed_seq_params is not None and packed_seq_params.qkv_format == "thd":
+                # The n-grams are hashed over the whole stream, which CP splits contiguously.
+                seq_positions = get_q_positions_thd(packed_seq_params.cu_seqlens_q, seqlen * self.cp_size)
             if self.cp_size > 1:
                 chunks = [torch.empty_like(input_ids) for _ in range(self.cp_size)]
                 torch.distributed.all_gather(chunks, input_ids.contiguous(), group=self.cp_group)
                 start = self.cp_group.rank() * seqlen
-                ids = self.hash_ids(torch.cat(chunks, dim=1))[:, start : start + seqlen].transpose(0, 1)
+                ids = self.hash_ids(torch.cat(chunks, dim=1), seq_positions)[:, start : start + seqlen].transpose(0, 1)
             else:
-                ids = self.hash_ids(input_ids).transpose(0, 1)
+                ids = self.hash_ids(input_ids, seq_positions).transpose(0, 1)
             rows = self.lookup(ids)
         kv, _ = self.linear_wkv(rows.flatten(-2))
         x = hidden_states.view(seqlen, bsz, self.hc_mult, self.dim)

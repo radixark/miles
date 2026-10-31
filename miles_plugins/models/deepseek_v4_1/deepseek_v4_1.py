@@ -39,9 +39,10 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
 )
 from miles_plugins.models.deepseek_v4.ops.grouped_matmul import GroupedMatmul
 from miles_plugins.models.deepseek_v4.ops.rope import wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, get_q_positions_thd, get_window_topk_idxs_thd
 from miles_plugins.models.deepseek_v4_1.engram import DeepSeekV41Engram
-from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor
-from miles_plugins.models.deepseek_v4_1.ops.indexer import DeepSeekV41Indexer
+from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor, compressor_rows_thd
+from miles_plugins.models.deepseek_v4_1.ops.indexer import DeepSeekV41Indexer, segment_spans
 from miles_plugins.models.deepseek_v4_1.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
 
 HC_FUSED = os.environ.get("MILES_DSV41_HC_FUSED", "0") == "1"
@@ -314,13 +315,25 @@ class V41TransformerLayer(HyperConnectionTransformerLayer):
         if self.v41_carry:
             hidden_states = v41_unpack_carry(hidden_states, rt, self.v41_base_cols)
         if self.v41_engram is not None:
-            hidden_states = self.v41_engram(hidden_states, rt.input_ids)
+            hidden_states = self.v41_engram(
+                hidden_states, rt.input_ids, packed_seq_params=kwargs.get("packed_seq_params")
+            )
         output, context = super().forward(hidden_states, *args, **kwargs)
         if self.v41_is_last:
             output = v41_aggregate(output, rt.pre, self.config.num_residual_streams)
         elif self.v41_carry:
             output = v41_pack_carry(output, rt, self.v41_plan)
         return output, context
+
+
+def gather_compressed_cp(t: torch.Tensor, cp_group, seq_rows: torch.Tensor | None) -> torch.Tensor:
+    """All-gather a compressed block ``[b, n_local, d]`` over CP.
+
+    ``seq_rows`` reorders the rank-major gather of THD's fixed-capacity per-rank blocks into
+    sequence-major rows; None when the gather is already in that order.
+    """
+    t = all_gather_cp(t, dim=1, cp_group=cp_group)
+    return t if seq_rows is None else t.index_select(1, seq_rows)
 
 
 class DeepSeekV41Attention(MegatronModule):
@@ -345,6 +358,7 @@ class DeepSeekV41Attention(MegatronModule):
             pg_collection.cp if hasattr(pg_collection, "cp") else None
         )  # config-access-exempt: Megatron process-group collections may omit context parallelism
         self.cp_size = self.cp_group.size() if self.cp_group is not None else 1
+        self.cp_rank = self.cp_group.rank() if self.cp_group is not None else 0
 
         layer_id = layer_number - 1
         self.layer_id = layer_id
@@ -498,7 +512,11 @@ class DeepSeekV41Attention(MegatronModule):
         rt = get_runtime(self.config)
         cp = self.cp_size
         seqlen_global = seqlen * cp
-        if cp > 1 and ratio:
+        # THD: one packed stream, split contiguously over CP; None for BSHD.
+        thd = ThdLayout.from_packed_seq_params(packed_seq_params, cp_rank=self.cp_rank, seqlen_local=seqlen)
+        if thd is not None:
+            assert bsz == 1, f"a THD-packed stream has batch 1, got {bsz}"
+        elif cp > 1 and ratio:
             assert (
                 seqlen % ratio == 0
             ), f"context-parallel chunk {seqlen} must be a multiple of the compress ratio {ratio}"
@@ -507,7 +525,13 @@ class DeepSeekV41Attention(MegatronModule):
         freqs_full = wrapped_precompute_freqs_cis(self.config, rd, rope_base, not ratio, seqlen_global, x.device)[
             :seqlen_global
         ]
-        freqs_cis = get_freqs_cis_for_cp(freqs_full, seqlen, cp, self.cp_group)
+        if thd is None:
+            q_positions = get_q_positions_for_cp(seqlen, cp_size=cp, cp_group=self.cp_group, device=x.device)
+            freqs_cis = get_freqs_cis_for_cp(freqs_full, seqlen, cp, self.cp_group)
+        else:
+            # Positions restart at every segment, so each sample is rotated as it would be alone.
+            q_positions = get_q_positions_thd(thd.cu_seqlens, seqlen, thd.global_start)
+            freqs_cis = freqs_full.index_select(0, q_positions)
 
         qr = self.q_layernorm(self.linear_q_down_proj(x)[0])
         q = self.linear_q_up_proj(qr)[0].unflatten(-1, (self.n_local_heads, self.head_dim)).clone()
@@ -515,35 +539,53 @@ class DeepSeekV41Attention(MegatronModule):
 
         kv = kv_norm_rope_fp8(self.linear_kv_proj(x)[0], self.kv_layernorm.weight, self.eps, freqs_cis, rd)
 
-        q_positions = get_q_positions_for_cp(seqlen, cp_size=cp, cp_group=self.cp_group, device=x.device)
-        topk_idxs = get_window_topk_idxs_cp(q_positions, window_size=self.window_size, cp_size=cp, bsz=bsz)
+        if thd is None:
+            topk_idxs = get_window_topk_idxs_cp(q_positions, window_size=self.window_size, cp_size=cp, bsz=bsz)
+        else:
+            # The window stops at the segment start instead of reaching into the previous sample.
+            topk_idxs = get_window_topk_idxs_thd(
+                thd.cu_seqlens, window_size=self.window_size, total_tokens=seqlen, global_start=thd.global_start
+            ).int()
         if cp > 1:
             kv = all_gather_cp(kv, dim=1, cp_group=self.cp_group)
 
         if ratio:
             offset = seqlen_global
+            # q_positions count from the segment start under THD, so this counts the segment's keys.
             compress_lens = (q_positions + 1) // ratio
             if self.is_kv_source:
-                latent = self.core_attention.compressor(hidden_states)
+                # Under THD the gathered latent and index keys are sequence-major, so every layer that
+                # reuses them addresses a segment's keys from its first one on.
+                seq_rows = None
+                if thd is None:
+                    latent = self.core_attention.compressor(hidden_states)
+                    n_groups = latent.size(0)
+                    freqs_compress = get_freqs_cis_for_cp(freqs_full, seqlen, cp, self.cp_group, stride=ratio)[
+                        :n_groups
+                    ]
+                else:
+                    rows = compressor_rows_thd(hidden_states, thd, ratio=ratio, cp_group=self.cp_group)
+                    latent = self.core_attention.compressor(rows.hidden)
+                    freqs_compress = freqs_full.index_select(0, rows.positions)
+                    seq_rows = rows.seq_rows
                 latent = einops.rearrange(latent, "n b d -> b n d")
-                n_groups = latent.size(1)
-                freqs_compress = get_freqs_cis_for_cp(freqs_full, seqlen, cp, self.cp_group, stride=ratio)[:n_groups]
                 if self.is_index_source:
                     index_k = self.core_attention.indexer.index_keys(latent, freqs_compress)
                     if cp > 1:
-                        index_k = all_gather_cp(index_k, dim=1, cp_group=self.cp_group)
+                        index_k = gather_compressed_cp(index_k, self.cp_group, seq_rows)
                     rt.index_k[self.layer_id] = index_k
                 latent = latent.clone(memory_format=torch.contiguous_format)
                 apply_rotary_emb(latent[..., -rd:], freqs_compress)
                 latent = fake_quant_compressed_kv(latent)
                 latent = compressed_kv_stored(latent, rd)
                 if cp > 1:
-                    latent = all_gather_cp(latent, dim=1, cp_group=self.cp_group)
+                    latent = gather_compressed_cp(latent, self.cp_group, seq_rows)
                 rt.latent[self.layer_id] = latent
             latent = rt.latent[self.kv_source_layer]
             if self.is_index_source:
+                spans = None if thd is None else segment_spans(thd, ratio=ratio, seqlen_local=seqlen)
                 topk_rel, candidates = self.core_attention.indexer(
-                    x, qr, rt.index_k[self.kv_source_layer], freqs_cis, compress_lens, rt.candidates
+                    x, qr, rt.index_k[self.kv_source_layer], freqs_cis, compress_lens, rt.candidates, spans=spans
                 )
                 rt.topk = topk_rel
                 if candidates is not None:
