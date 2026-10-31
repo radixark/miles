@@ -28,7 +28,7 @@ class TestLaunchWorkerManager:
         monkeypatch.setattr(
             wiring,
             "_launch_ray_worker_manager",
-            lambda args, *, worker_env, observers_active: launched.append(args),
+            lambda args, *, worker_env, report_process_ends: launched.append(args),
         )
 
         args = SimpleNamespace(cluster_backend=ClusterBackend.RAY.value)
@@ -141,12 +141,14 @@ class TestTheWireTheWorkerManagerIsLaunchedWith:
             wiring.RayWorkerManager,
             "launch",
             staticmethod(
-                lambda args, specs, pgs, *, comm_backend, worker_env, observers_active: launched.append(comm_backend)
+                lambda args, specs, pgs, *, comm_backend, worker_env, report_process_ends: launched.append(
+                    comm_backend
+                )
             ),
         )
 
         args = SimpleNamespace(cluster_backend=ClusterBackend.RAY.value, worker_comm_backend=resolved)
-        wiring._launch_ray_worker_manager(args, worker_env=None, observers_active=False)
+        wiring._launch_ray_worker_manager(args, worker_env=None, report_process_ends=False)
 
         assert launched == [WorkerCommBackend(resolved)]
 

@@ -70,12 +70,17 @@ class RayWorkerManager:
         *,
         comm_backend: WorkerCommBackend,
         worker_env: dict[str, str] | None = None,
-        observers_active: bool = False,
+        report_process_ends: bool = False,
     ):
         obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
         ray.get(
             obj.init.remote(
-                args, specs, pgs, comm_backend=comm_backend, worker_env=worker_env, observers_active=observers_active
+                args,
+                specs,
+                pgs,
+                comm_backend=comm_backend,
+                worker_env=worker_env,
+                report_process_ends=report_process_ends,
             )
         )
         return obj
@@ -92,7 +97,7 @@ class RayWorkerManager:
         *,
         comm_backend: WorkerCommBackend,
         worker_env: dict[str, str] | None = None,
-        observers_active: bool = False,
+        report_process_ends: bool = False,
     ):
         configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
 
@@ -100,7 +105,7 @@ class RayWorkerManager:
         self.comm_backend = comm_backend
         # set in every worker on top of its spec's env, e.g. what run observers need; never secrets
         self.worker_env = dict(worker_env or {})
-        self.observers_active = observers_active
+        self.report_process_ends = report_process_ends
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
@@ -443,8 +448,8 @@ class _BaseActorManager(Generic[SpecT]):
             return
 
         await self._shutdown_gracefully()
-        # a worker stuck in a long call makes this wait the whole timeout; runs without observers skip it
-        if self.manager.observers_active:
+        # a worker stuck in a long call makes this wait the whole timeout; only runs observing process ends pay it
+        if self.manager.report_process_ends:
             await self._report_process_end()
 
         try:

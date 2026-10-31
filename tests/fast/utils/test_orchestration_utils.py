@@ -72,7 +72,7 @@ class TestInitOrchestrationScript:
             captured["tracking_args"] = actual_args
 
         def fake_launch_worker_manager(
-            actual_args: Namespace, *, worker_env: dict[str, str], observers_active: bool
+            actual_args: Namespace, *, worker_env: dict[str, str], report_process_ends: bool
         ) -> object:
             calls.append("launch_worker_manager")
             captured["worker_manager_args"] = actual_args
@@ -183,7 +183,7 @@ class TestInitOrchestrationScript:
         monkeypatch.setattr(
             orchestration_utils,
             "launch_worker_manager",
-            lambda _args, *, worker_env, observers_active: worker_manager,
+            lambda _args, *, worker_env, report_process_ends: worker_manager,
         )
         monkeypatch.setattr(orchestration_utils, "compute_backend_capability", lambda _args: object())
         monkeypatch.setattr(
@@ -218,7 +218,6 @@ class TestInitOrchestrationScript:
     ) -> None:
         """``end_run`` comes last, so an observer can close the run once every process has sent what it held."""
         heard: list[str] = []
-        launched: dict[str, bool] = {}
 
         class _EndingObserver(observers.Observer):
             def end_process(self) -> None:
@@ -227,52 +226,21 @@ class TestInitOrchestrationScript:
             def end_run(self, *, succeeded: bool) -> None:
                 heard.append("end_run")
 
-        def fake_launch_worker_manager(
-            _args: Namespace, *, worker_env: dict[str, str], observers_active: bool
-        ) -> object:
-            launched["observers_active"] = observers_active
-            return object()
+        launched = await _run_driver_with(monkeypatch, _EndingObserver, heard=heard)
 
-        async def fake_shutdown_worker_manager(_handle: object) -> None:
-            heard.append("workers stopped")
-
-        monkeypatch.setattr(
-            observers, "entry_points", lambda group: [SimpleNamespace(name="ending", load=lambda: _EndingObserver)]
-        )
-        monkeypatch.setattr(observers, "get_current_node_ip", lambda: "10.0.0.1")
-        monkeypatch.setattr(Timer(), "event_sinks", [])
-        monkeypatch.setattr(orchestration_utils.event_logger_checkpoint, "restore", lambda _args: None)
-        monkeypatch.setattr(orchestration_utils, "configure_logger", lambda _args, *, source: None)
-        monkeypatch.setattr(orchestration_utils, "maybe_start_periodic_pyspy_dump", lambda: None)
-        monkeypatch.setattr(orchestration_utils, "init_tracking", lambda _args: None)
-        monkeypatch.setattr(orchestration_utils, "finish_tracking", lambda: None)
-        monkeypatch.setattr(orchestration_utils, "launch_worker_manager", fake_launch_worker_manager)
-        monkeypatch.setattr(orchestration_utils, "shutdown_worker_manager", fake_shutdown_worker_manager)
-        monkeypatch.setattr(orchestration_utils, "compute_backend_capability", lambda _args: object())
-        monkeypatch.setattr(
-            orchestration_utils.object_store, "init_instance", lambda _args, *, contribute_segment: None
-        )
-
-        async with Disposer() as disposer:
-            orchestration_utils.init_orchestration_script(
-                ArgvOrchestratorStartupInfo(
-                    args=Namespace(
-                        run="test",
-                        run_uuid=_RUN_UUID,
-                        ci_fault_hooks=None,
-                        ci_fault_hooks_path=None,
-                        cluster_backend="ray",
-                        wandb_run_id=None,
-                        mlflow_run_id=None,
-                        use_miles_dashboard=False,
-                    ),
-                    all_args=Namespace(),
-                ),
-                disposer=disposer,
-            )
-
-        assert launched == dict(observers_active=True)
+        assert launched == dict(report_process_ends=True)
         assert heard == ["workers stopped", "driver end_process", "end_run"]
+
+    async def test_workers_report_their_end_only_when_an_observer_takes_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A worker busy in a long call makes its stop wait the whole timeout, which an observer of metrics alone does not need."""
+
+        class _MetricsObserver(observers.Observer):
+            def metrics(self, metrics, *, step_key: str, step: int | None) -> None:
+                pass
+
+        assert await _run_driver_with(monkeypatch, _MetricsObserver, heard=[]) == dict(report_process_ends=False)
 
     def test_the_dashboard_and_an_observer_of_sample_lifecycles_are_refused_together(
         self, monkeypatch: pytest.MonkeyPatch
@@ -300,3 +268,53 @@ class TestInitOrchestrationScript:
                 ArgvOrchestratorStartupInfo(args=Namespace(use_miles_dashboard=True), all_args=Namespace()),
                 disposer=Disposer(),
             )
+
+
+async def _run_driver_with(
+    monkeypatch: pytest.MonkeyPatch, observer_class: type[observers.Observer], *, heard: list[str]
+) -> dict[str, bool]:
+    """Starts and ends a driver with ``observer_class`` installed; returns what the worker manager was launched with."""
+    launched: dict[str, bool] = {}
+
+    def fake_launch_worker_manager(
+        _args: Namespace, *, worker_env: dict[str, str], report_process_ends: bool
+    ) -> object:
+        launched["report_process_ends"] = report_process_ends
+        return object()
+
+    async def fake_shutdown_worker_manager(_handle: object) -> None:
+        heard.append("workers stopped")
+
+    monkeypatch.setattr(
+        observers, "entry_points", lambda group: [SimpleNamespace(name="observer", load=lambda: observer_class)]
+    )
+    monkeypatch.setattr(observers, "get_current_node_ip", lambda: "10.0.0.1")
+    monkeypatch.setattr(Timer(), "event_sinks", [])
+    monkeypatch.setattr(orchestration_utils.event_logger_checkpoint, "restore", lambda _args: None)
+    monkeypatch.setattr(orchestration_utils, "configure_logger", lambda _args, *, source: None)
+    monkeypatch.setattr(orchestration_utils, "maybe_start_periodic_pyspy_dump", lambda: None)
+    monkeypatch.setattr(orchestration_utils, "init_tracking", lambda _args: None)
+    monkeypatch.setattr(orchestration_utils, "finish_tracking", lambda: None)
+    monkeypatch.setattr(orchestration_utils, "launch_worker_manager", fake_launch_worker_manager)
+    monkeypatch.setattr(orchestration_utils, "shutdown_worker_manager", fake_shutdown_worker_manager)
+    monkeypatch.setattr(orchestration_utils, "compute_backend_capability", lambda _args: object())
+    monkeypatch.setattr(orchestration_utils.object_store, "init_instance", lambda _args, *, contribute_segment: None)
+
+    async with Disposer() as disposer:
+        orchestration_utils.init_orchestration_script(
+            ArgvOrchestratorStartupInfo(
+                args=Namespace(
+                    run="test",
+                    run_uuid=_RUN_UUID,
+                    ci_fault_hooks=None,
+                    ci_fault_hooks_path=None,
+                    cluster_backend="ray",
+                    wandb_run_id=None,
+                    mlflow_run_id=None,
+                    use_miles_dashboard=False,
+                ),
+                all_args=Namespace(),
+            ),
+            disposer=disposer,
+        )
+    return launched

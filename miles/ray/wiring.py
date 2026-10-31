@@ -13,14 +13,14 @@ from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import ClusterBackend, WorkerCommBackend
 
 
-def launch_worker_manager(args, *, worker_env: dict[str, str] | None = None, observers_active: bool = False):
+def launch_worker_manager(args, *, worker_env: dict[str, str] | None = None, report_process_ends: bool = False):
     """``worker_env`` is set in every worker the manager launches, on top of each spec's own;
-    with ``observers_active``, each worker reports its end to the run observers before it is killed."""
+    with ``report_process_ends``, each worker reports its end to the run observers before it is killed."""
     match ClusterBackend(args.cluster_backend):
         case ClusterBackend.KUBERNETES:
             return None
         case ClusterBackend.RAY:
-            return _launch_ray_worker_manager(args, worker_env=worker_env, observers_active=observers_active)
+            return _launch_ray_worker_manager(args, worker_env=worker_env, report_process_ends=report_process_ends)
 
 
 async def shutdown_worker_manager(worker_manager_handle: ActorHandle | None) -> None:
@@ -39,7 +39,7 @@ def compute_backend_capability(args: AllConfig) -> BackendCapability:
     )
 
 
-def _launch_ray_worker_manager(args, *, worker_env: dict[str, str] | None, observers_active: bool):
+def _launch_ray_worker_manager(args, *, worker_env: dict[str, str] | None, report_process_ends: bool):
     from miles.ray.placement_group import create_placement_groups
 
     specs = compute_specs(args)
@@ -51,5 +51,5 @@ def _launch_ray_worker_manager(args, *, worker_env: dict[str, str] | None, obser
         pgs,
         comm_backend=WorkerCommBackend(args.worker_comm_backend),
         worker_env=worker_env,
-        observers_active=observers_active,
+        report_process_ends=report_process_ends,
     )

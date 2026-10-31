@@ -93,7 +93,7 @@ def init_orchestration_script(startup_info: OrchestratorStartupInfo, *, disposer
         all_args.wandb_run_id = args.wandb_run_id
         all_args.mlflow_run_id = args.mlflow_run_id
         worker_manager = launch_worker_manager(
-            all_args, worker_env=worker_env, observers_active=observers.Observers().active
+            all_args, worker_env=worker_env, report_process_ends=observers.Observers().hears("end_process")
         )
         disposer.add(partial(shutdown_worker_manager, worker_manager))
 

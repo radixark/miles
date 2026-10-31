@@ -177,7 +177,7 @@ def _make_pgs(num_slots: int = 8) -> dict[str, PlacementGroupInfo]:
 
 
 async def _launch(
-    specs, pgs=None, comm_backend: WorkerCommBackend = WorkerCommBackend.RAY, *, observers_active: bool = False
+    specs, pgs=None, comm_backend: WorkerCommBackend = WorkerCommBackend.RAY, *, report_process_ends: bool = False
 ) -> RayWorkerManager:
     manager = RayWorkerManager()
     await manager.init(
@@ -185,7 +185,7 @@ async def _launch(
         specs,
         pgs if pgs is not None else {},
         comm_backend=comm_backend,
-        observers_active=observers_active,
+        report_process_ends=report_process_ends,
     )
     return manager
 
@@ -429,7 +429,7 @@ class TestServeWorkersAreStopped:
         self, fake_ray_cluster: FakeRayCluster, comm_backend: WorkerCommBackend
     ):
         """The actor of either wire has to answer the call, or its observers lose what they still buffer."""
-        manager = await _launch([_make_spec()], comm_backend=comm_backend, observers_active=True)
+        manager = await _launch([_make_spec()], comm_backend=comm_backend, report_process_ends=True)
 
         await manager.stop_cells(["trainer-00000"])
 

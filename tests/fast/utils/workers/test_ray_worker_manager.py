@@ -89,7 +89,7 @@ async def _launch(
     specs: list[BaseCommandSpec],
     pgs: dict[str, PlacementGroupInfo] | None = None,
     *,
-    observers_active: bool = False,
+    report_process_ends: bool = False,
 ) -> RayWorkerManager:
     manager = RayWorkerManager()
     await manager.init(
@@ -97,7 +97,7 @@ async def _launch(
         specs,
         pgs if pgs is not None else {},
         comm_backend=WorkerCommBackend.RAY,
-        observers_active=observers_active,
+        report_process_ends=report_process_ends,
     )
     return manager
 
@@ -1411,7 +1411,7 @@ class TestStopDetails:
 
     async def test_a_worker_ends_its_run_observers_before_it_is_killed(self, fake_ray_cluster: FakeRayCluster):
         """A worker killed first loses what its observers still buffer, such as the run's last eval."""
-        manager = await _launch([_make_spec("engine")], observers_active=True)
+        manager = await _launch([_make_spec("engine")], report_process_ends=True)
 
         await manager._pools["engine"].cells[0].stop()
 
@@ -1422,7 +1422,7 @@ class TestStopDetails:
         self, fake_ray_cluster: FakeRayCluster
     ):
         """A hung observer must not keep the worker, and the GPUs it holds, from being released."""
-        manager = await _launch([_make_spec("engine")], observers_active=True)
+        manager = await _launch([_make_spec("engine")], report_process_ends=True)
         fake_ray_cluster.handles[0].hanging_methods["report_process_end"] = 3600
 
         with patch.object(observers, "END_PROCESS_TIMEOUT_S", 0.01):
@@ -1430,10 +1430,10 @@ class TestStopDetails:
 
         assert fake_ray_cluster.events.count(EVENT_KILL) == 1
 
-    async def test_a_run_without_observers_kills_its_workers_without_asking_them(
+    async def test_a_run_whose_observers_ignore_process_ends_kills_its_workers_without_asking_them(
         self, fake_ray_cluster: FakeRayCluster
     ):
-        """A worker stuck in a collective answers only after the timeout, a wait a run without observers must not pay."""
+        """A worker stuck in a collective answers only after the timeout, a wait no run should pay for nothing."""
         manager = await _launch([_make_spec("engine")])
 
         await manager._pools["engine"].cells[0].stop()
