@@ -37,6 +37,8 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         rollout_sampling_logprobs_mode="selected",
         rollout_temperature=1.0,
         output_store_backend_config=None,
+        multimodal_token_space_processing=False,
+        shared_media_dir=None,
     )
     defaults.update(overrides)
     return SessionServerConfig(**defaults)

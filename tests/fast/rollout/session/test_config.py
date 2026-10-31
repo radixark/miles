@@ -36,6 +36,8 @@ _ARGS_TO_CONFIG_FIELD = {
     "rollout_top_logprobs_num": "rollout_top_logprobs_num",
     "rollout_sampling_logprobs_mode": "rollout_sampling_logprobs_mode",
     "rollout_temperature": "rollout_temperature",
+    "multimodal_token_space_processing": "multimodal_token_space_processing",
+    "shared_media_dir": "shared_media_dir",
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
@@ -68,6 +70,8 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    multimodal_token_space_processing=True,
+    shared_media_dir="/fake/media",
     use_output_store=False,
     **sglang_router_args("manual"),
 )
@@ -206,6 +210,8 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
     output_store_backend_config=None,
+    multimodal_token_space_processing=False,
+    shared_media_dir=None,
 )
 
 

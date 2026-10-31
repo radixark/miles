@@ -11,6 +11,7 @@ from miles.rollout.session.samples.merge import (
     merge_samples_with_addition_r3,
     truncate_samples_by_total_tokens,
 )
+from miles.rollout.session.token_space import engine_token_ids
 from miles.rollout.session.v2.session_state import SessionRegistryV2, SessionStateV2
 from miles.utils.types import Sample
 
@@ -75,7 +76,7 @@ def build_leaf_material(
             args,
             records,
             registry.tokenizer,
-            accumulated_token_ids=leaf.token_ids,
+            accumulated_token_ids=engine_token_ids(leaf.token_ids, leaf.record),
             max_trim_tokens=registry.tito_tokenizer.max_trim_tokens,
             use_addition_r3=use_addition_r3,
             evaluation=state.evaluation,

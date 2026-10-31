@@ -70,6 +70,46 @@ def collect_media_refs(messages: Iterable[dict[str, Any]], media_dir: str | None
     return multimodal_inputs or None
 
 
+def has_message_media(messages: Iterable[dict[str, Any]]) -> bool:
+    """Whether any message holds an image, audio or video part."""
+    return any(
+        isinstance(part, dict) and part.get("type") in _PART_TYPES
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+
+
+def materialize_message_media(messages: list[dict[str, Any]], media_dir: str | None) -> list[dict[str, Any]]:
+    """``messages`` with every media source replaced by its shared-path reference.
+
+    The same content always gets the same path, so a conversation that resends its media on every
+    turn resends the same references. Messages without media are returned as they are; the input
+    is not modified.
+    """
+    out = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list) or not has_message_media([message]):
+            out.append(message)
+            continue
+        parts = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") not in _PART_TYPES:
+                parts.append(part)
+                continue
+            _, fields = _PART_TYPES[part["type"]]
+            field = next((field for field in fields if part.get(field) is not None), None)
+            source = part[field] if field is not None else None
+            if isinstance(source, dict) and "url" in source:
+                part = {**part, field: {**source, "url": materialize_media_ref(source["url"], media_dir)}}
+            else:
+                part = {**part, field: materialize_media_ref(source, media_dir)}
+            parts.append(part)
+        out.append({**message, "content": parts})
+    return out
+
+
 def materialize_media_ref(source: Any, media_dir: str | None) -> str:
     """Materialize one media source as an absolute shared path; one not yet a file is written under ``media_dir``.
 

@@ -20,8 +20,10 @@ from PIL import Image
 from miles.utils.media_refs import (
     collect_media_refs,
     has_media,
+    has_message_media,
     load_media_for_processor,
     materialize_media_ref,
+    materialize_message_media,
     rollout_media_payload,
 )
 
@@ -129,3 +131,36 @@ def test_processor_loads_original_pixels_without_resizing(tmp_path):
     (image,) = loaded["images"]
     assert image.size == (37, 23) and image.mode == "RGBA"
     assert loaded["audios"] == [b"audio-bytes"]
+
+
+def test_message_media_become_shared_paths_and_text_messages_stay_as_they_are(tmp_path):
+    """The session server stores a conversation's media as shared paths: the same bytes always get the
+    same path, so a conversation that resends its screenshots every turn resends the same references."""
+    data_url = "data:image/png;base64," + base64.b64encode(_png_bytes("red")).decode()
+    text = {"role": "system", "content": "be brief"}
+    image_message = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+            {"type": "image", "image": data_url},
+        ],
+    }
+    messages = [text, image_message]
+    assert has_message_media(messages) and not has_message_media([text])
+
+    out = materialize_message_media(messages, str(tmp_path))
+    assert out[0] is text
+    part_url, part_image = out[1]["content"][1:]
+    assert part_url["image_url"]["detail"] == "high"
+    assert part_url["image_url"]["url"] == part_image["image"]
+    assert Path(part_image["image"]).read_bytes() == _png_bytes("red")
+    assert image_message["content"][1]["image_url"]["url"] == data_url, "the input is not modified"
+    assert materialize_message_media(out, str(tmp_path)) == out, "a stored path is its own reference"
+    assert collect_media_refs(out, None) == {"images": [part_image["image"]] * 2}
+
+
+def test_message_media_without_a_shared_dir_are_refused():
+    data_url = "data:image/png;base64," + base64.b64encode(_png_bytes("red")).decode()
+    with pytest.raises(ValueError, match="--shared-media-dir"):
+        materialize_message_media([{"role": "user", "content": [{"type": "image_url", "image_url": data_url}]}], None)
