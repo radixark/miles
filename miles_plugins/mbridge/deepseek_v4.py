@@ -4,6 +4,8 @@ from megatron.core.transformer.enums import AttnBackend
 from mbridge.core import register_model
 from mbridge.models import DeepseekV3Bridge
 
+from miles_plugins.mbridge.block_scaled_safetensor_io import BlockScaledSafeTensorIO
+
 
 @register_model("deepseek_v4")
 class DeepseekV4Bridge(DeepseekV3Bridge):
@@ -83,6 +85,10 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
             "decoder.hc_head_scale": "model.hc_head_scale",
         }
     )
+
+    def _get_safetensor_io(self, weights_path: str):
+        device = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
+        return BlockScaledSafeTensorIO(self._get_actual_hf_path(weights_path), device)
 
     def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
         try:
