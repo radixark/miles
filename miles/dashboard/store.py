@@ -27,11 +27,13 @@ from __future__ import annotations
 import calendar
 import io
 import json
+import logging
+import math
 import os
 import threading
 import time
-from collections import OrderedDict
-from collections.abc import Callable
+from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, ClassVar
@@ -43,6 +45,8 @@ except ImportError:
 
 import numpy as np
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 
 class Stream(StrEnum):
@@ -265,6 +269,16 @@ def _hour_bounds(key: str) -> tuple[float, float]:
     return float(start), float(start + 3600)
 
 
+def _read_complete_lines(path: Path, offset: int, end: int | None = None) -> bytes:
+    """The newline-terminated lines of ``path`` in [offset, end) (to EOF
+    without ``end``). A line still being written is left for a later read once
+    its writer ends it."""
+    with open(path, "rb") as f:
+        f.seek(offset)
+        appended = f.read() if end is None else f.read(end - offset)
+    return appended[: appended.rfind(b"\n") + 1]
+
+
 class _PartitionReader:
     """One hourly-partitioned JSONL stream on the read side.
 
@@ -306,7 +320,13 @@ class _PartitionReader:
         return out
 
     def has_data(self) -> bool:
-        return any(path.stat().st_size > 0 for _, path in self.files())
+        """Whether a complete record exists: a writer mid-append leaves a file
+        holding a partial line, which no reader parses yet."""
+        for _, path in self.files():
+            with open(path, "rb") as f:
+                if f.readline().endswith(b"\n"):
+                    return True
+        return False
 
     def window(self, t0: float | None, t1: float | None) -> Any:
         """Concatenated block over the partitions intersecting [t0, t1]."""
@@ -338,15 +358,12 @@ class _PartitionReader:
             if key in self._blocks and path.stat().st_size <= offset:
                 self._blocks.move_to_end(key)
                 return self._blocks[key]
-            with open(path, "rb") as f:
-                f.seek(offset)
-                chunk = f.read()
-            end = chunk.rfind(b"\n")
-            if end >= 0:
-                new = self._parse(chunk[: end + 1], path, offset)
+            complete_lines = _read_complete_lines(path, offset)
+            if complete_lines:
+                new = self._parse(complete_lines, path, offset)
                 pieces = [self._blocks[key], new] if key in self._blocks else [new]
                 self._blocks[key] = self._concat([piece for piece in pieces if self._length(piece)])
-                self._offsets[key] = offset + end + 1
+                self._offsets[key] = offset + len(complete_lines)
             elif key not in self._blocks:
                 self._blocks[key] = self._concat([])
                 self._offsets[key] = offset
@@ -358,31 +375,268 @@ class _PartitionReader:
 
     def edge_stamps(self) -> list[float]:
         """Global-range candidates from the first line of the oldest file and
-        the last complete line of the newest — no full scan."""
-        files = [(key, path) for key, path in self.files() if path.stat().st_size > 0]
-        if not files:
-            return []
+        the complete lines in the tail of the newest file holding any — no
+        full scan. One flush writes a batch in arrival order, so its last line
+        need not be its newest; and the newest file can hold only a line still
+        being written, which must not leave the oldest row as the edge."""
+        files = [path for _, path in self.files() if path.stat().st_size > 0]
         lines = []
-        with open(files[0][1], "rb") as f:
-            lines.append(f.readline())
-        with open(files[-1][1], "rb") as f:
-            f.seek(0, 2)
-            f.seek(max(0, f.tell() - 65536))
-            tail = f.read()
-        complete = tail[: tail.rfind(b"\n") + 1]
-        if complete:
-            lines.append(complete.splitlines()[-1])
-        stamps: list[float] = []
-        for line in lines:
-            try:
-                stamps.extend(self._line_stamps(json.loads(line)))
-            except json.JSONDecodeError:
-                pass  # partial line mid-append: no complete record to stamp yet
-        return stamps
+        if files:
+            with open(files[0], "rb") as f:
+                first_line = f.readline()
+            if first_line.endswith(b"\n"):
+                lines.append(first_line)
+        for path in reversed(files):
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                tail_start = max(0, f.tell() - 65536)
+                f.seek(tail_start)
+                tail = f.read()
+            # a mid-file seek cuts the first line
+            tail_lines = tail[: tail.rfind(b"\n") + 1].splitlines()[1 if tail_start else 0 :]
+            if tail_lines:
+                lines.extend(tail_lines)
+                break
+        return [stamp for line in lines for stamp in self._line_stamps(json.loads(line))]
+
+
+class _AppendCursor:
+    """One consumer's read offsets over a partitioned stream, for consumers
+    that fold every byte of the stream once rather than cache windows of it."""
+
+    def __init__(self, reader: _PartitionReader):
+        self._reader = reader
+        self._offsets: dict[str, int] = {}
+
+    def appended(self) -> Iterator[tuple[Path, int, bytes]]:
+        """(path, offset, complete lines) per partition that grew since the last
+        call, oldest partition first. A partition's offset advances only once the
+        consumer's loop body returns, so a fold that raises re-reads the same
+        bytes next time.
+
+        Sizes are taken newest partition first, then read up to: flush writes
+        partitions oldest first, so a row in a newer partition is never read
+        before the older-partition rows written ahead of it (a phase's open
+        marker ahead of its close across an hour boundary)."""
+        sizes = [(key, path, path.stat().st_size) for key, path in reversed(self._reader.files())]
+        for key, path, size in reversed(sizes):
+            offset = self._offsets.get(key, 0)
+            if size <= offset:
+                continue
+            complete_lines = _read_complete_lines(path, offset, size)
+            if complete_lines:
+                yield path, offset, complete_lines
+            self._offsets[key] = offset + len(complete_lines)
+
+
+class _PhaseIndex:
+    """What a windowed read of the phases stream cannot answer, across every
+    partition: intervals still open (a stall can be older than any window),
+    intervals closed after more than ``longer_than_s`` (the close lands past
+    any window's upper slack), and each phase's most recent closed durations
+    up to ``longer_than_s`` (the stall baseline: a phase every rank is stuck in
+    stops closing, so a trailing window of closes would empty out; a longer
+    close is a stall that ended, not a sample of the phase's usual length).
+
+    Each partition's bytes are folded in once and later calls read only what
+    was appended. An open marker always lands before its close: the sink
+    pushes it at ``Timer.start`` while the close waits for a batch."""
+
+    # a few steps' worth of closes at 1024 ranks
+    RECENT_CLOSES_PER_PHASE: ClassVar[int] = 4096
+    _INTERVAL_KEY_FIELD_PREFIXES: ClassVar[tuple[bytes, ...]] = (b'"name":', b'"t0":', b'"node":', b'"rank":')
+    _OPEN_T1_BYTES: ClassVar[bytes] = json.dumps(PhaseEvent.OPEN_T1).encode()
+
+    def __init__(self, reader: _PartitionReader, *, longer_than_s: float):
+        self._cursor = _AppendCursor(reader)
+        self._longer_than_s = longer_than_s
+        # only the few still-open or long lines are ever json-parsed: one writer
+        # serializes equal values identically, so the key is matched as bytes
+        self._open_line_by_interval_key: dict[tuple[bytes, ...], bytes] = {}
+        self._open_event_by_line: dict[bytes, PhaseEvent] = {}
+        # keyed like the open lines, so re-reading a chunk after a failed one stays idempotent
+        self._long_closed_event_by_interval_key: dict[tuple[bytes, ...], PhaseEvent] = {}
+        self._recent_closes_by_raw_name: dict[bytes, deque[tuple[float, float]]] = defaultdict(
+            lambda: deque(maxlen=self.RECENT_CLOSES_PER_PHASE)
+        )
+        self._lock = threading.Lock()
+
+    def events(self) -> list[PhaseEvent]:
+        """Every interval still open, and every closed one longer than ``longer_than_s``."""
+        with self._lock:
+            self._fold_appended()
+            open_lines = set(self._open_line_by_interval_key.values())
+            self._open_event_by_line = {
+                line: self._open_event_by_line.get(line) or PhaseEvent.from_dict(json.loads(line))
+                for line in open_lines
+            }
+            return [*self._open_event_by_line.values(), *self._long_closed_event_by_interval_key.values()]
+
+    def recent_closed_durations(self, *, since_t0: float) -> dict[str, list[float]]:
+        """Each phase's last ``RECENT_CLOSES_PER_PHASE`` closed durations up to
+        ``longer_than_s``, of intervals that began at or after ``since_t0``."""
+        with self._lock:
+            self._fold_appended()
+            return {
+                json.loads(raw_name): [duration for t0, duration in closes if t0 >= since_t0]
+                for raw_name, closes in self._recent_closes_by_raw_name.items()
+            }
+
+    def _fold_appended(self) -> None:
+        for _, _, complete_lines in self._cursor.appended():
+            # appended once the chunk folds whole: a re-read after a failure must not count a close twice
+            closes = []
+            for line in complete_lines.splitlines():
+                interval_key = tuple(_raw_field_value(line, field) for field in self._INTERVAL_KEY_FIELD_PREFIXES)
+                t1_bytes = _raw_field_value(line, b'"t1":')
+                if t1_bytes == self._OPEN_T1_BYTES:
+                    self._open_line_by_interval_key[interval_key] = line
+                    continue
+                self._open_line_by_interval_key.pop(interval_key, None)
+                t0, duration = float(interval_key[1]), float(t1_bytes) - float(interval_key[1])
+                if duration > self._longer_than_s:
+                    self._long_closed_event_by_interval_key[interval_key] = PhaseEvent.from_dict(json.loads(line))
+                else:
+                    closes.append((interval_key[0], t0, duration))
+            for raw_name, t0, duration in closes:
+                self._recent_closes_by_raw_name[raw_name].append((t0, duration))
+
+
+def _raw_field_value(line: bytes, prefix: bytes) -> bytes:
+    """The raw value after ``prefix`` in one compact JSON line."""
+    start = line.index(prefix) + len(prefix)
+    end = line.find(b",", start)
+    return line[start : end if end >= 0 else line.rindex(b"}")].strip()
+
+
+class _ThinnedEngineSeries:
+    """Run-long engine series thinned to at most ``2 * SCRAPES_PER_ENGINE``
+    scrapes per engine.
+
+    Engine queries stride-sample each series down to ``max_points``, so a
+    run-long query needs a few times that many scrapes, not every one: the
+    first scrape of each engine per bucket of ``bucket_s`` stands in for the
+    bucket. ``bucket_s`` doubles as the run grows, re-thinning the kept rows
+    (first-per-2P of first-per-P is first-per-2P of the raw stream), so the
+    raw bytes are parsed once. Whole scrapes are kept so dp ranks still fold
+    and counters still difference."""
+
+    SCRAPES_PER_ENGINE: ClassVar[int] = 4000
+
+    def __init__(
+        self, reader: _PartitionReader, parse: Callable[[bytes, Path, int], pl.DataFrame], empty: pl.DataFrame
+    ):
+        self._cursor = _AppendCursor(reader)
+        self._parse = parse
+        self._kept_scrapes = empty
+        self._bucket_s = 0.0  # 0 keeps every scrape
+        # a scrape can straddle two flushes: its later rows follow the first ones in
+        self._last_kept_ts_by_addr: dict[str, float] = {}
+        # updated from each append's kept rows, so the bound check never scans the whole view
+        self._kept_scrape_count_by_addr: dict[str, int] = {}
+        self.version = 0
+        self._lock = threading.Lock()
+
+    def kept_scrapes(self) -> tuple[pl.DataFrame, int]:
+        with self._lock:
+            for path, offset, complete_lines in self._cursor.appended():
+                self._append_thinned(self._parse(complete_lines, path, offset))
+                self.version += 1
+            return self._kept_scrapes, self.version
+
+    def _append_thinned(self, rows: pl.DataFrame) -> None:
+        continued = dict(self._last_kept_ts_by_addr)
+        kept = self._thin(rows)
+        self._kept_scrapes = pl.concat([self._kept_scrapes, kept], rechunk=False)
+        # the one scrape a chunk can share with the view is the continued one
+        new_scrapes = (
+            kept.select("addr", "ts")
+            .unique()
+            .join(
+                pl.DataFrame(
+                    dict(addr=list(continued), ts=list(continued.values())), schema=dict(addr=pl.String, ts=pl.Float64)
+                ),
+                on=["addr", "ts"],
+                how="anti",
+            )
+        )
+        for addr, count in new_scrapes.group_by("addr").len().iter_rows():
+            self._kept_scrape_count_by_addr[addr] = self._kept_scrape_count_by_addr.get(addr, 0) + count
+        while max(self._kept_scrape_count_by_addr.values(), default=0) > 2 * self.SCRAPES_PER_ENGINE:
+            self._bucket_s = 2 * self._bucket_s if self._bucket_s else self._compute_initial_bucket_s()
+            self._last_kept_ts_by_addr = {}
+            self._kept_scrapes = self._thin(self._kept_scrapes)
+            self._kept_scrape_count_by_addr = dict(
+                self._kept_scrapes.group_by("addr").agg(pl.col("ts").n_unique()).iter_rows()
+            )
+        self._kept_scrapes = (
+            self._kept_scrapes.rechunk() if self._kept_scrapes.n_chunks() > 256 else self._kept_scrapes
+        )
+
+    def _compute_initial_bucket_s(self) -> float:
+        span = self._kept_scrapes["ts"].max() - self._kept_scrapes["ts"].min()
+        return 2.0 ** math.floor(math.log2(max(span / self.SCRAPES_PER_ENGINE, 1.0)))
+
+    def _thin(self, rows: pl.DataFrame) -> pl.DataFrame:
+        if not self._bucket_s or rows.is_empty():
+            kept = rows
+        else:
+            scrapes = rows.select("addr", "ts").unique()
+            last_kept = pl.DataFrame(
+                dict(addr=list(self._last_kept_ts_by_addr), ts=list(self._last_kept_ts_by_addr.values())),
+                schema=dict(addr=pl.String, ts=pl.Float64),
+            )
+            first_per_bucket = (
+                scrapes.join(last_kept, on="addr", how="left", suffix="_kept")
+                .filter(pl.col("ts_kept").is_null() | (pl.col("ts") > pl.col("ts_kept")))
+                .with_columns(bucket=(pl.col("ts") / self._bucket_s).floor())
+                .filter(
+                    pl.col("ts_kept").is_null() | (pl.col("bucket") > (pl.col("ts_kept") / self._bucket_s).floor())
+                )
+                .group_by("addr", "bucket")
+                .agg(pl.col("ts").min())
+                .select("addr", "ts")
+            )
+            scrapes_to_keep = pl.concat([first_per_bucket, scrapes.join(last_kept, on=["addr", "ts"], how="semi")])
+            kept = rows.join(scrapes_to_keep, on=["addr", "ts"], how="semi")
+        if not kept.is_empty():
+            for addr, ts in kept.group_by("addr").agg(pl.col("ts").max()).iter_rows():
+                self._last_kept_ts_by_addr[addr] = max(ts, self._last_kept_ts_by_addr.get(addr, ts))
+        return kept
+
+
+def _read_engine_catalog(path: Path) -> set[str] | None:
+    """The cataloged engine metric names, or None when no catalog can be
+    trusted: absent, or unreadable. Either way the stream itself answers."""
+    if not path.exists():
+        return None
+    try:
+        return set(json.loads(path.read_text())["metrics"])
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error("ignoring unreadable %s (%r): engine metric names come from the stream", path, e)
+        return None
+
+
+def _concat_frames(frames: list[pl.DataFrame]) -> pl.DataFrame:
+    merged = frames[0] if len(frames) == 1 else pl.concat(frames, rechunk=False)
+    # bound chunk fragmentation from long tail sessions
+    return merged.rechunk() if merged.n_chunks() > 256 else merged
+
+
+def _split_by_metric(frame: pl.DataFrame) -> dict[str, pl.DataFrame]:
+    return {metric: part for (metric,), part in frame.partition_by("metric", as_dict=True).items()}
+
+
+def _concat_blocks_by_metric(blocks: list[dict[str, pl.DataFrame]]) -> dict[str, pl.DataFrame]:
+    frames_by_metric: dict[str, list[pl.DataFrame]] = {}
+    for block in blocks:
+        for metric, frame in block.items():
+            frames_by_metric.setdefault(metric, []).append(frame)
+    return {metric: _concat_frames(frames) for metric, frames in frames_by_metric.items()}
 
 
 class MetricStore:
-    COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES)
+    COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES, Stream.GPU_PROCESSES)
     PARTITIONED_STREAMS: ClassVar[tuple[Stream, ...]] = (
         Stream.GPU_UTIL,
         Stream.ENGINE_SERIES,
@@ -393,9 +647,13 @@ class MetricStore:
     MAX_WINDOW_S: ClassVar[float] = 4 * 3600.0
     PARTITION_CACHE_BLOCKS: ClassVar[int] = 24
     CATALOG_FILENAME: ClassVar[str] = "lane_catalog.json"
+    ENGINE_CATALOG_FILENAME: ClassVar[str] = "engine_catalog.json"
     FRAME_SCHEMAS: ClassVar[dict[Stream, dict[str, Any]]] = {
         Stream.GPU_UTIL: dict(
             ts=pl.Float64, node=pl.String, gpu=pl.Int64, util=pl.Int64, mem_mb=pl.Int64, power_w=pl.Int64
+        ),
+        Stream.GPU_PROCESSES: dict(
+            ts=pl.Float64, node=pl.String, gpu=pl.Int64, pid=pl.Int64, name=pl.String, mem_mb=pl.Int64
         ),
         # labels dicts are canonicalized to a JSON string column at parse time
         Stream.ENGINE_SERIES: dict(
@@ -411,25 +669,37 @@ class MetricStore:
         self._offsets: dict[Stream, int] = {s: 0 for s in Stream if s not in self.PARTITIONED_STREAMS}
         self._readers: dict[Stream, _PartitionReader] = {s: self._make_reader(s) for s in self.PARTITIONED_STREAMS}
         self.unserializable_dropped = 0
+        self._phase_index = _PhaseIndex(self._readers[Stream.PHASES], longer_than_s=self.MAX_WINDOW_S)
         self._catalog: dict[str, dict] | None = None  # write-side lane catalog accumulator
-        # full-window engine query cache, versioned by partition file sizes so
-        # appended scrapes invalidate it; the lock is load-bearing because sync
-        # endpoints serve concurrently from FastAPI's threadpool
-        self._engine_cache_lock = threading.Lock()
-        self._engine_cache_version: tuple | None = None
-        self._engine_frame_cache: pl.DataFrame | None = None
+        self._thinned_engine_series = _ThinnedEngineSeries(
+            self._readers[Stream.ENGINE_SERIES],
+            parse=lambda raw, path, offset: self._parse_columnar(Stream.ENGINE_SERIES, raw, path, offset),
+            empty=pl.DataFrame(schema=self.FRAME_SCHEMAS[Stream.ENGINE_SERIES]),
+        )
+        # sync endpoints serve concurrently from FastAPI's threadpool
+        self._engine_parts_lock = threading.Lock()
+        self._engine_parts_version = -1
         self._engine_parts_cache: dict[tuple[str, bool], dict[tuple[str, str], pl.DataFrame]] = {}
+        self._cataloged_engine_metrics: set[str] | None = None  # write-side accumulator
+        self._writes_engine_catalog: bool | None = None  # decided at the first merge
 
     def _make_reader(self, stream: Stream) -> _PartitionReader:
+        if stream is Stream.ENGINE_SERIES:
+            # every engine query asks for one metric: blocks are kept split by it
+            return _PartitionReader(
+                self.dir / stream.value,
+                self.dir / stream.filename,
+                parse=lambda raw, path, offset: _split_by_metric(self._parse_columnar(stream, raw, path, offset)),
+                concat=_concat_blocks_by_metric,
+                length=lambda frames_by_metric: sum(frame.height for frame in frames_by_metric.values()),
+                line_stamps=lambda data: (data["ts"],),
+                max_blocks=self.PARTITION_CACHE_BLOCKS,
+            )
         if stream in self.COLUMNAR_STREAMS:
             empty = pl.DataFrame(schema=self.FRAME_SCHEMAS[stream])
 
             def concat_frames(blocks: list, empty: pl.DataFrame = empty) -> pl.DataFrame:
-                if not blocks:
-                    return empty
-                merged = blocks[0] if len(blocks) == 1 else pl.concat(blocks, rechunk=False)
-                # bound chunk fragmentation from long tail sessions
-                return merged.rechunk() if merged.n_chunks() > 256 else merged
+                return _concat_frames(blocks) if blocks else empty
 
             return _PartitionReader(
                 self.dir / stream.value,
@@ -440,7 +710,7 @@ class MetricStore:
                 line_stamps=lambda data: (data["ts"],),
                 max_blocks=self.PARTITION_CACHE_BLOCKS,
             )
-        assert stream in (Stream.PHASES, Stream.TRAJECTORIES, Stream.GPU_PROCESSES), stream
+        assert stream in (Stream.PHASES, Stream.TRAJECTORIES), stream
         record_type = _RECORD_TYPE_OF_STREAM[stream]
         return _PartitionReader(
             self.dir / stream.value,
@@ -491,6 +761,7 @@ class MetricStore:
     def flush(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._merge_catalog()
+        self._merge_engine_catalog()
         for stream, buffer in self._buffers.items():
             if not buffer:
                 continue
@@ -560,9 +831,39 @@ class MetricStore:
                 lane["ranks"].sort()
                 lane["engine_addrs"].sort()
                 lane["roles"].sort()
-            tmp = self.dir / (self.CATALOG_FILENAME + ".tmp")
-            tmp.write_text(json.dumps(dict(version=1, lanes=lanes)))
-            os.replace(tmp, self.dir / self.CATALOG_FILENAME)
+            staging_path = self.dir / (self.CATALOG_FILENAME + ".tmp")
+            staging_path.write_text(json.dumps(dict(version=1, lanes=lanes)))
+            os.replace(staging_path, self.dir / self.CATALOG_FILENAME)
+
+    def _merge_engine_catalog(self) -> None:
+        """Fold buffered engine metric names into ``engine_catalog.json``, so
+        the sglang category needs no stream scan.
+
+        The catalog exists only if it covers the whole stream: a dir whose
+        engine stream predates it (written by older code, now resumed) gets
+        none, and readers keep scanning. Atomic rewrite, only when changed;
+        the accumulator moves only once the rewrite landed, so a failed flush
+        rewrites it on retry."""
+        path = self.dir / self.ENGINE_CATALOG_FILENAME
+        if self._writes_engine_catalog is None:
+            catalog = _read_engine_catalog(path)
+            if catalog is None and path.exists():
+                path.unlink()  # unreadable, so it cannot vouch for the stream; readers scan instead
+            self._writes_engine_catalog = catalog is not None or not self._readers[Stream.ENGINE_SERIES].has_data()
+            self._cataloged_engine_metrics = catalog or set()
+        if not self._writes_engine_catalog:
+            return
+        names = {sample.metric for sample in self._buffers[Stream.ENGINE_SERIES]}
+        if names <= self._cataloged_engine_metrics:
+            return
+        merged = self._cataloged_engine_metrics | names
+        staging_path = self.dir / (self.ENGINE_CATALOG_FILENAME + ".tmp")
+        with open(staging_path, "w") as f:
+            f.write(json.dumps(dict(version=1, metrics=sorted(merged))))
+            f.flush()
+            os.fsync(f.fileno())  # a rename can outlive unsynced data across a crash
+        os.replace(staging_path, path)
+        self._cataloged_engine_metrics = merged
 
     # ------------------------------ read side -------------------------------
 
@@ -590,15 +891,11 @@ class MetricStore:
             path = self.dir / stream.filename
             if not path.exists():
                 continue
-            with open(path, "rb") as f:
-                f.seek(self._offsets[stream])
-                chunk = f.read()
-            end = chunk.rfind(b"\n")
-            if end < 0:
+            complete_lines = _read_complete_lines(path, self._offsets[stream])
+            if not complete_lines:
                 continue
-            complete = chunk[: end + 1]
             record_type = _RECORD_TYPE_OF_STREAM[stream]
-            for line in complete.splitlines():
+            for line in complete_lines.splitlines():
                 try:
                     self.records[stream].append(record_type.from_dict(json.loads(line)))
                 except (json.JSONDecodeError, TypeError, KeyError) as e:
@@ -606,7 +903,7 @@ class MetricStore:
                         f"corrupt record in {path} near byte {self._offsets[stream]}: {line[:200]!r}"
                     ) from e
                 num_new += 1
-            self._offsets[stream] += len(complete)
+            self._offsets[stream] += len(complete_lines)
         for reader in self._readers.values():
             num_new += reader.refresh_cached()
         return num_new
@@ -743,13 +1040,34 @@ class MetricStore:
         return lanes
 
     def phase_events(self, t0: float | None = None, t1: float | None = None) -> list[PhaseEvent]:
-        """Raw phase events, open markers included — advisory heuristics need
-        the unexpanded events rather than the lane-resolved view."""
+        """Unexpanded phase events for [t0, t1] (not the lane-resolved view):
+        closed intervals that can overlap the window, every interval still open,
+        and every closed interval longer than ``MAX_WINDOW_S``. An open marker
+        whose close has landed is not returned; ``iter_records`` has the raw rows."""
         return self._phase_events(t0, t1)
 
     def _phase_events(self, t0: float | None, t1: float | None) -> list[PhaseEvent]:
+        """Closed intervals that can overlap [t0, t1], every interval still open,
+        and every closed interval longer than ``MAX_WINDOW_S``. Closes key by end
+        hour, so none ending at or after t0 sits in an earlier partition, and the
+        upper slack reaches every interval up to ``MAX_WINDOW_S`` long; longer
+        ones come from the index alone, so none is returned twice."""
         upper = None if t1 is None else t1 + self.MAX_WINDOW_S
-        return self._readers[Stream.PHASES].window(None, upper)
+        closed = [
+            event
+            for event in self._readers[Stream.PHASES].window(t0, upper)
+            if not event.open and event.t1 - event.t0 <= self.MAX_WINDOW_S
+        ]
+        return closed + self._phase_index.events()
+
+    def open_phase_events(self) -> list[PhaseEvent]:
+        """Every phase interval opened and not yet closed, however old."""
+        return [event for event in self._phase_index.events() if event.open]
+
+    def recent_closed_phase_durations(self, *, since_t0: float) -> dict[str, list[float]]:
+        """Each phase's most recent closed durations, of intervals that began at
+        or after ``since_t0``, however long ago they closed."""
+        return self._phase_index.recent_closed_durations(since_t0=since_t0)
 
     def has_stream(self, stream: Stream) -> bool:
         if stream in self.PARTITIONED_STREAMS:
@@ -770,14 +1088,15 @@ class MetricStore:
                     labels={k: v for k, v in json.loads(row["labels_json"]).items() if v is not None},
                     value=row["value"],
                 )
-                for row in self._readers[stream].window(None, None).iter_rows(named=True)
+                for frame in self._readers[stream].window(None, None).values()
+                for row in frame.iter_rows(named=True)
             ]
         if stream is Stream.PHASES:
-            return list(self._phase_events(None, None))
+            return list(self._readers[stream].window(None, None))
         if stream is Stream.TRAJECTORIES:
             return self.trajectory_events()
         if stream is Stream.GPU_PROCESSES:
-            return self._readers[stream].window(None, None)
+            return [GpuProcessSample(**row) for row in self._readers[stream].window(None, None).iter_rows(named=True)]
         return list(self.records[stream])
 
     @staticmethod
@@ -907,7 +1226,7 @@ class MetricStore:
                     if not covered:
                         # External engines register without GPU identity; fall
                         # back to every known lane on the engines' nodes.
-                        engine_nodes = {engine["addr"].split("//")[-1].split(":")[0] for engine in window["engines"]}
+                        engine_nodes = {_engine_host(engine["addr"]) for engine in window["engines"]}
                         covered = {
                             (lane["node"], lane["gpu"]) for lane in self.lanes() if lane["node"] in engine_nodes
                         }
@@ -1000,12 +1319,11 @@ class MetricStore:
         """Per-process memory snapshots in [t0, t1] (coarser cadence than
         ``gpu_series``): the timeline hover resolves the nearest snapshot per
         lane client-side, same as it already does for the util/mem series."""
-        events = self._window_records(self._readers[Stream.GPU_PROCESSES].window(t0, t1), t0, t1)
-        return [
-            dict(ts=e.ts, node=e.node, gpu=e.gpu, pid=e.pid, name=e.name, mem_mb=e.mem_mb)
-            for e in events
-            if lanes is None or (e.node, e.gpu) in lanes
-        ]
+        frame = self._window(self._readers[Stream.GPU_PROCESSES].window(t0, t1), t0, t1)
+        if lanes is not None:
+            selected_lanes = pl.DataFrame(sorted(lanes), schema=dict(node=pl.String, gpu=pl.Int64), orient="row")
+            frame = frame.join(selected_lanes, on=["node", "gpu"], how="semi")
+        return frame.to_dicts()
 
     # cumulative engine families are stored raw; the catalog exposes them as
     # per-interval derived series instead
@@ -1029,10 +1347,18 @@ class MetricStore:
         {"sglang_token_usage", "sglang_cache_hit_rate", "sglang_kv_transfer_latency_ms"}
     )
 
+    def newest_engine_scrape_ts(self) -> float | None:
+        stamps = self._readers[Stream.ENGINE_SERIES].edge_stamps()
+        return max(stamps) if stamps else None
+
     def engine_metric_names(self) -> list[str]:
-        """Distinct scraped engine metrics — the L0 sglang category catalog."""
-        frame, _ = self._engine_cache()
-        raw = set(frame.get_column("metric").unique())
+        """Distinct scraped engine metrics — the L0 sglang category catalog.
+
+        Read from ``engine_catalog.json``; a dir without a usable one falls
+        back to the run-long view."""
+        raw = _read_engine_catalog(self.dir / self.ENGINE_CATALOG_FILENAME)
+        if raw is None:
+            raw = set(self._thinned_engine_series.kept_scrapes()[0].get_column("metric").unique())
         names = {name for name in raw if not name.endswith(self._CUMULATIVE_SUFFIXES)}
         names.update(derived for derived, base in self.ENGINE_RATE_METRICS.items() if base in raw)
         names.update(
@@ -1050,8 +1376,10 @@ class MetricStore:
         t1: float | None = None,
         max_points: int = 2000,
         per_dp_rank: bool = False,
+        addrs: set[str] | None = None,
     ) -> list[dict]:
-        """One series per (engine addr, label set) for the given metric.
+        """One series per (engine addr, label set) for the given metric,
+        restricted to ``addrs`` when given (None = every engine).
 
         By default per-dp-rank samples (dp-attention engines export one per
         rank) are folded into one engine-level series — summed, or averaged
@@ -1061,30 +1389,32 @@ class MetricStore:
         Derived names (``ENGINE_RATE_METRICS`` / ``ENGINE_MEAN_METRICS``) are
         computed from adjacent raw cumulative samples; a counter reset or an
         interval without completions leaves a gap, never a fabricated value."""
+
+        def parts(raw_metric: str) -> dict[tuple[str, str], pl.DataFrame]:
+            return self._engine_parts(raw_metric, t0, t1, per_dp_rank=per_dp_rank, addrs=addrs)
+
         if metric in self.ENGINE_RATE_METRICS:
-            parts = self._engine_parts(self.ENGINE_RATE_METRICS[metric], t0, t1, per_dp_rank=per_dp_rank)
-            return self._derived_series(parts, None, max_points)
+            return self._derived_series(parts(self.ENGINE_RATE_METRICS[metric]), None, max_points)
         if metric in self.ENGINE_MEAN_METRICS:
             base = self.ENGINE_MEAN_METRICS[metric]
-            return self._derived_series(
-                self._engine_parts(base + "_sum", t0, t1, per_dp_rank=per_dp_rank),
-                self._engine_parts(base + "_count", t0, t1, per_dp_rank=per_dp_rank),
-                max_points,
-            )
+            return self._derived_series(parts(base + "_sum"), parts(base + "_count"), max_points)
         out = []
-        for (addr, labels_json), part in self._engine_parts(metric, t0, t1, per_dp_rank=per_dp_rank).items():
+        for (addr, labels_json), part in parts(metric).items():
             ts, values = stride_downsample(part["ts"].to_numpy(), part["value"].to_numpy(), max_points)
             out.append(dict(addr=addr, labels=_engine_labels(labels_json), ts=ts.tolist(), value=values.tolist()))
         return out
 
     def _engine_parts(
-        self, metric: str, t0: float | None, t1: float | None, *, per_dp_rank: bool = False
+        self, metric: str, t0: float | None, t1: float | None, *, per_dp_rank: bool, addrs: set[str] | None
     ) -> dict[tuple[str, str], pl.DataFrame]:
         if t0 is None and t1 is None:
-            return self._engine_parts_cached(metric, per_dp_rank)
-        frame = self._window(self._readers[Stream.ENGINE_SERIES].window(t0, t1), t0, t1).filter(
-            pl.col("metric") == metric
-        )
+            parts = self._engine_parts_cached(metric, per_dp_rank)
+            return parts if addrs is None else {key: part for key, part in parts.items() if key[0] in addrs}
+        frames_by_metric = self._readers[Stream.ENGINE_SERIES].window(t0, t1)
+        empty = pl.DataFrame(schema=self.FRAME_SCHEMAS[Stream.ENGINE_SERIES])
+        frame = self._window(frames_by_metric.get(metric, empty), t0, t1)
+        if addrs is not None:
+            frame = frame.filter(pl.col("addr").is_in(sorted(addrs)))
         if not per_dp_rank:
             frame = self._fold_dp_ranks(frame, metric)
         return {
@@ -1112,22 +1442,14 @@ class MetricStore:
         agg = pl.col("value").mean() if metric in self.ENGINE_MEAN_AGGREGATED_METRICS else pl.col("value").sum()
         return frame.group_by(["ts", "addr", "metric", "labels_json"]).agg(agg.alias("value"))
 
-    def _engine_cache(self) -> tuple[pl.DataFrame, dict[tuple[str, bool], dict[tuple[str, str], pl.DataFrame]]]:
-        """The full-window frame and its partition cache, returned as a pair so a
-        caller racing a rebuild files partitions under the frame they came from."""
-        reader = self._readers[Stream.ENGINE_SERIES]
-        with self._engine_cache_lock:
-            version = tuple((key, path.stat().st_size) for key, path in reader.files())
-            if version != self._engine_cache_version:
-                self._engine_frame_cache = reader.window(None, None)
-                self._engine_parts_cache = {}
-                self._engine_cache_version = version  # last: a failed rebuild must not look cached
-            return self._engine_frame_cache, self._engine_parts_cache
-
     def _engine_parts_cached(self, metric: str, per_dp_rank: bool) -> dict[tuple[str, str], pl.DataFrame]:
-        frame, cache = self._engine_cache()
-        cache_key = (metric, per_dp_rank)
-        parts = cache.get(cache_key)
+        frame, version = self._thinned_engine_series.kept_scrapes()
+        with self._engine_parts_lock:
+            if version != self._engine_parts_version:
+                self._engine_parts_cache = {}
+                self._engine_parts_version = version
+            cache_key = (metric, per_dp_rank)
+            parts = self._engine_parts_cache.get(cache_key)
         if parts is None:
             frame = frame.filter(pl.col("metric") == metric)
             if not per_dp_rank:
@@ -1136,7 +1458,9 @@ class MetricStore:
                 key: part.sort("ts")
                 for key, part in sorted(frame.partition_by(["addr", "labels_json"], as_dict=True).items())
             }
-            cache[cache_key] = parts
+            with self._engine_parts_lock:
+                if version == self._engine_parts_version:
+                    self._engine_parts_cache[cache_key] = parts
         return parts
 
     def _derived_series(self, num_parts, den_parts, max_points: int) -> list[dict]:
@@ -1168,6 +1492,19 @@ class MetricStore:
                 dict(addr=addr, labels=_engine_labels(labels_json), ts=point_ts.tolist(), value=point_values.tolist())
             )
         return out
+
+    def engine_addrs_on_lanes(self, lanes: set[tuple[str, int]]) -> set[str]:
+        """Engines that ever ran on one of ``lanes``. External engines register
+        without GPU identity and match by their addr's host, as in ``phases_by_lane``."""
+        addrs = set()
+        for window in self.topology_windows():
+            for engine in window["engines"]:
+                if engine["gpus"]:
+                    if any((node, gpu) in lanes for node, gpu in engine["gpus"]):
+                        addrs.add(engine["addr"])
+                elif any(node == _engine_host(engine["addr"]) for node, _ in lanes):
+                    addrs.add(engine["addr"])
+        return addrs
 
     def lane_index(self) -> list[dict]:
         """Per-lane metadata for selection resolution: train ranks observed on
@@ -1515,6 +1852,11 @@ def _metric_by_suffix(metrics: dict[str, float], base_key: str) -> float | None:
 
 def _engine_labels(labels_json: str) -> dict:
     return {k: v for k, v in json.loads(labels_json).items() if v is not None}
+
+
+def _engine_host(addr: str) -> str:
+    """An engine addr's host: an external engine (no GPU identity) runs on the node it names."""
+    return addr.split("//")[-1].split(":")[0]
 
 
 def stride_downsample(xs, ys, max_points: int) -> tuple[np.ndarray, np.ndarray]:

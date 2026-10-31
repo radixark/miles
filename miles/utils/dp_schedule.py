@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import logging
-from argparse import Namespace
 from typing import NamedTuple
 
 from miles.utils.args.runtime import RolloutConfig, TrainerConfig
-from miles.utils.flops_utils import calculate_fwd_flops
+from miles.utils.flops_utils import ModelFlops, model_flops_from_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.seqlen_balancing import (
     expand_bins_by_splitting,
@@ -35,14 +36,21 @@ class DPSchedule(NamedTuple):
     num_rollouts: list[int]  # (num_steps,): distinct rollout counts
 
 
+@functools.cache
+def _model_flops(hf_checkpoint: str) -> ModelFlops | None:
+    hf_config = load_hf_config(hf_checkpoint)
+    try:
+        return model_flops_from_hf_config(hf_config)
+    except Exception as e:
+        logger.warning(f"--balance-by-flops balances by token count, the HF config could not be sized: {e!r}")
+        return None
+
+
 def _calculate_workloads(step_lengths: list[int], args: TrainerConfig | RolloutConfig) -> list[float]:
-    if isinstance(args, TrainerConfig):
-        backend_values = vars(args.backend)
-    else:
-        assert isinstance(args, RolloutConfig)
-        backend_values = args.raw_megatron.base_args if args.train_backend == "megatron" else vars(args.raw_fsdp)
-    flops_args = Namespace(**(dict(args) | backend_values))
-    return [calculate_fwd_flops([sl], flops_args) for sl in step_lengths]
+    model_flops = _model_flops(args.hf_checkpoint)
+    if model_flops is None:
+        return list(step_lengths)
+    return [model_flops.fwd_flops([sl]) for sl in step_lengths]
 
 
 def build_dp_schedule(

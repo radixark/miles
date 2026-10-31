@@ -9,7 +9,10 @@ from tests.ci.ci_register import register_cpu_ci
 
 from miles.backends.torchtitan_utils import parallel as tp
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
-from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
+from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser, validate_torchtitan_args
+from miles.utils.arguments import get_miles_extra_args_provider
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
+from miles.utils.lora import arguments as lora_arguments
 
 register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
@@ -33,20 +36,27 @@ def _args(**overrides) -> Namespace:
         lr_warmup_fraction=None,
         lr_wsd_decay_iters=None,
         lr_decay_iters=None,
+        lora_rank=0,
+        lora_type="lora",
+        lora_A_init_method="kaiming",
+        lora_dropout=0.0,
+        lora_adapter_path=None,
+        lora_train_only=False,
+        colocate_memory_peak_device="cpu",
     )
     return Namespace(**{**base, **overrides})
 
 
-def test_the_backend_needs_torch_213(monkeypatch):
-    monkeypatch.setattr(torch, "__version__", "2.12.0")
-    with pytest.raises(ValueError, match="torch>=2.13"):
-        validate_torchtitan_args(_args())
+def test_the_backend_needs_torch_214(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
+    with pytest.raises(ValueError, match="torch>=2.14"):
+        validate_torchtitan_args(_args())
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     validate_torchtitan_args(_args())
 
 
 def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="seq-length"):
         validate_torchtitan_args(_args(seq_length=8192, rollout_max_context_len=16384))
     with pytest.raises(ValueError, match="no room for a prompt"):
@@ -55,17 +65,71 @@ def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="context parallelism"):
         validate_torchtitan_args(_args(titan_model_name="qwen3_5", context_parallel_size=2))
 
 
 def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="ref-update-interval"):
         validate_torchtitan_args(_args(ref_update_interval=4))
     with pytest.raises(ValueError, match="save-debug-train-data"):
         validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
+
+
+def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    validate_torchtitan_args(_args(lora_rank=8))
+    with pytest.raises(ValueError, match="qwen3 only"):
+        validate_torchtitan_args(_args(lora_rank=8, titan_model_name="glm5_next"))
+    with pytest.raises(ValueError, match="--lora-type lora"):
+        validate_torchtitan_args(_args(lora_rank=8, lora_type="canonical_lora"))
+    with pytest.raises(ValueError, match="kaiming"):
+        validate_torchtitan_args(_args(lora_rank=8, lora_A_init_method="xavier"))
+    with pytest.raises(ValueError, match="no dropout"):
+        validate_torchtitan_args(_args(lora_rank=8, lora_dropout=0.05))
+    with pytest.raises(ValueError, match="--lora-adapter-path"):
+        validate_torchtitan_args(_args(lora_rank=8, lora_adapter_path="/adapter"))
+    with pytest.raises(ValueError, match="grad buffers"):
+        validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu"))
+    validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu", lora_train_only=True))
+
+
+def test_lora_defaults_are_the_values_torchtitan_honors():
+    """A torchtitan LoRA command without --lora-type or --lora-A-init-method must not hit the refusals."""
+    parser = build_torchtitan_parser(get_miles_extra_args_provider())
+    assert (parser.get_default("lora_type"), parser.get_default("lora_A_init_method")) == ("lora", "kaiming")
+
+
+def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
+    """torchtitan runs in the default raw mode; megatron's native adapter spec must not vet its targets."""
+    hf_config = SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"})
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
+    monkeypatch.setattr(
+        lora_arguments.HfWeightMapping,
+        "from_config",
+        lambda config: HfWeightMapping(frozenset({"model.layers.0.self_attn.q_proj.weight"})),
+    )
+    monkeypatch.setattr(
+        lora_arguments,
+        "resolve_adapter_targets",
+        lambda *args, **kwargs: pytest.fail("torchtitan LoRA targets went through megatron's native spec"),
+    )
+    args = Namespace(
+        train_backend="torchtitan",
+        megatron_to_hf_mode="raw",
+        hf_checkpoint="/hf",
+        lora_rank=8,
+        lora_adapter_path=None,
+        lora_type="lora",
+        target_modules="q_proj",
+        exclude_modules=None,
+        experts_shared_outer_loras=False,
+        multi_lora_n_adapters=0,
+    )
+    lora_arguments.validate_lora_args(args)
+    assert args.lora_adapter_targets == ["q_proj"]
 
 
 def _config_args(**overrides: object) -> Namespace:
@@ -110,14 +174,10 @@ def single_gpu_dims(monkeypatch):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils import config as titan_config
 
-    monkeypatch.setattr(
-        titan_config,
-        "parallel_dims_from_config",
-        lambda parallelism: SimpleNamespace(dp_replicate=1, dp_shard=1, pp_enabled=False),
-    )
+    monkeypatch.setattr(titan_config.dist, "get_world_size", lambda group=None: 1)
 
 
-def test_a_tied_checkpoint_is_refused_under_pipeline_parallelism(tmp_path):
+def test_a_tied_checkpoint_is_refused_under_pipeline_parallelism(tmp_path, single_gpu_dims):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.config import build_trainer_config
 
@@ -136,30 +196,35 @@ def test_the_lr_schedule_follows_miles_flags_not_torchtitan_defaults(tmp_path, s
     constant = build_trainer_config(
         _config_args(lr_warmup_iters=3), hf_assets_path=hf, lr_total_steps=10, dump_subdir="x"
     )
-    assert (constant.lr_scheduler.warmup_steps, constant.lr_scheduler.min_lr_factor) == (3, 1.0)
+    assert (constant.optim.lr_scheduler.warmup_steps, constant.optim.lr_scheduler.min_lr_factor) == (3, 1.0)
     cosine = build_trainer_config(
         _config_args(lr_decay_style="cosine", lr=1e-6, min_lr=1e-7),
         hf_assets_path=hf,
         lr_total_steps=10,
         dump_subdir="x",
     )
-    assert cosine.lr_scheduler.decay_type == "cosine"
-    assert cosine.lr_scheduler.min_lr_factor == pytest.approx(0.1)
+    assert cosine.optim.lr_scheduler.decay_type == "cosine"
+    assert cosine.optim.lr_scheduler.min_lr_factor == pytest.approx(0.1)
 
 
-def test_the_trainer_keeps_dtensor_only_on_the_model_parallel_axes(tmp_path, single_gpu_dims):
-    """torchtitan v0.3.0 defaults to the spmd_types backend, whose FSDP wrapping wants every
-    parameter distributed over the full mesh first and rejects a plain-DP model."""
+def test_context_parallelism_swaps_in_the_all_gather_kv_attention(tmp_path, monkeypatch):
+    """torchtitan refuses CP on a plain flex attention; the backend converts every layer's inner attention."""
     pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.config import build_trainer_config
+    from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention
 
-    config = build_trainer_config(
-        _config_args(),
+    from miles.backends.torchtitan_utils import config as titan_config
+
+    monkeypatch.setattr(titan_config.dist, "get_world_size", lambda group=None: 2)
+    config = titan_config.build_trainer_config(
+        _config_args(context_parallel_size=2),
         hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
         lr_total_steps=10,
         dump_subdir="x",
     )
-    assert config.parallelism.spmd_backend == "partial_dtensor"
+    assert config.parallelism.context_parallel_degree == 2
+    assert config.parallelism.context_parallel_load_balancer is None
+    inner = {type(layer.attention.inner_attention) for layer in config.model.layers}
+    assert inner == {AllGatherKVFlexInnerAttention.Config}
 
 
 class _Mesh:
@@ -212,13 +277,13 @@ def _state(dist_stub, meshes: dict[str, int], world: int | None = None, **kwargs
     dist_stub["__world__"] = world
     dist_stub["gloo"] = world
     dist_stub["self_group"] = 1
-    dp = meshes.get("batch", 1)
+    dp = meshes.get("dp", 1)
     dist_stub[f"gloo_sub{tuple(range(dp))}"] = dp
     return tp.create_titan_parallel_state(_ParallelDims(meshes), **kwargs)
 
 
 def test_context_parallelism_stays_inside_the_trainer_and_absent_axes_are_trivial(dist_stub):
-    state = _state(dist_stub, {"batch": 4, "loss": 8, "cp": 2})
+    state = _state(dist_stub, {"dp": 4, "loss": 8, "cp": 2})
     assert (state.intra_dp.size, state.intra_dp_cp.size, state.cp.size) == (4, 4, 1)
     for axis in (state.tp, state.pp, state.ep, state.etp, state.indep_dp):
         assert (axis.size, axis.rank) == (1, 0)
@@ -253,10 +318,10 @@ def test_resume_reads_from_load_and_writes_to_save(tmp_path, single_gpu_dims):
         lr_total_steps=1,
         dump_subdir="actor",
     )
-    assert config.dump_folder == str(save_root / "torchtitan" / "actor")
-    assert config.checkpoint.initial_load_path == str(load_root / "torchtitan" / "actor" / "checkpoint" / "step-12")
-    assert (config.checkpoint.initial_load_model_only, config.checkpoint.initial_load_in_hf) == (False, False)
-    assert config.checkpoint.last_save_model_only is False
+    assert config.output_dir == str(save_root / "torchtitan" / "actor")
+    assert config.checkpointer.initial_load_path == str(load_root / "torchtitan" / "actor" / "checkpoint" / "step-12")
+    assert (config.checkpointer.initial_load_model_only, config.checkpointer.initial_load_in_hf) == (False, False)
+    assert config.checkpointer.last_save_model_only is False
 
     fresh = build_trainer_config(
         _config_args(load=str(tmp_path / "empty"), save=str(save_root)),
@@ -264,24 +329,26 @@ def test_resume_reads_from_load_and_writes_to_save(tmp_path, single_gpu_dims):
         lr_total_steps=1,
         dump_subdir="actor",
     )
-    assert fresh.checkpoint.initial_load_path is None
-    assert (fresh.checkpoint.initial_load_model_only, fresh.checkpoint.initial_load_in_hf) == (True, True)
+    assert fresh.checkpointer.initial_load_path is None
+    assert (fresh.checkpointer.initial_load_model_only, fresh.checkpointer.initial_load_in_hf) == (True, True)
 
 
-def test_the_replayed_router_forward_mirrors_the_pinned_torchtitan_router():
-    """routing_replay._token_router_forward is a copy of TokenChoiceTopKRouter.forward with the
-    top-k swapped for the replayed one; a torchtitan bump that changes the upstream forward must
-    re-sync the copy before this fingerprint is updated."""
-    import ast
-    import hashlib
+def test_routing_replay_hooks_the_router_where_it_picks_experts():
+    """routing_replay swaps TokenChoiceTopKRouter._select_experts per router; that only replays the routing if the
+    upstream forward still looks the method up on the instance and gathers its scores from the returned ids."""
     import inspect
-    import textwrap
 
     moe = pytest.importorskip("torchtitan.models.common.moe")
 
-    source = textwrap.dedent(inspect.getsource(moe.TokenChoiceTopKRouter.forward))
-    fingerprint = hashlib.sha256(ast.dump(ast.parse(source)).encode()).hexdigest()
-    assert fingerprint == "e3c6e10d721ebf5bdc8d968524cc204fbc3c74e775157b30248d6ec2f1aecef9"
+    forward = inspect.getsource(moe.TokenChoiceTopKRouter.forward)
+    assert "self._select_experts," in forward
+    assert "scores_TE.gather(dim=-1, index=topk_expert_ids_TK)" in forward
+    assert list(inspect.signature(moe.TokenChoiceTopKRouter._select_experts).parameters) == [
+        "self",
+        "scores_TE",
+        "expert_bias_E",
+        "router_kwargs",
+    ]
 
 
 _GLM47_FLASH_HF_CONFIG = dict(
@@ -302,6 +369,7 @@ _GLM47_FLASH_HF_CONFIG = dict(
     routed_scaling_factor=1.8,
     norm_topk_prob=True,
     rope_theta=1000000,
+    rms_norm_eps=1e-5,
     vocab_size=154880,
 )
 
@@ -334,19 +402,29 @@ _GLM47_FLASH_CHECKPOINT_KEYS = [
 
 def test_unknown_model_names_name_both_package_roots():
     pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.config import resolve_model_spec
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import build_model_config
 
     with pytest.raises(ValueError, match="miles.backends.torchtitan_utils.models.nope.*torchtitan.models.nope"):
-        resolve_model_spec(_config_args(titan_model_name="nope", titan_model_flavor="x"))
+        build_model_config(
+            _config_args(titan_model_name="nope", titan_model_flavor="x"), parallelism=ParallelismConfig()
+        )
 
 
 def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
     pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.config import resolve_model_spec
+    from torchtitan.config.parallelism import ParallelismConfig
+    from torchtitan.models.common import RMSNorm, Sigmoid
+    from torchtitan.models.common.moe import MoE
+    from torchtitan.models.deepseek_v3 import DeepSeekV3Model
 
-    spec = resolve_model_spec(_config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"))
+    from miles.backends.torchtitan_utils.config import build_model_config
+
+    model = build_model_config(
+        _config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"), parallelism=ParallelismConfig()
+    )
     hf = _GLM47_FLASH_HF_CONFIG
-    model = spec.model
     assert (model.dim, model.vocab_size, len(model.layers)) == (
         hf["hidden_size"],
         hf["vocab_size"],
@@ -362,21 +440,25 @@ def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
         attention.v_head_dim,
     ) == (hf["q_lora_rank"], hf["kv_lora_rank"], hf["qk_nope_head_dim"], hf["qk_rope_head_dim"], hf["v_head_dim"])
     assert attention.rope.theta == hf["rope_theta"] and attention.rope.scaling == "none"
-    assert [layer.moe is None for layer in model.layers] == [i < hf["first_k_dense_replace"] for i in range(47)]
-    assert model.layers[0].feed_forward.w1.out_features == hf["intermediate_size"]
-    moe = model.layers[1].moe
+    assert {norm.eps for _, norm, _, _ in model.traverse(RMSNorm.Config, recurse=True)} == {hf["rms_norm_eps"]}
+    assert [isinstance(layer.feed_forward, MoE.Config) for layer in model.layers] == [
+        i >= hf["first_k_dense_replace"] for i in range(47)
+    ]
+    assert model.layers[0].feed_forward.w2.in_features == hf["intermediate_size"]
+    moe = model.layers[1].feed_forward
     assert moe.num_experts == hf["n_routed_experts"]
-    assert moe.routed_experts.inner_experts.hidden_dim == hf["moe_intermediate_size"]
-    assert moe.shared_experts.w1.out_features == hf["moe_intermediate_size"] * hf["n_shared_experts"]
-    assert (moe.router.top_k, moe.router.score_func, moe.router.route_scale, moe.router.route_norm) == (
+    assert moe.routed_experts.w2.in_features == hf["moe_intermediate_size"]
+    assert moe.shared_experts.w2.in_features == hf["moe_intermediate_size"] * hf["n_shared_experts"]
+    assert (moe.router.top_k, type(moe.router.score_func), moe.router.route_scale, moe.router.route_norm) == (
         hf["num_experts_per_tok"],
-        "sigmoid",
+        Sigmoid.Config,
         hf["routed_scaling_factor"],
         hf["norm_topk_prob"],
     )
+    assert (moe.router.aux_loss, moe.freeze_expert_bias) == (None, True)
     assert model.mtp_layers == []
 
-    adapter = spec.state_dict_adapter(model, None)
+    adapter = DeepSeekV3Model.state_dict_adapter_cls(model, None)
     assert set(_GLM47_FLASH_CHECKPOINT_KEYS) <= set(adapter.from_hf_map)
 
 
