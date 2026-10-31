@@ -85,7 +85,7 @@ def step(monkeypatch):
         FALLTHROUGH="fallthrough",
         REPLAY_BACKWARD="replay_backward",
         stage=lambda name: _recording(stages, name),
-        fill=MagicMock(side_effect=lambda *a, **k: stages.append("fill")),
+        attach=MagicMock(side_effect=lambda *a, **k: stages.append("attach")),
         log_prob_stage=lambda args: "replay_forward",
         rewind=MagicMock(side_effect=lambda: stages.append("rewind")),
         reset=MagicMock(side_effect=lambda: stages.append("reset")),
@@ -120,7 +120,7 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
     actor._train_core(rollout_id=3, rollout_data=rollout_data)
 
     assert step["stages"] == [
-        "fill",
+        "attach",
         "enter:fallthrough",
         "enter:ref",
         "exit:ref",
@@ -135,7 +135,7 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
     assert step["log_probs"] == [(actor.ref_runner, "ref_"), (actor.runner, "")]
     assert step["steps"] == [actor.runner]
     assert rollout_data == {"ref_log_probs": [1], "log_probs": [1], "adv": True}
-    assert step["replay"].fill.call_args.kwargs["align"] is actor.align_token_side_channel
+    assert step["replay"].attach.call_args.kwargs["align"] is actor.align_token_side_channel
 
 
 _VOCAB_SIZE = 11

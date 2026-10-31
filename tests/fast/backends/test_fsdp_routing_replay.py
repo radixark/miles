@@ -161,15 +161,15 @@ def test_log_prob_stage_replays_when_routing_came_from_the_rollout():
 
 
 def test_log_prob_stage_records_for_the_non_rollout_variant():
-    # --use-routing-replay alone has nothing to replay yet: the queues are only filled by fill(),
+    # --use-routing-replay alone has nothing to replay yet: the queues are only filled by attach(),
     # which is gated on use_rollout_routing_replay. Replaying here would pop an empty queue.
     routing_replay_manager.enabled = True
     assert routing_replay.log_prob_stage(Namespace(use_rollout_routing_replay=False)) == routing_replay.RECORD
 
 
-def test_fill_is_skipped_for_the_non_rollout_variant():
-    # Passing None for every downstream argument: reaching fill_replay_data would raise.
-    routing_replay.fill(Namespace(use_rollout_routing_replay=False), None, None, None, None)
+def test_attach_is_skipped_for_the_non_rollout_variant():
+    # Passing None for every downstream argument: reaching attach_replay_data would raise.
+    routing_replay.attach(Namespace(use_rollout_routing_replay=False), None, None, None, None)
 
 
 def test_stage_sets_and_restores():

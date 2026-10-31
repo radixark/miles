@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from miles.backends.training_utils.replay.data import fill_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.replay.data import attach_replay_data, register_replay_list_sequential
 from miles.utils.replay_base import routing_replay_manager
 
 FALLTHROUGH = "fallthrough"
@@ -20,29 +20,19 @@ def enable(args) -> bool:
     return routing_replay_manager.enabled
 
 
-def fill(args, models, data_iterators, num_microbatches, rollout_data, align=None) -> None:
+def attach(args, models, data_iterators, num_microbatches, rollout_data, align=None) -> None:
     if not uses_rollout_replay(args):
         return
 
-    fill_replay_data(
+    attach_replay_data(
+        routing_replay_manager,
         args=args,
         models=models,
         data_iterator=data_iterators,
         num_microbatches=num_microbatches,
         rollout_data=rollout_data,
-        data_key=routing_replay_manager.data_key,
-        replay_list=routing_replay_manager.replays,
-        register_replay_list_func=routing_replay_manager.register_replay_list_func,
-        if_sp_region=routing_replay_manager.if_sp_region,
-        indices_are_token_positions=routing_replay_manager.replay_indices_are_token_positions,
-        kept_in_train_dump=routing_replay_manager.kept_in_train_dump,
+        align=align,
     )
-
-    if align is None:
-        return
-    for replay in routing_replay_manager.replays:
-        for i, entry in enumerate(replay.top_indices_list):
-            replay.top_indices_list[i] = align(entry, -1)
 
 
 def log_prob_stage(args) -> str:

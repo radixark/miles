@@ -108,6 +108,24 @@ class TestGetDataIteratorPrecomputedSchedule:
         assert sorted(i for shard in shards for i in shard["sample_indices"]) == list(range(256))
 
 
+class TestDataIteratorMicrobatchIndices:
+    @pytest.mark.parametrize(
+        "schedule",
+        [dict(micro_batch_size=2), dict(micro_batch_indices=[[3, 0], [1], [2, 5, 4]])],
+        ids=["fixed", "balanced"],
+    )
+    def test_matches_the_rows_get_next_yields(self, schedule):
+        """Replay is filled from this membership, so it must be what the forwards pop."""
+        rollout = {"sample_indices": list(range(6))}
+        iterator = data_utils.DataIterator(rollout, **schedule)
+        yielded = [iterator.get_next(["sample_indices"])["sample_indices"] for _ in range(3)]
+
+        consumed = iterator.offset
+        assert iterator.microbatch_indices(3) == yielded
+        assert iterator.microbatch_indices(2) == yielded[:2]
+        assert iterator.offset == consumed
+
+
 class TestGetDataIteratorUnsupportedSchedule:
     def test_a_backend_without_schedule_support_falls_back_and_rejects_three_cells(
         self, monkeypatch: pytest.MonkeyPatch
