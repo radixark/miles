@@ -86,19 +86,26 @@ def init_orchestration_script(startup_info: OrchestratorStartupInfo, *, disposer
         )
     observers.start_process("driver")
     # registered before the worker manager, so it runs after the workers are gone
-    disposer.add_exit(lambda succeeded: observers.Observers().end_run(succeeded=succeeded))
+    disposer.add_exit(_end_observed_run)
 
     if isinstance(startup_info, ArgvOrchestratorStartupInfo):
         all_args = startup_info.all_args
         all_args.wandb_run_id = args.wandb_run_id
         all_args.mlflow_run_id = args.mlflow_run_id
-        worker_manager = launch_worker_manager(all_args, worker_env=worker_env)
+        worker_manager = launch_worker_manager(
+            all_args, worker_env=worker_env, observers_active=observers.Observers().active
+        )
         disposer.add(partial(shutdown_worker_manager, worker_manager))
 
     capability = _compute_backend_capability(startup_info)
     object_store.init_instance(args, contribute_segment=False)
     fault_hook_controller.configure(resources=FaultHookResources(args=args), owner=FaultHookOwner.ORCHESTRATOR)
     return capability
+
+
+def _end_observed_run(succeeded: bool) -> None:
+    observers.Observers().end_process()
+    observers.Observers().end_run(succeeded=succeeded)
 
 
 def _compute_backend_capability(startup_info: OrchestratorStartupInfo) -> BackendCapability:

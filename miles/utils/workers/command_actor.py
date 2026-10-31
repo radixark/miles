@@ -36,6 +36,9 @@ class CommandActor(NodeProbeMixin):
         self._shutting_down = True
         process_utils.terminate_process_tree(self._process)
 
+    def report_process_end(self) -> None:
+        observers.Observers().end_process()
+
     def kill_subprocess(self) -> None:
         assert self._process is not None, "CommandActor has no subprocess to kill"
         process_utils.kill_process_tree(self._process)

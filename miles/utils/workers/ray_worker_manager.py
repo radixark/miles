@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.utils import observers
 from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
@@ -69,9 +70,14 @@ class RayWorkerManager:
         *,
         comm_backend: WorkerCommBackend,
         worker_env: dict[str, str] | None = None,
+        observers_active: bool = False,
     ):
         obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
-        ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend, worker_env=worker_env))
+        ray.get(
+            obj.init.remote(
+                args, specs, pgs, comm_backend=comm_backend, worker_env=worker_env, observers_active=observers_active
+            )
+        )
         return obj
 
     @staticmethod
@@ -86,6 +92,7 @@ class RayWorkerManager:
         *,
         comm_backend: WorkerCommBackend,
         worker_env: dict[str, str] | None = None,
+        observers_active: bool = False,
     ):
         configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
 
@@ -93,6 +100,7 @@ class RayWorkerManager:
         self.comm_backend = comm_backend
         # set in every worker on top of its spec's env, e.g. what run observers need; never secrets
         self.worker_env = dict(worker_env or {})
+        self.observers_active = observers_active
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
@@ -435,6 +443,9 @@ class _BaseActorManager(Generic[SpecT]):
             return
 
         await self._shutdown_gracefully()
+        # a worker stuck in a long call makes this wait the whole timeout; runs without observers skip it
+        if self.manager.observers_active:
+            await self._report_process_end()
 
         try:
             ray.kill(self.actor_handle)
@@ -444,6 +455,14 @@ class _BaseActorManager(Generic[SpecT]):
 
     async def _shutdown_gracefully(self) -> None:
         pass
+
+    async def _report_process_end(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self.actor_handle.report_process_end.remote(), timeout=observers.END_PROCESS_TIMEOUT_S
+            )
+        except Exception as e:
+            logger.warning(f"Reporting the end of {self=} to its run observers failed ({e!r}); killing it anyway")
 
     @property
     def name(self) -> str:
@@ -588,6 +607,9 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
             self, *, ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]], context: WorkerLaunchContext
         ) -> None:
             super().__init__(**ctor_kwargs(_ctor_context(context)))
+
+        def report_process_end(self) -> None:
+            observers.Observers().end_process()
 
     BootstrappedWorker.__name__ = worker_class.__name__
     BootstrappedWorker.__qualname__ = worker_class.__qualname__

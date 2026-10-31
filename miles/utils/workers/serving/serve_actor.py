@@ -8,6 +8,7 @@ from typing import Any
 
 import uvicorn
 
+from miles.utils import observers
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord
@@ -39,6 +40,9 @@ class ServeActor(NodeProbeMixin):
 
     def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
         return fault_hook_controller.apply(command)
+
+    def report_process_end(self) -> None:
+        observers.Observers().end_process()
 
 
 def serve_until_stopped(*, app: Any, port: int) -> None:

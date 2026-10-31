@@ -13,13 +13,14 @@ from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import ClusterBackend, WorkerCommBackend
 
 
-def launch_worker_manager(args, *, worker_env: dict[str, str] | None = None):
-    """``worker_env`` is set in every worker the manager launches, on top of each spec's own."""
+def launch_worker_manager(args, *, worker_env: dict[str, str] | None = None, observers_active: bool = False):
+    """``worker_env`` is set in every worker the manager launches, on top of each spec's own;
+    with ``observers_active``, each worker reports its end to the run observers before it is killed."""
     match ClusterBackend(args.cluster_backend):
         case ClusterBackend.KUBERNETES:
             return None
         case ClusterBackend.RAY:
-            return _launch_ray_worker_manager(args, worker_env=worker_env)
+            return _launch_ray_worker_manager(args, worker_env=worker_env, observers_active=observers_active)
 
 
 async def shutdown_worker_manager(worker_manager_handle: ActorHandle | None) -> None:
@@ -38,12 +39,17 @@ def compute_backend_capability(args: AllConfig) -> BackendCapability:
     )
 
 
-def _launch_ray_worker_manager(args, *, worker_env: dict[str, str] | None):
+def _launch_ray_worker_manager(args, *, worker_env: dict[str, str] | None, observers_active: bool):
     from miles.ray.placement_group import create_placement_groups
 
     specs = compute_specs(args)
     # TODO: pass in specs instead of args
     pgs = create_placement_groups(args)
     return RayWorkerManager.launch(
-        args, specs, pgs, comm_backend=WorkerCommBackend(args.worker_comm_backend), worker_env=worker_env
+        args,
+        specs,
+        pgs,
+        comm_backend=WorkerCommBackend(args.worker_comm_backend),
+        worker_env=worker_env,
+        observers_active=observers_active,
     )

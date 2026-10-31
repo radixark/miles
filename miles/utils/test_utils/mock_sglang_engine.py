@@ -80,6 +80,9 @@ class MockSGLangEngine:
             self._http_server.close()
         return True
 
+    def report_process_end(self):
+        self._record("report_process_end", (), {})
+
     def kill_subprocess(self):
         """Real CommandActor takes the actor down with the subprocess; the
         in-process mock cannot exit the test process, so only the server dies."""

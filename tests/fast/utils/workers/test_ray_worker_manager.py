@@ -11,6 +11,7 @@ from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayC
 from tests.fast.utils.workers.fake_specs import FakeCommandSpec
 
 from miles.ray.placement_group import PlacementGroupInfo
+from miles.utils import observers
 from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
 from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
@@ -84,10 +85,19 @@ def _make_pgs(*, num_slots: int = 8, first_gpu_id: int = 0) -> dict[str, Placeme
     }
 
 
-async def _launch(specs: list[BaseCommandSpec], pgs: dict[str, PlacementGroupInfo] | None = None) -> RayWorkerManager:
+async def _launch(
+    specs: list[BaseCommandSpec],
+    pgs: dict[str, PlacementGroupInfo] | None = None,
+    *,
+    observers_active: bool = False,
+) -> RayWorkerManager:
     manager = RayWorkerManager()
     await manager.init(
-        worker_manager_args(), specs, pgs if pgs is not None else {}, comm_backend=WorkerCommBackend.RAY
+        worker_manager_args(),
+        specs,
+        pgs if pgs is not None else {},
+        comm_backend=WorkerCommBackend.RAY,
+        observers_active=observers_active,
     )
     return manager
 
@@ -1398,6 +1408,38 @@ class TestStopDetails:
             await asyncio.wait_for(stop_task, timeout=5)
 
         assert fake_ray_cluster.events.count(EVENT_KILL) == 2
+
+    async def test_a_worker_ends_its_run_observers_before_it_is_killed(self, fake_ray_cluster: FakeRayCluster):
+        """A worker killed first loses what its observers still buffer, such as the run's last eval."""
+        manager = await _launch([_make_spec("engine")], observers_active=True)
+
+        await manager._pools["engine"].cells[0].stop()
+
+        assert fake_ray_cluster.events[-3:] == ["shutdown", "report_process_end", EVENT_KILL]
+        assert callable(getattr(fake_ray_cluster.handles[0].actor_class, "report_process_end", None))
+
+    async def test_a_worker_whose_observers_do_not_end_is_killed_after_the_timeout(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """A hung observer must not keep the worker, and the GPUs it holds, from being released."""
+        manager = await _launch([_make_spec("engine")], observers_active=True)
+        fake_ray_cluster.handles[0].hanging_methods["report_process_end"] = 3600
+
+        with patch.object(observers, "END_PROCESS_TIMEOUT_S", 0.01):
+            await manager._pools["engine"].cells[0].stop()
+
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+
+    async def test_a_run_without_observers_kills_its_workers_without_asking_them(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """A worker stuck in a collective answers only after the timeout, a wait a run without observers must not pay."""
+        manager = await _launch([_make_spec("engine")])
+
+        await manager._pools["engine"].cells[0].stop()
+
+        assert fake_ray_cluster.calls_of("report_process_end") == []
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
 
     async def test_all_workers_are_killed_even_when_one_shutdown_hangs(self, fake_ray_cluster: FakeRayCluster):
         """One broken worker must not save its peers from teardown."""

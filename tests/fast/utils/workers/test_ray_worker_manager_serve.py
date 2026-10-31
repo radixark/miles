@@ -176,9 +176,17 @@ def _make_pgs(num_slots: int = 8) -> dict[str, PlacementGroupInfo]:
     }
 
 
-async def _launch(specs, pgs=None, comm_backend: WorkerCommBackend = WorkerCommBackend.RAY) -> RayWorkerManager:
+async def _launch(
+    specs, pgs=None, comm_backend: WorkerCommBackend = WorkerCommBackend.RAY, *, observers_active: bool = False
+) -> RayWorkerManager:
     manager = RayWorkerManager()
-    await manager.init(worker_manager_args(), specs, pgs if pgs is not None else {}, comm_backend=comm_backend)
+    await manager.init(
+        worker_manager_args(),
+        specs,
+        pgs if pgs is not None else {},
+        comm_backend=comm_backend,
+        observers_active=observers_active,
+    )
     return manager
 
 
@@ -415,6 +423,18 @@ class TestServeWorkersAreStopped:
 
         assert fake_ray_cluster.calls_of("shutdown") == []
         assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+
+    @pytest.mark.parametrize("comm_backend", [WorkerCommBackend.RAY, WorkerCommBackend.RPC], ids=["ray", "rpc"])
+    async def test_a_serve_worker_ends_its_run_observers_before_it_is_killed(
+        self, fake_ray_cluster: FakeRayCluster, comm_backend: WorkerCommBackend
+    ):
+        """The actor of either wire has to answer the call, or its observers lose what they still buffer."""
+        manager = await _launch([_make_spec()], comm_backend=comm_backend, observers_active=True)
+
+        await manager.stop_cells(["trainer-00000"])
+
+        assert fake_ray_cluster.events[-2:] == ["report_process_end", EVENT_KILL]
+        assert callable(getattr(_actor_classes(fake_ray_cluster)[0], "report_process_end", None))
 
 
 class TestServeAndCommandSpecsCoexist:
