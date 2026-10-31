@@ -96,10 +96,35 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
     validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu", lora_train_only=True))
 
 
-def test_lora_defaults_are_the_values_torchtitan_honors():
-    """A torchtitan LoRA command without --lora-type or --lora-A-init-method must not hit the refusals."""
+def test_lora_defaults_are_the_values_torchtitan_honors(monkeypatch):
+    """A torchtitan LoRA command without --lora-type or --lora-A-init-method must not hit the refusals.
+
+    torchtitan runs in the default raw mode, so a default keyed on raw mode alone would pick canonical_lora.
+    """
     parser = build_torchtitan_parser(get_miles_extra_args_provider())
-    assert (parser.get_default("lora_type"), parser.get_default("lora_A_init_method")) == ("lora", "kaiming")
+    assert (parser.get_default("lora_type"), parser.get_default("lora_A_init_method")) == (None, "kaiming")
+    hf_config = SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"})
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
+    monkeypatch.setattr(
+        lora_arguments.HfWeightMapping,
+        "from_config",
+        lambda config: HfWeightMapping(frozenset({"model.layers.0.self_attn.q_proj.weight"})),
+    )
+    args = Namespace(
+        train_backend="torchtitan",
+        megatron_to_hf_mode="raw",
+        entry="train",
+        hf_checkpoint="/hf",
+        lora_rank=8,
+        lora_adapter_path=None,
+        lora_type=None,
+        target_modules="q_proj",
+        exclude_modules=None,
+        experts_shared_outer_loras=False,
+        multi_lora_n_adapters=0,
+    )
+    lora_arguments.validate_lora_args(args)
+    assert args.lora_type == "lora"
 
 
 def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):

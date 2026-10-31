@@ -4020,3 +4020,30 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
     assert native_args is not None
     assert native_args.mtp_detach_heads is detach_heads
     assert "mtp_detach_heads" not in args.model_fields
+
+
+class TestLoRATypeResolution:
+    """--lora-type defaults to what each backend trains: native gives every HF projection its own lora_A."""
+
+    def _parse(self, tmp_path, extra):
+        from transformers import Qwen3Config
+
+        Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
+        args = get_megatron_arg_parser().parse_args(
+            ["--lora-rank", "8", "--target-modules", "q_proj", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"]
+            + extra
+            + REQUIRED_ARGS
+        )
+        miles_validate_args(args)
+        return args
+
+    @pytest.mark.parametrize("mode,lora_type", [("raw", "canonical_lora"), ("bridge", "lora")])
+    def test_default_follows_the_backend(self, tmp_path, mode, lora_type):
+        assert self._parse(tmp_path, ["--megatron-to-hf-mode", mode]).lora_type == lora_type
+
+    def test_native_refuses_shared_a_lora(self, tmp_path):
+        from miles.utils.lora.arguments import validate_lora_args_after_megatron
+
+        args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
+        with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
+            validate_lora_args_after_megatron(args)

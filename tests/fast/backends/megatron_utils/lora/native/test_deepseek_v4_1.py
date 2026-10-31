@@ -104,7 +104,7 @@ def launcher_targets(monkeypatch) -> list[str]:
     (train_command,) = train_commands
     launch_args, _ = parser.parse_known_args(shlex.split(train_command))
     launch_args.multi_lora, launch_args.megatron_to_hf_mode = False, "raw"
-    launch_args.lora_type, launch_args.experts_shared_outer_loras = "lora", False
+    launch_args.lora_type, launch_args.experts_shared_outer_loras = "canonical_lora", False
     register_hf_config_aliases()
     hf_config = AutoConfig.for_model("deepseek_v41")
     hf_targets = _resolve_lora_targets(launch_args, hf_config)
