@@ -15,6 +15,7 @@ from megatron.training.global_vars import _build_tokenizer, set_args
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
+from miles.backends.megatron_utils.te_fa4_window import patch_te_flash_attn_4_window
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_utils.config import register_hf_config_aliases
@@ -129,6 +130,7 @@ def init(
     # Random seeds for reproducibility.
     set_random_seed_from_args(args)
     register_hf_config_aliases()
+    patch_te_flash_attn_4_window()
     with args.backend.mutable():
         _build_tokenizer(args.backend)
     # We won't use this. initialize to pass some validation in megatron.
