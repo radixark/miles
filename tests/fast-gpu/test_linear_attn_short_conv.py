@@ -2,7 +2,8 @@
 conv is per channel, so the chunked forward matches the single call bit for bit. fla picks its backward
 tiling from the channel count, so on Blackwell the gradients differ from the single call by fp32
 accumulation order (~1e-6 relative); a wrong channel mapping is off by ~1. The conv, on whichever
-backend the layer selects, also matches a float64 torch reference to bf16 rounding (< 5e-3)."""
+backend the layer selects, also matches a float64 torch reference to bf16 rounding (< 5e-3), including
+the "miles" backend above its size floor, where it runs miles.kernels.conv's backward."""
 
 import sys
 
@@ -53,6 +54,37 @@ def test_conv_matches_float64_reference(backend):
     out_ref = _reference(xr, wr, cu_seqlens)
     out_ref.backward(grad.double())
     out = conv(x, cu_seqlens=cu_seqlens)
+    for actual, expected in ((out, out_ref), (xi.grad, xr.grad), (conv.weight.grad, wr.grad)):
+        assert ((actual.double() - expected).norm() / expected.norm()).item() < 5e-3
+
+
+@pytest.mark.skipif(not linear_attn.conv_bwd_kernel_available(), reason="causal_conv1d_bwd_cuda extension not built")
+def test_miles_backend_runs_the_sequence_aligned_backward(monkeypatch):
+    """The "miles" backend takes miles.kernels.conv's backward (asserted here, not just assumed from the gate)
+    and still matches the float64 reference, on a larger input with uneven sequences."""
+    torch.manual_seed(0)
+    tokens, channels = 8192, 1024
+    calls = []
+    real_bwd = linear_attn.causal_conv1d_bwd
+
+    def counting_bwd(*args):
+        calls.append(args)
+        return real_bwd(*args)
+
+    monkeypatch.setattr(linear_attn, "causal_conv1d_bwd", counting_bwd)
+    conv = _conv(channels)
+    conv.backend = "miles"
+    x = torch.randn(1, tokens, channels, device="cuda", dtype=torch.bfloat16)
+    grad = torch.randn_like(x)
+    cu_seqlens = torch.tensor([0, 700, 3001, 3070, tokens], device="cuda", dtype=torch.int32)
+    xi = x.clone().requires_grad_()
+    out = conv(xi, cu_seqlens=cu_seqlens)
+    out.backward(grad)
+    assert calls, "the sequence-aligned backward did not run"
+    xr = x.double().requires_grad_()
+    wr = conv.weight.detach().double().requires_grad_()
+    out_ref = _reference(xr, wr, cu_seqlens)
+    out_ref.backward(grad.double())
     for actual, expected in ((out, out_ref), (xi.grad, xr.grad), (conv.weight.grad, wr.grad)):
         assert ((actual.double() - expected).norm() / expected.norm()).item() < 5e-3
 
