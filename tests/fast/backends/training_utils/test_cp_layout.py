@@ -72,3 +72,42 @@ def test_take_ranges_pads_rows_past_the_end():
 
     rows = torch.arange(6).reshape(3, 2)
     assert take_ranges(rows, ((2, 4),), pad_func).tolist() == [[4, 5], [-1, -1]]
+
+
+@pytest.mark.parametrize(
+    "kwargs,lengths,expected",
+    [
+        # Without CP the micro batch is padded to a multiple of pad_size: 5 + 2 = 7 -> 8.
+        (dict(cp_size=1, pad_size=4), [5, 2], [0, 5, 7, 8]),
+        # Zigzag: each sequence is padded to a multiple of 2 * cp_size (10 -> 12, 3 -> 4), then the whole
+        # to a multiple of cp_size * pad_size (16 -> 18).
+        (dict(cp_size=2, pad_size=3), [10, 3], [0, 12, 16, 18]),
+        (dict(cp_size=2, pad_size=2), [10, 3], [0, 12, 16]),
+        # thd all-gather: the sequences keep their lengths and the concatenation is padded (11 -> 12).
+        (dict(cp_size=2, allgather_cp=True, pad_size=2), [5, 4, 2], [0, 5, 9, 11, 12]),
+    ],
+)
+def test_cu_seqlens(kwargs, lengths, expected):
+    for cp_rank in range(kwargs["cp_size"]):
+        assert _layout(cp_rank, **kwargs).cu_seqlens(lengths) == expected
+
+
+def _no_padding(tensor, num_rows):
+    raise AssertionError(f"padded {num_rows} rows")
+
+
+def test_pack():
+    # bshd stacks the per-sequence pieces.
+    bshd = _layout(0, 2, qkv_format="bshd", max_seq_len=8)
+    assert bshd.pack([torch.tensor([1, 2, 0, 0]), torch.tensor([3, 0, 0, 0])], 0).tolist() == [
+        [1, 2, 0, 0],
+        [3, 0, 0, 0],
+    ]
+    # thd zigzag concatenates 6 + 2 rows and pads to a multiple of pad_size 3.
+    zigzag = _layout(0, 2, pad_size=3)
+    assert zigzag.pack([torch.arange(6), torch.arange(2)], -1).tolist() == [0, 1, 2, 3, 4, 5, 0, 1, -1]
+    # thd all-gather: the ranges already end at a multiple of pad_size, so nothing is padded.
+    allgather = _layout(1, 2, allgather_cp=True, pad_size=2)
+    tokens = [torch.arange(5), torch.arange(4), torch.arange(2)]
+    pieces = [take_ranges(t, r, 0) for t, r in zip(tokens, allgather.local_ranges([5, 4, 2]), strict=True)]
+    assert allgather.pack(pieces, _no_padding).tolist() == [1, 2, 3, 0, 1, 0]
