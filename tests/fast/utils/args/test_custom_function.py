@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Annotated
 
 import pytest
+import yaml
 
 from miles.utils.args.custom_function import (
     CustomFunctionConfig,
@@ -123,6 +124,20 @@ class TestCustomArgumentRegistration:
 
         assert result is parser
         assert parser.parse_args(["--threshold", "0.9"]).threshold == 0.9
+
+    @pytest.mark.parametrize("partial", [True, False])
+    def test_malformed_mix_yaml_is_left_to_startup_validation(self, tmp_path, partial: bool) -> None:
+        """The flag pre-parse runs even for --help; a YAML syntax error there must not crash it."""
+        from miles.utils.args.custom_function import _compute_rollout_dataset_function_infos
+
+        config = tmp_path / "mix.yaml"
+        config.write_text("datasets: [unclosed\n")
+        args = argparse.Namespace(rollout_data_yaml_config=str(config))
+        if partial:
+            assert _compute_rollout_dataset_function_infos(args, partial=True) == []
+        else:
+            with pytest.raises(yaml.YAMLError):
+                _compute_rollout_dataset_function_infos(args, partial=False)
 
     def test_distinct_legacy_hooks_may_declare_the_same_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Two legacy hooks get separate adapted classes; an identical shared flag must not hit an argparse conflict."""
