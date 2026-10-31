@@ -147,8 +147,20 @@ def test_loading_the_served_vocab_zero_fills_megatrons_padding():
     assert head_b.shape == (PADDED_VOCAB, 2)
     torch.testing.assert_close(head_b[:VOCAB], tensors["lm_head.lora_B.weight"])
     assert not head_b[VOCAB:].any()
-    with pytest.raises(AssertionError, match="has 9 rows, not 10"):
-        adapter.load_plan({**tensors, "lm_head.lora_B.weight": torch.randn(VOCAB - 1, 2)}.__getitem__)
+    for rows in (VOCAB - 1, PADDED_VOCAB + 1):
+        with pytest.raises(AssertionError, match="not between the served 10 and the padded 12"):
+            adapter.load_plan({**tensors, "lm_head.lora_B.weight": torch.randn(rows, 2)}.__getitem__)
+
+
+def test_an_adapter_over_the_padded_vocab_loads_as_is():
+    """An adapter written before the export trimmed padding (e.g. an Inkling one) still loads."""
+    adapter = _attached(tied=True).lora_lm_head_adapter
+    head_b = torch.randn(PADDED_VOCAB, 2)
+    tensors = {"lm_head.lora_A.weight": torch.randn(2, HIDDEN), "lm_head.lora_B.weight": head_b}
+
+    plan = dict((id(parameter), tensor) for parameter, tensor in adapter.load_plan(tensors.__getitem__))
+
+    torch.testing.assert_close(plan[id(adapter.head_B)], head_b)
 
 
 @pytest.mark.parametrize(
