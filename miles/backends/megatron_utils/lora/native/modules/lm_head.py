@@ -75,7 +75,11 @@ class LoRAOutputHead(NativeLoRAAdapter):
         padded_rows = vocab_local * self.context.tp_size
         served_rows = self._served_rows(padded_rows)
         head_b = take(f"{self.hf_prefix}lora_B.weight")
-        assert head_b.shape[0] == served_rows, f"{self.hf_prefix}lora_B has {head_b.shape[0]} rows, not {served_rows}"
+        # miles exports the served rows; an adapter written over Megatron's padded vocab loads as is
+        assert served_rows <= head_b.shape[0] <= padded_rows, (
+            f"{self.hf_prefix}lora_B has {head_b.shape[0]} rows, not between the served {served_rows} and the "
+            f"padded {padded_rows}"
+        )
         # Megatron's vocab padding rows get no logit delta
         head_b = F.pad(head_b, (0, 0, 0, padded_rows - head_b.shape[0]))
         return [
