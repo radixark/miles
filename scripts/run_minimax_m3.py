@@ -1,11 +1,13 @@
-"""MiniMax-M3 DAPO training (bf16 train, bf16 rollout).
+"""MiniMax-M3 / MiniMax-M3.1-Flash DAPO training (bf16 train, bf16 rollout).
 
 `prepare` downloads the release to `<model-dir>/<repo name>` and, unless `<model-dir>/<model-name>` is
-that download, converts it with tools/convert_minimax_m3_to_bf16.py. It then converts the model into
-the Megatron `<model-dir>/<megatron-model-type>_torch_dist` used as the reference model, unless they
-already exist:
-  MiniMax-M3         the full model (854 GB), 8 nodes x 4 GPUs
-  MiniMax-M3-4layer  `--layers 0,1,3,4`: two dense-attention dense-MLP and two sparse MoE layers, 4 GPUs
+that download, converts it with tools/convert_minimax_m3_to_bf16.py (MiniMax-M3.1-Flash ships MXFP8
+linears and NVFP4 routed experts; MiniMax-M3 ships BF16). It then converts the model into the Megatron
+`<model-dir>/<megatron-model-type>_torch_dist` used as the reference model, unless they already exist:
+  MiniMax-M3                      the full model (854 GB), 8 nodes x 4 GPUs
+  MiniMax-M3-4layer               `--layers 0,1,3,4`: two dense-attention dense-MLP and two sparse MoE layers, 4 GPUs
+  MiniMax-M3.1-Flash-bf16         the full model (852 GB), 8 nodes x 4 GPUs
+  MiniMax-M3.1-Flash-4layer-bf16  `--layers 0,1,3,4` (36 GB), two dense and two MoE layers, 4 GPUs
 
 Args:
     --model-name: checkpoint directory under `--model-dir`; selects the matching recipe.
@@ -67,12 +69,32 @@ _RECIPES = {
         rollout_num_gpus_per_engine=4,
         layers="0,1,3,4",
     ),
+    "MiniMax-M3.1-Flash-bf16": _Recipe(
+        hf_repo="MiniMaxAI/MiniMax-M3.1-Flash",
+        megatron_model_type="minimax-m3.1-flash",
+        num_gpus=32,
+        parallel=(4, 4, 8),
+        rollout_num_gpus_per_engine=8,
+        stream_optimizer_state=True,
+        check_weight_update_equal=False,
+        convert_args="--pipeline-model-parallel-size 4 --expert-model-parallel-size 8",
+    ),
+    "MiniMax-M3.1-Flash-4layer-bf16": _Recipe(
+        hf_repo="MiniMaxAI/MiniMax-M3.1-Flash",
+        megatron_model_type="minimax-m3.1-flash-4layer",
+        num_gpus=4,
+        parallel=(2, 1, 2),
+        rollout_num_gpus_per_engine=4,
+        layers="0,1,3,4",
+    ),
 }
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    model_name: Literal["MiniMax-M3", "MiniMax-M3-4layer"] = "MiniMax-M3-4layer"
+    model_name: Literal[
+        "MiniMax-M3", "MiniMax-M3-4layer", "MiniMax-M3.1-Flash-bf16", "MiniMax-M3.1-Flash-4layer-bf16"
+    ] = "MiniMax-M3-4layer"
     num_gpus_per_node: int = 4
     run_id: str = U.create_run_id()
     model_dir: str = "/root/models"
