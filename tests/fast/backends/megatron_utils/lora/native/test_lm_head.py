@@ -93,6 +93,12 @@ def test_the_adapter_changes_only_the_output_side(tied):
     assert adapter.head_A.grad is not None and adapter.head_B.grad is not None
 
 
+def test_the_vocab_sharded_b_counts_once_per_tp_rank():
+    """head_B holds this rank's vocab rows, so Megatron's grad norm must count every rank's shard."""
+    head_b = _attached(tied=True).lora_lm_head_adapter.head_B
+    assert head_b.tensor_model_parallel and head_b.partition_dim == 0
+
+
 def test_an_unselected_head_gets_no_adapter():
     model = _Model(tied=True)
     assert LMHeadSpec().attach(model, _ARGS, _context(("q_proj",))) == 0
