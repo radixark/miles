@@ -154,3 +154,28 @@ def test_qwen3_next_in_proj_stays_one_fused_adapter():
     targets = [f"model.layers.*.linear_attn.{leaf}" for leaf in ("in_proj_qkvz", "in_proj_ba")]
     mapping = _gdn_in_proj("in_proj_qkvz", "in_proj_ba")
     assert _resolve(targets, [mapping], _GDN_PARAMETER, canonical=True) == ["decoder.layers.*.self_attention.in_proj"]
+
+
+def _normalize(monkeypatch, targets, *, canonical):
+    from miles.backends.megatron_utils.lora.target_modules import normalize_lora_targets_to_hf
+
+    registry = SimpleNamespace(get_all_mappings=lambda: [_QWEN3_5_IN_PROJ])
+    bridge = SimpleNamespace(
+        hf_pretrained=SimpleNamespace(config=None), _model_bridge=SimpleNamespace(mapping_registry=lambda: registry)
+    )
+    monkeypatch.setattr("miles.utils.megatron_bridge_utils.load_auto_bridge", lambda checkpoint: bridge)
+    monkeypatch.setattr(
+        "miles.backends.megatron_utils.lora.target_modules.HfWeightMapping.from_config",
+        lambda config: HfWeightMapping(frozenset()),
+    )
+    return normalize_lora_targets_to_hf("/ckpt", targets, canonical=canonical, exclude_modules=[])
+
+
+def test_a_gdn_component_selector_cannot_widen_to_its_whole_hf_module(monkeypatch):
+    """in_proj_q alone would train in_proj_k and in_proj_v too, since HF holds q/k/v in one in_proj_qkv."""
+    with pytest.raises(AssertionError, match=r"no Bridge mapping: \['in_proj_q'\]"):
+        _normalize(monkeypatch, ["in_proj_q", "in_proj_z"], canonical=True)
+    assert _normalize(monkeypatch, ["in_proj_[qkv]", "in_proj_z"], canonical=True) == [
+        "model.layers.*.linear_attn.in_proj_qkv",
+        "model.layers.*.linear_attn.in_proj_z",
+    ]
