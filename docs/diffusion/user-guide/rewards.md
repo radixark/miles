@@ -225,8 +225,8 @@ Override that path with `--custom-reward-post-process-path` — see
 
 ### JSONL format
 
-Training prompts are loaded from `.jsonl` files via `miles/utils/diffusion_data.py` and read in
-file order; `--rollout-shuffle` permutes them once per epoch (seeded by `--rollout-seed`):
+Training prompts are loaded from `.jsonl` files via `miles/utils/diffusion_data.py` and permuted
+once per epoch (seeded by `--rollout-seed`); pass `--no-rollout-shuffle` to read them in file order:
 
 ```json
 {"input": "A photo of a cat wearing sunglasses"}

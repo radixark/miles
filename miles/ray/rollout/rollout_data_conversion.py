@@ -4,6 +4,7 @@ from typing import Any
 
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.output_store.dropped import record_dropped_samples
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ def postprocess_rollout_data(
             if trim_len == 0:
                 raise ValueError(f"Not enough samples {len(data)} for global_batch_size {global_batch_size}")
             origin_data_length = len(data)
+            record_dropped_samples(data[trim_len:])
             SampleOwnershipRecorder.log_dropped_groups(args=args, before=data, after=data[:trim_len], reason="trim")
             data = data[:trim_len]
             logger.info(f"trim number of samples from {origin_data_length} to {trim_len}")

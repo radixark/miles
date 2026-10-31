@@ -12,6 +12,7 @@ register_rocm_ci(est_time=600, suite="nightly-stage-c-8-gpu-mi350", labels=["fsd
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     model_name="Qwen3-30B-A3B",

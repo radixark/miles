@@ -1,4 +1,3 @@
-import functools
 import logging
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, nullcontext
@@ -38,7 +37,7 @@ from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.dp_schedule import TrainParallelConfig
-from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
+from miles.utils.lora.utils import build_lora_config, lora_rollout_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.profile_utils import TrainProfiler
@@ -98,6 +97,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         model_name = self.args.model_name
         if model_name is None:
             model_name = type(self.hf_config).__name__.lower()
+        is_lora = lora_rollout_enabled(self.args)
         return WeightUpdater(
             self.args,
             model,
@@ -108,17 +108,11 @@ class TorchNativeTrainRayActor(TrainRayActor):
             ),  # config-access-exempt: unquantized HF checkpoints omit quantization_config
             iterator_factory=iterator_factory,
             parallel_state=get_parallel_state(),
-            is_lora=False,
+            is_lora=is_lora,
+            lora_sync_config=(
+                build_lora_config(self.args, target_modules=self.args.lora_adapter_targets) if is_lora else None
+            ),
         )
-
-    @functools.cached_property
-    def _fwd_tflops(self) -> Callable[[list[int]], float] | None:
-        try:
-            flops_args = flops_args_from_hf_config(self.hf_config)
-        except Exception as e:
-            logger.warning(f"MFU will not be reported, {type(self.hf_config).__name__} could not be sized: {e}")
-            return None
-        return lambda seq_lens: fwd_tflops_per_gpu(seq_lens, flops_args, dist.get_world_size())
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         if self.args.debug_rollout_only or self.args.backend.save is None:
@@ -168,6 +162,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
             rollout_data, store_get_result = get_rollout_data(
                 args=self.args,
                 rollout_data_ref=rollout_data_ref,
+                output_store_read=self.output_store_read,
                 witness_info=None,
                 train_parallel_config=self.train_parallel_config,
             )
@@ -181,6 +176,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,
             compute_total_fwd_flops=self._fwd_tflops,
+            compute_total_train_flops=self._train_tflops,
         )
         self._heartbeat.bump()
         return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)

@@ -112,7 +112,7 @@ def make_args(**overrides: Any) -> Namespace:
         prefill_num_servers=None,
         # routers / session server
         use_miles_dashboard=False,
-        use_miles_router=False,
+        router="sglang",
         miles_router_timeout=None,
         miles_router_max_connections=None,
         miles_router_health_check_failure_threshold=3,
@@ -149,6 +149,7 @@ def make_args(**overrides: Any) -> Namespace:
         fp16=False,
         use_rollout_indexer_replay=False,
         rollout_indexer_topk_num_streams=None,
+        use_output_store=False,
         env_report_interval_seconds=3600.0,
         # checkpoint / data source
         hf_checkpoint="/fake/model",
