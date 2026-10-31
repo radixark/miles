@@ -80,7 +80,7 @@ class LoRAOutputHead(NativeLoRAAdapter):
             f"{self.hf_prefix}lora_B has {head_b.shape[0]} rows, not between the served {served_rows} and the "
             f"padded {padded_rows}"
         )
-        # Megatron's vocab padding rows get no logit delta
+        # rows past the adapter's B, up to Megatron's padded vocab, get no logit delta
         head_b = F.pad(head_b, (0, 0, 0, padded_rows - head_b.shape[0]))
         return [
             (self.head_A, take(f"{self.hf_prefix}lora_A.weight")),
