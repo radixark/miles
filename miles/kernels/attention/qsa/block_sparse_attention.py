@@ -334,9 +334,10 @@ def _qsa_bs_dkdv_kernel(
             dk += tl.dot(tl.trans(ds), q)
             dv += tl.dot(tl.trans(p.to(do.dtype)), do)
 
-    out_offs = split * stride_split + offs_k[:, None] * stride_kt + kv_head * stride_kh + offs_d[None, :]
-    tl.store(DK + out_offs, dk, mask=k_in[:, None])
-    tl.store(DV + out_offs, dv, mask=k_in[:, None])
+    dk_offs = split * stride_split + offs_k[:, None] * stride_kt + kv_head * stride_kh + offs_d[None, :]
+    dv_offs = split * stride_split + offs_k[:, None] * stride_vt + kv_head * stride_vh + offs_d[None, :]
+    tl.store(DK + dk_offs, dk, mask=k_in[:, None])
+    tl.store(DV + dv_offs, dv, mask=k_in[:, None])
 
 
 def selection_to_block_bitmap(indices: Tensor, num_tokens: int, block_size: int) -> Tensor:
@@ -419,10 +420,13 @@ class _LaunchConfig:
     dkdv_splits: int = 1
 
 
-# measured on GB300: narrow blocks are qwen3.8-next's 4-token QSA blocks, wide ones MiniMax-M3's 128-token MSA blocks
-_FWD_CONFIGS = {False: _LaunchConfig(64, 64, 8, 2), True: _LaunchConfig(64, 128, 4, 1)}
-_BWD_CONFIGS = {False: _LaunchConfig(128, 64, 8, 1, dkdv_splits=2), True: _LaunchConfig(64, 128, 8, 2, dkdv_splits=4)}
-_WIDE_BLOCK = 64
+# (forward, backward), measured on GB300 with qwen3.8-next's 4-token QSA blocks and MiniMax-M3's 128-token MSA blocks
+_NARROW_BLOCK = (_LaunchConfig(64, 64, 8, 2), _LaunchConfig(128, 64, 8, 1, dkdv_splits=2))
+_WIDE_BLOCK = (_LaunchConfig(64, 128, 4, 1), _LaunchConfig(64, 128, 8, 2, dkdv_splits=4))
+
+
+def _launch_configs(block_size: int) -> tuple[_LaunchConfig, _LaunchConfig]:
+    return _WIDE_BLOCK if block_size >= 64 else _NARROW_BLOCK
 
 
 class _QSABlockSparseAttn(torch.autograd.Function):
@@ -434,7 +438,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         group = Hq // Hkv
         qc, kc, vc = q.contiguous(), k.contiguous(), v.contiguous()
         selc = sel.contiguous()
-        cfg = _FWD_CONFIGS[block_size >= _WIDE_BLOCK]
+        cfg, _ = _launch_configs(block_size)
         klist, kcnt = build_tile_index(selc, block_first, block_last, cfg.bq, cfg.bk, block_size)
         o = torch.empty(T, Hq, D, device=q.device, dtype=torch.float32)
         lse = torch.empty(Hq, T, device=q.device, dtype=torch.float32)
@@ -486,7 +490,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         do = grad_out.contiguous().to(qc.dtype)
         # delta once, in torch: both backward kernels need it and neither should redo it
         delta = (do.float() * o.float()).sum(-1).transpose(0, 1).contiguous()
-        cfg = _BWD_CONFIGS[ctx.block_size >= _WIDE_BLOCK]
+        _, cfg = _launch_configs(ctx.block_size)
         num_kv_tiles = triton.cdiv(T, cfg.bk)
         splits = math.gcd(cfg.dkdv_splits, ctx.group)
         dq = torch.empty(T, Hq, D, device=qc.device, dtype=torch.float32)

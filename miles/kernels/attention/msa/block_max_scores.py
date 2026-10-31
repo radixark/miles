@@ -5,6 +5,8 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
+_BQ = 64
+
 
 @triton.jit
 def _block_max_scores_kernel(
@@ -51,12 +53,11 @@ def msa_block_max_scores(q: Tensor, k: Tensor, cu_seqlens: Tensor, block_size: i
     ``NB`` is the block count of the longest sequence; blocks start at each sequence's first token.
     """
     T, H, D = q.shape
-    bq = 64
     bounds = cu_seqlens.tolist()
     tiles = [
         (q_start, start, end)
         for start, end in zip(bounds[:-1], bounds[1:], strict=True)
-        for q_start in range(start, end, bq)
+        for q_start in range(start, end, _BQ)
     ]
     num_blocks = max(-(-(end - start) // block_size) for start, end in zip(bounds[:-1], bounds[1:], strict=True))
     tiles = torch.tensor(tiles, dtype=torch.int32, device=q.device)
@@ -74,7 +75,7 @@ def msa_block_max_scores(q: Tensor, k: Tensor, cu_seqlens: Tensor, block_size: i
         out.stride(1),
         scale,
         D=D,
-        BQ=bq,
+        BQ=_BQ,
         BLK=block_size,
         num_warps=4,
         num_stages=2,

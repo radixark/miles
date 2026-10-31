@@ -105,7 +105,7 @@ class MiniMaxM3Indexer(MegatronModule):
     @torch.no_grad()
     def select(self, q: Tensor, k: Tensor, cu_seqlens: Tensor, positions: Tensor) -> Tensor:
         """Selected blocks as packed start positions ``[H, T, topk_blocks]`` int64, -1 padded."""
-        H, T = q.shape[1], q.shape[0]
+        T, H = q.shape[:2]
         bs = self.block_size
         scores = msa_block_max_scores(q, k, cu_seqlens, bs, q.shape[-1] ** -0.5)
         block_ids = torch.arange(scores.shape[-1], device=q.device)
