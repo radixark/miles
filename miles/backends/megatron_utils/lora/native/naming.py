@@ -61,7 +61,9 @@ class ConverterNaming:
         from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf_names
 
         meta_weight = torch.empty(self._global_shape(weight), dtype=weight.dtype, device="meta")
-        (hf_weight_name,) = convert_to_hf_names(self.args, self.model_name, "module.module.output_layer.weight", meta_weight)
+        (hf_weight_name,) = convert_to_hf_names(
+            self.args, self.model_name, "module.module.output_layer.weight", meta_weight
+        )
         return f"{hf_weight_name.removesuffix('.weight')}."
 
     def _global_shape(self, weight: nn.Parameter) -> list[int]:
