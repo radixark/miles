@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import make_trainer_config
 from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
 
 from miles.backends.training_utils.model_companion import ModelCompanion
@@ -132,6 +133,21 @@ def test_actor_ref_actor_switch_restores_model_companion(
         ref_sample: 1,
     }
     assert torch.equal(weight, torch.tensor([2.0]))
+
+
+@pytest.mark.parametrize(("loss_coeff", "trains_indexers"), [(None, False), (0.0, False), (0.1, True)])
+def test_train_tflops_counts_indexer_backward_only_under_an_indexer_loss(
+    actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, loss_coeff: float | None, trains_indexers: bool
+) -> None:
+    """The indexer loss coefficient is a Megatron flag, so it is read off the trainer config's backend."""
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 1)
+    train_actor = object.__new__(actor_module.MegatronTrainRayActor)
+    train_actor.args = make_trainer_config(dsa_indexer_loss_coeff=loss_coeff)
+    train_actor._model_flops = SimpleNamespace(
+        has_indexers=True, train_flops=lambda seq_lens, trains_indexers: (2e12 if trains_indexers else 1e12)
+    )
+
+    assert train_actor._train_tflops([8]) == (2.0 if trains_indexers else 1.0)
 
 
 def _colocated_lora_actor(actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, **args) -> object:

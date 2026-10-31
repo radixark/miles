@@ -89,6 +89,8 @@ class MLPLoRASpec(Protocol):
 
     name: str
     supported_targets: frozenset[str]
+    # regex of the HF blocks (below ``layers.N.``) whose projections this spec adapts
+    hf_block_pattern: str
 
     def attach(self, mlp: nn.Module, layer: nn.Module, context: AttachContext) -> int: ...
 
@@ -150,7 +152,7 @@ class LoRAArchSpec:
         """Whether this spec implements an adapter for the HF module (``*`` stands for any layer)."""
         blocks = [
             (re.escape(self.attention.hf_block), self.attention.supported_targets),
-            (r"mlp(?:\.shared_experts?)?", self.mlp.supported_targets),
+            (self.mlp.hf_block_pattern, self.mlp.supported_targets),
         ]
         if self.linear_attention is not None:
             blocks.append((re.escape(self.linear_attention.hf_block), self.linear_attention.supported_targets))

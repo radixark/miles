@@ -26,6 +26,7 @@ from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespa
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.router.backend import RouterKind
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
@@ -49,6 +50,7 @@ from miles.utils.object_store_config import (
     compute_mooncake_init_kwargs_from_env,
     compute_mooncake_init_kwargs_vanilla,
 )
+from miles.utils.output_store.config import check_output_store_args
 from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_args
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.score_centering import validate_score_centering_args
@@ -252,6 +254,7 @@ def parse_args_and_get_parser(
         previous_arg_names = set(vars(args))
         args.compress_ratios = None
         args.rollout_indexer_topk_num_streams = None
+        args.rollout_indexer_topk_width = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
             args.compress_ratios = getattr(
@@ -277,6 +280,8 @@ def parse_args_and_get_parser(
                 args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - layer_types.count(
                     "linear_attention"
                 )
+                # ids per stream and token; sizes the output store buffer
+                args.rollout_indexer_topk_width = text_config.index_topk
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0
@@ -379,8 +384,10 @@ def parse_args_and_get_parser(
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     _validate_argument_ownership(args, parser=parser, training_backend_arg_names=training_backend_arg_names)
     sglang, sglang_scaling = SglangConfig.parse_args(args)
+    raw_megatron = resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {})
+    check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
-        "raw_megatron": resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {}),
+        "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
         "raw_torchtitan": TorchtitanArgsNamespace(**backend_values) if backend == "torchtitan" else None,
         "sglang": sglang,
@@ -687,8 +694,9 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
 def _validate_rematerialize_param_from_master_weight(args):
     if not args.rematerialize_param_from_master_weight:
         return
-    if args.debug_train_only:
-        # update_weights never runs, so the param buffer would never be paused.
+    if args.debug_train_only or args.debug_rollout_only:
+        # update_weights never runs (rollout-only builds no trainer model at all), so the param buffer would
+        # never be paused.
         args.rematerialize_param_from_master_weight = False
         return
     assert (
@@ -843,18 +851,24 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         )
 
 
+def _apply_custom_config(args, data: dict) -> None:
+    # configs written before --router
+    if data.pop("use_miles_router", False):
+        data["router"] = RouterKind.MILES
+    for k, v in data.items():
+        if hasattr(args, k):  # config-access-exempt: attribute selected at runtime from k
+            logger.info(
+                f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}."
+            )  # config-access-exempt: attribute selected at runtime from k
+        setattr(args, k, v)
+
+
 def miles_validate_args(args):
     from miles.backends.training_utils.weight_update.session import weight_update_selector
 
     if args.custom_config_path:
         logger.warning("--custom-config-path is deprecated; use the custom function's declared CLI arguments instead.")
-        data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
-        for k, v in data.items():
-            if hasattr(args, k):  # config-access-exempt: attribute selected at runtime from k
-                logger.info(
-                    f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}."
-                )  # config-access-exempt: attribute selected at runtime from k
-            setattr(args, k, v)
+        _apply_custom_config(args, yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
 
     mode = args.update_weight_transfer_mode
     if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
@@ -1233,6 +1247,9 @@ def miles_validate_args(args):
             args.actor_num_nodes = args.rollout_num_gpus // args.actor_num_gpus_per_node
         args.colocate = False
         args.offload_train = args.offload_rollout = False
+        # The forced value wins over the user's: no trainer runs, so a disk target would only trip
+        # its --offload-train requirement on a recipe reused for a rollout-only run.
+        args.offload_train_target = "cpu"
         if args.train_memory_margin_bytes > 0:
             logger.warning("Force train_memory_margin_bytes=0 since debug_rollout_only does not support it")
             args.train_memory_margin_bytes = 0
@@ -1401,7 +1418,14 @@ def miles_validate_args(args):
                 "offloader; pass --chunked-optimizer-state-offload and a non-zero "
                 "--optimizer-state-offload-fraction"
             )
+            assert args.stream_optimizer_state_page_cache_mb is None, (
+                "--stream-optimizer-state-page-cache-mb caps the Adam bucket store; Muon's disk state is "
+                "file-backed mappings the chunked offloader owns"
+            )
         else:
+            assert (
+                args.stream_optimizer_state_page_cache_mb is None or args.stream_optimizer_state_page_cache_mb >= 0
+            ), "--stream-optimizer-state-page-cache-mb must be >= 0"
             assert (
                 args.use_distributed_optimizer
             ), "--stream-optimizer-state-to-disk requires the distributed optimizer"
@@ -1444,9 +1468,16 @@ def miles_validate_args(args):
         assert (
             not args.enable_witness
         ), "--enable-witness reads the master optimizer's per-param state, which the NVMe store owns"
+        page_cache_mb = args.stream_optimizer_state_page_cache_mb
         logger.info(
             f"Streaming optimizer state to disk, dir={args.offload_train_disk_dir}, "
-            f"chunk={args.offload_train_disk_chunk_mb}MB, moments={args.stream_optimizer_state_moment_dtype}"
+            f"chunk={args.offload_train_disk_chunk_mb}MB, moments={args.stream_optimizer_state_moment_dtype}, "
+            f"page cache {'left to the kernel' if page_cache_mb is None else f'capped at {page_cache_mb}MB'}"
+        )
+    else:
+        assert args.stream_optimizer_state_page_cache_mb is None, (
+            "--stream-optimizer-state-page-cache-mb caps the Megatron Adam bucket store; it needs "
+            "--stream-optimizer-state-to-disk and is not supported on other backends"
         )
 
     if args.async_max_concurrent_samples is not None:
@@ -1581,6 +1612,10 @@ def miles_validate_args(args):
         assert (
             args.multi_lora_n_adapters == 0
         ), "--multi-lora-n-adapters drives RayWorkerManager, which --cluster-backend kubernetes does not use"
+        assert not args.use_output_store, (
+            "--use-output-store puts the store config in engine and session server commands, which --cluster-backend "
+            "kubernetes renders before it points Mooncake at the in-cluster master, with a 0.0.0.0 engine host"
+        )
         if ObjectStoreBackend(args.object_store_backend) != ObjectStoreBackend.MOONCAKE:
             logger.info(
                 f"Overriding --object-store-backend {args.object_store_backend} with "

@@ -19,11 +19,12 @@ from miles.rollout.base_types import (
     compute_kv_cache_namespace,
 )
 from miles.rollout.generate_hub.single_turn import generate
-from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
+from miles.rollout.generate_utils.generate_endpoint_utils import router_routes_by_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import DynamicLimitSemaphore
 from miles.utils.lifecycle import TrajectoryLifecycle
+from miles.utils.output_store.dropped import record_dropped_samples
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample, SampleLineage
 
@@ -120,21 +121,26 @@ async def generate_and_rm(
 
     # TODO: unify the two branches into one if we decide to use list as output type
     # multi samples
-    if isinstance(sample, list):
-        samples = sample
-        if any([sample.status == Sample.Status.ABORTED for sample in samples]):
-            return samples
+    try:
+        if isinstance(sample, list):
+            samples = sample
+            if any([sample.status == Sample.Status.ABORTED for sample in samples]):
+                return samples
 
-        # for multi agent system, the reward of some sample is calculated during generation.
-        samples_need_reward = [sample for sample in samples if sample.reward is None]
-        await batched_async_rm(args, samples_need_reward, inplace_set_reward_field=True)
-        return samples
-    else:
-        if sample.status == Sample.Status.ABORTED:
-            return sample
-        # for multi-turn environment, a reward could be assigned to the agent.
-        if sample.reward is None:
-            sample.reward = await async_rm(args, sample)
+            # for multi agent system, the reward of some sample is calculated during generation.
+            samples_need_reward = [sample for sample in samples if sample.reward is None]
+            await batched_async_rm(args, samples_need_reward, inplace_set_reward_field=True)
+            return samples
+        else:
+            if sample.status == Sample.Status.ABORTED:
+                return sample
+            # for multi-turn environment, a reward could be assigned to the agent.
+            if sample.reward is None:
+                sample.reward = await async_rm(args, sample)
+    except BaseException:
+        # A generate function may return new samples; once their reward fails, nothing else holds their refs.
+        record_dropped_samples([sample])
+        raise
 
     logger.debug(f"{log_prefix} generate_and_rm complete")
     return sample
@@ -152,7 +158,7 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    if policy_uses_routing_key(args):
+    if router_routes_by_key(args):
         for sample in group:
             if sample.routing_key is None:
                 sample.routing_key = str(uuid.uuid4())
@@ -172,19 +178,22 @@ async def generate_and_rm_group(
 
     try:
         group = await asyncio.gather(*tasks)
+        logger.debug(f"{log_prefix} [group] All {len(group)} samples completed")
+        if state.aborted:
+            return group
+
+        if args.group_rm:
+            await batched_async_rm(args, group, inplace_set_reward_field=True)
     except BaseException:
         # cancel siblings and let them settle: the group returns only after every
         # sample task is done, so no orphan generation or in-flight credit outlives it
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        finished = [task.result() for task in tasks if not task.cancelled() and task.exception() is None]
+        # A failed group reaches no drop site: hand over the refs its samples hold, filled in place or returned.
+        record_dropped_samples([group, finished])
         raise
-    logger.debug(f"{log_prefix} [group] All {len(group)} samples completed")
-    if state.aborted:
-        return group
-
-    if args.group_rm:
-        await batched_async_rm(args, group, inplace_set_reward_field=True)
 
     return group
 

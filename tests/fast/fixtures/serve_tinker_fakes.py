@@ -47,6 +47,8 @@ async def tinker_startup(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Simpl
         multi_lora_n_adapters=1,
         lora_alpha=16,
         lora_rank=8,
+        lora_type="lora",
+        experts_shared_outer_loras=False,
         tinker_lora_groups=["attn"],
         sglang_router_ip="router",
         sglang_router_port=30000,

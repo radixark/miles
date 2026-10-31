@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from miles.backends.megatron_utils.lora.native.naming import DeclaredNaming
 from miles.backends.megatron_utils.lora.native.spec.attention import (
+    DeepSeekV41AttentionSpec,
     Glm5NextAttentionSpec,
     GQAAttentionSpec,
     HybridGQAGDNAttentionSpec,
@@ -21,7 +22,11 @@ from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, Lo
 from miles.backends.megatron_utils.lora.native.spec.gdn import Qwen35GDNSpec
 from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
 from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec
-from miles.backends.megatron_utils.lora.native.spec.mlp import FusedGateUpMLPSpec, SplitGateUpMLPSpec
+from miles.backends.megatron_utils.lora.native.spec.mlp import (
+    DeepSeekV4SharedExpertSpec,
+    FusedGateUpMLPSpec,
+    SplitGateUpMLPSpec,
+)
 from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import matches_lora_target
@@ -124,6 +129,7 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "qwen3_next": hybrid,
         "deepseek_v3": mla,
         "deepseek_v32": mla,
+        "deepseek_v41": _arch_spec(DeepSeekV41AttentionSpec(), mlp=DeepSeekV4SharedExpertSpec()),
         "glm4_moe_lite": mla,
         "glm_moe_dsa": mla,
         "glm5_next": _glm5_next_arch_spec(),
