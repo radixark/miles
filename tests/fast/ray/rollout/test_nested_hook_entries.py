@@ -118,6 +118,7 @@ class TestNestedHookEntries:
                     name="eval", path="unused", custom_generate_function_path=_hook("dataset", dataset_setting=7)
                 )
             ],
+            rollout_dataset_functions={},
         )
         executor = RolloutExecutor.__new__(RolloutExecutor)
         executor.args = args

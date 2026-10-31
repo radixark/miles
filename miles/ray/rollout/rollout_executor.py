@@ -533,6 +533,7 @@ def _compute_rollout_function_config(args: BaseLeafConfig, function: CustomFunct
             args.custom_agent_function_path,
             args.custom_rm_path,
             *(dataset.custom_generate_function_path for dataset in args.eval_datasets),
+            *args.rollout_dataset_functions.values(),
         ),
     )
 

@@ -8,6 +8,7 @@ from pydantic import ConfigDict, SerializeAsAny, create_model, model_validator
 
 from miles.utils.args.schema import BaseConfig, validate_complete_config
 from miles.utils.function_registry import load_function
+from miles.utils.rollout_data_config import load_rollout_data_config
 from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 
 
@@ -46,6 +47,8 @@ def add_user_provided_function_arguments(
     if modify_args is not None:
         modify_args(args_partial)
     infos = _compute_custom_function_field_infos(args_partial, partial=True, config_class=config_class)
+    if config_class is None:
+        infos += _compute_rollout_dataset_function_infos(args_partial, partial=True)
     registered_paths: set[str] = set()
     registered_config_classes: set[type[BaseConfig]] = set()
     for info in infos:
@@ -55,9 +58,35 @@ def add_user_provided_function_arguments(
         if (
             function_config_class := info.config_class
         ) is not None and function_config_class not in registered_config_classes:
-            function_config_class.add_arguments(parser=parser)
+            _add_function_arguments(parser, function_config_class, path=info.path)
             registered_config_classes.add(function_config_class)
     return parser
+
+
+def _add_function_arguments(parser: argparse.ArgumentParser, config_class: type[BaseConfig], *, path: str) -> None:
+    """Register a hook's flags, skipping ones another hook already declared the same way."""
+    # two hooks can share flags, e.g. a wrapper reusing agentic_tool_call's add_arguments
+    scratch = argparse.ArgumentParser(add_help=False)
+    config_class.add_arguments(parser=scratch)
+    for action in scratch._actions:
+        existing = {
+            parser._option_string_actions[o] for o in action.option_strings if o in parser._option_string_actions
+        }
+        if not existing:
+            parser._add_action(action)
+            continue
+        (other,) = existing
+        if (other.dest, other.default, other.type, other.nargs) != (
+            action.dest,
+            action.default,
+            action.type,
+            action.nargs,
+        ):
+            raise ValueError(
+                f"{path} declares {'/'.join(action.option_strings)} differently from an earlier hook "
+                f"(dest/default/type/nargs {other.dest, other.default, other.type, other.nargs} vs "
+                f"{action.dest, action.default, action.type, action.nargs})"
+            )
 
 
 def resolve_custom_function_configs(args: argparse.Namespace, *, config_class: type[BaseConfig] | None = None) -> None:
@@ -67,6 +96,15 @@ def resolve_custom_function_configs(args: argparse.Namespace, *, config_class: t
         if resolved.config is not None:
             custom_arg_names.update(type(resolved.config).model_fields)
         setattr(args, info.name, resolved)
+
+    if config_class is None:
+        # functions a --rollout-data-yaml-config dataset names; no args field holds them
+        args.rollout_dataset_functions = {}
+        for info in _compute_rollout_dataset_function_infos(args, partial=False):
+            resolved = _resolve_custom_function_config(info=info, args=args)
+            if resolved.config is not None:
+                custom_arg_names.update(type(resolved.config).model_fields)
+            args.rollout_dataset_functions[info.path] = resolved
 
     for name in custom_arg_names:
         if hasattr(args, name):  # config-access-exempt: schema-selected field
@@ -140,6 +178,47 @@ def _compute_custom_function_field_infos(
             continue
         config_class = _compute_config_class(fn, path=path)
         infos.append(_CustomFunctionFieldInfo(name=name, path=path, fn=fn, config_class=config_class))
+    return infos
+
+
+_ROLLOUT_DATASET_FUNCTION_FIELDS = ("generate_function",)
+
+
+def _compute_rollout_dataset_function_infos(
+    args: argparse.Namespace, *, partial: bool
+) -> list[_CustomFunctionFieldInfo]:
+    """Hooks a --rollout-data-yaml-config dataset names, so their own flags are registered and resolved."""
+    value = getattr(args, "rollout_data_yaml_config", None)  # config-access-exempt: absent from partial parses
+    if value is None:
+        return []
+    try:
+        datasets = load_rollout_data_config(value)
+    except Exception:
+        # any bad file (missing, invalid YAML, failed schema) is reported by startup validation, not the pre-parse
+        if partial:
+            return []
+        raise
+    infos = []
+    for dataset in datasets:
+        for field_name in _ROLLOUT_DATASET_FUNCTION_FIELDS:
+            if (path := getattr(dataset, field_name)) is None:  # config-access-exempt: fixed field names
+                continue
+            try:
+                fn = load_function(path)
+            except (ModuleNotFoundError, ValueError):
+                if partial:
+                    continue
+                raise
+            if partial and fn is None:
+                continue
+            infos.append(
+                _CustomFunctionFieldInfo(
+                    name=f"rollout_dataset:{dataset.name}:{field_name}",
+                    path=path,
+                    fn=fn,
+                    config_class=_compute_config_class(fn, path=path),
+                )
+            )
     return infos
 
 

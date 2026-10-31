@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Annotated
 
 import pytest
+import yaml
 
 from miles.utils.args.custom_function import (
     CustomFunctionConfig,
@@ -123,6 +124,51 @@ class TestCustomArgumentRegistration:
 
         assert result is parser
         assert parser.parse_args(["--threshold", "0.9"]).threshold == 0.9
+
+    @pytest.mark.parametrize("partial", [True, False])
+    def test_malformed_mix_yaml_is_left_to_startup_validation(self, tmp_path, partial: bool) -> None:
+        """The flag pre-parse runs even for --help; a YAML syntax error there must not crash it."""
+        from miles.utils.args.custom_function import _compute_rollout_dataset_function_infos
+
+        config = tmp_path / "mix.yaml"
+        config.write_text("datasets: [unclosed\n")
+        args = argparse.Namespace(rollout_data_yaml_config=str(config))
+        if partial:
+            assert _compute_rollout_dataset_function_infos(args, partial=True) == []
+        else:
+            with pytest.raises(yaml.YAMLError):
+                _compute_rollout_dataset_function_infos(args, partial=False)
+
+    def test_distinct_legacy_hooks_may_declare_the_same_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Two legacy hooks get separate adapted classes; an identical shared flag must not hit an argparse conflict."""
+        from miles.utils.args.custom_function import add_user_provided_function_arguments
+
+        def add_max_turns(parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--max-turns", type=int, default=8)
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--first", default="first-legacy")
+        parser.add_argument("--second", default="second-legacy")
+        monkeypatch.setattr("sys.argv", ["test"])
+        with function_registry.temporary("first-legacy", SimpleNamespace(add_arguments=add_max_turns)):
+            with function_registry.temporary("second-legacy", SimpleNamespace(add_arguments=add_max_turns)):
+                add_user_provided_function_arguments(parser, config_class=_RunConfig)
+
+        assert parser.parse_args(["--max-turns", "3"]).max_turns == 3
+
+    def test_a_flag_declared_differently_by_two_hooks_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from miles.utils.args.custom_function import add_user_provided_function_arguments
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--first", default="first-legacy")
+        parser.add_argument("--second", default="second-legacy")
+        monkeypatch.setattr("sys.argv", ["test"])
+        first = SimpleNamespace(add_arguments=lambda p: p.add_argument("--max-turns", type=int, default=8))
+        second = SimpleNamespace(add_arguments=lambda p: p.add_argument("--max-turns", type=int, default=50))
+        with function_registry.temporary("first-legacy", first):
+            with function_registry.temporary("second-legacy", second):
+                with pytest.raises(ValueError, match="--max-turns differently"):
+                    add_user_provided_function_arguments(parser, config_class=_RunConfig)
 
     def test_partial_discovery_defers_missing_modules_until_final_resolution(
         self, monkeypatch: pytest.MonkeyPatch
