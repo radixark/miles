@@ -22,6 +22,7 @@ from miles.ray.rollout.cell_state import (
 )
 from miles.ray.rollout.engine_env_reporter import EngineEnvReporter
 from miles.ray.rollout.serving_registry import ServingRegistry, SGLangServingRegistry
+from miles.utils.arguments import driver_owns_generation_pause
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.ft_utils.health_checker import (
     ActiveAndEpoch,
@@ -310,7 +311,12 @@ class ServerCell:
         logger.info(f"Cell {self.meta.cell_id} {debug_name} end new={self._state}")
 
     async def offload(self, tags: list[str] | None):
-        return await self.api_client.release_memory_occupation(tags=tags)
+        # A driver-owned pause (--fully-async --colocate) retracted the running
+        # requests so they resume after training: aborting them here would end
+        # every in-flight trajectory at each step.
+        return await self.api_client.release_memory_occupation(
+            tags=tags, abort_running=not driver_owns_generation_pause(self.args)
+        )
 
     async def onload(self, tags: list[str] | None):
         return await self.api_client.resume_memory_occupation(tags=tags)
