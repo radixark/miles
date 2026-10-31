@@ -347,7 +347,7 @@ def selection_to_block_bitmap(indices: Tensor, num_tokens: int, block_size: int)
     return flags
 
 
-def _tile_mask(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int) -> Tensor:
+def _tile_mask(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int, block_size: int) -> Tensor:
     """``[NQT, NKT]`` bool: some query in query tile ``i`` selected a block with a token in key tile ``j``.
 
     Key tiles are absolute token ranges ``[j * bk, (j + 1) * bk)``, as the kernels walk them.
@@ -362,9 +362,11 @@ def _tile_mask(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk
         sel = torch.nn.functional.pad(sel, (0, 0, 0, pad_q))
     picked = sel.view(nqt, bq, nb).amax(dim=1).to(torch.int32)
     tile = torch.zeros(nqt, nkt, dtype=torch.int32, device=sel.device)
-    # block_size <= bk, so a block touches at most the tiles of its first and last token
-    tile.index_add_(1, block_first.long() // bk, picked)
-    tile.index_add_(1, block_last.long() // bk, picked)
+    # a block wider than a tile, or off the tile grid, touches every tile between its first and last token
+    first_tile = block_first.long() // bk
+    last_tile = block_last.long() // bk
+    for off in range(-(-block_size // bk) + 1):
+        tile.index_add_(1, torch.minimum(first_tile + off, last_tile), picked)
     return tile > 0
 
 
@@ -376,22 +378,24 @@ def _compact_tile_mask(mat: Tensor) -> tuple[Tensor, Tensor]:
     return order[:, :maxc].contiguous().to(torch.int32), cnt
 
 
-def build_tile_index(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int) -> tuple[Tensor, Tensor]:
+def build_tile_index(
+    sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int, block_size: int
+) -> tuple[Tensor, Tensor]:
     """``[T, NB]`` block flags -> (``klist`` [NQT, maxc] int32, ``kcnt`` [NQT] int32).
 
     ``klist[i]`` lists, ascending, the key tiles that at least one query in query-tile
     ``i`` selected. Per-query exactness still comes from the in-kernel mask; this only
     decides which tiles are worth visiting.
     """
-    return _compact_tile_mask(_tile_mask(sel, block_first, block_last, bq, bk))
+    return _compact_tile_mask(_tile_mask(sel, block_first, block_last, bq, bk, block_size))
 
 
-def build_tile_index_pair(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int):
+def build_tile_index_pair(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int, block_size: int):
     """Both directions of the tile map: (klist, kcnt) per query tile, (qlist, qcnt) per key tile.
 
     The transposed half is what lets dK/dV be keyed on the key tile and so avoid atomics.
     """
-    tile = _tile_mask(sel, block_first, block_last, bq, bk)
+    tile = _tile_mask(sel, block_first, block_last, bq, bk, block_size)
     klist, kcnt = _compact_tile_mask(tile)
     qlist, qcnt = _compact_tile_mask(tile.t().contiguous())
     return klist, kcnt, qlist, qcnt
@@ -407,7 +411,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         qc, kc, vc = q.contiguous(), k.contiguous(), v.contiguous()
         selc = sel.contiguous()
         BQ, BK = 64, 64
-        klist, kcnt = build_tile_index(selc, block_first, block_last, BQ, BK)
+        klist, kcnt = build_tile_index(selc, block_first, block_last, BQ, BK, block_size)
         o = torch.empty(T, Hq, D, device=q.device, dtype=torch.float32)
         lse = torch.empty(Hq, T, device=q.device, dtype=torch.float32)
         grid = (triton.cdiv(T, BQ), Hq)
@@ -463,7 +467,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         dv = torch.zeros(vc.shape, device=vc.device, dtype=torch.float32)
 
         BQ, BK = 64, 32
-        klist, kcnt, qlist, qcnt = build_tile_index_pair(selc, block_first, block_last, BQ, BK)
+        klist, kcnt, qlist, qcnt = build_tile_index_pair(selc, block_first, block_last, BQ, BK, ctx.block_size)
         common = (
             qc.stride(0),
             qc.stride(1),

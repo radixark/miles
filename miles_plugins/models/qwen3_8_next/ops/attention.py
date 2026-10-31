@@ -12,7 +12,7 @@ from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
 from miles.kernels.attention.qsa import qsa_block_sparse_attention, qsa_sparse_attention
-from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout, Qwen38NextQSAIndexer
+from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout, Qwen38NextQSAIndexer, packed_positions
 
 
 class Qwen38NextQSACoreAttention(MegatronModule):
@@ -85,16 +85,6 @@ class Qwen38NextAttention(SelfAttention):
         self._qsa_selection = None
         self._qsa_block_form = None
 
-    @staticmethod
-    def _packed_positions(cu_seqlens: Tensor, total: int) -> Tensor:
-        """Positions restarting at 0 for each sequence in a packed batch."""
-        idx = torch.arange(total, device=cu_seqlens.device)
-        starts = cu_seqlens[:-1].long()
-        seg = torch.zeros(total, dtype=torch.long, device=cu_seqlens.device)
-        seg[starts[1:]] = 1
-        seg = seg.cumsum(0)
-        return idx - starts[seg]
-
     def forward(self, hidden_states: Tensor, *args, **kwargs):
         packed = kwargs.get("packed_seq_params")
 
@@ -121,7 +111,7 @@ class Qwen38NextAttention(SelfAttention):
                     "document."
                 )
             self._qsa_cu_seqlens = cu
-            positions = self._packed_positions(cu, seq)
+            positions = packed_positions(cu, seq)
         else:
             self._qsa_cu_seqlens = None
             positions = torch.arange(seq, device=hidden_states.device)
