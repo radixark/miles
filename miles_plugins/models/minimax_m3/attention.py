@@ -12,11 +12,10 @@ from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
+from miles.kernels.attention.msa import msa_block_max_scores
 from miles.kernels.attention.qsa.block_sparse_attention import qsa_block_sparse_attention
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout, packed_positions
 
-# bounds the [heads, queries, keys] fp32 logits the block scores are reduced from
-_QUERY_CHUNK = 2048
 # topk priority: init blocks, then local blocks, then the best scores; future blocks never
 _INIT_BLOCK_SCORE = 1e30
 _LOCAL_BLOCK_SCORE = 1e29
@@ -104,40 +103,24 @@ class MiniMaxM3Indexer(MegatronModule):
         return q, k.squeeze(1)
 
     @torch.no_grad()
-    def select(self, q: Tensor, k: Tensor, cu_seqlens: Tensor) -> Tensor:
+    def select(self, q: Tensor, k: Tensor, cu_seqlens: Tensor, positions: Tensor) -> Tensor:
         """Selected blocks as packed start positions ``[H, T, topk_blocks]`` int64, -1 padded."""
-        T, H, D = q.shape
+        H, T = q.shape[1], q.shape[0]
         bs = self.block_size
-        scale = D**-0.5
+        scores = msa_block_max_scores(q, k, cu_seqlens, bs, q.shape[-1] ** -0.5)
+        block_ids = torch.arange(scores.shape[-1], device=q.device)
+        valid_blocks = positions.long() // bs + 1
+        valid = block_ids[None, :] < valid_blocks[:, None]
+        local = valid & (block_ids[None, :] >= (valid_blocks - self.local_blocks).clamp(min=0)[:, None])
+        init = valid & (block_ids[None, :] < self.init_blocks)
+        scores = torch.where(valid, scores, _INVALID_BLOCK_SCORE)
+        scores = torch.where(local, _LOCAL_BLOCK_SCORE, scores)
+        scores = torch.where(init, _INIT_BLOCK_SCORE, scores)
+        kk = min(self.topk_blocks, scores.shape[-1])
+        top_score, top_idx = torch.topk(scores, kk, dim=-1)
+        seq_start = torch.arange(T, device=q.device) - positions.long()
         selected = torch.full((H, T, self.topk_blocks), -1, dtype=torch.int64, device=q.device)
-        cu = cu_seqlens.tolist()
-        for s, e in zip(cu[:-1], cu[1:], strict=True):
-            length = e - s
-            if length == 0:
-                continue
-            nb = -(-length // bs)
-            kpad = torch.zeros(nb * bs, D, dtype=torch.float32, device=q.device)
-            kpad[:length] = k[s:e].float()
-            key_pos = torch.arange(nb * bs, device=q.device)
-            block_ids = torch.arange(nb, device=q.device)
-            for qs in range(0, length, _QUERY_CHUNK):
-                qe = min(qs + _QUERY_CHUNK, length)
-                logits = torch.einsum("qhd,kd->hqk", q[s + qs : s + qe].float(), kpad) * scale
-                qpos = torch.arange(qs, qe, device=q.device)
-                logits = logits.masked_fill(~(key_pos.unsqueeze(0) <= qpos.unsqueeze(1)).unsqueeze(0), float("-inf"))
-                score = logits.view(H, qe - qs, nb, bs).amax(dim=-1)
-                valid_blocks = qpos // bs + 1
-                valid = block_ids.unsqueeze(0) < valid_blocks.unsqueeze(1)
-                local = valid & (
-                    block_ids.unsqueeze(0) >= (valid_blocks - self.local_blocks).clamp(min=0).unsqueeze(1)
-                )
-                init = valid & (block_ids.unsqueeze(0) < self.init_blocks)
-                score = torch.where(valid.unsqueeze(0), score, torch.full_like(score, _INVALID_BLOCK_SCORE))
-                score = torch.where(local.unsqueeze(0), torch.full_like(score, _LOCAL_BLOCK_SCORE), score)
-                score = torch.where(init.unsqueeze(0), torch.full_like(score, _INIT_BLOCK_SCORE), score)
-                kk = min(self.topk_blocks, nb)
-                top_score, top_idx = torch.topk(score, kk, dim=-1)
-                selected[:, s + qs : s + qe, :kk] = torch.where(top_score > _INVALID_BLOCK_SCORE, s + top_idx * bs, -1)
+        selected[..., :kk] = torch.where(top_score > _INVALID_BLOCK_SCORE, seq_start[None, :, None] + top_idx * bs, -1)
         return selected
 
 
@@ -241,7 +224,7 @@ class MiniMaxM3Attention(SelfAttention):
             kv_heads_per_rank = self.config.num_query_groups // parallel_state.get_tensor_model_parallel_world_size()
             local_heads = list(range(tp_rank * kv_heads_per_rank, (tp_rank + 1) * kv_heads_per_rank))
             q, k = self.indexer.project(indexer_states[:, 0], positions, rotary_pos_emb, local_heads)
-            selected = self.indexer.select(q, k, cu)
+            selected = self.indexer.select(q, k, cu, positions)
             layout = PackedBlockLayout(cu, positions, self.indexer.block_size)
             token_start = layout.token_start.to(torch.int32)
             self._msa_block_form = (

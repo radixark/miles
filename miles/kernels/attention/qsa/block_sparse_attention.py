@@ -7,6 +7,9 @@ is exact: block-granular membership is a superset of the row, and ``lo``/``hi`` 
 inclusive key range, sequence start .. query position) removes the extra tokens.
 """
 
+import math
+from dataclasses import dataclass
+
 import torch
 import triton
 import triton.language as tl
@@ -246,10 +249,12 @@ def _qsa_bs_dkdv_kernel(
     stride_ql,
     stride_ot,
     stride_oh,
+    stride_split,
     T,
     NB,
     scale,
     GROUP: tl.constexpr,
+    HEADS_PER_SPLIT: tl.constexpr,
     D: tl.constexpr,
     BQ: tl.constexpr,
     BK: tl.constexpr,
@@ -257,11 +262,13 @@ def _qsa_bs_dkdv_kernel(
 ):
     """dK/dV keyed on the key tile, so nothing needs atomics.
 
-    Launched per KV head: the ``GROUP`` query heads sharing a KV head are summed here,
-    since separate programs would overwrite each other's dK/dV.
+    Each program sums ``HEADS_PER_SPLIT`` of the ``GROUP`` query heads sharing a KV head into
+    its own slice of ``DK``/``DV``; the caller adds the slices.
     """
     pid_k = tl.program_id(0)
-    kv_head = tl.program_id(1)
+    num_splits: tl.constexpr = GROUP // HEADS_PER_SPLIT
+    kv_head = tl.program_id(1) // num_splits
+    split = tl.program_id(1) % num_splits
 
     offs_k = pid_k * BK + tl.arange(0, BK)
     offs_d = tl.arange(0, D)
@@ -300,8 +307,8 @@ def _qsa_bs_dkdv_kernel(
             & q_mask[:, None]
         )
 
-        for gh in range(0, GROUP):
-            qh = kv_head * GROUP + gh
+        for gh in range(0, HEADS_PER_SPLIT):
+            qh = kv_head * GROUP + split * HEADS_PER_SPLIT + gh
             q = tl.load(
                 Q + offs_q[:, None] * stride_qt + qh * stride_qh + offs_d[None, :],
                 mask=q_mask[:, None],
@@ -327,8 +334,9 @@ def _qsa_bs_dkdv_kernel(
             dk += tl.dot(tl.trans(ds), q)
             dv += tl.dot(tl.trans(p.to(do.dtype)), do)
 
-    tl.store(DK + offs_k[:, None] * stride_kt + kv_head * stride_kh + offs_d[None, :], dk, mask=k_in[:, None])
-    tl.store(DV + offs_k[:, None] * stride_vt + kv_head * stride_vh + offs_d[None, :], dv, mask=k_in[:, None])
+    out_offs = split * stride_split + offs_k[:, None] * stride_kt + kv_head * stride_kh + offs_d[None, :]
+    tl.store(DK + out_offs, dk, mask=k_in[:, None])
+    tl.store(DV + out_offs, dv, mask=k_in[:, None])
 
 
 def selection_to_block_bitmap(indices: Tensor, num_tokens: int, block_size: int) -> Tensor:
@@ -401,6 +409,22 @@ def build_tile_index_pair(sel: Tensor, block_first: Tensor, block_last: Tensor, 
     return klist, kcnt, qlist, qcnt
 
 
+@dataclass(frozen=True)
+class _LaunchConfig:
+    bq: int
+    bk: int
+    num_warps: int
+    num_stages: int
+    # programs sharing one KV head's query heads in the dK/dV kernel
+    dkdv_splits: int = 1
+
+
+# measured on GB300: narrow blocks are qwen3.8-next's 4-token QSA blocks, wide ones MiniMax-M3's 128-token MSA blocks
+_FWD_CONFIGS = {False: _LaunchConfig(64, 64, 8, 2), True: _LaunchConfig(64, 128, 4, 1)}
+_BWD_CONFIGS = {False: _LaunchConfig(128, 64, 8, 1, dkdv_splits=2), True: _LaunchConfig(64, 128, 8, 2, dkdv_splits=4)}
+_WIDE_BLOCK = 64
+
+
 class _QSABlockSparseAttn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, sel, lo, hi, blk_base, tok_base, block_first, block_last, scale, block_size):
@@ -410,11 +434,11 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         group = Hq // Hkv
         qc, kc, vc = q.contiguous(), k.contiguous(), v.contiguous()
         selc = sel.contiguous()
-        BQ, BK = 64, 64
-        klist, kcnt = build_tile_index(selc, block_first, block_last, BQ, BK, block_size)
+        cfg = _FWD_CONFIGS[block_size >= _WIDE_BLOCK]
+        klist, kcnt = build_tile_index(selc, block_first, block_last, cfg.bq, cfg.bk, block_size)
         o = torch.empty(T, Hq, D, device=q.device, dtype=torch.float32)
         lse = torch.empty(Hq, T, device=q.device, dtype=torch.float32)
-        grid = (triton.cdiv(T, BQ), Hq)
+        grid = (triton.cdiv(T, cfg.bq), Hq)
         _qsa_bs_fwd_kernel[grid](
             qc,
             kc,
@@ -443,11 +467,11 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             scale,
             GROUP=group,
             D=D,
-            BQ=BQ,
-            BK=BK,
+            BQ=cfg.bq,
+            BK=cfg.bk,
             BLK=block_size,
-            num_warps=8,
-            num_stages=2,
+            num_warps=cfg.num_warps,
+            num_stages=cfg.num_stages,
         )
         ctx.save_for_backward(qc, kc, vc, selc, lo, hi, blk_base, tok_base, block_first, block_last, o, lse)
         ctx.scale = scale
@@ -462,12 +486,14 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         do = grad_out.contiguous().to(qc.dtype)
         # delta once, in torch: both backward kernels need it and neither should redo it
         delta = (do.float() * o.float()).sum(-1).transpose(0, 1).contiguous()
+        cfg = _BWD_CONFIGS[ctx.block_size >= _WIDE_BLOCK]
+        num_kv_tiles = triton.cdiv(T, cfg.bk)
+        splits = math.gcd(cfg.dkdv_splits, ctx.group)
         dq = torch.empty(T, Hq, D, device=qc.device, dtype=torch.float32)
-        dk = torch.zeros(kc.shape, device=kc.device, dtype=torch.float32)
-        dv = torch.zeros(vc.shape, device=vc.device, dtype=torch.float32)
+        dk = torch.empty(splits, *kc.shape, device=kc.device, dtype=torch.float32)
+        dv = torch.empty(splits, *vc.shape, device=vc.device, dtype=torch.float32)
 
-        BQ, BK = 64, 32
-        klist, kcnt, qlist, qcnt = build_tile_index_pair(selc, block_first, block_last, BQ, BK, ctx.block_size)
+        klist, kcnt, qlist, qcnt = build_tile_index_pair(selc, block_first, block_last, cfg.bq, cfg.bk, ctx.block_size)
         common = (
             qc.stride(0),
             qc.stride(1),
@@ -477,7 +503,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             vc.stride(1),
             selc.stride(0),
         )
-        _qsa_bs_dq_kernel[(triton.cdiv(T, BQ), Hq)](
+        _qsa_bs_dq_kernel[(triton.cdiv(T, cfg.bq), Hq)](
             qc,
             kc,
             vc,
@@ -502,13 +528,13 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             ctx.scale,
             GROUP=ctx.group,
             D=D,
-            BQ=BQ,
-            BK=BK,
+            BQ=cfg.bq,
+            BK=cfg.bk,
             BLK=ctx.block_size,
-            num_warps=8,
-            num_stages=1,
+            num_warps=cfg.num_warps,
+            num_stages=cfg.num_stages,
         )
-        _qsa_bs_dkdv_kernel[(triton.cdiv(T, BK), kc.shape[1])](
+        _qsa_bs_dkdv_kernel[(num_kv_tiles, kc.shape[1] * splits)](
             qc,
             kc,
             vc,
@@ -528,17 +554,20 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             qlist.stride(0),
             do.stride(0),
             do.stride(1),
+            dk.stride(0),
             T,
             selc.shape[1],
             ctx.scale,
             GROUP=ctx.group,
+            HEADS_PER_SPLIT=ctx.group // splits,
             D=D,
-            BQ=BQ,
-            BK=BK,
+            BQ=cfg.bq,
+            BK=cfg.bk,
             BLK=ctx.block_size,
-            num_warps=8,
-            num_stages=1,
+            num_warps=cfg.num_warps,
+            num_stages=cfg.num_stages,
         )
+        dk, dv = dk.sum(dim=0), dv.sum(dim=0)
         return dq.to(qc.dtype), dk.to(kc.dtype), dv.to(vc.dtype), None, None, None, None, None, None, None, None, None
 
 
