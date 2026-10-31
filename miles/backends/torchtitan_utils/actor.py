@@ -80,7 +80,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
 
         self.prof = TrainProfiler(args)
         self.load_hf_assets()
-        platforms.current_platform.install_titan_attention()
+        platforms.current_platform.install_titan_attention(args.backend.titan_tpu_attention)
 
         self.trainer = TitanTrainer(config, fsdp_gather_once=args.backend.titan_fsdp_gather_once)
         self.model_parts = self.trainer.model_parts
