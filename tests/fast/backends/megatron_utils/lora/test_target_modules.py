@@ -179,6 +179,8 @@ def test_a_gdn_component_selector_cannot_widen_to_its_whole_hf_module(monkeypatc
     """in_proj_q alone would train in_proj_k and in_proj_v too, since HF holds q/k/v in one in_proj_qkv."""
     with pytest.raises(AssertionError, match=r"no Bridge mapping: \['in_proj_q'\]; a GDN q/k/v selector must cover"):
         _normalize(monkeypatch, ["in_proj_q", "in_proj_z"], canonical=True)
+    with pytest.raises(AssertionError, match=r"no Bridge mapping: \['in_proj_q'\]$"):
+        _normalize(monkeypatch, ["in_proj_q"], canonical=False)
     assert _normalize(monkeypatch, ["in_proj_[qkv]", "in_proj_z"], canonical=True) == [
         "model.layers.*.linear_attn.in_proj_qkv",
         "model.layers.*.linear_attn.in_proj_z",

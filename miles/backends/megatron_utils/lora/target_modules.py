@@ -201,7 +201,8 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
     unmatched = sorted(set(target_modules) - matched_targets)
     assert not unmatched, f"LoRA targets have no Bridge mapping: {unmatched}" + (
         "; a GDN q/k/v selector must cover in_proj_qkv whole (in_proj_qkv or in_proj_[qkv])"
-        if any(target.rsplit(".", 1)[-1] in ("in_proj_q", "in_proj_k", "in_proj_v") for target in unmatched)
+        if canonical
+        and any(target.rsplit(".", 1)[-1] in ("in_proj_q", "in_proj_k", "in_proj_v") for target in unmatched)
         else ""
     )
     assert selected_hf_modules, "No LoRA targets remain after applying --exclude-modules"
