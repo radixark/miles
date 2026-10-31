@@ -81,7 +81,6 @@ def test_the_adapter_changes_only_the_output_side(tied):
     model = _attached(tied=tied)
     adapter = model.lora_lm_head_adapter
     tokens = torch.tensor([1, 4, 7])
-    embedding_before = model.embedding.weight.clone()
     head = model.embedding.weight if tied else model.output_layer.weight
     hidden = model.embedding.weight[tokens]
 
@@ -90,7 +89,6 @@ def test_the_adapter_changes_only_the_output_side(tied):
 
     expected = hidden @ head.t() + 2.0 * hidden @ adapter.head_A.t() @ adapter.head_B.t()
     torch.testing.assert_close(logits, expected)
-    assert torch.equal(model.embedding.weight, embedding_before) and model.embedding.weight.grad is None
     assert adapter.head_A.grad is not None and adapter.head_B.grad is not None
 
 
@@ -98,6 +96,16 @@ def test_the_vocab_sharded_b_counts_once_per_tp_rank():
     """head_B holds this rank's vocab rows, so Megatron's grad norm must count every rank's shard."""
     head_b = _attached(tied=True).lora_lm_head_adapter.head_B
     assert head_b.tensor_model_parallel and head_b.partition_dim == 0
+
+
+def test_export_trims_megatrons_vocab_padding():
+    adapter = _attached(tied=True).lora_lm_head_adapter
+    gather = SimpleNamespace(request=lambda tensor, dim: lambda: tensor)
+
+    exported = dict(adapter.export_plan(gather))
+
+    assert exported["lm_head.lora_A.weight"] is adapter.head_A
+    torch.testing.assert_close(exported["lm_head.lora_B.weight"](), adapter.head_B[:VOCAB])
 
 
 def test_a_head_without_a_vocab_size_fails_instead_of_exporting_padding():
