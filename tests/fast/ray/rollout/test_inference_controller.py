@@ -10,6 +10,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout import inference_controller as inference_controller_module
+from miles.ray.rollout.engine_topology import EngineTopologyReporter
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.inference_controller import (
     InferenceController,
@@ -329,6 +330,7 @@ def _make_controller(
     controller.context_lock = ContextLock("InferenceController")
     controller._engine_provider = engines
     controller._router_providers = [_FakeWorkerProvider([])]
+    controller._engine_topology_reporter = EngineTopologyReporter()
     return controller
 
 
@@ -411,6 +413,23 @@ class TestHealthCheckerActiveness:
         servers = {"default": _RecordingServer()}
         engine_provider = _FakeWorkerProvider([])
         controller = _make_controller(servers, engine_provider=engine_provider)
+
+        await controller.prepare_rollout(rollout_id=0)
+
+        assert awaited == [(servers, engine_provider)]
+
+    @pytest.mark.asyncio
+    async def test_preparing_a_rollout_awaits_the_engine_topology_report(self, monkeypatch):
+        """The topology report is a coroutine, so prepare_rollout must await it instead of leaving it unscheduled."""
+        awaited: list[tuple[dict, _FakeWorkerProvider]] = []
+
+        async def _record(servers: dict, *, provider: _FakeWorkerProvider) -> None:
+            awaited.append((servers, provider))
+
+        servers = {"default": _RecordingServer()}
+        engine_provider = _FakeWorkerProvider([])
+        controller = _make_controller(servers, engine_provider=engine_provider)
+        monkeypatch.setattr(controller._engine_topology_reporter, "report_if_changed", _record)
 
         await controller.prepare_rollout(rollout_id=0)
 

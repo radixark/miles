@@ -1,3 +1,4 @@
+import logging
 import sys
 from dataclasses import dataclass
 from functools import partial
@@ -5,7 +6,7 @@ from functools import partial
 from typing_extensions import Self
 
 from miles.ray.wiring import compute_backend_capability, launch_worker_manager, shutdown_worker_manager
-from miles.utils import object_store
+from miles.utils import object_store, observers
 from miles.utils.args.runtime import AllConfig, OrchestratorConfig
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer
@@ -24,6 +25,8 @@ from miles.utils.workers.connection_config import StaticConnConfig
 from miles.utils.workers.serving.utils import parse_orchestrator_argv
 from miles.utils.workers.serving.worker_config import OrchestratorWorkerConfig
 from miles.utils.workers.types import ClusterBackend
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -67,20 +70,42 @@ def init_orchestration_script(startup_info: OrchestratorStartupInfo, *, disposer
     event_logger_checkpoint.restore(args)
     configure_logger(args, source=SimpleProcessIdentity(component="main"))
     maybe_start_periodic_pyspy_dump()
+    if args.use_miles_dashboard and observers.Observers().hears("trajectory_event"):
+        raise ValueError(
+            "--use-miles-dashboard cannot run together with an installed run observer that takes sample "
+            "lifecycle events, because only one of them can receive those events. Drop --use-miles-dashboard "
+            "or disable that observer."
+        )
     disposer.add(finish_tracking)
     init_tracking(args)
+    worker_env = observers.start_run(run_uuid=args.run_uuid, args=args)
+    if worker_env and ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES:
+        logger.warning(
+            f"run observers set {sorted(worker_env)} for the workers, but the launcher starts a Kubernetes "
+            "run's workers, so they will not see these variables"
+        )
+    observers.start_process("driver")
+    # registered before the worker manager, so it runs after the workers are gone
+    disposer.add_exit(_end_observed_run)
 
     if isinstance(startup_info, ArgvOrchestratorStartupInfo):
         all_args = startup_info.all_args
         all_args.wandb_run_id = args.wandb_run_id
         all_args.mlflow_run_id = args.mlflow_run_id
-        worker_manager = launch_worker_manager(all_args)
+        worker_manager = launch_worker_manager(
+            all_args, worker_env=worker_env, report_process_ends=observers.Observers().hears("end_process")
+        )
         disposer.add(partial(shutdown_worker_manager, worker_manager))
 
     capability = _compute_backend_capability(startup_info)
     object_store.init_instance(args, contribute_segment=False)
     fault_hook_controller.configure(resources=FaultHookResources(args=args), owner=FaultHookOwner.ORCHESTRATOR)
     return capability
+
+
+def _end_observed_run(succeeded: bool) -> None:
+    observers.Observers().end_process()
+    observers.Observers().end_run(succeeded=succeeded)
 
 
 def _compute_backend_capability(startup_info: OrchestratorStartupInfo) -> BackendCapability:

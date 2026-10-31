@@ -237,6 +237,14 @@ class Disposer:
             else:
                 self._stack.callback(teardown)
 
+    def add_exit(self, teardown: Callable[[bool], Any]) -> None:
+        """Like ``add``, for a teardown that needs to know whether the body succeeded."""
+
+        def on_exit(exc_type, exc, exc_traceback) -> None:
+            teardown(exc_type is None)
+
+        self._stack.push(on_exit)
+
 
 class DynamicLimitSemaphore:
     def __init__(self, limit: Callable[[], int]) -> None:
