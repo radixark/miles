@@ -374,6 +374,9 @@ def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):
 
 def _compute_dataset_metrics(args, all_samples: list[Sample]) -> dict[str, float | int]:
     """Reward, length and truncation per `--rollout-data-yaml-config` dataset."""
+    # only the mixer's own tag counts; a single-dataset row may carry an arbitrary `dataset_name` field
+    if args.rollout_data_yaml_config is None:
+        return {}
     log_dict = {}
     samples_of_dataset = group_by(
         [s for s in all_samples if isinstance(s.metadata, dict) and "dataset_name" in s.metadata],
