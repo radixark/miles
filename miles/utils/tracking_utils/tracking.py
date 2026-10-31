@@ -6,15 +6,7 @@ from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_eve
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 from miles.utils.observers import Observers
 
-from .base import (
-    MilesDashboardBackend,
-    MlflowBackend,
-    PrometheusBackend,
-    TensorboardBackend,
-    TrackingBackend,
-    TrackingManager,
-    WandbBackend,
-)
+from .base import MlflowBackend, PrometheusBackend, TensorboardBackend, TrackingBackend, TrackingManager, WandbBackend
 from .ci_history import CiHistoryBackend
 
 # The full registry lives here, not base.py: base must never import a backend
@@ -27,7 +19,6 @@ BACKEND_REGISTRY: dict[str, tuple[type[TrackingBackend], str]] = {
     "mlflow": (MlflowBackend, "use_mlflow"),
     "prometheus": (PrometheusBackend, "use_prometheus"),
     "ci_history": (CiHistoryBackend, "ci_enable_metrics_capture"),
-    "miles_dashboard": (MilesDashboardBackend, "use_miles_dashboard"),
 }
 
 logger = logging.getLogger(__name__)

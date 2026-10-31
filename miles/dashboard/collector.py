@@ -1,16 +1,16 @@
 """The dashboard ingest hub.
 
-Producers (Timer sinks on every rank, the rollout manager's hooks, per-node
-GPU samplers) push records here; the collector buffers them, appends to the
+Producers (the dashboard observer in every process of the run, per-node GPU
+samplers) push records here; the collector buffers them, appends to the
 JSONL streams under ``{dump_details}/dashboard/`` on a flush cadence, runs
-the sglang scraper thread once a router is registered, and optionally
-forwards a latest-value snapshot to the existing Prometheus collector for
-external Grafana.
+the sglang scraper thread against the engines of the latest topology, and
+optionally forwards a latest-value snapshot to the existing Prometheus
+collector for external Grafana.
 
-This class is deliberately Ray-free: the backend glue (``backend.py``) wraps
-it in a named Ray actor pinned to the driver node and spawns the per-node
-sampler actors — the collector itself only ever sees plain method calls, so
-every behavior here is unit-testable. Producers call in fire-and-forget
+This class is deliberately Ray-free: the observer (``observer.py``) wraps it
+in a named Ray actor pinned to the driver node, and the per-node sampler
+actors are spawned through module-level seams — the collector itself only
+ever sees plain method calls, so every behavior here is unit-testable. Producers call in fire-and-forget
 style; nothing in the training path ever waits on this class.
 
 Failure policy: if the disk write fails (disk full, NFS hiccup) the error is
@@ -29,12 +29,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
-from miles.dashboard.logging_utils import RateLimitedWarner
 from miles.dashboard.sandbox_health import SNAPSHOT_FILENAME, SandboxHealth, SandboxReport
-from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST, ScrapeMode, SglangScraper
+from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST, SglangScraper
 from miles.dashboard.store import (
     DataBufferSample,
-    EngineInfo,
     EngineSample,
     GpuProcessSample,
     GpuSample,
@@ -46,6 +44,7 @@ from miles.dashboard.store import (
     TopologySnapshot,
     TrajectoryEvent,
 )
+from miles.utils.logging_utils import RateLimitedWarner
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +133,6 @@ class CollectorConfig:
     flush_interval_seconds: float = 5.0
     gpu_sample_interval_seconds: float = 1.0
     scrape_interval_seconds: float = 2.0
-    scrape_mode: str = "auto"  # "auto" or a ScrapeMode value; auto resolves at set_router()
     metric_whitelist: tuple[str, ...] = DEFAULT_METRIC_WHITELIST
     forward_prometheus: bool = False
 
@@ -167,8 +165,6 @@ class DashboardCollector:
         self._latest_gpu: dict[tuple[str, int], GpuSample] = {}
         self._latest_running_reqs: dict[str, tuple[float, float]] = {}
         self._latest_phase_seconds: dict[str, float] = {}
-        self._scraped_engine_addrs: set[str] = set()
-        self._actor_engine_addrs: set[str] = set()
         self._stop_event = threading.Event()
         self._flush_thread: threading.Thread | None = None
         # per-node GPU samplers, keyed by ray NodeID and reconciled on every
@@ -184,6 +180,15 @@ class DashboardCollector:
 
     def start(self) -> None:
         assert self._flush_thread is None, "collector already started"
+        kwargs = {} if self._scraper_http_get is None else {"http_get": self._scraper_http_get}
+        self._scraper = SglangScraper(
+            self._append,
+            engine_addrs=self._current_engine_addrs,
+            interval=self.config.scrape_interval_seconds,
+            whitelist=self.config.metric_whitelist,
+            **kwargs,
+        )
+        self._scraper.start()
         self._flush_thread = threading.Thread(target=self._run_flush_loop, name="dashboard-flush", daemon=True)
         self._flush_thread.start()
 
@@ -229,70 +234,11 @@ class DashboardCollector:
         self._append(sample)
 
     def update_topology(self, snapshot: TopologySnapshot) -> None:
-        # an addr the actor path ever registered must not be resurrected as
-        # "external" after a restart retires it — scrape memory is a fallback
-        # for engines the actor path NEVER knew, not a liveness source
-        self._actor_engine_addrs.update(e.addr for e in snapshot.engines if e.worker_type != "external")
-        snapshot = self._with_external_engines(snapshot)
         with self._lock:
             if self._last_topology is not None and self._last_topology.engines == snapshot.engines:
                 return  # steady-state re-registration; only changes are recorded
             self._last_topology = snapshot
         self._append(snapshot)
-
-    def _with_external_engines(self, snapshot: TopologySnapshot) -> TopologySnapshot:
-        """Merge in engines known only from scraping: externally launched
-        sglang servers have no miles engine actor, so actor registration
-        never sees them — but every scraped sample carries their addr. Node
-        is the addr host; GPU placement is unknown (gpus=[]), which the
-        frontend resolves by node match."""
-        covered = {engine.addr for engine in snapshot.engines} | self._actor_engine_addrs
-        synthetic = [
-            EngineInfo(addr=addr, worker_type="external", engine_rank=-1, gpus=[], gpu_uuids=[])
-            for addr in sorted(self._scraped_engine_addrs)
-            if addr not in covered
-        ]
-        if not synthetic:
-            return snapshot
-        return TopologySnapshot(ts=snapshot.ts, engines=snapshot.engines + synthetic)
-
-    def _sync_external_topology(self) -> None:
-        """Flush-loop step (outside the ingest lock): fold newly scraped
-        engine addrs into the topology. _update_latest only RECORDS addrs —
-        it runs under self._lock, and update_topology takes the same lock."""
-        with self._lock:
-            covered = set() if self._last_topology is None else {e.addr for e in self._last_topology.engines}
-            missing = self._scraped_engine_addrs - covered - self._actor_engine_addrs
-            base = [] if self._last_topology is None else list(self._last_topology.engines)
-        if missing:
-            self.update_topology(TopologySnapshot(ts=time.time(), engines=base))
-
-    def set_router(self, router_addr: str) -> None:
-        """Register the sglang router and start (or re-point) the scraper."""
-        mode = ScrapeMode.DIRECT if self.config.scrape_mode == "auto" else ScrapeMode(self.config.scrape_mode)
-        # never hold the lock while stopping a scraper: its thread may be
-        # blocked on the same lock inside the _append sink (deadlock)
-        with self._lock:
-            previous = self._scraper
-            if previous is not None and previous.router_addr == router_addr and previous.mode == mode:
-                return
-            self._scraper = None
-        if previous is not None:
-            previous.stop()
-        kwargs = dict(
-            mode=mode,
-            router_addr=router_addr,
-            engine_addrs=self._current_engine_addrs,
-            interval=self.config.scrape_interval_seconds,
-            whitelist=self.config.metric_whitelist,
-        )
-        if self._scraper_http_get is not None:
-            kwargs["http_get"] = self._scraper_http_get
-        scraper = SglangScraper(self._append, **kwargs)
-        with self._lock:
-            self._scraper = scraper
-        scraper.start()
-        logger.info("dashboard scraper started in %s mode against %s", mode, router_addr)
 
     def _current_engine_addrs(self) -> list[str]:
         with self._lock:
@@ -311,7 +257,6 @@ class DashboardCollector:
         if isinstance(record, GpuSample):
             self._latest_gpu[(record.node, record.gpu)] = record
         elif isinstance(record, EngineSample):
-            self._scraped_engine_addrs.add(record.addr)
             if record.metric == "sglang_num_running_reqs":
                 ts, total = self._latest_running_reqs.get(record.addr, (None, 0.0))
                 self._latest_running_reqs[record.addr] = (
@@ -328,7 +273,6 @@ class DashboardCollector:
             self._stop_event.wait(self.config.flush_interval_seconds)
             try:
                 self._reconcile_samplers()
-                self._sync_external_topology()
             except Exception:
                 logger.exception("dashboard sampler reconcile failed; will retry next tick")
             try:

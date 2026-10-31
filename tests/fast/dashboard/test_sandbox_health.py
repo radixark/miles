@@ -1,15 +1,15 @@
-"""Sandbox health: report hook, subproc relay, bounded table, snapshot, endpoint and flush robustness."""
+"""Sandbox health: reports from agent code, subproc relay, bounded table, snapshot, endpoint and flush robustness."""
 
 import asyncio
 import json
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from miles.dashboard import backend, hooks
 from miles.dashboard.collector import CollectorConfig, DashboardCollector
 from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.sandbox_health import (
@@ -22,40 +22,43 @@ from miles.dashboard.sandbox_health import (
 from miles.dashboard.server import make_app
 from miles.dashboard.store import MetricsRecord, MetricStore, Stream
 from miles.rollout.agentic.agent_function import call_agent_function
+from miles.rollout.agentic.sandbox_reports import push_sandbox_reports, report_sandbox
+from miles.utils import observers as observers_module
+from miles.utils.misc import SingletonMeta
+from miles.utils.observers import Observer, Observers
 from miles.utils.test_utils import sandbox_report_stubs
 
 
-class _FakeRemoteMethod:
+class _SandboxRecorder(Observer):
     def __init__(self):
-        self.calls = []
+        self.reports: list[dict] = []
 
-    def remote(self, *args):
-        self.calls.append(args)
-
-
-class _FakeHandle:
-    def __init__(self):
-        self.push_sandbox_reports = _FakeRemoteMethod()
+    def sandbox_report(self, report):
+        self.reports.append(report)
 
 
 @pytest.fixture
-def handle(monkeypatch) -> _FakeHandle:
-    fake = _FakeHandle()
-    monkeypatch.setattr(backend, "_handle", fake)
-    return fake
+def recorder(monkeypatch) -> _SandboxRecorder:
+    observer = _SandboxRecorder()
+    monkeypatch.setattr(
+        observers_module,
+        "entry_points",
+        lambda group: [SimpleNamespace(name="recorder", load=lambda: lambda: observer)],
+    )
+    SingletonMeta._instances.pop(Observers, None)
+    return observer
 
 
-def test_report_is_a_noop_without_a_collector(monkeypatch):
-    monkeypatch.setattr(backend, "_handle", None)
-    hooks.report_sandbox("a", status="error", error="boom")
+def test_report_is_a_noop_without_observers():
+    report_sandbox("a", status="error", error="boom")
 
 
-def test_report_coerces_values_and_swallows_a_bad_status(handle: _FakeHandle):
+def test_report_coerces_values_and_swallows_a_bad_status(recorder: _SandboxRecorder):
     key = uuid.uuid4()
-    hooks.report_sandbox(key, task=Path("t"), provider="modal", sandbox_id=7, status="error", error=OSError("x"))
-    hooks.report_sandbox("a", status="exploded")
-    [([report],)] = handle.push_sandbox_reports.calls
-    assert (report.sandbox_key, report.task, report.sandbox_id, report.status, report.error) == (
+    report_sandbox(key, task=Path("t"), provider="modal", sandbox_id=7, status="error", error=OSError("x"))
+    report_sandbox("a", status="exploded")
+    [report] = recorder.reports
+    assert (report["sandbox_key"], report["task"], report["sandbox_id"], report["status"], report["error"]) == (
         str(key),
         "t",
         "7",
@@ -64,53 +67,49 @@ def test_report_coerces_values_and_swallows_a_bad_status(handle: _FakeHandle):
     )
 
 
-def test_subproc_reports_reach_the_callers_collector(handle: _FakeHandle):
+def test_subproc_reports_reach_the_callers_observers(recorder: _SandboxRecorder):
     result = asyncio.run(
         call_agent_function(
             sandbox_report_stubs.report_sandbox_health,
             mode="subproc",
-            on_child_reports=hooks.push_sandbox_reports,
+            on_child_reports=push_sandbox_reports,
             sandbox_key="a",
         )
     )
     assert result == "reported"
-    reports = [report for (batch,) in handle.push_sandbox_reports.calls for report in batch]
-    assert [(r.sandbox_key, r.status, r.provider) for r in reports] == [
+    assert [(r["sandbox_key"], r["status"], r["provider"]) for r in recorder.reports] == [
         ("a", "healthy", "local"),
         ("a", "finished", None),
     ]
 
 
-def test_a_hung_subproc_call_reports_before_it_returns_and_its_cancel_teardown(handle: _FakeHandle):
+def test_a_hung_subproc_call_reports_before_it_returns_and_its_cancel_teardown(recorder: _SandboxRecorder):
     """A sandbox stuck in setup must show up while its call runs, and its teardown after a cancel must arrive."""
-
-    def reports() -> list[SandboxReport]:
-        return [report for (batch,) in handle.push_sandbox_reports.calls for report in batch]
 
     async def run() -> None:
         call = asyncio.create_task(
             call_agent_function(
                 sandbox_report_stubs.report_then_hang,
                 mode="subproc",
-                on_child_reports=hooks.push_sandbox_reports,
+                on_child_reports=push_sandbox_reports,
                 sandbox_key="stuck",
             )
         )
         for _ in range(300):
-            if reports():
+            if recorder.reports:
                 break
             await asyncio.sleep(0.05)
-        assert [r.status for r in reports()] == ["healthy"]
+        assert [r["status"] for r in recorder.reports] == ["healthy"]
         call.cancel()
         with pytest.raises(asyncio.CancelledError):
             await call
         for _ in range(300):
-            if len(reports()) == 2:
+            if len(recorder.reports) == 2:
                 break
             await asyncio.sleep(0.05)
 
     asyncio.run(run())
-    assert [(r.sandbox_key, r.status) for r in reports()] == [("stuck", "healthy"), ("stuck", "finished")]
+    assert [(r["sandbox_key"], r["status"]) for r in recorder.reports] == [("stuck", "healthy"), ("stuck", "finished")]
 
 
 def _report(ts: float, key: str, status: str = "healthy", **kwargs) -> SandboxReport:

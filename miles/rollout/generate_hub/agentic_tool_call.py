@@ -38,7 +38,6 @@ from typing import Any
 import httpx
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
-from miles.dashboard.hooks import push_sandbox_reports as push_dashboard_sandbox_reports
 from miles.rollout.agentic.agent_function import AGENT_FUNCTION_MODES, call_agent_function
 from miles.rollout.agentic.sandbox_reports import push_sandbox_reports
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
@@ -95,7 +94,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         agent_metadata = await call_agent_function(
             custom_agent_function,
             mode=input.args.custom_agent_function_mode,
-            on_child_reports=_route_sandbox_reports,
+            on_child_reports=push_sandbox_reports,
             base_url=tracer.agent_base_url,
             prompt=input.sample.prompt,
             request_kwargs=build_chat_request_kwargs(input.sampling_params),
@@ -189,13 +188,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     (sample,) = samples
     sample.metadata.update(result.session_metadata)
     return GenerateFnOutput(samples=sample)
-
-
-def _route_sandbox_reports(reports: list) -> None:
-    # the observers' report_sandbox sends dicts; the built-in dashboard's sends its own report type
-    push_sandbox_reports([report for report in reports if isinstance(report, dict)])
-    if dashboard_reports := [report for report in reports if not isinstance(report, dict)]:
-        push_dashboard_sandbox_reports(dashboard_reports)
 
 
 def _add_arguments(parser: argparse.ArgumentParser):

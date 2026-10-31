@@ -353,7 +353,7 @@ def execute(args: ScriptArgs):
 
     traces_dir = args.save_traces_dir or f"{args.save_dir.rstrip('/')}/traces"
     if traces_dir != "disabled":
-        misc_args += f"--dump-details {traces_dir} --use-miles-dashboard "
+        misc_args += f"--dump-details {traces_dir} "
 
     # train/entropy_loss is a hardcoded 0.0 unless this is set, and a falling entropy is the
     # earliest warning of policy collapse on a long agentic run.
@@ -425,6 +425,8 @@ def execute(args: ScriptArgs):
     }
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
+    if traces_dir != "disabled":
+        extra_env_vars["MILES_DASHBOARD"] = "1"
 
     U.execute_train(
         train_args=train_args,

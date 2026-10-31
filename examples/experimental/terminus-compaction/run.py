@@ -211,7 +211,6 @@ def _observability_args(args: ScriptArgs) -> str:
         )
     return (
         f"--dump-details {_save_traces_dir(args)} "
-        "--use-miles-dashboard "
         "--use-rollout-entropy "
         f"{prometheus_args}"
         f"{command_utils.get_default_wandb_args(__file__, run_name_prefix='terminus-compaction', run_id=args.run_id)}"
@@ -236,6 +235,7 @@ def _build_train_args(args: ScriptArgs) -> str:
 
 def _extra_env_vars(args: ScriptArgs) -> dict[str, str]:
     env = {
+        "MILES_DASHBOARD": "1",
         "PYTHONPATH": str(_HARBOR_PIPELINE_DIR),
         "AGENT_SERVER_URL": args.agent_server_url,
         "AGENT_MODEL_NAME": args.agent_model_name,

@@ -49,7 +49,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=7788)
     parser.add_argument("--follow", action="store_true", help="tail telemetry streams of a still-running job")
     parser.add_argument("--tensor-lru", type=int, default=2, help="rollout steps kept resident in tensor memory")
-    parser.add_argument("--cache-dir", default=None, help="summary cache dir (default: <dump>/dashboard/cache)")
+    parser.add_argument(
+        "--cache-dir", default=None, help="cache dir for derived files (default: <dump>/dashboard/cache)"
+    )
     parser.add_argument("--demo", action="store_true", help="serve generated demo data (needs a repo checkout)")
     parser.add_argument(
         "--use-utilization-overview",

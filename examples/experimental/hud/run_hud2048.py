@@ -177,11 +177,9 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
-    # Telemetry. The dashboard collector is what makes a multi-hour run
-    # diagnosable after the fact; log-multi-turn adds per-turn counts and
-    # lengths, the difference between "the reward moved" and knowing how many
-    # actions produced it.
-    telemetry_args = "--use-miles-dashboard --dashboard-gpu-sample-interval 5 --log-multi-turn --log-passrate "
+    # Telemetry. log-multi-turn adds per-turn counts and lengths, the difference
+    # between "the reward moved" and knowing how many actions produced it.
+    telemetry_args = "--log-multi-turn --log-passrate "
 
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
@@ -221,7 +219,13 @@ def execute():
         f"{misc_args} "
     )
 
-    extra_env_vars = {"CUDA_DEVICE_MAX_CONNECTIONS": "1", **preflight()}
+    extra_env_vars = {
+        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+        # the dashboard collector makes a multi-hour run diagnosable after the fact
+        "MILES_DASHBOARD": "1",
+        "MILES_DASHBOARD_GPU_SAMPLE_INTERVAL": "5",
+        **preflight(),
+    }
     for key in ("WANDB_API_KEY", "HUD_API_KEY"):
         if os.environ.get(key):
             extra_env_vars[key] = os.environ[key]

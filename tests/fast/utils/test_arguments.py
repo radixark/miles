@@ -1092,23 +1092,6 @@ class TestClusterBackend:
 
         assert args.object_store_backend == "ray"
 
-    def test_refuses_a_kubernetes_run_that_serves_the_miles_dashboard(self, tmp_path):
-        """The dashboard is a named Ray actor, and this backend brings up no Ray cluster to hold it."""
-        args = self._parse(
-            [
-                "--cluster-backend",
-                "kubernetes",
-                "--num-rollout",
-                "1",
-                "--use-miles-dashboard",
-                "--dump-details",
-                str(tmp_path),
-            ]
-        )
-
-        with pytest.raises(AssertionError, match="--use-miles-dashboard"):
-            miles_validate_args(args)
-
     def test_refuses_a_kubernetes_run_that_posts_through_the_ray_cluster(self):
         """Distributed POST reads ray.nodes(), which answers nothing where there is no cluster."""
         args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1", "--use-distributed-post"])
@@ -1164,24 +1147,6 @@ class TestClusterBackend:
         miles_validate_args(args)
 
         assert args.use_distributed_post is True
-
-    def test_a_ray_run_may_still_serve_the_miles_dashboard(self, tmp_path):
-        """The Ray cluster that holds the dashboard actor is exactly what this backend has."""
-        args = self._parse(
-            [
-                "--cluster-backend",
-                "ray",
-                "--num-rollout",
-                "1",
-                "--use-miles-dashboard",
-                "--dump-details",
-                str(tmp_path),
-            ]
-        )
-
-        miles_validate_args(args)
-
-        assert args.use_miles_dashboard is True
 
 
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
@@ -2047,20 +2012,6 @@ class TestCustomConfigAppliedBeforeDerivedArgs:
         )
         miles_validate_args(args)
         assert args.rollout_sampling_logprobs_mode == ("support" if filtered else "selected")
-
-    def test_a_dashboard_switched_on_by_the_config_file_is_still_checked(self, tmp_path):
-        """Checking the dashboard before the file override let a file-only opt-in start without a dump directory."""
-        args = self._parse(tmp_path, [], "use_miles_dashboard: true\n")
-
-        with pytest.raises(AssertionError, match="--dump-details is required"):
-            miles_validate_args(args)
-
-    def test_a_dashboard_switched_off_by_the_config_file_drops_its_requirement(self, tmp_path):
-        """A run whose file turns the dashboard off must not be rejected for telemetry it will never write."""
-        args = self._parse(tmp_path, ["--use-miles-dashboard"], "use_miles_dashboard: false\n")
-        miles_validate_args(args)
-
-        assert args.use_miles_dashboard is False
 
     def test_eval_prompt_data_from_the_config_file_is_expanded_into_datasets(self, tmp_path):
         """Building the dataset list before the file override left the file's paths as an unparsed raw list."""

@@ -7,7 +7,6 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, TypeVar
 
-from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.debug_data import (
     RolloutDataInjectionUtil,
     drop_conversations_not_dumped,
@@ -286,9 +285,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         if (
             get_buffer_length := getattr(self.data_source, "get_buffer_length", None)
         ) is not None:  # config-access-exempt: custom data sources may omit this lifecycle method
-            buffer_length = get_buffer_length()
-            dashboard_hooks.report_data_buffer(buffer_length)
-            if buffer_length is not None:
+            if (buffer_length := get_buffer_length()) is not None:
                 report_data_buffer(buffer_length)
         with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
             data, metadata, metrics = await self._get_rollout_data(

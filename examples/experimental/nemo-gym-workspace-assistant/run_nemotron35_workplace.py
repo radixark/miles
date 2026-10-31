@@ -210,12 +210,10 @@ def _miscellaneous_args(args: ScriptArgs) -> str:
             "custom_megatron_init_path": "workplace_training_checks.initialize_training_state",
             "custom_megatron_before_train_step_hook_path": "workplace_training_checks.before_train_step",
             "dump_details": str(Path(args.output_dir) / "traces"),
-            "use_miles_dashboard": True,
             "observe_training_entropy": True,
             "use_rollout_entropy": True,
             "use_prometheus": True,
             "prometheus_port": 9090,
-            "dashboard_forward_prometheus": True,
         }
     )
 
@@ -238,6 +236,8 @@ def execute(args: ScriptArgs) -> None:
         megatron_model_type="nemotron-3-nano-30b-a3b",
         megatron_path=args.megatron_path,
         extra_env_vars={
+            "MILES_DASHBOARD": "1",
+            "MILES_DASHBOARD_FORWARD_PROMETHEUS": "1",
             "MILES_NEMOTRONH_KEEP_MTP": "",
             "WORKPLACE_RESOURCE_URL": args.verifier_url,
             "HF_HOME": args.hf_cache_dir,

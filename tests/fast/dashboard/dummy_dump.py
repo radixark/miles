@@ -37,7 +37,7 @@ from pathlib import Path
 import torch
 
 from miles.backends.training_utils.metrics.train_dump import save_debug_train_data_for_rank
-from miles.ray.rollout.debug_data import save_dashboard_columns, save_debug_rollout_data
+from miles.ray.rollout.debug_data import save_debug_rollout_data
 from miles.ray.rollout.train_data_conversion import (
     convert_samples_to_train_data,
     process_rollout_data_shard,
@@ -259,7 +259,6 @@ def blank_samples(dump_dir: Path, rollout_id: int, *, seconds: float = 100.0) ->
     pack["samples"] = []
     torch.save(pack, path)
 
-    save_dashboard_columns([], dump_dir / "dashboard_columns" / f"rollout_{rollout_id}.parquet")
     (dump_dir / "trajectory" / f"{rollout_id}.jsonl").unlink(missing_ok=True)
     for shard in (dump_dir / "train_data").glob(f"{rollout_id}_*.pt"):
         shard.unlink()

@@ -1,13 +1,25 @@
-"""CLI arguments and configuration plumbing for the miles dashboard."""
+"""Turning the miles dashboard on and configuring it, from environment variables and the run's arguments."""
 
 from __future__ import annotations
 
 import logging
+import os
+from typing import Any
 
 from miles.dashboard.collector import CollectorConfig
 from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST
+from miles.utils.observers import RunRefusedError
 
 logger = logging.getLogger(__name__)
+
+ENABLE_ENV = "MILES_DASHBOARD"
+_ON = frozenset({"1", "true", "t", "yes", "y", "on"})
+_OFF = frozenset({"", "0", "false", "f", "no", "n", "off"})
+_INTERVAL_ENVS = {
+    "flush_interval_seconds": "MILES_DASHBOARD_FLUSH_INTERVAL",
+    "gpu_sample_interval_seconds": "MILES_DASHBOARD_GPU_SAMPLE_INTERVAL",
+    "scrape_interval_seconds": "MILES_DASHBOARD_SGLANG_SCRAPE_INTERVAL",
+}
 
 # curated subset of args persisted into meta.json for the dashboard header
 _SNAPSHOT_KEYS = (
@@ -38,37 +50,49 @@ _SNAPSHOT_KEYS = (
 
 
 def validate_dashboard_args(args) -> None:
-    if not args.use_miles_dashboard:
-        return
-    assert args.dump_details is not None, (
-        "--use-miles-dashboard writes telemetry under {dump-details}/dashboard/ and the "
-        "trajectory views read the rollout/train dumps, so --dump-details is required"
-    )
-    if not args.use_rollout_entropy:
+    if args["dump_details"] is None:
+        raise RunRefusedError(
+            f"{ENABLE_ENV}=1 writes telemetry under {{dump-details}}/dashboard/ and the "
+            "trajectory views read the rollout/train dumps, so --dump-details is required"
+        )
+    if args["cluster_backend"] == "kubernetes":
+        raise RunRefusedError(
+            f"{ENABLE_ENV}=1 creates a Ray actor, which --cluster-backend kubernetes has no cluster for"
+        )
+    if not args["use_rollout_entropy"]:
         logger.warning(
-            "--use-miles-dashboard without --use-rollout-entropy: per-token entropy "
+            f"{ENABLE_ENV}=1 without --use-rollout-entropy: per-token entropy "
             "will be missing from the dashboard token view"
         )
 
 
-def collector_config_from_args(args, *, start_ts: float) -> CollectorConfig:
-    if args.dashboard_sglang_metrics is not None:
-        whitelist = tuple(m for m in args.dashboard_sglang_metrics.split(",") if m)
-        assert whitelist, f"empty --dashboard-sglang-metrics: {args.dashboard_sglang_metrics!r}"
+def env_switch(name: str) -> bool:
+    """An on/off environment variable, spelled the way miles' other switches are."""
+    value = os.environ.get(name, "").strip().lower()
+    if value not in _ON | _OFF:
+        raise ValueError(f"{name}={value!r} is neither on ({', '.join(sorted(_ON))}) nor off")
+    return value in _ON
+
+
+def collector_config_from_args(args: dict[str, Any], *, start_ts: float) -> CollectorConfig:
+    """``args`` is every argument of the run, as the observers' ``start_run`` reports them.
+    Raises ``ValueError`` for a dashboard setting it cannot read."""
+    if (metrics := os.environ.get("MILES_DASHBOARD_SGLANG_METRICS")) is not None:
+        whitelist = tuple(m for m in metrics.split(",") if m)
+        if not whitelist:
+            raise ValueError(f"MILES_DASHBOARD_SGLANG_METRICS={metrics!r} names no metric")
     else:
         whitelist = DEFAULT_METRIC_WHITELIST
-    snapshot = {
-        key: getattr(args, key) for key in _SNAPSHOT_KEYS if hasattr(args, key)
-    }  # config-access-exempt: attribute selected at runtime from key
+    # an interval left unset keeps CollectorConfig's default
+    intervals = {
+        field: float(value) for field, name in _INTERVAL_ENVS.items() if (value := os.environ.get(name)) is not None
+    }
     return CollectorConfig(
-        dashboard_dir=f"{args.dump_details}/dashboard",
-        run_name=args.wandb_group or "miles-run",
+        dashboard_dir=f"{args['dump_details']}/dashboard",
+        run_name=args["wandb_group"] or "miles-run",
         start_ts=start_ts,
-        args_snapshot=snapshot,
-        flush_interval_seconds=args.dashboard_flush_interval,
-        gpu_sample_interval_seconds=args.dashboard_gpu_sample_interval,
-        scrape_interval_seconds=args.dashboard_sglang_scrape_interval,
-        scrape_mode=args.dashboard_sglang_scrape_mode,
+        args_snapshot={key: args[key] for key in _SNAPSHOT_KEYS if key in args},
         metric_whitelist=whitelist,
-        forward_prometheus=args.dashboard_forward_prometheus,
+        forward_prometheus=env_switch("MILES_DASHBOARD_FORWARD_PROMETHEUS"),
+        **intervals,
     )

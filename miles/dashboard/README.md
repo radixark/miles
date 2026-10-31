@@ -1,43 +1,55 @@
 # miles dashboard
 
 Training-dynamics and efficiency dashboards for miles runs, built on top of
-`--dump-details` plus a live telemetry collector.
-
-User-facing documentation lives at `docs/user-guide/dashboard.md`; this file is the
-implementer's summary.
+`--dump-details` plus a live telemetry collector. It watches a run through
+miles' run observers (`miles.utils.observers`).
 
 ## Collect
 
 ```bash
-python train.py ... \
+MILES_DASHBOARD=1 python train.py ... \
     --dump-details /path/to/dump \
-    --use-miles-dashboard \
     --use-rollout-entropy        # optional: per-token entropy in the token view
 ```
 
-`--use-miles-dashboard` adds a named collector actor on the driver node, one
-NVML sampler per GPU node, per-rank phase interval sinks on the existing
-`Timer` instrumentation, and an sglang engine-metric scraper. Everything is
-appended under `{dump-details}/dashboard/` (append-only JSONL). Overhead on
-the training path is a few milliseconds per step; all pushes are
-fire-and-forget and a dead collector never affects training.
+A launcher sets `MILES_DASHBOARD=1` in its `extra_env_vars`. The settings are
+environment variables too; an unset one keeps its default in `CollectorConfig`
+(`collector.py`):
 
-`--dump-details` alone (no `--use-miles-dashboard`) still writes the rollout
-`.pt`, a per-token column mirror (`dashboard_columns/`, so the token view
-never full-loads the `.pt`), and — for session / multi-turn runs — a
-raw-conversation sidecar (`trajectory/`, for the conversation view).
+| Variable | Controls |
+|---|---|
+| `MILES_DASHBOARD_FLUSH_INTERVAL` | collector disk flush cadence (s) |
+| `MILES_DASHBOARD_GPU_SAMPLE_INTERVAL` | NVML sampling cadence (s) |
+| `MILES_DASHBOARD_SGLANG_SCRAPE_INTERVAL` | engine scrape cadence (s) |
+| `MILES_DASHBOARD_SGLANG_METRICS` | comma-separated override of the scraped sglang metrics |
+| `MILES_DASHBOARD_FORWARD_PROMETHEUS` | `1` also pushes dashboard gauges to the `--use-prometheus` collector for external Grafana |
+
+`MILES_DASHBOARD=1` turns on the dashboard's run observer (`observer.py`). It starts a named collector actor on the
+driver node, which runs one NVML sampler per GPU node and an sglang
+engine-metric scraper, and forwards what every process of the run reports
+(timer phases, sample lifecycles, metrics, engine topology, sandbox health)
+to it. Everything is appended under `{dump-details}/dashboard/` (append-only
+JSONL). Overhead on the training path is a few milliseconds per step; all
+pushes are fire-and-forget and a dead collector never affects training.
+The dashboard cannot serve a run without `--dump-details` or on
+`--cluster-backend kubernetes`, so such a run stops at startup.
+
+`--dump-details` alone (without `MILES_DASHBOARD`) still writes the rollout
+`.pt` and — for session / multi-turn runs — a raw-conversation sidecar
+(`trajectory/`, for the conversation view). The viewer writes a per-token
+column mirror into its cache directory (`--cache-dir`) the first time it reads
+a step, so later token views never full-load the `.pt`.
 
 ## View
 
 ```bash
-pip install fastapi uvicorn polars   # already present in the training image
 python -m miles.dashboard.serve --dump-details /path/to/dump [--follow] [--port 7788]
 ```
 
 Works on any machine that can see the directory (login node over NFS, the
 training node itself); `--follow` tails a still-running job, typically over an
 SSH port-forward. `--use-utilization-overview` forces the fleet overview
-(auto-enabled above 64 lanes). Runs recorded *without* `--use-miles-dashboard`
+(auto-enabled above 64 lanes). Runs recorded *without* `MILES_DASHBOARD`
 still get the training-dynamics views; only the timeline is absent (metrics
 fall back to dump-derived `dump/*` aggregates).
 
@@ -74,13 +86,13 @@ Agentic rollouts that run each trial in a sandbox can make its health
 visible by calling `report_sandbox` from the agent / custom generate
 function: when the sandbox starts, after each command it runs, on an error,
 and on teardown. The call is cheap, never raises, and is a no-op when the
-dashboard is disabled. It works with any sandbox backend: `provider` and
+run has no observers. It works with any sandbox backend: `provider` and
 `sandbox_id` are free-form labels, and miles never talks to the provider.
 Under `--custom-agent-function-mode subproc` the agent process sends each
 report to the rollout process as it is made, so a hung call still shows up.
 
 ```python
-from miles.dashboard.hooks import report_sandbox
+from miles.rollout.agentic.sandbox_reports import report_sandbox
 
 
 async def run_trial(trial_id: str, task: str, env) -> float:
@@ -114,9 +126,9 @@ MILES_DASHBOARD_REALDATA_DIR=/path/to/real/dump python -m pytest tests/fast/dash
 Architecture:
 
 ```
-producers (Timer sinks / rollout hooks / NVML samplers / sglang scraper)
+producers (the run observer in every process / NVML samplers / sglang scraper)
     -> DashboardCollector (named actor, driver node)          [live JSONL streams]
-dump .pt + dashboard_columns/*.parquet + trajectory/*.jsonl   [written by training]
+dump .pt + trajectory/*.jsonl                                [written by training]
     -> serve.py: MetricStore + DumpReader -> FastAPI -> static SPA
 ```
 
