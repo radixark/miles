@@ -37,13 +37,18 @@ _SHARED_EXPERT_BLOCK = re.compile(r"(?:^|\.)shared_experts?$")
 
 
 def _arch_spec(
-    attention: AttentionSpecBase, *, mlp=None, has_linear_attention_layers: bool = False, linear_attention=None
+    attention: AttentionSpecBase,
+    *,
+    mlp=None,
+    lm_head=LMHeadSpec(),
+    has_linear_attention_layers: bool = False,
+    linear_attention=None,
 ) -> LoRAArchSpec:
     return LoRAArchSpec(
         name=attention.name,
         attention=attention,
         mlp=mlp or SplitGateUpMLPSpec(),
-        lm_head=LMHeadSpec(),
+        lm_head=lm_head,
         has_linear_attention_layers=has_linear_attention_layers,
         linear_attention=linear_attention,
     )
@@ -130,7 +135,8 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "qwen3_next": hybrid,
         "deepseek_v3": mla,
         "deepseek_v32": mla,
-        "deepseek_v41": _arch_spec(DeepSeekV41AttentionSpec(), mlp=DeepSeekV4SharedExpertSpec()),
+        # its converter names the output head `head`, which no adapter here has been validated on
+        "deepseek_v41": _arch_spec(DeepSeekV41AttentionSpec(), mlp=DeepSeekV4SharedExpertSpec(), lm_head=None),
         "glm4_moe_lite": mla,
         "glm_moe_dsa": mla,
         "glm5_next": _glm5_next_arch_spec(),
@@ -224,6 +230,7 @@ def validate_native_lora_args(args) -> None:
     assert (
         spec.experts is None or args.expert_tensor_parallel_size == 1
     ), f"native {spec.name} expert LoRA assumes --expert-tensor-parallel-size 1"
+
 
 
 def _assert_fixed_target_layout(spec: LoRAArchSpec, hf_config: dict, hf_targets: list[str]) -> None:

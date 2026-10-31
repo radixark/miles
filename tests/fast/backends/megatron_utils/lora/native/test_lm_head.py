@@ -1,5 +1,6 @@
 """Native lm_head adapters on every converter-named family, tied embeddings included — no GPU."""
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
@@ -99,6 +100,14 @@ def test_the_vocab_sharded_b_counts_once_per_tp_rank():
     assert head_b.tensor_model_parallel and head_b.partition_dim == 0
 
 
+def test_a_converter_naming_the_head_otherwise_fails():
+    """Targets are checked against the spec's leaf; a differently named head would silently get no adapter."""
+    context = _context(("lm_head",))
+    context = dataclasses.replace(context, naming=SimpleNamespace(output_head_prefix=lambda weight: "head."))
+    with pytest.raises(AssertionError, match="names the output head 'head'"):
+        LMHeadSpec().attach(_Model(tied=True), _ARGS, context)
+
+
 def test_an_unselected_head_gets_no_adapter():
     model = _Model(tied=True)
     assert LMHeadSpec().attach(model, _ARGS, _context(("q_proj",))) == 0
@@ -171,11 +180,14 @@ def test_the_unembed_group_is_attachable(hf_config):
     assert "lm_head" in served
 
 
-def test_specs_without_a_head_adapter_still_refuse_it():
-    with pytest.raises(AssertionError, match=r"does not implement adapters for \['lm_head'\]"):
+@pytest.mark.parametrize(
+    "model_type,head", [("glm5_next", "lm_head"), ("deepseek_v41", "lm_head"), ("deepseek_v41", "head")]
+)
+def test_specs_without_a_head_adapter_still_refuse_it(model_type, head):
+    with pytest.raises(AssertionError, match=rf"does not implement adapters for \['{head}'\]"):
         resolve_adapter_targets(
-            {"model_type": "glm5_next"},
-            ["lm_head"],
+            {"model_type": model_type},
+            [head],
             hf_modules=[],
             lora_type="canonical_lora",
             experts_shared_outer_loras=True,
