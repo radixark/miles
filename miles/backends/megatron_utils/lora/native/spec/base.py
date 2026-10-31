@@ -156,13 +156,20 @@ class LoRAArchSpec:
         ]
         if self.linear_attention is not None:
             blocks.append((re.escape(self.linear_attention.hf_block), self.linear_attention.supported_targets))
-        if self.lm_head is not None and re.search(r"(?:^|\.)lm_head$", hf_module):
+        if self.adapts_head(hf_module):
             return True
         # a target may nest below its block (GLM-5.3-Flash's forget_gate.f_a_proj)
         return any(
             re.search(rf"{_HF_LAYER}{block}\.{re.escape(target)}$", hf_module)
             for block, targets in blocks
             for target in targets
+        )
+
+    def adapts_head(self, hf_module: str) -> bool:
+        """Whether the HF module (or target) is the output head this spec adapts."""
+        return (
+            self.lm_head is not None
+            and re.search(rf"(?:^|\.){re.escape(self.lm_head.hf_leaf)}$", hf_module) is not None
         )
 
     def validate(self, context: AttachContext) -> None:
