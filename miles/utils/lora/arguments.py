@@ -10,6 +10,7 @@ from miles.utils.lora.hf_lora_targets import (
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
     expand_packed_hf_lora_targets,
+    gdn_in_proj_served_targets,
     get_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
@@ -30,8 +31,17 @@ def validate_lora_args(args):
         "torchtitan",
     ), f"LoRA injection is not implemented for --train-backend {args.train_backend}; use megatron or torchtitan"
     assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
-    args.hf_lora_targets = _resolve_lora_targets(args, load_hf_config(args.hf_checkpoint))
+    hf_config = load_hf_config(args.hf_checkpoint)
+    args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
     args.lora_adapter_targets = list(args.hf_lora_targets)
+    if (
+        args.train_backend == "megatron"
+        and args.megatron_to_hf_mode == "bridge"
+        and args.lora_type == "canonical_lora"
+    ):
+        # Bridge's canonical adapters export a GDN in_proj by component
+        modules = [m for m in _hf_modules(hf_config) if any(matches_lora_target(m, t) for t in args.hf_lora_targets)]
+        args.lora_adapter_targets = gdn_in_proj_served_targets(modules or args.hf_lora_targets, args.hf_lora_targets)
 
     # Training and serving must agree on shared-outer grouped-expert LoRA (expert_dim=1).
     if args.experts_shared_outer_loras and hasattr(

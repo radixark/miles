@@ -2862,6 +2862,51 @@ class TestMultiLoRAValidation:
         assert set(args.hf_lora_targets) == expected
         assert args.lora_adapter_targets == args.hf_lora_targets
 
+    @pytest.mark.parametrize(
+        "lora_type,served",
+        [
+            ("canonical_lora", ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z", "out_proj"]),
+            ("lora", ["in_proj_qkv", "in_proj_z", "out_proj"]),
+        ],
+    )
+    def test_bridge_canonical_serves_gdn_in_proj_components(self, monkeypatch, lora_type, served):
+        """Bridge's canonical adapters export Qwen3.5's GDN in_proj by component, as SGLang must load them."""
+        prefix = "model.language_model.layers.0.linear_attn."
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: HfWeightMapping(
+                frozenset(
+                    f"{prefix}{leaf}.weight"
+                    for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+                )
+            ),
+        )
+        args = self._parse(["--target-modules", "in_proj_qkv,in_proj_z,out_proj", "--lora-type", lora_type])
+        miles_validate_args(args)
+        assert args.lora_adapter_targets == served
+
+    def test_bridge_canonical_serves_wildcard_gdn_targets_by_component(self, monkeypatch):
+        """A target whose block is a wildcard still reaches the GDN modules Bridge splits into components."""
+        prefix = "model.language_model.layers.0.linear_attn."
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: HfWeightMapping(
+                frozenset(f"{prefix}{leaf}.weight" for leaf in ("in_proj_qkv", "in_proj_z"))
+            ),
+        )
+        args = self._parse(["--target-modules", "*.in_proj_qkv,*.in_proj_z", "--lora-type", "canonical_lora"])
+        miles_validate_args(args)
+        assert args.lora_adapter_targets == [f"*.in_proj_{component}" for component in ("q", "k", "v", "z")]
+
+    def test_bridge_canonical_refuses_a_partial_gdn_group(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: HfWeightMapping(frozenset({"model.language_model.layers.0.linear_attn.in_proj_b.weight"})),
+        )
+        args = self._parse(["--target-modules", "in_proj_b", "--lora-type", "canonical_lora"])
+        with pytest.raises(AssertionError, match=r"\['in_proj_a', 'in_proj_b'\] selected together"):
+            miles_validate_args(args)
+
     def test_rejects_multiple_tokenizer_workers(self):
         # Each sglang tokenizer worker holds its own LoRA registry, so per-step
         # upserts fail non-deterministically; fail at launch, not first push.
