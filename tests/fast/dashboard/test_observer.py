@@ -1,5 +1,6 @@
 """The dashboard observer hands each event to the collector actor as the record the store reads."""
 
+import threading
 import time
 from importlib.metadata import EntryPoint
 from types import SimpleNamespace
@@ -223,6 +224,35 @@ def test_end_process_sends_what_the_process_holds_then_waits_until_it_landed(col
     observer.end_process()
 
     assert sent == [["eval"], ["gen_start"], ("ping", END_PROCESS_TIMEOUT_SECONDS)]
+
+
+def test_end_process_waits_for_a_batch_another_thread_is_still_pushing(collector, monkeypatch):
+    """A batch the push thread took but has not pushed yet must still go out before ``end_process``'s ping."""
+    monkeypatch.setattr(dashboard_observer, "BATCH_MAX_SECONDS", 3600.0)  # only the threads below push
+    sent, pushing, release = [], threading.Event(), threading.Event()
+
+    def slow_push(batch):
+        pushing.set()
+        release.wait(5)
+        sent.append([event.name for event in batch])
+
+    monkeypatch.setattr(collector.push_phases, "remote", slow_push)
+    monkeypatch.setattr(collector.ping, "remote", lambda: "ping")
+    monkeypatch.setattr(dashboard_observer, "ray", SimpleNamespace(get=lambda ref, timeout: sent.append(ref)))
+    observer = _started(ROLLOUT_MANAGER)
+    observer.phase_end("eval", 1.0, 2.0)
+    pusher = threading.Thread(target=observer._phases.flush)
+    pusher.start()
+    assert pushing.wait(5)
+
+    ender = threading.Thread(target=observer.end_process)
+    ender.start()
+    time.sleep(0.1)  # let end_process reach its ping if the push in flight does not hold it back
+    release.set()
+    pusher.join(5)
+    ender.join(5)
+
+    assert sent == [["eval"], "ping"]
 
 
 def test_end_run_shuts_down_only_a_collector_it_created(collector, monkeypatch):

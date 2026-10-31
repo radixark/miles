@@ -156,7 +156,9 @@ class DashboardObserver(Observer):
 class _Batcher:
     """Pushes records in batches, by count or by age. A background thread also
     pushes what a process that went quiet still holds: the last phases of a
-    train rank idling through an eval would otherwise show as still open."""
+    train rank idling through an eval would otherwise show as still open.
+    Batches are pushed under the lock, so ``flush`` returns only after every
+    batch taken before it has been pushed."""
 
     def __init__(self, push: Callable[[list], Any]):
         self._push = push
@@ -169,19 +171,16 @@ class _Batcher:
     def add(self, record) -> None:
         with self._lock:
             self._records.append(record)
-            due = len(self._records) >= BATCH_MAX_EVENTS or time.monotonic() - self._last_push >= BATCH_MAX_SECONDS
-            batch = self._take() if due else None
+            if len(self._records) >= BATCH_MAX_EVENTS or time.monotonic() - self._last_push >= BATCH_MAX_SECONDS:
+                self._push(self._take())
             if self._pusher is None:
                 self._pusher = threading.Thread(target=self._push_periodically, daemon=True, name="dashboard-push")
                 self._pusher.start()
-        if batch:
-            self._push(batch)
 
     def flush(self) -> None:
         with self._lock:
-            batch = self._take() if self._records else None
-        if batch:
-            self._push(batch)
+            if self._records:
+                self._push(self._take())
 
     def _take(self) -> list:
         batch, self._records = self._records, []
