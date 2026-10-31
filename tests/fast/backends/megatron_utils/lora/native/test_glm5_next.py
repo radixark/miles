@@ -128,7 +128,11 @@ def _launcher_targets(monkeypatch) -> list[str]:
         parser.add_argument(flag)
     (train_command,) = train_commands
     launch_args, _ = parser.parse_known_args(shlex.split(train_command))
-    launch_args.multi_lora, launch_args.lora_type, launch_args.experts_shared_outer_loras = False, "canonical_lora", False
+    launch_args.multi_lora, launch_args.lora_type, launch_args.experts_shared_outer_loras = (
+        False,
+        "canonical_lora",
+        False,
+    )
     hf_config = _hf_config()
     hf_targets = _resolve_lora_targets(launch_args, hf_config)
     assert _native_serving_targets(launch_args, hf_config, hf_targets) == hf_targets
