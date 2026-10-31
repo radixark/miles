@@ -36,11 +36,14 @@ logger = logging.getLogger(__name__)
 _SHARED_EXPERT_BLOCK = re.compile(r"(?:^|\.)shared_experts?$")
 
 
+_LM_HEAD = LMHeadSpec()
+
+
 def _arch_spec(
     attention: AttentionSpecBase,
     *,
     mlp=None,
-    lm_head=LMHeadSpec(),
+    lm_head=_LM_HEAD,
     has_linear_attention_layers: bool = False,
     linear_attention=None,
 ) -> LoRAArchSpec:

@@ -17,10 +17,6 @@ class HFNaming(Protocol):
         """HF prefix of the block whose projections ``leaves`` the host weight carries, e.g. ``model.layers.3.self_attn.``."""
         ...
 
-    def output_head_prefix(self, weight: nn.Parameter) -> str:
-        """HF prefix of the output head, e.g. ``lm_head.``."""
-        ...
-
 
 class ConverterNaming:
     """Names adapters after the HF weights the raw-mode converter makes of their hosts.
