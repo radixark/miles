@@ -166,7 +166,7 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
     stack.enter_context(patch("miles.backends.megatron_utils.model.check_model_hashes"))
 
 
-def _initialize_with_scheduler(**overrides) -> MagicMock:
+def _initialize_with_scheduler(*, iteration: int = 100, **overrides) -> MagicMock:
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
     args = make_trainer_config(
@@ -186,7 +186,9 @@ def _initialize_with_scheduler(**overrides) -> MagicMock:
                 return_value=(model, optimizer, opt_param_scheduler),
             )
         )
-        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, True)))
+        stack.enter_context(
+            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(iteration, True))
+        )
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args, resume_from_ckpt=True)
 
@@ -194,7 +196,7 @@ def _initialize_with_scheduler(**overrides) -> MagicMock:
         model,
         optimizer,
         opt_param_scheduler,
-        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
+        LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=iteration + 1),
     )
     return opt_param_scheduler
 
@@ -215,6 +217,13 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it(use_check
     )
 
     scheduler.step.assert_called_once_with(increment=800)
+
+
+def test_initialize_refreshes_scheduler_after_a_release_checkpoint():
+    """A release checkpoint returns iteration 0 without scheduler state, so step(0) must still refresh lr/wd."""
+    scheduler = _initialize_with_scheduler(iteration=0)
+
+    scheduler.step.assert_called_once_with(increment=0)
 
 
 def _load_model_state_with(

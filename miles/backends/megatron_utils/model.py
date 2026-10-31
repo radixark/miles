@@ -1057,8 +1057,9 @@ def load_model_state(
             )
         # MCore loads scheduler state with the optimizer state, and its load_state_dict
         # replays the saved step count whatever use_checkpoint_opt_param_scheduler says;
-        # that flag only picks which scheduler settings win.
-        scheduler_restored = restored_trained_iteration and not args.backend.no_load_optim
+        # that flag only picks which scheduler settings win. A release checkpoint returns
+        # iteration 0 without scheduler state, so it still needs the step(0) refresh below.
+        scheduler_restored = restored_trained_iteration and iteration > 0 and not args.backend.no_load_optim
     else:
         if is_first_replica_megatron_main_rank():
             logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
