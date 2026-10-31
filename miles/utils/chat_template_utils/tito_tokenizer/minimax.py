@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.truncation import MarkerPair, TruncationGrammar
 
 
 class MinimaxM25TITOTokenizer(TITOTokenizer):
@@ -37,6 +38,13 @@ class MinimaxM25TITOTokenizer(TITOTokenizer):
         template="minimax_m25_fixed.jinja",
         extra_kwargs={"clear_thinking": False},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
+    )
+
+    # ``<invoke ...>`` and ``<parameter ...>`` inside the block are plain text.
+    TRUNCATION_GRAMMAR = TruncationGrammar(
+        think=MarkerPair("<think>", "\n</think>\n\n"),
+        tool_blocks=(MarkerPair("<minimax:tool_call>", "\n</minimax:tool_call>"),),
+        end_of_turn="[e~[",
     )
 
     _default_assistant_start_str: str = "]~b]ai"

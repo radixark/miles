@@ -86,10 +86,7 @@ class TokenSeqComparator:
         trim_trailing_ids: set[int] | None = None,
     ):
         self.tokenizer = tokenizer
-        if special_token_ids is not None:
-            self._special_ids = set(special_token_ids)
-        else:
-            self._special_ids = self.collect_special_ids(tokenizer)
+        self._special_ids = self.resolve_special_ids(tokenizer, special_token_ids)
         self._assistant_start_str = assistant_start_str
         self._trim_trailing_ids: set[int] | None = set(trim_trailing_ids) if trim_trailing_ids else None
 
@@ -115,6 +112,13 @@ class TokenSeqComparator:
         if decoder:
             ids |= {k for k, v in decoder.items() if v.special}
         return ids
+
+    @staticmethod
+    def resolve_special_ids(tokenizer, special_token_ids: set[int] | None) -> set[int]:
+        """Segment-boundary IDs: *special_token_ids* when given, else :meth:`collect_special_ids`."""
+        if special_token_ids is not None:
+            return set(special_token_ids)
+        return TokenSeqComparator.collect_special_ids(tokenizer)
 
     def segment_by_special_tokens(self, token_ids: list[int]) -> list[Segment]:
         """Split *token_ids* into segments at special-token boundaries.
