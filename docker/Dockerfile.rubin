@@ -147,11 +147,13 @@ RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-t
 
 ARG MILES_REPO=radixark/miles
 ARG MILES_COMMIT=a3be2ba174b48064fc46bc0724bca05cf1695d69
+# the dashboard plugin is installed only when MILES_COMMIT already has it
 RUN git clone "https://github.com/${MILES_REPO}.git" /opt/miles && \
     cd /opt/miles && \
     git fetch --depth=1 origin "${MILES_COMMIT}" && \
     git checkout "${MILES_COMMIT}" && \
-    python3 -m pip install -e . --no-deps --no-build-isolation
+    python3 -m pip install -e . --no-deps --no-build-isolation && \
+    if [ -d plugins/miles-dashboard ]; then python3 -m pip install -e plugins/miles-dashboard --no-deps --no-build-isolation; fi
 
 WORKDIR /opt/miles
 

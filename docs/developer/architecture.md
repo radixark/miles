@@ -62,7 +62,6 @@ miles/
 │   ├── fully_async_*.py  # queue-backed producer for train_async.py
 │   └── inference_rollout/# default class-based rollout
 ├── router/               # FastAPI proxy + worker load-balancer (router.py)
-├── dashboard/            # run dashboard: collector, backend, dump reader
 ├── true_on_policy/       # true-on-policy contracts and per-model profiles
 └── utils/                # arguments.py, async / IO / distributed helpers, audit_utils/
 ```
@@ -71,7 +70,7 @@ The `miles_plugins/` tree sits beside it. Nothing in `miles/` imports it directl
 is loaded only when a run names its import path in a flag (`--spec`, or one of the
 `--custom-*-path` flags). `models/` holds Megatron specs and HF module wrappers, `mbridge/`
 per-architecture weight bridges, `megatron_bridge/` the `megatron.bridge` shims, and
-`optimizers/` optimizer plugins.
+`optimizers/` optimizer plugins. Packages that install on their own live under `plugins/`.
 
 `train.py` and `train_async.py` are the entry points. They are
 thin; most logic lives in the modules above.

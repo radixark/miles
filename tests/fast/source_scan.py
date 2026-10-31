@@ -7,7 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FRAMEWORK_ROOT = REPO_ROOT / "miles"
 
-SHIPPED_PACKAGE_ROOTS = ("miles", "miles_plugins", "scripts", "examples", "tools")
+SHIPPED_PACKAGE_ROOTS = ("miles", "miles_plugins", "plugins", "scripts", "examples", "tools")
 
 
 def framework_modules(*, exclude_dirs: Iterable[Path] = ()) -> list[Path]:

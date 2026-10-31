@@ -60,9 +60,11 @@ RUN git clone https://github.com/${TORCHTITAN_REPO}.git /root/torchtitan && \
 # ====================================== Install main package ============================================
 
 # miles, without the CUDA-only requirements; its transformers and ray pins replace the release's
+# the dashboard plugin is installed only when MILES_COMMIT already has it
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && git checkout ${MILES_COMMIT} && \
     pip install --no-deps -e . && \
+    if [ -d plugins/miles-dashboard ]; then pip install --no-deps -e plugins/miles-dashboard; fi && \
     grep -vE '^\s*(#|$)|nvidia-resiliency-ext|ring_flash_attn|torchft-nightly' requirements.txt > /tmp/requirements-tpu.txt && \
     pip install -c /opt/torch-constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu -r /tmp/requirements-tpu.txt && \
     rm /tmp/requirements-tpu.txt

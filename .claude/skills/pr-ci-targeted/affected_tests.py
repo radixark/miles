@@ -30,7 +30,7 @@ from tests.ci.ci_policy import registration_matches_selection
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.stage_selection import known_no_gpu_path
 
-SOURCE_ROOTS = ("miles", "miles_plugins", "scripts", "examples", "tests")
+SOURCE_ROOTS = ("miles", "miles_plugins", "plugins", "scripts", "examples", "tests")
 ENTRY_POINTS = ("train.py", "train_async.py", "train_multi_policy.py", "serve_tinker.py")
 MAX_UNFOLLOWED_LISTED = 20
 DOTTED_NAME = re.compile(r"(?<![\w./-])[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
@@ -72,6 +72,8 @@ def python_files(roots: tuple[str, ...]) -> list[str]:
 
 def module_name(path: str) -> str:
     parts = Path(path).with_suffix("").parts
+    if parts[0] == "plugins":  # plugins/<distribution>/<package>/...: imported by the package's name
+        parts = parts[2:]
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 

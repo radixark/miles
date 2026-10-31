@@ -75,6 +75,24 @@ def test_from_package_import_module_reaches_the_test(repo):
     assert result.reached == {"tests/fast-gpu/test_ple.py": "miles/kernels/embedding/ple_gate_conv.py (hop 0)"}
 
 
+def test_a_plugin_module_reaches_the_test_that_imports_it_by_package_name(repo):
+    repo(
+        {
+            "plugins/miles-dashboard/miles_dashboard/__init__.py": "",
+            "plugins/miles-dashboard/miles_dashboard/gpu_sampler.py": "",
+            "tests/fast-gpu/test_gpu_sampler_hw.py": "from miles_dashboard.gpu_sampler import GpuSampler\n",
+        }
+    )
+
+    result = _trace(
+        ["plugins/miles-dashboard/miles_dashboard/gpu_sampler.py"], [_gpu("tests/fast-gpu/test_gpu_sampler_hw.py")]
+    )
+
+    assert result.reached == {
+        "tests/fast-gpu/test_gpu_sampler_hw.py": "plugins/miles-dashboard/miles_dashboard/gpu_sampler.py (hop 0)"
+    }
+
+
 @pytest.mark.parametrize(
     "statement", ["from .model import build", "from . import model", "from ..megatron_utils.model import build"]
 )

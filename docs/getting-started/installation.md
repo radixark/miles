@@ -59,6 +59,7 @@ git clone https://github.com/radixark/miles.git
 cd miles
 pip install -r requirements.txt
 pip install -e . --no-deps
+pip install -e plugins/miles-dashboard
 ```
 
 <Warning>
@@ -76,6 +77,7 @@ If you already run a Miles image and want the latest code:
 cd /root/miles
 git pull --rebase
 pip install -e . --no-deps
+pip install -e plugins/miles-dashboard --no-deps
 ray stop && ray start --head --port=6379
 ```
 

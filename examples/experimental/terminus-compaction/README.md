@@ -147,7 +147,7 @@ The trace root defaults to `<output-dir>/<run-id>/details`. View the live Miles
 dashboard with:
 
 ```bash
-python -m miles.dashboard.serve \
+python -m miles_dashboard.serve \
     --dump-details /path/to/output/<run-id>/details \
     --follow \
     --port 7788

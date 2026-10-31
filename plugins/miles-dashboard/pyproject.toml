@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "miles-dashboard"
+version = "0.1.0"
+description = "Training-dynamics and efficiency dashboard for miles runs"
+requires-python = ">=3.11"
+# miles itself is not listed: the plugin runs inside a miles environment
+dependencies = [
+    "fastapi>=0.135",
+    "uvicorn>=0.41",
+    "prometheus_client>=0.24",
+    "polars>=1.42",
+    "numpy",
+    "torch",
+]
+
+[project.entry-points."miles.observers"]
+miles_dashboard = "miles_dashboard.observer:DashboardObserver"
+
+[project.scripts]
+miles-dashboard = "miles_dashboard.serve:main"
+
+[tool.setuptools]
+packages = ["miles_dashboard"]
+
+[tool.setuptools.package-data]
+miles_dashboard = ["static/*"]

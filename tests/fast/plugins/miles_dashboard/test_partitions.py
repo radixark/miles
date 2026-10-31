@@ -1,0 +1,421 @@
+import json
+import threading
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+from tests.fast.plugins.miles_dashboard.dummy_telemetry import dump_dummy_telemetry
+
+import miles_dashboard.store as store_module
+from miles_dashboard.dump_reader import DumpReader
+from miles_dashboard.server import make_app
+from miles_dashboard.store import (
+    GpuProcessSample,
+    GpuSample,
+    Meta,
+    MetricStore,
+    PhaseEvent,
+    Role,
+    Stream,
+    _hour_key,
+    _PartitionReader,
+)
+
+# hour-aligned base so partition boundaries land where the test says they do
+BASE = ((1_000_000 // 3600) + 1) * 3600.0
+HOUR = 3600.0
+
+
+def _three_hour_store(tmp_path):
+    """Two lanes of gpu samples across three hours, one rollout-role train
+    event per hour, and one long train event straddling the h0/h1 boundary."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="hours", start_ts=BASE, args={}))
+    for hour in range(3):
+        for sec in (10.0, 1800.0, 3590.0):
+            ts = BASE + hour * HOUR + sec
+            for gpu in (0, 1):
+                writer.append(GpuSample(ts=ts, node="n", gpu=gpu, util=10 * (hour + 1), mem_mb=100, power_w=50))
+        writer.append(
+            PhaseEvent(
+                name="actor_train",
+                t0=BASE + hour * HOUR + 100,
+                t1=BASE + hour * HOUR + 200,
+                node="n",
+                gpus=[0],
+                rank=0,
+                role=Role.TRAIN,
+            )
+        )
+    # straddler: starts in hour 0, completes in hour 1 -> lands in the h1 file
+    writer.append(
+        PhaseEvent(
+            name="straddle",
+            t0=BASE + 3500,
+            t1=BASE + HOUR + 300,
+            node="n",
+            gpus=[1],
+            rank=1,
+            role=Role.TRAIN,
+        )
+    )
+    writer.flush()
+    return MetricStore.load(tmp_path)
+
+
+def test_flush_routes_hourly_files(tmp_path):
+    _three_hour_store(tmp_path)
+    gpu_files = sorted(p.name for p in (tmp_path / "gpu_util").glob("*.jsonl"))
+    assert gpu_files == sorted(f"{_hour_key(BASE + h * HOUR)}.jsonl" for h in range(3))
+    assert not (tmp_path / Stream.GPU_UTIL.filename).exists()
+    # the straddler is keyed by its END hour
+    h1 = tmp_path / "phases" / f"{_hour_key(BASE + HOUR)}.jsonl"
+    assert any(json.loads(line)["name"] == "straddle" for line in h1.read_text().splitlines())
+
+
+def test_windowed_read_parses_only_touched_partitions(tmp_path):
+    store = _three_hour_store(tmp_path)
+    reader = store._readers[Stream.GPU_UTIL]
+    parsed = []
+    original = reader._parse
+    reader._parse = lambda raw, path, offset: (parsed.append(path.stem), original(raw, path, offset))[-1]
+
+    series = store.gpu_series(t0=BASE + HOUR + 5, t1=BASE + HOUR + 1900)
+    assert parsed == [_hour_key(BASE + HOUR)]
+    assert set(series) == {"n:0", "n:1"}
+    assert series["n:0"]["util"] == [20, 20]  # samples at +10 and +1800 of hour 1
+
+    # second read inside the same hour: served from cache, no re-parse
+    store.gpu_series(t0=BASE + HOUR + 5, t1=BASE + HOUR + 2000)
+    assert parsed == [_hour_key(BASE + HOUR)]
+
+
+def test_cached_partition_tails_appended_rows(tmp_path):
+    store = _three_hour_store(tmp_path)
+    window = dict(t0=BASE + 2 * HOUR, t1=BASE + 2 * HOUR + 3599)
+    assert len(store.gpu_series(**window)["n:0"]["ts"]) == 3
+
+    writer = MetricStore(tmp_path)
+    writer.append(GpuSample(ts=BASE + 2 * HOUR + 3595.0, node="n", gpu=0, util=99, mem_mb=100, power_w=50))
+    writer.flush()
+    assert store.follow() == 1  # cached hour-2 block picks up the append
+    assert len(store.gpu_series(**window)["n:0"]["ts"]) == 4
+
+
+def test_phases_forward_slack_finds_straddler(tmp_path):
+    store = _three_hour_store(tmp_path)
+    # window entirely inside hour 0; the straddler's file is hour 1
+    phases = store.phases_by_lane(t0=BASE + 3400, t1=BASE + 3550)
+    assert "straddle" in {p["name"] for p in phases}
+
+
+def test_initialize_only_when_window_covers_run_start(tmp_path):
+    store = _three_hour_store(tmp_path)
+    full = {p["name"] for p in store.phases_by_lane()}
+    assert "initialize" in full
+    later = {p["name"] for p in store.phases_by_lane(t0=BASE + 50, t1=BASE + 300)}
+    assert "initialize" not in later
+
+
+def test_legacy_flat_file_still_reads(tmp_path):
+    (tmp_path / Meta.FILENAME).write_text(json.dumps(dict(run_name="v1", start_ts=1.0, args={})))
+    with open(tmp_path / Stream.GPU_UTIL.filename, "w") as f:
+        f.write('{"ts": 5.0, "node": "n", "gpu": 0, "util": 42, "mem_mb": 1, "power_w": 1}\n')
+    store = MetricStore.load(tmp_path)
+    assert store.has_stream(Stream.GPU_UTIL)
+    assert store.gpu_series()["n:0"]["util"] == [42]
+    # no catalog in a v1 dir: lane_index falls back to the stream scan
+    assert not (tmp_path / MetricStore.CATALOG_FILENAME).exists()
+    assert [(e["node"], e["gpu"]) for e in store.lane_index()] == [("n", 0)]
+
+
+def test_lane_catalog_matches_stream_scan(tmp_path):
+    dump_dummy_telemetry(tmp_path)
+    dashboard = tmp_path / "dashboard"
+    assert (dashboard / MetricStore.CATALOG_FILENAME).exists()
+    from_catalog = MetricStore.load(dashboard).lane_index()
+    (dashboard / MetricStore.CATALOG_FILENAME).unlink()
+    from_scan = MetricStore.load(dashboard).lane_index()
+    assert from_catalog == from_scan
+
+
+def test_time_range_from_edge_stamps(tmp_path):
+    store = _three_hour_store(tmp_path)
+    t0, t1 = store.time_range()
+    assert t0 == BASE + 10.0  # first gpu sample
+    assert t1 == BASE + 2 * HOUR + 3590.0  # last gpu sample
+
+
+def test_open_marker_sentinel_stays_out_of_time_range(tmp_path):
+    # an OPEN marker (t1=-1.0) partitioned by its start hour can be the first
+    # line of the oldest phases file; its sentinel must not become the range min
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="open", start_ts=BASE, args={}))
+    writer.append(
+        PhaseEvent(name="train", t0=BASE + 5.0, t1=PhaseEvent.OPEN_T1, node="n", gpus=[0], rank=0, role=Role.TRAIN)
+    )
+    writer.append(
+        PhaseEvent(name="train", t0=BASE + 5.0, t1=BASE + 900.0, node="n", gpus=[0], rank=0, role=Role.TRAIN)
+    )
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+    assert store.time_range() == (BASE + 5.0, BASE + 900.0)
+
+
+def test_server_enforces_window_cap(tmp_path):
+    dump_dummy_telemetry(tmp_path)
+    client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
+
+    meta = client.get("/api/meta").json()
+    assert meta["capabilities"]["max_window_s"] == MetricStore.MAX_WINDOW_S
+
+    over = MetricStore.MAX_WINDOW_S + 1
+    for path, params in (
+        ("/api/timeline/gpu", {}),
+        ("/api/timeline/phases", {}),
+        ("/api/timeline/engine_series", {"metric": "sglang_num_running_reqs"}),
+        ("/api/timeline/heatmap", {"metric": "util"}),
+    ):
+        ok = client.get(path, params=params)
+        assert ok.status_code == 200, path
+        bad = client.get(path, params={**params, "t0": 0.0, "t1": over})
+        assert bad.status_code == 400, path
+        assert "max_window_s" in bad.json()["detail"]
+
+
+def test_corrupt_partition_line_surfaces_at_read(tmp_path):
+    store = _three_hour_store(tmp_path)
+    partition = tmp_path / "gpu_util" / f"{_hour_key(BASE)}.jsonl"
+    with open(partition, "a") as f:
+        f.write("not json\n")
+    with pytest.raises(ValueError, match="corrupt record"):
+        store.gpu_series(t0=BASE, t1=BASE + 100)
+
+
+def test_open_marker_partitions_by_start_hour_and_is_found(tmp_path):
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="open", start_ts=BASE, args={}))
+    writer.append(GpuSample(ts=BASE + 2 * HOUR, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
+    writer.append(
+        PhaseEvent(name="rollout", t0=BASE + 100, t1=PhaseEvent.OPEN_T1, node="n", gpus=[0], rank=0, role=Role.TRAIN)
+    )
+    writer.flush()
+    # the marker sits in hour 0 (keyed by t0, not by the -1 sentinel)
+    h0 = tmp_path / "phases" / f"{_hour_key(BASE)}.jsonl"
+    assert h0.exists() and "rollout" in h0.read_text()
+
+    store = MetricStore.load(tmp_path)
+    # windowed query two hours later still sees the growing band (backward slack)
+    phases = [p for p in store.phases_by_lane(t0=BASE + 2 * HOUR - 10, t1=BASE + 2 * HOUR) if p["name"] == "rollout"]
+    assert phases and phases[0]["t1"] == BASE + 2 * HOUR  # clipped to the data edge
+
+
+def _counting_reader(tmp_path, *, parse_delay: float):
+    """A reader over one partition whose parse is slow enough to hold the
+    critical section open across a thread switch."""
+
+    def parse(raw, path, offset):
+        time.sleep(parse_delay)
+        return [int(line) for line in raw.splitlines()]
+
+    (tmp_path / "part").mkdir()
+    (tmp_path / "part" / "20260814_19.jsonl").write_text("".join(f"{i}\n" for i in range(100)))
+    return _PartitionReader(
+        tmp_path / "part",
+        tmp_path / "absent.jsonl",
+        parse=parse,
+        concat=lambda blocks: [row for block in blocks for row in block],
+        length=len,
+        line_stamps=lambda row: (row, row),
+        max_blocks=4,
+    )
+
+
+def test_concurrent_fill_does_not_duplicate_records(tmp_path):
+    """The follow thread and a request handler both enter `_block` at the same
+    stale offset; unserialized, each appends the same byte range and every
+    downstream aggregate double-counts."""
+    reader = _counting_reader(tmp_path, parse_delay=0.05)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(reader.window(None, None))) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert [len(rows) for rows in results] == [100, 100]
+    assert reader.window(None, None) == list(range(100))
+
+
+def test_concurrent_refresh_does_not_duplicate_records(tmp_path):
+    """Same race through the follow tick's entry point, on an already-cached
+    block — the shape the live `--follow` server hits."""
+    reader = _counting_reader(tmp_path, parse_delay=0.05)
+    reader.window(None, None)
+    (tmp_path / "part" / "20260814_19.jsonl").open("a").write("".join(f"{i}\n" for i in range(100, 150)))
+    threads = [
+        threading.Thread(target=reader.refresh_cached),
+        threading.Thread(target=lambda: reader.window(None, None)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert reader.window(None, None) == list(range(150))
+
+
+def _hourly_phases_with_old_stall(tmp_path, *, hours: int) -> MetricStore:
+    """One closed train_wait per hour for ``hours`` hours, plus a train_wait
+    opened in hour 0 that never closes: a stall older than any query window."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="day", start_ts=BASE, args={}))
+    writer.append(
+        PhaseEvent(name="train_wait", t0=BASE + 10, t1=PhaseEvent.OPEN_T1, node="n", gpus=[1], rank=1, role=Role.TRAIN)
+    )
+    for hour in range(hours):
+        t0 = BASE + hour * HOUR + 100
+        writer.append(PhaseEvent(name="train_wait", t0=t0, t1=t0 + 10, node="n", gpus=[0], rank=0, role=Role.TRAIN))
+        writer.append(GpuSample(ts=t0, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
+    writer.flush()
+    return MetricStore.load(tmp_path)
+
+
+def test_windowed_phase_query_stays_within_its_partitions_past_the_cache_size(tmp_path, monkeypatch):
+    """More hours than the partition cache holds must not turn every request
+    into a re-parse of the whole history."""
+    hours = MetricStore.PARTITION_CACHE_BLOCKS + 6
+    store = _hourly_phases_with_old_stall(tmp_path, hours=hours)
+    parsed_partitions = []
+    parse = store._parse_object_lines
+    monkeypatch.setattr(store, "_parse_object_lines", lambda *a: parsed_partitions.append(a[2].stem) or parse(*a))
+
+    last_hour = (BASE + (hours - 1) * HOUR, BASE + hours * HOUR)
+    store.phases_by_lane(t0=last_hour[0], t1=last_hour[1])
+    first = len(parsed_partitions)
+    store.phases_by_lane(t0=last_hour[0], t1=last_hour[1])
+    assert first <= 6, f"a 1 h window parsed {first} partitions"
+    assert len(parsed_partitions) == first, "a repeated window re-parsed partitions it had cached"
+
+
+def test_phase_opened_before_the_window_is_still_open_in_it(tmp_path):
+    hours = MetricStore.PARTITION_CACHE_BLOCKS + 6
+    store = _hourly_phases_with_old_stall(tmp_path, hours=hours)
+    phases = store.phases_by_lane(t0=BASE + (hours - 1) * HOUR, t1=BASE + hours * HOUR)
+    stalled = [p for p in phases if p["gpu"] == 1]
+    assert [p["name"] for p in stalled] == ["train_wait"]
+    assert stalled[0]["t0"] == BASE + 10
+
+
+def test_phase_longer_than_the_window_slack_shows_once_in_every_window_it_spans(tmp_path):
+    """A 10 h stall closes past any window's upper slack: the hours it spanned
+    must still show it after it closes, and the window holding its close once."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="long", start_ts=BASE, args={}))
+    stall = dict(name="train_wait", t0=BASE + 10, node="n", gpus=[1], rank=1, role=Role.TRAIN)
+    writer.append(PhaseEvent(**stall, t1=PhaseEvent.OPEN_T1))
+    for hour in range(12):
+        t0 = BASE + hour * HOUR + 100
+        writer.append(PhaseEvent(name="train_wait", t0=t0, t1=t0 + 10, node="n", gpus=[0], rank=0, role=Role.TRAIN))
+    writer.append(PhaseEvent(**stall, t1=BASE + 10 * HOUR + 10))
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+
+    for t0, t1 in [(BASE + HOUR, BASE + 2 * HOUR), (BASE + 9.5 * HOUR, BASE + 10.5 * HOUR)]:
+        stalled = [p for p in store.phases_by_lane(t0=t0, t1=t1) if p["gpu"] == 1]
+        assert [p["t0"] for p in stalled] == [BASE + 10], (t0, stalled)
+
+
+def test_iter_records_returns_every_phase_row_as_written(tmp_path):
+    """Tools replay the stream through the sinks: an open marker whose close
+    landed is still a row, unlike in the phase_events() query view."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="raw", start_ts=BASE, args={}))
+    interval = dict(name="train_wait", t0=BASE + 10, node="n", gpus=[0], rank=0, role=Role.TRAIN)
+    writer.append(PhaseEvent(**interval, t1=PhaseEvent.OPEN_T1))
+    writer.append(PhaseEvent(**interval, t1=BASE + 20))
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+    assert [event.t1 for event in store.iter_records(Stream.PHASES)] == [PhaseEvent.OPEN_T1, BASE + 20]
+    assert [event.t1 for event in store.phase_events()] == [BASE + 20]
+
+
+def test_close_landing_mid_read_in_a_newer_partition_still_pairs_its_open(tmp_path, monkeypatch):
+    """A flush between reading hour 0 and hour 1 writes an open marker into
+    hour 0 and its close into hour 1: the close must not be read before its
+    open, or the open stays in the index forever."""
+
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="race", start_ts=BASE, args={}))
+    for t0 in (BASE + 10, BASE + HOUR + 10):
+        writer.append(PhaseEvent(name="actor_train", t0=t0, t1=t0 + 5, node="n", gpus=[0], rank=0, role=Role.TRAIN))
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+
+    crossing = dict(name="train_wait", t0=BASE + HOUR - 1, node="n", gpus=[1], rank=1, role=Role.TRAIN)
+    read = store_module._read_complete_lines
+    flushed = []
+
+    def flush_after_reading_hour_0(path, *args):
+        lines = read(path, *args)
+        if path.stem == _hour_key(BASE) and not flushed:
+            flushed.append(True)
+            writer.append(PhaseEvent(**crossing, t1=PhaseEvent.OPEN_T1))
+            writer.append(PhaseEvent(**crossing, t1=BASE + HOUR + 1))
+            writer.flush()
+        return lines
+
+    monkeypatch.setattr(store_module, "_read_complete_lines", flush_after_reading_hour_0)
+    store.open_phase_events()
+    assert flushed
+    assert store.open_phase_events() == []
+
+
+def test_time_range_edge_is_the_newest_row_not_the_last_written(tmp_path):
+    """One flush writes a batch in arrival order: its last line need not be its newest."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="edge", start_ts=BASE, args={}))
+    for ts in (BASE + 20, BASE + 30, BASE + 10):
+        writer.append(GpuSample(ts=ts, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
+    writer.flush()
+    assert MetricStore.load(tmp_path).time_range()[1] == BASE + 30
+
+
+def test_time_range_edge_ignores_a_newest_partition_still_being_written(tmp_path):
+    """The first write into a new hour can be polled mid-line: the edge is the
+    newest complete row, not the run's first."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="edge", start_ts=BASE, args={}))
+    for ts in (BASE + 10, BASE + 2 * HOUR - 10):
+        writer.append(GpuSample(ts=ts, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
+    writer.flush()
+    (tmp_path / Stream.GPU_UTIL.value / f"{_hour_key(BASE + 2 * HOUR)}.jsonl").write_bytes(b'{"ts":')
+    assert MetricStore.load(tmp_path).time_range()[1] == BASE + 2 * HOUR - 10
+
+
+def test_gpu_processes_window_and_lane_filter_match_the_written_rows(tmp_path):
+
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="procs", start_ts=BASE, args={}))
+    written = [
+        GpuProcessSample(
+            ts=BASE + h * HOUR + s, node=node, gpu=gpu, pid=100 + gpu, name=f"proc-{gpu}", mem_mb=1000 * gpu
+        )
+        for h in range(3)
+        for s in (5.0, 3000.0)
+        for node in ("a", "b")
+        for gpu in (0, 1)
+    ]
+    for sample in written:
+        writer.append(sample)
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+
+    t0, t1 = BASE + 2000, BASE + HOUR + 3500
+    expected = [
+        dict(ts=p.ts, node=p.node, gpu=p.gpu, pid=p.pid, name=p.name, mem_mb=p.mem_mb)
+        for p in written
+        if t0 <= p.ts <= t1 and (p.node, p.gpu) in {("a", 1), ("b", 0)}
+    ]
+    got = store.gpu_processes(t0=t0, t1=t1, lanes={("a", 1), ("b", 0)})
+    assert sorted(got, key=lambda r: (r["ts"], r["node"], r["gpu"])) == sorted(
+        expected, key=lambda r: (r["ts"], r["node"], r["gpu"])
+    )

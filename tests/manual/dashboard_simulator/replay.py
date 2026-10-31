@@ -21,7 +21,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
-from tests.fast.dashboard.dummy_dump import _make_args
+from tests.fast.plugins.miles_dashboard.dummy_dump import _make_args
 from tests.manual.dashboard_simulator.calibration import (
     CalibrationRun,
     CalibrationTrajectory,
@@ -31,11 +31,14 @@ from tests.manual.dashboard_simulator.calibration import (
 )
 from tests.manual.dashboard_simulator.dumps import ActorLayout, TrainDumpWriter
 
-from miles.dashboard import observer as dashboard_observer
-from miles.dashboard.collector import CollectorConfig, DashboardCollector
-from miles.dashboard.gpu_sampler import GpuSampler
-from miles.dashboard.observer import DashboardObserver
-from miles.dashboard.store import (
+from miles.ray.rollout.debug_data import save_debug_rollout_data
+from miles.utils import observers as run_observers
+from miles.utils.types import Sample
+from miles_dashboard import observer as dashboard_observer
+from miles_dashboard.collector import CollectorConfig, DashboardCollector
+from miles_dashboard.gpu_sampler import GpuSampler
+from miles_dashboard.observer import DashboardObserver
+from miles_dashboard.store import (
     DataBufferSample,
     EngineInfo,
     EngineSample,
@@ -48,9 +51,6 @@ from miles.dashboard.store import (
     TopologySnapshot,
     TrajectoryEvent,
 )
-from miles.ray.rollout.debug_data import save_debug_rollout_data
-from miles.utils import observers as run_observers
-from miles.utils.types import Sample
 
 _CYCLE_GAP_S = 60.0
 
