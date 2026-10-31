@@ -65,6 +65,16 @@ def block_causal_mask(query_positions: Tensor, num_blocks: int, compress_ratio: 
     return blocks.unsqueeze(0) < first_invalid.unsqueeze(1)
 
 
+def packed_positions(cu_seqlens: Tensor, total: int) -> Tensor:
+    """Positions restarting at 0 for each sequence in a packed batch."""
+    idx = torch.arange(total, device=cu_seqlens.device)
+    starts = cu_seqlens[:-1].long()
+    seg = torch.zeros(total, dtype=torch.long, device=cu_seqlens.device)
+    seg[starts[1:]] = 1
+    seg = seg.cumsum(0)
+    return idx - starts[seg]
+
+
 class PackedBlockLayout:
     """Per-sequence compressed-block grid for a packed (thd) batch.
 
