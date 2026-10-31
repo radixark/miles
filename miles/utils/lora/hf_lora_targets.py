@@ -39,7 +39,8 @@ _SHARED_EXPERTS = _prefix_paths("mlp.shared_experts", "gate_proj", "up_proj", "d
 _QWEN_SHARED_EXPERT = _prefix_paths("mlp.shared_expert", "gate_proj", "up_proj", "down_proj")
 _PACKED_EXPERTS = _prefix_paths("mlp.experts", "gate_up_proj", "down_proj")
 _GDN_NEXT = _prefix_paths("linear_attn", "in_proj_qkvz", "in_proj_ba", "out_proj")
-_GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+# official Tinker adapts no in_proj_b / in_proj_a; they stay targetable by name
+_GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "out_proj")
 # GDN in_proj HF module -> the components a canonical adapter exports; official Tinker trains q / k / v / z apart
 GDN_IN_PROJ_COMPONENTS_BY_MODULE = {
     "in_proj_qkv": ("in_proj_q", "in_proj_k", "in_proj_v"),

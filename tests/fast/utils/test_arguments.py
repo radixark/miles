@@ -1115,10 +1115,13 @@ class TestClusterBackend:
         with pytest.raises(AssertionError, match="--use-output-store"):
             miles_validate_args(args)
 
-    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path) -> None:
+    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path, monkeypatch) -> None:
         """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
         from transformers import Qwen3Config
 
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+        )
         Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
         args = self._parse(
             [
@@ -2769,6 +2772,11 @@ class TestDataSourceSelection:
 class TestMultiLoRAValidation:
     @pytest.fixture(autouse=True)
     def _bridge_selector(self, monkeypatch):
+        self.fused_checks = []
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection",
+            lambda checkpoint, targets, *, canonical: self.fused_checks.append((list(targets), canonical)),
+        )
         monkeypatch.setattr(
             "miles.utils.lora.arguments.HfWeightMapping.from_config",
             lambda config: SimpleNamespace(parameter_names=frozenset()),
@@ -2884,6 +2892,11 @@ class TestMultiLoRAValidation:
         args = self._parse(["--target-modules", "in_proj_qkv,in_proj_z,out_proj", "--lora-type", lora_type])
         miles_validate_args(args)
         assert args.lora_adapter_targets == served
+
+    @pytest.mark.parametrize("lora_type", ["lora", "canonical_lora"])
+    def test_bridge_checks_fused_modules_at_argument_time(self, lora_type):
+        miles_validate_args(self._parse(["--target-modules", "q_proj", "--lora-type", lora_type]))
+        assert self.fused_checks == [(["q_proj"], lora_type == "canonical_lora")]
 
     def test_bridge_canonical_serves_wildcard_gdn_targets_by_component(self, monkeypatch):
         """A target whose block is a wildcard still reaches the GDN modules Bridge splits into components."""
@@ -4069,6 +4082,12 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
 
 class TestLoRATypeResolution:
     """--lora-type defaults to what each backend trains: native gives every HF projection its own lora_A."""
+
+    @pytest.fixture(autouse=True)
+    def _no_bridge(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+        )
 
     def _parse(self, tmp_path, extra):
         from transformers import Qwen3Config

@@ -12,6 +12,7 @@ from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
     _HF_LORA_MODELS,
     exclude_hf_lora_targets,
+    gdn_in_proj_served_targets,
     get_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
@@ -231,3 +232,38 @@ def test_remote_config_with_native_class_name():
         HfWeightMapping.from_config(remote_config).parameter_names
         == HfWeightMapping.from_config(config).parameter_names
     )
+
+
+# module leaves of the official Tinker exports in design doc §6.9 (unembed_tokens is HF's lm_head)
+_TINKER_QWEN3_5_4B = {
+    "self_attn.q_proj",
+    "self_attn.k_proj",
+    "self_attn.v_proj",
+    "self_attn.o_proj",
+    "linear_attn.in_proj_q",
+    "linear_attn.in_proj_k",
+    "linear_attn.in_proj_v",
+    "linear_attn.in_proj_z",
+    "linear_attn.out_proj",
+    "mlp.gate_proj",
+    "mlp.up_proj",
+    "mlp.down_proj",
+    "lm_head",
+}
+
+
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
+def test_qwen3_5_attn_group_is_official_tinkers(model_type):
+    """Official Qwen3.5 / 3.6 adapters train in_proj_q/k/v/z and out_proj on the GDN layers, never in_proj_b/a."""
+    text = {"layer_types": ["linear_attention", "full_attention"], "shared_expert_intermediate_size": 16}
+    targets = resolve_hf_lora_targets({"model_type": model_type, "text_config": text}, target_modules=["attn"])
+    served = gdn_in_proj_served_targets(targets, targets)
+    gdn = {target.split(".layers.*.")[1] for target in served if ".linear_attn." in target}
+    assert gdn == {f"linear_attn.{leaf}" for leaf in ("in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z", "out_proj")}
+
+
+def test_qwen3_5_dense_default_groups_match_the_official_export():
+    config = {"model_type": "qwen3_5", "text_config": {"layer_types": ["linear_attention", "full_attention"]}}
+    targets = resolve_hf_lora_targets(config, target_modules=["attn", "mlp", "unembed"])
+    served = gdn_in_proj_served_targets(targets, targets)
+    assert {target.split(".layers.*.")[-1] for target in served} == _TINKER_QWEN3_5_4B
