@@ -68,9 +68,10 @@ and Kimi K3 (which require `--experts-shared-outer-loras`); Inkling's spec also 
 its output head. Inkling and Kimi K3 accept only their verified adapter layout (Kimi
 K3 may omit the routed-expert down projection), so omit `--target-modules` for them.
 Qwen3.5 / Qwen3.6 GDN layers adapt `linear_attn.out_proj` and the input projections as independent
-`in_proj_q`/`in_proj_k`/`in_proj_v`/`in_proj_z`/`in_proj_b`/`in_proj_a` adapters, the components
-official Tinker trains. SGLang stacks them only as complete groups, so `in_proj_qkv` and `in_proj_z` are
-selected together, and so are `in_proj_b` and `in_proj_a`.
+`in_proj_q`/`in_proj_k`/`in_proj_v`/`in_proj_z`/`in_proj_b`/`in_proj_a` adapters. Official Tinker adapters
+train `in_proj_q/k/v/z` (four distinct A's); `in_proj_b`/`in_proj_a` are adapted only when targeted, which
+the `attn` group currently does. SGLang stacks the components only as complete groups, so `in_proj_qkv` and
+`in_proj_z` are selected together, and so are `in_proj_b` and `in_proj_a`.
 Selecting a projection the spec does not implement
 (for example routed experts or Qwen3-Next GDN projections) fails at startup; use
 `--megatron-to-hf-mode bridge` for those. A partial fused selection (for example

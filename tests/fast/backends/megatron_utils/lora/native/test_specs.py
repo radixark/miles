@@ -290,7 +290,7 @@ def _qwen3_5_resolve(targets):
 
 class TestQwen35GDNTargets:
     def test_canonical_serves_the_in_proj_components(self):
-        """SGLang stacks in_proj_q/k/v/z and in_proj_b/a, each with its own A, as official Tinker trains them."""
+        """SGLang stacks in_proj_q/k/v/z and in_proj_b/a, each with its own A."""
         targets = [f"{_GDN35}{leaf}" for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")]
         assert _qwen3_5_resolve(targets) == [
             f"{_GDN35}{leaf}"

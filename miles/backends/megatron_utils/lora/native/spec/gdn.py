@@ -12,7 +12,7 @@ from miles.backends.megatron_utils.lora.native.spec import layout as L
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec, ShardLayout
 from miles.backends.megatron_utils.lora.native.spec.layout import ModuleLayout, ProjectionBinding, attach_layout
 
-# (HF module a target selects, exported component, parameter prefix); official Tinker trains q / k / v apart
+# (HF module a target selects, exported component, parameter prefix); official Tinker trains q / k / v / z apart
 GDN_IN_PROJ_COMPONENTS = (
     ("in_proj_qkv", "in_proj_q", "q"),
     ("in_proj_qkv", "in_proj_k", "k"),
