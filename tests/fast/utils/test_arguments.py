@@ -1115,11 +1115,14 @@ class TestClusterBackend:
         with pytest.raises(AssertionError, match="--use-output-store"):
             miles_validate_args(args)
 
-    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path) -> None:
+    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path, monkeypatch) -> None:
         """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
         from transformers import Qwen3Config
 
-        Qwen3Config(num_hidden_layers=1, architectures=["Qwen3ForCausalLM"]).save_pretrained(tmp_path)
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+        )
+        Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
         args = self._parse(
             [
                 "--cluster-backend",
@@ -1133,7 +1136,7 @@ class TestClusterBackend:
                 "--megatron-to-hf-mode",
                 "bridge",
                 "--target-modules",
-                "q_proj,k_proj,v_proj",
+                "q_proj",
                 "--hf-checkpoint",
                 str(tmp_path),
             ]
@@ -4080,13 +4083,18 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
 class TestLoRATypeResolution:
     """--lora-type defaults to what each backend trains: native gives every HF projection its own lora_A."""
 
+    @pytest.fixture(autouse=True)
+    def _no_bridge(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+        )
+
     def _parse(self, tmp_path, extra):
         from transformers import Qwen3Config
 
-        Qwen3Config(num_hidden_layers=1, architectures=["Qwen3ForCausalLM"]).save_pretrained(tmp_path)
+        Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
         args = get_megatron_arg_parser().parse_args(
-            ["--lora-rank", "8", "--target-modules", "q_proj,k_proj,v_proj", "--hf-checkpoint", str(tmp_path)]
-            + ["--num-rollout", "1"]
+            ["--lora-rank", "8", "--target-modules", "q_proj", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"]
             + extra
             + REQUIRED_ARGS
         )
