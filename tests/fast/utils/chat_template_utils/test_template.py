@@ -25,6 +25,7 @@ from unittest.mock import MagicMock
 import pytest
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
+from sglang.srt.parser.reasoning_parser import ReasoningParser
 from transformers import AutoTokenizer
 
 from miles.utils.chat_template_utils import (
@@ -61,12 +62,22 @@ def _make_serving(tokenizer) -> OpenAIServingChat:
     serving.template_manager = MagicMock()
     serving.template_manager.chat_template_name = None
     serving.template_manager.jinja_template_content_format = "string"
+    # sglang v0.5.23 renders through a Python chat template when one is loaded; a
+    # MagicMock attribute would select that path, while HF Jinja templates have None.
+    serving.template_manager.python_chat_template = None
     serving.use_dpsk_v32_encoding = False
     serving.chat_encoding_spec = None
     serving.is_gpt_oss = False
     serving.is_gemma4 = False
+    serving.is_minimax_m3 = False
+    # sglang v0.5.23 routes only adapter-backed specs (dsv4, dsv41, inkling)
+    # through ``_encoding_adapter``; the Jinja and dsv32 paths tested here have none.
+    serving._encoding_adapter = None
     serving.tool_call_parser = None
     serving.reasoning_parser = None
+    # sglang v0.5.23 reads the reasoning detector __init__ builds from reasoning_parser
+    # while rendering; None mirrors reasoning_parser=None.
+    serving._reasoning_detector = None
     # sglang v0.5.16 added server-level default chat-template kwargs, merged into
     # the request's chat_template_kwargs at the top of _process_messages.
     # __init__ always sets it (to `... or {}`); mirror the empty default so the
@@ -78,6 +89,7 @@ def _make_serving(tokenizer) -> OpenAIServingChat:
     # takes the real production path instead of hitting AttributeError.
     serving._tokenizer_auto_adds_specials = len(tokenizer.encode("")) > 0
     serving._prompt_text_round_trip_is_lossy = serving._probe_prompt_text_round_trip()
+    serving._template_reads_reasoning_content = serving._chat_template_reads_reasoning_content()
     serving._chat_template_cache = OrderedDict()
     return serving
 
@@ -125,6 +137,9 @@ def sglang_dsv32_prompt_ids(
     serving = _make_serving(tokenizer)
     serving.chat_encoding_spec = "dsv32"
     serving.reasoning_parser = "deepseek-v3"
+    serving._reasoning_detector = ReasoningParser(
+        model_type=serving.reasoning_parser, stream_reasoning=True, tokenizer=tokenizer
+    ).detector
     serving.tool_call_parser = "deepseekv32"
     result = serving._process_messages(request, is_multimodal=False)
     return result.prompt_ids
