@@ -135,7 +135,7 @@ def _build_gsm8k_train_args(
         test_name=test_name,
         enable_fault_tolerance=enable_fault_tolerance,
     )
-    train_args += f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} --log-inference-engine-weight-checksums "
+    train_args += f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} "
     return train_args + build_extra_train_args(dump_dir)
 
 

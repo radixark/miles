@@ -176,7 +176,8 @@ class DebugConfig(BaseConfig):
     enable_event_analyzer: A[
         bool,
         Arg(
-            help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step."
+            help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each "
+            "training step. Implied by train fault tolerance; turns --log-inference-engine-weight-checksums on."
         ),
     ] = False
     log_inference_engine_weight_checksums: A[
@@ -185,8 +186,9 @@ class DebugConfig(BaseConfig):
             action=argparse.BooleanOptionalAction,
             help="Ask every inference engine for a full weight checksum after each weight update and record it "
             "in the event log. The engines materialize all weights to answer, which costs a large transient "
-            "allocation, so this defaults on only under --enable-event-analyzer, which checks the checksums; "
-            "an event directory alone does not turn it on.",
+            "allocation, so this defaults on only under --enable-event-analyzer (implied by train fault tolerance), "
+            "which checks the checksums and refuses to run without them; an event directory alone does not turn "
+            "it on.",
         ),
     ] = None
     enable_sample_ownership_checker: A[
