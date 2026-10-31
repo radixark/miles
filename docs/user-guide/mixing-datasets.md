@@ -41,7 +41,8 @@ Unknown fields are rejected, so a typo fails at startup instead of being ignored
 - **Separate epochs.** Each dataset has its own position, epoch and shuffle, and wraps around on its own.
   The checkpoint saves all of them, and resuming also re-checks every file's SHA-256.
 
-Every sample carries `metadata["dataset_name"]`.
+Every sample carries `metadata["dataset_name"]`, and the rollout metrics add
+`rollout/dataset/<name>/{episode_raw_reward,response_len/mean,truncated_ratio,num_training_samples}`.
 
 ### Limits
 

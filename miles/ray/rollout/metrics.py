@@ -115,6 +115,7 @@ def _compute_metrics_from_samples(args, samples):
     log_dict |= _compute_spec_metrics(args, samples)
     log_dict |= _compute_prefix_cache_metrics(args, samples)
     log_dict |= _compute_reward_cat_metrics(args, samples)
+    log_dict |= _compute_dataset_metrics(args, samples)
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
 
@@ -369,6 +370,27 @@ def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):
     metrics["prefix_cache_hit_rate"] = total_cached_tokens / total_prompt_tokens if total_prompt_tokens > 0 else 0.0
     metrics["avg_cached_tokens_per_sample"] = total_cached_tokens / num_samples
     return metrics
+
+
+def _compute_dataset_metrics(args, all_samples: list[Sample]) -> dict[str, float | int]:
+    """Reward, length and truncation per `--rollout-data-yaml-config` dataset."""
+    # only the mixer's own tag counts; a single-dataset row may carry an arbitrary `dataset_name` field
+    if args.rollout_data_yaml_config is None:
+        return {}
+    log_dict = {}
+    samples_of_dataset = group_by(
+        [s for s in all_samples if isinstance(s.metadata, dict) and "dataset_name" in s.metadata],
+        lambda s: s.metadata["dataset_name"],
+    )
+    for name, samples in samples_of_dataset.items():
+        dataset_metrics = _compute_training_sample_metrics(args, samples)
+        dataset_metrics["response_len/mean"] = np.mean([s.effective_response_length for s in samples]).item()
+        # status, not a length cap: a sample stopped by a lower per-sample budget counts too
+        dataset_metrics["truncated_ratio"] = np.mean(
+            [int(s.status == Sample.Status.TRUNCATED) for s in samples]
+        ).item()
+        log_dict |= dict_add_prefix(dataset_metrics, f"dataset/{name}/")
+    return log_dict
 
 
 def _compute_reward_cat_metrics(args, all_samples: list[Sample]):
