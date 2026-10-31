@@ -220,8 +220,6 @@ class SessionCore:
         self.instance_id = session_server_instance_id
         # Keep materialization serial per server, without blocking its HTTP event loop.
         self._sample_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-samples")
-        # Derived from pause_generation_mode at server bootstrap; session code
-        # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
         # The output store client deleting what this server's sessions did not hand over; None without one.
         self._output_store = output_store
