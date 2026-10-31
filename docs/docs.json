@@ -208,6 +208,7 @@
        },
        "models/gpt-oss/gpt-oss",
        "models/mimo/mimo-v2-6-flash",
+       "models/minimax/minimax-m3",
        "models/stepfun/step5",
        "models/muse-spark/muse-spark-open",
        "models/reflection/beam"
