@@ -20,7 +20,7 @@ def _hf_leaf(checkpoint_parameter):
 
 
 def _splits_canonically(megatron_module, checkpoint_parameters):
-    """CanonicalLoRA gives each HF projection of a fused qkv / fc1, or of Qwen3.5's GDN in_proj, its own adapter."""
+    """CanonicalLoRA gives each component of a fused qkv / fc1, or of Qwen3.5's GDN in_proj, its own adapter."""
     if ".experts." in megatron_module or len(checkpoint_parameters) < 2:
         return False
     leaf = megatron_module.rsplit(".", 1)[-1]
@@ -198,8 +198,11 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
                     ), f"Explicit LoRA target {target!r} overlaps --exclude-modules at {hf_module!r}"
                     if not excluded:
                         selected_hf_modules.add(hf_module)
-    assert (
-        set(target_modules) <= matched_targets
-    ), f"LoRA targets have no Bridge mapping: {sorted(set(target_modules) - matched_targets)}"
+    unmatched = sorted(set(target_modules) - matched_targets)
+    assert not unmatched, f"LoRA targets have no Bridge mapping: {unmatched}" + (
+        "; a GDN q/k/v selector must cover in_proj_qkv whole (in_proj_qkv or in_proj_[qkv])"
+        if any(target.rsplit(".", 1)[-1] in ("in_proj_q", "in_proj_k", "in_proj_v") for target in unmatched)
+        else ""
+    )
     assert selected_hf_modules, "No LoRA targets remain after applying --exclude-modules"
     return sorted(selected_hf_modules)

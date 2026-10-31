@@ -281,9 +281,10 @@ def test_native_run_contract_accepts_its_validated_configs(tmp_path):
         ({"eval_uses_snapshots": True, "eval_hf_dir": "/eval"}, "tied lm_head adapter cannot be merged"),
     ],
 )
-def test_native_run_contract_rejects_head_adapter_configs(tmp_path, override, message):
+@pytest.mark.parametrize("head_target", ["lm_head", "*head"])
+def test_native_run_contract_rejects_head_adapter_configs(tmp_path, override, message, head_target):
     with pytest.raises(AssertionError, match=message):
-        validate_native_lora_args(_native_run_args(tmp_path, "qwen3", hf_lora_targets=["lm_head"], **override))
+        validate_native_lora_args(_native_run_args(tmp_path, "qwen3", hf_lora_targets=[head_target], **override))
 
 
 def test_native_run_contract_accepts_merged_export_without_a_tied_head(tmp_path):
