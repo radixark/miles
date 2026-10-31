@@ -16,6 +16,7 @@ setup(
     package_data={
         "miles.dashboard": ["static/*"],
         "miles.utils.chat_template_utils.templates": ["*.jinja"],
+        "miles_plugins.models.kda_chunk_train": ["csrc/*.h", "csrc/*/*.cu"],
     },
     install_requires=_fetch_requirements("requirements.txt"),
     extras_require={

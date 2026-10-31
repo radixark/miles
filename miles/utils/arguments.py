@@ -63,6 +63,7 @@ logger = logging.getLogger(__name__)
 
 LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
+KDA_BACKENDS = ("fla", "deterministic", "deterministic_fla_fwd", "deterministic_cake_fwd")
 
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
 

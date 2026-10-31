@@ -36,6 +36,23 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = "te"
+    kda_backend: A[
+        str,
+        Arg(
+            choices=("fla", "deterministic", "deterministic_fla_fwd", "deterministic_cake_fwd"),
+            help=(
+                "Backend for Kimi K3 KDA linear-attention layers. "
+                "'fla' (flash-linear-attention) runs forward and backward through FLA's Triton kernels. "
+                "The deterministic family runs the backward through Miles' deterministic chunked KDA training "
+                "backward (miles_plugins/models/kda_chunk_train; SM100a/SM103a, K = V = 128, any fixed or packed "
+                "sequence lengths, context parallelism through FLA's CP state exchange; other calls fall back to "
+                "FLA): "
+                "'deterministic_fla_fwd' keeps FLA's forward, 'deterministic_cake_fwd' runs the Cake forward "
+                "(five launches, bit-deterministic), and 'deterministic' is the alias of the family's current "
+                "default (deterministic_cake_fwd)."
+            ),
+        ),
+    ] = "fla"
     true_on_policy_mode: A[bool, Arg(help="Whether to enable true-on-policy mode.")] = False
     train_env_vars: A[
         Any,

@@ -173,12 +173,13 @@ def gather(local: torch.Tensor, dim: int, group) -> torch.Tensor:
     return torch.cat(parts, dim=dim)
 
 
-def build_layer(ref, config, allgather_cp: bool = True) -> LinearAttentionLayer:
-    """A head-sharded layer holding this TP rank's shard of ``ref``'s weights, identity input norm."""
+def build_layer(ref, config, allgather_cp: bool = True, backend: str = "fla") -> LinearAttentionLayer:
+    """A head-sharded layer holding this TP rank's shard of ``ref``'s weights, identity input norm. ``backend``:
+    the KDA recurrence kernel (``--kda-backend`` value; KDA references only)."""
     pg = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
     tp = pg.tp
     if isinstance(ref, ReplicatedKDA):
-        core = KimiDeltaAttention(config, ref.heads, CONV, EPS, tp, gate_lower_bound=KDA_LOWER_BOUND)
+        core = KimiDeltaAttention(config, ref.heads, CONV, EPS, tp, gate_lower_bound=KDA_LOWER_BOUND, backend=backend)
     else:
         core_cls = Qwen3_5GatedDeltaNet if ref.family == "qwen3_5" else Qwen3NextGatedDeltaNet
         core = core_cls(config, ref.heads, CONV, EPS, tp)
@@ -199,7 +200,14 @@ def build_layer(ref, config, allgather_cp: bool = True) -> LinearAttentionLayer:
 
 
 def packed(cu_seqlens):
-    return SimpleNamespace(cu_seqlens_q=cu_seqlens)
+    """The training path's ``PackedSeqParams`` surface: the device boundaries, their one int64 host copy per
+    micro-batch and the slots the KDA layer caches the fla CP context in (``get_packed_seq_params``)."""
+    return SimpleNamespace(
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_cpu=torch.tensor(cu_seqlens.tolist(), dtype=torch.int64),
+        fla_cp_context=None,
+        fla_cp_cu_seqlens_cpu=None,
+    )
 
 
 def rel_err(a: torch.Tensor, b: torch.Tensor) -> float:

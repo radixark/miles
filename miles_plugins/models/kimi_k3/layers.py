@@ -247,7 +247,9 @@ class KimiK3Attention(MegatronModule):
 
 class KimiK3KDAAttention(LinearAttentionLayer):
     """K3's KDA layers on the shared head-sharded linear-attention layer. The ``self_attention`` constructor
-    signature K3's layer spec builds with; the input norm is the transformer layer's, so none here."""
+    signature K3's layer spec builds with; the input norm is the transformer layer's, so none here. The
+    recurrence kernel follows ``--kda-backend`` (``kda_backend``, which K3's layer spec passes from the trainer
+    config; fla, or the deterministic chunked backward with fla's or the Cake forward)."""
 
     is_kda = True
 
@@ -258,6 +260,7 @@ class KimiK3KDAAttention(LinearAttentionLayer):
         cp_comm_type: str | None = None,
         pg_collection=None,
         name: str | None = None,
+        kda_backend: str = "fla",
     ) -> None:
         del cp_comm_type, name
         if pg_collection is None:
@@ -276,6 +279,7 @@ class KimiK3KDAAttention(LinearAttentionLayer):
             config.layernorm_epsilon,
             pg_collection.tp,
             gate_lower_bound=config.kimi_kda_gate_lower_bound,
+            backend=kda_backend,
         )
         super().__init__(config, core, nn.Identity(), pg_collection, allgather_cp=False)
 

@@ -8,6 +8,7 @@ import torch
 
 from miles.backends.training_utils.weight_update.protocols.cuda_ipc import (
     UpdateWeightFromTensor,
+    _ipc_ref_counter,
     _send_to_colocated_engine,
 )
 from miles.utils import async_utils
@@ -154,10 +155,11 @@ class TestColocatedBaseSend:
         protocol._ipc_gather_src = 0
         protocol._ipc_gather_group = MagicMock(name="ipc_group")
         protocol._selector = "all"
+        protocol._ring = None  # default path: one fresh CUDA-IPC bucket per send
         future = MagicMock(name="engine_future")
 
         with (
-            patch(f"{_TENSOR_MODULE}._send_to_colocated_engine", return_value=([future], object())),
+            patch(f"{_TENSOR_MODULE}._send_to_colocated_engine", return_value=([future], object(), ["payload"])),
             patch(f"{_TENSOR_MODULE}.async_utils.wait_futures", return_value=[{"success": True}]) as wait,
             patch(f"{_TENSOR_MODULE}.check_weight_sync_results") as check,
             patch(f"{_TENSOR_MODULE}.dist.barrier") as barrier,
@@ -184,7 +186,7 @@ class TestColocatedBaseSend:
             dist_mock.get_rank.return_value = 0
             dist_mock.get_world_size.return_value = 1
             dist_mock.gather_object.side_effect = _gather_object_onto_source
-            futures, _long_lived_tensors = _send_to_colocated_engine(
+            futures, _long_lived_tensors, _serialized = _send_to_colocated_engine(
                 named_tensors,
                 ipc_engine=engine,
                 ipc_gather_src=0,
@@ -197,6 +199,146 @@ class TestColocatedBaseSend:
             "serialized:model.layers.0.mlp.up_proj.weight",
         ]
         assert engine.max_active == 1
+
+
+class TestIpcBucketRing:
+    def test_ref_counter_is_read_from_the_reducer_pickle(self) -> None:
+        """The debug reader finds torch's ref-counter shm name and slot offset without unpickling (no IPC open)."""
+        import base64
+        import pickle
+
+        # same positional layout as torch.multiprocessing.reductions.reduce_tensor's args tuple
+        args = (
+            torch.Tensor,
+            torch.Size([5]),
+            (1,),
+            0,
+            torch.storage.TypedStorage,
+            torch.uint8,
+            "GPU-0123",
+            b"\x01" * 64,
+            4096,
+            0,
+            False,
+            b"/torch_4242_1518968791_17",
+            9,
+            b"\x02" * 64,
+            False,
+        )
+        payload = {"flattened_tensor": ("rebuild", args), "metadata": [("b0.t0", "/torch_1_1 is only a name here", 3)]}
+        data = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+        assert _ipc_ref_counter(data) == ("/torch_4242_1518968791_17", 9)
+        assert _ipc_ref_counter(base64.b64encode(data).decode()) == ("/torch_4242_1518968791_17", 9)
+        assert _ipc_ref_counter(pickle.dumps({"metadata": []})) is None
+
+    def test_ring_handshake_shares_the_engine_verdict_with_every_rank(self) -> None:
+        """With the ring, a non-source rank waits for the gather-source rank's verdict and raises on an engine error
+        instead of running ahead into the next bucket."""
+        protocol = UpdateWeightFromTensor.__new__(UpdateWeightFromTensor)
+        protocol.args = Namespace(update_weight_buffer_size=16)
+        protocol.use_distribute = False
+        protocol._ring = object()  # any ring: only the handshake path is exercised
+        protocol._ring_debug_left = 0
+        protocol._ipc_gather_src = 0
+        protocol._ipc_gather_group = MagicMock(name="gather_group")
+        protocol._ipc_engine = None
+        protocol._selector = "all"
+
+        def all_gather(obj_list, obj, group):
+            assert group is protocol._ipc_gather_group
+            assert obj is None  # this rank holds no futures, so it has no error of its own
+            assert len(obj_list) == 8
+            obj_list[0] = "rank 0: RuntimeError: engine said no"
+
+        with (
+            patch(f"{_TENSOR_MODULE}.dist") as dist_mock,
+            patch(f"{_TENSOR_MODULE}._send_to_colocated_engine", return_value=([], [], ["payload"])),
+        ):
+            dist_mock.get_rank.return_value = 3  # not the gather source: holds no futures
+            dist_mock.get_world_size.return_value = 8
+            dist_mock.all_gather_object.side_effect = all_gather
+            with pytest.raises(RuntimeError, match="engine said no"):
+                protocol.send_bucket([("w", torch.zeros(1))])
+            dist_mock.all_gather_object.assert_called_once()
+            dist_mock.barrier.assert_not_called()
+
+
+class TestIpcBucketRingStage:
+    """CPU-only: slot rotation, growth, cached share args and the re-share fallback of ``_IpcBucketRing.stage``."""
+
+    @staticmethod
+    def _fake_share(buf: torch.Tensor):
+        # positional layout of torch.multiprocessing.reductions.reduce_tensor's args
+        return (
+            "rebuild",
+            (
+                torch.Tensor,
+                torch.Size([buf.numel()]),
+                (1,),
+                0,
+                torch.storage.TypedStorage,
+                buf.dtype,
+                "GPU-uuid",
+                b"\x01" * 64,
+                buf.numel(),
+                0,
+                False,
+                b"/torch_1_2_0",
+                7,
+                b"\x02" * 64,
+                True,
+            ),
+        )
+
+    def _ring(self, slots: int, min_bytes: int, reshare: bool = False):
+        from miles.backends.training_utils.weight_update.protocols.cuda_ipc import _IpcBucketRing
+
+        ring = _IpcBucketRing(slots, min_bytes=min_bytes, reshare=reshare)
+
+        def fake_share(buf: torch.Tensor):
+            # mirror the real _share_once: it clears event_sync_required (rule 1) and records the ref-counter file
+            fn, args = self._fake_share(buf)
+            args = list(args)
+            args[_IpcBucketRing._ARG_EVENT_SYNC] = False
+            ring._note_counter_file(args[_IpcBucketRing._ARG_REF_COUNTER_HANDLE])
+            return fn, tuple(args)
+
+        ring._share_once = fake_share  # type: ignore[method-assign]
+        return ring
+
+    def test_slots_rotate_and_the_cached_share_carries_the_bucket_length(self) -> None:
+        from miles.backends.training_utils.weight_update.protocols.cuda_ipc import _SharedTensorRef
+
+        ring = self._ring(2, min_bytes=16)
+        stream = MagicMock(name="stream")
+        with patch("torch.cuda.current_stream", return_value=stream):
+            refs = [ring.stage(torch.full((n,), i, dtype=torch.uint8)) for i, n in enumerate((4, 6, 8))]
+        assert all(isinstance(r, _SharedTensorRef) for r in refs)
+        assert [r.args[1] for r in refs] == [torch.Size([4]), torch.Size([6]), torch.Size([8])]
+        assert all(r.args[2] == (1,) and r.args[3] == 0 and r.args[14] is False for r in refs)
+        assert refs[0].args[7] == refs[2].args[7]  # bucket 2 reused slot 0's one-time share
+        assert stream.synchronize.call_count == 3
+        slots = ring._slots[(torch.uint8, torch.device("cpu"))]
+        assert len(slots) == 2 and ring.reallocs == 2 and ring.retired == []
+        assert slots[0].buf[:8].tolist() == [2] * 8  # bucket 2 overwrote slot 0 with its bytes
+        assert ring.counter_files == {"/dev/shm/torch_1_2_0"}
+
+    def test_oversized_bucket_grows_the_slot_and_retires_the_old_buffer(self) -> None:
+        ring = self._ring(2, min_bytes=8)
+        with patch("torch.cuda.current_stream", return_value=MagicMock()):
+            ring.stage(torch.zeros(8, dtype=torch.uint8))  # slot 0 at min size
+            ring.stage(torch.zeros(8, dtype=torch.uint8))  # slot 1
+            big = ring.stage(torch.ones(32, dtype=torch.uint8))  # slot 0 again: too small -> grow
+        assert ring.reallocs == 3 and len(ring.retired) == 1 and ring.retired[0].numel() == 8
+        assert big.args[1] == torch.Size([32])
+        assert ring._slots[(torch.uint8, torch.device("cpu"))][0].buf.numel() == 32
+
+    def test_reshare_mode_returns_the_slot_view_itself(self) -> None:
+        ring = self._ring(1, min_bytes=16, reshare=True)
+        with patch("torch.cuda.current_stream", return_value=MagicMock()):
+            view = ring.stage(torch.arange(5, dtype=torch.uint8))
+        assert isinstance(view, torch.Tensor) and view.numel() == 5 and view.tolist() == [0, 1, 2, 3, 4]
+        assert ring._slots[(torch.uint8, torch.device("cpu"))][0].shared is None
 
 
 class TestObservedWorldSize:
