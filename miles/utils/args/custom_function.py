@@ -193,8 +193,8 @@ def _compute_rollout_dataset_function_infos(
         return []
     try:
         datasets = load_rollout_data_config(value)
-    except (OSError, ValueError):
-        # a bad file is reported by the startup validation, not by the partial parse
+    except Exception:
+        # any bad file (missing, invalid YAML, failed schema) is reported by startup validation, not the pre-parse
         if partial:
             return []
         raise
