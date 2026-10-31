@@ -202,8 +202,10 @@ checkpoint keys to the current HF model namespace, without loading base weights.
 This resolves renamed and packed parameter names. Custom models absent from
 native Transformers keep their existing checkpoint namespace.
 
-Bridge resolves mappings against parameters that actually exist across PP/EP
-ranks before checking fused selections. Explicit Megatron selectors retain a
+Argument validation checks fused selections against Bridge's mapping registry and
+the HF model's modules; a model whose HF implementation lists no modules (remote
+code) is checked only at model build, where Bridge resolves mappings against
+parameters that actually exist across PP/EP ranks. Explicit Megatron selectors retain a
 compatibility conversion at startup. Adapter factories receive only Megatron
 targets; they do not overwrite the HF selection. Arbitrary layer/expert subsets
 within a registry template are not implemented and are rejected.
