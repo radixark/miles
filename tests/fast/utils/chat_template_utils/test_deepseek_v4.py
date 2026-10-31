@@ -230,16 +230,31 @@ def test_render_with_tools_injects_tool_schemas():
 
 def test_render_with_tools_matches_manual_system_injection():
     # Passing tools= must equal pre-canonicalizing them into the system message and
-    # passing tools=None -- i.e. the injection is exactly the Tool-pydantic model_dump
-    # that sglang's serving path applies.
+    # passing tools=None -- i.e. the injection is exactly the V4 tool payload.
     from sglang.srt.entrypoints.openai.protocol import Tool
 
-    canonical = [Tool.model_validate(t).model_dump() for t in _TOOLS]
+    canonical = [deepseek.dsv4_tool_payload(Tool.model_validate(t)) for t in _TOOLS]
     msgs = [{"role": "user", "content": "weather?"}]
     expected = deepseek.V4.render_messages(
         [{"role": "system", "content": "", "tools": canonical}, *msgs], thinking_mode="chat"
     )
     assert deepseek.V4.render_messages(msgs, tools=_TOOLS, thinking_mode="chat") == expected
+
+
+def test_tool_payload_keeps_the_v0522_shape_whatever_the_client_order():
+    """V4 renders each tool dict verbatim. sglang v0.5.23's Tool.model_dump keeps the client's key
+    order and drops an unset strict, which would change V4 prompts; the payload keeps v0.5.22's."""
+    from sglang.srt.entrypoints.openai.protocol import Tool
+
+    client_order = {
+        "type": "function",
+        "function": {"name": "f", "parameters": {"type": "object"}, "description": "d"},
+    }
+
+    payload = deepseek.dsv4_tool_payload(Tool.model_validate(client_order))
+
+    assert payload["function"] == {"description": "d", "name": "f", "parameters": {"type": "object"}, "strict": False}
+    assert list(payload["function"]) == ["description", "name", "parameters", "strict"]
 
 
 def test_render_with_tools_reuses_existing_system_message():

@@ -50,9 +50,10 @@ def _inject_tools_into_system(
     """Put *tools* in the system message, where ``encode_messages`` reads them.
 
     The encoder serializes each tool dict verbatim into ``<functions>``, so they
-    must round-trip through the pydantic payload the encoder was paired with in
-    sglang's ``serving_chat`` (``Tool.model_dump()`` fills defaults / orders
-    fields; V4.1 keeps only the fields the client sent) or the token ids drift.
+    must round-trip through the payload the encoder is paired with or the token
+    ids drift: V3.2 uses ``Tool.model_dump()`` as sglang's dsv32 serving path
+    does, V4 keeps the v0.5.22 payload (``dsv4_tool_payload``), and V4.1 keeps
+    only the fields the client sent (``dsv41_tool_payload``).
     """
     out = copy.deepcopy(messages)
     if not out or out[0].get("role") != "system":
@@ -132,8 +133,32 @@ class DeepSeekV32Family(DeepSeekFamily):
         return None
 
 
+def dsv4_tool_payload(tool: Tool) -> dict[str, Any]:
+    """The tool dict sglang v0.5.22's ``Tool.model_dump()`` gave the V4 encoder.
+
+    v0.5.23 keeps the client's key order and drops an unset ``strict``
+    (sgl-project/sglang#46133); V4 renders the dict verbatim, so rebuild the
+    declared field order with ``strict`` defaulting to False.
+    """
+    payload = tool.model_dump()
+    function = payload["function"]
+    declared = {
+        "description": function.get("description"),
+        "name": function["name"],
+        "parameters": function.get("parameters"),
+        "strict": bool(function.get("strict", False)),
+    }
+    if "defer_loading" in function:
+        declared["defer_loading"] = function["defer_loading"]
+    payload["function"] = declared
+    return payload
+
+
 class DeepSeekV4Family(DeepSeekFamily):
     template = encoding_dsv4
+
+    def _inject_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return _inject_tools_into_system(messages, tools, dsv4_tool_payload)
 
     def _generation_prompt_suffix(self, tail_role: str | None, thinking_token: str) -> str | None:
         if tail_role in {"user", "developer", "tool"}:
