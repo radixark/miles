@@ -180,7 +180,8 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
             for target in target_modules:
                 matches = matches_lora_target(hf_module, target) or matches_lora_target(megatron_module, target)
                 if canonical and _splits_canonically(megatron_module, _checkpoint_parameters(mapping)):
-                    matches |= any(
+                    # a component selector reaches the HF module only whole: in_proj_q alone would widen to q/k/v
+                    matches |= all(
                         matches_lora_target(module, target)
                         for module in _canonical_adapter_modules(megatron_module, checkpoint_parameter)
                     )
