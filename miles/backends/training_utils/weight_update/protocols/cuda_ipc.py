@@ -17,7 +17,7 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.utils import async_utils
-from miles.utils.lora.utils import lora_base_cpu_backup_enabled, lora_rollout_enabled
+from miles.utils.lora.utils import lora_rollout_enabled
 
 try:
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
@@ -260,9 +260,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         # Overwritten with "miles" when connect finds a distributed engine tail.
         self.group_name = "miles-colocate"
         self._ring = (
-            _IpcBucketRing(
-                _RING_SLOTS, min_bytes=getattr(args, "update_weight_buffer_size", 0) or 0, reshare=_RING_RESHARE
-            )
+            _IpcBucketRing(_RING_SLOTS, min_bytes=args.update_weight_buffer_size, reshare=_RING_RESHARE)
             if _RING_SLOTS > 0
             else None
         )
@@ -306,18 +304,11 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, self.rollout_engines, engine_cell_ids)
         self._selector = selector
 
-        if engine_gpu_counts is None:
-            engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
-        if engine_gpu_offsets is None:
-            # Fallback: assume engines are densely packed (no placeholder gaps).
-            engine_gpu_offsets = []
-            offset = 0
-            for c in engine_gpu_counts:
-                engine_gpu_offsets.append(offset)
-                offset += c
+        assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
+        assert engine_gpu_offsets is not None and len(engine_gpu_offsets) == len(rollout_engines)
 
         # Compute colocated engine count: engines whose GPUs fall within actor GPU range.
-        total_actor_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
+        total_actor_gpus = dist.get_world_size()
         colocate_engine_nums = 0
         for gpu_offset, gpu_count in zip(engine_gpu_offsets, engine_gpu_counts, strict=True):
             if gpu_offset + gpu_count > total_actor_gpus:
@@ -341,12 +332,9 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             self.group_name = "miles"
             if self._is_distributed_src_rank:
                 if (g := self._model_update_groups) is not None:
-                    disconnect_rollout_engines_from_distributed(
-                        self.args, self.group_name, g, self.distributed_rollout_engines
-                    )
+                    disconnect_rollout_engines_from_distributed(self.group_name, g, self.distributed_rollout_engines)
 
                 self._model_update_groups = connect_rollout_engines_from_distributed(
-                    self.args,
                     self.group_name,
                     self.distributed_rollout_engines,
                     engine_gpu_counts=distributed_gpu_counts,
@@ -391,15 +379,11 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         # collective among the group's members.
         self.is_sender = self._ipc_gather_group is not None
 
-        # A LoRA sync must re-push the frozen base unless the engines keep it
-        # across pauses (CPU backup, persistent GPU copy, or remote engines);
-        # the weight checker always needs the full rewrite.
-        base_persists = (
-            self.use_distribute
-            or lora_base_cpu_backup_enabled(self.args)
-            or (self.args.colocate and not self.args.offload_rollout)
+        # Remote engines (use_distribute) keep the base as well. Never true unless
+        # args.lora_sync_sends_base, which is all the trainer's host backup reads.
+        self.needs_base_resync_for_lora = self.args.lora_sync_sends_base and (
+            self.args.check_weight_update_equal or not self.use_distribute
         )
-        self.needs_base_resync_for_lora = self.args.check_weight_update_equal or not base_persists
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         futures, long_lived_tensors, serialized = _send_to_colocated_engine(
@@ -500,7 +484,9 @@ def _send_to_colocated_engine(
     is_gather_src = dist.get_rank() == ipc_gather_src
     long_live_tensors = []
 
-    if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
+    if getattr(
+        FlattenedTensorBucket, "supports_multi_dtypes", False
+    ):  # config-access-exempt: bucket implementations differ in multi-dtype support
         converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors}
     else:
         converted_named_tensors_by_dtypes = {}

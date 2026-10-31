@@ -37,16 +37,6 @@ def _linear(module: nn.Module, inputs: torch.Tensor) -> torch.Tensor:
     return output
 
 
-def _kda_backend_from_args() -> str:
-    """``--kda-backend`` from the Megatron args; ``fla`` when no args are initialized (layer unit tests)."""
-    try:
-        from megatron.training import get_args
-
-        return getattr(get_args(), "kda_backend", "fla")
-    except (ImportError, AssertionError):
-        return "fla"
-
-
 class KimiK3Attention(MegatronModule):
     """K3's MLA layers; the KDA layers are :class:`KimiK3KDAAttention`."""
 
@@ -67,7 +57,9 @@ class KimiK3Attention(MegatronModule):
         if pg_collection is None:
             pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
         else:
-            assert hasattr(pg_collection, "tp") and hasattr(pg_collection, "cp")
+            assert hasattr(pg_collection, "tp") and hasattr(
+                pg_collection, "cp"
+            )  # config-access-exempt: process group collections differ across Megatron versions
         self.pg_collection = pg_collection
         self.tp_group = pg_collection.tp
         self.tp_size = self.tp_group.size()
@@ -256,7 +248,8 @@ class KimiK3Attention(MegatronModule):
 class KimiK3KDAAttention(LinearAttentionLayer):
     """K3's KDA layers on the shared head-sharded linear-attention layer. The ``self_attention`` constructor
     signature K3's layer spec builds with; the input norm is the transformer layer's, so none here. The
-    recurrence kernel follows ``--kda-backend`` (fla, or fla's forward with the deterministic chunked backward)."""
+    recurrence kernel follows ``--kda-backend`` (``kda_backend``, which K3's layer spec passes from the trainer
+    config; fla, or the deterministic chunked backward with fla's or the Cake forward)."""
 
     is_kda = True
 
@@ -267,6 +260,7 @@ class KimiK3KDAAttention(LinearAttentionLayer):
         cp_comm_type: str | None = None,
         pg_collection=None,
         name: str | None = None,
+        kda_backend: str = "fla",
     ) -> None:
         del cp_comm_type, name
         if pg_collection is None:
@@ -285,7 +279,7 @@ class KimiK3KDAAttention(LinearAttentionLayer):
             config.layernorm_epsilon,
             pg_collection.tp,
             gate_lower_bound=config.kimi_kda_gate_lower_bound,
-            backend=_kda_backend_from_args(),
+            backend=kda_backend,
         )
         super().__init__(config, core, nn.Identity(), pg_collection, allgather_cp=False)
 

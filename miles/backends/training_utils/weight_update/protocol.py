@@ -26,6 +26,8 @@ class WeightTransferProtocol(ABC):
 
     required_placement: ClassVar[WeightUpdatePlacement] = WeightUpdatePlacement(gather_pp=False)
     supports_lora: ClassVar[bool] = False
+    # Opt in only when separate instances own independent transfer state.
+    supports_receiver_pools: ClassVar[bool] = False
     use_weight_update_session: ClassVar[bool] = True
     needs_base_resync_for_lora: bool = False
 
@@ -76,10 +78,10 @@ class WeightTransferProtocol(ABC):
 
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
-    mode = getattr(args, "update_weight_transfer_mode", "broadcast")
+    mode = args.update_weight_transfer_mode
     if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
-    if mode == "broadcast_packed" and (getattr(args, "train_backend", None) != "megatron" or args.colocate):
+    if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
     if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor

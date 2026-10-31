@@ -11,6 +11,7 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 | ------------------------ | ------------------------ | -------------------------------------- |
 | `docker/Dockerfile`      | `radixark/miles` (CUDA)  | `docker-build.yml`, `release-docker.yml` |
 | `docker/Dockerfile.rubin` | Vera Rubin (aarch64/SM107) | `docker-build.yml` (`rubin` manual variant) |
+| `docker/Dockerfile.tpu` | TPU v7x through torch_tpu (x86_64) | `docker-build.yml` (`tpu` manual variant) |
 | `docker/Dockerfile.rocm` | AMD ROCm (MI35x, MI30x) | `docker-build.yml` (`rocm*-mi35x`, `rocm10-mi30x` variants) |
 | `docker/Dockerfile.cu12` | Deprecated CUDA 12.9 (x86_64), unmaintained | Manual builds only |
 
@@ -21,7 +22,7 @@ CUDA 12 image builds are retired, following [SGLang v0.5.20](https://github.com/
 
 The Dockerfile is the build recipe: it provides the cu13 defaults and emits one image. `build.py` owns the variant → build-arg overrides (see Build script), including the ROCm base and wheels releases.
 
-The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang-miles`. `SGLANG_COMMIT` remains empty unless the caller pins a revision. ROCm variants keep their separate base and wheels pins in `docker/build.py`.
+The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang-miles`. `SGLANG_COMMIT` remains empty unless the caller pins a revision. From that checkout it installs `python/` and `radix_transfer_plugins/`, the output store package SGLang imports, both editable, and the build fails unless that package imports; its Mooncake backend is left out because `mooncake.store` needs the GPU driver. ROCm variants keep their separate base and wheels pins in `docker/build.py`.
 
 **Inputs (build-args)**
 
@@ -37,7 +38,7 @@ The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang
 
 **Output** — one `radixark/miles` image for the platform buildx targets: the SGLang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM at its branch default or caller-pinned commit, Miles, and the prebuilt wheels (`sgl-router` among them). It also carries `kubectl`, `helm` and `tmux`, which the k8s-native launch path drives the cluster with. A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
-`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). All ROCm variants build on the `lmsysorg/sglang` v0.5.21 ROCm releases pinned in `docker/build.py`, so `docker/Dockerfile.rocm` fetches the matching frozen branch `sglang-miles-v0.5.21-final`. `rocm724-mi35x` uses the Python 3.12 base and ROCm 7.2.4 wheels from the `rocm724-gfx950-v0.5.20` release. It sets `APPLY_ROCR_VMMFIX=1` to install the point-release-matched ROCr VMM-pause fix; ROCm 10 has the fix upstream. The MI300X / MI325X (`gfx942`) variant `rocm10-mi30x` uses the `rocm10-gfx942-v0.5.20` release. That release holds Transformer Engine, flash-attn and apex built for `gfx942` from the same sources as the `gfx950` shelf, so the variant installs every wheel prebuilt, like `rocm10-mi35x`. It also sets `AITER_PREBUILD_JIT=1`. `docker/amd/prebuild_aiter_jit.py` then builds the bf16 aiter attention kernels that sglang otherwise JIT-compiles on first use: the `mha_batch_prefill` extend modules, and `pa_ragged` decode for GQA ratios 1–16, head sizes 64 and 128, and contexts up to 64K. It builds them for `GPU_ARCH`, because the build host has no GPU.
+`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). All ROCm variants build on the `lmsysorg/sglang` v0.5.22 ROCm releases pinned in `docker/build.py`, so `docker/Dockerfile.rocm` fetches the matching stable branch `sglang-miles`. `rocm724-mi35x` uses the Python 3.12 base and ROCm 7.2.4 wheels from the `rocm724-gfx950-v0.5.20` release. It sets `APPLY_ROCR_VMMFIX=1` to install the point-release-matched ROCr VMM-pause fix; ROCm 10 has the fix upstream. The MI300X / MI325X (`gfx942`) variant `rocm10-mi30x` uses the `rocm10-gfx942-v0.5.20` release. That release holds Transformer Engine, flash-attn and apex built for `gfx942` from the same sources as the `gfx950` shelf, so the variant installs every wheel prebuilt, like `rocm10-mi35x`. It also sets `AITER_PREBUILD_JIT=1`. `docker/amd/prebuild_aiter_jit.py` then builds the bf16 aiter attention kernels that sglang otherwise JIT-compiles on first use: the `mha_batch_prefill` extend modules, and `pa_ragged` decode for GQA ratios 1–16, head sizes 64 and 128, and contexts up to 64K. It builds them for `GPU_ARCH`, because the build host has no GPU.
 
 ### `docker/install-kube-tools.sh`
 
@@ -54,6 +55,7 @@ The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang
 | `cu13-x86`     | `radixark/miles:dev`               | `linux/amd64`                 | x86-only build of the same image               |
 | `cu13-aarch64` | `radixark/miles:dev`               | `linux/arm64`                 | arm64-only build of the same image             |
 | `rubin` | `radixark/miles:dev-rubin` | `linux/arm64` | Vera Rubin — `docker/Dockerfile.rubin` |
+| `tpu` | `radixark/miles:dev-tpu` | `linux/amd64` | TPU v7x (torch_tpu) — `docker/Dockerfile.tpu` |
 | `rocm724-mi35x` | `rocm/sgl-dev:miles-rocm724-mi35x` | native                       | AMD MI35x (`gfx950`, ROCm 7.2.4) — `docker/Dockerfile.rocm` |
 | `rocm10-mi35x`  | `rocm/sgl-dev:miles-rocm10-mi35x`  | native                       | AMD MI35x (`gfx950`, ROCm 10, ROCm SDK as pip wheels) — `docker/Dockerfile.rocm` |
 | `rocm10-mi30x`  | `rocm/sgl-dev:miles-rocm10-mi30x`  | native                       | AMD MI300X / MI325X (`gfx942`, ROCm 10) — `docker/Dockerfile.rocm` |
@@ -66,6 +68,8 @@ The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `de
 A multi-arch build (`cu13`) needs Buildx's `docker-container` driver. Use `--push` to publish directly, or `--output type=oci,dest=/tmp/image,tar=false` to export a local OCI layout for later publication; it cannot load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, and repeatable `--build-arg KEY=VALUE`. `--context <repository>` selects a separate build context while keeping the driver and hash reader in their original checkout.
 
 The `rubin` variant uses the existing `docker-build` runner and targets `linux/arm64`, like `cu13-aarch64`. It is not included in scheduled builds, automatic tag promotion/pruning, regular CUDA PR images or versioned releases.
+
+The `tpu` variant builds from sglang-torchtpu's release image (`SGLANG_TPU_IMAGE_TAG`): it swaps in sglang-torchtpu at `SGLANG_TPU_COMMIT` (the release's torch_tpu, libtpu and jax), moves the one Python environment to `TORCH_VERSION` (the CUDA image's torch; the torchtitan backend needs >= 2.13), and adds torchtitan at `TORCHTITAN_COMMIT` and miles. Like `rubin`, it is manual only.
 
 ## PR build check (in `pr-test.yml`)
 

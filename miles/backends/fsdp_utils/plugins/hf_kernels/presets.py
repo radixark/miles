@@ -48,7 +48,7 @@ REQUIRED_SLOT_FUNCTIONS = {
 
 def default_module_kernels(args) -> dict[str, HubKernelSpec]:
     """The mapping miles ships. Empty under the bit-exact run modes, which own their numerics."""
-    if args.true_on_policy_mode or args.deterministic_mode:
+    if args.true_on_policy_mode or args.backend.deterministic_mode:
         return {}
     return {
         SLOT_GATED_DELTA_RULE: FLA,

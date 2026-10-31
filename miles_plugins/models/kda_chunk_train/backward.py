@@ -538,7 +538,9 @@ def _state_args(state_in, return_out, *, layout, hv, device, in_name, out_name):
 
 def _use_cp(cp_context) -> bool:
     """An fla CP context with a process group: the CP host protocol applies."""
-    return cp_context is not None and getattr(cp_context, "group", None) is not None
+    return (
+        cp_context is not None and getattr(cp_context, "group", None) is not None
+    )  # config-access-exempt: fla CP contexts carry a process group only when built for a CP group
 
 
 def _first_slot(state_c: torch.Tensor, n: int) -> torch.Tensor:
@@ -621,7 +623,10 @@ def _a1_backward_feed(fl, q_norm, k_norm, v, beta_s, Akk, g_raw, A_log, dt_bias,
 
 
 def _roles(cp_context) -> dict:
-    return {k: getattr(cp_context, k, None) for k in ("is_first_rank", "is_last_rank", "pre_num_ranks", "post_num_ranks", "num_seqs")}
+    return {
+        k: getattr(cp_context, k, None)  # config-access-exempt: fla CP context fields are selected by role name
+        for k in ("is_first_rank", "is_last_rank", "pre_num_ranks", "post_num_ranks", "num_seqs")
+    }
 
 
 #: Record of this process's most recent CP exchange (diagnostics; not consumed by the op):

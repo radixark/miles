@@ -36,7 +36,9 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
         marked = []
         for chunk in model:
             for param in chunk.parameters():
-                group_name = getattr(param, "_lora_grad_sum_group", None)
+                group_name = getattr(
+                    param, "_lora_grad_sum_group", None
+                )  # config-access-exempt: _lora_grad_sum_group is optional backend-attached tensor metadata
                 if group_name is not None and param.requires_grad:
                     marked.append((param, group_name))
         _marked_lora_grad_params_cache[key] = marked
@@ -54,7 +56,9 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
         for param, g_name in marked:
             if g_name != group_name:
                 continue
-            grad = getattr(param, "main_grad", None)
+            grad = getattr(
+                param, "main_grad", None
+            )  # config-access-exempt: main_grad is optional backend-attached tensor metadata
             if grad is None:
                 grad = param.grad
             if grad is not None:
@@ -161,29 +165,18 @@ def create_lora_instance(args: Namespace, *, target_modules):
     from megatron.bridge.peft.canonical_lora import CanonicalLoRA
     from megatron.bridge.peft.lora import LoRA
 
-    lora_type_name = getattr(args, "lora_type", "lora").lower()
-
-    if lora_type_name == "canonical_lora":
-        lora_cls = CanonicalLoRA
-    else:
-        lora_cls = LoRA
-
-    lora_kwargs = dict(
+    lora_cls = CanonicalLoRA if args.lora_type == "canonical_lora" else LoRA
+    lora = lora_cls(
         target_modules=target_modules,
         dim=args.lora_rank,
         alpha=args.lora_alpha,
         dropout=args.lora_dropout,
         lora_A_init_method=args.lora_A_init_method,
-        lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
+        lora_B_init_method=args.lora_B_init_method,
+        # SGLang serves one adapter per expert, or shared-outer (PR #21466)
+        share_expert_adapters=False,
+        experts_shared_outer_loras=args.experts_shared_outer_loras,
     )
-    if "share_expert_adapters" in getattr(lora_cls, "__dataclass_fields__", {}):
-        lora_kwargs["share_expert_adapters"] = False
-    # shared-outer grouped-expert LoRA (SGLang PR #21466); per-expert is the default
-    if getattr(args, "experts_shared_outer_loras", False):
-        assert lora_cls is LoRA, "--experts-shared-outer-loras requires the standard LoRA adapter type"
-        lora_kwargs["experts_shared_outer_loras"] = True
-
-    lora = lora_cls(**lora_kwargs)
 
     logger.info(
         f"Created {lora_cls.__name__}: rank={args.lora_rank}, alpha={args.lora_alpha}, "
@@ -214,7 +207,7 @@ def save_lora_checkpoint(
         adapter_state = {name: param.detach().cpu() for name, param in _adapter_shard_params(model).items()}
         training_state = None
         if optimizer is not None:
-            save_optimizer = not getattr(args, "no_save_optim", False)
+            save_optimizer = not args.backend.no_save_optim
             training_state = {
                 "iteration": iteration,
                 "optimizer": optimizer.state_dict() if save_optimizer else None,
@@ -276,7 +269,7 @@ def restore_lora_adapter(
 
     if optimizer is None:
         return None
-    if args.no_load_optim:
+    if args.backend.no_load_optim:
         # the fp32 masters were built before the adapter load; without this the first step() reverts it
         optimizer.reload_model_params()
     else:

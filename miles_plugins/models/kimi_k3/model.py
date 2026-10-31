@@ -32,7 +32,7 @@ def configure_kimi_k3(config) -> None:
     config.use_te_activation_func = False
 
 
-def build_kimi_k3_spec(config, vp_stage=None):
+def build_kimi_k3_spec(config, vp_stage=None, kda_backend: str = "fla"):
     assert config.virtual_pipeline_model_parallel_size is None, "Kimi K3 does not support VPP yet"
 
     block_spec = get_gpt_decoder_block_spec(
@@ -47,8 +47,11 @@ def build_kimi_k3_spec(config, vp_stage=None):
         layer_spec = copy.deepcopy(layer_spec)
         layer_spec.module = KimiK3TransformerLayer
         layer_number = layer_offset + len(layer_specs) + 1
-        attention = KimiK3KDAAttention if layer_number in config.kimi_kda_layers else KimiK3Attention
-        layer_spec.submodules.self_attention = ModuleSpec(module=attention)
+        if layer_number in config.kimi_kda_layers:
+            attention = ModuleSpec(module=KimiK3KDAAttention, params={"kda_backend": kda_backend})
+        else:
+            attention = ModuleSpec(module=KimiK3Attention)
+        layer_spec.submodules.self_attention = attention
         layer_spec.submodules.input_layernorm = TENorm
         layer_spec.submodules.pre_mlp_layernorm = TENorm
 
@@ -63,6 +66,5 @@ def build_kimi_k3_spec(config, vp_stage=None):
 
 
 def get_kimi_k3_spec(args, config, vp_stage):
-    del args
     configure_kimi_k3(config)
-    return build_kimi_k3_spec(config, vp_stage=vp_stage)
+    return build_kimi_k3_spec(config, vp_stage=vp_stage, kda_backend=args.kda_backend)

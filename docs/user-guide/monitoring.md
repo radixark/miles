@@ -74,24 +74,20 @@ def my_log(rollout_id, args, samples, extra, rollout_time) -> bool:
 
 ### Built-in PyTorch profiler
 
-The PyTorch profiler is wired into Miles via `miles/utils/profile_utils.py`. Flags
-differ by backend:
-
-**Megatron** — choose which sub-loop to profile:
-
-```bash
---profile-target train_overall    # or train_actor, train_log_probs (multi-arg)
-```
-
-**FSDP** — additionally exposes the standard FSDPArgs window:
+The PyTorch profiler is wired into Miles via `miles/utils/profile_utils.py`. It reads Megatron's profiling flags on every backend (FSDP and torchtitan mirror them):
 
 ```bash
 --use-pytorch-profiler
---profile-step-start 10
---profile-step-end 12
---memory-snapshot-path snapshot.pickle
---tensorboard-dir /data/tb-run-42
+--profile-step-start 1 --profile-step-end 2   # trace steps start .. end-1 (rollout steps for train_overall)
+--profile-ranks 0 8                           # global ranks to trace; empty (the Miles images' default) traces every rank
+--tensorboard-dir /data/tb-run-42             # one gzipped trace per traced rank
+--pytorch-profiler-collect-callstack          # optional: Python call stacks (much larger traces)
+--pytorch-profiler-collect-shapes             # optional: tensor shapes
 ```
+
+`--profile-target train_overall` (the default) traces whole training steps on every backend. `train_actor` and `train_log_probs` trace the microbatch loop of each optimizer step, so their window counts microbatches and restarts at every step; the Megatron backend rejects them.
+
+`--record-memory-history` records a memory snapshot instead (CUDA with the default `--memory-recorder torch`, host memory with `memray`; it needs `train_overall` in `--profile-target`). It is written under `--memory-snapshot-dir` once rollout id `--memory-snapshot-num-steps` - 1 has trained, and the torch recorder also writes one on a CUDA OOM.
 
 Open the trace in `chrome://tracing` or [Perfetto](https://ui.perfetto.dev/).
 
@@ -102,7 +98,7 @@ Open the trace in `chrome://tracing` or [Perfetto](https://ui.perfetto.dev/).
 | Trainer stdout | wherever you redirected `ray job submit` (or Ray dashboard) |
 | Ray workers | `~/.ray/session_latest/logs/` |
 | wandb local cache | `wandb/run-<id>/files/` |
-| FSDP profiler / memory snapshot | `--tensorboard-dir`, `--memory-snapshot-path` |
+| Training profiler / memory snapshot | `--tensorboard-dir`, `--memory-snapshot-dir` |
 
 ## Router endpoints
 
@@ -110,6 +106,8 @@ The router exposes a small FastAPI surface used internally by Miles:
 
 | Endpoint | Method | What |
 |---|---|---|
-| `/add_worker` | POST | Register an SGLang engine |
-| `/list_workers` | GET | List registered workers |
+| `/workers` | POST | Register an SGLang engine (`{"url": ...}`), as on sgl-router |
+| `/workers` | GET | List registered workers with their ids |
+| `/workers/{id}` | DELETE | Unregister a worker |
+| `/add_worker`, `/remove_worker`, `/list_workers` | POST / POST / GET | The same, in sgl-router's pre-0.2.2 API |
 | any other path | GET / POST / PUT / DELETE | Proxied to a selected SGLang worker — e.g. `/generate`, `/v1/chat/completions`, `/health`. |

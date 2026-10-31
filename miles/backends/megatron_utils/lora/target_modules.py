@@ -54,7 +54,7 @@ def _resolve_adapter_targets(megatron_module, checkpoint_parameters, selected, *
         selected == checkpoint_parameters
     ), f"LoRA on fused module {megatron_module!r} requires all HF targets with this adapter"
     if canonical and ".experts." in megatron_module and megatron_module.endswith(".linear_fc1"):
-        # CanonicalLoRA requires split aliases even for fused expert adapters.
+        # canonical expert gate/up are independent even when HF packs gate_up_proj
         return [f"{megatron_module}_gate", f"{megatron_module}_up"]
     return [megatron_module]
 
@@ -104,9 +104,9 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
 
 def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, exclude_modules, explicit_targets=()):
     # Only legacy Megatron selectors need Bridge before trainer creation.
-    from megatron.bridge import AutoBridge
+    from miles.utils.megatron_bridge_utils import load_auto_bridge
 
-    bridge = AutoBridge.from_hf_pretrained(hf_checkpoint, trust_remote_code=True)
+    bridge = load_auto_bridge(hf_checkpoint)
     hf_mapping = HfWeightMapping.from_config(bridge.hf_pretrained.config)
     model_bridge = bridge._model_bridge
     model_bridge.hf_pretrained = bridge.hf_pretrained

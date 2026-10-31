@@ -11,7 +11,6 @@ from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_
 from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import resolve_checkpoint_spec
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, LoRAArchSpec
-from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import build_hf_namespace_predicate
 
@@ -64,6 +63,10 @@ def wrap_model_provider_with_lora(provider_func, args):
 def _resolve_attach_context(args, transformer_config, arch_spec: LoRAArchSpec) -> AttachContext:
     from megatron.core import parallel_state as ps
 
+    # megatron_to_hf pulls in sglang's quantization kernels, which probe the GPU at import time on ROCm.
+    # Keep it out of module scope so argument parsing can import this package on a GPU-less host.
+    from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
+
     tp_size = ps.get_tensor_model_parallel_world_size()
     naming = arch_spec.declared_naming or ConverterNaming(
         args,
@@ -94,7 +97,9 @@ def _attach_layer(layer: nn.Module, arch_spec: LoRAArchSpec, context: AttachCont
     # the MLP layout applies to a dense MLP or an MLP-shaped shared expert, not to the MoE block itself
     mlp = layer.mlp
     wrapped += arch_spec.mlp.attach(mlp, layer, context)
-    shared = getattr(mlp, "shared_experts", None)  # absent on dense layers and MoEs without shared experts
+    shared = getattr(
+        mlp, "shared_experts", None
+    )  # absent on dense layers and MoEs without shared experts  # config-access-exempt: dense and MoE MLP modules expose different shared_experts structures
     if shared is not None:
         wrapped += arch_spec.mlp.attach(shared, layer, context)
     if arch_spec.experts is not None:
@@ -104,7 +109,9 @@ def _attach_layer(layer: nn.Module, arch_spec: LoRAArchSpec, context: AttachCont
 
 def _require_grad_on_first_activation(model) -> nn.Module | None:
     """Make a frozen embedding output require grad in training so recomputation enters each block."""
-    embedding = getattr(model, "embedding", None)
+    embedding = getattr(
+        model, "embedding", None
+    )  # config-access-exempt: only pipeline stages containing embeddings expose this module
     if embedding is None:
         return None
 

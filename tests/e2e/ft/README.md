@@ -17,6 +17,8 @@
 | `scenario_rollout_deterministic` | `kill_rollout__dp4` |
 | `scenario_trainer_all_gather_fault` | `kill_train__dp2_tp2` |
 | `scenario_p2p_send_receiver_fault` | `kill_rollout__dp2_tp2` |
+| `scenario_inference_scaling` | `test_inference_scaling__kill_rollout.py`, no modes |
+| `scenario_trainer_scaling` | `test_trainer_scaling__kill_train.py`, no modes |
 | `scenario_random_crash` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer`, `kill_train_rollout__dp2_cp2`, `kill_rollout__dp4` |
 | `scenario_realistic_gsm8k` | `test_realistic_gsm8k__kill_train_rollout.py`, no modes |
 | `scenario_random_crash_fully_async` | `kill_train_rollout__dp2_cp2` |
@@ -42,6 +44,8 @@
 | `scenario_rollout_deterministic` | comparison | engine crashes change training bits not at all |
 | `scenario_trainer_all_gather_fault` | comparison | a trainer rank killed, stopped or deadlocked in the weight-update all-gather changes training bits not at all |
 | `scenario_p2p_send_receiver_fault` | comparison | an engine killed while the trainer is sending it weights over P2P changes training bits not at all |
+| `scenario_inference_scaling` | soak | the engine pool grows and shrinks under a live run, and the run follows it |
+| `scenario_trainer_scaling` | soak | the trainer pool gains and loses a DP cell under a live run, and the quorum follows it |
 | `scenario_random_crash` | soak | system survives random crashes without hanging |
 | `scenario_realistic_gsm8k` | soak | model still reaches gsm8k accuracy under random crashes |
 | `scenario_random_crash_fully_async` | soak | same, through `train_async.py --fully-async` |
@@ -73,6 +77,7 @@
 | `kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full` | 4 train + 2 rollout | 32 + 16 | 4 | CP2 TP2 PP2 EP2 ETP2 | 2 engines × 8 GPU | full MoE | `("train",)` | full model, all parallelism; multi-node, so no CI entry |
 
 - **Batch shape**: `--rollout-batch-size 32 --n-samples-per-prompt 8 --global-batch-size 256` everywhere — 256 samples per rollout, divisible by both 2 and 4 cells. `scenario_trainer_with_failure` x `kill_train__dp4_cp2__fake_rollout__moe_5layer` trains the fault rollout on the 3 surviving cells, so the uneven 256-over-3 split is exercised there.
+- **Microbatch token budget**: `kill_train__dp2_cp2__moe_5layer` uses `--max-tokens-per-gpu 8192` on both comparison sides to bound backward memory on 80 GiB H100s. Other modes use 32768. The rollout and global batch sizes remain 256 samples.
 - **Model**: 1-node modes use the 5-layer MoE `Qwen3-30B-A3B-5layer`, except the five dense modes.
 
 ## Running the code
@@ -168,7 +173,7 @@ hf upload --repo-type dataset fzyzcjy/miles-test-rollout-Qwen3-30B-A3B-5layer \
 - **Each fault action is its own form**: pod deletion is a quarter of a kubernetes trainer injection, not half of it.
 - **The actor class decides what a kill means**, since an injection carries only an action and a target: `TrainRayActor` and `ServeActor` crash their own process, the only thing that costs torchft a member, while `CommandActor` SIGKILLs the isolated process group rooted at the engine subprocess. That includes the launch shell and every engine child it spawned, so a dead cell cannot leave an orphaned scheduler holding GPU memory while its replacement starts; the Ray actor observes the subprocess exit and reports the death as production sees it.
 - **Why an engine never exits or segfaults**: exiting and segfaulting are what a process does to itself from the inside, and no signal reproduces them from outside — SIGTERM is a clean shutdown, SIGSEGV is delivered rather than provoked. An engine takes SIGKILL, plus SIGSTOP on kubernetes; the soak asks it for nothing else.
-- **How a kubernetes engine takes a kill**: its pod runs sglang as the entrypoint (`CommandWorkerSpec`), so no actor and no rpc server exist to receive a fault hook. The kill is delivered from outside instead, as a `kubectl exec` SIGKILL of the sglang processes in the engine container, and deleting the pod is the second, coarser form — the engine *is* the pod.
+- **How a kubernetes engine takes a kill**: its pod runs sglang as the entrypoint (`BaseCommandSpec`), so no actor and no rpc server exist to receive a fault hook. The kill is delivered from outside instead, as a `kubectl exec` SIGKILL of the sglang processes in the engine container, and deleting the pod is the second, coarser form — the engine *is* the pod.
 - **Deletion is the test layer's own**: the async Kubernetes client deletes the observed pod under UID and resource-version preconditions, timeout-bounded, and waits until that UID is absent. It models an outsider, and deliberately avoids the production heal path `KubernetesCellOperations.suspend`, whose bugs an injector sharing it would hide.
 
 ### `scenario_trainer_no_failure`
@@ -223,6 +228,9 @@ Fault injection: --ci-fault-hooks, JSON list of FaultHookRequest {request_id, ho
   rollout_id, attempt, weight_version, delay_ms}; the same requests can be set at runtime through the api server
   hook_name trainer_step_before_allreduce: inside the targeted actor rank, matched on rollout_id and attempt
   hook_name trainer_controller_step_end: trainer controller, actions stop_cell / start_cell via cell_operations
+  hook_name orchestrator_step_end, action restart_rollout_cell: restart the named rollout cell before the next
+    weight transaction; wait for a fresh Running worker generation and log original/replacement identities.
+    Requires rollout FT, synchronous single-policy training, update_weights_interval=1 and zero delay_ms.
   action exit_process / kill_process / stop_process / deadlock_thread: os._exit(1), SIGKILL, SIGSTOP or hang the reaching thread
 
 Healing witness: target phase_b event dir, exactly two CellReconfigureEvents
@@ -441,6 +449,60 @@ Assertions:
 - **What the timing witness proves**: the sender dispatched the declared hook during a transport write that failed; `FIRED` records dispatch, not the remote receiver's actual kill time.
 - **Calibration**: the 50 ms delay and the CI estimate have not been calibrated by a run.
 
+### `scenario_inference_scaling`
+
+```
+Type: soak (no baseline, no compare); kubernetes only, the pool is a LeaderWorkerSet there
+Entry: test_inference_scaling__kill_rollout.py, no mode: topology pinned in conftest_ft/scaling.py
+Steps: 12 rollouts (SCALING_NUM_ROLLOUTS)
+Layout: dense Qwen3-0.6B, 2 cells x CP2 on 4 train GPUs + 2 engines x 1 GPU, disaggregated,
+        --ft-components rollout, api server + mini ft controller; 7 GPUs at the peak
+
+Mechanism: run_cell_soak with one target kind, "pool": the observer lists the engine pool as a
+        PoolTarget (LeaderWorkerSet replicas read through kubectl + its rollout cells), and the
+        only form is ResizePoolForm (tests/utils/soak/ft/actions/resize.py), drawn every poll. Once
+        the run is in the scheduled rollout (2 -> 3 in rollout 2, 3 -> 2 in rollout 7) it
+        relaunches the run through the launcher with --rollout-num-gpus set for the new size,
+        which only creates or deletes engine pods; a rollout already trained fails the soak. The
+        resize counts as recovered once every engine cell is Serving and there are exactly
+        replicas of them; it must show in the run within LANDING_LAG_ROLLOUTS (3) rollouts.
+
+Assertions:
+  1. Soak: every resize returned and recovered, a normal step in the tail, final observation
+     alive and ready
+  2. Both resizes applied in order, the pool reading 2 -> 3 -> 2 replicas
+  3. train/grad_norm finite and nonzero for all 12 rollouts
+  4. Engines the weights of each rollout reached (InferenceEngineWeightChecksumEvent of the
+     update before it) follow 2 / 3 / 2, each landing within the lag window
+```
+
+- **Why through the launcher**: scaling is relaunching the run with a new size, as an operator does; the launcher admits a change of pool replicas as a scaling, and no other workload of the run is recreated.
+- **Why the engines of the update before a rollout**: the weights published after rollout r are what rollout r + 1 generates with, so that is the rollout an engine joining or leaving there shows in.
+
+### `scenario_trainer_scaling`
+
+```
+Type: soak (no baseline, no compare); kubernetes only, the pool is a LeaderWorkerSet there
+Entry: test_trainer_scaling__kill_train.py, no mode: topology pinned in conftest_ft/scaling.py
+Steps: 12 rollouts (SCALING_NUM_ROLLOUTS)
+Layout: as scenario_inference_scaling with --ft-components train (indep_dp); 8 GPUs at the peak
+
+Mechanism: as scenario_inference_scaling, relaunching with --actor-num-gpus-per-node set for the
+        new size (one 2-GPU pod = one cell): the trainer controller sees the pod through its
+        watch, and the next step's refresh heals the new cell into the quorum (checkpoint from
+        cell 0) or shrinks the quorum to the survivors. Recovered once every actor cell is Healthy
+        and there are exactly replicas of them.
+
+Assertions:
+  1. - 3. as scenario_inference_scaling
+  4. Cells in the one TrainGroupStepEndEvent of each rollout follow 2 / 3 / 2 within the lag
+     windows; every cell reports NORMAL, except that the cell a shrink removes may report
+     "error" inside the shrink's lag window
+```
+
+- **Why the removed cell may report "error"**: the trainer does not retry a step whose surviving cells all report NORMAL after one cell failed (the gradients were already exchanged), so a shrink landing late in a step leaves that step's final attempt with the removed cell as "error".
+- **Why only above the deployed size**: the controller waits for its deployed cell count at init and on reload, so a pool scaled below it would hang a later restart of the run.
+
 ### `scenario_random_crash`
 
 ```
@@ -515,7 +577,7 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 - **Evidence**: typed events in `<dump_dir>-soak/<session_id>/events.jsonl`, requests flushed before dispatch; after teardown the training-event logs, discarded generations included, are copied under `sources/` with SHA-256 digests, and the checks read those copies.
 - **Code**: the soak engine lives in `tests/utils/soak/core/`, the FT forms, observers and checkers in `tests/utils/soak/ft/`.
 - **Random transfer coverage**: every real-rollout random soak uses P2P weight transfer; fake-rollout modes keep trainer-only coverage and never exercise weight transfer.
-- **Checksum observation**: the harness requests an event directory with `--save-debug-event-data`, which turns `--log-inference-engine-weight-checksums` on by default, so in real-rollout modes each published weight version records per-tensor engine checksums bound to its version, update and engine incarnation, collected under a five-second timeout; a missed observation loses evidence and fails the test, not training. Small observation overhead is accepted; production recovery and ordering remain unchanged.
+- **Checksum observation**: the harness requests an event directory with `--save-debug-event-data` and runs the event analyzer (`--enable-event-analyzer`, also implied by train fault tolerance), which turns `--log-inference-engine-weight-checksums` on, so in real-rollout modes each published weight version records per-tensor engine checksums bound to its version, update and engine incarnation, collected under a five-second timeout; a missed observation loses evidence and fails the test, not training. Small observation overhead is accepted; production recovery and ordering remain unchanged.
 - **Checksum witness**: the analyzer rule `inference_engine_weight_checksum_coverage` requires every settled published weight update to carry exactly one checksum record covering the engine incarnations it updated, and `inference_engine_weight_checksum_consistency` requires same-version engines to agree; both run before every training step, so a run's last publication is the one publication no rule sees.
 - **Movement**: the analyzer rule `inference_engine_weight_movement` fails the analysis when the tensor set changes between adjacent settled versions, and only logs a warning when a tensor keeps its checksum (a bf16 tensor such as a norm weight can stay unchanged for thousands of steps at a small learning rate) within one trainer load state of a model, with an unchanged tensor set; LoRA and update intervals other than one disable it, read from the trainer ranks' environment reports, but never same-version consistency.
 - **Fault triggers**: `--fault-triggers` picks which triggers the scheduler draws from. `timer` is the wall-clock scheduler: an exponential interval elapses and the drawn form fires at once. `hook` binds the drawn form to a named trainer fault hook (`trainer_weight_update_before_all_gather`, `trainer_weight_update_before_send`) with a delay drawn uniformly from 0 to 1000 ms (the deadlock stays immediate), so the fault lands inside a weight update; the deadlock is drawn only at `trainer_weight_update_before_all_gather`, because the send hook runs on a per-engine writer thread whose hang fails that engine's update and replaces the engine, leaving the trainer the form targets healthy; the random_crash and gsm8k soaks turn the all-gather forms off (`weight_update_all_gathers=False`), because the hook is reached only when a weight update all-gathers (TP, EP or ETP above 1) and every real-rollout topology they run is CP-only; it adds `--update-weights-timeout 600`. Both together mix the two through one scheduler, and both are on by default; every enabled form must produce an effect. Fake-rollout modes never run a weight update, so no trainer fault hook is ever reached there, and rollout-only modes expose no trainer cell to carry a hook: the default drops `hook` for both and asking for it explicitly is refused. A random_crash mode with more trainer cells than engines is refused with `hook`, since a trainer cell that sends to no engine never reaches a weight-update hook; run it with `--fault-triggers timer`. A scheduled cell kind left with no form by the chosen triggers (rollout cells under `--fault-triggers hook` on kubernetes, whose pod forms are timer-only) is refused when the soak is built, before training launches.
@@ -555,6 +617,9 @@ Fault recovery must not cost end-to-end learning, which the comparison scenarios
 - **Why the threshold does not move**: it is the entire value of this scenario, so engine crashes are paid for with a lower rollout crash rate, never with a lower bar.
 
 ### `scenario_random_crash_fully_async` and `scenario_realistic_gsm8k_fully_async`
+
+- **Random-crash Ray final evaluation**: the fully-async soak uses the normal `train_async.py` entry and evaluates the prepared GSM8K test split after the final weight update, with no pre-training eval, one sample per prompt and a 200-token response limit. Normal eval preparation resumes rollout health checks; the original final-state and fault-coverage assertions remain unchanged.
+- **Random-crash Ray probe grace**: the fully-async eager soak sets `--trainer-heartbeat-checker-first-wait 0`; a 300-second wait after each recovery otherwise consumes its 60-rollout injection window before every enabled fault form can run. Health probes, quiescence, recovery witnesses and coverage assertions remain mandatory.
 
 ```
 Type: shells - each calls its sync twin with fully_async=True and pins nothing else

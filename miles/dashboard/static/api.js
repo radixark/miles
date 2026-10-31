@@ -43,3 +43,8 @@ export async function getMeta() {
   if (metaCache === null) metaCache = await api("/api/meta");
   return metaCache;
 }
+
+export async function refreshMeta() {
+  metaCache = await api("/api/meta");
+  return metaCache;
+}

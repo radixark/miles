@@ -24,6 +24,7 @@ from miles.backends.training_utils.weight_update.protocols.utils.data_replica im
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.utils import async_utils
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -45,7 +46,9 @@ _SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
     torch.bool: "BOOL",
     torch.complex64: "C64",
     **{
-        getattr(torch, torch_dtype_name): safetensors_dtype
+        getattr(
+            torch, torch_dtype_name
+        ): safetensors_dtype  # config-access-exempt: attribute selected at runtime from torch_dtype_name
         for torch_dtype_name, safetensors_dtype in (
             ("float8_e4m3fn", "F8_E4M3"),
             ("float8_e4m3fnuz", "F8_E4M3FNUZ"),
@@ -55,7 +58,9 @@ _SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
             ("uint32", "U32"),
             ("uint16", "U16"),
         )
-        if hasattr(torch, torch_dtype_name)
+        if hasattr(
+            torch, torch_dtype_name
+        )  # config-access-exempt: attribute selected at runtime from torch_dtype_name
     },
 }
 
@@ -120,11 +125,10 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self.is_sender = replica_rank == 0
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
-        # The first call only captures the baseline snapshot the next sync diffs against.
+        # Capture the HF baseline before the first publication.
         if not self._baseline_captured:
             self._capture_baseline(iter_buckets)
             self._baseline_captured = True
-            return False
         self._snapshot_file_version += 1
         self._begin_encode()
         return True
@@ -165,15 +169,16 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         base from — so the invariant ``snapshot == engine base`` holds even where the megatron->HF
         round-trip trims vocab-padding rows (embed/lm_head). Every emitted tensor must have the same
         layout as that canonical checkpoint because deltas operate on raw bytes. pull_weights(0)
-        makes each host materialize its local base now, overlapped with the snapshot gather, so the
-        first real sync only pays the delta apply."""
+        makes each host materialize its local base now, overlapped with the snapshot gather.
+        The same sync then publishes the loaded trainer weights and reloads the engines."""
         # a prior run's versions would apply against the wrong base; start the dir clean
         pulls = []
         if dist.get_rank() == 0:
             shutil.rmtree(self.delta_dir, ignore_errors=True)
             os.makedirs(self.delta_dir, exist_ok=True)
             if self._post_write_hook is not None:
-                self._post_write_hook(self.args, self.delta_dir, list(self.rollout_engines))
+                fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
+                self._post_write_hook(fn_args, self.delta_dir, list(self.rollout_engines))
             pulls = [
                 async_utils.submit(
                     client.pull_weights(
@@ -237,26 +242,6 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
         if dist.get_rank() == 0:
             check_weight_sync_results(async_utils.wait_futures(pulls), is_lora=False)
-            if self.args.check_weight_update_equal:
-                # The weights checker resets engine tensors at startup and compares after the
-                # first sync, expecting it to rewrite every tensor. The baseline publishes
-                # nothing, so reload the just-pulled base checkpoint to restore engine state
-                # (and set the engine weight version the CI equality check expects).
-                results = async_utils.wait_futures(
-                    [
-                        async_utils.submit(
-                            client.update_weights_from_disk(
-                                model_path=self.args.update_weight_local_checkpoint_dir,
-                                weight_version="0",
-                            )
-                        )
-                        for client in self.rollout_engines
-                    ]
-                )
-                check_weight_sync_results(results, is_lora=False)
-            else:
-                # TODO: temporarily weaken checkers; should enhance and fix related logics
-                _update_weight_version_if_unset(self.rollout_engines, "0")
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
                 len(self._snapshot),
@@ -384,7 +369,8 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         (checksum-verified), then reload the engines. The pull is disk-only, so it runs before
         pause and overlaps generation."""
         if self._post_write_hook is not None:
-            self._post_write_hook(self.args, self._version_dir, list(self.rollout_engines))
+            fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
+            self._post_write_hook(fn_args, self._version_dir, list(self.rollout_engines))
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
             pulls = async_utils.wait_futures(
@@ -453,23 +439,3 @@ def _atomic_write(path: str, data: bytes) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
-
-
-_UNSET_WEIGHT_VERSION = "default"
-
-
-def _update_weight_version_if_unset(rollout_engines: Sequence[SGLangApiClient], weight_version: str) -> None:
-    reported = async_utils.wait_futures(
-        [async_utils.submit(client.get_weight_version()) for client in rollout_engines]
-    )
-    unset = [
-        client
-        for client, version in zip(rollout_engines, reported, strict=True)
-        if version in (None, _UNSET_WEIGHT_VERSION)
-    ]
-    async_utils.wait_futures(
-        [
-            async_utils.submit(client.update_weight_version(weight_version=weight_version, abort_all_requests=False))
-            for client in unset
-        ]
-    )

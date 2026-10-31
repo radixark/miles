@@ -62,12 +62,14 @@ class TestConnect:
     def _make_protocol() -> UpdateWeightFromTensor:
         protocol = UpdateWeightFromTensor.__new__(UpdateWeightFromTensor)
         protocol.args = Namespace(
+            train_backend="megatron",
             rollout_num_gpus_per_engine=2,
             actor_num_nodes=1,
             actor_num_gpus_per_node=8,
             check_weight_update_equal=False,
             colocate=True,
             offload_rollout=True,
+            lora_sync_sends_base=True,
         )
         protocol.rollout_engines = None
         protocol._model_update_groups = None
@@ -91,6 +93,7 @@ class TestConnect:
             patch(f"{_TENSOR_MODULE}.disconnect_rollout_engines_from_distributed") as disconnect,
         ):
             dist_mock.get_rank.return_value = rank
+            dist_mock.get_world_size.return_value = 8
             protocol.connect(
                 engines,
                 engine_gpu_counts=_ENGINE_GPU_COUNTS,
@@ -121,7 +124,7 @@ class TestConnect:
         assert protocol.use_distribute is True
         assert protocol.rollout_engines == engines[:3]
         assert protocol.distributed_rollout_engines == engines[3:]
-        connect.assert_called_once_with(protocol.args, "miles", engines[3:], engine_gpu_counts=[2])
+        connect.assert_called_once_with("miles", engines[3:], engine_gpu_counts=[2])
         disconnect.assert_not_called()
         assert protocol._model_update_groups is connect.return_value
         assert protocol._ipc_engine is engines[expected_engine_index]
@@ -336,3 +339,17 @@ class TestIpcBucketRingStage:
             view = ring.stage(torch.arange(5, dtype=torch.uint8))
         assert isinstance(view, torch.Tensor) and view.numel() == 5 and view.tolist() == [0, 1, 2, 3, 4]
         assert ring._slots[(torch.uint8, torch.device("cpu"))][0].shared is None
+
+
+class TestObservedWorldSize:
+    def test_colocation_uses_the_live_world_instead_of_declared_actor_capacity(self) -> None:
+        """A smaller live trainer world sends engines outside that world through distributed transfer."""
+        protocol = TestConnect._make_protocol()
+        protocol.args.actor_num_gpus_per_node = 32
+        engines = [MagicMock(name=f"engine{i}") for i in range(4)]
+
+        _, connect, _ = TestConnect._connect(protocol, engines, rank=0, tp_rank=0)
+
+        assert protocol.rollout_engines == engines[:3]
+        assert protocol.distributed_rollout_engines == engines[3:]
+        connect.assert_called_once_with("miles", engines[3:], engine_gpu_counts=[2])

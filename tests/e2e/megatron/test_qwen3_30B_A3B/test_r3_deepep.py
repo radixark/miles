@@ -19,6 +19,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     use_deepep=True,
@@ -26,6 +27,7 @@ CASE = CaseConfig(
     use_int4_rollout=False,
     use_bridge=False,
     use_r3=True,
+    use_output_store=True,
     num_gpus_per_node=4,
     cp_size=2,
     pp_size=1,

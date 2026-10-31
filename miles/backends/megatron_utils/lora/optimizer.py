@@ -2,9 +2,8 @@
 
 Each live slot owns an independent LayerWiseDistributedOptimizer over exactly
 its adapter parameters, built at load and destroyed with the slot, so a fresh
-tenant never inherits optimizer state. Requires plain DDP all-reduce
-(use_distributed_optimizer OFF) so cross-batch gradient retention stays
-idempotent."""
+tenant never inherits optimizer state. Plain DDP all-reduce keeps full gradients
+available to each slot's optimizer."""
 
 import logging
 import math
@@ -25,19 +24,26 @@ logger = logging.getLogger(__name__)
 
 def validate_multi_lora_optimizer_args(args: Namespace) -> None:
     """Reject launch options the per-slot optimizers cannot honor."""
-    assert not args.use_distributed_optimizer, (
+    assert not args.backend.use_distributed_optimizer, (
         "multi-LoRA per-slot optimizers require use_distributed_optimizer=False: "
-        "gradient retention relies on all-reduce idempotency, and LayerWise "
-        "sharding replaces byte-level ZeRO"
+        "LayerWise sharding requires full parameter gradients instead of byte-level ZeRO shards"
     )
-    assert args.bf16 and not args.fp16, "multi-LoRA per-slot optimizers require bf16 (no dynamic loss scaler)"
     assert (
-        args.optimizer or ""
+        args.backend.bf16 and not args.backend.fp16
+    ), "multi-LoRA per-slot optimizers require bf16 (no dynamic loss scaler)"
+    assert (
+        args.backend.optimizer or ""
     ).lower() == "adam", (
-        f"multi-LoRA per-slot optimizers only implement Adam semantics; got optimizer={args.optimizer!r}"
+        f"multi-LoRA per-slot optimizers only implement Adam semantics; got optimizer={args.backend.optimizer!r}"
     )
-    for flag in ("optimizer_cpu_offload", "stream_optimizer_state_to_disk", "rematerialize_param_from_master_weight"):
-        assert not getattr(args, flag, False), f"--{flag.replace('_', '-')} is not supported with multi-LoRA slots"
+    for config, flag in (
+        (args.backend, "optimizer_cpu_offload"),
+        (args, "stream_optimizer_state_to_disk"),
+        (args, "rematerialize_param_from_master_weight"),
+    ):
+        assert not getattr(
+            config, flag, False
+        ), f"--{flag.replace('_', '-')} is not supported with multi-LoRA slots"  # config-access-exempt: attribute selected at runtime from flag
 
 
 def adapter_slot_parameters(model, slot: int) -> list[torch.nn.Parameter]:
@@ -93,7 +99,8 @@ def _build_slot_base_optimizers(config, model, slot_params, *, use_gloo_process_
     optimizers = [
         child.optimizer
         for child in chained.chained_optimizers
-        if getattr(child, "optimizer", None) is not None and child.get_parameters()
+        if getattr(child, "optimizer", None) is not None
+        and child.get_parameters()  # config-access-exempt: optimizer wrappers differ in optimizer support
     ]
     config.bf16 = True
     return optimizers
@@ -113,11 +120,13 @@ class SlotOptimizer:
         assert slot_params, f"adapter slot {slot} has no parameters; is this a multi-LoRA model?"
 
         config = OptimizerConfig(
-            **{f.name: getattr(args, f.name) for f in fields(OptimizerConfig) if hasattr(args, f.name)}
+            **{
+                f.name: getattr(args.backend, f.name) for f in fields(OptimizerConfig) if hasattr(args.backend, f.name)
+            }  # config-access-exempt: attribute selected at runtime from f.name
         )
         config.timers = None
         base_optimizers = _build_slot_base_optimizers(
-            config, model, slot_params, use_gloo_process_groups=args.use_gloo_process_groups
+            config, model, slot_params, use_gloo_process_groups=args.backend.use_gloo_process_groups
         )
         assert base_optimizers, f"adapter slot {slot} produced no optimizer children"
         self._inner = LayerWiseDistributedOptimizer(
@@ -179,21 +188,33 @@ class SlotOptimizer:
         """Zero the slot's gradients everywhere they live: the DDP ``main_grad``
         buffer views and any lingering ``grad``/``main_param.grad`` references."""
         for param in adapter_slot_parameters(self._model, self.slot):
-            if (main_grad := getattr(param, "main_grad", None)) is not None:
+            if (
+                main_grad := getattr(param, "main_grad", None)
+            ) is not None:  # config-access-exempt: main_grad is optional backend-attached tensor metadata
                 main_grad.zero_()
             param.grad = None
-            if (main_param := getattr(param, "main_param", None)) is not None:
+            if (
+                main_param := getattr(param, "main_param", None)
+            ) is not None:  # config-access-exempt: main_param is optional backend-attached tensor metadata
                 main_param.grad = None
 
 
-def reset_grad_metadata_keep_grads(model_chunks) -> None:
-    """Reset DDP bookkeeping while retaining each slot's gradient accumulation window."""
-    for model_chunk in model_chunks:
-        if getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine":
-            for param in model_chunk.params_with_grad:
-                param.grad_added_to_main_grad = False
-        for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
-            bucket_group.reset()
+@contextmanager
+def accumulate_gradients(model_chunks):
+    # Synchronizing retained expert gradients would scale earlier requests again.
+    buffers = [buffer for chunk in model_chunks for buffer in chunk.buffers + chunk.expert_parallel_buffers]
+    accumulated = [buffer.grad_data.clone() for buffer in buffers]
+    for chunk in model_chunks:
+        chunk.zero_grad_buffer()
+    try:
+        yield
+    except BaseException:
+        for buffer, previous in zip(buffers, accumulated, strict=True):
+            buffer.grad_data.copy_(previous)
+        raise
+    else:
+        for buffer, previous in zip(buffers, accumulated, strict=True):
+            buffer.grad_data.add_(previous)
 
 
 def step_slot_optimizers(

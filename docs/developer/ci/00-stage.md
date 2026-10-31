@@ -23,8 +23,8 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-b-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 2 | both resolvers, `stage-a-cpu` |
 | `stage-c-2-gpu-h200` | 2× H200 | `["h200","2gpu"]` | 4 | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 9 | both resolvers, `stage-a-cpu` |
-| `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 1 regular / 2 otherwise | both resolvers, `stage-a-cpu` |
-| `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 4 | both resolvers, `stage-a-cpu` |
+| `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 2 regular / 3 otherwise | both resolvers, `stage-a-cpu` |
+| `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 4 regular / 5 otherwise | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-b200` | B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-b200` | same B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | same plan, no 8-GPU stage barrier |
 | `stage-c-4-gpu-mi350` | 4× MI350 | `["self-hosted","amd","mi350","4gpu"]` | 2 | both resolvers |
@@ -105,7 +105,7 @@ Shard sizing and concurrency policy live in [CI Maintenance](../../../.claude/ru
 
 `pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi350` through `_run-ci-rocm.yml` on two 4-GPU MI350 runners and splits tests into two `est_time`-balanced shards. It runs no CPU tests.
 
-Reusable calls can select a Miles `ref` and cadence, but resolve the same undated `rocm/sgl-dev:miles-rocm724-mi35x` image as the other automatic paths. SGLang and Megatron-LM remain baked into that image. The release branch-cut workflow does not call ROCm CI or include it in the `release-ci` gate.
+Reusable calls can select a Miles `ref` and cadence, but resolve the same undated `rocm/sgl-dev:miles-rocm10-mi35x` image as the other automatic paths. SGLang and Megatron-LM remain baked into that image. The release branch-cut workflow does not call ROCm CI or include it in the `release-ci` gate.
 
 Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi350", ...)` run; the `nightly-` prefixed suites and CUDA registrations are not inherited. PR, nightly, weekly, and release runs consume the shared cadence and label policy: `run-ci-amd` selects the `amd`-labelled subset, other `run-ci-*` labels select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly or release selects every enabled registration.
 

@@ -14,6 +14,7 @@ from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_serve
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils import async_utils
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState
 from miles.utils.audit_utils.checksum_utils import ChecksumCollectionFailure
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.context_lock import (
@@ -79,7 +80,7 @@ class InferenceController:
             engine_provider=self._engine_provider,
             router_addrs=router_addrs,
         )
-        if self.args.eval_num_gpus > 0:
+        if "eval" in self.servers:
             self._eval_fleet = InferenceControllerEvalFleet(self.args, srv=self.servers["eval"])
 
         self._watcher_disposers.append(await self._engine_provider.watch_cells(self._reconcile))
@@ -210,12 +211,22 @@ class InferenceController:
     # -------------------------- engine management -----------------------------
 
     @acquires_lock
-    async def start_update_weights(self, model_id: str | None = None) -> "UpdatableEngines":
+    async def start_update_weights(
+        self, model_id: str | None = None, receiver_pool: str = "rollout"
+    ) -> "UpdatableEngines":
         """Return engines eligible for weight updates."""
+        if receiver_pool not in {"rollout", "eval"}:
+            raise ValueError(f"Unknown receiver pool: {receiver_pool!r}")
+        if receiver_pool == "eval":
+            if self._eval_fleet is None:
+                raise ValueError("This run has no dedicated eval pool")
+            if model_id is not None:
+                raise ValueError("Dedicated eval synchronization does not select a training model")
+            model_id = "eval"
         await self._health_monitoring_pause(model_id)
         await self._ensure_cells_ready(model_id=model_id)
 
-        srv = self._get_updatable_server(model_id=model_id)
+        srv = self._get_updatable_server(model_id=model_id, receiver_pool=receiver_pool)
         if not srv:
             return UpdatableEngines(
                 rollout_engines=[],
@@ -223,6 +234,7 @@ class InferenceController:
                 engine_gpu_offsets=[],
                 engine_cell_ids=[],
                 snapshot_cell_id_to_hashes={},
+                receiver_pool=receiver_pool,
             )
 
         return UpdatableEngines(
@@ -233,11 +245,12 @@ class InferenceController:
             snapshot_cell_id_to_hashes={
                 cell_id: cell.meta.workers_hash for cell_id, cell in srv.normal_server_cells.items()
             },
+            receiver_pool=receiver_pool,
         )
 
-    @releases_lock
+    @lock_exempt
     async def abort_update_weights(self) -> None:
-        pass
+        self.context_lock.release_if_detached()
 
     @releases_lock
     async def end_update_weights(
@@ -314,10 +327,15 @@ class InferenceController:
         return [srv]
 
     @requires_lock
-    def _get_updatable_server(self, model_id: str | None = None) -> RolloutServer | None:
+    def _get_updatable_server(
+        self, model_id: str | None = None, receiver_pool: str = "rollout"
+    ) -> RolloutServer | None:
         if model_id is not None:
             [srv] = self._get_servers_of_model_id(model_id)
-            assert srv.update_weights, f"Server for model_id {model_id!r} is frozen (update_weights=False)"
+            # Explicit eval selection is admitted above; ordinary updates keep eval frozen.
+            assert (
+                srv.update_weights or receiver_pool == "eval"
+            ), f"Server for model_id {model_id!r} is frozen (update_weights=False)"
             return srv
 
         updatable = [srv for srv in self.servers.values() if srv.update_weights]
@@ -336,7 +354,7 @@ class InferenceController:
 
     @lock_exempt
     async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
-        return self._eval_fleet.info if self._eval_fleet is not None else None
+        return await self._eval_fleet.info() if self._eval_fleet is not None else None
 
     @lock_exempt
     async def pin_eval_fleet(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
@@ -345,7 +363,26 @@ class InferenceController:
         ), "this run deploys no eval fleet, so nothing asked this controller to pin one"
         return await self._eval_fleet.pin(checkpoint_dir=checkpoint_dir, weight_version=weight_version)
 
+    @lock_exempt
+    async def check_eval_fleet_version(self, weight_version: str) -> EvalFleetPin:
+        """Check the already-synchronized eval pool without loading a checkpoint."""
+        if self._eval_fleet is None:
+            raise ValueError("This run has no dedicated eval fleet")
+        return await self._eval_fleet.check_version(weight_version)
+
     # -------------------------- misc APIs -----------------------------
+
+    @with_lock
+    async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+        engine_gpu_counts = [
+            count for name, srv in self.servers.items() if name != "eval" for count in srv.engine_gpu_counts
+        ]
+        eval_srv = self.servers.get("eval")
+        return InferenceRuntimeImmutState(
+            engine_count=len(engine_gpu_counts),
+            gpu_count=sum(engine_gpu_counts),
+            eval_engine_count=len(eval_srv.engine_gpu_counts) if eval_srv is not None else 0,
+        )
 
     @lock_exempt
     async def get_cell_statuses(self) -> dict[str, CellStatus]:
@@ -436,6 +473,7 @@ class UpdatableEngines:
     engine_gpu_offsets: list[int]
     engine_cell_ids: list[str]
     snapshot_cell_id_to_hashes: dict[str, str]
+    receiver_pool: str = "rollout"
 
     def __post_init__(self) -> None:
         num_engines = len(self.rollout_engines)
@@ -458,6 +496,7 @@ class UpdatableEngines:
             engine_gpu_offsets=self.engine_gpu_offsets[s],
             engine_cell_ids=cell_ids,
             snapshot_cell_id_to_hashes={c: self.snapshot_cell_id_to_hashes[c] for c in cell_ids},
+            receiver_pool=self.receiver_pool,
         )
 
 

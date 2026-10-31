@@ -3,11 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
-from miles.utils.env_report.redaction import redact_argv, redact_env_vars
+from miles.utils.env_report.redaction import redact_argv, redact_config_values, redact_env_vars
+from miles.utils.external_utils.command_utils.common import ArgvManipulator
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.file_utils import atomic_write_text
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.argv_utils import ORCHESTRATOR_CONFIG_FLAG
+from miles.utils.workers.serving.utils import parse_orchestrator_argv
 
 
 class LaunchRecord(FrozenStrictBaseModel):
@@ -32,7 +35,7 @@ class LaunchRecord(FrozenStrictBaseModel):
             values_file=str(values_file),
             restart_at=plan.restart_at,
             worker_argv=redact_argv(plan.worker_argv),
-            orchestrator_command=redact_argv(plan.orchestrator_command),
+            orchestrator_command=_redact_orchestrator_command(plan.orchestrator_command),
             env=redact_env_vars(plan.env),
             reachable_at=reachable_at,
         )
@@ -49,3 +52,12 @@ def installed_launch_record_file(*, manifest: Manifest) -> str | None:
                 if entry.name == LAUNCHER_REPORT_ENV_VAR:
                     return entry.value
     return None
+
+
+def _redact_orchestrator_command(command: list[str]) -> list[str]:
+    if not command:
+        return command
+
+    payload = parse_orchestrator_argv(command)
+    redacted_payload = payload.model_copy(update={"args": redact_config_values(payload.args)})
+    return ArgvManipulator.set(command, ORCHESTRATOR_CONFIG_FLAG, redacted_payload.model_dump_json())

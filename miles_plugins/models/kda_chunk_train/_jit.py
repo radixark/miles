@@ -1264,7 +1264,9 @@ class NativeKernel:
         record = MODULES[stage][self.arch]
         self.record = record
         native = load(stage, self.arch)
-        self._call = getattr(native, record["ffi_entry"])
+        self._call = getattr(
+            native, record["ffi_entry"]
+        )  # config-access-exempt: the build record names the native module's FFI entry point
         self._arg_plan = tuple(tuple(item) for item in record["arg_plan"])
         self._binding_names = frozenset(name for kind, name in self._arg_plan if _is_binding(kind))
         self._segments = _plan_segments(stage, self._arg_plan)

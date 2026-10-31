@@ -44,6 +44,8 @@ def define_step_key_metric_group(prefix: str, step_key: str) -> None:
 
 
 def log(args, metrics, step_key: str):
+    """Log one row whose only axis is ``step_key``. Backends other than wandb treat every other key as a metric
+    plotted against it, so an extra axis key such as ``rollout/step`` on a train row becomes its own series there."""
     step = metrics.get(step_key)
     _manager.log(metrics, step=step, step_key=step_key)
 

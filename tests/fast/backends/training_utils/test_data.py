@@ -26,10 +26,9 @@ def _parallel_state(*, dp_size: int) -> ParallelState:
 def _static_args() -> Namespace:
     return Namespace(
         qkv_format="thd",
-        global_batch_size=256,
         use_dynamic_global_batch_size=False,
         use_dynamic_batch_size=False,
-        micro_batch_size=8,
+        backend=Namespace(global_batch_size=256, micro_batch_size=8),
     )
 
 
@@ -37,6 +36,7 @@ def _scheduled_args() -> Namespace:
     return Namespace(
         qkv_format="thd",
         global_batch_size=256,
+        backend=Namespace(global_batch_size=256),
         use_dynamic_global_batch_size=False,
         use_dynamic_batch_size=True,
         max_tokens_per_gpu=64,
@@ -159,13 +159,14 @@ class TestGetRolloutDataParallelWiring:
             dp_rank: int,
             train_parallel_config: TrainParallelConfig,
             witness_info: object,
+            output_store_read: object,
         ) -> tuple[dict[str, list[list[int]]], object]:
             seen.append((dp_rank, train_parallel_config, witness_info))
             return {"tokens": [[1]], "loss_masks": [[1]]}, store_result
 
         monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
         monkeypatch.setattr(data_utils, "process_rollout_data", process)
-        monkeypatch.setattr(data_utils.torch.cuda, "current_device", lambda: "cpu")
+        monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: data_utils.torch.device("cpu"))
         args = Namespace(enable_witness=False, qkv_format="thd")
 
         rollout, result = data_utils.get_rollout_data(

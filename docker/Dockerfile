@@ -23,7 +23,7 @@ ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
 ARG TORCHTITAN_REPO=pytorch/torchtitan
-ARG TORCHTITAN_COMMIT=086bf6c166ec85c1298eb5596fa9bf95f6a2d840
+ARG TORCHTITAN_COMMIT=45e33cd413b64cb37a7840cfd3c9765d3c639ae1
 
 ARG WHEELS_REPO=radixark/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
@@ -182,20 +182,21 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3
 
 # torch_memory_saver's source build needs TMS_CUDA_MAJOR; take it from torch.
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
-    pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@b5588e83de86412a48689a6583a4b567e75f7acc --no-cache-dir --force-reinstall
+    pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@118b09b3bc7b0cf386745db1eac2601d4aa7e681 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@8cd3466d14d2337c8492827b3712482c2b3e4866 --no-deps --no-build-isolation
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@f590252e37cd26f3516b04a911d2ac735889a21f --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
-# torchtitan backend: pinned to the v0.3.0 release commit because torchtitan tracks
+# torchtitan backend: pinned to the v0.4.0 release commit because torchtitan tracks
 # torch nightly and its model/adapter layouts move; --no-deps keeps its torch and
 # datasets pins from touching the versions sglang links against. Its own python
-# deps are pinned explicitly (spmd_types is a hard import in parallel_dims).
+# deps are pinned explicitly to the versions its requirements.txt names.
 RUN git clone https://github.com/${TORCHTITAN_REPO}.git torchtitan && \
     cd torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
     pip install --no-deps -e .
-RUN pip install "spmd_types==0.2.3" "tyro>=1.0.5" && pip install --no-deps "torchdata>=0.8.0"
+RUN pip install "spmd_types==0.3.1" "torch_remat==0.2.2" "torch_checkpointing==0.1.1" "grain==0.2.18" && \
+    pip install --no-deps "attn-gym==0.0.17"
 
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
@@ -216,6 +217,9 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 # The base image ships the Rust extension modules prebuilt (SGLANG_RUST_BUILD_MODE=never);
 # re-installing must not rebuild them, which needs the torch link path only the upstream
 # build stage has.
+# radix_transfer_plugins, the output store package SGLang imports, sits beside python/ in the
+# same checkout; editable installs keep both at that checkout's commit. The build host has no
+# libcuda.so.1, which mooncake.store loads, so the check imports all of it but the Mooncake backend.
 RUN cd /sgl-workspace/sglang && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
@@ -223,7 +227,9 @@ RUN cd /sgl-workspace/sglang && \
     else \
       git checkout -f FETCH_HEAD; \
     fi && \
-    SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps
+    SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps && \
+    pip install -e radix_transfer_plugins --no-deps && \
+    python3 -c "import radix_transfer_plugins.stashes.token_output"
 
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh

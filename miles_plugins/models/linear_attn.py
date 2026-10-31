@@ -51,6 +51,7 @@ WEIGHT_LAYOUT_VERSION = 1
 INT32_ELEMENTS = 2**31 - 1
 _CHUNK_ELEMENTS = 2**30
 _CHANNEL_ALIGN = 128
+_ROW_STRIDE_ALIGN = 8
 
 
 def gdn_kernel(backend: str):
@@ -150,7 +151,9 @@ def kda_recurrence(
     """
     boundaries = {"cp_context": cp_context} if cp_context is not None else {"cu_seqlens": cu_seqlens}
     kernel = kda_kernel(backend)
-    if getattr(kernel, "takes_beta_logits", False):
+    if getattr(
+        kernel, "takes_beta_logits", False
+    ):  # config-access-exempt: only the Cake-forward deterministic drop-in carries takes_beta_logits
         # the Cake forward applies the sigmoid inside its first stage; dbeta then comes back w.r.t. the logits
         beta = {"beta": beta_logits, "use_beta_sigmoid_in_kernel": True}
     else:
@@ -416,12 +419,32 @@ class LinearAttention(MegatronModule, ABC):
 
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
-    kernel. Models subclass it with their projections."""
+    kernel. Models subclass it with their projections and :meth:`in_proj_sections`; all four projections
+    run as one GEMM whose width is zero-padded to a multiple of 8, the row-stride alignment causal-conv1d's
+    channel-last backward requires of the q/k/v view."""
 
     def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu"):
         gdn_kernel(backend)
         super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation)
         self.backend = backend
+        local = self.local
+        self.in_proj_widths = (
+            local.num_k_heads * local.group_qkv_dim,
+            local.value_dim,
+            local.num_v_heads,
+            local.num_v_heads,
+        )
+        self.in_proj_padding = -sum(self.in_proj_widths) % _ROW_STRIDE_ALIGN
+
+    @abstractmethod
+    def in_proj_sections(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """This rank's q/k/v (group-major), z, b and a weight rows, each ``[width, hidden]``."""
+
+    def project(self, x):
+        sections = self.in_proj_sections()
+        padding = sections[0].new_zeros(self.in_proj_padding, x.shape[-1])
+        out = F.linear(x, torch.cat([*sections, padding]))
+        return Projections(*out.split([*self.in_proj_widths, self.in_proj_padding], dim=-1)[:4])
 
     def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_cpu=None):
         del cu_seqlens_cpu  # GDN keeps fla's own boundary handling (not wired to the host copy)
@@ -560,7 +583,9 @@ class LinearAttentionLayer(MegatronModule):
         or upload). Without a host copy (``bshd`` / a foreign ``PackedSeqParams``) the context is rebuilt per
         call as before, through fla's ``cu_seqlens.cpu()``."""
         conv_kernel_size = self.linear_attn.conv_kernel_size
-        cached = getattr(packed_seq_params, "fla_cp_context", None)
+        cached = getattr(
+            packed_seq_params, "fla_cp_context", None
+        )  # config-access-exempt: only PackedSeqParamsWithHostCuSeqlens carries the cached fla CP context
         if cached is not None and cached.group is self.cp_group and cached.conv1d_kernel_size == conv_kernel_size:
             return cached, packed_seq_params.fla_cp_cu_seqlens_cpu
         cp_context = build_fla_cp_context(
@@ -568,7 +593,9 @@ class LinearAttentionLayer(MegatronModule):
         )
         local_cpu = cp_context.cu_seqlens_cpu
         local_cpu = local_cpu.to(torch.int64) if local_cpu is not None else None
-        if cu_seqlens_cpu is not None and hasattr(packed_seq_params, "fla_cp_context"):
+        if cu_seqlens_cpu is not None and hasattr(
+            packed_seq_params, "fla_cp_context"
+        ):  # config-access-exempt: only PackedSeqParamsWithHostCuSeqlens can cache the fla CP context
             packed_seq_params.fla_cp_context = cp_context
             packed_seq_params.fla_cp_cu_seqlens_cpu = local_cpu
         return cp_context, local_cpu
@@ -597,7 +624,9 @@ class LinearAttentionLayer(MegatronModule):
         global_cu_seqlens = self._global_cu_seqlens(x, packed_seq_params)
         # the micro-batch's host copy of the boundaries (CPU int64, one object per micro-batch); None for
         # bshd input or a PackedSeqParams that does not carry it -> the kernels fall back to their own handling
-        cu_seqlens_cpu = getattr(packed_seq_params, "cu_seqlens_cpu", None)
+        cu_seqlens_cpu = getattr(
+            packed_seq_params, "cu_seqlens_cpu", None
+        )  # config-access-exempt: bshd input and foreign PackedSeqParams carry no host boundary copy
         relayout = self.cp_size > 1 and not self.allgather_cp
         if relayout:
             x = zigzag_to_packed_shard(x, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
