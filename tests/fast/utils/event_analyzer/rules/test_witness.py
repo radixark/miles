@@ -216,6 +216,11 @@ class TestWitnessCheck:
         assert issues[0].rollout_id == 0
         assert issues[0].cell_index == 0
 
+    def test_witness_disabled_returns_no_issues(self) -> None:
+        """Without --enable-witness there are no allocations or snapshots; a NORMAL step is not an issue."""
+        events: list[Event] = [_make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]})]
+        assert check(events) == []
+
     def test_error_cell_outcome_is_skipped(self) -> None:
         """cell_outcomes with 'error' string should not produce any issue."""
         events: list[Event] = [
