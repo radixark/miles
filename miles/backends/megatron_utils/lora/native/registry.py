@@ -230,7 +230,7 @@ def validate_native_lora_args(args) -> None:
     assert (
         spec.experts is None or args.expert_tensor_parallel_size == 1
     ), f"native {spec.name} expert LoRA assumes --expert-tensor-parallel-size 1"
-    if any(spec.adapts_head(target) for target in args.hf_lora_targets):
+    if spec.lm_head is not None and _selects_head(spec, args.hf_checkpoint, args.hf_lora_targets):
         assert not args.enable_mtp_training, (
             "native LoRA's lm_head adapter does not support --enable-mtp-training: the MTP heads reuse the output "
             "layer, so their loss would train the adapter"
@@ -240,6 +240,19 @@ def validate_native_lora_args(args) -> None:
             "a tied lm_head adapter cannot be merged into HF weights (it would change the input embedding); "
             "drop --save-hf / eval snapshots or the unembed target"
         )
+
+
+def _selects_head(spec: LoRAArchSpec, hf_checkpoint: str, hf_targets: list[str]) -> bool:
+    """Whether the targets reach the output head; a glob like ``*head`` names it only through the HF modules."""
+    from miles.utils.hf_utils.config import load_hf_config
+    from miles.utils.hf_utils.weight_mapping import HfWeightMapping
+
+    modules = [
+        name.removesuffix(".weight")
+        for name in HfWeightMapping.from_config(load_hf_config(hf_checkpoint)).parameter_names
+    ]
+    selected = [module for module in modules if any(matches_lora_target(module, target) for target in hf_targets)]
+    return any(spec.adapts_head(name) for name in selected + hf_targets)
 
 
 def _assert_fixed_target_layout(spec: LoRAArchSpec, hf_config: dict, hf_targets: list[str]) -> None:
