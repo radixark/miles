@@ -134,6 +134,42 @@ def _kda_recurrence():
     return kda_recurrence
 
 
+def test_kimi_k3_spec_passes_the_kda_backend_to_the_kda_layers(monkeypatch):
+    """``--kda-backend`` reaches K3's KDA layers through the layer spec: the trainer config's ``kda_backend`` goes
+    from ``get_kimi_k3_spec(args, ...)`` into the KDA layers' ``ModuleSpec`` params (Megatron's ``get_args()`` holds
+    the backend namespace, which carries no trainer-config field). MLA layers take no backend."""
+    import copy
+    from types import SimpleNamespace
+
+    from megatron.core.transformer.spec_utils import ModuleSpec
+
+    from miles_plugins.models.kimi_k3 import model as k3
+    from miles_plugins.models.kimi_k3.layers import KimiK3Attention, KimiK3KDAAttention
+
+    def block_spec(config, use_transformer_engine, vp_stage):
+        layer = ModuleSpec(
+            module=object,
+            submodules=SimpleNamespace(self_attention=None, input_layernorm=None, pre_mlp_layernorm=None, mlp=None),
+        )
+        return SimpleNamespace(layer_specs=[copy.deepcopy(layer) for _ in range(config.num_layers)])
+
+    monkeypatch.setattr(k3, "get_gpt_decoder_block_spec", block_spec)
+    monkeypatch.setattr(k3, "get_transformer_layer_offset", lambda config, vp_stage: 0)
+    for backend in ("fla", "deterministic", "deterministic_fla_fwd", "deterministic_cake_fwd"):
+        config = SimpleNamespace(
+            num_layers=4,
+            num_attention_heads=96,
+            moe_latent_size=3584,
+            virtual_pipeline_model_parallel_size=None,
+            moe_layer_freq=[1, 1, 1, 1],
+        )
+        spec = k3.get_kimi_k3_spec(SimpleNamespace(kda_backend=backend), config, vp_stage=None)
+        attention = [layer.submodules.self_attention for layer in spec.layer_specs]
+        assert [a.module for a in attention] == [KimiK3KDAAttention] * 3 + [KimiK3Attention]
+        assert [a.params for a in attention[:3]] == [{"kda_backend": backend}] * 3
+        assert "kda_backend" not in (attention[3].params or {})
+
+
 def test_unknown_backend_raises_value_error():
     pytest.importorskip("megatron.core")
     from miles_plugins.models.linear_attn import kda_kernel
