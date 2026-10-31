@@ -136,8 +136,21 @@ RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; the
 # Megatron #5992 requires on SM100; 1.26.0 has no compact wrapper and fails
 # TransformerConfig validation once that change is in miles-main. A floor, not a
 # pin: the base image may already ship a newer one.
-RUN pip install /tmp/wheels/flash_mla-*.whl && \
-    pip install --no-deps "nvidia-cudnn-frontend>=1.28"
+RUN pip install --no-deps "nvidia-cudnn-frontend>=1.28"
+
+# Two FlashMLA builds, both packaged as `flash_mla`. SGLang pins sgl-flash-mla for decode
+# APIs the nv_dev build lacks; Megatron's CSA forward and miles' DSA kernel need nv_dev
+# (`indexer_topk`, SM90 and 576-dim sparse prefill). sglang-miles imports `sgl_flash_mla`
+# first, so move the base image's package there and install nv_dev as `flash_mla`.
+RUN FLASH_MLA_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("flash_mla").submodule_search_locations[0])') && \
+    SGL_FLASH_MLA_DIR="$(dirname "$FLASH_MLA_DIR")/sgl_flash_mla" && \
+    mv "$FLASH_MLA_DIR" "$SGL_FLASH_MLA_DIR" && \
+    rm -rf "$SGL_FLASH_MLA_DIR/__pycache__" && \
+    sed -i 's/\bfrom flash_mla\b/from sgl_flash_mla/' "$SGL_FLASH_MLA_DIR"/*.py && \
+    if grep -nE '^\s*(from|import) flash_mla\b' "$SGL_FLASH_MLA_DIR"/*.py; then \
+      echo "sgl_flash_mla still imports flash_mla; extend the rename above" >&2; exit 1; \
+    fi && \
+    pip install /tmp/wheels/flash_mla-*.whl
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
 RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
