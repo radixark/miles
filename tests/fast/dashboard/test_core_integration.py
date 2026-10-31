@@ -55,7 +55,9 @@ def test_the_dashboard_observer_end_to_end_on_local_ray(tmp_path, ray_local_mode
         with timer("update_weights"):
             time.sleep(0.01)
 
-        observers.Observers().end_run(succeeded=True)  # flushes the phases + synchronous collector shutdown
+        # as the driver ends: its process sends the batched phases, then the collector shuts down
+        observers.Observers().end_process()
+        observers.Observers().end_run(succeeded=True)
     finally:
         Timer().event_sinks[:] = saved_sinks
 

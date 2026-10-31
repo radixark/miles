@@ -9,7 +9,12 @@ import pytest
 
 from miles.dashboard import observer as dashboard_observer
 from miles.dashboard import sandbox_health
-from miles.dashboard.observer import BATCH_MAX_EVENTS, SHUTDOWN_TIMEOUT_SECONDS, DashboardObserver
+from miles.dashboard.observer import (
+    BATCH_MAX_EVENTS,
+    END_PROCESS_TIMEOUT_SECONDS,
+    SHUTDOWN_TIMEOUT_SECONDS,
+    DashboardObserver,
+)
 from miles.dashboard.store import EngineInfo, MetricStore, PhaseEvent, Role, Stream, TrajectoryEvent
 from miles.utils import observers
 from miles.utils.misc import SingletonMeta
@@ -34,6 +39,7 @@ class FakeCollector:
         self.update_topology = FakeRemoteMethod()
         self.push_data_buffer = FakeRemoteMethod()
         self.push_sandbox_reports = FakeRemoteMethod()
+        self.ping = FakeRemoteMethod()
         self.shutdown = FakeRemoteMethod()
 
 
@@ -194,13 +200,33 @@ def test_events_without_a_collector_are_dropped(monkeypatch):
     observer.data_buffer(1)
     observer.engine_topology([])
     observer.sandbox_report(dict(ts=1.0, sandbox_key="sb", status="healthy"))
-    observer.end_run(succeeded=True)
+    observer.end_process()
 
     assert observer._phases._records == [] and observer._trajectories._records == []
 
 
+def test_end_process_sends_what_the_process_holds_then_waits_until_it_landed(collector, monkeypatch):
+    """A worker is killed right after ``end_process``, so a push still in flight would die with it."""
+    sent = []
+    monkeypatch.setattr(collector.push_phases, "remote", lambda batch: sent.append([event.name for event in batch]))
+    monkeypatch.setattr(
+        collector.push_trajectories, "remote", lambda batch: sent.append([event.kind for event in batch])
+    )
+    monkeypatch.setattr(collector.ping, "remote", lambda: "ping")
+    monkeypatch.setattr(
+        dashboard_observer, "ray", SimpleNamespace(get=lambda ref, timeout: sent.append((ref, timeout)))
+    )
+    observer = _started(ROLLOUT_MANAGER)
+    observer.phase_end("eval", 1.0, 2.0)
+    observer.trajectory_event(_trajectory_event(1.5))
+
+    observer.end_process()
+
+    assert sent == [["eval"], ["gen_start"], ("ping", END_PROCESS_TIMEOUT_SECONDS)]
+
+
 def test_end_run_shuts_down_only_a_collector_it_created(collector, monkeypatch):
-    """A worker ending flushes what it holds; only the driver, which created the collector, waits for its last flush and kills it."""
+    """Only the driver, which created the collector, waits for its last flush and kills it."""
     ray_calls = []
     monkeypatch.setattr(
         dashboard_observer,
@@ -211,11 +237,9 @@ def test_end_run_shuts_down_only_a_collector_it_created(collector, monkeypatch):
         ),
     )
     worker = _started(TRAIN_RANK)
-    worker.phase_end("tail", 1.0, 2.0)
 
     worker.end_run(succeeded=True)
 
-    assert [event.name for event in _pushed(collector.push_phases)] == ["tail"]
     assert collector.shutdown.calls == [] and ray_calls == []
 
     driver = DashboardObserver()

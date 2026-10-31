@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 BATCH_MAX_EVENTS = 64
 BATCH_MAX_SECONDS = 2.0
 SHUTDOWN_TIMEOUT_SECONDS = 30.0
+# an estimate: the collector takes a push in milliseconds; kept below miles' END_PROCESS_TIMEOUT_S
+END_PROCESS_TIMEOUT_SECONDS = 10.0
 
 # the processes the timeline has lanes for
 _PHASE_ROLES = {"train": store.Role.TRAIN, "rollout_manager": store.Role.ROLLOUT_MANAGER}
@@ -123,9 +125,14 @@ class DashboardObserver(Observer):
                 store.MetricsRecord(ts=time.time(), step_key=step_key, step=step, metrics=_scalars_only(metrics))
             )
 
-    def end_run(self, *, succeeded: bool) -> None:
+    def end_process(self) -> None:
         self._phases.flush()
         self._trajectories.flush()
+        if self._collector is not None:
+            # the collector runs each caller's calls in order, so the ping answers after this process's pushes
+            ray.get(self._collector.ping.remote(), timeout=END_PROCESS_TIMEOUT_SECONDS)
+
+    def end_run(self, *, succeeded: bool) -> None:
         if not self._owns_collector:
             return
         try:
