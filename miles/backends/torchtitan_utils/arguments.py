@@ -2,8 +2,12 @@ from dataclasses import dataclass
 
 import torch
 
+from miles import platforms
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
+from miles.backends.training_utils.loss.hub.fixed_shape import fixed_shape_loss_enabled
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
+
+_TPU_ATTENTION_BACKENDS = ("sdpa_blocks", "splash")
 
 
 @dataclass
@@ -17,6 +21,15 @@ class TorchtitanArgs(FSDPArgs):
     tensor_model_parallel_size: int = 1
     pipeline_model_parallel_size: int = 1
     expert_model_parallel_size: int = 1
+
+    # torch.compile each TransformerBlock; always on where shapes are static (TPU), opt-in elsewhere
+    titan_compile: bool = False
+    # all-gather FSDP params once per pass and reduce-scatter once per step; holds full params and grads
+    titan_fsdp_gather_once: bool = False
+    # packed-document attention on TPU: "sdpa_blocks" (query blocks over SDPA) or "splash" (Pallas kernel)
+    titan_tpu_attention: str = "sdpa_blocks"
+    # FSDP's gradient reduce dtype: bfloat16 halves the gradient accumulation and reduce-scatter buffers
+    titan_fsdp_reduce_dtype: str = "float32"
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -52,6 +65,51 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
+    platform = platforms.current_platform
+    if args.titan_fsdp_reduce_dtype not in ("float32", "bfloat16"):
+        raise ValueError(f"--titan-fsdp-reduce-dtype {args.titan_fsdp_reduce_dtype!r}: expected float32 or bfloat16")
+    if args.titan_tpu_attention not in _TPU_ATTENTION_BACKENDS:
+        raise ValueError(
+            f"--titan-tpu-attention {args.titan_tpu_attention!r}: expected one of {_TPU_ATTENTION_BACKENDS}"
+        )
+    if args.titan_tpu_attention != "sdpa_blocks" and not platforms.IS_TPU:
+        raise ValueError(f"--titan-tpu-attention {args.titan_tpu_attention} applies on TPU only")
+    if args.titan_tpu_attention == "splash" and args.seq_length % 1024:
+        raise ValueError(
+            f"--titan-tpu-attention splash tiles the sequence in 1024-token blocks; --seq-length {args.seq_length} "
+            "is not a multiple of 1024"
+        )
+    # without Triton, the fused log-prob op is the fixed-shape path's compiled program
+    if args.log_probs_backend == "fused" and not platform.triton_kernels:
+        if not fixed_shape_loss_enabled(args) or args.tensor_model_parallel_size != 1 or args.entropy_coef != 0:
+            raise ValueError(
+                f"--log-probs-backend fused on {platform.device_type} needs the fixed-shape loss "
+                "(loss/hub/fixed_shape.py), --tensor-model-parallel-size 1 and --entropy-coef 0; "
+                "use --log-probs-backend torch"
+            )
+    # without dynamic shapes, packed microbatches are padded to a power-of-two bucket capped at --seq-length
+    if not platforms.current_platform.dynamic_shapes:
+        if args.use_dynamic_batch_size and args.max_tokens_per_gpu > args.seq_length:
+            raise ValueError(
+                f"--max-tokens-per-gpu {args.max_tokens_per_gpu} exceeds --seq-length {args.seq_length}, "
+                "the largest length bucket"
+            )
+        if not args.use_dynamic_batch_size and args.micro_batch_size > 1:
+            raise ValueError(
+                f"--micro-batch-size {args.micro_batch_size} can pack more than --seq-length {args.seq_length} "
+                "tokens, the largest length bucket; use --use-dynamic-batch-size with --max-tokens-per-gpu"
+            )
+
+    # colocate syncs through CUDA IPC, outside the transfer modes
+    modes = platform.weight_transfer_modes
+    if modes is not None and (args.colocate or args.update_weight_transfer_mode not in modes):
+        raise ValueError(
+            f"on {platform.device_type} the trainer syncs weights with --update-weight-transfer-mode "
+            f"{' or '.join(sorted(modes))} to disaggregated engines; got "
+            f"{args.update_weight_transfer_mode!r}{' with --colocate' if args.colocate else ''}"
+        )
+    if args.titan_fsdp_gather_once and args.pipeline_model_parallel_size > 1:
+        raise ValueError("--titan-fsdp-gather-once does not apply to the pipeline schedule; drop it under PP")
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
     if args.fp16:

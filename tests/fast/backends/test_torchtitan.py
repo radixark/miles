@@ -7,6 +7,8 @@ import pytest
 import torch
 from tests.ci.ci_register import register_cpu_ci
 
+from miles import platforms
+from miles.backends.torchtitan_utils import arguments as titan_arguments
 from miles.backends.torchtitan_utils import parallel as tp
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser, validate_torchtitan_args
@@ -20,7 +22,12 @@ register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 def _args(**overrides) -> Namespace:
     base = dict(
         titan_model_name="qwen3",
+        titan_tpu_attention="sdpa_blocks",
+        titan_fsdp_reduce_dtype="float32",
         seq_length=8192,
+        micro_batch_size=1,
+        use_dynamic_batch_size=False,
+        log_probs_backend="torch",
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
         expert_model_parallel_size=1,
@@ -32,6 +39,9 @@ def _args(**overrides) -> Namespace:
         stream_optimizer_state_to_disk=False,
         stream_optimizer_state_moment_dtype="fp32",
         fp16=False,
+        titan_fsdp_gather_once=False,
+        colocate=False,
+        update_weight_transfer_mode="shm",
         lr_decay_style="constant",
         lr_warmup_fraction=None,
         lr_wsd_decay_iters=None,
@@ -64,6 +74,84 @@ def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
     validate_torchtitan_args(_args(seq_length=16384, rollout_max_context_len=None, rollout_max_response_len=8192))
 
 
+def _on_tpu(monkeypatch) -> None:
+    monkeypatch.setattr(platforms, "IS_TPU", True)
+    # TpuPlatform's values; importing it would import torch_tpu
+    monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
+    monkeypatch.setattr(platforms.current_platform, "triton_kernels", False)
+    monkeypatch.setattr(platforms.current_platform, "weight_transfer_modes", frozenset({"disk", "shm"}))
+
+
+def test_a_tpu_microbatch_cannot_outgrow_the_largest_length_bucket(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    _on_tpu(monkeypatch)
+    with pytest.raises(ValueError, match="max-tokens-per-gpu 16384 exceeds"):
+        validate_torchtitan_args(
+            _args(use_dynamic_batch_size=True, max_tokens_per_gpu=16384, log_probs_backend="torch")
+        )
+    validate_torchtitan_args(_args(use_dynamic_batch_size=True, max_tokens_per_gpu=8192, log_probs_backend="torch"))
+    # fixed-size microbatches pack micro_batch_size samples, each up to --seq-length
+    with pytest.raises(ValueError, match="micro-batch-size 2"):
+        validate_torchtitan_args(_args(use_dynamic_batch_size=False, micro_batch_size=2, log_probs_backend="torch"))
+    validate_torchtitan_args(_args(use_dynamic_batch_size=False, micro_batch_size=1, log_probs_backend="torch"))
+
+
+def test_the_tpu_fused_log_prob_needs_the_fixed_shape_loss(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    _on_tpu(monkeypatch)
+    tpu_fused = dict(
+        use_dynamic_batch_size=False, log_probs_backend="fused", tensor_model_parallel_size=1, entropy_coef=0
+    )
+    monkeypatch.setattr(titan_arguments, "fixed_shape_loss_enabled", lambda args: False)
+    with pytest.raises(ValueError, match="fixed-shape loss"):
+        validate_torchtitan_args(_args(**tpu_fused))
+    monkeypatch.setattr(titan_arguments, "fixed_shape_loss_enabled", lambda args: True)
+    validate_torchtitan_args(_args(**tpu_fused))
+    with pytest.raises(ValueError, match="entropy-coef 0"):
+        validate_torchtitan_args(_args(**{**tpu_fused, "entropy_coef": 0.01}))
+
+
+def test_splash_attention_needs_a_tpu_and_whole_1024_token_tiles(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    with pytest.raises(ValueError, match="TPU only"):
+        validate_torchtitan_args(_args(titan_tpu_attention="splash"))
+    _on_tpu(monkeypatch)
+    splash = dict(titan_tpu_attention="splash", use_dynamic_batch_size=False, log_probs_backend="torch")
+    with pytest.raises(ValueError, match="multiple of 1024"):
+        validate_torchtitan_args(_args(**splash, seq_length=3000, rollout_max_context_len=3000))
+    validate_torchtitan_args(_args(**splash))
+
+
+@pytest.mark.parametrize("seq_len", [1000, 1024, 3000, 8192])
+def test_the_recompile_limit_counts_every_length_bucket(seq_len):
+    """A bucket the limit misses is one compile too many, which a fullgraph block turns into a crash."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.trainer import fixed_shape_length_bucket, fixed_shape_length_buckets
+
+    assert {fixed_shape_length_bucket(n, seq_len) for n in range(1, seq_len + 1)} == fixed_shape_length_buckets(
+        seq_len
+    )
+
+
+def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucket(monkeypatch):
+    """Each pass with its own guards compiles once per bucket, and none may turn dynamic, which TPU rejects."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.trainer import configure_fixed_shape_compile
+
+    monkeypatch.setattr(torch._dynamo.config, "recompile_limit", 1)
+    monkeypatch.setattr(torch._dynamo.config, "automatic_dynamic_shapes", True)
+    configure_fixed_shape_compile(seq_len=8192, num_passes=3)
+    assert torch._dynamo.config.recompile_limit == 1, "a dynamic-shape platform compiles one graph per pass"
+    assert torch._dynamo.config.automatic_dynamic_shapes
+
+    _on_tpu(monkeypatch)
+    configure_fixed_shape_compile(seq_len=8192, num_passes=2)
+    assert torch._dynamo.config.recompile_limit == 2 * 4  # buckets 1024, 2048, 4096, 8192
+    assert not torch._dynamo.config.automatic_dynamic_shapes
+    configure_fixed_shape_compile(seq_len=8192, num_passes=3)
+    assert torch._dynamo.config.recompile_limit == 3 * 4
+
+
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
     with pytest.raises(ValueError, match="context parallelism"):
@@ -76,6 +164,14 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
         validate_torchtitan_args(_args(ref_update_interval=4))
     with pytest.raises(ValueError, match="save-debug-train-data"):
         validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
+    _on_tpu(monkeypatch)
+    for cuda_only in (dict(update_weight_transfer_mode="broadcast"), dict(colocate=True)):
+        with pytest.raises(ValueError, match="disk or shm"):
+            validate_torchtitan_args(_args(log_probs_backend="torch", use_dynamic_batch_size=False, **cuda_only))
+    monkeypatch.undo()
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    with pytest.raises(ValueError, match="gather-once"):
+        validate_torchtitan_args(_args(titan_fsdp_gather_once=True, pipeline_model_parallel_size=2))
 
 
 def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
@@ -158,8 +254,10 @@ def _config_args(**overrides: object) -> Namespace:
         seed=1,
         gradient_checkpointing=False,
         optimizer_cpu_offload=False,
+        titan_compile=False,
         save=None,
         load=None,
+        titan_fsdp_reduce_dtype="float32",
     )
     return Namespace(backend=TorchtitanArgsNamespace(**{**base, **overrides}))
 
@@ -212,6 +310,19 @@ def test_the_lr_schedule_follows_miles_flags_not_torchtitan_defaults(tmp_path, s
     assert cosine.lr_scheduler.min_lr_factor == pytest.approx(0.1)
 
 
+def test_a_static_shape_platform_compiles_without_the_flag(tmp_path, single_gpu_dims, monkeypatch):
+    """Eager torch_tpu runs every op separately, so TPU must compile even when --titan-compile is not passed."""
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    hf = _checkpoint_dir(tmp_path, tie_word_embeddings=False)
+    config_kwargs = dict(hf_assets_path=hf, lr_total_steps=1, dump_subdir="x")
+    assert not build_trainer_config(_config_args(), **config_kwargs).compile.enable
+    _on_tpu(monkeypatch)
+    monkeypatch.setattr(platforms.current_platform, "compile_backend", "tpu")
+    config = build_trainer_config(_config_args(), **config_kwargs)
+    assert (config.compile.enable, config.compile.components, config.compile.backend) == (True, ["model"], "tpu")
+
+
 def test_the_trainer_keeps_dtensor_only_on_the_model_parallel_axes(tmp_path, single_gpu_dims):
     """torchtitan v0.3.0 defaults to the spmd_types backend, whose FSDP wrapping wants every
     parameter distributed over the full mesh first and rejects a plain-DP model."""
@@ -261,6 +372,7 @@ def dist_stub():
             "new_group",
             lambda ranks, backend=None: "self_group" if backend is None else f"gloo_sub{tuple(ranks)}",
         ),
+        patch.object(tp.dist, "new_subgroups_by_enumeration", lambda ranks_per_subgroup_list: ("self_group", [])),
         patch.object(tp.dist, "get_process_group_ranks", lambda group: list(range(sizes.get(group, 1)))),
         patch.object(
             tp.dist, "all_gather_object", lambda out, obj, group=None: out.__setitem__(slice(None), [obj] * len(out))

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
+from miles import platforms
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
@@ -12,7 +13,7 @@ from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIter
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
-from miles.backends.torchtitan_utils.trainer import TitanTrainer
+from miles.backends.torchtitan_utils.trainer import TitanTrainer, configure_fixed_shape_compile
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.replay.routing_replay import enable as enable_routing_replay
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
@@ -79,12 +80,15 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
 
         self.prof = TrainProfiler(args)
         self.load_hf_assets()
+        platforms.current_platform.install_titan_attention(args.backend.titan_tpu_attention)
 
-        self.trainer = TitanTrainer(config)
+        self.trainer = TitanTrainer(config, fsdp_gather_once=args.backend.titan_fsdp_gather_once)
         self.model_parts = self.trainer.model_parts
         self.optimizers = self.trainer.optimizers.optimizers
         self.align_token_side_channel = self.trainer.align_token_side_channel
         self.trainer.configure_loss_reduction()
+        # actor train and actor log-probs differ in grad mode; the frozen ref model differs in requires_grad
+        configure_fixed_shape_compile(seq_len=config.training.seq_len, num_passes=2 + int(with_ref))
         set_parallel_state(
             create_titan_parallel_state(self.trainer.parallel_dims, is_pp_last_stage=self.trainer.has_last_stage())
         )
@@ -129,7 +133,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         if not args.ref_load:
             raise ValueError("--ref-load is required to build a torchtitan reference model")
         ref_config = build_trainer_config(args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref")
-        ref_trainer = TitanTrainer(ref_config)
+        ref_trainer = TitanTrainer(ref_config, fsdp_gather_once=args.backend.titan_fsdp_gather_once)
         ref_trainer.configure_loss_reduction()
         ref_trainer.checkpointer.load()
         for part in ref_trainer.model_parts:

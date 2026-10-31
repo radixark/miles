@@ -11,6 +11,11 @@ class TpuPlatform(Platform):
     # the tpu compile backend takes static shapes only
     dynamic_shapes = False
     nvml_numa_affinity = False
+    # torch_tpu lowers compiled graphs to XLA
+    compile_backend = "tpu"
+    triton_kernels = False
+    # a TPU engine shares neither NCCL nor CUDA IPC (colocate) with the trainer
+    weight_transfer_modes = frozenset({"disk", "shm"})
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         # touching the device before init_process_group breaks the multi-process rendezvous
@@ -19,6 +24,19 @@ class TpuPlatform(Platform):
     def bind_device_after_process_group(self) -> None:
         # each process sees its one device, which the process group has brought up
         torch.accelerator.set_device_index(0)
+
+    def pin_host_memory(self, tensor: torch.Tensor) -> None:
+        # torch_tpu has no host-registration call; device copies go through pageable memory
+        pass
+
+    def unpin_host_memory(self, tensor: torch.Tensor) -> None:
+        pass
+
+    def install_titan_attention(self, backend: str) -> None:
+        # torch_tpu runs FlexAttention as one dense L x L mask
+        from miles.backends.torchtitan_utils import tpu_doc_attention
+
+        tpu_doc_attention.install(backend)
 
     def device_name(self) -> str | None:
         return None

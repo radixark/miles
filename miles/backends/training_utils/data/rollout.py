@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from miles import platforms
 from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -38,7 +39,15 @@ def get_rollout_data(
     *,
     train_parallel_config: TrainParallelConfig,
     output_store_read: Callable | None = None,
+    sample_device: torch.device | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
+    """Fetch this rank's rollout shard; per-sample tokens, masks and log-probs go to ``sample_device``.
+
+    ``sample_device`` defaults to the accelerator; the fixed-shape loss keeps them on the host and moves
+    each microbatch in one copy (loss/hub/fixed_shape.py).
+    """
+    if sample_device is None:
+        sample_device = platforms.current_platform.current_device()
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
@@ -50,16 +59,14 @@ def get_rollout_data(
         witness_info=witness_info,
         output_store_read=output_store_read,
     )
-    # move tokens to the device in advance
-    rollout_data["tokens"] = [
-        torch.tensor(t, dtype=torch.long, device=current_platform.current_device()) for t in rollout_data["tokens"]
-    ]
+    # move per-sample tensors to sample_device in advance
+    rollout_data["tokens"] = [torch.tensor(t, dtype=torch.long, device=sample_device) for t in rollout_data["tokens"]]
     rollout_data["loss_masks"] = [
-        torch.tensor(t, dtype=torch.int, device=current_platform.current_device()) for t in rollout_data["loss_masks"]
+        torch.tensor(t, dtype=torch.int, device=sample_device) for t in rollout_data["loss_masks"]
     ]
     if "rollout_mask_sums" in rollout_data:
         rollout_data["rollout_mask_sums"] = torch.tensor(
-            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=current_platform.current_device()
+            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=sample_device
         )
     if args.enable_witness:
         seq_witness_ids = rollout_data.pop("seq_witness_ids")
@@ -106,7 +113,7 @@ def get_rollout_data(
                         args.qkv_format,
                         rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
                     ),
-                    device=current_platform.current_device(),
+                    device=sample_device,
                     dtype=dtype,
                 )
                 for i, (value, total_length, response_length) in enumerate(
@@ -532,11 +539,15 @@ def get_data_iterator(
         samples = rollout_data["total_lengths"]
         assert len(samples) == num_local_samples
         num_microbatches = []
+        # a fixed-shape trainer cannot run a microbatch above the cap, which the balanced partition ignores
+        num_microbatches_for = (
+            get_minimum_num_micro_batch_size
+            if platforms.current_platform.dynamic_shapes
+            else _num_microbatches_within_cap
+        )
         for i in range(num_steps_per_rollout):
             start, end = i * num_local_gbs, (i + 1) * num_local_gbs
-            num_microbatches.append(
-                get_minimum_num_micro_batch_size(samples[start:end], args.max_tokens_per_gpu * cp_size)
-            )
+            num_microbatches.append(num_microbatches_for(samples[start:end], args.max_tokens_per_gpu * cp_size))
 
         num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=current_platform.current_device())
         GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
@@ -575,3 +586,21 @@ def get_data_iterator(
         data_iterator,
         num_microbatches,
     )
+
+
+def _num_microbatches_within_cap(lengths: list[int], max_tokens: int) -> int:
+    """The fewest microbatches whose seqlen-balanced partition keeps each one within `max_tokens`.
+
+    First-fit only bounds the count from below: the balanced partition that forms the microbatches ignores the
+    cap and can exceed it. A sample longer than the cap still gets a microbatch of its own.
+    """
+    cap = max(max_tokens, max(lengths))
+    num = get_minimum_num_micro_batch_size(lengths, max_tokens)
+    while num < len(lengths) and _largest_partition(lengths, num) > cap:
+        num += 1
+    return num
+
+
+def _largest_partition(lengths: list[int], num_partitions: int) -> int:
+    partitions = get_seqlen_balanced_partitions(lengths, num_partitions, equal_size=False)
+    return max(sum(lengths[i] for i in partition) for partition in partitions)
