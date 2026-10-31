@@ -66,6 +66,7 @@ run:
     - round_robin
     - --disaggregation-bootstrap-port
     - '11000'
+    - --no-enable-decoder-swa-bounded-replay
     - --engine-info-bootstrap-port
     - '12000'
     - --mem-fraction-static
@@ -151,6 +152,7 @@ run:
     - --enable-metrics
     - --disaggregation-mode
     - decode
+    - --no-enable-decoder-swa-bounded-replay
     - --engine-info-bootstrap-port
     - '12000'
     - --mem-fraction-static
