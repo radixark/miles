@@ -179,13 +179,15 @@ def _quantize_param(args, name, weight, weight_block_size, is_skipped):
 
 
 def _get_scale_format(args, name, weight_block_size):
+    is_moe_expert = ".experts." in name
+    # grouped_moe mirrors SGLang's own MoE requant call: SM120 requantizes only grouped MoE scales.
     if not (
         should_deepgemm_weight_requant_ue8m0
-        and should_deepgemm_weight_requant_ue8m0(weight_block_size=weight_block_size)
+        and should_deepgemm_weight_requant_ue8m0(weight_block_size=weight_block_size, grouped_moe=is_moe_expert)
     ):
         return None  # use default fp32 scale format
 
-    if ".experts." not in name:
+    if not is_moe_expert:
         # Non-MoE linear weights: ue8m0 when deepgemm is enabled
         return "ue8m0"
 
