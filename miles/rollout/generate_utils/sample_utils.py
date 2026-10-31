@@ -2,6 +2,9 @@ from copy import deepcopy
 from dataclasses import fields
 from typing import Any
 
+import numpy as np
+import torch
+
 from miles.rollout.generate_utils.rollout_topk_logprobs import merge_rollout_topk_logprobs_field
 from miles.rollout.generate_utils.sampling_mask import merge_sampling_masks
 from miles.utils.output_store.plan import combine_plans
@@ -38,6 +41,32 @@ def _introduces_replay_gap(a: Sample, b: Sample) -> bool:
     )  # config-access-exempt: attribute selected at runtime from field
 
 
+def _values_equal(x, y) -> bool:
+    if isinstance(x, dict) and isinstance(y, dict):
+        return x.keys() == y.keys() and all(_values_equal(x[k], y[k]) for k in x)
+    if isinstance(x, (np.ndarray, torch.Tensor)) or isinstance(y, (np.ndarray, torch.Tensor)):
+        try:
+            return bool(np.array_equal(np.asarray(x), np.asarray(y)))
+        except (TypeError, ValueError):
+            return False
+    return x == y
+
+
+def _is_prefix_of(x, y) -> bool:
+    """Whether every entry of ``x`` is the start of the same entry of ``y``:
+    lists by elements, arrays along their first axis, dicts key by key."""
+    if isinstance(x, dict) and isinstance(y, dict):
+        return set(x) <= set(y) and all(_is_prefix_of(x[k], y[k]) for k in x)
+    if isinstance(x, (np.ndarray, torch.Tensor)) or isinstance(y, (np.ndarray, torch.Tensor)):
+        xa, ya = np.asarray(x), np.asarray(y)
+        return (
+            xa.shape[1:] == ya.shape[1:] and xa.shape[0] <= ya.shape[0] and bool(np.array_equal(xa, ya[: xa.shape[0]]))
+        )
+    if isinstance(x, list) and isinstance(y, list):
+        return len(x) <= len(y) and all(_values_equal(p, q) for p, q in zip(x, y, strict=False))
+    return _values_equal(x, y)
+
+
 def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
     """Merge two samples generated from sibling inference engine calls.
 
@@ -55,6 +84,20 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
     def _per_token(sample: Sample, field: str, default) -> list:
         value = getattr(sample, field)  # config-access-exempt: iterate the explicit sample completion field list
         return value if value is not None else [default] * sample.response_length
+
+    def _merge_growing_value(field):
+        # Images accumulate along the turns: b's prompt holds every image a's
+        # did plus the new ones, so the merged sample carries b's and a's must
+        # be a prefix of them. Equal values (text samples: both None) pass as before.
+        x = getattr(a, field)  # config-access-exempt: attribute selected at runtime from field
+        y = getattr(b, field)  # config-access-exempt: attribute selected at runtime from field
+        if _values_equal(x, y):
+            return x
+        if x is None:
+            return y
+        if y is None or not _is_prefix_of(x, y):
+            raise AssertionError(f"{field} mismatch: a.{field} is not a prefix of b.{field}")
+        return y
 
     def _merge_optional_per_token(field):
         # Optional OPD per-token lists (teacher_log_probs, opd_reverse_kl): merge like
@@ -160,8 +203,8 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             rollout_id=_merge_equal_value("rollout_id"),
             prompt=b.prompt,
             tokens=b.tokens,
-            multimodal_inputs=_merge_equal_value("multimodal_inputs"),
-            multimodal_train_inputs=_merge_equal_value("multimodal_train_inputs"),
+            multimodal_inputs=_merge_growing_value("multimodal_inputs"),
+            multimodal_train_inputs=_merge_growing_value("multimodal_train_inputs"),
             response=a.response + obs_text + b.response,
             response_length=a.response_length + obs_len + b.response_length,
             label=_merge_equal_value("label"),

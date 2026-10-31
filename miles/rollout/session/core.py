@@ -22,6 +22,7 @@ from starlette.responses import Response
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
+    MessageValidationError,
     OutputStoreContractError,
     SessionNotFoundError,
     TokenizationError,
@@ -29,6 +30,13 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionRegistry
+from miles.rollout.session.media import (
+    MediaStore,
+    expanded_length,
+    media_references,
+    normalize_messages,
+    restore_messages,
+)
 from miles.rollout.session.request_args import ClientResponseIntent, filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.samples.merge import (
@@ -201,6 +209,38 @@ def extract_completion(result: dict) -> tuple:
     return response, choice, assistant_message, completion_token_ids
 
 
+def store_request_media(client_args: dict, media: MediaStore | None) -> dict:
+    """Register the request's images in the session's store and reference
+    them from the messages as ``mm://`` URLs (miles.rollout.session.media),
+    so stored history and records carry each image once. A text-only server
+    (``media`` None) passes the request through; an image on it is a 400."""
+    messages = client_args.get("messages")
+    if not isinstance(messages, list):
+        return client_args
+    if media is None:
+        if media_references(messages):
+            raise MessageValidationError("this session server carries no images (no image processor)")
+        return client_args
+    try:
+        normalized = normalize_messages(messages, media)
+    except ValueError as e:
+        raise MessageValidationError(str(e)) from e
+    if normalized is messages:
+        return client_args
+    return {**client_args, "messages": normalized}
+
+
+def engine_request_body(request_body: dict, media: MediaStore | None) -> bytes:
+    """The proxied body: the stored ``mm://`` references become the client's
+    data URLs again, so the engine receives the images with the ids."""
+    if media is None:
+        return orjson.dumps(request_body)
+    messages = request_body.get("messages")
+    if isinstance(messages, list) and media_references(messages):
+        request_body = {**request_body, "messages": restore_messages(messages, media)}
+    return orjson.dumps(request_body)
+
+
 class SessionCore:
     """HTTP session operations over one ``SessionRegistry``."""
 
@@ -260,7 +300,13 @@ class SessionCore:
         await asyncio.to_thread(self._sample_executor.shutdown, wait=True, cancel_futures=True)
 
     def _maybe_request_addition_r3(
-        self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
+        self,
+        request_body: dict,
+        checkpoint_token_ids: list[int],
+        prompt_token_ids: list[int],
+        *,
+        checkpoint_messages: list[dict] | None = None,
+        media: MediaStore | None = None,
     ) -> None:
         """Ask SGLang to return only the R3 rows the session has not retained.
 
@@ -268,15 +314,22 @@ class SessionCore:
         (v1: the post-rollback checkpoint; v2: the positioned attach node). The
         checkpoint's N - 1 rows must remain a causal prefix of the new prompt,
         so every persisted patch starts exactly where the previous one ended.
+
+        The engine counts rows on the ids it ran, with every image placeholder
+        expanded to the image's token count, so the offset it is sent is the
+        checkpoint's expanded length (``checkpoint_messages`` name the
+        checkpoint's images, in order, through ``media``); the prefix check
+        stays on the stored ids, which is what both sides were rendered from.
         """
         if not (self.use_addition_r3 and request_body.get("return_routed_experts")):
             return
         previous_rows = max(0, len(checkpoint_token_ids) - 1)
-        assert prompt_token_ids[:previous_rows] == checkpoint_token_ids[:previous_rows], (
-            f"additional R3 requires {previous_rows} stable prefix tokens, "
-            f"got {_lcp_len(checkpoint_token_ids, prompt_token_ids)}"
-        )
-        request_body["routed_experts_start_len"] = previous_rows
+        stable_prefix_tokens = _lcp_len(checkpoint_token_ids, prompt_token_ids)
+        assert (
+            stable_prefix_tokens >= previous_rows
+        ), f"additional R3 requires {previous_rows} stable prefix tokens, got {stable_prefix_tokens}"
+        expanded = expanded_length(checkpoint_token_ids, checkpoint_messages or [], media)
+        request_body["routed_experts_start_len"] = max(0, expanded - 1)
 
     async def health(self) -> Response:
         body = {"status": "ok"}
@@ -354,16 +407,21 @@ class SessionCore:
                 max_trim_tokens=metadata.get("max_trim_tokens", 0),
                 use_addition_r3=self.use_addition_r3,
                 evaluation=session.evaluation,
+                media=session.media,
             )
             if max_seq_len is not None:
                 samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
             if not samples:
                 return _samples_response(encode_samples([], metadata, empty_reason="all_truncated", fields=fields))
             if self.use_addition_r3:
-                samples = [merge_samples_with_addition_r3(self.config, samples, session.records, tokenizer)]
+                samples = [
+                    merge_samples_with_addition_r3(
+                        self.config, samples, session.records, tokenizer, media=session.media
+                    )
+                ]
             else:
                 samples = [merge_samples(samples, tokenizer)]
-            adopt_session_records(samples[0], session.records)
+            adopt_session_records(samples[0], session.records, media=session.media)
         except StorePlanError as exc:
             # Not a 422: the rollout raises it again and stops, as it does for one from /generate.
             raise OutputStoreContractError(str(exc)) from exc
@@ -412,7 +470,7 @@ class SessionCore:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            client_args = parse_chat_request(body)
+            client_args = store_request_media(parse_chat_request(body), session.media)
             prepared = session.prepare_token_ids_and_request_args(
                 client_args,
                 config=self.config,
@@ -427,10 +485,16 @@ class SessionCore:
 
             # prepare_token_ids_and_request_args applied any retry rollback, so token_ids is
             # the checkpoint this request builds on.
-            self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
+            self._maybe_request_addition_r3(
+                request_body,
+                session.token_ids,
+                prompt_token_ids,
+                checkpoint_messages=session.messages,
+                media=session.media,
+            )
 
             # orjson: the body carries the whole prompt's input_ids on every turn.
-            proxy_body = orjson.dumps(request_body)
+            proxy_body = engine_request_body(request_body, session.media)
             expected_num_assistant = session.num_assistant
         # --- lock released ---
 

@@ -11,6 +11,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
     compute_routing_headers,
+    image_pad_id_for,
     update_sample_from_response,
 )
 from miles.rollout.generate_utils.tool_call_utils import (
@@ -55,8 +56,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             args,
             sample.tokens,
             input.sampling_params,
+            multimodal_inputs=sample.multimodal_inputs,
             evaluation=input.evaluation,
             kv_cache_namespace=sample.kv_cache_namespace,
+            image_pad_id=image_pad_id_for(input.state),
         )
         if payload is None:
             sample.status = halt_status
@@ -68,7 +71,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if sink is not None:
             tokens = output.get("meta_info", {}).get("completion_tokens", "")
             sink.gen_span(sample, gen_t0, time.time(), turn=_turn + 1, detail=str(tokens))
-        await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
+        await update_sample_from_response(
+            args, sample, payload=payload, output=output, update_loss_mask=True, prompt_ids=sample.tokens
+        )
         if record_trajectory:
             trajectory.append({"role": "assistant", "content": output["text"]})
             sample.metadata["messages"] = list(trajectory)  # snapshot: trajectory keeps growing in later turns

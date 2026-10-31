@@ -4,7 +4,6 @@ import time
 from copy import deepcopy
 from functools import partial
 
-import orjson
 from starlette.responses import Response
 
 from miles.rollout.session.core import (
@@ -14,8 +13,10 @@ from miles.rollout.session.core import (
     _chat_client_response,
     _render_json,
     _samples_response,
+    engine_request_body,
     extract_completion,
     proxy_result_to_response,
+    store_request_media,
 )
 from miles.rollout.session.errors import OutputStoreContractError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
@@ -204,7 +205,7 @@ class SessionCoreV2(SessionCore):
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            client_args = parse_chat_request(body)
+            client_args = store_request_media(parse_chat_request(body), session.media)
             prepared, attach_parent = prepare_token_ids_and_request_args(
                 session,
                 client_args,
@@ -219,11 +220,17 @@ class SessionCoreV2(SessionCore):
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
             checkpoint_token_ids = attach_parent.token_ids if attach_parent is not None else []
-            self._maybe_request_addition_r3(request_body, checkpoint_token_ids, prompt_token_ids)
+            self._maybe_request_addition_r3(
+                request_body,
+                checkpoint_token_ids,
+                prompt_token_ids,
+                checkpoint_messages=attach_parent.path_messages() if attach_parent is not None else [],
+                media=session.media,
+            )
             _add_session_extra_key(request_body, session)
 
             # orjson: the body carries the whole prompt's input_ids on every turn.
-            proxy_body = orjson.dumps(request_body)
+            proxy_body = engine_request_body(request_body, session.media)
         # --- lock released ---
 
         # --- Phase 2: proxy to backend (NO lock held) ---

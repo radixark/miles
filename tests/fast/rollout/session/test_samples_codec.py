@@ -444,3 +444,42 @@ class TestStorePlanOnTheSamplesWire:
         payload = encode_samples([_computed_sample()], {}, None)
         (out,) = decode_samples_and_merge_input_sample(payload, Sample(rollout_store_plan=self._plan())).samples
         assert out.rollout_store_plan is None
+
+
+def test_multimodal_train_inputs_round_trip_as_a_tensor_dict():
+    """The sample's images (PNG bytes, lengths, grids) cross the samples wire
+    as one tensor per key and come back as torch tensors; a text sample
+    carries a null marker."""
+    import numpy as np
+    import torch
+
+    from miles.rollout.session.samples.codec import (
+        COMPUTED_FIELDS_V2,
+        decode_samples_and_merge_input_sample,
+        encode_samples,
+    )
+    from miles.utils.types import Sample
+
+    with_images = Sample(
+        tokens=[1, 2, 3],
+        response_length=1,
+        loss_mask=[1],
+        rollout_log_probs=[-0.5],
+        status=Sample.Status.COMPLETED,
+        multimodal_train_inputs={
+            "image_png": np.frombuffer(b"\x89PNGabc", dtype=np.uint8).copy(),
+            "image_png_lengths": np.asarray([7], dtype=np.int64),
+            "image_grid_thw": np.asarray([[1, 4, 4]], dtype=np.int64),
+        },
+    )
+    text = Sample(
+        tokens=[4], response_length=1, loss_mask=[1], rollout_log_probs=[0.0], status=Sample.Status.COMPLETED
+    )
+    payload = encode_samples([with_images, text], {}, fields=COMPUTED_FIELDS_V2)
+    reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+    first, second = reply.samples
+    assert isinstance(first.multimodal_train_inputs["image_png"], torch.Tensor)
+    assert first.multimodal_train_inputs["image_png"].numpy().tobytes() == b"\x89PNGabc"
+    assert first.multimodal_train_inputs["image_png_lengths"].tolist() == [7]
+    assert first.multimodal_train_inputs["image_grid_thw"].tolist() == [[1, 4, 4]]
+    assert second.multimodal_train_inputs is None

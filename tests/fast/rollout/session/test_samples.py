@@ -834,6 +834,44 @@ class TestAdditionR3Assembly:
     one (len(tokens) - 1, num_layers, topk) tensor after the ordinary merge.
     """
 
+    def test_image_records_offsets_are_in_the_engines_expanded_token_space(self):
+        """A record whose prompt holds an image placeholder: the engine ran the
+        placeholder expanded to the image's 4 tokens, so its rows end at the
+        expanded length plus the outputs, minus one, and the next record's
+        offset (computed the same way by the session) continues from there."""
+        from tests.fast.rollout.session.test_media import FakeProcessor, _data_url, _image_message, _png
+
+        from miles.rollout.session.media import MediaStore, normalize_messages
+
+        pad = 151655
+        store = MediaStore(FakeProcessor(), pad)
+        messages = normalize_messages([_image_message(_data_url(_png()))], store)
+        # Turn 1: 3 ids sent, 6 run (one 4-token image), 2 outputs: rows [0, 7).
+        # Turn 2: checkpoint [1, pad, 2, 7, 8] = 8 expanded tokens -> start 7;
+        # 6 ids sent, 9 run, 1 output: rows [7, 9).
+        full = _r3_rows(9, seed=0)
+        first = _make_record(
+            [1, pad, 2], [7, 8], prompt_tokens=6, routed_experts=_r3_patch(full[:7]), routed_experts_start_len=0
+        )
+        first.request["messages"] = messages
+        second = _make_record(
+            [1, pad, 2, 7, 8, 3], [9], prompt_tokens=9, routed_experts=_r3_patch(full[7:]), routed_experts_start_len=7
+        )
+        second.request["messages"] = messages
+        tok = _mock_tokenizer()
+        turns = compute_samples_from_openai_records(
+            _ARGS_R3,
+            [first, second],
+            tok,
+            accumulated_token_ids=[1, pad, 2, 7, 8, 3, 9],
+            use_addition_r3=True,
+            media=store,
+        )
+        merged = merge_samples_with_addition_r3(_ARGS_R3, turns, [first, second], tok, media=store)
+        assert merged.tokens == [1, pad, pad, pad, pad, 2, 7, 8, 3, 9]
+        np.testing.assert_array_equal(merged.rollout_routed_experts, full)
+        merged.validate()
+
     def test_two_patches_reconstruct_full_reference(self):
         """Patches must rebuild byte-for-byte the tensor full-R3 responses give
         for the same tokens under the same in-place lifecycle."""
@@ -1061,7 +1099,7 @@ def _store_record(
     return record, arrays
 
 
-def _merge_store(records, accumulated, *, use_addition_r3=True, max_trim_tokens=0, max_seq_len=None):
+def _merge_store(records, accumulated, *, use_addition_r3=True, max_trim_tokens=0, max_seq_len=None, media=None):
     """What a session server's collect does with the records."""
     tok = _mock_tokenizer()
     samples = compute_samples_from_openai_records(
@@ -1071,14 +1109,15 @@ def _merge_store(records, accumulated, *, use_addition_r3=True, max_trim_tokens=
         accumulated_token_ids=accumulated,
         max_trim_tokens=max_trim_tokens,
         use_addition_r3=use_addition_r3,
+        media=media,
     )
     if max_seq_len is not None:
         samples = truncate_samples_by_total_tokens(samples, max_seq_len, tok)
     if use_addition_r3:
-        merged = merge_samples_with_addition_r3(_ARGS_R3, samples, records, tok)
+        merged = merge_samples_with_addition_r3(_ARGS_R3, samples, records, tok, media=media)
     else:
         merged = merge_samples(samples, tok)
-    adopt_session_records(merged, records)
+    adopt_session_records(merged, records, media=media)
     return merged
 
 
@@ -1159,6 +1198,33 @@ class TestStoreSessionAssembly:
         assert merged.tokens == accumulated[:14]
         np.testing.assert_array_equal(_routed_experts(merged, objects), full[:13])
         assert [r.key for r in merged.rollout_store_plan.owned_refs] == ["r0", "r1"]
+
+    def test_image_records_count_routed_experts_rows_in_the_engines_expanded_token_space(self):
+        # The engine ran turn 0's one image placeholder as the image's 4 tokens: 3 ids sent, 6 run,
+        # 2 outputs, so it stored rows [0, 7). Turn 1's checkpoint [1, pad, 2, 7, 8] is 8 expanded
+        # tokens, so it starts at row 7; 6 ids sent, 9 run, 1 output: rows [7, 9). Counted on the
+        # sent ids, turn 0 would be expected to hold 4 rows, not the 7 it stored.
+        from tests.fast.rollout.session.test_media import FakeProcessor, _data_url, _image_message, _png
+
+        from miles.rollout.session.media import MediaStore, normalize_messages
+
+        pad = 151655
+        store = MediaStore(FakeProcessor(), pad)
+        messages = normalize_messages([_image_message(_data_url(_png()))], store)
+        full = _r3_rows(9, seed=0)
+        r0, a0 = _store_record("r0", [1, pad, 2], [7, 8], routed_experts=full[:7], routed_experts_start_len=0)
+        r1, a1 = _store_record("r1", [1, pad, 2, 7, 8, 3], [9], routed_experts=full[7:], routed_experts_start_len=7)
+        for record in (r0, r1):
+            record.request["messages"] = messages
+
+        merged = _merge_store([r0, r1], [1, pad, 2, 7, 8, 3, 9], media=store)
+
+        assert merged.tokens == [1, pad, pad, pad, pad, 2, 7, 8, 3, 9]
+        assert [(s.ref.key, s.start, s.end) for s in merged.rollout_store_plan.fields[R3].segs] == [
+            ("r0", 0, 7),
+            ("r1", 0, 2),
+        ]
+        np.testing.assert_array_equal(_routed_experts(merged, {"r0": a0, "r1": a1}), full)
 
     @pytest.mark.parametrize("max_seq_len", [None, 23])
     def test_a_gap_before_a_record_raises(self, max_seq_len):
@@ -1340,3 +1406,89 @@ class TestPrefixCacheInfo:
 
         assert samples[0].prefix_cache_info.cached_tokens == 0
         assert samples[0].prefix_cache_info.total_prompt_tokens == 0
+
+
+# ── test: images on the session path ─────────────────────────────────
+
+
+class TestImagesInSamples:
+    """A record whose messages carry images: the prompt's placeholders are
+    expanded to the processor's counts, the images ride along in the
+    trainer's PNG format, and the engine's reported prompt length must agree
+    (miles.rollout.session.media)."""
+
+    PAD = 151655
+
+    @staticmethod
+    def _store():
+        from tests.fast.rollout.session.test_media import FakeProcessor, _data_url, _png
+
+        from miles.rollout.session.media import MediaStore, normalize_messages
+
+        store = MediaStore(FakeProcessor(), TestImagesInSamples.PAD)
+        url = _data_url(_png())  # 64x64: 4 tokens
+        messages = normalize_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": url}}],
+                }
+            ],
+            store,
+        )
+        return store, messages
+
+    def _record(self, messages, prompt_tokens):
+        record = _make_record([1, self.PAD, 2], [7, 8], prompt_tokens=prompt_tokens)
+        record.request["messages"] = messages
+        return record
+
+    def test_placeholders_expand_and_images_ride_along(self):
+        store, messages = self._store()
+        samples = compute_samples_from_openai_records(
+            _ARGS, [self._record(messages, prompt_tokens=6)], _mock_tokenizer(), media=store
+        )
+        (sample,) = samples
+        assert sample.tokens == [1, self.PAD, self.PAD, self.PAD, self.PAD, 2, 7, 8]
+        assert sample.response_length == 2 and sample.loss_mask == [1, 1]
+        assert sample.multimodal_train_inputs["image_grid_thw"].tolist() == [[1, 4, 4]]
+        assert sample.multimodal_train_inputs["image_png_lengths"].tolist() == [len(store.entries.popitem()[1].png)]
+
+    def test_the_engine_prompt_length_must_match_the_expansion(self):
+        store, messages = self._store()
+        with pytest.raises(ValueError, match="did not run the request ids as sent"):
+            compute_samples_from_openai_records(
+                _ARGS, [self._record(messages, prompt_tokens=3)], _mock_tokenizer(), media=store
+            )
+
+    def test_a_text_record_is_unchanged_and_images_need_a_store(self):
+        record = _make_record([1, 2], [7], prompt_tokens=2)
+        (sample,) = compute_samples_from_openai_records(_ARGS, [record], _mock_tokenizer(), media=None)
+        assert sample.tokens == [1, 2, 7] and sample.multimodal_train_inputs is None
+        _, messages = self._store()
+        with pytest.raises(ValueError, match="no image processor"):
+            compute_samples_from_openai_records(_ARGS, [self._record(messages, 6)], _mock_tokenizer(), media=None)
+
+    def test_merged_turns_carry_the_last_turn_images(self):
+        from tests.fast.rollout.session.test_media import _data_url, _png
+
+        from miles.rollout.session.media import normalize_messages
+
+        store, first_messages = self._store()
+        second_messages = normalize_messages(
+            first_messages
+            + [
+                {"role": "assistant", "content": "r"},
+                {"role": "user", "content": [{"type": "image_url", "image_url": {"url": _data_url(_png(width=128))}}]},
+            ],
+            store,
+        )
+        first = self._record(first_messages, prompt_tokens=6)
+        # 7 ids sent; the engine expands the two placeholders to 4 and 8 tokens: 7 - 2 + 4 + 8 = 17.
+        second = _make_record([1, self.PAD, 2, 7, 8, 9, self.PAD], [5], prompt_tokens=17)
+        second.request["messages"] = second_messages
+        turns = compute_samples_from_openai_records(_ARGS, [first, second], _mock_tokenizer(), media=store)
+        merged = merge_samples(turns, _mock_tokenizer())
+        assert merged.multimodal_train_inputs["image_grid_thw"].tolist() == [[1, 4, 4], [1, 4, 8]]
+        assert merged.response_length == len(merged.tokens) - 6, "the first turn's expanded prompt is 6 ids"
+        assert merged.loss_mask == [1, 1] + [0] * (1 + 8) + [1]

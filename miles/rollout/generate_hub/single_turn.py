@@ -7,6 +7,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
     compute_routing_headers,
+    image_pad_id_for,
     update_sample_from_response,
 )
 from miles.utils.http_utils import post
@@ -41,12 +42,13 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
         multimodal_inputs=sample.multimodal_inputs,
         evaluation=input.evaluation,
         kv_cache_namespace=sample.kv_cache_namespace,
+        image_pad_id=image_pad_id_for(input.state),
     )
     if payload is None:
         sample.status = halt_status
         return GenerateFnOutput(samples=sample)
 
     output = await post(url, payload, headers=compute_routing_headers(args, sample))
-    await update_sample_from_response(args, sample, payload=payload, output=output)
+    await update_sample_from_response(args, sample, payload=payload, output=output, prompt_ids=input_ids)
 
     return GenerateFnOutput(samples=sample)

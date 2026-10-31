@@ -20,6 +20,13 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 from miles.rollout.generate_utils.rollout_topk_logprobs import append_rollout_topk_logprobs
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata, read_sampled_logprobs
+from miles.rollout.session.media import (
+    MediaStore,
+    expand_image_placeholders,
+    expanded_length,
+    media_references,
+    train_inputs,
+)
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
 from miles.utils.output_store.plan import (
@@ -41,9 +48,16 @@ def compute_samples_from_openai_records(
     *,
     use_addition_r3: bool = False,
     evaluation: bool = False,
+    media: MediaStore | None = None,
 ) -> list[Sample]:
     """Convert per-turn session records into training Samples, aligning each
     turn's output tokens against the TITO accumulated token sequence.
+
+    ``media`` is the session's image store: a turn whose messages carry
+    images gets its image placeholders expanded to the processor's counts
+    (the form the trainer runs) and the images attached as
+    ``multimodal_train_inputs``; the alignment below runs on the unexpanded
+    ids, which is what the engine was sent and what the session stores.
 
     Each record carries its own ``prompt_token_ids`` and ``output_token_ids``
     (with logprobs).  We want to reuse those per-turn logprobs directly
@@ -93,7 +107,13 @@ def compute_samples_from_openai_records(
             cursor += matched
 
         sample = _compute_sample_from_openai_record(
-            args, record, tokenizer, trim_count, use_addition_r3=use_addition_r3, evaluation=evaluation
+            args,
+            record,
+            tokenizer,
+            trim_count,
+            use_addition_r3=use_addition_r3,
+            evaluation=evaluation,
+            media=media,
         )
         attach_lifecycle_metadata(sample, record, records[i - 1] if i else None, turn=i + 1)
         if is_last and args.save_debug_trajectory_data is not None:
@@ -113,6 +133,37 @@ def compute_samples_from_openai_records(
     return samples
 
 
+def expand_prompt_images(
+    record: SessionRecord, prompt_token_ids: list[int], media: MediaStore | None
+) -> tuple[list[int], dict | None]:
+    """The record's prompt as the trainer runs it: each image placeholder
+    expanded to the processor's token count for that image, plus the images
+    in the trainer's PNG format. A record without images, or a text-only
+    server, returns the ids unchanged and None.
+
+    The engine reports the prompt length it ran (``meta_info.prompt_tokens``);
+    when present it must equal the expanded length, otherwise the engine did
+    not run the client's ids (it re-tokenized, or dropped the images) and the
+    sample would train on a prompt the model never saw."""
+    refs = media_references(record.request.get("messages") or [])
+    if not refs:
+        return prompt_token_ids, None
+    if media is None or not media.enabled:
+        raise ValueError("the record carries images but this session server has no image processor")
+    entries = [media.get(ref) for ref in refs]
+    if media.expands:
+        expanded = expand_image_placeholders(prompt_token_ids, [e.num_tokens for e in entries], media.image_pad_id)
+    else:
+        expanded = list(prompt_token_ids)
+    reported = record.response["choices"][0].get("meta_info", {}).get("prompt_tokens")
+    if isinstance(reported, int) and reported != len(expanded):
+        raise ValueError(
+            f"the engine ran {reported} prompt tokens but the session's expanded prompt has {len(expanded)} "
+            f"({len(prompt_token_ids)} sent, {len(entries)} image(s)): the engine did not run the request ids as sent"
+        )
+    return expanded, train_inputs(entries)
+
+
 def _compute_sample_from_openai_record(
     args: Namespace,
     record: SessionRecord,
@@ -121,6 +172,7 @@ def _compute_sample_from_openai_record(
     *,
     use_addition_r3: bool = False,
     evaluation: bool = False,
+    media: MediaStore | None = None,
 ) -> Sample:
     choice = record.response["choices"][0]
     finish_reason = choice.get("finish_reason")
@@ -128,6 +180,7 @@ def _compute_sample_from_openai_record(
     prompt_token_ids = record.request.get("input_ids")
     if prompt_token_ids is None:
         raise ValueError("input_ids not found in request — the session server should populate it")
+    prompt_token_ids, image_inputs = expand_prompt_images(record, prompt_token_ids, media)
 
     output_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
@@ -152,6 +205,7 @@ def _compute_sample_from_openai_record(
                 sampling_logprobs_mode=sampling_logprobs_mode,
             )
     sample.tokens = prompt_token_ids + output_token_ids
+    sample.multimodal_train_inputs = image_inputs
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
@@ -201,13 +255,16 @@ def _compute_sample_from_openai_record(
     return sample
 
 
-def adopt_session_records(merged: Sample, records: list[SessionRecord]) -> None:
+def adopt_session_records(merged: Sample, records: list[SessionRecord], *, media: MediaStore | None = None) -> None:
     """Complete a merged sample's output store plan from its session's records.
 
     The per-turn plans leave routed experts out: a TITO trim of a turn would cut a row that the
     next turn's incremental object starts after. Like ``merge_samples_with_addition_r3``, they are
     rebuilt from the untrimmed records, each continuing from its ``routed_experts_start_len``. The
     sample also owns every record's object, so objects of turns the merge dropped are deleted with it.
+
+    A record's rows are counted in the engine's token space: ``media`` expands each image
+    placeholder of its prompt to the image's token count, as the engine did when it stored them.
     """
     plan = merged.rollout_store_plan
     if plan is None:
@@ -222,10 +279,11 @@ def adopt_session_records(merged: Sample, records: list[SessionRecord]) -> None:
                 # The merge stopped early: later records lie past the merged tokens.
                 break
             num_output = len(choice["meta_info"]["output_token_logprobs"])
+            prompt_len = expanded_length(record.request["input_ids"], record.request.get("messages") or [], media)
             turn = StorePlan.from_response(
                 ref,
                 request=record.request,
-                num_tokens=len(record.request["input_ids"]) + num_output,
+                num_tokens=prompt_len + num_output,
                 response_length=num_output,
             )
             rows = rows.append(turn.fields[RoutedExpertsSegments.name])
@@ -239,8 +297,15 @@ def merge_samples_with_addition_r3(
     samples: list[Sample],
     records: list[SessionRecord],
     tokenizer,
+    *,
+    media: MediaStore | None = None,
 ) -> Sample:
-    """Merge ordinary fields, then materialize the required append-only R3 prefix."""
+    """Merge ordinary fields, then materialize the required append-only R3 prefix.
+
+    Row offsets are in the engine's token space: a record's rows end at its
+    expanded prompt length plus its outputs, minus one (``media`` expands the
+    image placeholders the way the engine did), which is where the next
+    record's ``routed_experts_start_len`` was computed."""
     merged = merge_samples(samples, tokenizer)
     if all(record.response["choices"][0]["meta_info"].get("routed_experts") is None for record in records):
         return merged
@@ -263,7 +328,8 @@ def merge_samples_with_addition_r3(
         if start != covered_rows:
             raise ValueError(f"additional R3: record {i} starts at row {start}; expected {covered_rows}")
 
-        end = len(record.request["input_ids"]) + len(choice["meta_info"]["output_token_logprobs"]) - 1
+        prompt_len = expanded_length(record.request["input_ids"], record.request.get("messages") or [], media)
+        end = prompt_len + len(choice["meta_info"]["output_token_logprobs"]) - 1
         if end < start:
             raise ValueError(f"additional R3: record {i} has invalid offsets (start={start}, end={end})")
         delta_rows = end - start

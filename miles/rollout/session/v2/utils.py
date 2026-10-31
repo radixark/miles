@@ -79,16 +79,17 @@ def build_leaf_material(
             max_trim_tokens=registry.tito_tokenizer.max_trim_tokens,
             use_addition_r3=use_addition_r3,
             evaluation=state.evaluation,
+            media=state.media,
         )
         if max_seq_len is not None:
             turns = truncate_samples_by_total_tokens(turns, max_seq_len, registry.tokenizer)
         if not turns:
             continue
         if use_addition_r3:
-            sample = merge_samples_with_addition_r3(args, turns, records, registry.tokenizer)
+            sample = merge_samples_with_addition_r3(args, turns, records, registry.tokenizer, media=state.media)
         else:
             sample = merge_samples(turns, registry.tokenizer)
-        adopt_session_records(sample, records)
+        adopt_session_records(sample, records, media=state.media)
         flat: dict[str, Any] = {
             "accumulated_token_ids": list(leaf.token_ids),
             "turn_args": filter_turn_args(leaf.turn_args),

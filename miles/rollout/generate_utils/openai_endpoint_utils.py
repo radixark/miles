@@ -23,7 +23,11 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
-_SESSION_REQUEST_TIMEOUT = 120
+# The samples op of a long image session (320 turns, 40 screenshots per leaf)
+# took 160 to 190 s on 2026-10-13; at 120 s the client gave up and the episode
+# was dropped with its group. Running the op in the server's worker thread does
+# not shorten it, and ops of one server run one at a time.
+_SESSION_REQUEST_TIMEOUT = 300
 
 
 class OpenAIEndpointTracer:
