@@ -1,5 +1,6 @@
 import logging
 from argparse import Namespace
+from collections.abc import Callable
 from math import isclose
 
 import numpy as np
@@ -11,7 +12,6 @@ from miles.backends.training_utils.data.context_parallel import get_sum_of_sampl
 from miles.backends.training_utils.data.rollout import DataIterator
 from miles.backends.training_utils.metrics import perf
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.flops_utils import fwd_tflops_per_gpu
 from miles.utils.ft_utils.process_group_utils import MultiPGUtil
 from miles.utils.metric_utils import compute_rollout_step, namespace_metrics, strip_metrics_namespace
 from miles.utils.tracking_utils import tracking
@@ -423,7 +423,13 @@ def log_multi_turn_data(rollout_id: int, args: Namespace, rollout_data: RolloutB
         )
 
 
-def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None = None) -> None:
+def log_perf_data(
+    rollout_id: int,
+    args: Namespace,
+    compute_total_fwd_flops: Callable[[list[int]], float] | None,
+    compute_total_train_flops: Callable[[list[int]], float] | None = None,
+    extra_metrics: dict | None = None,
+) -> None:
     parallel_state = get_parallel_state()
     perf.log_perf_data_raw(
         rollout_id=rollout_id,
@@ -433,7 +439,8 @@ def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None =
             and parallel_state.is_pp_last_stage
             and parallel_state.effective_dp_cp.rank == 0
         ),
-        compute_total_fwd_flops=lambda seq_lens: fwd_tflops_per_gpu(seq_lens, args.backend, dist.get_world_size()),
+        compute_total_fwd_flops=compute_total_fwd_flops,
+        compute_total_train_flops=compute_total_train_flops,
         extra_metrics=extra_metrics,
     )
 

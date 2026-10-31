@@ -430,6 +430,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
                 cu_seqlens=batch["cu_seqlens"],
                 cu_seqlens_host=batch["cu_seqlens_host"],
                 max_seqlen=batch["max_seqlen"],
+                num_documents=len(batch["unconcat_tokens"]),
             )
         )
 

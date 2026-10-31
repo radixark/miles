@@ -214,5 +214,10 @@ class RolloutDataInjectionUtil:
 def _load_rollout_data_file(path: Path) -> tuple[list[Sample], dict]:
     payload = torch.load(path, weights_only=False)
     data = [Sample.from_dict(sample) for sample in payload["samples"]]
+    if any(sample.rollout_store_plan is not None for sample in data):
+        raise ValueError(
+            f"{path} was saved with --use-output-store; its output store refs did not outlive that run. "
+            "Dump the rollout data again without --use-output-store."
+        )
     metadata = payload.get("metadata") or {}
     return data, metadata

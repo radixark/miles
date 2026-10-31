@@ -9,6 +9,7 @@ from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.types import SessionServerInstance
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import Sample
 
 
@@ -269,9 +270,11 @@ class TestRadixCacheExtraKey:
 
 
 @pytest.mark.asyncio
-async def test_collection_error_propagates(monkeypatch):
-    tracer = _Tracer(error=RuntimeError("samples unavailable"))
+@pytest.mark.parametrize("error_type", [RuntimeError, StorePlanError])
+async def test_collection_error_propagates(monkeypatch, error_type):
+    """Only timeouts and transport errors become an ABORTED sample; a StorePlanError must reach the rollout loop."""
+    tracer = _Tracer(error=error_type("samples unavailable"))
     _patch_agent(monkeypatch, tracer)
 
-    with pytest.raises(RuntimeError, match="samples unavailable"):
+    with pytest.raises(error_type, match="samples unavailable"):
         await agentic_tool_call.generate(_generate_input())
