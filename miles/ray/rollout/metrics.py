@@ -315,6 +315,10 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
 
     def _is_zero_std(samples: list[Sample]):
         rewards = [sample.get_reward_value(args) for sample in samples]
+        # An aborted episode (agentic generate, a hosted environment that
+        # never opened) has no reward; it is neither easy nor hard.
+        if any(reward is None for reward in rewards):
+            return False
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
 
     all_sample_groups = group_by(all_samples, lambda s: s.group_index)
