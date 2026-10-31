@@ -46,6 +46,13 @@ VARIANTS = {
         "dockerfile": "docker/Dockerfile.rubin",
         "build_args": {},
     },
+    "tpu": {
+        "image": "radixark/miles",
+        "platforms": ["linux/amd64"],
+        "tag_postfix": "-tpu",
+        "dockerfile": "docker/Dockerfile.tpu",
+        "build_args": {},
+    },
     "rocm724-mi35x": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm724-mi35x",
@@ -183,6 +190,7 @@ class Variant(str, Enum):
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
     rubin = "rubin"
+    tpu = "tpu"
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
     rocm10_mi30x = "rocm10-mi30x"

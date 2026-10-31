@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import sys
+from urllib.parse import quote
 
 import httpx
 import setproctitle
@@ -59,6 +60,10 @@ class MilesRouter:
     def _setup_routes(self):
         """Setup all the HTTP routes except catch-all proxy"""
         # sglang-router api
+        self.app.post("/workers")(self.create_worker)
+        self.app.get("/workers")(self.get_workers)
+        self.app.delete("/workers/{worker_id:path}")(self.delete_worker)
+        # sglang-router <= 0.2.1 api
         self.app.post("/add_worker")(self.add_worker)
         self.app.post("/remove_worker")(self.remove_worker)
         self.app.get("/list_workers")(self.list_workers)
@@ -188,14 +193,7 @@ class MilesRouter:
                 status_code=400, content={"error": "worker_url is required (use query ?url=... or JSON body)"}
             )
 
-        # Add if new, keep a simple request count per worker
-        if worker_url not in self.worker_request_counts:
-            self.worker_request_counts[worker_url] = 0
-            self.worker_failure_counts[worker_url] = 0
-            self.dead_workers.discard(worker_url)
-            if self.verbose:
-                print(f"[miles-router] Added new worker: {worker_url}")
-
+        self._add_worker_url(worker_url)
         return {"status": "success", "worker_urls": self.worker_request_counts}
 
     async def remove_worker(self, request: Request):
@@ -206,12 +204,45 @@ class MilesRouter:
                 status_code=400, content={"error": "worker_url is required (use query ?url=... or JSON body)"}
             )
 
+        self._remove_worker_url(worker_url)
+        return {"status": "success", "worker_urls": self.worker_request_counts}
+
+    async def create_worker(self, request: Request):
+        """POST /workers with body {"url", "worker_type"}, as sgl-router takes it."""
+        body = await request.body()
+        payload = json.loads(body) if body else {}
+        worker_url = payload.get("url")
+        if not worker_url:
+            return JSONResponse(status_code=400, content={"error": "url is required in the JSON body"})
+        if payload.get("worker_type", "regular") != "regular":
+            return JSONResponse(
+                status_code=400, content={"error": "miles router serves only regular workers (no PD disaggregation)"}
+            )
+
+        self._add_worker_url(worker_url)
+        return {"status": "success", "worker_id": _worker_id(worker_url)}
+
+    async def get_workers(self, request: Request):
+        return {"workers": [{"id": _worker_id(url), "url": url} for url in self.worker_request_counts]}
+
+    async def delete_worker(self, worker_id: str):
+        # the path is percent-decoded before routing, so the id arrives as the url itself
+        self._remove_worker_url(worker_id)
+        return {"status": "success"}
+
+    def _add_worker_url(self, worker_url: str) -> None:
+        if worker_url not in self.worker_request_counts:
+            self.worker_request_counts[worker_url] = 0
+            self.worker_failure_counts[worker_url] = 0
+            self.dead_workers.discard(worker_url)
+            if self.verbose:
+                print(f"[miles-router] Added new worker: {worker_url}")
+
+    def _remove_worker_url(self, worker_url: str) -> None:
         self.worker_request_counts.pop(worker_url, None)
         self.worker_failure_counts.pop(worker_url, None)
         self.dead_workers.discard(worker_url)
         logger.info(f"[miles-router] Removed worker: {worker_url}")
-
-        return {"status": "success", "worker_urls": self.worker_request_counts}
 
     async def _parse_worker_url(self, request: Request) -> str | None:
         if worker_url := request.query_params.get("url") or request.query_params.get("worker_url"):
@@ -248,6 +279,11 @@ class MilesRouter:
             logger.info(f"[miles-router] Request to {url} finished after the worker was deregistered; ignoring")
             return
         self.worker_request_counts[url] = count - 1
+
+
+def _worker_id(worker_url: str) -> str:
+    # quoted so the id is one path segment of DELETE /workers/{id}
+    return quote(worker_url, safe="")
 
 
 if __name__ == "__main__":

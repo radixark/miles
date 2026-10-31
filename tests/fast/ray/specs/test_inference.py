@@ -54,7 +54,13 @@ from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.serving.utils import parse_serve_worker_config
 from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider
-from miles.utils.workers.worker_spec import RPC_PORT_NAME, HostAndPort, LaunchCommandContext, WorkerCtorContext
+from miles.utils.workers.worker_spec import (
+    RPC_PORT_NAME,
+    HostAndPort,
+    LaunchCommandContext,
+    WorkerCtorContext,
+    WorkerLaunchContext,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -168,9 +174,35 @@ class TestRouterPortPinning:
 
 
 class TestComputeSpecRouterLaunchCommand:
+    @pytest.mark.parametrize("use_miles_router", [False, True])
+    def test_existing_router_backends_have_no_worker_environment(self, use_miles_router):
+        args = make_args(use_miles_router=use_miles_router)
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+        context = WorkerLaunchContext(
+            args=args, cell_index=0, worker_in_cell_index=0, num_workers_per_cell=1, gpu_ids=[]
+        )
+
+        assert spec.env_var(context) == {}
+
+    def test_backend_environment_is_available_before_listener_allocation(self, monkeypatch):
+        args = make_args()
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+        context = WorkerLaunchContext(
+            args=args, cell_index=0, worker_in_cell_index=0, num_workers_per_cell=1, gpu_ids=[]
+        )
+
+        class RecordingBackend:
+            def env_var(self, ctx):
+                assert ctx is context
+                return {"ROUTER_WORKER_ENV": "configured"}
+
+        monkeypatch.setattr(inference_specs, "make_router_backend", lambda current_args: RecordingBackend())
+
+        assert spec.env_var(context) == {"ROUTER_WORKER_ENV": "configured"}
+
     def test_pd_disagg_with_miles_router_asserts(self):
         """Rendering a miles-router launch command for a PD-disaggregated model must fail fast."""
-        args = make_args(use_miles_router=True, sglang_router_ip=None, sglang_router_port=None)
+        args = make_args(router="miles", sglang_router_ip=None, sglang_router_port=None)
         spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("prefill", "decode"))
         with pytest.raises(AssertionError, match="miles router does not support PD"):
             spec.launch_command(_make_router_ctx(spec.args))
@@ -180,7 +212,7 @@ class TestComputeSpecRouterLaunchCommand:
         that can put the router in PD mode; a router built without it misroutes every request while
         discovery still reports a healthy prefill/decode fleet."""
         args = make_args(
-            use_miles_router=False,
+            router="sglang",
             sglang_router_ip=None,
             sglang_router_port=None,
             rollout_external=True,
@@ -194,7 +226,7 @@ class TestComputeSpecRouterLaunchCommand:
 
     def test_without_the_external_pd_flag_a_regular_model_keeps_a_regular_router(self):
         """Every internal run takes this path, and the new flag defaults to off."""
-        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+        args = make_args(router="sglang", sglang_router_ip=None, sglang_router_port=None)
         spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
 
         argv = shlex.split(spec.launch_command(_make_router_ctx(spec.args)))
@@ -204,7 +236,7 @@ class TestComputeSpecRouterLaunchCommand:
     def test_the_external_pd_flag_is_rejected_by_the_miles_router(self):
         """The miles router cannot serve PD at all, so the external flag must hit the same guard."""
         args = make_args(
-            use_miles_router=True,
+            router="miles",
             sglang_router_ip=None,
             sglang_router_port=None,
             rollout_external=True,
@@ -217,7 +249,7 @@ class TestComputeSpecRouterLaunchCommand:
 
     def test_sgl_router_launches_the_native_cli(self):
         """The sgl router runs as the upstream CLI with the addresses from the launch context."""
-        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+        args = make_args(router="sglang", sglang_router_ip=None, sglang_router_port=None)
         spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
         argv = shlex.split(spec.launch_command(_make_router_ctx(spec.args)))
         assert argv[0] == sys.executable
@@ -232,7 +264,7 @@ class TestComputeSpecRouterLaunchCommand:
             "getaddrinfo",
             lambda host, *_a, **_k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.7", 0))],
         )
-        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+        args = make_args(router="sglang", sglang_router_ip=None, sglang_router_port=None)
         spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
 
         argv = shlex.split(spec.launch_command(_make_router_ctx(spec.args, host="node1234")))
@@ -242,7 +274,7 @@ class TestComputeSpecRouterLaunchCommand:
     def test_sgl_router_keeps_a_wildcard_bind_host(self, monkeypatch):
         """Kubernetes places every command worker on 0.0.0.0, which must pass through without a lookup."""
         monkeypatch.setattr(socket, "getaddrinfo", _refuse_lookup)
-        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+        args = make_args(router="sglang", sglang_router_ip=None, sglang_router_port=None)
         spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
 
         argv = shlex.split(spec.launch_command(_make_router_ctx(spec.args, host="0.0.0.0")))
@@ -252,7 +284,7 @@ class TestComputeSpecRouterLaunchCommand:
     def test_miles_router_keeps_the_placed_hostname(self, monkeypatch):
         """The miles router binds through uvicorn, which resolves names itself, so its host is left alone."""
         monkeypatch.setattr(socket, "getaddrinfo", _refuse_lookup)
-        args = make_args(use_miles_router=True, sglang_router_ip=None, sglang_router_port=None)
+        args = make_args(router="miles", sglang_router_ip=None, sglang_router_port=None)
         spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
 
         argv = shlex.split(spec.launch_command(_make_router_ctx(spec.args, host="node1234")))
@@ -262,7 +294,7 @@ class TestComputeSpecRouterLaunchCommand:
     def test_sgl_router_launch_preserves_prefixed_raw_inputs(self):
         """Raw --router-* aliases and collections survive the full launch-command path."""
         args = make_args(
-            use_miles_router=False,
+            router="sglang",
             sglang_router_ip=None,
             sglang_router_port=None,
             router_tls_cert_path="/certs/server.pem",
@@ -281,7 +313,7 @@ class TestComputeSpecRouterLaunchCommand:
     def test_miles_router_launches_with_a_parseable_config(self):
         """The miles router command's config payload parses back losslessly."""
         args = make_args(
-            use_miles_router=True,
+            router="miles",
             sglang_router_ip=None,
             sglang_router_port=None,
             miles_router_max_connections=100,
@@ -709,7 +741,7 @@ class TestSpecsRouter:
         args = _make_router_args(
             tmp_path,
             debug_train_only=True,
-            use_miles_router=True,
+            router="miles",
             sglang_router_port=31000,
             use_session_server="v1",
         )
@@ -790,7 +822,7 @@ class TestInferenceSpecPinToHead:
 def _make_pin_args(*, pinned: bool):
     return make_args(
         pin_rollout_manager_to_head=pinned,
-        use_miles_router=False,
+        router="sglang",
         use_session_server=True,
         hf_checkpoint="/fake/model",
         session_server_workers=1,
@@ -824,11 +856,7 @@ class TestInferenceEnginePortSchema:
         assert ports["dist_init"].mode == "master"
         assert ports["dist_init"].allow_dynamic is True
         assert ports["dist_init"].num_consecutive == 33
-        assert {name for name, info in ports.items() if info.mode == "per_worker"} == {
-            "primary",
-            "nccl",
-            "engine_info_bootstrap",
-        }
+        assert {name for name, info in ports.items() if info.mode == "per_worker"} == {"primary", "nccl"}
 
     def test_the_gate_port_is_allocated_once_per_cell(self, tmp_path):
         """The out-of-band launch gate lives on the cell's rank-0 engine, like dist_init."""
@@ -1322,12 +1350,12 @@ class TestEngineCellChunking:
 
 class TestRouterInterpreterFlags:
     @pytest.mark.parametrize(
-        ("use_miles_router", "module"),
-        [(True, "miles.router.router"), (False, "sglang_router.launch_router")],
+        ("router", "module"),
+        [("miles", "miles.router.router"), ("sglang", "sglang_router.launch_router")],
         ids=["miles_router", "sglang_router"],
     )
     def test_the_router_launch_command_carries_the_parent_interpreter_flags(
-        self, monkeypatch: pytest.MonkeyPatch, use_miles_router: bool, module: str
+        self, monkeypatch: pytest.MonkeyPatch, router: str, module: str
     ):
         """A router launched by a bare interpreter runs with different semantics than the job that spawned it."""
         monkeypatch.setattr(
@@ -1335,7 +1363,7 @@ class TestRouterInterpreterFlags:
             "orig_argv",
             [sys.executable, "-O", "-X", "faulthandler", "-m", "miles.train", "--config", "x.yaml"],
         )
-        args = make_args(use_miles_router=use_miles_router, sglang_router_ip=None, sglang_router_port=None)
+        args = make_args(router=router, sglang_router_ip=None, sglang_router_port=None)
         spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
 
         argv = shlex.split(spec.launch_command(_make_router_ctx(spec.args)))

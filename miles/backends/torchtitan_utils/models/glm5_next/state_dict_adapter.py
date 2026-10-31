@@ -1,5 +1,5 @@
+from torchtitan.models.common.moe.state_dict_adapter import MoEStateDictAdapter
 from torchtitan.models.deepseek_v3.state_dict_adapter import DeepSeekV3StateDictAdapter
-from torchtitan.models.utils import MoEStateDictAdapter
 
 
 _HF_LAYER = "model.language_model.layers.{}"
@@ -54,14 +54,14 @@ _LAYER_MAP = {
     "mlp.gate_proj.weight": "feed_forward.w1.weight",
     "mlp.up_proj.weight": "feed_forward.w3.weight",
     "mlp.down_proj.weight": "feed_forward.w2.weight",
-    "mlp.experts.{}.gate_proj.weight": "moe.routed_experts.inner_experts.w1_EFD",
-    "mlp.experts.{}.up_proj.weight": "moe.routed_experts.inner_experts.w3_EFD",
-    "mlp.experts.{}.down_proj.weight": "moe.routed_experts.inner_experts.w2_EDF",
-    "mlp.gate.weight": "moe.router.gate.weight",
-    "mlp.gate.e_score_correction_bias": "moe.expert_bias_E",
-    "mlp.shared_experts.gate_proj.weight": "moe.shared_experts.w1.weight",
-    "mlp.shared_experts.up_proj.weight": "moe.shared_experts.w3.weight",
-    "mlp.shared_experts.down_proj.weight": "moe.shared_experts.w2.weight",
+    "mlp.experts.{}.gate_proj.weight": "feed_forward.routed_experts.w1_EFD",
+    "mlp.experts.{}.up_proj.weight": "feed_forward.routed_experts.w3_EFD",
+    "mlp.experts.{}.down_proj.weight": "feed_forward.routed_experts.w2.weight",
+    "mlp.gate.weight": "feed_forward.router.gate.weight",
+    "mlp.gate.e_score_correction_bias": "feed_forward.expert_bias_E",
+    "mlp.shared_experts.gate_proj.weight": "feed_forward.shared_experts.w1.weight",
+    "mlp.shared_experts.up_proj.weight": "feed_forward.shared_experts.w3.weight",
+    "mlp.shared_experts.down_proj.weight": "feed_forward.shared_experts.w2.weight",
 }
 
 

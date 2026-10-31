@@ -44,6 +44,7 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
+from miles.utils.output_store.dropped import record_dropped_samples
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     agent_metadata = None
     collect_failed = False
+    cancelled = False
     t_start = time.monotonic()
     try:
         logger.debug(f"{log_prefix} Starting agent function call")
@@ -101,7 +103,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
     except Exception as e:
         logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
-
+    except BaseException:
+        cancelled = True
+        raise
     finally:
         # Collect even if the agent failed.
         logger.debug(f"{log_prefix} Calling collect_samples...")
@@ -110,7 +114,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             collect_kwargs["agent_metadata"] = agent_metadata
         try:
             result = await tracer.collect_samples(input.sample, **collect_kwargs)
-        # Costs this sample, not the run; a non-2xx still raises RuntimeError.
+        # Costs this sample, not the run; a non-2xx still raises, and a StorePlanError stops the rollout.
         except (TimeoutError, httpx.TransportError) as e:
             collect_failed = True
             logger.warning(f"{log_prefix} Failed collecting samples: {e!r}", exc_info=True)
@@ -119,6 +123,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
                 f"total_time={time.monotonic()-t_start:.1f}s"
             )
+            if cancelled:
+                # The session handed these samples' output store objects to us; nobody will train them.
+                record_dropped_samples(result.samples)
 
     if collect_failed:
         sample = deepcopy(input.sample)

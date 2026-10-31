@@ -17,7 +17,7 @@ from miles.rollout.session.core import (
     extract_completion,
     proxy_result_to_response,
 )
-from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
+from miles.rollout.session.errors import OutputStoreContractError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
@@ -30,6 +30,7 @@ from miles.rollout.session.v2.session_state import (
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
 from miles.utils.function_registry import load_function
+from miles.utils.output_store.plan import StorePlanError
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +41,23 @@ class SessionCoreV2(SessionCore):
     transport shell (health, create/delete, raw proxy)."""
 
     def __init__(
-        self, backend, registry: SessionRegistryV2, config, session_server_instance_id=None, *, use_addition_r3=False
+        self,
+        backend,
+        registry: SessionRegistryV2,
+        config,
+        session_server_instance_id=None,
+        *,
+        use_addition_r3=False,
+        output_store=None,
     ):
-        super().__init__(backend, registry, config, session_server_instance_id, use_addition_r3=use_addition_r3)
+        super().__init__(
+            backend,
+            registry,
+            config,
+            session_server_instance_id,
+            use_addition_r3=use_addition_r3,
+            output_store=output_store,
+        )
         # Import-path only in production: function_registry is process-local.
         self.sample_picker = load_function(config.session_sample_picker_path, sync_required=True)
         self.sample_postprocessor = load_function(config.session_sample_postprocessor_path, sync_required=True)
@@ -84,12 +99,15 @@ class SessionCoreV2(SessionCore):
         pick/post-process hook pipeline and encode the result.
 
         The worker reads a snapshot, never the live tree. Deterministic
-        assembly/hook failures map to 422; unknown exceptions propagate.
+        assembly/hook failures map to 422, a broken output store contract to
+        ``OutputStoreContractError``; unknown exceptions propagate.
         """
         session = self.registry.get_session(session_id)
         async with session.lock:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            if session.store_refs.contract_error is not None:
+                raise OutputStoreContractError(session.store_refs.contract_error)
             snapshot = session.snapshot()
         return await asyncio.get_running_loop().run_in_executor(
             self._sample_executor,
@@ -131,6 +149,9 @@ class SessionCoreV2(SessionCore):
                 # A copy: hooks may edit the session metadata, which must not reach that leaf's sample.
                 computed_mismatch={session.latest().seq: deepcopy(metadata.get("tito_session_mismatch"))},
             )
+        except StorePlanError as exc:
+            # Not a 422: the rollout raises it again and stops, as it does for one from /generate.
+            raise OutputStoreContractError(str(exc)) from exc
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
         if not material:
@@ -159,7 +180,9 @@ class SessionCoreV2(SessionCore):
         # authoritative server-owned value only at the wire boundary.
         if self.config.sglang_speculative_algorithm is not None:
             metadata[SESSION_ROLLOUT_METRICS_KEY] = build_session_rollout_metrics(session_id, session.tree.nodes)
-        return _samples_response(encode_samples(samples, metadata, fields=fields))
+        response = _samples_response(encode_samples(samples, metadata, fields=fields))
+        session.store_refs.hand_over(samples)
+        return response
 
     async def chat_completions(
         self, session_id: str, *, method: str, query: str, headers: dict, body: bytes
@@ -204,10 +227,11 @@ class SessionCoreV2(SessionCore):
         # --- lock released ---
 
         # --- Phase 2: proxy to backend (NO lock held) ---
-        headers = {**headers, "X-SMG-Routing-Key": session_id}
+        headers = self._with_routing_key(headers, session_id)
         result = await self.backend.do_proxy(
             ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
         )
+        await self._take_store_ref(session, request_body, result)
 
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the
         # agent can retry or handle the error.

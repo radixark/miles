@@ -1,14 +1,23 @@
 from argparse import Namespace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from miles.ray.rollout.output_snapshotter import _MAX_RETAINED_OUTPUTS, _RolloutExecutorOutputSnapshotter
 from miles.utils.types import Sample
 
 
-def _args() -> Namespace:
-    return Namespace(ci_test=False, ci_inject_missing_prefetched_batch_bug=False)
+def _args(**overrides) -> Namespace:
+    return Namespace(
+        **{
+            "ci_test": False,
+            "ci_inject_missing_prefetched_batch_bug": False,
+            "enable_sample_ownership_checker": False,
+            "use_output_store": False,
+            **overrides,
+        }
+    )
 
 
 class TestRolloutExecutorOutputSnapshotter:
@@ -18,7 +27,7 @@ class TestRolloutExecutorOutputSnapshotter:
         snapshotter.capture(trainer_model_id=None, rollout_id=3, data=[Sample(index=7)], metadata={})
         snapshotter.save(tmp_path)
         restored = _RolloutExecutorOutputSnapshotter(
-            args=Namespace(ci_test=True, ci_inject_missing_prefetched_batch_bug=True)
+            args=_args(ci_test=True, ci_inject_missing_prefetched_batch_bug=True)
         )
         restored.load(tmp_path)
 
@@ -30,12 +39,26 @@ class TestRolloutExecutorOutputSnapshotter:
         snapshotter.capture(trainer_model_id=None, rollout_id=3, data=[Sample(index=7)], metadata={})
         snapshotter.save(tmp_path)
         restored = _RolloutExecutorOutputSnapshotter(
-            args=Namespace(ci_test=True, ci_inject_missing_prefetched_batch_bug=True)
+            args=_args(ci_test=True, ci_inject_missing_prefetched_batch_bug=True)
         )
         restored.load(tmp_path)
 
         assert restored.get(trainer_model_id=None, rollout_id=3) is None
         restored.capture(trainer_model_id=None, rollout_id=3, data=[Sample(index=8)], metadata={})
+
+    @pytest.mark.parametrize("use_output_store", [False, True])
+    def test_a_batch_restored_with_inline_replay_is_regenerated_under_the_store_switch(
+        self, tmp_path: Path, use_output_store: bool
+    ) -> None:
+        """A run saved without --use-output-store holds inline replay arrays, which convert rejects under it."""
+        snapshotter = _RolloutExecutorOutputSnapshotter(args=_args())
+        inline = Sample(index=7, rollout_routed_experts=np.zeros((1, 1, 1), dtype=np.int32))
+        snapshotter.capture(trainer_model_id=None, rollout_id=3, data=[inline], metadata={})
+        snapshotter.save(tmp_path)
+        restored = _RolloutExecutorOutputSnapshotter(args=_args(use_output_store=use_output_store))
+        restored.load(tmp_path)
+
+        assert (restored.get(trainer_model_id=None, rollout_id=3) is None) == use_output_store
 
     def test_a_replayed_batch_cannot_be_captured_twice(self, tmp_path: Path) -> None:
         """Re-capturing a key would overwrite the snapshot a replayed rollout still owns."""
