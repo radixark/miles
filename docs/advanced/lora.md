@@ -90,7 +90,7 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Bridge | GLM-5 / 5.1 / 5.2 744B-A40B | MoE + MLA + DSA | [GLM-5.1 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_1_744b_a40b_lora.py), [GLM-5.2 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_2_744b_a40b_lora.py) | CI covers reduced 6-layer / 5-layer checkpoints; historical full-744B results are described below. |
 | Bridge | Qwen3.5 / Qwen3.6 35B-A3B | Hybrid GDN + MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_qwen3_5_35b_a3b_lora.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/test_qwen3_5_35b_a3b_lora_ci.py) | Uses explicit wildcard targets to exclude MTP and vision modules. |
 | Native / raw | Inkling / Inkling-Small | Native multimodal MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_inkling.py), [Inkling-Small 6-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_inkling_small_6layer_lora_ci.py) | Larger profiles are launcher/experiment evidence rather than LoRA CI. |
-| Native / raw | Qwen3 0.6B, Qwen3.5-35B-A3B | Dense GQA; gated-GQA + GDN hybrid MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_qwen3_lora_native.py), [Qwen3 0.6B E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_0_6b_lora_native_ci.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_5_35b_a3b_lora_native_ci.py) | Attention (+ dense/shared MLP) adapters; GDN layers carry none. |
+| Native / raw | Qwen3 0.6B, Qwen3.5-35B-A3B | Dense GQA; gated-GQA + GDN hybrid MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_qwen3_lora_native.py), [Qwen3 0.6B E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_0_6b_lora_native_ci.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_5_35b_a3b_lora_native_ci.py) | E2E targets attention (+ dense/shared MLP); GDN adapters have no E2E yet. |
 | Native / raw | GLM-4.7-Flash, GLM-5.2, Kimi K2.5 | MLA MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_lora_native.py), [GLM-5.2 5-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_glm5_2_5layer_lora_native_ci.py), [Kimi K2.5 2-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_kimi_k25_2layer_lora_native_ci.py) | MLA attention adapters; routed experts require Bridge. |
 | Native / raw | GLM-5.3-Flash | Hybrid KDA + DSA MoE + mHC | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_3_flash_lora.py), [model page](/models/glm/glm5-3-flash) | KDA, DSA (except `kv_b_proj`) and dense/shared MLP adapters; routed experts stay frozen. Serving needs SGLang LoRA on the KDA projections. |
 
@@ -214,7 +214,8 @@ For Bridge, SGLang receives the selected HF paths and normalizes them into buffe
 (for example, Q/K/V become `qkv_proj`); it does not own the selection policy.
 Adapter checkpoints derive their concrete `target_modules` from exported tensor
 keys rather than a separate Megatron-to-HF name table. Online adapter registration
-uses the resolved HF selection for Bridge and native LoRA, and `all-linear` for
+uses the resolved HF selection for Bridge and native LoRA (native Qwen3.5 / 3.6 GDN `in_proj` targets are
+registered as their exported components `in_proj_q/k/v/z/b/a`), and `all-linear` for
 native Inkling, without an extra
 tensor export.
 This requires [SGLang's HF-path normalization support](https://github.com/sgl-project/sglang/pull/40242),
