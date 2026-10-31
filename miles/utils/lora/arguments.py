@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 def validate_lora_args(args):
+    if args.lora_type is None:
+        args.lora_type = _default_lora_type(args)
     validate_multi_lora_args(args)
     if not is_lora_enabled(args):
         return
@@ -28,9 +30,6 @@ def validate_lora_args(args):
         "torchtitan",
     ), f"LoRA injection is not implemented for --train-backend {args.train_backend}; use megatron or torchtitan"
     assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
-    # native trains one lora_A per HF projection; Bridge's default shares one across a fused projection
-    if args.lora_type is None:
-        args.lora_type = "canonical_lora" if args.megatron_to_hf_mode == "raw" else "lora"
     args.hf_lora_targets = _resolve_lora_targets(args, load_hf_config(args.hf_checkpoint))
     args.lora_adapter_targets = list(args.hf_lora_targets)
 
@@ -47,6 +46,17 @@ def validate_lora_args(args):
             "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
             "shared-outer" if args.experts_shared_outer_loras else "per-expert",
         )
+
+
+def _default_lora_type(args) -> str:
+    """The one owner of --lora-type's default. Native gives every projection its spec declares its own lora_A
+    and Tinker serves the PEFT / cookbook layout; Bridge's LoRA and torchtitan share one lora_A per fused
+    projection."""
+    if args.train_backend == "megatron" and args.megatron_to_hf_mode == "raw":
+        return "canonical_lora"
+    if args.entry == "serve":
+        return "canonical_lora"
+    return "lora"
 
 
 def validate_lora_args_after_megatron(args):

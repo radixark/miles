@@ -239,9 +239,6 @@ def parse_args_and_get_parser(
         nonlocal parser
         training_backend_arg_names.update(action.dest for action in value._actions)
         parser = add_miles_arguments(value)
-        if entry == "serve":
-            # Tinker adapters default to the PEFT / Tinker cookbook layout
-            parser.set_defaults(lora_type="canonical_lora")
         return parser
 
     backend = parse_args_train_backend()

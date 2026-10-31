@@ -21,9 +21,8 @@ class TorchtitanArgs(FSDPArgs):
 
 def build_torchtitan_parser(extra_args_provider=None):
     parser = build_dataclass_parser(TorchtitanArgs, "torchtitan Training (miles)", extra_args_provider)
-    # torchtitan's LoRA shares one lora_A across a fused q/k/v or gate/up projection, initialized
-    # kaiming_uniform_(a=sqrt(5))
-    parser.set_defaults(lora_type="lora", lora_A_init_method="kaiming")
+    # torchtitan's LoRA initializes lora_A kaiming_uniform_(a=sqrt(5)); --lora-type defaults in validate_lora_args
+    parser.set_defaults(lora_A_init_method="kaiming")
     return parser
 
 
