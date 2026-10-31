@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -20,9 +21,13 @@ from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_d
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.object_store import ObjectStoreGetResult
+from miles.utils.output_store.plan import is_segments_column
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
+
+if TYPE_CHECKING:
+    from radix_transfer_plugins import OutputStore
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +47,7 @@ def get_rollout_data(
     witness_info: WitnessInfo | None = None,
     *,
     train_parallel_config: TrainParallelConfig,
-    output_store_read: Callable | None = None,
+    output_store: "OutputStore | None" = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
@@ -53,7 +58,7 @@ def get_rollout_data(
         dp_rank=parallel_state.effective_dp.rank,
         train_parallel_config=train_parallel_config,
         witness_info=witness_info,
-        output_store_read=output_store_read,
+        output_store=output_store,
     )
     # move tokens to the device in advance
     rollout_data["tokens"] = [
@@ -123,10 +128,10 @@ def get_rollout_data(
                     )
                 )
             ]
-    if "rollout_routed_experts" in rollout_data:
-        rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
-    if "rollout_indexer_topk" in rollout_data:
-        rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
+    # An output store column holds segments, whose rows replay reads per micro batch.
+    for key in ("rollout_routed_experts", "rollout_indexer_topk"):
+        if key in rollout_data and not is_segments_column(rollout_data[key]):
+            rollout_data[key] = [torch.from_numpy(r) for r in rollout_data[key]]
     return rollout_data, store_get_result
 
 

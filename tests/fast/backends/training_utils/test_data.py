@@ -177,7 +177,7 @@ class TestGetRolloutDataParallelWiring:
             dp_rank: int,
             train_parallel_config: TrainParallelConfig,
             witness_info: object,
-            output_store_read: object,
+            output_store: object,
         ) -> tuple[dict[str, list[list[int]]], object]:
             seen.append((dp_rank, train_parallel_config, witness_info))
             return {"tokens": [[1]], "loss_masks": [[1]]}, store_result

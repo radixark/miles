@@ -20,7 +20,7 @@ def enable(args) -> bool:
     return routing_replay_manager.enabled
 
 
-def attach(args, models, data_iterators, num_microbatches, rollout_data, align=None) -> None:
+def attach(args, models, data_iterators, num_microbatches, rollout_data, output_store=None, align=None) -> None:
     if not uses_rollout_replay(args):
         return
 
@@ -31,6 +31,7 @@ def attach(args, models, data_iterators, num_microbatches, rollout_data, align=N
         data_iterator=data_iterators,
         num_microbatches=num_microbatches,
         rollout_data=rollout_data,
+        output_store=output_store,
         align=align,
     )
 

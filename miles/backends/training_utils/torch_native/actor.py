@@ -162,7 +162,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
             rollout_data, store_get_result = get_rollout_data(
                 args=self.args,
                 rollout_data_ref=rollout_data_ref,
-                output_store_read=self.output_store_read,
+                output_store=self.output_store,
                 witness_info=None,
                 train_parallel_config=self.train_parallel_config,
             )
@@ -190,6 +190,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
             data_iterators,
             num_microbatches,
             rollout_data,
+            output_store=self.output_store,
             align=self.align_token_side_channel,
         )
         data_iterator = data_iterators[0]

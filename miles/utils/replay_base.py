@@ -79,6 +79,8 @@ class BaseReplayManager:
         # This step's source: `fill(i)` records micro batch i's entry in every replay.
         self._fill: Callable[[int], None] | None = None
         self._filled = 0
+        # With output store columns: the ReadSlots their rows are read into, kept across steps.
+        self.read_slots = None
 
     def create_replay(self, stream_idx: int | None = None) -> Replay:
         replay = Replay(stream_idx=stream_idx)

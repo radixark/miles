@@ -199,8 +199,11 @@ def test_store_sample_equals_inline_sample(seed):
         assert store_column.dtype == inline_column.dtype == dtype
         assert torch.equal(store_column, inline_column), (store_column.tolist(), inline_column.tolist())
     if R3 in plan.fields:
-        assert columns["rollout_routed_experts"].dtype == inline.rollout_routed_experts.dtype == np.int32
-        np.testing.assert_array_equal(columns["rollout_routed_experts"], inline.rollout_routed_experts)
+        # The column is the segments; replay reads their rows.
+        segments = columns["rollout_routed_experts"]
+        rows = np.concatenate([objects[seg.ref.key][R3][seg.start : seg.end] for seg in segments.segs])
+        assert rows.dtype == inline.rollout_routed_experts.dtype == np.int32
+        np.testing.assert_array_equal(rows, inline.rollout_routed_experts)
     if mode == "selected":
         assert set(columns).isdisjoint(TOPK_COLUMNS) and inline.rollout_topk_token_ids is None
         return

@@ -3,8 +3,11 @@
 Each case rolls out a batch both ways (``test_plan_vs_inline.run_case``), converts and splits
 each batch across DP ranks, and has the store shards materialize their columns from the stored
 objects. Every column of every shard must equal the inline shard's: values, dtypes and types.
+A forward column holds each sample's segments instead, whose rows must be the inline rows.
 """
 
+import sys
+import types
 from types import SimpleNamespace
 
 import numpy as np
@@ -26,8 +29,14 @@ from miles.rollout.generate_utils import tool_call_utils
 from miles.utils import object_store
 from miles.utils.data import process_rollout_data
 from miles.utils.object_store import ObjectStoreGetResult
-from miles.utils.output_store.plan import MASK_SUPPORT_LOGPROBS, StorePlanError
-from miles.utils.output_store.trainer_columns import materialize_store_columns
+from miles.utils.output_store.plan import (
+    MASK_LENGTHS,
+    MASK_SUPPORT_LOGPROBS,
+    MASK_TOKEN_IDS,
+    StorePlanError,
+    is_segments_column,
+)
+from miles.utils.output_store.trainer_columns import maybe_materialize_store_plans
 
 DP_SIZE = 2
 
@@ -36,16 +45,31 @@ DP_SIZE = 2
 def fakes(monkeypatch):
     monkeypatch.setattr(tool_call_utils, "tokenize_tool_responses", lambda messages, tokenizer: list(messages))
     fake_store_refs(monkeypatch)
+    stashes = types.ModuleType("radix_transfer_plugins.stashes.token_output")
+    stashes.TokenOutputStash = object
+    monkeypatch.setitem(
+        sys.modules, "radix_transfer_plugins.stashes", types.ModuleType("radix_transfer_plugins.stashes")
+    )
+    monkeypatch.setitem(sys.modules, "radix_transfer_plugins.stashes.token_output", stashes)
 
 
-def reader(objects: dict, calls: list):
+class FakeOutputStore:
     """``OutputStore.read_many`` over plain arrays, recording what it was asked for."""
 
-    def read(requests):
-        calls.append([(ref.key, tuple(names)) for ref, names in requests])
-        return [SimpleNamespace(**{name: objects[ref.key][name] for name in names}) for ref, names in requests]
+    def __init__(self, objects: dict, calls: list):
+        self.objects, self.calls = objects, calls
 
-    return read
+    def read_many(self, requests, *, stash_type):
+        self.calls.append([(ref.key, tuple(names)) for ref, names in requests])
+        return [SimpleNamespace(**{name: self.objects[ref.key][name] for name in names}) for ref, names in requests]
+
+
+def segment_rows(column: list, objects: dict) -> list[np.ndarray]:
+    """Each sample's rows of a segments column, read whole: what the inline column holds."""
+    return [
+        np.concatenate([objects[seg.ref.key][segments.stored[0]][seg.start : seg.end] for seg in segments.segs])
+        for segments in column
+    ]
 
 
 def rollout(seed: int):
@@ -77,7 +101,9 @@ def rollout(seed: int):
     return args, inline, store, objects, mode
 
 
-def assert_same_column(store, inline, name):
+def assert_same_column(store, inline, name, objects):
+    if is_segments_column(store):
+        store = segment_rows(store, objects)
     assert len(store) == len(inline), name
     for s, i in zip(store, inline, strict=True):
         assert type(s) is type(i), (name, type(s), type(i))
@@ -102,34 +128,37 @@ def test_store_shards_carry_the_inline_columns(seed):
 
     for inline_shard, store_shard in zip(inline_shards, store_shards, strict=True):
         calls = []
-        materialize_store_columns(args, store_shard, read=reader(objects, calls))
+        maybe_materialize_store_plans(args, store_shard, store=FakeOutputStore(objects, calls))
 
         assert store_shard.keys() == inline_shard.keys()
         for name, column in inline_shard.items():
-            assert_same_column(store_shard[name], column, name)
-        # One read per shard, each object once; selected requests stored no support log-probs.
-        (requests,) = calls
-        assert len({key for key, _ in requests}) == len(requests)
-        if mode == "selected":
-            assert all(MASK_SUPPORT_LOGPROBS not in names for _, names in requests)
+            assert_same_column(store_shard[name], column, name, objects)
+        # At most one read per shard, each object once, and only the sampling mask: replay reads the
+        # forward fields per micro batch. Selected requests stored no support log-probs.
+        assert len(calls) <= 1
+        for requests in calls:
+            assert len({key for key, _ in requests}) == len(requests)
+            assert all(set(names) <= {MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS} for _, names in requests)
+            if mode == "selected":
+                assert all(MASK_SUPPORT_LOGPROBS not in names for _, names in requests)
 
 
 def test_a_shard_without_plans_is_left_alone():
     shard = {"tokens": [[1, 2]], "response_lengths": [1]}
     # The column alone decides: no args field is read.
-    materialize_store_columns(SimpleNamespace(), shard, read=None)
+    maybe_materialize_store_plans(SimpleNamespace(), shard, store=None)
     assert shard == {"tokens": [[1, 2]], "response_lengths": [1]}
 
 
 def test_plans_without_a_reader_or_their_objects_fail_without_retries():
     args, _, store, objects, _ = rollout(1)
     data = convert_samples_to_train_data(args, store, {}, None, None)
-    with pytest.raises(StorePlanError, match="no output store reader"):
-        materialize_store_columns(args, dict(data), read=None)
+    with pytest.raises(StorePlanError, match="no output store client"):
+        maybe_materialize_store_plans(args, dict(data), store=None)
     # A deleted object: an FT retry would read the same nothing.
     missing = {key: arrays for key, arrays in objects.items() if not key.startswith("0/")}
     with pytest.raises(StorePlanError, match="cannot read this shard's output store objects"):
-        materialize_store_columns(args, dict(data), read=reader(missing, []))
+        maybe_materialize_store_plans(args, dict(data), store=FakeOutputStore(missing, []))
 
 
 def test_ci_test_catches_a_sampled_log_prob_the_candidates_disagree_with():
@@ -139,7 +168,7 @@ def test_ci_test_catches_a_sampled_log_prob_the_candidates_disagree_with():
     tampered.rollout_log_probs[-1] += 0.5
     data = convert_samples_to_train_data(args, store, {}, None, None)
     with pytest.raises(ValueError, match="same sampler distribution"):
-        materialize_store_columns(args, data, read=reader(objects, []))
+        maybe_materialize_store_plans(args, data, store=FakeOutputStore(objects, []))
 
 
 @pytest.mark.parametrize("delay_split", [True, False])
@@ -165,12 +194,12 @@ def test_every_rank_materializes_its_own_shard(monkeypatch, delay_split):
             dp_rank=rank,
             train_parallel_config=config,
             witness_info=None,
-            output_store_read=reader(objects, calls),
+            output_store=FakeOutputStore(objects, calls),
         )
         expected = process_rollout_data_shard(args, dict(inline_shards[rank]))
         assert shard.keys() == expected.keys()
         for name, column in expected.items():
-            assert_same_column(shard[name], column, name)
+            assert_same_column(shard[name], column, name, objects)
         # The stored value keeps its plans: an FT retry reads them again.
         assert "rollout_store_plan" in result.value and len(calls) == 1
 
@@ -187,12 +216,13 @@ def test_a_failed_store_read_releases_the_shard(monkeypatch):
     data = convert_samples_to_train_data(args, samples, {}, None, None)
     ref = [store.put(value=shard) for shard in split_train_data_by_dp(args, data, config)]
 
-    def read(requests):
-        raise TimeoutError("output store read timed out")
+    class TimingOutStore:
+        def read_many(self, requests, *, stash_type):
+            raise TimeoutError("output store read timed out")
 
     with pytest.raises(TimeoutError):
         process_rollout_data(
-            args, ref, dp_rank=0, train_parallel_config=config, witness_info=None, output_store_read=read
+            args, ref, dp_rank=0, train_parallel_config=config, witness_info=None, output_store=TimingOutStore()
         )
     # The caller never got the result to release: an FT retry would leak the shard's buffer.
     assert len(released) == 1
