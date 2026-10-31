@@ -28,7 +28,7 @@ from miles.backends.megatron_utils.lora.native.spec.mlp import (
 )
 from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
-from miles.utils.lora.utils import lora_rollout_enabled, matches_lora_target
+from miles.utils.lora.utils import matches_lora_target
 
 logger = logging.getLogger(__name__)
 
@@ -194,10 +194,6 @@ def resolve_adapter_targets(
 
 def validate_native_lora_args(args) -> None:
     """Reject run configurations native LoRA has not been validated with; needs Megatron's resolved args."""
-    assert args.colocate or not lora_rollout_enabled(args), (
-        "native LoRA syncs adapters only to colocated engines; use --colocate, --lora-train-only, "
-        "or --megatron-to-hf-mode bridge"
-    )
     assert not args.overlap_param_gather, (
         "native LoRA does not support --overlap-param-gather: sibling-module adapter attachment has not "
         "been validated against MCore's bucket prefetch ordering."

@@ -44,7 +44,7 @@ the torchtitan backend's. All are separate from SGLang's serving-side
 | Implementation | How the adapter is built | Model coverage on current `main` | Status |
 |---|---|---|---|
 | **Megatron-Bridge PEFT** | `AutoBridge` builds the provider, applies Bridge LoRA before DDP, and exports HF-named adapter tensors. Select it with `--megatron-to-hf-mode bridge`. | Qwen2.5, Qwen3, GPT-OSS, Kimi K2.5, GLM-5/5.1/5.2/5.3, and Qwen3.5/3.6, subject to the evidence and module caveats below. | General production path. Current multi-LoRA also requires this path. |
-| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles.backends.megatron_utils.lora.native` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles/backends/megatron_utils/lora/native/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6/Next hybrids (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), Inkling, and Kimi K3. | Single-LoRA, colocated. Unregistered models fail at startup. |
+| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles.backends.megatron_utils.lora.native` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles/backends/megatron_utils/lora/native/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6/Next hybrids (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), Inkling, and Kimi K3. | Single-LoRA. Unregistered models fail at startup. |
 | **torchtitan LoRA** | Under `--train-backend torchtitan`, torchtitan's own `LoRATransform` adapts the Linear projections the HF targets name before the model is built and parallelized; the model's state-dict adapter names the adapters back as HF PEFT tensors. | Single-adapter LoRA on Linear projections of `--titan-model-name qwen3` (other torchtitan models are refused): dense attention and MLP; attention-only on Qwen3 MoE is checked at config level but not yet run end to end. torchtitan fuses q/k/v and gate/up into one projection each, sharing one `lora_A`, so a target set takes all of a fused projection or none of it, and each HF projection exports a copy of the shared `lora_A` with its own rows of `lora_B`. Routed experts are not adapted. Defaults to `--lora-type lora` (one `lora_A` per fused projection) and `--lora-A-init-method kaiming` (torchtitan's init); other values are refused. No dropout, no `--lora-adapter-path`. | New; covered by the Qwen3-4B E2E below. |
 
 <Note>
@@ -139,7 +139,7 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 | `--lora-base-cpu-backup` | off | Colocated mode only: keep a CPU mirror of the frozen SGLang base and avoid re-sending base weights. This trades host RAM for faster and more reliable pause/resume. |
 | `--lora-train-only` | off | Train the adapter while keeping ordinary rollout engines on the frozen base policy. |
 | `--experts-shared-outer-loras` | off | Use shared outer factors for grouped MoE experts. This layout is not checkpoint-compatible with per-expert LoRA. |
-| `--check-lora-weight-equal` | off | On the colocated path, verify each synchronized adapter tensor with SHA-256. |
+| `--check-lora-weight-equal` | off | Verify each synchronized adapter tensor with SHA-256. |
 | `--update-weights-interval` | `1` | Publish new weights every N rollout/train iterations. This is not LoRA-specific, but it controls when the live adapter is synchronized. |
 
 ### HF target source of truth
@@ -233,9 +233,7 @@ Bridge-only.
 | Topology | Adapter transport | Requirements |
 |---|---|---|
 | Colocated | Local tensor serialization / CUDA IPC | Add `--colocate`; large-model recipes generally also use `--lora-base-cpu-backup`. Pipeline parallel adapter shards are assembled before the load. |
-| Disaggregated, including multi-node | NCCL broadcast to remote SGLang engines | Use `--update-weight-transfer-mode broadcast`, Bridge mode, and `--pipeline-model-parallel-size 1`. |
-
-Native LoRA is colocated only. Remote/disaggregated LoRA sync requires Bridge.
+| Disaggregated, including multi-node | NCCL broadcast to remote SGLang engines | Use `--update-weight-transfer-mode broadcast`. |
 
 On SGLang attention DP (`--sglang-attn-dp-size N`, or the deprecated
 `--sglang-enable-dp-attention --sglang-dp-size N`), SGLang serves LoRA only from
@@ -297,7 +295,7 @@ alternative aligned-expert path.
   native LoRA imports HF adapters through `--lora-adapter-path`.
 - **Weight synchronization.** Colocated IPC and remote NCCL broadcast both ship
   adapter tensors at each configured update boundary without merging them into
-  the base. A checksum checker is available for the colocated path.
+  the base. `--check-lora-weight-equal` verifies them with SHA-256.
 - **Model structures.** Dense attention/MLP, MLA, GDN, multimodal models, models
   containing DSA, and both per-expert and shared-outer MoE adapters have
   validated recipes or tests. DSA-indexer adapters themselves are not validated;

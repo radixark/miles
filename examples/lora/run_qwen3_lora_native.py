@@ -64,6 +64,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     num_gpus_per_node: int = 8
     tensor_model_parallel_size: int = 2
+    # off: one engine on rollout_num_gpus_per_engine GPUs, the trainer on the rest
+    colocate: bool = True
 
     lr: float = 1e-5
     lora_rank: int = 16
@@ -155,6 +157,12 @@ def _train(args: ScriptArgs):
         f"TP{args.tensor_model_parallel_size}, rollout tp={args.rollout_num_gpus_per_engine}"
     )
     load_save_path = f"{args.save_dir}/{args.run_id}"
+    actor_num_gpus = args.num_gpus_per_node
+    if args.colocate:
+        placement_args = "--colocate "
+    else:
+        actor_num_gpus -= args.rollout_num_gpus_per_engine
+        placement_args = f"--rollout-num-gpus {args.rollout_num_gpus_per_engine} "
 
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} --load {args.torch_dist} "
@@ -213,7 +221,7 @@ def _train(args: ScriptArgs):
     misc_args = (
         "--attention-dropout 0.0 --hidden-dropout 0.0 "
         "--update-weight-buffer-size 536870912 "
-        f"--actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --colocate "
+        f"--actor-num-nodes 1 --actor-num-gpus-per-node {actor_num_gpus} {placement_args}"
     )
 
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""

@@ -247,7 +247,6 @@ def _native_run_args(tmp_path, model_type, **overrides):
 @pytest.mark.parametrize(
     "override, message",
     [
-        ({"colocate": False}, "colocated"),
         ({"overlap_param_gather": True}, "overlap-param-gather"),
         ({"moe_shared_expert_overlap": True}, "moe-shared-expert-overlap"),
         ({"overlap_grad_reduce": True}, "overlap-grad-reduce"),
@@ -261,6 +260,7 @@ def test_native_run_contract_rejects_unvalidated_configs(tmp_path, override, mes
 
 def test_native_run_contract_accepts_its_validated_configs(tmp_path):
     validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3"))
+    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False))
     validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False, lora_train_only=True))
     # expert TP only matters for specs whose routed experts carry adapters
     validate_native_lora_args(_native_run_args(tmp_path, "qwen3_moe", expert_tensor_parallel_size=2))
