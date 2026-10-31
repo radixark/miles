@@ -390,7 +390,7 @@ def forward_only(
         return output_tensor, partial(f, **callback_kwargs)
 
     # eval() also selects inference kernels (TE attention), so it only switches off train-only behavior
-    if args.train_only_forward_options:
+    if args.backend.train_only_forward_options:
         for model_module in model:
             model_module.eval()
 

@@ -44,6 +44,8 @@ _RESOLVED_AFTER_PARSING: dict[str, Any] = dict(
     use_sampling_support_replay=False,
     rollout_sampling_logprobs_mode="selected",
     run_uuid="0" * RUN_UUID_LENGTH,
+    # Megatron's default hidden / attention dropout are 0.1
+    train_only_forward_options=["--hidden-dropout", "--attention-dropout"],
 )
 
 
