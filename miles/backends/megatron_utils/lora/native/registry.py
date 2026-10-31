@@ -21,7 +21,7 @@ from miles.backends.megatron_utils.lora.native.spec.attention import (
 from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, LoRAArchSpec
 from miles.backends.megatron_utils.lora.native.spec.gdn import Qwen35GDNSpec
 from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
-from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec
+from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec, LMHeadSpec
 from miles.backends.megatron_utils.lora.native.spec.mlp import (
     DeepSeekV4SharedExpertSpec,
     FusedGateUpMLPSpec,
@@ -36,13 +36,22 @@ logger = logging.getLogger(__name__)
 _SHARED_EXPERT_BLOCK = re.compile(r"(?:^|\.)shared_experts?$")
 
 
+_LM_HEAD = LMHeadSpec()
+
+
 def _arch_spec(
-    attention: AttentionSpecBase, *, mlp=None, has_linear_attention_layers: bool = False, linear_attention=None
+    attention: AttentionSpecBase,
+    *,
+    mlp=None,
+    lm_head=_LM_HEAD,
+    has_linear_attention_layers: bool = False,
+    linear_attention=None,
 ) -> LoRAArchSpec:
     return LoRAArchSpec(
         name=attention.name,
         attention=attention,
         mlp=mlp or SplitGateUpMLPSpec(),
+        lm_head=lm_head,
         has_linear_attention_layers=has_linear_attention_layers,
         linear_attention=linear_attention,
     )
@@ -129,7 +138,8 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "qwen3_next": hybrid,
         "deepseek_v3": mla,
         "deepseek_v32": mla,
-        "deepseek_v41": _arch_spec(DeepSeekV41AttentionSpec(), mlp=DeepSeekV4SharedExpertSpec()),
+        # its converter names the output head `head`, which no adapter here has been validated on
+        "deepseek_v41": _arch_spec(DeepSeekV41AttentionSpec(), mlp=DeepSeekV4SharedExpertSpec(), lm_head=None),
         "glm4_moe_lite": mla,
         "glm_moe_dsa": mla,
         "glm5_next": _glm5_next_arch_spec(),
@@ -223,6 +233,29 @@ def validate_native_lora_args(args) -> None:
     assert (
         spec.experts is None or args.expert_tensor_parallel_size == 1
     ), f"native {spec.name} expert LoRA assumes --expert-tensor-parallel-size 1"
+    if spec.lm_head is not None and _selects_head(spec, args.hf_checkpoint, args.hf_lora_targets):
+        assert not args.enable_mtp_training, (
+            "native LoRA's lm_head adapter does not support --enable-mtp-training: the MTP heads reuse the output "
+            "layer, so their loss would train the adapter"
+        )
+        exports_merged = args.save_hf is not None or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
+        assert args.untie_embeddings_and_output_weights or not exports_merged, (
+            "a tied lm_head adapter cannot be merged into HF weights (it would change the input embedding); "
+            "drop --save-hf / eval snapshots or the unembed target"
+        )
+
+
+def _selects_head(spec: LoRAArchSpec, hf_checkpoint: str, hf_targets: list[str]) -> bool:
+    """Whether the targets reach the output head; a glob like ``*head`` names it only through the HF modules."""
+    from miles.utils.hf_utils.config import load_hf_config
+    from miles.utils.hf_utils.weight_mapping import HfWeightMapping
+
+    modules = [
+        name.removesuffix(".weight")
+        for name in HfWeightMapping.from_config(load_hf_config(hf_checkpoint)).parameter_names
+    ]
+    selected = [module for module in modules if any(matches_lora_target(module, target) for target in hf_targets)]
+    return any(spec.adapts_head(name) for name in selected + hf_targets)
 
 
 def _assert_fixed_target_layout(spec: LoRAArchSpec, hf_config: dict, hf_targets: list[str]) -> None:

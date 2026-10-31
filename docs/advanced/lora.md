@@ -64,9 +64,13 @@ The spec is selected from the checkpoint's `model_type`.
 
 Adapters cover attention projections (GQA Q/K/V/O, MLA Q-A/Q-B/KV-A/KV-B/O), dense
 MLPs, and shared experts. Routed experts carry shared-outer adapters only for Inkling
-and Kimi K3 (which require `--experts-shared-outer-loras`); Inkling's spec also covers
-its output head. Inkling and Kimi K3 accept only their verified adapter layout (Kimi
-K3 may omit the routed-expert down projection), so omit `--target-modules` for them.
+and Kimi K3 (which require `--experts-shared-outer-loras`). The output head (`lm_head`, the
+`unembed` group) is adaptable on every family except Kimi K3, GLM-5.3-Flash and DeepSeek-V4.1; on a
+tied-embedding model it gets its own adapter and the input embedding is unchanged, as with official
+Tinker's unembed. A selected head needs `--vocab-size`, and is refused with `--enable-mtp-training` and, on a
+tied-embedding model, with `--save-hf` or eval snapshots (a merged tied head would change the input embedding).
+Inkling and Kimi K3 accept only their verified adapter layout (Kimi K3 may omit the routed-expert down
+projection), so omit `--target-modules` for them.
 Qwen3.5 / Qwen3.6 GDN layers adapt `linear_attn.out_proj` and the input projections as independent
 `in_proj_q`/`in_proj_k`/`in_proj_v`/`in_proj_z`/`in_proj_b`/`in_proj_a` adapters. Official Tinker adapters
 train `in_proj_q/k/v/z` (four distinct A's); `in_proj_b`/`in_proj_a` are adapted only when targeted, which
