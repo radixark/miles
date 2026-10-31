@@ -1,4 +1,4 @@
-"""The fixed-shape (TPU) log-prob and policy-loss path agrees with the per-sample path.
+"""The fixed-shape (TPU) log-prob, policy-loss and score-centering path agrees with the per-sample path.
 
 `loss/hub/fixed_shape.py` scores the padded microbatch instead of per-sample slices. On CPU both paths
 run directly, so these tests feed them the same packed samples (the fixed-shape side gets extra padding
@@ -7,18 +7,25 @@ rows of garbage logits) and compare log-probs, entropy, loss, metrics and gradie
 
 from __future__ import annotations
 
+from argparse import Namespace
+
+import numpy as np
 import pytest
 import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
+from miles.backends.training_utils.loss.hub import fixed_shape
 from miles.backends.training_utils.loss.hub.fixed_shape import (
     _FusedLogProb,
+    fixed_shape_loss_enabled,
     fixed_shape_policy_loss_function,
+    fixed_shape_score_centering_loss_function,
     get_fixed_shape_log_probs_and_entropy,
 )
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
 from miles.backends.training_utils.loss.hub.losses import policy_loss_function
+from miles.backends.training_utils.loss.hub.score_centering_loss import score_centering_loss_function
 
 from .loss_test_utils import make_args, make_batch, make_inputs, make_parallel_state
 
@@ -57,13 +64,13 @@ def _padded(logits: torch.Tensor) -> torch.Tensor:
     return torch.cat([logits, pad], dim=1)
 
 
-def _inputs(args, seed: int = 0):
+def _inputs(args, seed: int = 0, *, response_lens: list[int] = RESPONSE_LENS):
     make_parallel_state()
     inputs = make_inputs(
         seed=seed,
         batch_size=len(PROMPT_LENS),
         prompt_lens=PROMPT_LENS,
-        response_lens=RESPONSE_LENS,
+        response_lens=response_lens,
         vocab_size=VOCAB,
         args=args,
     )
@@ -191,3 +198,136 @@ def test_fused_log_prob_matches_log_softmax(temperature):
     torch.testing.assert_close(log_probs, ref, atol=1e-5, rtol=0)
     torch.testing.assert_close(entropy, ref_entropy.detach(), atol=1e-4, rtol=0)
     torch.testing.assert_close(fused_grad.float(), logits.grad.float(), atol=1e-6, rtol=0)
+
+
+TOP_K = 5
+
+
+def _score_centering_args(**overrides):
+    defaults = dict(
+        loss_type="score_centering",
+        score_centering_is="none",
+        score_centering_tis_clip=2.0,
+        score_centering_mis_low=0.5,
+        score_centering_mis_high=5.0,
+        rollout_top_logprobs_num=TOP_K,
+    )
+    return _args(**{**defaults, **overrides})
+
+
+def _score_centering_batch(inputs: dict) -> dict:
+    """`make_batch` plus rollout top-k candidates: distinct ids, short rows padded with -1 / -inf."""
+    generator = torch.Generator().manual_seed(1)
+    ids, log_probs = [], []
+    for length in inputs["response_lens"]:
+        sample_ids = torch.rand((length, VOCAB), generator=generator).argsort(dim=-1)[:, :TOP_K]
+        sample_log_probs = -torch.rand((length, TOP_K), generator=generator) * 4
+        sample_ids[1::4, 3:] = -1
+        sample_log_probs[1::4, 3:] = -torch.inf
+        ids.append(sample_ids.numpy().astype(np.int32))
+        log_probs.append(sample_log_probs.numpy())
+    batch = make_batch(inputs, "score_centering")
+    batch["rollout_topk_token_ids"] = ids
+    batch["rollout_topk_log_probs"] = log_probs
+    # rows outside the loss mask may carry NaN; both paths must mask them before use
+    batch["rollout_log_probs"][0][::3] = torch.nan
+    batch["advantages"][0][::3] = torch.nan
+    return batch
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        dict(),
+        dict(score_centering_is="tis"),
+        dict(score_centering_is="mis"),
+        dict(entropy_coef=0.01),
+        dict(entropy_coef=0.0, observe_training_entropy=True),
+        dict(use_kl_loss=True, kl_loss_coef=0.05, kl_loss_type="low_var_kl"),
+        dict(use_kl_loss=True, kl_loss_coef=0.05, use_unbiased_kl=True),
+        dict(calculate_per_token_loss=True),
+        dict(rollout_temperature=0.7),
+        dict(log_probs_chunk_size=-1),
+    ],
+    ids=["none", "tis", "mis", "entropy", "observe-entropy", "kl", "unbiased-kl", "per-token", "temp", "unchunked"],
+)
+def test_score_centering_loss_matches(overrides):
+    _assert_score_centering_loss_matches(_score_centering_args(**{"entropy_coef": 0.0, **overrides}))
+
+
+def test_score_centering_loss_matches_with_an_empty_response():
+    """A sample with no response tokens (e.g. aborted before its first token) scores no rows."""
+    _assert_score_centering_loss_matches(_score_centering_args(entropy_coef=0.0), response_lens=[25, 0, 40])
+
+
+def _assert_score_centering_loss_matches(args, *, response_lens: list[int] = RESPONSE_LENS):
+    inputs = _inputs(args, response_lens=response_lens)
+
+    logits = inputs["policy_logits"].clone().requires_grad_(True)
+    batch = _score_centering_batch(inputs)
+    sum_of_sample_mean = get_sum_of_sample_mean(
+        batch["total_lengths"],
+        batch["response_lengths"],
+        batch["loss_masks"],
+        args.backend.calculate_per_token_loss,
+        args.qkv_format,
+        None,
+    )
+    want_loss, want_metrics = score_centering_loss_function(args, batch, logits, sum_of_sample_mean)
+    want_loss.backward()
+
+    padded = _padded(inputs["policy_logits"]).requires_grad_(True)
+    got_loss, got_metrics = fixed_shape_score_centering_loss_function(
+        args, _score_centering_batch(inputs), padded, sum_of_sample_mean=None
+    )
+    got_loss.backward()
+
+    assert torch.isfinite(want_loss)
+    torch.testing.assert_close(got_loss, want_loss, rtol=1e-6, atol=1e-7)
+    assert set(got_metrics) == set(want_metrics)
+    for key, want in want_metrics.items():
+        torch.testing.assert_close(got_metrics[key], want, rtol=1e-5, atol=1e-6, msg=key)
+    num_packed = sum(inputs["total_lens"])
+    torch.testing.assert_close(padded.grad[:, :num_packed], logits.grad, rtol=1e-5, atol=1e-8)
+    assert torch.count_nonzero(padded.grad[:, num_packed:]) == 0
+
+
+def _gate_args(**overrides) -> Namespace:
+    values = dict(
+        train_backend="torchtitan",
+        qkv_format="thd",
+        context_parallel_size=1,
+        pipeline_model_parallel_size=1,
+        loss_type="score_centering",
+        advantage_estimator="grpo",
+        true_on_policy_mode=False,
+        allgather_cp=False,
+        use_sampling_support_replay=False,
+        use_rollout_routing_replay=False,
+        use_opsm=False,
+        use_tis=False,
+        get_mismatch_metrics=False,
+        use_opd=False,
+        custom_pg_loss_reducer_function_path=None,
+        dump_details=None,
+        multi_lora=False,
+    )
+    return Namespace(**{**values, **overrides})
+
+
+@pytest.mark.parametrize(
+    "overrides, enabled",
+    [
+        (dict(), True),
+        (dict(loss_type="policy_loss"), True),
+        (dict(loss_type="sft_loss"), False),
+        # the forward-only pass would need the dense sampling mask, which has data-dependent shapes
+        (dict(use_sampling_support_replay=True), False),
+    ],
+    ids=["score-centering", "policy-loss", "sft-loss", "score-centering-replay"],
+)
+def test_fixed_shape_loss_gate(monkeypatch, overrides, enabled):
+    # TpuPlatform's values; importing it would import torch_tpu
+    monkeypatch.setattr(fixed_shape.platforms, "IS_TPU", True)
+    monkeypatch.setattr(fixed_shape.platforms.current_platform, "dynamic_shapes", False)
+    assert fixed_shape_loss_enabled(_gate_args(**overrides)) is enabled
