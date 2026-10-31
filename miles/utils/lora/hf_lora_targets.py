@@ -40,6 +40,15 @@ _QWEN_SHARED_EXPERT = _prefix_paths("mlp.shared_expert", "gate_proj", "up_proj",
 _PACKED_EXPERTS = _prefix_paths("mlp.experts", "gate_up_proj", "down_proj")
 _GDN_NEXT = _prefix_paths("linear_attn", "in_proj_qkvz", "in_proj_ba", "out_proj")
 _GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+# GDN in_proj HF module -> the components a canonical adapter exports; official Tinker trains q / k / v / z apart
+GDN_IN_PROJ_COMPONENTS_BY_MODULE = {
+    "in_proj_qkv": ("in_proj_q", "in_proj_k", "in_proj_v"),
+    "in_proj_z": ("in_proj_z",),
+    "in_proj_b": ("in_proj_b",),
+    "in_proj_a": ("in_proj_a",),
+}
+# SGLang stacks the components into in_proj_qkvz and in_proj_ba only as complete groups
+GDN_IN_PROJ_SERVED_GROUPS = (frozenset({"in_proj_qkv", "in_proj_z"}), frozenset({"in_proj_b", "in_proj_a"}))
 _KDA = _prefix_paths(
     "self_attn",
     "q_proj",
@@ -347,3 +356,29 @@ def expand_hf_lora_targets(targets: list[str], layout: HfLoraTargets) -> list[st
             matches_lora_target(module, target) for module in available
         ), f"LoRA target {target!r} is not an HF target of this model"
     return [module for module in available if any(matches_lora_target(module, target) for target in targets)]
+
+
+def gdn_in_proj_served_targets(modules: list[str], hf_targets: list[str], hf_block: str = "linear_attn") -> list[str]:
+    """Check the GDN in_proj selection of canonical adapters and name its targets after the exported components.
+
+    ``modules`` are the HF modules the targets select (the targets themselves when the model lists none).
+    """
+    leaves_by_block: dict[str, set[str]] = {}
+    for module in modules:
+        block, _, leaf = module.rpartition(".")
+        if block.endswith(hf_block) or not block:
+            leaves_by_block.setdefault(block, set()).add(leaf)
+    for block, leaves in leaves_by_block.items():
+        for group in GDN_IN_PROJ_SERVED_GROUPS:
+            assert leaves & group in (set(), group), (
+                f"GDN LoRA needs {sorted(group)} selected together in {block or hf_block} "
+                f"(got {sorted(leaves & group)}): SGLang serves the components only as a stacked group"
+            )
+    served = []
+    for target in hf_targets:
+        block, dot, leaf = target.rpartition(".")
+        if leaf in GDN_IN_PROJ_COMPONENTS_BY_MODULE and (block.endswith(hf_block) or not block):
+            served.extend(f"{block}{dot}{component}" for component in GDN_IN_PROJ_COMPONENTS_BY_MODULE[leaf])
+        else:
+            served.append(target)
+    return served

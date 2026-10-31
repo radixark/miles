@@ -208,10 +208,13 @@ compatibility conversion at startup. Adapter factories receive only Megatron
 targets; they do not overwrite the HF selection. Arbitrary layer/expert subsets
 within a registry template are not implemented and are rejected.
 For Bridge, standard LoRA requires all projections of a fused weight together;
-`canonical_lora` supports individual Q/K/V and dense gate/up selections.
+`canonical_lora` supports individual Q/K/V and dense gate/up selections, and
+Qwen3.5 / 3.6 GDN input projections as `in_proj_q`/`in_proj_k`/`in_proj_v`/`in_proj_z`/`in_proj_b`/`in_proj_a`
+adapters, each with its own `lora_A`, served to SGLang under those names; `in_proj_qkv` and `in_proj_z` are
+selected together, and so are `in_proj_b` and `in_proj_a`.
 Grouped-expert FC1 requires both gate and up; in canonical mode each gets its
-own adapter. GDN input projections remain fused and require all of their HF
-projections even in canonical mode.
+own adapter. Qwen3-Next GDN input projections remain fused and require all of
+their HF projections even in canonical mode.
 
 Tinker uses `--target-modules attn,mlp,unembed` by default; for example,
 `--target-modules attn,mlp` disables output-head training. Client SDK flags must
