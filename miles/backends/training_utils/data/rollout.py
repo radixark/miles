@@ -6,7 +6,12 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
+from miles.backends.training_utils.data.context_parallel import (
+    CPLayout,
+    slice_log_prob_with_cp,
+    slice_with_cp,
+    take_ranges,
+)
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
@@ -238,14 +243,15 @@ def get_batch(
 
         if allgather_cp:
             assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
-            assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} not divisible by cp_size {cp_size}"
-            local_len = max_seqlen // cp_size
-            start = parallel_state.cp.rank * local_len
-            tokens = [
-                F.pad(t, (0, max_seqlen - t.size(0)), value=pad_token_id)[start : start + local_len] for t in tokens
-            ]
-        else:
-            tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        layout = CPLayout.build(
+            qkv_format=qkv_format,
+            allgather_cp=allgather_cp,
+            cp_rank=parallel_state.cp.rank,
+            cp_size=cp_size,
+            max_seq_len=max_seqlen,
+        )
+        local_ranges = layout.local_ranges([t.size(0) for t in tokens])
+        tokens = [take_ranges(t, ranges, pad_token_id) for t, ranges in zip(tokens, local_ranges, strict=True)]
         sample_token_lengths = [t.size(0) for t in tokens]
         tokens = torch.stack(tokens)
 
