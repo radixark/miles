@@ -367,6 +367,8 @@ class MixedRolloutDataSource(DataSource):
             sample.index = self.sample_index
             self.sample_index += 1
             sample.metadata["dataset_name"] = config.name
+            if config.agent is not None:
+                sample.metadata["agent_config"] = copy.deepcopy(config.agent)
             sample.generate_function_path = config.generate_function
             group.append(sample)
         self.sample_group_index += 1

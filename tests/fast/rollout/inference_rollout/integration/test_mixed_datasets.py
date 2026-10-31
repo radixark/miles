@@ -8,6 +8,7 @@ from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 from tests.fast.rollout.inference_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_train
 
 from miles.rollout.generate_hub import single_turn
+from miles.utils.test_utils import mock_tools
 
 _MIXED_DATASETS = {
     "math": ([{"input": "What is 1+7?", "label": "8"}] * 3, {"samples_per_step": 1}),
@@ -85,3 +86,40 @@ def test_a_dataset_generate_function_runs_only_on_its_samples(rollout_env):
     load_and_call_train(rollout_env.args, rollout_env.data_source)
 
     assert _GENERATE_CALLS == {"science": 6}
+
+
+_AGENT_CONFIGS: list = []
+
+
+async def recording_agent(metadata, **kwargs):
+    _AGENT_CONFIGS.append((metadata["dataset_name"], metadata.get("agent_config")))
+    return await mock_tools.run_agentic_tool_call(metadata=metadata, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "rollout_env",
+    [
+        pytest.param(
+            RolloutEnvConfig(
+                extra_argv=MODULAR_ROLLOUT_BASE_ARGV
+                + extra_argv_for_variant(
+                    "agentic_tool_call", custom_agent_function_path=f"{_THIS_MODULE}.recording_agent"
+                )
+                + _BATCH_ARGV,
+                mixed_datasets={
+                    "math": _MIXED_DATASETS["math"],
+                    "science": (_MIXED_DATASETS["science"][0], {"samples_per_step": 3, "agent": {"max_turns": 3}}),
+                },
+            ),
+            id="agentic",
+        )
+    ],
+    indirect=True,
+)
+def test_a_dataset_agent_block_reaches_the_agent_function(rollout_env):
+    _AGENT_CONFIGS.clear()
+    load_and_call_train(rollout_env.args, rollout_env.data_source)
+
+    assert sorted(_AGENT_CONFIGS, key=str) == sorted(
+        [("math", None)] * 2 + [("science", {"max_turns": 3})] * 6, key=str
+    )

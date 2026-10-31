@@ -491,7 +491,7 @@ def _validate_rollout_data_yaml_config(args) -> None:
     for dataset in datasets:
         # TODO(#3947): pass these settings on to the dataset's samples
         set_fields = dataset.model_dump(exclude_none=True)
-        if unsupported := [name for name in ("max_response_len", "agent") if name in set_fields]:
+        if unsupported := [name for name in ("max_response_len",) if name in set_fields]:
             raise NotImplementedError(
                 f"--rollout-data-yaml-config dataset {dataset.name!r}: {', '.join(unsupported)} not supported yet"
             )
