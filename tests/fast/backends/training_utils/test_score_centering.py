@@ -380,3 +380,15 @@ def test_selected_log_probs_gradcheck_and_empty_response() -> None:
     assert result.shape == (0, 3)
     result.sum().backward()
     torch.testing.assert_close(logits.grad, torch.zeros_like(logits))
+
+
+@pytest.mark.parametrize("sampling_support", [False, True])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32, torch.float64])
+def test_empty_rows_have_the_non_empty_dtype(dtype: torch.dtype, sampling_support: bool) -> None:
+    # Under all-gather CP a rank without response rows all-reduces these outputs with ranks that have rows.
+    logits = torch.randn(2, 4).to(dtype)
+    ids = torch.tensor([[0, 2], [1, 3]])
+    rows = selected_log_probs_and_entropy(logits, ids, with_entropy=True, sampling_support=sampling_support)
+    empty = selected_log_probs_and_entropy(logits[:0], ids[:0], with_entropy=True, sampling_support=sampling_support)
+    assert [value.dtype for value in empty] == [value.dtype for value in rows]
+    assert empty[0].shape == (0, 2) and empty[1].shape == (0,)
