@@ -6,9 +6,11 @@ through miles' run observers (`miles.utils.observers`).
 
 ## Install
 
-The miles image installs it. Elsewhere, from a miles checkout:
+The miles image installs it. Elsewhere, such as a login node that only views
+dumps, install miles first and then the plugin, from a miles checkout:
 
 ```bash
+pip install -e .
 pip install -e plugins/miles-dashboard
 ```
 
