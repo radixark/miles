@@ -103,7 +103,7 @@ class TestResolveAdapterTargets:
         [
             ("qwen3_moe", "model.layers.*.mlp.experts.gate_up_proj"),
             ("kimi_k2", "model.layers.*.mlp.experts.*.gate_proj"),
-            ("qwen3_5", "model.language_model.layers.*.linear_attn.in_proj_qkv"),
+            ("qwen3_next", "model.layers.*.linear_attn.in_proj_qkvz"),
         ],
     )
     def test_unimplemented_projections_fail_closed(self, model_type, target):
@@ -277,3 +277,66 @@ def test_inkling_head_export_rows_follow_sglangs_served_vocab(tmp_path):
     assert _read_unpadded_vocab_size(str(tmp_path)) is None
     with pytest.raises(FileNotFoundError):
         _read_unpadded_vocab_size(str(tmp_path / "missing"))
+
+
+_GDN35 = "model.language_model.layers.*.linear_attn."
+
+
+def _qwen3_5_resolve(targets):
+    return _resolve_adapter_targets(
+        {"model_type": "qwen3_5"}, targets, hf_modules=[], lora_type="canonical_lora", experts_shared_outer_loras=False
+    )
+
+
+class TestQwen35GDNTargets:
+    def test_canonical_serves_the_in_proj_components(self):
+        """SGLang stacks in_proj_q/k/v/z and in_proj_b/a, each with its own A."""
+        targets = [f"{_GDN35}{leaf}" for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")]
+        assert _qwen3_5_resolve(targets) == [
+            f"{_GDN35}{leaf}"
+            for leaf in ("in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+        ]
+
+    def test_the_attn_group_is_attachable(self):
+        """The attn group covers the GDN layers too."""
+        config = {"model_type": "qwen3_5", "text_config": {"layer_types": ["linear_attention", "full_attention"]}}
+        targets = resolve_hf_lora_targets(config, target_modules=["attn"])
+        served = _qwen3_5_resolve(targets)
+        assert f"{_GDN35}in_proj_q" in served and f"{_GDN35}in_proj_qkv" not in served
+
+    def test_concrete_modules_are_checked_per_layer(self):
+        """With the model's module list, groups are checked on each layer's selected modules, not per selector."""
+        modules = [
+            f"model.language_model.layers.{layer}.linear_attn.{leaf}"
+            for layer in range(2)
+            for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+        ]
+
+        def resolve(targets):
+            return _resolve_adapter_targets(
+                {"model_type": "qwen3_5"},
+                targets,
+                hf_modules=modules,
+                lora_type="canonical_lora",
+                experts_shared_outer_loras=False,
+            )
+
+        # a leaf selector and a scoped one complete the group only once both reach the same layer
+        assert resolve(["in_proj_qkv", f"{_GDN35}in_proj_z"]) == [
+            "in_proj_q",
+            "in_proj_k",
+            "in_proj_v",
+            f"{_GDN35}in_proj_z",
+        ]
+        with pytest.raises(
+            AssertionError, match=r"selected together in model\.language_model\.layers\.0\.linear_attn "
+        ):
+            resolve(["model.language_model.layers.0.linear_attn.in_proj_qkv", f"{_GDN35}in_proj_z".replace("*", "1")])
+
+    @pytest.mark.parametrize(
+        "leaves", [("in_proj_qkv",), ("in_proj_z",), ("in_proj_b",), ("in_proj_qkv", "in_proj_z", "in_proj_a")]
+    )
+    def test_a_partial_stacked_group_is_rejected(self, leaves):
+        """SGLang stacks the components only as complete q/k/v/z and b/a groups."""
+        with pytest.raises(AssertionError, match="selected together"):
+            _qwen3_5_resolve([f"{_GDN35}{leaf}" for leaf in leaves])
