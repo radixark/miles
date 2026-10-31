@@ -73,6 +73,41 @@ class TestTypedAgentAbort:
 
         assert aborted == ["global", "swe"]
 
+    async def test_an_unreadable_mix_file_still_aborts_the_run_wide_agent(self, tmp_path, caplog) -> None:
+        """Abort must tear down what it can; a missing YAML used to raise out of the hook."""
+        args = ImmutableNamespace(
+            custom_agent_function_path=_hook("test86.global.run"),
+            rollout_data_yaml_config=str(tmp_path / "gone.yaml"),
+            rollout_dataset_functions={},
+        )
+        aborted: list[str] = []
+
+        async def abort_global(view: ImmutableNamespace) -> None:
+            aborted.append("global")
+
+        with function_registry.temporary("test86.global.abort", abort_global), caplog.at_level(logging.WARNING):
+            await call_agent_abort_hook(args)
+
+        assert aborted == ["global"]
+        assert "Cannot read --rollout-data-yaml-config" in caplog.text
+
+    async def test_the_hot_restart_view_without_resolved_hooks_still_aborts_dataset_agents(self, tmp_path) -> None:
+        """Hot restart passes the orchestrator config, which lacks rollout_dataset_functions."""
+        config = tmp_path / "mix.yaml"
+        config.write_text(
+            "datasets:\n  swe:\n    path: /data/swe.jsonl\n    samples_per_step: 1\n    agent_function: test86.swe.run\n"
+        )
+        args = ImmutableNamespace(custom_agent_function_path=None, rollout_data_yaml_config=str(config))
+        aborted: list[str] = []
+
+        async def abort_swe(view: ImmutableNamespace) -> None:
+            aborted.append("swe")
+
+        with function_registry.temporary("test86.swe.abort", abort_swe):
+            await call_agent_abort_hook(args)
+
+        assert aborted == ["swe"]
+
     @pytest.mark.parametrize("path", [None, "single_component", "missing_test86_package.agent"])
     async def test_absent_agent_or_abort_callback_does_not_require_plugin_state(self, path: str | None) -> None:
         """Optional abort teardown tolerates absent configuration and integrations with no sibling module."""
