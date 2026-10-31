@@ -147,7 +147,7 @@ def _run(layer, x, cu_seqlens, grad_out):
     return out, x.grad
 
 
-def check(name, targets, config, tp_group):
+def check(targets, config, tp_group):
     dtype = config.params_dtype
     torch.manual_seed(7)
     ref = ReplicatedGDN("qwen3_5", HIDDEN, HEADS, dtype).cuda()
@@ -306,7 +306,7 @@ def main():
         )
         for name, targets in TARGET_SETS.items():
             label = f"{name} TP={world}{'+SP' if sp else ''} {str(dtype).removeprefix('torch.')}"
-            errors = check(name, targets, config, tp_group)
+            errors = check(targets, config, tp_group)
             if rank == 0:
                 print(f"[{label}] " + "  ".join(f"{k}={v:.2e}" for k, v in errors.items()))
             bad = {k: v for k, v in errors.items() if _bad(k, v, dtype)}
