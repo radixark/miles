@@ -85,39 +85,29 @@ def fill_replay_data(
 
         # Row p replays token p. The final token has no row, so it is padded like the CP padding; the
         # padded positions are masked from loss.
-        max_seq_len = batch["max_seq_lens"][0] if qkv_format == "bshd" else None
-        pad_size = None if qkv_format == "bshd" else parallel_state.tp.size * args.data_pad_size_multiplier
         layout = CPLayout.build(
             qkv_format=qkv_format,
             allgather_cp=args.allgather_cp,
             cp_rank=parallel_state.cp.rank,
             cp_size=parallel_state.cp.size,
-            max_seq_len=max_seq_len,
-            pad_size=pad_size,
+            max_seq_len=batch["max_seq_lens"][0] if qkv_format == "bshd" else None,
+            pad_size=None if qkv_format == "bshd" else parallel_state.tp.size * args.data_pad_size_multiplier,
         )
         local_ranges = layout.local_ranges([t.size(0) for t in tokens])
         replay_data = [take_ranges(r, ranges, pad_func) for r, ranges in zip(replay_data, local_ranges, strict=True)]
+        if indices_are_token_positions and qkv_format == "thd" and not layout.per_pack:
+            # map indices to thd format
+            offset = 0
+            for i, r in enumerate(replay_data):
+                replay_data[i] = torch.where(r != -1, r + offset, r)
+                offset += r.shape[0]
+        replay_data = layout.pack(replay_data, pad_func)
 
         if qkv_format == "bshd":
-            replay_data = torch.stack(replay_data, dim=0)
             batch_size, seqlen, num_layers, topk = replay_data.shape
             if sequence_first:
                 replay_data = replay_data.transpose(0, 1)
             replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
-        elif layout.per_pack:
-            # The ranges already cover this rank's piece of the padded concatenation.
-            replay_data = torch.cat(replay_data, dim=0)
-        else:
-            if indices_are_token_positions:
-                # map indices to thd format
-                offset = 0
-                for i, r in enumerate(replay_data):
-                    replay_data[i] = torch.where(r != -1, r + offset, r)
-                    offset += r.shape[0]
-            replay_data = torch.cat(replay_data, dim=0)
-            pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
-            if pad != 0:
-                replay_data = pad_func(replay_data, pad)
 
         # sequence_parallel is Megatron-only; FSDP has tp_size == 1 so the slice is a no-op there.
         if args.train_backend == "megatron" and args.backend.sequence_parallel and if_sp_region:

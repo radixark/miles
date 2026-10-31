@@ -1,3 +1,4 @@
+import itertools
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Sequence
@@ -6,12 +7,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from miles.backends.training_utils.data.context_parallel import (
-    CPLayout,
-    slice_log_prob_with_cp,
-    slice_with_cp,
-    take_ranges,
-)
+from miles.backends.training_utils.data.context_parallel import CPLayout, slice_log_prob_with_cp, take_ranges
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
@@ -130,17 +126,10 @@ def get_rollout_data(
     return rollout_data, store_get_result
 
 
-def _prepare_loss_masks(
-    loss_masks: Sequence[torch.Tensor],
-    total_lengths: Sequence[int],
-    response_lengths: Sequence[int],
-    *,
-    qkv_format: str,
-    max_seqlen: int,
-    pad: int,
-    allgather_cp: bool,
-) -> torch.Tensor:
-    """Expand response masks to input-token alignment, then pack/slice them like ``tokens``.
+def _align_loss_masks_to_tokens(
+    loss_masks: Sequence[torch.Tensor], total_lengths: Sequence[int], response_lengths: Sequence[int]
+) -> list[torch.Tensor]:
+    """Expand response masks to input-token alignment; ``get_batch`` then packs them like ``tokens``.
 
     Contract: ``mask[i]`` is 1 iff ``tokens[i]`` is a supervised response token.
     Whoever derives labels owns the prediction shift. Megatron does so when
@@ -149,31 +138,10 @@ def _prepare_loss_masks(
     alignment is fixed before CP slicing because a local roll in Miles would
     have no halo exchange across shard or packed-sequence boundaries.
     """
-    parallel_state = get_parallel_state()
-    cp_size = parallel_state.cp.size
-    cp_rank = parallel_state.cp.rank
-    aligned_masks = []
-    for loss_mask, total_length, response_length in zip(loss_masks, total_lengths, response_lengths, strict=True):
-        prompt_length = total_length - response_length
-        loss_mask = F.pad(loss_mask, (prompt_length, 0), value=0)
-        if not allgather_cp:
-            loss_mask = slice_with_cp(loss_mask, 0, qkv_format, max_seqlen)
-        aligned_masks.append(loss_mask)
-
-    if qkv_format == "bshd":
-        if allgather_cp:
-            local_len = max_seqlen // cp_size
-            start = cp_rank * local_len
-            aligned_masks = [
-                F.pad(mask, (0, max_seqlen - mask.size(0)), value=0)[start : start + local_len]
-                for mask in aligned_masks
-            ]
-        return torch.stack(aligned_masks)
-
-    loss_mask = F.pad(torch.cat(aligned_masks), (0, pad), value=0)
-    if allgather_cp:
-        loss_mask = loss_mask.chunk(cp_size, dim=0)[cp_rank]
-    return loss_mask.unsqueeze(0)
+    return [
+        F.pad(loss_mask, (total_length - response_length, 0), value=0)
+        for loss_mask, total_length, response_length in zip(loss_masks, total_lengths, response_lengths, strict=True)
+    ]
 
 
 def get_batch(
@@ -229,86 +197,46 @@ def get_batch(
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?
     pad_token_id = 0
-    pad_size = parallel_state.tp.size * pad_multiplier
-    pad = 0
 
     # for cp, we need all tokens to calculate logprob
     batch["unconcat_tokens"] = tokens
 
-    cp_size = parallel_state.cp.size
-
+    if qkv_format not in ("thd", "bshd"):
+        raise ValueError(f"Unsupported qkv_format: {qkv_format}")
     if qkv_format == "bshd":
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
+    if allgather_cp:
+        assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
 
-        if allgather_cp:
-            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
-        layout = CPLayout.build(
-            qkv_format=qkv_format,
-            allgather_cp=allgather_cp,
-            cp_rank=parallel_state.cp.rank,
-            cp_size=cp_size,
-            max_seq_len=max_seqlen,
-        )
-        local_ranges = layout.local_ranges([t.size(0) for t in tokens])
-        tokens = [take_ranges(t, ranges, pad_token_id) for t, ranges in zip(tokens, local_ranges, strict=True)]
-        sample_token_lengths = [t.size(0) for t in tokens]
-        tokens = torch.stack(tokens)
+    layout = CPLayout.build(
+        qkv_format=qkv_format,
+        allgather_cp=allgather_cp,
+        cp_rank=parallel_state.cp.rank,
+        cp_size=parallel_state.cp.size,
+        max_seq_len=max_seqlen if qkv_format == "bshd" else None,
+        pad_size=parallel_state.tp.size * pad_multiplier,
+    )
+    token_lengths = [t.size(0) for t in tokens]
+    local_ranges = layout.local_ranges(token_lengths)
 
-    elif qkv_format == "thd":
-        cp_rank = parallel_state.cp.rank
+    def _pack_like_tokens(per_sample: Sequence[torch.Tensor], pad_value: int = 0) -> torch.Tensor:
+        """Per-sample tensors aligned with the tokens, in this rank's layout: [B, S] under bshd, [1, T] under thd."""
+        lengths = [x.size(0) for x in per_sample]
+        assert lengths == token_lengths, f"per-sample lengths {lengths} differ from the token lengths {token_lengths}"
+        pieces = [take_ranges(x, ranges, pad_value) for x, ranges in zip(per_sample, local_ranges, strict=True)]
+        packed = layout.pack(pieces, pad_value)
+        return packed if qkv_format == "bshd" else packed.unsqueeze(0)
 
-        if allgather_cp:
-            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
-            # DSA mode: concatenate all sequences first, then slice once with CP.
-            # We also pad the *global* concatenated stream to make per-rank batches equal.
-            cu_seqlens_list: list[int] = [0]
-            for t in tokens:
-                cu_seqlens_list.append(cu_seqlens_list[-1] + t.size(0))
+    tokens = _pack_like_tokens(tokens, pad_token_id)
+    sample_token_lengths = [sum(stop - start for start, stop in ranges) for ranges in local_ranges]
 
-            tokens = torch.cat(tokens, dim=0)
-
-            # Pad global stream so (1) divisible by cp_size (equal batches),
-            # (2) divisible by pad_size (reduce fragmentation).
-            global_pad_size = cp_size * pad_size
-            pad = (global_pad_size - tokens.size(0) % global_pad_size) % global_pad_size
-            if pad != 0:
-                tokens = F.pad(tokens, (0, pad), value=pad_token_id)
-                cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
-
-            cu_seqlens_host = tuple(cu_seqlens_list)
-            cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=current_platform.current_device())
-            tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
-        else:
-            tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
-            sample_token_lengths = [t.size(0) for t in tokens]
-
-            cu_seqlens = [0]
-            for t in tokens:
-                cu_seqlens.append(cu_seqlens[-1] + t.size(0))
-
-            tokens = torch.cat(tokens)
-
-            # Always pad to reduce memory fragmentation and maybe make the computation faster
-            pad = (pad_size - tokens.size(0) % pad_size) % pad_size
-            if pad != 0:
-                tokens = F.pad(tokens, (0, pad), value=pad_token_id)
-                cu_seqlens.append(cu_seqlens[-1] + pad)
-
-            # thd requires the cu_seqlens to be of the origin length
-            cu_seqlens_host = tuple(boundary * cp_size for boundary in cu_seqlens)
-            cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int, device=current_platform.current_device()) * cp_size
-
-        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
-
-        tokens = tokens.unsqueeze(0)
-
-        batch["cu_seqlens"] = cu_seqlens
+    if qkv_format == "thd":
+        cu_seqlens_host = tuple(layout.cu_seqlens(token_lengths))
+        batch["cu_seqlens"] = torch.tensor(cu_seqlens_host, dtype=torch.int, device=current_platform.current_device())
         # the same boundaries on the host, for consumers that must not sync the device to read them
         batch["cu_seqlens_host"] = cu_seqlens_host
-        batch["max_seqlen"] = max_seqlen
-    else:
-        raise ValueError(f"Unsupported qkv_format: {qkv_format}")
+        batch["max_seqlen"] = max(end - start for start, end in itertools.pairwise(cu_seqlens_host))
 
     # Multi-LoRA: compute per-adapter token counts from post-CP per-sample lengths.
     # NOTE: allgather CP is currently not supported
@@ -329,18 +257,7 @@ def get_batch(
 
     def _compute_transform_like_token_ids(ids_list: list):
         assert not allgather_cp, "allgather CP is not supported for FSDP"
-        if qkv_format == "bshd":
-            ids = [slice_with_cp(p, 0, qkv_format, max_seqlen) for p in ids_list]
-            ids = torch.stack(ids)
-        elif qkv_format == "thd":
-            ids = [slice_with_cp(p, 0, qkv_format) for p in ids_list]
-            ids = torch.cat(ids)
-            if pad != 0:
-                ids = F.pad(ids, (0, pad), value=0)
-            ids = ids.unsqueeze(0)
-        else:
-            raise NotImplementedError
-        return ids
+        return _pack_like_tokens(ids_list)
 
     if get_position_ids:
         position_ids_list = []
@@ -354,14 +271,8 @@ def get_batch(
     if (witness_ids := batch.get("witness_ids")) is not None:
         batch["witness_ids"] = _compute_transform_like_token_ids(witness_ids)
 
-    input_loss_masks = _prepare_loss_masks(
-        batch["loss_masks"],
-        batch["total_lengths"],
-        batch["response_lengths"],
-        qkv_format=qkv_format,
-        max_seqlen=max_seqlen,
-        pad=pad,
-        allgather_cp=allgather_cp,
+    input_loss_masks = _pack_like_tokens(
+        _align_loss_masks_to_tokens(batch["loss_masks"], batch["total_lengths"], batch["response_lengths"])
     )
     assert (
         input_loss_masks.shape == tokens.shape
