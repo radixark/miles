@@ -151,9 +151,11 @@ def check_fused_lora_selection(hf_checkpoint, hf_targets, *, canonical):
         for names in fused.values():
             selected = [name for name in names if any(matches_lora_target(name, target) for target in hf_targets)]
             missing = [name for name in names if name not in selected]
+            # a template adapts every layer alike, so the remedy names leaves, not this layer's modules
+            missing_leaves = sorted({name.rpartition(".")[2] for name in missing})
             assert not (selected and missing), (
                 f"Bridge fuses {names} into {megatron_module}, which shares one lora_A across them, so it cannot "
-                f"adapt only {selected}: add {missing} to --target-modules"
+                f"adapt only {selected}: add {missing_leaves} to --target-modules"
                 + (" or pass --lora-type canonical_lora" if splittable else "")
             )
 

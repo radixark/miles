@@ -190,7 +190,9 @@ def _check_fused(monkeypatch, targets, *, canonical, mappings=(_QWEN3_5_IN_PROJ,
 
     leaves = ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "in_proj_qkvz", "in_proj_ba")
     _fake_bridge(
-        monkeypatch, mappings, {f"model.layers.{layer}.linear_attn.{leaf}.weight" for layer in range(layers) for leaf in leaves}
+        monkeypatch,
+        mappings,
+        {f"model.layers.{layer}.linear_attn.{leaf}.weight" for layer in range(layers) for leaf in leaves},
     )
     check_fused_lora_selection("/ckpt", targets, canonical=canonical)
 
@@ -199,7 +201,7 @@ _OFFICIAL_GDN = ["model.layers.*.linear_attn.in_proj_qkv", "model.layers.*.linea
 
 
 def test_shared_a_lora_refuses_part_of_a_fused_module_at_argument_time(monkeypatch):
-    missing = r"\['model.layers.0.linear_attn.in_proj_a', 'model.layers.0.linear_attn.in_proj_b'\]"
+    missing = r"\['in_proj_a', 'in_proj_b'\]"
     with pytest.raises(AssertionError, match=rf"add {missing} to --target-modules or pass --lora-type canonical_lora"):
         _check_fused(monkeypatch, _OFFICIAL_GDN, canonical=False)
 
@@ -218,3 +220,10 @@ def test_a_layer_scoped_selection_is_checked_per_layer(monkeypatch):
     _check_fused(monkeypatch, targets, canonical=False)
     with pytest.raises(AssertionError, match=r"cannot adapt only \['model.layers.1.linear_attn.in_proj_b'\]"):
         _check_fused(monkeypatch, [*targets, "model.layers.1.linear_attn.in_proj_b"], canonical=False)
+
+
+def test_canonical_lora_still_refuses_part_of_a_fused_module_it_cannot_split(monkeypatch):
+    """Qwen3-Next's in_proj_qkvz / in_proj_ba stay one adapter under canonical_lora too."""
+    mapping = _gdn_in_proj("in_proj_qkvz", "in_proj_ba")
+    with pytest.raises(AssertionError, match=r"add \['in_proj_ba'\] to --target-modules$"):
+        _check_fused(monkeypatch, ["in_proj_qkvz"], canonical=True, mappings=(mapping,))
