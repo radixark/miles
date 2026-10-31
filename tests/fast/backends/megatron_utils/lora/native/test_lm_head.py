@@ -100,6 +100,12 @@ def test_the_vocab_sharded_b_counts_once_per_tp_rank():
     assert head_b.tensor_model_parallel and head_b.partition_dim == 0
 
 
+def test_a_head_without_a_vocab_size_fails_instead_of_exporting_padding():
+    model = _Model(tied=True)
+    with pytest.raises(AssertionError, match="--vocab-size"):
+        LMHeadSpec().attach(model, SimpleNamespace(backend=SimpleNamespace(vocab_size=None)), _context(("lm_head",)))
+
+
 def test_a_converter_naming_the_head_otherwise_fails():
     """Targets are checked against the spec's leaf; a differently named head would silently get no adapter."""
     context = _context(("lm_head",))

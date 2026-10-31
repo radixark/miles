@@ -29,6 +29,7 @@ class LMHeadSpec:
         assert hf_module.rpartition(".")[2] == self.hf_leaf, f"the converter names the output head {hf_module!r}"
         if not context.lora.selects(hf_module):
             return 0
+        assert args.backend.vocab_size is not None, "the lm_head adapter exports over --vocab-size, which is unset"
         adapter = LoRAOutputHead(
             hf_prefix=f"{hf_module}.",
             reference=weight,
