@@ -298,7 +298,7 @@ class TestQwen35GDNTargets:
         ]
 
     def test_the_attn_group_is_attachable(self):
-        """Tinker's attn group covers the GDN layers too; base native rejected every linear_attn target."""
+        """The attn group covers the GDN layers too."""
         config = {"model_type": "qwen3_5", "text_config": {"layer_types": ["linear_attention", "full_attention"]}}
         targets = resolve_hf_lora_targets(config, target_modules=["attn"])
         served = _qwen3_5_resolve(targets)
@@ -308,6 +308,6 @@ class TestQwen35GDNTargets:
         "leaves", [("in_proj_qkv",), ("in_proj_z",), ("in_proj_b",), ("in_proj_qkv", "in_proj_z", "in_proj_a")]
     )
     def test_a_partial_stacked_group_is_rejected(self, leaves):
-        """SGLang only stacks complete q/k/v/z and b/a groups, so any other subset would serve nothing."""
+        """SGLang stacks the components only as complete q/k/v/z and b/a groups."""
         with pytest.raises(AssertionError, match="selected together"):
             _qwen3_5_resolve([f"{_GDN35}{leaf}" for leaf in leaves])

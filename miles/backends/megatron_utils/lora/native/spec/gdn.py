@@ -34,8 +34,7 @@ class Qwen35GDNSpec:
 
     name = "qwen3_5_gdn"
     hf_block = "linear_attn"
-    in_proj_targets = frozenset(host for host, _component, _prefix in GDN_IN_PROJ_COMPONENTS)
-    supported_targets = in_proj_targets | {"out_proj"}
+    supported_targets = frozenset(host for host, _component, _prefix in GDN_IN_PROJ_COMPONENTS) | {"out_proj"}
     out_proj_layout = ModuleLayout(
         name="qwen3_5_gdn_out_proj",
         full_sequence=True,
@@ -77,7 +76,7 @@ class Qwen35GDNSpec:
     def served_targets(self, modules: list[str], hf_targets: list[str]) -> list[str]:
         """Check the in_proj selection and name its targets after the components native exports.
 
-        SGLang stacks only complete groups and rejects a partial one at load.
+        SGLang stacks the components only as complete groups.
         """
         leaves_by_block: dict[str, set[str]] = {}
         for module in modules:

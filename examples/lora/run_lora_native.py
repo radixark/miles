@@ -13,7 +13,8 @@ projections and the trainer and the engine agree on which modules carry an adapt
 * MLA registries: ``q_a_proj,q_b_proj,kv_a_proj_with_mqa,kv_b_proj,o_proj``
   (SGLang stacks the two down-projections into ``fused_qkv_a_proj_with_mqa``)
 * Qwen3.5: ``q_proj,k_proj,v_proj,o_proj``, where ``q_proj`` carries the output-gate
-  slice. Its linear-attention (GDN) layers have no fused qkv and get no adapter.
+  slice. Its linear-attention (GDN) layers get no adapter because these targets select no
+  ``linear_attn.*`` module.
 
 A raw-mode Qwen3.5 backward divergence (grad_norm 1e7-1e10 with recompute, NaN without)
 was once on record here; it no longer reproduces — 20-rollout runs of both Qwen3.5-35B-A3B
