@@ -67,7 +67,7 @@ class TestLogTrainStep:
         assert log_dict == payload == {"train/loss": 0.5, "train/grad_norm": 2.0, "rollout/step": 2, "train/step": 9}
 
     def test_the_rollout_step_matches_the_one_rollout_rows_log_when_scaled_to_train_steps(self, monkeypatch):
-        """Train curves line up with rollout and eval on rollout/step only if every writer uses one formula."""
+        """Train rows log the `compute_rollout_step` value that rollout and perf rows log."""
         calls = _capture(monkeypatch)
         args = Namespace(
             trainer_model_id=None,
@@ -83,7 +83,7 @@ class TestLogTrainStep:
             grad_norm=2.0,
             rollout_id=2,
             step_id=1,
-            num_steps_per_rollout=4,
+            num_steps_per_rollout=2,
             should_log=True,
         )
 
