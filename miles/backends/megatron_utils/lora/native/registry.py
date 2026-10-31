@@ -168,7 +168,8 @@ def resolve_adapter_targets(
     """
     assert lora_type == "canonical_lora", (
         "native LoRA gives every HF projection its own lora_A, which is --lora-type canonical_lora; "
-        f"--lora-type {lora_type} shares one lora_A across each fused projection on bridge"
+        f"--lora-type {lora_type} shares one lora_A across each fused projection on bridge. Drop --lora-type, "
+        "or use --megatron-to-hf-mode bridge"
     )
     _model_type, spec = resolve_config_spec(hf_config)
     assert (
