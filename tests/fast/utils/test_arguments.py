@@ -4024,3 +4024,49 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
     assert native_args is not None
     assert native_args.mtp_detach_heads is detach_heads
     assert "mtp_detach_heads" not in args.model_fields
+
+
+class TestSessionServerForwardsTheFamilyParsers:
+    """``--tito-model`` names a family whose sglang reasoning and tool-call
+    parsers are bound on its TITO class; ``miles_validate_args`` makes them the
+    engine's ``--sglang-reasoning-parser`` / ``--sglang-tool-call-parser``
+    unless the user set them (a disagreeing value raises). Without this the
+    engine auto-detects a parser from the checkpoint's template: for the
+    Qwen3.5/3.6/3.8 families ``qwen3`` with force_reasoning=False, which never
+    splits a think block the fixed template opened in the generation prompt."""
+
+    @staticmethod
+    def _validated(extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(["--use-session-server", "--num-rollout", "1", *extra, *REQUIRED_ARGS])
+        miles_validate_args(args)
+        return args
+
+    @pytest.mark.parametrize(
+        "tito_model, reasoning_parser, tool_call_parser",
+        [
+            ("qwen38small", "qwen3-thinking", "qwen3_coder"),
+            ("qwen35", "qwen3-thinking", "qwen3_coder"),
+            ("qwen3", "qwen3", "qwen25"),
+            ("glm47", "glm45", "glm47"),
+        ],
+    )
+    def test_the_engine_parsers_default_to_the_family_binding(self, tito_model, reasoning_parser, tool_call_parser):
+        args = self._validated(["--tito-model", tito_model])
+        assert (args.sglang_reasoning_parser, args.sglang_tool_call_parser) == (
+            reasoning_parser,
+            tool_call_parser,
+        )
+
+    def test_a_user_value_that_agrees_is_kept(self):
+        args = self._validated(["--tito-model", "qwen38small", "--sglang-reasoning-parser", "qwen3-thinking"])
+        assert args.sglang_reasoning_parser == "qwen3-thinking"
+
+    def test_a_user_value_that_disagrees_with_the_binding_raises(self):
+        with pytest.raises(ValueError, match="disagrees with the parser registered"):
+            self._validated(["--tito-model", "qwen38small", "--sglang-reasoning-parser", "qwen3"])
+
+    def test_the_default_family_leaves_the_engine_parsers_alone(self):
+        args = self._validated(["--tito-model", "default"])
+        assert args.sglang_reasoning_parser is None and args.sglang_tool_call_parser is None

@@ -1043,6 +1043,27 @@ def miles_validate_args(args):
         user_kwargs.update(resolved_kwargs)
         args.apply_chat_template_kwargs = user_kwargs
 
+        # The family's reasoning and tool-call parsers reach the engines this
+        # run launches (sglang_engine forwards every ``sglang_<ServerArgs
+        # field>``). Without them sglang auto-detects a parser from the
+        # checkpoint's template: for the Qwen3.5/3.6/3.8 families that is
+        # ``qwen3`` with force_reasoning=False, which never splits a think block
+        # the fixed template opened in the generation prompt, so the engine
+        # returns the thinking, ``</think>`` and the tool-call text as
+        # ``content`` and the session server stores it that way. A value the
+        # user passes must agree with the binding (resolve_... raises).
+        from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
+
+        reasoning_parser, tool_call_parser = resolve_reasoning_and_tool_call_parser(
+            tito_model,
+            args.sglang_reasoning_parser,
+            args.sglang_tool_call_parser,
+        )
+        if reasoning_parser is not None:
+            args.sglang_reasoning_parser = reasoning_parser
+        if tool_call_parser is not None:
+            args.sglang_tool_call_parser = tool_call_parser
+
     if args.chat_template_path is not None:
         if not os.path.isfile(args.chat_template_path):
             raise FileNotFoundError(f"--chat-template-path file not found: {args.chat_template_path}")

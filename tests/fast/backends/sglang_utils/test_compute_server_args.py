@@ -215,3 +215,13 @@ class TestAttentionDpLoRA:
         pinned = {"lora_name": "miles_lora", "lora_path": "/fake/adapter", "pinned": True}
         assert server_args["lora_paths"] == [pinned if attention_dp else "miles_lora=/fake/adapter"]
         assert server_args["max_loras_per_batch"] == (2 if attention_dp else 1)
+
+
+def test_the_family_parsers_reach_the_engine_as_server_args():
+    """``miles_validate_args`` sets ``args.sglang_reasoning_parser`` and
+    ``args.sglang_tool_call_parser`` from the TITO family; the builder forwards
+    every ``sglang_<ServerArgs field>``, so the engine starts with them."""
+    args = make_args(sglang_reasoning_parser="qwen3-thinking", sglang_tool_call_parser="qwen3_coder")
+    kwargs = compute(args)
+    assert kwargs["reasoning_parser"] == "qwen3-thinking"
+    assert kwargs["tool_call_parser"] == "qwen3_coder"
