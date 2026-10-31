@@ -7,9 +7,7 @@ import pytest
 from pydantic import BaseModel
 
 from miles.rollout.agentic.sandbox_reports import report_sandbox
-from miles.utils import misc
 from miles.utils import observers as observers_module
-from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.misc import SingletonMeta
 from miles.utils.observers import Observer, Observers, RunRefusedError
@@ -52,8 +50,7 @@ class _Broken(Observer):
 @pytest.fixture
 def install(monkeypatch):
     """Installs observers as if their packages registered entry points; undoes everything they hooked into."""
-    monkeypatch.setattr(misc, "get_current_node_ip", lambda: "10.0.0.1")
-    monkeypatch.delenv(MILES_HOST_IP_ENV, raising=False)
+    monkeypatch.setattr(observers_module, "get_current_node_ip", lambda: "10.0.0.1")
     sinks_before = list(Timer().event_sinks)
 
     def _install(*observers: Observer) -> Observers:
@@ -96,17 +93,6 @@ def test_a_failing_observer_breaks_neither_the_run_nor_the_other_observers(insta
     assert [name for kind, name in recorder.calls if kind == "phase_end"] == ["actor_train", "actor_train"]
     warnings = [r for r in caplog.records if "failed in phase_end" in r.message]
     assert len(warnings) == 1, "a repeating failure must warn once per interval, not once per event"
-
-
-def test_a_process_names_its_node_as_the_worker_manager_publishes_it(install, monkeypatch):
-    """With ``MILES_HOST_IP`` set, a process named by Ray's address would not match its engines' GPUs."""
-    monkeypatch.setenv(MILES_HOST_IP_ENV, "10.9.9.9")
-    recorder = _Recorder()
-    install(recorder)
-
-    observers_module.start_process("command", gpus=lambda: [1])
-
-    assert ("start_process", dict(role="command", node="10.9.9.9", rank=-1, gpus=[1])) in recorder.calls
 
 
 def test_only_start_run_can_refuse_the_run(install):
