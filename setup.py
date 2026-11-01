@@ -22,10 +22,10 @@ setup(
         "fsdp": [
             "torch>=2.0",
         ],
-        # torchtitan 0.3.0 needs torch>=2.13 but does not declare torch
+        # torchtitan 0.4.0 targets torch 2.15 but does not declare torch; miles backports what it needs onto 2.14
         "torchtitan": [
-            "torch>=2.13",
-            "torchtitan==0.3.0",
+            "torch>=2.14",
+            "torchtitan==0.4.0",
         ],
         "mlflow": [
             "mlflow>=2.0",
