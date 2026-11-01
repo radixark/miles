@@ -156,6 +156,34 @@ class TestCustomArgumentRegistration:
 
         assert parser.parse_args(["--max-turns", "3"]).max_turns == 3
 
+    def test_a_hook_keeps_its_mutually_exclusive_group(self) -> None:
+        """Copying parsed actions dropped argparse groups; the hook must still reject both flags together."""
+        from miles.utils.args.custom_function import _adapt_legacy_custom_config, _add_function_arguments
+
+        def add_arguments(parser: argparse.ArgumentParser) -> None:
+            group = parser.add_mutually_exclusive_group(required=True)
+            group.add_argument("--local", action="store_true")
+            group.add_argument("--remote", action="store_true")
+
+        parser = argparse.ArgumentParser()
+        _add_function_arguments(parser, _adapt_legacy_custom_config(add_arguments), path="probe.generate")
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--local", "--remote"])
+        with pytest.raises(SystemExit):
+            parser.parse_args([])
+
+    def test_a_hook_keeps_its_parser_defaults(self) -> None:
+        from miles.utils.args.custom_function import _adapt_legacy_custom_config, _add_function_arguments
+
+        def add_arguments(parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--hook-size", type=int, default=3)
+            parser.set_defaults(backend_mode="required-by-hook")
+
+        parser = argparse.ArgumentParser()
+        parser.set_defaults(backend_mode="global-default")
+        _add_function_arguments(parser, _adapt_legacy_custom_config(add_arguments), path="probe.generate")
+        assert parser.parse_args([]).backend_mode == "required-by-hook"
+
     def test_a_flag_declared_differently_by_two_hooks_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from miles.utils.args.custom_function import add_user_provided_function_arguments
 
