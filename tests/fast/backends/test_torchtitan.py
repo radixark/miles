@@ -188,6 +188,18 @@ def test_a_tied_checkpoint_is_refused_under_pipeline_parallelism(tmp_path, singl
         )
 
 
+def test_a_multimodal_checkpoint_declares_tying_in_its_text_config(tmp_path, single_gpu_dims):
+    """Composite HF configs nest the decoder under text_config, where tie_word_embeddings lives."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    hf = _checkpoint_dir(tmp_path, model_type="muse_glimmer", text_config={"tie_word_embeddings": True})
+    with pytest.raises(ValueError, match="pipeline"):
+        build_trainer_config(
+            _config_args(pipeline_model_parallel_size=2), hf_assets_path=hf, lr_total_steps=1, dump_subdir="x"
+        )
+
+
 def test_the_lr_schedule_follows_miles_flags_not_torchtitan_defaults(tmp_path, single_gpu_dims):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.config import build_trainer_config

@@ -23,7 +23,7 @@ from miles.backends.torchtitan_utils.components import TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.utils.args.runtime import TrainerConfig
-from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.hf_utils.config import hf_text_config, load_hf_config
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ def build_trainer_config(
     if args.backend.optimizer != "adam":
         raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.backend.optimizer!r}")
 
-    ties_embeddings = load_hf_config(hf_assets_path).tie_word_embeddings
+    ties_embeddings = hf_text_config(load_hf_config(hf_assets_path)).tie_word_embeddings
     if ties_embeddings and args.backend.pipeline_model_parallel_size > 1:
         raise ValueError(
             "the checkpoint ties lm_head to the embedding, which torchtitan cannot do across pipeline "

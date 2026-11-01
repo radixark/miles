@@ -17,7 +17,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_t
     iter_checkpoint_tower_units,
 )
 from miles.platforms import current_platform
-from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.hf_utils.config import hf_text_config, load_hf_config
 
 
 class TitanHfWeightIterator(HfWeightIteratorBase):
@@ -26,11 +26,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._engine_dtypes = _checkpoint_dtypes(self.args.hf_checkpoint)
-        hf_config = load_hf_config(self.args.hf_checkpoint)
-        text_config = (
-            getattr(hf_config, "text_config", None)
-            or hf_config  # config-access-exempt: only multimodal checkpoints nest the decoder under text_config
-        )
+        text_config = hf_text_config(load_hf_config(self.args.hf_checkpoint))
         self._q_lora_rank = (
             getattr(text_config, "q_lora_rank", None)
             or None  # config-access-exempt: HF models without query LoRA omit q_lora_rank
