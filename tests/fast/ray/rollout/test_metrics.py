@@ -17,6 +17,7 @@ from miles.ray.rollout.metrics import (
     log_rollout_data,
 )
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
@@ -782,6 +783,30 @@ class TestEvalMetrics:
         assert payload["eval/gsm8k"] == 0.5
         assert not any(key.startswith("alpha/") for key in payload)
 
+    def test_a_dataset_whose_every_attempt_aborted_scores_zero(self, monkeypatch):
+        samples = [
+            make_sample(index=i, reward=None, status=Sample.Status.ABORTED, response_length=0) for i in range(2)
+        ]
+
+        payload = _log_eval(monkeypatch, {"osworld": _eval_dataset(samples)})
+
+        assert payload["eval/osworld"] == 0.0
+        assert payload["eval/osworld-none_reward_ratio"] == 1.0
+
+    def test_pass_at_k_groups_attempts_by_the_dataset_s_own_sample_count(self, monkeypatch):
+        samples = [make_sample(index=i, reward=1.0 if i in (0, 4) else 0.0) for i in range(8)]
+
+        payload = _log_eval(
+            monkeypatch,
+            {"osworld": _eval_dataset(samples)},
+            log_passrate=True,
+            n_samples_per_eval_prompt=3,
+            eval_datasets=[EvalDatasetConfig(name="osworld", path="osworld.jsonl", n_samples_per_eval_prompt=4)],
+        )
+
+        assert payload["eval/osworld-pass@1"] == 0.25
+        assert payload["eval/osworld-pass@4"] == 1.0
+
 
 class TestObservedGpuThroughput:
     @pytest.mark.parametrize("gpu_count", [0, 4])
@@ -861,3 +886,21 @@ class TestDatasetMetrics:
         out = _compute_metrics_from_samples(args, [make_sample(index=0, metadata={"dataset_name": row_dataset_name})])
 
         assert not any(key.startswith("dataset/") for key in out)
+
+
+def _eval_dataset(samples: list[Sample]) -> dict:
+    return {
+        "rewards": [s.reward for s in samples],
+        "truncated": [s.status == Sample.Status.TRUNCATED for s in samples],
+        "samples": samples,
+    }
+
+
+def _log_eval(monkeypatch, data: dict, **overrides) -> dict:
+    payloads: list[dict] = []
+    monkeypatch.setattr(
+        "miles.ray.rollout.metrics.tracking.log", lambda _args, payload, step_key: payloads.append(payload)
+    )
+    log_eval_rollout_data(0, make_args(**{"log_passrate": False, **overrides}), data)
+    [payload] = payloads
+    return payload
