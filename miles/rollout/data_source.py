@@ -273,6 +273,14 @@ class MixedRolloutDataSource(DataSource):
                     f"rollout dataset {config.name!r}: row {bad} has non-mapping metadata "
                     f"({type(dataset.samples[bad].metadata).__name__}); --metadata-key must name a JSON object"
                 )
+            # the file is reopened to parse it; a rewrite since hashing would train on unpinned bytes
+            if (pinned := self.dataset_sha256[config.name]) is not None:
+                path, _ = _parse_generalized_path(config.path)
+                if (loaded := _hash_file(path)) != pinned:
+                    raise ValueError(
+                        f"rollout dataset {config.name!r} ({path}) changed while loading: sha256 {pinned[:8]} "
+                        f"at startup, {loaded[:8]} after parsing"
+                    )
             self.datasets[config.name] = dataset
             logger.info(f"rollout dataset {config.name!r}: {len(dataset)} prompts, weight {config.samples_per_step}")
 
@@ -374,6 +382,14 @@ def _lower_limit(*limits: int | None) -> int | None:
     return min(known) if known else None
 
 
+def _hash_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _check_dataset_sha256(config: RolloutDatasetConfig) -> str | None:
     """Hash the dataset file; stop when its first 8 hex characters differ from the configured `sha256`.
 
@@ -386,11 +402,7 @@ def _check_dataset_sha256(config: RolloutDatasetConfig) -> str | None:
                 f"rollout dataset {config.name!r}: sha256 is only supported for a single file, not {path}"
             )
         return None
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(1 << 20):
-            digest.update(chunk)
-    actual = digest.hexdigest()
+    actual = _hash_file(path)
     if config.sha256 is None:
         logger.warning(f'rollout dataset {config.name!r} has no sha256; add `sha256: "{actual[:8]}"` to pin it')
     elif config.sha256 != actual[:8]:
