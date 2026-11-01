@@ -45,6 +45,7 @@ def _scheduled_args() -> Namespace:
         balance_data=False,
         balance_by_flops=False,
         allow_partial_train_step=False,
+        pad_steps_for_dp_alignment=False,
         multi_lora=False,
         enable_sample_ownership_checker=False,
     )
