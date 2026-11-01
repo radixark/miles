@@ -51,6 +51,10 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "enable_cp_tp_group_sharing": (
         "Resolved from the model architecture and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
+    "aux_hidden_state_capture": (
+        "Resolved from --enable-return-aux-hidden-states and --speculative-algorithm and declared Arg(no_cli=True); "
+        "sglang registers no CLI option for it."
+    ),
     "grpc_worker_threads": (
         "Env-only (SGLANG_GRPC_WORKER_THREADS) and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),

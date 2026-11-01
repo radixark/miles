@@ -1,4 +1,5 @@
 import logging
+from typing import TYPE_CHECKING
 
 import torch.distributed as dist
 
@@ -6,13 +7,23 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
+if TYPE_CHECKING:
+    from torchtitan.config.parallelism import ParallelismConfig
+    from torchtitan.distributed import ParallelismContext
+
 logger = logging.getLogger(__name__)
 
 
-def parallel_dims_from_config(parallelism_config):
-    from torchtitan.distributed import ParallelDims
+def parallelism_context_from_config(
+    parallelism_config: "ParallelismConfig", *, output_dir: str
+) -> "ParallelismContext":
+    # deferred: the CPU suite imports this module (through the actor) without torchtitan installed
+    from torchtitan.distributed import ParallelismContext
+    from torchtitan.distributed.parallelism_context import DistributedTopology
 
-    return ParallelDims.from_config(parallelism_config, dist.get_world_size())
+    return ParallelismContext.from_config(
+        parallelism_config, DistributedTopology(dist.get_world_size()), dump_folder=output_dir
+    )
 
 
 def _gloo_subgroup(my_ranks: list[int]):
@@ -29,8 +40,8 @@ def _gloo_subgroup(my_ranks: list[int]):
     return my_group
 
 
-def _group_info(parallel_dims, mesh_name: str, *, with_gloo: bool = False) -> GroupInfo:
-    mesh = parallel_dims.get_optional_mesh(mesh_name)
+def _group_info(parallelism: "ParallelismContext", mesh_name: str, *, with_gloo: bool = False) -> GroupInfo:
+    mesh = parallelism.get_optional_mesh(mesh_name)
     if mesh is None:
         ranks = [dist.get_rank()]
         group = dist.new_group(ranks)
@@ -45,19 +56,19 @@ def _group_info(parallel_dims, mesh_name: str, *, with_gloo: bool = False) -> Gr
     )
 
 
-def create_titan_parallel_state(parallel_dims, *, is_pp_last_stage: bool = True) -> ParallelState:
+def create_titan_parallel_state(parallelism: "ParallelismContext", *, is_pp_last_stage: bool = True) -> ParallelState:
     alone = GroupInfo(rank=0, size=1, group=dist.new_group([dist.get_rank()]))
-    dp = _group_info(parallel_dims, "batch", with_gloo=True)
+    dp = _group_info(parallelism, "dp", with_gloo=True)
     state = ParallelState(
         intra_dp=dp,
         intra_dp_cp=dp,
         cp=alone,
-        tp=_group_info(parallel_dims, "tp"),
-        pp=_group_info(parallel_dims, "pp"),
-        ep=_group_info(parallel_dims, "ep"),
+        tp=_group_info(parallelism, "tp"),
+        pp=_group_info(parallelism, "pp"),
+        ep=_group_info(parallelism, "ep"),
         etp=alone,
         indep_dp=alone,
-        meshes={"fsdp": parallel_dims.get_mesh("fsdp")} if parallel_dims.get_optional_mesh("fsdp") else {},
+        meshes={},
         is_pp_last_stage=is_pp_last_stage,
         vpp_size=1,
     )
