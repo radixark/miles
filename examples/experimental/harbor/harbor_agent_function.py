@@ -51,6 +51,14 @@ Env vars (read on the rollout worker):
                          same meaning as on the agent server
   HARBOR_OVERRIDE_STORAGE_MB
                          per-sandbox disk, Harbor's ``override_storage_mb``
+  HARBOR_AGENT_IMPORT_PATH
+                         ``module:Class`` Harbor builds instead of the agent
+                         registered under ``agent_name``
+  HARBOR_AGENT_KWARGS    JSON object added to ``AgentConfig.kwargs``; a key the
+                         binding sets is refused
+  HARBOR_VERIFIER_IMPORT_PATH / HARBOR_VERIFIER_KWARGS
+                         a Harbor verifier class, and its JSON kwargs, run in
+                         place of the task's ``tests/``
 
 Failure semantics: a verdict is returned as-is. A trial the policy cannot have
 failed is discarded with ``InfraAbort``: one that failed before its agent
@@ -132,6 +140,13 @@ def _allowed_hosts(var: str) -> list[str]:
     return [host for host in re.split(r"[,\s]+", os.getenv(var, "")) if host]
 
 
+def _env_json_object(var: str) -> dict[str, Any]:
+    value = json.loads(os.getenv(var, "") or "{}")
+    if not isinstance(value, dict):
+        raise ValueError(f"{var} must be a JSON object, got {type(value).__name__}")
+    return value
+
+
 # --- harness bindings -------------------------------------------------------
 #
 # What Miles must know per harness to hand it the session URL: which env vars /
@@ -155,6 +170,7 @@ class HarnessBinding:
     env: Callable[[str, str], dict[str, str]]
     # the model name Harbor passes to the harness
     model_name: Callable[[str], str] = lambda model: model
+    accepts_max_seq_len: bool = True
 
 
 def _terminus_kwargs(
@@ -281,6 +297,25 @@ def _opencode_env(session_url: str, api_key: str) -> dict[str, str]:
     return {"OPENAI_BASE_URL": session_url, "OPENAI_API_BASE": session_url, "OPENAI_API_KEY": api_key}
 
 
+def _computer_1_kwargs(
+    session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "api_base": session_url,
+        "temperature": sampling_params.get("temperature"),
+        "llm_kwargs": {**{k: v for k, v in sampling_params.items() if k != "temperature"}, "api_key": api_key},
+        "provider": "litellm",
+        "enable_images": True,
+    }
+    if max_turns := _env_int("HARBOR_AGENT_MAX_ITERATIONS"):
+        kwargs["max_turns"] = max_turns
+    return kwargs
+
+
+def _no_env(session_url: str, api_key: str) -> dict[str, str]:
+    return {}
+
+
 HARNESS_BINDINGS: dict[str, HarnessBinding] = {
     "terminus-2": HarnessBinding(kwargs=_terminus_kwargs, env=_openai_env),
     "terminus-1": HarnessBinding(kwargs=_terminus_kwargs, env=_openai_env),
@@ -292,6 +327,7 @@ HARNESS_BINDINGS: dict[str, HarnessBinding] = {
         model_name=lambda model: "/".join(_opencode_provider_model(model)),
     ),
     "mini-swe-agent": HarnessBinding(kwargs=_no_kwargs, env=_mini_swe_agent_env),
+    "computer-1": HarnessBinding(kwargs=_computer_1_kwargs, env=_no_env, accepts_max_seq_len=False),
 }
 # Any other installed agent that speaks OpenAI chat completions.
 _DEFAULT_BINDING = HarnessBinding(kwargs=_no_kwargs, env=_openai_env)
@@ -394,12 +430,26 @@ def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwarg
         "input_cost_per_token": 0.0,
         "output_cost_per_token": 0.0,
     }
-    if max_seq_len is not None:
+    if max_seq_len is not None and binding.accepts_max_seq_len:
         agent_kwargs["max_seq_len"] = max_seq_len
+    extra_agent_kwargs = _env_json_object("HARBOR_AGENT_KWARGS")
+    if clash := sorted(set(extra_agent_kwargs) & set(agent_kwargs)):
+        raise ValueError(f"HARBOR_AGENT_KWARGS sets {clash}, which the {agent_name} binding owns")
+    agent_kwargs.update(extra_agent_kwargs)
+    import_path = os.getenv("HARBOR_AGENT_IMPORT_PATH", "").strip() or None
 
     extra: dict[str, Any] = {}
-    if verifier_timeout := os.getenv("HARBOR_VERIFIER_TIMEOUT_SEC"):
-        extra["verifier"] = VerifierConfig(override_timeout_sec=float(verifier_timeout))
+    verifier_timeout = os.getenv("HARBOR_VERIFIER_TIMEOUT_SEC")
+    verifier_import_path = os.getenv("HARBOR_VERIFIER_IMPORT_PATH", "").strip() or None
+    verifier_kwargs = _env_json_object("HARBOR_VERIFIER_KWARGS")
+    if verifier_kwargs and verifier_import_path is None:
+        raise ValueError("HARBOR_VERIFIER_KWARGS needs HARBOR_VERIFIER_IMPORT_PATH")
+    if verifier_timeout or verifier_import_path:
+        extra["verifier"] = VerifierConfig(
+            override_timeout_sec=float(verifier_timeout) if verifier_timeout else None,
+            import_path=verifier_import_path,
+            kwargs=verifier_kwargs,
+        )
     if build_mult := os.getenv("HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER"):
         extra["environment_build_timeout_multiplier"] = float(build_mult)
 
@@ -407,7 +457,8 @@ def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwarg
     return TrialConfig(
         task=TaskConfig(path=_task_path(tasks_dir, str(metadata.get("instance_id", "")))),
         agent=AgentConfig(
-            name=agent_name,
+            name=None if import_path else agent_name,
+            import_path=import_path,
             model_name=binding.model_name(model),
             override_timeout_sec=float(agent_timeout) if agent_timeout else None,
             env=binding.env(session_url, api_key),

@@ -55,7 +55,7 @@ servers on the head node. On a multi-node job see the network note in
 ranges must route from the sandbox network: one
 session-server port per worker starting at `--session-server-port` (30000-30031
 for `run.py`'s 32 workers) and the SGLang router's 31000. Host-process agents
-(terminus-2) call the model from the worker and need no sandbox egress.
+(terminus-2, computer-1) call the model from the worker and need no sandbox egress.
 
 ## 3. Prepare data
 
@@ -105,6 +105,15 @@ keep the requested CPU guarantee while allowing burst capacity.
 Every remaining knob — timeouts and their layering, failure semantics, the
 full env-var reference — is documented in `harbor_agent_function.py`'s header,
 next to the code that reads it.
+
+Harbor's `computer-1` screenshot agent trains with Qwen3-VL when the launcher
+passes `agentic_train_args(..., tito_model="qwen3_vl", session_images=True)`,
+which selects `--use-session-server v2 --multimodal-token-space-processing`, and also passes
+the `--sglang-enable-token-space-processor`, `--shared-media-dir` and
+`--use-miles-router` that session images require. Qwen3-VL clicks on a 0-999 grid while
+computer-1's generic provider reads pixels, so set `HARBOR_AGENT_IMPORT_PATH` to a `Computer1`
+subclass whose provider marks its actions `CoordinateSpace.NORMALIZED_0_999`. Other computer-1
+settings, such as the desktop size, go in `HARBOR_AGENT_KWARGS`.
 
 ## 5. Optional: run the trials on a CPU box
 
