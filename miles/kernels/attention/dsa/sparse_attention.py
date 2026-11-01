@@ -11,6 +11,11 @@ folded in (FlashMLA's is converted); the TileLang backward takes it as is, cuDNN
 without the sink, with the indices compacted valid-first. Which kernels run and how the TileLang ones are tiled
 is a SparseAttentionConfig: measured rows live in _TUNED, keyed by (CUDA major or ROCm gfx name, RoPE tail, TP-local heads);
 callers may pass their own.
+
+CAKE_SPARSE_ATTENTION_CONFIG opts into the generated deterministic kernels in miles/kernels/attention/dsa/cake
+(SM100a / SM103a, single latent group, d_v = 512): forward and backward both run there, since the cake backward
+is validated against the cake forward's output and log-sum-exp, and its key-side gradient is reduced in a fixed
+order without floating-point atomics. _default_config never selects it.
 """
 
 from dataclasses import dataclass, replace
@@ -45,12 +50,22 @@ _SHORT_TOPK = 128
 
 @dataclass(frozen=True)
 class SparseAttentionConfig:
-    forward_backend: Literal["flash_mla", "tilelang"] = "flash_mla"
+    forward_backend: Literal["flash_mla", "tilelang", "cake"] = "flash_mla"
     forward_threads: int = 256
-    backward_backend: Literal["tilelang", "cudnn"] = "tilelang"
+    backward_backend: Literal["tilelang", "cudnn", "cake"] = "tilelang"
     backward_stages: int = 0
     backward_split_store: int = 2
 
+    def __post_init__(self):
+        if (self.forward_backend == "cake") != (self.backward_backend == "cake"):
+            raise ValueError(
+                "the cake sparse-attention backend runs forward and backward together; got "
+                f"forward_backend={self.forward_backend!r}, backward_backend={self.backward_backend!r}"
+            )
+
+
+# Opt-in deterministic kernels (miles/kernels/attention/dsa/cake); the tiling fields do not apply to them.
+CAKE_SPARSE_ATTENTION_CONFIG = SparseAttentionConfig(forward_backend="cake", backward_backend="cake")
 
 _TILELANG_SMALL_HEADS = SparseAttentionConfig(forward_backend="tilelang", forward_threads=128)
 
@@ -267,4 +282,27 @@ def sparse_attention(
         d_v = q.shape[-1]
     if config is None:
         config = _default_config(q, kv, indices.shape[-1], d_v)
+    if config.forward_backend == "cake":
+        return _cake_sparse_attention(q, kv, indices, attn_sink, sm_scale, d_v)
     return _SparseAttention.apply(q, kv, indices, attn_sink, sm_scale, d_v, config)
+
+
+def _cake_sparse_attention(q, kv, indices, attn_sink, sm_scale, d_v):
+    """The cake autograd function on this module's [B, S, H, D] / [B, S_kv, 1, D] / [B, S, 1, topk] contract.
+
+    A single sequence runs the cake ``thd`` layout (the returned rows are the saved output, no copy); a batch
+    runs ``bshd`` (indices stay batch-local, the cake wrapper offsets them).
+    """
+    if kv.shape[2] != 1 or indices.shape[2] != 1:
+        raise ValueError(f"the cake backend takes a single latent group, got kv {tuple(kv.shape)}")
+    # GPU-only (builds its kernels on first use); importing it lazily keeps the package importable on CPU
+    from miles.kernels.attention.dsa import cake
+
+    if q.shape[0] == 1:
+        out = cake.sparse_attention(
+            q[0], kv[0], indices[0], sm_scale=sm_scale, attn_sink=attn_sink, layout="thd", d_v=d_v
+        )
+        return out.unsqueeze(0)
+    return cake.sparse_attention(
+        q, kv.squeeze(2), indices.squeeze(2), sm_scale=sm_scale, attn_sink=attn_sink, layout="bshd", d_v=d_v
+    )

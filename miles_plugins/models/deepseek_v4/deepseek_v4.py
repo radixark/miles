@@ -24,6 +24,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
 from miles.kernels.attention.dsa import sparse_attention
+from miles.kernels.attention.dsa.sparse_attention import CAKE_SPARSE_ATTENTION_CONFIG
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
@@ -184,6 +185,10 @@ class DeepSeekV4Attention(MegatronModule):
         )
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
+        # --miles-dsa-kernel-backend: "auto" keeps the measured per-arch kernel dispatch (config None); "cake" pins
+        # the sparse attention (bshd, FP32 sink) and the C4 indexer scores to the deterministic cake kernels.
+        use_cake = config.miles_dsa_kernel_backend == "cake"
+        self.attention_config = CAKE_SPARSE_ATTENTION_CONFIG if use_cake else None
 
         if self.compress_ratio:
             self.core_attention.compressor = DeepSeekV4Compressor(
@@ -201,6 +206,11 @@ class DeepSeekV4Attention(MegatronModule):
                         config=config, pg_collection=pg_collection, layer_id=layer_id
                     )
                 else:
+                    if use_cake:
+                        raise ValueError(
+                            "--miles-dsa-kernel-backend cake scores the indexer in V4Indexer; "
+                            f"unset V4_INDEXER_IMPL (got {indexer_impl!r}) or use --miles-dsa-kernel-backend auto."
+                        )
                     if topk_backend not in ("canonical", "torch"):
                         raise ValueError(
                             "DeepSeek V4 miles DSA topk backend is only supported with V4_INDEXER_IMPL=tilelang; "
@@ -419,6 +429,7 @@ class DeepSeekV4Attention(MegatronModule):
             topk_idxs.unsqueeze(2),
             self.softmax_scale,
             attn_sink=self.core_attention.attn_sink,
+            config=self.attention_config,
         )
 
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
@@ -460,6 +471,7 @@ def get_dsv4_spec(args, config, vp_stage):
         return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
 
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    config.miles_dsa_kernel_backend = args.miles_dsa_kernel_backend
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):

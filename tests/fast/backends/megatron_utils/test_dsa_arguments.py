@@ -31,6 +31,7 @@ def _args(**overrides):
         dsa_kernel_backend="cudnn",
         dsa_indexer_loss_coeff=None,
         miles_dsa_topk_backend="canonical",
+        miles_dsa_kernel_backend="auto",
         cp_comm_type=None,
         true_on_policy_mode=False,
         debug_disable_optimizer=False,
