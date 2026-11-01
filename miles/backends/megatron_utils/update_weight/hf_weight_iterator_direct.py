@@ -402,7 +402,7 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     (GLU/SwiGLU interleaved [gate, up]), so assert partition_stride==2 is removed.
     But TEGroupedLinear still does not set partition_stride/partition_dim correctly for grouped moe gemm
     """
-    if "linear_fc1.weight" in name and args.backend.swiglu:
+    if "linear_fc1.weight" in name and (args.backend.swiglu or args.backend.quick_geglu):
         partition_stride = 2
         if partition_dim < 0:
             partition_dim = 0

@@ -28,6 +28,23 @@ class TestResolvedFp8ScaleFormat:
 
         assert result == expected
 
+    def test_grouped_moe_scales_follow_sglang_when_only_grouped_moe_requantizes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On SM120 SGLang requantizes grouped MoE scales to UE8M0 but keeps dense fp32;
+        expert weights must be sent in UE8M0 there too, or the update writes the wrong scale format."""
+        monkeypatch.setattr(
+            quantizer_fp8,
+            "should_deepgemm_weight_requant_ue8m0",
+            lambda *, weight_block_size, grouped_moe=False: grouped_moe,
+        )
+        args = SimpleNamespace(sglang=make_sglang_config(moe_runner_backend="deep_gemm", moe_a2a_backend="none"))
+
+        expert = quantizer_fp8._get_scale_format(args, "model.layers.0.mlp.experts.0.weight", [128, 128])
+        dense = quantizer_fp8._get_scale_format(args, "model.layers.0.self_attn.o_proj.weight", [128, 128])
+
+        assert (expert, dense) == ("ue8m0", None)
+
     def test_server_group_override_controls_scale_format_instead_of_the_base_value(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
