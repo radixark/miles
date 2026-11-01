@@ -1,11 +1,16 @@
 import logging
 from typing import Any
 
+from unittest.mock import AsyncMock
+
 import pytest
-from tests.fast.fixtures.hook_consumer_fixtures import _hook
+from tests.fast.fixtures.args_fixtures import parse_fsdp_test_config
+from tests.fast.fixtures.hook_consumer_fixtures import _hook, _HookConfig
 
 from miles.utils.args.custom_view import ImmutableNamespace
+from miles.utils.args.runtime import OrchestratorConfig
 from miles.utils.function_registry import function_registry, load_function
+from miles.utils.hot_restart import init_or_reset_inference_controller
 from miles.utils.misc import call_agent_abort_hook
 
 
@@ -45,18 +50,11 @@ class TestTypedAgentAbort:
         assert ("provider shutdown failed" in caplog.text) is fails
         assert "hook_marker" not in dict(args)
 
-    async def test_a_dataset_agent_function_gets_its_own_abort(self, tmp_path) -> None:
+    async def test_a_dataset_agent_function_gets_its_own_abort(self) -> None:
         """An agent chosen by a mixed dataset kept issuing requests on abort when only the run-wide agent was aborted."""
-        config = tmp_path / "mix.yaml"
-        config.write_text(
-            "datasets:\n"
-            "  swe:\n    path: /data/swe.jsonl\n    samples_per_step: 1\n    agent_function: test86.swe.run\n"
-            "  web:\n    path: /data/web.jsonl\n    samples_per_step: 1\n    agent_function: test86.swe.run\n"
-        )
         args = ImmutableNamespace(
             custom_agent_function_path=_hook("test86.global.run"),
-            rollout_data_yaml_config=str(config),
-            rollout_dataset_functions={"test86.swe.run": _hook("test86.swe.run")},
+            rollout_dataset_agent_functions=[_hook("test86.swe.run")],
         )
         aborted: list[str] = []
 
@@ -73,40 +71,48 @@ class TestTypedAgentAbort:
 
         assert aborted == ["global", "swe"]
 
-    async def test_an_unreadable_mix_file_still_aborts_the_run_wide_agent(self, tmp_path, caplog) -> None:
-        """Abort must tear down what it can; a missing YAML used to raise out of the hook."""
+    async def test_a_removed_mix_file_does_not_stop_dataset_agent_teardown(self, tmp_path) -> None:
+        """Teardown uses the agents resolved at startup, never the live YAML."""
         args = ImmutableNamespace(
-            custom_agent_function_path=_hook("test86.global.run"),
-            rollout_data_yaml_config=str(tmp_path / "gone.yaml"),
-            rollout_dataset_functions={},
+            custom_agent_function_path=None,
+            rollout_data_yaml_config=str(tmp_path / "removed.yaml"),
+            rollout_dataset_agent_functions=[_hook("test86.swe.run")],
         )
-        aborted: list[str] = []
-
-        async def abort_global(view: ImmutableNamespace) -> None:
-            aborted.append("global")
-
-        with function_registry.temporary("test86.global.abort", abort_global), caplog.at_level(logging.WARNING):
-            await call_agent_abort_hook(args)
-
-        assert aborted == ["global"]
-        assert "Cannot read --rollout-data-yaml-config" in caplog.text
-
-    async def test_the_hot_restart_view_without_resolved_hooks_still_aborts_dataset_agents(self, tmp_path) -> None:
-        """Hot restart passes the orchestrator config, which lacks rollout_dataset_functions."""
-        config = tmp_path / "mix.yaml"
-        config.write_text(
-            "datasets:\n  swe:\n    path: /data/swe.jsonl\n    samples_per_step: 1\n    agent_function: test86.swe.run\n"
-        )
-        args = ImmutableNamespace(custom_agent_function_path=None, rollout_data_yaml_config=str(config))
-        aborted: list[str] = []
+        aborted: list[int] = []
 
         async def abort_swe(view: ImmutableNamespace) -> None:
-            aborted.append("swe")
+            aborted.append(view.hook_marker)
 
         with function_registry.temporary("test86.swe.abort", abort_swe):
             await call_agent_abort_hook(args)
 
-        assert aborted == ["swe"]
+        assert aborted == [41]
+
+    async def test_hot_restart_aborts_a_typed_dataset_agent(self, tmp_path) -> None:
+        """Hot restart passes the orchestrator config, which must carry the resolved dataset agents and their fields."""
+        config = tmp_path / "mix.yaml"
+        config.write_text(
+            "datasets:\n  a:\n    path: /data/a.jsonl\n    samples_per_step: 1\n    agent_function: test86.dsagent.run\n"
+        )
+        aborted: list[int] = []
+
+        async def agent(**kwargs: Any) -> None:
+            pass
+
+        agent.config_class = _HookConfig
+
+        async def abort(view: ImmutableNamespace) -> None:
+            aborted.append(view.hook_marker)
+
+        with function_registry.temporary("test86.dsagent.run", agent):
+            with function_registry.temporary("test86.dsagent.abort", abort):
+                config_all = parse_fsdp_test_config("--rollout-data-yaml-config", str(config))
+                args = OrchestratorConfig.slice_from(config_all)
+                controller = AsyncMock()
+                controller.is_initialized.return_value = True
+                await init_or_reset_inference_controller(controller, args=args, trainers=[])
+
+        assert aborted == [41]
 
     @pytest.mark.parametrize("path", [None, "single_component", "missing_test86_package.agent"])
     async def test_absent_agent_or_abort_callback_does_not_require_plugin_state(self, path: str | None) -> None:

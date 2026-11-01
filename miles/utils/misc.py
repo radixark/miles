@@ -9,7 +9,6 @@ import ray
 
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import MILES_HOST_IP_ENV, is_port_available
-from miles.utils.rollout_data_config import load_rollout_data_config
 
 logger = logging.getLogger(__name__)
 
@@ -84,27 +83,11 @@ async def call_agent_abort_hook(args) -> None:
 
 
 def _compute_agent_function_configs(args) -> list:
-    """Agent functions to abort; never raises, since a failed lookup must not block tearing down the rest."""
-    from miles.utils.args.custom_function import CustomFunctionConfig
-
     agent_functions = [args.custom_agent_function_path] if args.custom_agent_function_path else []
-    data_config = getattr(  # config-access-exempt: absent from hook-only views, e.g. hot restart and tests
-        args, "rollout_data_yaml_config", None
+    # resolved at startup and carried by both rollout and orchestrator configs, so abort never rereads the YAML
+    agent_functions += (
+        getattr(args, "rollout_dataset_agent_functions", None) or []  # config-access-exempt: hook-only test views
     )
-    if data_config is None:
-        return agent_functions
-    # the orchestrator view used by hot restart has no resolved dataset hooks; fall back to the bare path
-    resolved = getattr(args, "rollout_dataset_functions", None) or {}  # config-access-exempt: see above
-    try:
-        datasets = load_rollout_data_config(data_config)
-    except Exception as e:
-        logger.warning(f"Cannot read --rollout-data-yaml-config to abort its datasets' agents: {e}")
-        return agent_functions
-    for dataset in datasets:
-        if dataset.agent_function is not None:
-            agent_functions.append(
-                resolved.get(dataset.agent_function) or CustomFunctionConfig(path=dataset.agent_function)
-            )
     return agent_functions
 
 

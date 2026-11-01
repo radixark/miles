@@ -119,11 +119,14 @@ def resolve_custom_function_configs(args: argparse.Namespace, *, config_class: t
     if config_class is None:
         # functions a --rollout-data-yaml-config dataset names; no args field holds them
         args.rollout_dataset_functions = {}
+        args.rollout_dataset_agent_functions = []
         for info in _compute_rollout_dataset_function_infos(args, partial=False):
             resolved = _resolve_custom_function_config(info=info, args=args)
             if resolved.config is not None:
                 custom_arg_names.update(type(resolved.config).model_fields)
             args.rollout_dataset_functions[info.path] = resolved
+            if info.name.endswith(":agent_function") and resolved not in args.rollout_dataset_agent_functions:
+                args.rollout_dataset_agent_functions.append(resolved)
 
     for name in custom_arg_names:
         if hasattr(args, name):  # config-access-exempt: schema-selected field
