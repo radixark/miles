@@ -33,8 +33,9 @@ _NATIVE_MODELS = (
     "glm4_moe",
     "glm_moe_dsa",
     "glm5_next",
+    "muse_glimmer",
 )
-_MULTIMODAL_MODELS = {"qwen3_5", "qwen3_5_moe", "glm5_next"}
+_MULTIMODAL_MODELS = {"qwen3_5", "qwen3_5_moe", "glm5_next", "muse_glimmer"}
 
 
 def _small_config(model_type, overrides):
@@ -89,6 +90,25 @@ def _small_config(model_type, overrides):
             pad_token_id=0,
         )
     text.update(overrides)
+    if model_type == "muse_glimmer":
+        text.update(
+            layer_types=["sliding_attention", "full_attention"], layer_rope_theta=[500000.0, 0], sliding_window=8
+        )
+        vision = dict(
+            patch_size=2,
+            pos_emb_height=2,
+            pos_emb_width=2,
+            num_attention_heads=2,
+            num_hidden_layers=1,
+            hidden_size=16,
+            intermediate_size=32,
+            patch_temporal=1,
+            merge_size=1,
+            max_position_embeddings=16,
+        )
+        return AutoConfig.for_model(
+            model_type, text_config=text, vision_config=vision, out_hidden_size=32, projector_hidden_size=16
+        )
     if model_type in _MULTIMODAL_MODELS:
         return AutoConfig.for_model(
             model_type,

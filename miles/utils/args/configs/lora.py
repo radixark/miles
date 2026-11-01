@@ -11,6 +11,8 @@ class LoraConfig(BaseConfig):
     multi_lora: bool
     lora_sync_sends_base: bool
     hf_lora_targets: list[str] | None = None
+    # every HF projection the model's LoRA layout serves, resolved with the targets at startup
+    hf_lora_layout: list[str] | None = None
     lora_adapter_targets: list[str] | Literal["all-linear"] | None = None
 
     sglang_lora_use_virtual_experts: A[

@@ -6,6 +6,7 @@ from miles.utils.lora.hf_lora_targets import (
     exclude_hf_lora_targets,
     expand_packed_hf_lora_targets,
     parse_lora_targets,
+    resolve_hf_lora_layout,
     resolve_hf_lora_targets,
 )
 
@@ -94,3 +95,10 @@ def test_paired_targets_include_packed_experts(dense, scoped, caplog):
     assert "Expanding paired gate_proj/up_proj" in caplog.text
     assert expand_packed_hf_lora_targets(targets[:1], modules) == targets[:1]
     assert expand_packed_hf_lora_targets(targets, ["model.layers.0.mlp.gate_proj"]) == targets
+
+
+def test_the_layout_is_every_group_or_none_for_a_model_without_a_table():
+    assert resolve_hf_lora_layout({"model_type": "qwen3"}) == resolve_hf_lora_targets(
+        {"model_type": "qwen3"}, target_modules=["attn", "mlp", "unembed"]
+    )
+    assert resolve_hf_lora_layout({"model_type": "custom"}) is None

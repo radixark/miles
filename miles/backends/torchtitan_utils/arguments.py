@@ -82,11 +82,16 @@ def validate_torchtitan_args(args) -> None:
         _validate_lora_args(args)
 
 
+# each entry has a LoRA e2e under tests/e2e/torchtitan; other models build projections whose module paths
+# or HF names the LoRA target mapping does not handle yet
+_LORA_VALIDATED_MODELS = ("qwen3", "muse_glimmer")
+
+
 def _validate_lora_args(args) -> None:
-    if args.titan_model_name != "qwen3":
+    if args.titan_model_name not in _LORA_VALIDATED_MODELS:
         raise ValueError(
-            f"torchtitan LoRA is validated on --titan-model-name qwen3 only; {args.titan_model_name} builds "
-            "projections whose module paths or HF names the LoRA target mapping does not handle yet"
+            f"torchtitan LoRA is validated on --titan-model-name {', '.join(_LORA_VALIDATED_MODELS)} only; "
+            f"got {args.titan_model_name}"
         )
     if args.lora_type != "lora":
         raise ValueError(
