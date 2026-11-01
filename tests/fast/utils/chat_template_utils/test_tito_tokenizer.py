@@ -308,15 +308,12 @@ class TestConfig:
 
         request_args = startup_tito.resolve_request_args({"chat_template_kwargs": request_kwargs}, turn_args=None)
 
+        fixed = tito_cls.FIXED_TEMPLATE.extra_kwargs
         assert request_args == {
-            "chat_template_kwargs": {"drop_thinking": False, "thinking": expected, "custom_option": "launch"},
+            "chat_template_kwargs": {**fixed, "thinking": expected, "custom_option": "launch"},
             "tools": None,
         }
-        assert startup_tito.chat_template_kwargs == {
-            "drop_thinking": False,
-            "thinking": startup_thinking,
-            "custom_option": "launch",
-        }
+        assert startup_tito.chat_template_kwargs == {**fixed, "thinking": startup_thinking, "custom_option": "launch"}
         assert request_kwargs == original_kwargs
 
     def test_comparator_inherits_trailing_ids(self, qwen3_tito: Qwen3TITOTokenizer):
@@ -429,11 +426,12 @@ class TestResolveRequestArgs:
     def test_deepseek_recorded_mode_overrides_request_aliases(self, tito_cls):
         tokenizer = MagicMock()
         tokenizer.convert_tokens_to_ids.return_value = 1
+        fixed = tito_cls.FIXED_TEMPLATE.extra_kwargs
         launch = tito_cls(tokenizer, chat_template_kwargs={"enable_thinking": False})
-        assert launch.chat_template_kwargs == {"drop_thinking": False, "thinking": False}
+        assert launch.chat_template_kwargs == {**fixed, "thinking": False}
 
         recorded = launch.resolve_request_args({"chat_template_kwargs": {"thinking": True}}, turn_args=None)
-        assert recorded == {"chat_template_kwargs": {"drop_thinking": False, "thinking": True}, "tools": None}
+        assert recorded == {"chat_template_kwargs": {**fixed, "thinking": True}, "tools": None}
         same = launch.resolve_request_args({"chat_template_kwargs": {"enable_thinking": True}}, turn_args=recorded)
         assert same == recorded
         assert (
@@ -516,8 +514,6 @@ class TestResolveRequestArgs:
             (DeepSeekV32TITOTokenizer, "add_default_bos_token", True, False),
             (DeepSeekV32TITOTokenizer, "context", [{"role": "system", "content": "old"}], []),
             (DeepSeekV4TITOTokenizer, "reasoning_effort", "max", "high"),
-            (DeepSeekV4TITOTokenizer, "add_default_bos_token", True, False),
-            (DeepSeekV4TITOTokenizer, "context", [{"role": "system", "content": "old"}], []),
             (InklingTITOTokenizer, "reasoning_effort", "high", "low"),
         ],
     )

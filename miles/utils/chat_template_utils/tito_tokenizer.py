@@ -785,7 +785,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
     ``last_user_idx``: appending a *user* turn re-classifies every prior
     assistant as "before last user" and strips its thinking block, which is
     not append-only.  The vendored copy honors ``drop_thinking=False`` at the
-    render level (like ``encoding_dsv4``), so every surface pins it and the
+    render level, so every surface pins it and the
     ``{tool, user}`` surface becomes legal.
     """
 
@@ -867,7 +867,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
 
 
 class DeepSeekV4TITOTokenizer(TITOTokenizer):
-    """DeepSeek V4 — official encoder via miles' vendored ``encoding_dsv4``.
+    """DeepSeek V4 — deepseek-recipe via sglang's ``DeepSeekRecipe``.
 
     Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
     routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
@@ -880,9 +880,8 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
 
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
-        extra_kwargs={"drop_thinking": False},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
-        consistant_kwargs=["add_default_bos_token", "context", "reasoning_effort"],
+        consistant_kwargs=["reasoning_effort"],
     )
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
@@ -957,21 +956,36 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         *,
         template_args: dict[str, Any] | None = None,
     ) -> list[int]:
-        """Diff real-history renders because V4 folds adjacent ``tool``/``user`` turns."""
+        """Diff real-history renders because V4 folds adjacent ``tool``/``user`` turns.
+
+        The diff is over recipe's ids where it can be: recipe encodes message text
+        without the added vocabulary, so re-encoding text could turn content into
+        special tokens.
+        """
         assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
-        text_old = self.apply_chat_template(old_messages, add_generation_prompt=False, template_args=template_args)
-        text_new = self.apply_chat_template(new_messages, add_generation_prompt=True, template_args=template_args)
+        ids_old = self.apply_chat_template(
+            old_messages, add_generation_prompt=False, tokenize=True, template_args=template_args
+        )
+        ids_new = self.apply_chat_template(
+            new_messages, add_generation_prompt=True, tokenize=True, template_args=template_args
+        )
+        if ids_new[: len(ids_old)] == ids_old:
+            return ids_new[len(ids_old) :]
+        # A plain-text junction, such as a user turn folded after a tool result, can merge
+        # the prefix's last token with the appended text; encode the appended text alone.
+        text_old = self.tokenizer.decode(ids_old, skip_special_tokens=False)
+        text_new = self.tokenizer.decode(ids_new, skip_special_tokens=False)
         if not text_new.startswith(text_old):
             raise ValueError(
                 "deepseek_v4 render is not append-only for the appended messages "
-                "(prefix render changed; check drop_thinking and tool-result ordering)"
+                "(prefix render changed; check tool-result ordering)"
             )
         return self._encode_text(text_new[len(text_old) :])
 
 
 class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):
-    """DeepSeek V4.1 — official encoder via miles' vendored ``encoding_dsv41``; the
-    V4 incremental-render machinery applies unchanged."""
+    """DeepSeek V4.1 — deepseek-recipe's V4.1 encoding; the V4 incremental-render
+    machinery applies unchanged."""
 
     reasoning_parser = "deepseek-v41"
     tool_call_parser = "deepseekv41"

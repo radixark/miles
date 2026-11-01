@@ -1,12 +1,11 @@
-"""Tests for the DeepSeek V4 chat-template bridge and its dispatch through
+"""Tests for the DeepSeek V4 / V4.1 chat-template bridge and its dispatch through
 ``apply_chat_template``.
 
-Mirrors ``test_deepseek_v32.py``: the bridge renders via the vendored
-``encoding_dsv4.encode_messages`` (a pure string operation, no tokenizer
-needed), so most cases use plain message lists. Detection and the
-``tokenize=True`` dispatch use a tiny tokenizer stub backed by a temporary
-``config.json`` -- no real DeepSeek V4 checkpoint is required. The only
-behavioral delta versus V3.2 is the optional ``reasoning_effort`` kwarg.
+V4 and V4.1 render through deepseek-recipe, so every render must equal what
+sglang's chat endpoint renders for the same request without input_ids; the one
+intended difference is the V4 effort profile, which follows the checkpoint's
+own encoder.  Detection uses a tiny tokenizer stub backed by a temporary
+``config.json``; rendering uses the checkpoints' real tokenizers.
 """
 
 from __future__ import annotations
@@ -15,14 +14,18 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=25, suite="stage-a-cpu", labels=[])
 
-import copy
+import functools
 import json
 
 import pytest
-from pydantic import ValidationError
+from huggingface_hub import snapshot_download
+from sglang.srt.entrypoints.openai.chat_encoding_adapters import ChatOutputHooks
+from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
+from sglang.srt.entrypoints.openai.serving_deepseek_recipe import DeepSeekRecipeChatEncodingAdapter
+from transformers import AutoTokenizer
 
 from miles.utils.chat_template_utils import apply_chat_template, deepseek
-from miles.utils.chat_template_utils.templates import encoding_dsv4
+from miles.utils.chat_template_utils.tito_tokenizer import DeepSeekV4TITOTokenizer, DeepSeekV41TITOTokenizer
 
 _MSGS_BASIC = [{"role": "user", "content": "Hello"}]
 
@@ -55,14 +58,6 @@ def _tok_with_model_type(tmp_path, model_type: str, **extra) -> _FakeTokenizer:
     config = {"model_type": model_type, **extra}
     (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
     return _FakeTokenizer(str(tmp_path))
-
-
-def _reference_encode(messages, *, thinking: bool = False, drop_thinking: bool = True, **extra) -> str:
-    """The canonical V4 rendering: a direct ``encode_messages`` call. Locks
-    ``render_messages`` to this thin-bridge contract (no preprocessing of its own)."""
-    return encoding_dsv4.encode_messages(
-        messages, thinking_mode="thinking" if thinking else "chat", drop_thinking=drop_thinking, **extra
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -111,103 +106,7 @@ def test_detect_empty_name_or_path():
 
 
 # ---------------------------------------------------------------------------
-# Rendering parity with encode_messages (full scenario matrix)
-# ---------------------------------------------------------------------------
-
-_PARITY_SCENARIOS = {
-    "no_system": [{"role": "user", "content": "Hello"}],
-    "system": [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "hi"}],
-    "tool_calls_and_result": [
-        {"role": "user", "content": "weather in Paris?"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"type": "function", "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'}}
-            ],
-        },
-        {"role": "tool", "content": "sunny", "tool_call_id": "call_0"},
-    ],
-}
-
-
-@pytest.mark.parametrize("scenario", list(_PARITY_SCENARIOS), ids=list(_PARITY_SCENARIOS))
-@pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
-def test_render_matches_direct_encode_messages(scenario, thinking):
-    messages = _PARITY_SCENARIOS[scenario]
-    thinking_mode = "thinking" if thinking else "chat"
-    assert deepseek.V4.render_messages(messages, thinking_mode=thinking_mode) == _reference_encode(
-        messages, thinking=thinking
-    )
-
-
-@pytest.mark.parametrize("scenario", list(_PARITY_SCENARIOS), ids=list(_PARITY_SCENARIOS))
-@pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
-def test_apply_chat_template_tokenize_matches_render(tmp_path, scenario, thinking):
-    # tokenize=True path encodes the rendered string with add_special_tokens=False.
-    tok = _tok_with_model_type(tmp_path, "deepseek_v4")
-    messages = _PARITY_SCENARIOS[scenario]
-    thinking_mode = "thinking" if thinking else "chat"
-    ids = apply_chat_template(messages, tokenizer=tok, tokenize=True, thinking_mode=thinking_mode)
-    assert ids == [ord(c) for c in deepseek.V4.render_messages(messages, thinking_mode=thinking_mode)]
-
-
-def test_inherited_kwargs_pass_through():
-    # The V3.2 known kwargs are inherited verbatim and forwarded to encode_messages.
-    messages = _PARITY_SCENARIOS["system"]
-    assert deepseek.V4.render_messages(
-        messages, thinking_mode="thinking", drop_thinking=False, add_default_bos_token=False
-    ) == _reference_encode(messages, thinking=True, drop_thinking=False, add_default_bos_token=False)
-
-
-def test_thinking_mode_changes_output():
-    assert deepseek.V4.render_messages(_MSGS_BASIC, thinking_mode="thinking") != deepseek.V4.render_messages(
-        _MSGS_BASIC, thinking_mode="chat"
-    )
-
-
-# ---------------------------------------------------------------------------
-# reasoning_effort (the single V4 delta)
-# ---------------------------------------------------------------------------
-
-
-def test_reasoning_effort_omitted_equals_none():
-    assert deepseek.V4.render_messages(_MSGS_BASIC, thinking_mode="thinking") == deepseek.V4.render_messages(
-        _MSGS_BASIC, thinking_mode="thinking", reasoning_effort=None
-    )
-
-
-def test_reasoning_effort_max_differs_from_none():
-    # "max" + thinking emits the max-effort prefix (sglang behavior), so output differs.
-    assert deepseek.V4.render_messages(
-        _MSGS_BASIC, thinking_mode="thinking", reasoning_effort="max"
-    ) != deepseek.V4.render_messages(_MSGS_BASIC, thinking_mode="thinking")
-
-
-def test_reasoning_effort_max_matches_direct_encode():
-    assert deepseek.V4.render_messages(
-        _MSGS_BASIC, thinking_mode="thinking", reasoning_effort="max"
-    ) == _reference_encode(_MSGS_BASIC, thinking=True, reasoning_effort="max")
-
-
-def test_reasoning_effort_high_accepted_and_matches_direct():
-    # "high" is accepted (no exception) and equals a direct call; it is currently a
-    # no-op in sglang, so we do NOT assert it differs from None.
-    assert deepseek.V4.render_messages(
-        _MSGS_BASIC, thinking_mode="thinking", reasoning_effort="high"
-    ) == _reference_encode(_MSGS_BASIC, thinking=True, reasoning_effort="high")
-
-
-def test_reasoning_effort_invalid_value_raises():
-    # Value-level validation is delegated to sglang; depending on the sglang
-    # version it asserts the allowed set or raises ValueError. Both carry the
-    # same "Invalid reasoning effort" message.
-    with pytest.raises((AssertionError, ValueError), match="Invalid reasoning effort"):
-        deepseek.V4.render_messages(_MSGS_BASIC, thinking_mode="thinking", reasoning_effort="ultra")
-
-
-# ---------------------------------------------------------------------------
-# Tool injection (sglang-aligned: tools go into the system <functions> block)
+# Dispatch through apply_chat_template
 # ---------------------------------------------------------------------------
 
 _TOOLS = [
@@ -222,264 +121,13 @@ _TOOLS = [
 ]
 
 
-def test_render_with_tools_injects_tool_schemas():
-    out = deepseek.V4.render_messages([{"role": "user", "content": "hi"}], tools=_TOOLS, thinking_mode="chat")
-    assert "### Available Tool Schemas" in out
-    assert "get_weather" in out
-
-
-def test_render_with_tools_matches_manual_system_injection():
-    # Passing tools= must equal pre-canonicalizing them into the system message and
-    # passing tools=None -- i.e. the injection is exactly the V4 tool payload.
-    from sglang.srt.entrypoints.openai.protocol import Tool
-
-    canonical = [deepseek.dsv4_tool_payload(Tool.model_validate(t)) for t in _TOOLS]
-    msgs = [{"role": "user", "content": "weather?"}]
-    expected = deepseek.V4.render_messages(
-        [{"role": "system", "content": "", "tools": canonical}, *msgs], thinking_mode="chat"
-    )
-    assert deepseek.V4.render_messages(msgs, tools=_TOOLS, thinking_mode="chat") == expected
-
-
-def test_tool_payload_keeps_the_v0522_shape_whatever_the_client_order():
-    """V4 renders each tool dict verbatim. sglang v0.5.23's Tool.model_dump keeps the client's key
-    order and drops an unset strict, which would change V4 prompts; the payload keeps v0.5.22's."""
-    from sglang.srt.entrypoints.openai.protocol import Tool
-
-    client_order = {
-        "type": "function",
-        "function": {"name": "f", "parameters": {"type": "object"}, "description": "d"},
-    }
-
-    payload = deepseek.dsv4_tool_payload(Tool.model_validate(client_order))
-
-    assert payload["function"] == {"description": "d", "name": "f", "parameters": {"type": "object"}, "strict": False}
-    assert list(payload["function"]) == ["description", "name", "parameters", "strict"]
-
-
-def test_render_with_tools_reuses_existing_system_message():
-    msgs = [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "hi"}]
-    out = deepseek.V4.render_messages(msgs, tools=_TOOLS, thinking_mode="chat")
-    assert "You are helpful." in out
-    assert "### Available Tool Schemas" in out
-
-
-def test_empty_tools_list_not_injected():
-    # tools=[] is falsy (like None): neither is injected, so output matches no-tools.
-    msgs = [{"role": "user", "content": "hi"}]
-    assert deepseek.V4.render_messages(msgs, tools=[], thinking_mode="chat") == deepseek.V4.render_messages(
-        msgs, thinking_mode="chat"
-    )
-    assert deepseek.V4.render_messages(msgs, tools=None, thinking_mode="chat") == deepseek.V4.render_messages(
-        msgs, thinking_mode="chat"
-    )
-
-
-def test_bare_function_dict_rejected():
-    # The DeepSeek path requires a full {"type":"function","function":{...}} dict
-    # (Tool.model_validate); the HF-path leniency for bare function dicts is NOT inherited.
-    bare = [{"name": "get_weather", "parameters": {"type": "object", "properties": {}}}]
-    with pytest.raises(ValidationError):
-        deepseek.V4.render_messages([{"role": "user", "content": "hi"}], tools=bare, thinking_mode="chat")
-
-
-def test_render_with_tools_does_not_mutate_input():
-    msgs = [{"role": "user", "content": "hi"}]
-    snapshot = copy.deepcopy(msgs)
-    deepseek.V4.render_messages(msgs, tools=_TOOLS, thinking_mode="chat")
-    assert msgs == snapshot
-
-
-def test_apply_chat_template_with_tools_dispatches_to_bridge(tmp_path):
-    tok = _tok_with_model_type(tmp_path, "deepseek_v4")
-    msgs = [{"role": "user", "content": "hi"}]
-    via_apply = apply_chat_template(msgs, tokenizer=tok, tools=_TOOLS, tokenize=False)
-    assert via_apply == deepseek.V4.render_messages(msgs, tools=_TOOLS)
-
-
-# ---------------------------------------------------------------------------
-# Input immutability
-# ---------------------------------------------------------------------------
-
-
-def test_does_not_mutate_input(tmp_path):
-    tok = _tok_with_model_type(tmp_path, "deepseek_v4")
-    original = [
-        {"role": "user", "content": "q"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": {"x": 2}}}],
-        },
-    ]
-    snapshot = copy.deepcopy(original)
-    apply_chat_template(original, tokenizer=tok, tokenize=False)
-    assert original == snapshot
-
-
-def test_dict_arguments_equal_string_arguments(tmp_path):
-    # The dsv4 dispatch normalizes dict tool arguments to JSON strings, so dict-form
-    # and string-form arguments render identically.
-    tok = _tok_with_model_type(tmp_path, "deepseek_v4")
-    base = [
-        {"role": "user", "content": "q"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": {"a": 1, "b": "x"}}}],
-        },
-        {"role": "tool", "content": "r", "tool_call_id": "c0"},
-    ]
-    as_string = copy.deepcopy(base)
-    as_string[1]["tool_calls"][0]["function"]["arguments"] = json.dumps({"a": 1, "b": "x"}, ensure_ascii=False)
-    assert apply_chat_template(base, tokenizer=tok, tokenize=False) == apply_chat_template(
-        as_string, tokenizer=tok, tokenize=False
-    )
-
-
-# ---------------------------------------------------------------------------
-# Rejection of unknown kwargs
-# ---------------------------------------------------------------------------
-
-
-def test_reject_unknown_kwargs():
-    with pytest.raises(TypeError, match="unexpected keyword argument"):
-        deepseek.V4.render_messages(_MSGS_BASIC, some_unknown_kwarg=1)
-
-
-def test_accept_none_tools_and_known_kwargs():
-    deepseek.V4.render_messages(
-        _MSGS_BASIC, tools=None, thinking_mode="thinking", drop_thinking=False, reasoning_effort=None
-    )
-
-
-# ---------------------------------------------------------------------------
-# enable_thinking -> thinking_mode translation (miles alias for the encoder knob)
-# ---------------------------------------------------------------------------
-
-
-def test_enable_thinking_true_maps_to_thinking():
-    assert deepseek.V4.render_messages(_MSGS_BASIC, enable_thinking=True) == deepseek.V4.render_messages(
-        _MSGS_BASIC, thinking_mode="thinking"
-    )
-
-
-def test_enable_thinking_false_maps_to_chat():
-    assert deepseek.V4.render_messages(_MSGS_BASIC, enable_thinking=False) == deepseek.V4.render_messages(
-        _MSGS_BASIC, thinking_mode="chat"
-    )
-
-
-def test_enable_thinking_absent_defaults_to_thinking():
-    # No enable_thinking and no thinking_mode -> the cfg default ("thinking").
-    assert deepseek.V4.render_messages(_MSGS_BASIC) == deepseek.V4.render_messages(
-        _MSGS_BASIC, thinking_mode="thinking"
-    )
-
-
-def test_enable_thinking_none_defaults_to_thinking():
-    # Explicit None is treated as absent: falls through to the "thinking" default.
-    assert deepseek.V4.render_messages(_MSGS_BASIC, enable_thinking=None) == deepseek.V4.render_messages(
-        _MSGS_BASIC, thinking_mode="thinking"
-    )
-
-
-def test_explicit_thinking_mode_wins_over_enable_thinking():
-    assert deepseek.V4.render_messages(
-        _MSGS_BASIC, enable_thinking=False, thinking_mode="thinking"
-    ) == deepseek.V4.render_messages(_MSGS_BASIC, thinking_mode="thinking")
-
-
-def test_enable_thinking_is_consumed_not_rejected():
-    # enable_thinking is translated away, so it is not rejected as an unknown kwarg.
-    deepseek.V4.render_messages(_MSGS_BASIC, enable_thinking=True)
-
-
-def test_build_config_does_not_mutate_input_kwargs():
-    kwargs = {"enable_thinking": True}
-    deepseek.V4._build_encode_config(kwargs)
-    assert kwargs == {"enable_thinking": True}
-
-
-# ---------------------------------------------------------------------------
-# Generation-prompt behavior: the encoder's auto opener honors the knob
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("role", ["user", "developer"])
-def test_add_generation_prompt_false_strips_the_auto_opener(role):
-    for mode, opener in (("thinking", "<｜Assistant｜><think>"), ("chat", "<｜Assistant｜></think>")):
-        messages = [{"role": role, "content": "Hello"}]
-        with_opener = deepseek.V4.render_messages(messages, thinking_mode=mode)
-        without = deepseek.V4.render_messages(messages, thinking_mode=mode, add_generation_prompt=False)
-        assert with_opener == without + opener
-
-
-def test_add_generation_prompt_false_strips_the_tool_tail_opener():
-    messages = _PARITY_SCENARIOS["tool_calls_and_result"]
-    for mode, opener in (("thinking", "<｜Assistant｜><think>"), ("chat", "<｜Assistant｜></think>")):
-        with_opener = deepseek.V4.render_messages(messages, thinking_mode=mode)
-        without = deepseek.V4.render_messages(messages, thinking_mode=mode, add_generation_prompt=False)
-        assert with_opener == without + opener
-
-
-def test_add_generation_prompt_false_strips_one_opener_after_tool_and_user_tail():
-    messages = _PARITY_SCENARIOS["tool_calls_and_result"] + [{"role": "user", "content": "and tomorrow?"}]
-    for mode, opener in (("thinking", "<｜Assistant｜><think>"), ("chat", "<｜Assistant｜></think>")):
-        with_opener = deepseek.V4.render_messages(messages, thinking_mode=mode)
-        without = deepseek.V4.render_messages(messages, thinking_mode=mode, add_generation_prompt=False)
-        assert with_opener == without + opener
-
-
-def test_add_generation_prompt_false_noop_on_empty_wo_eos_assistant_tail():
-    messages = _MSGS_BASIC + [{"role": "assistant", "content": "", "reasoning_content": "r", "wo_eos": True}]
-    for mode in ("thinking", "chat"):
-        assert deepseek.V4.render_messages(
-            messages, thinking_mode=mode, add_generation_prompt=False
-        ) == deepseek.V4.render_messages(messages, thinking_mode=mode)
-
-
-@pytest.mark.parametrize("task", ["query", "action"])
-def test_add_generation_prompt_false_noop_on_task_tail(task):
-    for mode in ("thinking", "chat"):
-        messages = [{"role": "user", "content": "q", "task": task}]
-        assert deepseek.V4.render_messages(
-            messages, thinking_mode=mode, add_generation_prompt=False
-        ) == deepseek.V4.render_messages(messages, thinking_mode=mode)
-
-
-def test_apply_chat_template_forwards_add_generation_prompt(tmp_path):
-    tok = _tok_with_model_type(tmp_path, "deepseek_v4")
-    without_prompt = apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False, add_generation_prompt=False)
-    assert without_prompt == deepseek.V4.render_messages(_MSGS_BASIC, add_generation_prompt=False)
-    assert apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False) != without_prompt
-
-
-# ---------------------------------------------------------------------------
-# Dispatch integration through apply_chat_template
-# ---------------------------------------------------------------------------
-
-
-def test_apply_chat_template_dispatches_to_bridge(tmp_path):
-    tok = _tok_with_model_type(tmp_path, "deepseek_v4")
-    assert apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False) == deepseek.V4.render_messages(_MSGS_BASIC)
-
-
-def test_apply_chat_template_is_generation_ready(tmp_path):
-    tok = _tok_with_model_type(tmp_path, "deepseek_v4")
-    out = apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False)
-    assert "<｜User｜>" in out
-    assert "<｜Assistant｜>" in out
-
-
 def test_dsv32_tokenizer_not_routed_to_dsv4(tmp_path):
-    # A V3.2 checkpoint routes to the V3.2 bridge, not the V4 one. With tools the two
-    # encoders emit different tool blocks (<functions> vs "## Tools"), making the
-    # routing observable (a bare message renders identically under both encoders).
+    # A V3.2 checkpoint routes to the V3.2 encoder: its <functions> tool block,
+    # not V4's "## Tools" one.
     tok = _tok_with_model_type(tmp_path, "deepseek_v32")
     out = apply_chat_template(_MSGS_BASIC, tokenizer=tok, tools=_TOOLS, tokenize=False)
-    assert "<functions>" in out  # V3.2 tool block
-    assert "### Available Tool Schemas" not in out  # not the V4 tool block
+    assert "<functions>" in out
+    assert "### Available Tool Schemas" not in out
 
 
 def test_non_deepseek_uses_hf_fallback(tmp_path):
@@ -490,31 +138,179 @@ def test_non_deepseek_uses_hf_fallback(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Injected system / assistant appends (role-independent template resolution)
+# Rendering with the real tokenizers
 # ---------------------------------------------------------------------------
 
-_INJECT_HISTORY = [
-    {"role": "user", "content": "q1"},
-    {"role": "assistant", "content": "a1", "reasoning_content": "r1"},
-]
+_CHECKPOINTS = {
+    "dsv4": ("deepseek-ai/DeepSeek-V4-Flash", "60d8d70770c6776ff598c94bb586a859a38244f1"),
+    "dsv41": ("deepseek-ai/DeepSeek-V4.1-Flash", "314113f8a7dadb388215396ba5fbee2c610a04d6"),
+}
+_TITO_CLASSES = {"dsv4": DeepSeekV4TITOTokenizer, "dsv41": DeepSeekV41TITOTokenizer}
+_SPECS = list(_CHECKPOINTS)
 
-_INJECT_SHAPES = {
-    "system": [{"role": "system", "content": "mid-session system"}],
-    "assistant": [{"role": "assistant", "content": "injected"}],
-    "assistant_then_user": [
-        {"role": "assistant", "content": "injected"},
-        {"role": "user", "content": "next question"},
-    ],
-    "consecutive_assistants_then_user": [
-        {"role": "assistant", "content": "first injected"},
-        {"role": "assistant", "content": "second injected"},
-        {"role": "user", "content": "next question"},
-    ],
+
+@functools.cache
+def _tokenizer(spec: str):
+    repo, revision = _CHECKPOINTS[spec]
+    path = snapshot_download(
+        repo, revision=revision, allow_patterns=["config.json", "tokenizer.json", "tokenizer_config.json"]
+    )
+    return AutoTokenizer.from_pretrained(path)
+
+
+@functools.cache
+def _endpoint(spec: str) -> DeepSeekRecipeChatEncodingAdapter:
+    hooks = ChatOutputHooks(
+        thinking_requested=lambda request: True,
+        tool_call_parsing_active=lambda request: False,
+        history_tool_calls_count=lambda request: 0,
+        tool_call_id=lambda item, count: "",
+    )
+    return DeepSeekRecipeChatEncodingAdapter(
+        chat_encoding_spec=spec,
+        tokenizer=_tokenizer(spec),
+        reasoning_parser=None,
+        tool_call_parser=None,
+        chat_hooks=hooks,
+        default_chat_template_kwargs=None,
+    )
+
+
+def _endpoint_ids(spec: str, messages, *, tools=None, thinking: bool, reasoning_effort=None) -> list[int]:
+    """What sglang's chat endpoint renders for this request without input_ids."""
+    request = ChatCompletionRequest(
+        model="m",
+        messages=messages,
+        tools=tools,
+        reasoning_effort=reasoning_effort,
+        chat_template_kwargs={"thinking": thinking},
+    )
+    return _endpoint(spec).encode_messages(
+        messages=[m.model_dump() for m in request.messages],
+        request=request,
+        tools=[t.model_dump() for t in request.tools] if request.tools else None,
+        thinking=thinking,
+        image_data=[],
+    )
+
+
+def _ids(spec: str, messages, **kwargs) -> list[int]:
+    return apply_chat_template(messages, tokenizer=_tokenizer(spec), tokenize=True, **kwargs)
+
+
+_CALL = {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'}}
+_CALL2 = {"id": "call_2", "type": "function", "function": {"name": "get_weather", "arguments": '{"city": "Rome"}'}}
+_USER = {"role": "user", "content": "What's the weather in Paris?"}
+_ANSWER = {"role": "assistant", "content": "It is sunny.", "reasoning_content": "Recall the forecast."}
+_CALLING = {"role": "assistant", "content": "", "reasoning_content": "Need the tool.", "tool_calls": [_CALL]}
+_RESULT = {"role": "tool", "tool_call_id": "call_1", "content": '{"temp": 21}'}
+_FOLLOW_UP = {"role": "user", "content": "And tomorrow?"}
+
+_SCENARIOS = {
+    "user": ([_USER], None),
+    "system_user": ([{"role": "system", "content": "You are helpful."}, _USER], None),
+    "developer_user": ([{"role": "developer", "content": "Be terse."}, _USER], None),
+    "multiturn": ([_USER, _ANSWER, _FOLLOW_UP], None),
+    "mid_system": ([_USER, _ANSWER, {"role": "system", "content": "Answer in French."}, _FOLLOW_UP], None),
+    "tools": ([_USER], _TOOLS),
+    "tool_result": ([_USER, _CALLING, _RESULT], _TOOLS),
+    "parallel_results": (
+        [
+            _USER,
+            {**_CALLING, "tool_calls": [_CALL, _CALL2]},
+            _RESULT,
+            {"role": "tool", "tool_call_id": "call_2", "content": '{"temp": 25}'},
+        ],
+        _TOOLS,
+    ),
+    "tool_loop_then_user": ([_USER, _CALLING, _RESULT, _ANSWER, _FOLLOW_UP], _TOOLS),
 }
 
 
-@pytest.mark.parametrize("shape", list(_INJECT_SHAPES), ids=list(_INJECT_SHAPES))
-def test_drop_thinking_false_injected_appends_are_append_only(shape):
-    before = _reference_encode(_INJECT_HISTORY, thinking=True, drop_thinking=False)
-    after = _reference_encode(_INJECT_HISTORY + _INJECT_SHAPES[shape], thinking=True, drop_thinking=False)
-    assert after.startswith(before)
+@pytest.mark.parametrize("scenario", list(_SCENARIOS), ids=list(_SCENARIOS))
+@pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
+@pytest.mark.parametrize("spec", _SPECS)
+def test_render_matches_the_chat_endpoint(spec, scenario, thinking):
+    messages, tools = _SCENARIOS[scenario]
+    # V4 thinking defaults to the checkpoint's "preview" high, which recipe calls low.
+    endpoint_effort = "low" if spec == "dsv4" and thinking else None
+    expected = _endpoint_ids(spec, messages, tools=tools, thinking=thinking, reasoning_effort=endpoint_effort)
+    assert _ids(spec, messages, tools=tools, thinking=thinking) == expected
+
+
+def test_v4_effort_follows_the_checkpoint_preview_profile():
+    def text(**kwargs):
+        return apply_chat_template(_MSGS_BASIC, tokenizer=_tokenizer("dsv4"), thinking=True, **kwargs)
+
+    assert "Reasoning Effort" not in text()
+    assert text() == text(reasoning_effort="high")
+    assert text(reasoning_effort="max").startswith("<｜begin▁of▁sentence｜>Reasoning Effort: Absolute maximum")
+    with pytest.raises(ValueError):
+        text(reasoning_effort="low")
+
+
+def test_v41_integer_budget_and_env_default(monkeypatch):
+    def text(**kwargs):
+        return apply_chat_template(_MSGS_BASIC, tokenizer=_tokenizer("dsv41"), thinking=True, **kwargs)
+
+    monkeypatch.delenv("SGLANG_DSV41_REASONING_EFFORT", raising=False)
+    assert "Reasoning Effort: 30 (range 1-100" in text(reasoning_effort=30)
+    monkeypatch.setenv("SGLANG_DSV41_REASONING_EFFORT", "50")
+    assert "Reasoning Effort: 50 (range 1-100" in text()
+    assert text(reasoning_effort="max") != text()
+
+
+@pytest.mark.parametrize("spec", _SPECS)
+def test_text_render_tokenizes_to_the_id_render(spec):
+    messages, tools = _SCENARIOS["tool_loop_then_user"]
+    text = apply_chat_template(messages, tokenizer=_tokenizer(spec), tools=tools, tokenize=False)
+    assert _tokenizer(spec).encode(text, add_special_tokens=False) == _ids(spec, messages, tools=tools)
+
+
+@pytest.mark.parametrize("spec", _SPECS)
+def test_special_token_spellings_in_content_stay_text(spec):
+    user_id = _tokenizer(spec).convert_tokens_to_ids("<｜User｜>")
+    ids = _ids(spec, [{"role": "user", "content": "Explain <｜User｜> please."}])
+    assert ids.count(user_id) == 1
+
+
+@pytest.mark.parametrize("spec", _SPECS)
+def test_encoder_kwargs_recipe_does_not_take_are_rejected(spec):
+    with pytest.raises(TypeError):
+        _ids(spec, _MSGS_BASIC, drop_thinking=False)
+
+
+# ---------------------------------------------------------------------------
+# TITO: appended turns tokenize as the tail of the full render
+# ---------------------------------------------------------------------------
+
+_APPENDS = {
+    "tool_result_after_pending_call": ([_USER, _CALLING], [_RESULT]),
+    "user_after_answer": ([_USER, _ANSWER], [_FOLLOW_UP]),
+    # A pretokenized prefix may end on a tool result; the user turn then folds in on plain text.
+    "user_after_tool_result": ([_USER, _CALLING, _RESULT], [_FOLLOW_UP]),
+    "user_after_tool_loop": ([_USER, _CALLING, _RESULT, _ANSWER], [_FOLLOW_UP]),
+    "injected_assistant": ([_USER, _ANSWER], [{"role": "assistant", "content": "injected"}]),
+    "injected_assistant_then_user": ([_USER, _ANSWER], [{"role": "assistant", "content": "injected"}, _FOLLOW_UP]),
+    "consecutive_assistants_then_user": (
+        [_USER, _ANSWER],
+        [{"role": "assistant", "content": "first injected"}, {"role": "assistant", "content": "second"}, _FOLLOW_UP],
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", list(_APPENDS), ids=list(_APPENDS))
+@pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
+@pytest.mark.parametrize("spec", _SPECS)
+def test_appended_messages_tokenize_as_the_render_tail(spec, thinking, shape):
+    history, appended = _APPENDS[shape]
+    tito = _TITO_CLASSES[spec](_tokenizer(spec), chat_template_kwargs={"thinking": thinking})
+    args = tito.default_template_args(_TOOLS)
+    prefix = tito.apply_chat_template(history, add_generation_prompt=False, tokenize=True, template_args=args)
+    full = tito.apply_chat_template(history + appended, add_generation_prompt=True, tokenize=True, template_args=args)
+    delta = tito.tokenize_additional_messages(history, history + appended, template_args=args)
+    decode = functools.partial(_tokenizer(spec).decode, skip_special_tokens=False)
+    assert decode(prefix + delta) == decode(full)
+    if history[-1]["role"] == "assistant":
+        # A sampled turn ends on a special token, so nothing merges across the boundary.
+        assert prefix + delta == full
