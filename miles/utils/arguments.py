@@ -27,6 +27,7 @@ from miles.backends.training_utils.data.token_space_media_process import Rollout
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
 from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.data import DataConfig
@@ -87,7 +88,7 @@ def resolve_rollout_function_paths(args: argparse.Namespace) -> None:
         standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
     rollout_path = args.rollout_function_path or standard_path
     if args.fully_async:
-        rollout_path = FULLY_ASYNC_ROLLOUT_PATH
+        rollout_path = args.rollout_function_path or FULLY_ASYNC_ROLLOUT_PATH
     # Resolved after the override: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
     args.rollout_function_path = rollout_path
@@ -100,6 +101,14 @@ def driver_owns_generation_pause(args) -> bool:
 
 def supports_partial_target_weight_update(args) -> bool:
     return not args.colocate and args.update_weight_transfer_mode == "p2p"
+
+
+def _assert_fully_async_rollout_subclass(path: str) -> None:
+    rollout_cls = load_function(path)
+    assert isinstance(rollout_cls, type) and issubclass(rollout_cls, FullyAsyncRolloutFn), (
+        f"--fully-async and --rollout-function-path {path} both select a rollout function; pass only one, "
+        "or name a FullyAsyncRolloutFn subclass"
+    )
 
 
 def _resolve_rollout_functions(args) -> None:
@@ -120,9 +129,8 @@ def _resolve_rollout_functions(args) -> None:
         ), "--fully-async needs the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         # Runs after validate_multi_lora_args, which selects a rollout function of its own.
         assert not args.multi_lora, "--fully-async and multi-LoRA select different rollout functions"
-        assert (
-            args.rollout_function_path is None
-        ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
+        if args.rollout_function_path is not None:
+            _assert_fully_async_rollout_subclass(args.rollout_function_path)
         if args.colocate:
             assert args.train_backend != "fsdp", (
                 "--fully-async --colocate needs the megatron IPC weight updater; the FSDP updater still "

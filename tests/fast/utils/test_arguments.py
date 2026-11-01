@@ -26,6 +26,8 @@ from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
 from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
+from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
+from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
@@ -880,10 +882,25 @@ def test_the_flag_and_a_matching_path_agree():
 
 def test_the_flag_still_rejects_a_different_rollout_function():
     """Two different selections remain a misconfiguration."""
-    args = _fully_async_candidate_args(fully_async=True, rollout_function_path="pkg.CustomRolloutFn")
+    args = _fully_async_candidate_args(fully_async=True, rollout_function_path="test:OtherRolloutFn")
 
-    with pytest.raises(AssertionError, match="pass only one"):
+    with function_registry.temporary("test:OtherRolloutFn", InferenceRolloutFn):
+        with pytest.raises(AssertionError, match="pass only one"):
+            _resolve_rollout_functions(args)
+
+
+def test_the_flag_takes_a_fully_async_subclass():
+    class RecordingFullyAsyncRolloutFn(FullyAsyncRolloutFn):
+        pass
+
+    args = _fully_async_candidate_args(fully_async=True, rollout_function_path="test:RecordingFullyAsyncRolloutFn")
+
+    with function_registry.temporary("test:RecordingFullyAsyncRolloutFn", RecordingFullyAsyncRolloutFn):
         _resolve_rollout_functions(args)
+
+    assert args.fully_async is True
+    assert args.rollout_function_path == "test:RecordingFullyAsyncRolloutFn"
+    assert args.eval_function_path == "test:RecordingFullyAsyncRolloutFn"
 
 
 def test_an_ordinary_rollout_function_path_stays_untouched():
