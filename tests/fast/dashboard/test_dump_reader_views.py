@@ -283,7 +283,12 @@ def test_groups_null_rewards_are_not_zero_std(tmp_path):
     reader.summary = lambda rollout_id, evaluation=False: pl.DataFrame(
         {
             "group_index": [0, 0, 1, 1],
+            "sample_episode_id": [0, 1, 2, 3],
+            "sample_index": [0, 1, 2, 3],
+            "sample_occurrence": [0] * 4,
+            "reward": [0.0] * 4,
             "raw_reward": pl.Series([None] * 4, dtype=pl.Float64),
+            "episode_reward": pl.Series([None] * 4, dtype=pl.Float64),
             "response_length": [1, 2, 3, 4],
             "truncated": [False] * 4,
         }
@@ -586,7 +591,7 @@ class TestSummaryCacheVersioning:
 
         assert rebuilt.equals(expected)
         assert pl.read_parquet(cache_path).equals(expected)
-        assert json.loads(sources_path.read_text())["_summary_version"] == 9
+        assert json.loads(sources_path.read_text())["_summary_version"] == DumpReader.SUMMARY_VERSION
 
     def test_summary_invalidates_a_v8_cache_whose_prefill_lag_paired_calls(self, reader):
         """A v8 cache computed prefill_lag across calls, so it must be rebuilt rather than served."""
@@ -601,7 +606,7 @@ class TestSummaryCacheVersioning:
         rebuilt = reader.summary(0)
 
         assert rebuilt.equals(expected)
-        assert json.loads(sources_path.read_text())["_summary_version"] == 9
+        assert json.loads(sources_path.read_text())["_summary_version"] == DumpReader.SUMMARY_VERSION
 
 
 def test_pre_span_dump_survives_the_full_reader_pipeline(tmp_path):
