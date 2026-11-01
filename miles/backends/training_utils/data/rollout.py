@@ -41,6 +41,14 @@ def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     return torch.float32
 
 
+def _media_dtype(args: Namespace) -> torch.dtype | None:
+    if args.backend.fp16:
+        return torch.float16
+    if args.backend.bf16:
+        return torch.bfloat16
+    return None
+
+
 def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
@@ -110,6 +118,7 @@ def prepare_rollout_data(
             # Megatron-Bridge and torch-native models place their media rows and rotate by themselves.
             with_sglang_placement=args.train_backend == "megatron" and args.megatron_to_hf_mode == "raw",
             device=current_platform.current_device(),
+            dtype=_media_dtype(args),
         )
         rollout_data["multimodal_train_inputs"] = token_space_train_inputs.multimodal_train_inputs
         if token_space_train_inputs.mrope_position_ids is not None:

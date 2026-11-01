@@ -120,6 +120,7 @@ def compute_multimodal_train_inputs(
     mm_processor_worker_num: int,
     with_sglang_placement: bool,
     device: torch.device,
+    dtype: torch.dtype | None = None,
 ) -> TokenSpaceTrainInputs:
     """Start rebuilding each sample's processor tensors and mRoPE positions on the trainer from its media references.
 
@@ -130,6 +131,7 @@ def compute_multimodal_train_inputs(
         mm_processor_worker_num: Samples built at once (--trainer-mm-processor-worker-num).
         with_sglang_placement: Also return the tower row placement and the mRoPE positions SGLang computes.
         device: This rank's device; the tensors land here, and it stands in for the engine's GPU.
+        dtype: The training dtype the floating tensors are cast to, or None to keep the processor's.
 
     Returns:
         Each sample's build future, which resolves to its processor tensors and, with SGLang's placement, its
@@ -143,6 +145,7 @@ def compute_multimodal_train_inputs(
             mm_processor_worker_num=mm_processor_worker_num,
             with_sglang_placement=with_sglang_placement,
             device=device,
+            dtype=dtype,
         )
         for sample_multimodal_inputs, sample_tokens in zip(multimodal_inputs, tokens, strict=True)
     ]
@@ -163,6 +166,7 @@ def _submit_sample_build(
     mm_processor_worker_num: int,
     with_sglang_placement: bool,
     device: torch.device,
+    dtype: torch.dtype | None,
 ) -> Future:
     """Queue one sample's rebuild; the executor's future carries its ``_SampleBuild``, or the error that stopped it."""
 
@@ -174,6 +178,7 @@ def _submit_sample_build(
                 tokens,
                 with_sglang_placement=with_sglang_placement,
                 device=device,
+                dtype=dtype,
             )
         else:
             sample_train_inputs = None
@@ -283,6 +288,7 @@ def _sample_train_inputs(
     *,
     with_sglang_placement: bool,
     device: torch.device,
+    dtype: torch.dtype | None,
 ):
     from sglang.srt.multimodal.modality import Modality
 
@@ -303,7 +309,7 @@ def _sample_train_inputs(
     modalities, spans = train_inputs.pop("mm_modalities"), train_inputs.pop("mm_spans")
     mrope_positions = train_inputs.pop("mrope_positions", None)
     train_inputs.pop("mrope_position_delta", None)
-    train_inputs = {key: value.to(device) for key, value in train_inputs.items()}
+    train_inputs = {key: _to_train_tensor(value, device=device, dtype=dtype) for key, value in train_inputs.items()}
     if not with_sglang_placement:
         return train_inputs, None
     # The token index of every tower output row, from where SGLang placed each media (half-open spans).
@@ -326,3 +332,9 @@ def _sample_train_inputs(
 def _text_mrope_positions(trainer_processor: TrainerProcessor, tokens: torch.Tensor) -> torch.Tensor | None:
     mrope_positions, _ = trainer_processor.core.strategy.compute_mrope_positions({"input_ids": tokens.tolist()})
     return mrope_positions
+
+
+def _to_train_tensor(value: torch.Tensor, *, device: torch.device, dtype: torch.dtype | None) -> torch.Tensor:
+    if dtype is not None and value.is_floating_point():
+        return value.to(device=device, dtype=dtype)
+    return value.to(device)
