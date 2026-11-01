@@ -51,6 +51,7 @@ def _build_prefill_scoring_payload(
 
     if has_media(sample.multimodal_inputs) and args.multimodal_token_space_processing:
         payload.update(rollout_media_payload(sample.multimodal_inputs))
+        payload["mm_token_expansion_start_len"] = len(sample.tokens)
     elif sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
         image_data = sample.multimodal_inputs["images"]
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]

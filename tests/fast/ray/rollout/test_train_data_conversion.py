@@ -119,6 +119,35 @@ class TestConvertSamplesToTrainData:
         else:
             assert "multimodal_inputs" not in out
 
+    def test_dense_tensors_alongside_media_refs_are_refused(self):
+        args = make_args(
+            advantage_estimator="grpo", rewards_normalization=False, multimodal_token_space_processing=True
+        )
+        samples = make_samples_grouped(n_groups=1, group_size=2)
+        samples[0].multimodal_inputs = {"images": ["/shared/a.png"]}
+        samples[0].multimodal_train_inputs = {"pixel_values": torch.zeros(4, 8)}
+
+        with pytest.raises(ValueError, match="both media references and dense"):
+            convert_samples_to_train_data(
+                args,
+                samples,
+                metadata={},
+                custom_convert_samples_to_train_data_func=None,
+                custom_reward_post_process_func=None,
+            )
+
+    def test_custom_converter_output_with_both_is_refused(self):
+        converted = {"multimodal_inputs": [{"images": ["/shared/a.png"]}], "multimodal_train_inputs": [None]}
+
+        with pytest.raises(ValueError, match="both media references and dense"):
+            convert_samples_to_train_data(
+                make_rollout_config(enable_sample_ownership_checker=False),
+                [make_sample()],
+                metadata={},
+                custom_convert_samples_to_train_data_func=lambda args, samples: converted,
+                custom_reward_post_process_func=None,
+            )
+
     def test_loss_mask_none_filled_with_ones(self):
         args = make_args(rewards_normalization=False)
         s = make_sample(response_length=5)
