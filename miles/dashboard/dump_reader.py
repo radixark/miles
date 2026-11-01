@@ -17,7 +17,7 @@ surfacing as corruption.
 from __future__ import annotations
 
 import json
-import os
+import tempfile
 import time
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
@@ -552,10 +552,13 @@ class DumpReader:
             else pl.DataFrame(schema={name: pl.Null for name in self.SUMMARY_COLUMNS})
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path = cache_path.with_suffix(f".{os.getpid()}.tmp")
-        df.write_parquet(tmp_path)
-        tmp_path.replace(cache_path)
-        sources_path.write_text(json.dumps(sources))
+        with tempfile.TemporaryDirectory(dir=self.cache_dir) as temporary:
+            tmp_path = Path(temporary) / cache_path.name
+            df.write_parquet(tmp_path)
+            tmp_path.replace(cache_path)
+            tmp_sources = Path(temporary) / sources_path.name
+            tmp_sources.write_text(json.dumps(sources))
+            tmp_sources.replace(sources_path)
         return df
 
     def groups(self, rollout_id: int, *, evaluation: bool = False) -> pl.DataFrame:
