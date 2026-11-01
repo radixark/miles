@@ -12,6 +12,7 @@ Args:
   --sglang-port: port of the sglang server `train` connects to.
   --sglang-env-script: sglang-torchtpu's environment script, sourced before the server starts.
   --weight-transfer: shm (default) or disk.
+  --kv-cache-dtype: the engine's KV cache dtype; bfloat16 (default) or fp8_e4m3 for capacity.
   --weight-dir: where `disk` writes the weights.
   --wandb-project: wandb project; empty disables wandb (the key comes from WANDB_API_KEY or ~/.netrc).
   --extra-args: more train.py flags, appended last.
@@ -65,6 +66,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     sglang_env_script: str = "/sgl-workspace/sglang/benchmark/tpu/common_env.sh"
     weight_dir: str = "/dev/shm/miles_weights"
     weight_transfer: Literal["shm", "disk"] = "shm"
+    # sglang-torchtpu defaults to fp8 without scales, whose logprobs drift from the bf16 trainer's
+    kv_cache_dtype: str = "bfloat16"
     wandb_project: str = "miles-tpu"
     extra_args: str = ""
 
@@ -102,6 +105,7 @@ def _serve_sglang(args: ScriptArgs):
         # Required: it disables the piecewise prefill graph, which TPU does not implement.
         "--enable-torch-compile "
         "--page-size 64 "
+        f"--kv-cache-dtype {args.kv_cache_dtype} "
         f"--context-length {SEQ_LEN} "
         "--chunked-prefill-size 2048 "
         f"--tp-size {NUM_ENGINE_DEVICES} "
