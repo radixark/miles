@@ -253,6 +253,14 @@
       "pages": [
        "advanced/cluster-backend"
       ]
+     },
+     {
+      "group": "Algorithm",
+      "pages": [
+       "examples/infra-features/score-centering",
+       "examples/infra-features/train-infer-mismatch-helper",
+       "advanced/algorithms/length-penalties"
+      ]
      }
     ]
    },
