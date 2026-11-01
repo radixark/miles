@@ -1975,6 +1975,31 @@ class TestIndepDpBatchSchedule:
         assert args.use_dynamic_batch_size
 
 
+class TestPadStepsForDpAlignmentValidation:
+    def test_it_starts_with_the_dynamic_schedule(self):
+        args = _parse_megatron_args(["--pad-steps-for-dp-alignment"] + DYNAMIC_BATCH_ARGS)
+        miles_validate_args(args)
+        assert args.pad_steps_for_dp_alignment
+
+    def test_it_needs_the_dynamic_schedule(self):
+        with pytest.raises(ValueError, match="--use-dynamic-batch-size"):
+            miles_validate_args(_parse_megatron_args(["--pad-steps-for-dp-alignment"]))
+
+    def test_the_output_store_is_refused(self):
+        args = _parse_megatron_args(["--pad-steps-for-dp-alignment"] + DYNAMIC_BATCH_ARGS)
+        args.use_output_store = True
+        with pytest.raises(ValueError, match="--use-output-store"):
+            miles_validate_args(args)
+
+    def test_per_token_loss_is_refused(self):
+        with pytest.raises(ValueError, match="--calculate-per-token-loss"):
+            miles_validate_args(
+                _parse_megatron_args(
+                    ["--pad-steps-for-dp-alignment", "--calculate-per-token-loss"] + DYNAMIC_BATCH_ARGS
+                )
+            )
+
+
 def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
     """The eval fleet pins engine addresses once, so a healed eval cell would be skipped silently."""
     parser = get_megatron_arg_parser()
