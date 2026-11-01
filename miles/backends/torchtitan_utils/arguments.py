@@ -84,7 +84,7 @@ def validate_torchtitan_args(args) -> None:
 
 # each entry has a LoRA e2e under tests/e2e/torchtitan; other models build projections whose module paths
 # or HF names the LoRA target mapping does not handle yet
-_LORA_VALIDATED_MODELS = ("qwen3", "muse_glimmer")
+_LORA_VALIDATED_MODELS = ("qwen3", "muse_glimmer", "muse_spark")
 
 
 def _validate_lora_args(args) -> None:

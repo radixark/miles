@@ -18,6 +18,8 @@ from pathlib import Path
 from transformers import AutoConfig, AutoModelForCausalLM, PretrainedConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 
+from miles.utils.hf_utils.muse_spark_config import register_muse_spark_configs
+
 
 @dataclass(frozen=True)
 class _HFConfigAlias:
@@ -107,6 +109,7 @@ def register_hf_config_aliases() -> None:
             )
             auto_cls.register(compat_config, compat_model_cls, exist_ok=alias.override_hf_native)
         _REGISTERED_ALIASES.add(alias.model_type)
+    register_muse_spark_configs()
 
     try:
         import sglang.srt.configs.inkling  # noqa: F401
