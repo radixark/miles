@@ -1069,7 +1069,7 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
             "space; set --sglang-enable-token-space-processor (a frozen reward or reference engine group that "
             "serves its own requests may override it off)."
         )
-    if args.rollout_external_engine_addrs:
+    if _compute_rollout_external(args):
         raise ValueError(
             "--multimodal-token-space-processing builds the trainer's processor from the server args Miles "
             "launches its engines with, which external engines do not share."
@@ -1092,7 +1092,13 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
             "the vision tower with the device's default attention kernel, so the engine must too."
         )
     # Actor engine groups that disagree on a processor setting fail here, not after the first rollout.
-    RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint=args.hf_checkpoint)
+    try:
+        RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint=args.hf_checkpoint)
+    except AssertionError as error:
+        raise ValueError(
+            "--multimodal-token-space-processing builds one trainer processor for every rollout engine, so the "
+            f"engine groups must launch with the same processor settings: {error}"
+        ) from error
 
 
 def miles_validate_args(args):
