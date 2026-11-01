@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import random
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import torch
 from hypothesis import HealthCheck, given, settings
@@ -1458,3 +1460,127 @@ class TestOutputStoreTookEffect:
 
     def test_without_replay_there_is_nothing_to_store(self):
         assert "rollout_store_plan" not in self._convert([make_sample()], use_output_store=True)
+
+
+def _pad_data(rollout_ids, lengths=None):
+    n = len(rollout_ids)
+    return {
+        "tokens": [[1] * length for length in lengths or [5000] * n],
+        "response_lengths": [10] * n,
+        "rewards": [1.0] * n,
+        "raw_reward": [float(i) for i in range(n)],
+        "truncated": [0] * n,
+        "sample_indices": [100 + i for i in range(n)],
+        "rollout_ids": list(rollout_ids),
+        "loss_masks": [[1] * 10 for _ in range(n)],
+        "rollout_mask_sums": [10] * n,
+        "rollout_log_probs": [[-0.1] * 10 for _ in range(n)],
+        "weight_versions": [[{"spans": []}]] * n,
+        "prompt_group_sizes": [1] * n,
+    }
+
+
+def _split_padded(data, *, dp_size=2, pad=True, **overrides):
+    args = make_args(
+        use_dynamic_batch_size=True,
+        max_tokens_per_gpu=8192,
+        pad_steps_for_dp_alignment=pad,
+        **{"global_batch_size": len(set(data["rollout_ids"])), **overrides},
+    )
+    config = make_train_parallel_config(dp_size=dp_size, supports_precomputed_schedule=True)
+    return split_train_data_by_dp(args, data, config)
+
+
+def _rows(shards):
+    return [
+        {key: shard[key][k] for key in ("tokens", "loss_masks", "response_lengths", "rollout_ids", "sample_indices")}
+        | {"partition": j}
+        for shard in shards
+        for k, j in enumerate(shard["partition"])
+    ]
+
+
+class TestPadStepsForDpAlignment:
+    def test_without_the_flag_the_step_is_refused(self):
+        with pytest.raises(AssertionError, match="could only produce 3 micro-batches"):
+            _split_padded(_pad_data([7, 8, 9]), pad=False)
+
+    def test_a_pad_row_is_zero_loss_and_keeps_its_templates_rollout(self):
+        shards = _split_padded(_pad_data([7, 8, 9]))
+        [(shard, k)] = [(shard, k) for shard in shards for k, j in enumerate(shard["partition"]) if j == 3]
+        pad = {key: shard[key][k] for key in ("tokens", "loss_masks", "response_lengths", "rewards")}
+        pad |= {key: shard[key][k] for key in ("rollout_log_probs", "weight_versions", "rollout_ids")}
+        pad |= {key: shard[key][k] for key in ("rollout_mask_sums", "sample_indices")}
+        assert pad["tokens"] == [0, 0]
+        assert pad["loss_masks"] == [0]
+        assert pad["response_lengths"] == 1
+        assert pad["rewards"] == 0.0
+        assert pad["rollout_log_probs"] == [0.0]
+        assert pad["weight_versions"] == []
+        assert (pad["rollout_ids"], pad["rollout_mask_sums"], pad["sample_indices"]) == (7, 10, 100)
+        assert all(shard["total_lengths"][3] == 2 for shard in shards)
+
+    def test_batch_global_columns_keep_one_entry_per_real_sample(self):
+        data = _pad_data([7, 8, 9])
+        shards = _split_padded(data)
+        for shard in shards:
+            assert shard["raw_reward"] == [0.0, 1.0, 2.0]
+            assert shard["prompt_group_sizes"] == [1, 1, 1]
+        real = [row for row in _rows(shards) if row["partition"] < 3]
+        assert sorted(row["partition"] for row in real) == [0, 1, 2]
+        for row in real:
+            assert row["sample_indices"] == data["sample_indices"][row["partition"]]
+            assert row["tokens"] == data["tokens"][row["partition"]]
+
+    def test_replay_columns_are_cut_to_the_pad_row(self):
+        data = _pad_data([7, 8, 9])
+        data["rollout_topk_token_ids"] = [np.arange(40).reshape(10, 4)] * 3
+        data["rollout_topk_log_probs"] = [np.zeros((10, 4))] * 3
+        data["rollout_sampling_mask_offsets"] = [np.arange(0, 33, 3)] * 3
+        data["rollout_sampling_mask_ids"] = [np.arange(30)] * 3
+        data["rollout_routed_experts"] = [np.ones((4999, 2, 3), dtype=np.int32)] * 3
+        shards = _split_padded(data)
+        [(shard, k)] = [(shard, k) for shard in shards for k, j in enumerate(shard["partition"]) if j == 3]
+        assert shard["rollout_topk_token_ids"][k].tolist() == [[0, 1, 2, 3]]
+        assert shard["rollout_topk_log_probs"][k].shape == (1, 4)
+        assert shard["rollout_sampling_mask_offsets"][k].tolist() == [0, 3]
+        assert shard["rollout_sampling_mask_ids"][k].tolist() == [0, 1, 2]
+        assert shard["rollout_routed_experts"][k].shape == (1, 2, 3)
+
+    @pytest.mark.parametrize("length", [8192, 8191, 9000])
+    def test_an_already_aligned_step_gets_no_pad(self, length):
+        shards = _split_padded(_pad_data([0, 1], lengths=[length, length]))
+        assert sorted(row["partition"] for row in _rows(shards)) == [0, 1]
+
+    def test_an_eligible_partial_step_is_padded_too(self):
+        shards = _split_padded(_pad_data([0, 1, 2, 2, 2]), global_batch_size=2, allow_partial_train_step=True)
+        assert shards[0]["num_rollouts"] == [2, 1]
+        rows = _rows(shards)
+        assert sorted(row["partition"] for row in rows) == [0, 1, 2, 3, 4, 5]
+        assert [row["rollout_ids"] for row in rows if row["partition"] == 5] == [2]
+
+    def test_dp_one_needs_no_padding(self):
+        shards = _split_padded(_pad_data([0, 1, 2]), dp_size=1)
+        assert len(shards[0]["tokens"]) == 3
+
+
+def _over_half_cap_round(pad):
+    """A Harbor 2x1080p round needed 196 micro-batches at DP 2 but could produce 195."""
+    rng = random.Random(0)
+    data = _pad_data(list(range(195)), lengths=[rng.randint(4100, 8192) for _ in range(195)])
+    return data, lambda: _split_padded(data, pad=pad)
+
+
+def test_a_round_of_samples_over_half_the_cap_cannot_be_scheduled_without_padding():
+    _, split = _over_half_cap_round(pad=False)
+    with pytest.raises(AssertionError, match="could only produce 195 micro-batches after maximal splitting; need 196"):
+        split()
+
+
+def test_a_round_of_samples_over_half_the_cap_trains_every_sample_with_padding():
+    data, split = _over_half_cap_round(pad=True)
+    rows = _rows(split())
+    assert len(rows) == 196
+    assert sorted(row["partition"] for row in rows if row["partition"] < 195) == list(range(195))
+    [pad] = [row for row in rows if row["partition"] == 195]
+    assert (pad["tokens"], pad["loss_masks"], pad["rollout_ids"]) == ([0, 0], [0], 0)
