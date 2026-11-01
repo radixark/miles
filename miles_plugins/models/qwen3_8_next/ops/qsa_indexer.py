@@ -118,6 +118,17 @@ def packed_block_causal_mask(query_positions: Tensor, layout: PackedBlockLayout,
     return (blocks >= lo) & (blocks < first_invalid)
 
 
+def selected_blocks(selection: Tensor, layout: PackedBlockLayout, compress_ratio: int) -> Tensor:
+    """Indexer rows ``[T, K]`` -> the selected block ids ``[T, K / compress_ratio]``, ``-1`` where unused.
+
+    ``Qwen38NextQSAIndexer.forward`` emits every kept block as a run of ``compress_ratio`` consecutive
+    tokens starting at the block's first token, so the first token of each run names the block.
+    """
+    first = selection[:, ::compress_ratio].long()
+    block = layout.token_block_start.unsqueeze(1) + (first - layout.token_start.unsqueeze(1)) // compress_ratio
+    return torch.where(first >= 0, block, -1)
+
+
 class Qwen38NextQSAIndexer(MegatronModule):
     """Selects the sparse-attention budget for one full-attention layer."""
 

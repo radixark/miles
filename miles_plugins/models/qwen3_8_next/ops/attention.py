@@ -11,8 +11,8 @@ from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
-from miles.kernels.attention.qsa import qsa_block_sparse_attention, qsa_sparse_attention
-from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout, Qwen38NextQSAIndexer
+from miles.kernels.attention.qsa import build_qsa_block_index, qsa_block_attention, qsa_sparse_attention
+from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout, Qwen38NextQSAIndexer, selected_blocks
 
 
 class Qwen38NextQSACoreAttention(MegatronModule):
@@ -34,26 +34,20 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                 "Qwen38NextAttention.forward sets it before delegating; reaching here "
                 "means core_attention was called out of band."
             )
-        block_form = getattr(
-            self._owner, "_qsa_block_form", None
+        selected = getattr(
+            self._owner, "_qsa_blocks", None
         )  # config-access-exempt: the owner attaches sparse-attention state only during its forward
         if query.dim() == 3:
-            if block_form is not None:
-                sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, blk = block_form
-                return qsa_block_sparse_attention(
-                    query,
-                    key,
-                    value,
-                    sel_bitmap,
-                    lo,
-                    hi,
-                    blk_base,
-                    tok_base,
-                    block_first,
-                    block_last,
-                    self.softmax_scale,
-                    blk,
-                ).reshape(query.shape[0], -1)
+            if selected is not None:
+                blocks, cu_seqlens = selected
+                index = build_qsa_block_index(
+                    blocks,
+                    cu_seqlens,
+                    compress_ratio=self._owner.compress_ratio,
+                    num_heads=query.shape[1],
+                    num_kv_heads=key.shape[1],
+                )
+                return qsa_block_attention(query, key, value, index, self.softmax_scale).reshape(query.shape[0], -1)
             return qsa_sparse_attention(query, key, value, selection, self.softmax_scale).reshape(query.shape[0], -1)
 
         if query.dim() != 4:
@@ -83,7 +77,7 @@ class Qwen38NextAttention(SelfAttention):
         self.compress_ratio = config.qwen3_8_next_indexer_compress_ratio
         self.core_attention = Qwen38NextQSACoreAttention(config, layer_number, owner=self)
         self._qsa_selection = None
-        self._qsa_block_form = None
+        self._qsa_blocks = None
 
     @staticmethod
     def _packed_positions(cu_seqlens: Tensor, total: int) -> Tensor:
@@ -146,37 +140,22 @@ class Qwen38NextAttention(SelfAttention):
             seg_lo = seq_start.unsqueeze(1)
             ok = (merged >= seg_lo) & (merged <= pack_pos) & (merged >= 0)
             self._qsa_selection = torch.where(ok, merged, torch.full_like(merged, -1))
-            self._qsa_block_form = self._publish_block_form(self._qsa_selection, positions, seq_start, seq)
+            self._qsa_blocks = self._publish_blocks(selection, positions, seq)
         try:
             return super().forward(hidden_states, *args, **kwargs)
         finally:
             self._qsa_selection = None
             self._qsa_cu_seqlens = None
-            self._qsa_block_form = None
+            self._qsa_blocks = None
 
-    def _publish_block_form(self, selection: Tensor, positions: Tensor, seq_start: Tensor, seq: int):
-        """Selection rows -> the block form the tensor-core kernel consumes.
+    def _publish_blocks(self, selection: Tensor, positions: Tensor, seq: int) -> tuple[Tensor, Tensor]:
+        """Indexer rows -> (selected block ids, cu_seqlens), the input of the packed path's kernel.
 
         Block ids come from the indexer's per-sequence grid (``PackedBlockLayout``); a
         ceil(seq_start / ratio) base collides across sequences for some lengths.
         """
-        ratio = self.compress_ratio
         cu = self._qsa_cu_seqlens
         if cu is None or cu.numel() <= 2:
             cu = torch.tensor([0, seq], device=selection.device)
-        layout = PackedBlockLayout(cu, positions, ratio)
-        blk_base = layout.token_block_start.to(torch.int32)
-        tok_base = layout.token_start.to(torch.int32)
-        num_blocks = layout.num_blocks
-
-        sel_bitmap = torch.zeros(seq, num_blocks, dtype=torch.uint8, device=selection.device)
-        valid = selection >= 0
-        if bool(valid.any()):
-            rows = torch.arange(seq, device=selection.device).unsqueeze(1).expand_as(selection)
-            blk = blk_base.unsqueeze(1).long() + (selection - tok_base.unsqueeze(1)).div(ratio, rounding_mode="floor")
-            sel_bitmap[rows[valid], blk[valid].long().clamp_(0, num_blocks - 1)] = 1
-        lo = tok_base
-        hi = (positions + seq_start).to(torch.int32)
-        block_first = layout.block_first_token.to(torch.int32)
-        block_last = layout.block_last_token.to(torch.int32)
-        return sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, ratio
+        layout = PackedBlockLayout(cu, positions, self.compress_ratio)
+        return selected_blocks(selection, layout, self.compress_ratio), cu
