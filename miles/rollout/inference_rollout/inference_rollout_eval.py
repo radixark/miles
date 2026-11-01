@@ -15,6 +15,7 @@ from miles.rollout.inference_rollout.inference_rollout_common import (
 )
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
+from miles.utils.media_refs import run_media_dir
 from miles.utils.misc import as_completed_async
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample
@@ -74,7 +75,7 @@ async def eval_rollout_single_dataset(
             tool_key=dataset_cfg.tool_key,
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
-            media_dir=args.shared_media_dir,
+            media_dir=run_media_dir(args),
             token_space_processing=args.multimodal_token_space_processing,
         )
     dataset = prompt_dataset_cache[cache_key]

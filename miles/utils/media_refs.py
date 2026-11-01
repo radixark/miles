@@ -14,6 +14,7 @@ import base64
 import hashlib
 import io
 import os
+import shutil
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,17 @@ _TO_SGLANG_MEDIA_FIELDS = {"images": "image_data", "audios": "audio_data", "vide
 _PER_PART_OPTIONS = frozenset(
     {"resized_height", "resized_width", "min_pixels", "max_pixels", "total_pixels", "fps", "nframes", "max_frames"}
 )
+
+
+def run_media_dir(args) -> str | None:
+    if args.shared_media_dir is None:
+        return None
+    return os.path.join(args.shared_media_dir, args.run_uuid)
+
+
+def release_run_media(args) -> None:
+    if (media_dir := run_media_dir(args)) is not None:
+        shutil.rmtree(media_dir, ignore_errors=True)
 
 
 def has_media(multimodal_inputs: dict[str, list[str]] | None) -> bool:
