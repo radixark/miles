@@ -64,16 +64,20 @@ def add_user_provided_function_arguments(
 
 
 def _add_function_arguments(parser: argparse.ArgumentParser, config_class: type[BaseConfig], *, path: str) -> None:
-    """Register a hook's flags, skipping ones another hook already declared the same way."""
-    # two hooks can share flags, e.g. a wrapper reusing agentic_tool_call's add_arguments
+    """Register a hook's flags on the real parser, tolerating flags another hook already declared the same way.
+
+    Two hooks can share flags, e.g. a wrapper reusing agentic_tool_call's add_arguments. The hook always registers
+    on the real parser, so its mutually exclusive groups and `set_defaults` keep working.
+    """
+    # a scratch run only compares already-declared flags
     scratch = argparse.ArgumentParser(add_help=False)
     config_class.add_arguments(parser=scratch)
+    redeclared = False
     for action in scratch._actions:
         existing = {
             parser._option_string_actions[o] for o in action.option_strings if o in parser._option_string_actions
         }
         if not existing:
-            parser._add_action(action)
             continue
         (other,) = existing
         if (other.dest, other.default, other.type, other.nargs) != (
@@ -87,6 +91,21 @@ def _add_function_arguments(parser: argparse.ArgumentParser, config_class: type[
                 f"(dest/default/type/nargs {other.dest, other.default, other.type, other.nargs} vs "
                 f"{action.dest, action.default, action.type, action.nargs})"
             )
+        redeclared = True
+    if not redeclared:
+        config_class.add_arguments(parser=parser)
+        return
+    # identical re-declarations replace the earlier ones instead of raising argparse's conflict error;
+    # argparse checks conflicts per container, so every existing group needs the handler too
+    containers = [parser, *parser._action_groups, *parser._mutually_exclusive_groups]
+    previous_handlers = [container.conflict_handler for container in containers]
+    for container in containers:
+        container.conflict_handler = "resolve"
+    try:
+        config_class.add_arguments(parser=parser)
+    finally:
+        for container, handler in zip(containers, previous_handlers, strict=True):
+            container.conflict_handler = handler
 
 
 def resolve_custom_function_configs(args: argparse.Namespace, *, config_class: type[BaseConfig] | None = None) -> None:
