@@ -24,6 +24,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
+import polars as pl
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -133,13 +134,13 @@ def make_app(
         lifecycle lanes. The event scan is capped at one viewport (4 h) before
         the consume anchor (design §18.5); empty lanes = run predates the
         trajectory probes. ``sample_index`` narrows to one sample (the L2
-        page's own lane) without touching the step summary."""
+        page's own lane), resolved through the summary to the source sample
+        whose lane it ran on."""
         with _translate_errors():
-            indices = (
-                {sample_index}
-                if sample_index is not None
-                else set(reader.summary(rollout_id)["sample_index"].to_list())
-            )
+            summary = reader.summary(rollout_id)
+            if sample_index is not None:
+                summary = summary.filter(pl.col("sample_index") == sample_index)
+            indices = set(summary["lifecycle_index"].to_list())
             consume = next((b["ts"] for b in store.bubbles() if b["step"] == rollout_id), None)
             if consume is None:
                 window = store.time_range()
@@ -289,6 +290,15 @@ def make_app(
         with _translate_errors():
             df = reader.summary(rollout_id, evaluation=evaluation)
             return dict(rollout_id=rollout_id, evaluation=evaluation, **_table(df))
+
+    @app.get("/api/rollout/{rollout_id}/episodes")
+    def rollout_episodes(rollout_id: int, evaluation: bool = Query(False, alias="eval")):
+        with _translate_errors():
+            return dict(
+                rollout_id=rollout_id,
+                evaluation=evaluation,
+                **_table(reader.episodes(rollout_id, evaluation=evaluation)),
+            )
 
     @app.get("/api/rollout/{rollout_id}/groups")
     def rollout_groups(rollout_id: int, evaluation: bool = Query(False, alias="eval")):

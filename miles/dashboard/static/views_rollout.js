@@ -6,6 +6,7 @@ import { drawChart } from "./charts.js";
 const DEFAULT_COLUMNS = [
   "sample_index",
   "sample_occurrence",
+  "sample_episode_id",
   "group_index",
   "raw_reward",
   "reward",
@@ -140,9 +141,10 @@ export async function renderRollout(view, meta, route) {
     location.replace(`#/rollout/${rolloutId}${evaluation ? "?eval=1" : ""}`);
     return;
   }
-  const [summary, groups] = await Promise.all([
+  const [summary, groups, episodes] = await Promise.all([
     api(`/api/rollout/${rolloutId}/summary`, { eval: evaluation }),
     api(`/api/rollout/${rolloutId}/groups`, { eval: evaluation }),
+    api(`/api/rollout/${rolloutId}/episodes`, { eval: evaluation }),
   ]);
   const rows = summary.rows;
   for (const row of rows) row.versions = versionSpan(row);
@@ -186,10 +188,12 @@ export async function renderRollout(view, meta, route) {
   }
 
   // -------- headline stats --------
-  const rewards = rows.map((r) => r[rewardKey]).filter((v) => v !== null);
+  const episodeRewardKey = evaluation ? "reward" : "episode_reward";
+  const rewards = episodes.rows.map((r) => r[episodeRewardKey]).filter((v) => v !== null);
   const mean = (vs) => (vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null);
   const zeroStdGroups = groups.rows.filter((g) => g.zero_std).length;
   const stats = el("div", { class: "statgrid" }, [
+    statBox("episodes", episodes.rows.length),
     statBox("samples", rows.length),
     statBox("reward mean", mean(rewards)),
     statBox("truncated frac", mean(rows.map((r) => (r.truncated ? 1 : 0)))),
@@ -243,6 +247,8 @@ export async function renderRollout(view, meta, route) {
     renderTable();
     const panels = [];
     if (trajectories.lanes.length) {
+      const rowsByIndex = new Map();
+      for (const row of rows) if (!rowsByIndex.has(row.lifecycle_index)) rowsByIndex.set(row.lifecycle_index, row);
       panels.push(
         createAnatomy({
           lanes: trajectories.lanes,
@@ -251,8 +257,8 @@ export async function renderRollout(view, meta, route) {
           // shared execution, so the panel labels and opens the FIRST leaf
           // (last-one-wins would label one leaf while clicking opened another).
           // The samples table below reaches every (index, occurrence) row.
-          rowsByIndex: new Map(rows.filter((r) => (r.sample_occurrence ?? 0) === 0).map((r) => [r.sample_index, r])),
-          onClickSample: (index) => openTokens({ sample_index: index, sample_occurrence: 0 }),
+          rowsByIndex,
+          onClickSample: (index) => openTokens(rowsByIndex.get(index)),
         }),
       );
     }
@@ -279,7 +285,16 @@ export async function renderRollout(view, meta, route) {
 
   const tabBody = el("div", {});
   const tabButtons = el("div", { class: "tabs" });
-  const tabs = { samples: samplesTab, groups: groupsTab };
+  const episodesTab = () => [
+    el("div", { class: "panel" }, [
+      el("h3", {}, ["Episodes — samples sharing one episode id; click for the first sample"]),
+      sortableTable(episodes.rows, episodes.columns, {
+        onRowClick: openTokens,
+        sortState: { column: "sample_episode_id", desc: false },
+      }),
+    ]),
+  ];
+  const tabs = { episodes: episodesTab, samples: samplesTab, groups: groupsTab };
   const selectTab = (name) => {
     tabBody.replaceChildren(...tabs[name]());
     tabButtons.replaceChildren(
