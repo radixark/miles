@@ -36,6 +36,7 @@ _EXPECTED_FIXED_TEMPLATES = {
         {"preserve_thinking": True},
     ),
     TITOTokenizerType.QWENNEXT: ("qwen3_thinking_2507_and_next_fixed.jinja", {"clear_thinking": False}),
+    TITOTokenizerType.QWEN3_VL: (None, {}),
     TITOTokenizerType.GLM47: (None, {"clear_thinking": False}),
     TITOTokenizerType.GLM53: (None, {"clear_thinking": False, "enable_thinking": True}),
     TITOTokenizerType.NEMOTRON3: (None, {"truncate_history_thinking": False}),

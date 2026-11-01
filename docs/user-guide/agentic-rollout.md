@@ -338,6 +338,7 @@ but treat it as best-effort until it passes the checks below.
 | Qwen3.8-27B | `qwen38small` |
 | Qwen3.8-Flash-Next | `qwen4exp` |
 | Qwen3-Thinking-2507 / Qwen3-Next | `qwennext` |
+| Qwen3-VL Instruct | `qwen3_vl` |
 | GLM-4.7 / 5 / 5.2 | `glm47` |
 | GLM-5.3 / GLM-5.3-Flash (text sessions) | `glm53` |
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |

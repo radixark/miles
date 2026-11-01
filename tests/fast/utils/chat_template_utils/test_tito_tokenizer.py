@@ -81,6 +81,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     Kimi26TITOTokenizer,
     Nemotron3TITOTokenizer,
     Qwen3TITOTokenizer,
+    Qwen3VLTITOTokenizer,
     Qwen35TITOTokenizer,
     Qwen36TITOTokenizer,
     Qwen38SmallTITOTokenizer,
@@ -512,6 +513,7 @@ class TestResolveRequestArgs:
             (Qwen35TITOTokenizer, "add_vision_id", True, False),
             (Qwen36TITOTokenizer, "add_vision_id", True, False),
             (Qwen38SmallTITOTokenizer, "add_vision_id", True, False),
+            (Qwen3VLTITOTokenizer, "add_vision_id", True, False),
             (Qwen38SmallTITOTokenizer, "enable_thinking", True, False),
             (Qwen38SmallTITOTokenizer, "reasoning_effort", "low", "medium"),
             (GLM53TITOTokenizer, "reasoning_effort", "max", "low"),
@@ -945,6 +947,34 @@ class TestMergeTokensBoundary:
         )
         assert result == [100, 200, 300] + incremental
 
+    @pytest.mark.parametrize(
+        "tito_type, template_kwargs, matches_template",
+        [
+            (TITOTokenizerType.QWEN3_VL, {}, True),
+            (TITOTokenizerType.QWEN3_VL, {"add_vision_id": True}, True),
+            (TITOTokenizerType.DEFAULT, {}, False),
+        ],
+    )
+    def test_qwen3_vl_image_turn_after_a_model_stop(self, tito_type, template_kwargs, matches_template):
+        tito = get_tito_tokenizer(
+            _get_tokenizer("Qwen/Qwen3-VL-2B-Instruct", tito_type),
+            tokenizer_type=tito_type,
+            chat_template_kwargs=template_kwargs,
+        )
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}
+        old = [
+            {"role": "user", "content": [image, {"type": "text", "text": "Screen 1. What next?"}]},
+            {"role": "assistant", "content": "Click Save."},
+        ]
+        new = [*old, {"role": "user", "content": [image, {"type": "text", "text": "Screen 2. What next?"}]}]
+        stopped = tito.apply_chat_template(old[:1], add_generation_prompt=True, tokenize=True)
+        stopped += tito.tokenizer.encode("Click Save.<|im_end|>", add_special_tokens=False)
+
+        merged = tito.merge_tokens(old, new, stopped)
+
+        expected = tito.apply_chat_template(new, add_generation_prompt=True, tokenize=True)
+        assert (merged == expected) is matches_template
+
     # -- GLM47: strip ambiguous boundary tokens --
 
     def test_glm47_strips_observation(self, glm47_tito: GLM47TITOTokenizer, caplog):
@@ -1298,6 +1328,7 @@ class TestFactory:
             ("qwen38small", "Qwen/Qwen3-4B", Qwen38SmallTITOTokenizer),
             ("qwen4exp", "Qwen/Qwen3-4B", Qwen38SmallTITOTokenizer),
             ("qwennext", "Qwen/Qwen3-4B", QwenNextTITOTokenizer),
+            ("qwen3_vl", "Qwen/Qwen3-VL-2B-Instruct", Qwen3VLTITOTokenizer),
             ("glm47", "zai-org/GLM-4.7-Flash", GLM47TITOTokenizer),
             ("default", "Qwen/Qwen3-4B", TITOTokenizer),
         ],
@@ -1320,6 +1351,7 @@ class TestFactory:
             ("qwen38small", Qwen38SmallTITOTokenizer),
             ("qwen4exp", Qwen38SmallTITOTokenizer),
             ("qwennext", QwenNextTITOTokenizer),
+            ("qwen3_vl", Qwen3VLTITOTokenizer),
         ],
     )
     def test_qwen_variant_inherits_qwen3_boundary_logic(self, type_str, cls):
@@ -1356,6 +1388,7 @@ class TestParserBinding:
             (TITOTokenizerType.QWEN38_SMALL, "qwen3", "qwen3_coder"),
             (TITOTokenizerType.QWEN4_EXP, "qwen3", "qwen3_coder"),
             (TITOTokenizerType.QWENNEXT, "qwen3", "qwen25"),
+            (TITOTokenizerType.QWEN3_VL, "qwen3", "qwen25"),
             (TITOTokenizerType.GLM47, "glm45", "glm47"),
             (TITOTokenizerType.NEMOTRON3, "nemotron_3", "qwen3_coder"),
             (TITOTokenizerType.KIMI25, None, None),

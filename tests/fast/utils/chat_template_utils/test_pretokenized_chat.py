@@ -309,6 +309,7 @@ _APPEND_ROLE_FAMILIES = [
     (TITOTokenizerType.QWEN38_SMALL, None),
     (TITOTokenizerType.QWEN4_EXP, None),
     (TITOTokenizerType.QWENNEXT, None),
+    (TITOTokenizerType.QWEN3_VL, "Qwen/Qwen3-VL-2B-Instruct"),
     (TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash"),
     (TITOTokenizerType.GLM53, "zai-org/GLM-5.3"),
     (TITOTokenizerType.GLM53, "zai-org/GLM-5.3-Flash"),
