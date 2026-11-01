@@ -3,6 +3,8 @@ import os
 import shutil
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import polars as pl
 import pytest
@@ -82,6 +84,22 @@ def test_summary_parquet_cache_hit_and_invalidation(reader, monkeypatch):
     os.utime(next(reader.train_dir.glob("0_*.pt")), (stamp, stamp))
     with pytest.raises(RuntimeError, match="recompute attempted"):
         reader.summary(0)  # source changed -> cache invalidated -> recompute
+
+
+def test_concurrent_cold_summaries_publish_their_own_cache_files(reader, monkeypatch):
+    reader.joined(0)
+    barrier = Barrier(3)
+    write_parquet = pl.DataFrame.write_parquet
+
+    def overlapping_write(frame, path, *args, **kwargs):
+        barrier.wait(timeout=60)
+        return write_parquet(frame, path, *args, **kwargs)
+
+    monkeypatch.setattr(pl.DataFrame, "write_parquet", overlapping_write)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        frames = list(pool.map(lambda _: reader.summary(0), range(3)))
+    assert all(frame.equals(frames[0]) for frame in frames)
+    assert reader.summary(0).equals(frames[0])
 
 
 def test_groups(reader):
