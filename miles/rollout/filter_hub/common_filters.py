@@ -88,8 +88,10 @@ def apply_preput_filters(
 
 def apply_aborted_filter(args: Namespace, samples: Group, **kwargs) -> FilterOutput:
     """Reject entire group if any sample was aborted (e.g. env timeout, Docker crash)."""
-    if any(sample.status == Sample.Status.ABORTED for sample in iter_samples(samples)):
-        return FilterOutput(keep=False, reason="group_has_aborted")
+    for sample in iter_samples(samples):
+        if sample.status == Sample.Status.ABORTED:
+            cause = sample.metadata.get("exit_status") or "unknown"
+            return FilterOutput(keep=False, reason=f"group_has_aborted_{cause}")
     return FilterOutput(keep=True)
 
 

@@ -160,7 +160,7 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     indices = [group[0].index for group in output.samples]
     assert indices == sorted(indices)
     assert all(len(group) == N_SAMPLES_PER_PROMPT for group in output.samples)
-    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 0
+    assert "rollout/dynamic_filter/drop_group_has_aborted_unknown" not in output.metrics
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 0
 
     # The worker persists across calls; a second drain works on the same instance.
@@ -381,7 +381,7 @@ async def test_aborted_group_recycled(monkeypatch):
     assert not fn._retry_buffer
     # reset_for_retry cleared generated outputs so the prompt can be re-sampled
     assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
-    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+    assert output.metrics["rollout/dynamic_filter/drop_group_has_aborted_unknown"] == 1
     assert "rollout/dynamic_filter/drop_group_has_missing_reward" not in output.metrics
 
 
@@ -510,7 +510,7 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
 
     assert sibling_finished.is_set()
     assert not fn._worker.done()
-    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+    assert output.metrics["rollout/dynamic_filter/drop_group_has_aborted_unknown"] == 1
     assert all(sample.status == Sample.Status.COMPLETED for group in output.samples for sample in group)
     assert "Rollout group was cancelled" in caplog.text
     if handler == "retry":
@@ -527,7 +527,7 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
     # first replacement arrives.
     following = await asyncio.wait_for(fn(train_input(rollout_id=1)), timeout=2)
     assert following.samples
-    assert following.metrics["rollout/fully_async/aborted_groups_filtered"] == 0
+    assert "rollout/dynamic_filter/drop_group_has_aborted_unknown" not in following.metrics
 
 
 async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -557,7 +557,7 @@ async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPa
             await asyncio.wait_for(drain, timeout=2)
         assert fn._worker.cancelled()
         assert not fn._retry_buffer
-        assert fn._output.get_metrics()["rollout/fully_async/aborted_groups_filtered"] == 0
+        assert "rollout/dynamic_filter/drop_group_has_aborted_unknown" not in fn._output.get_metrics()
     finally:
         release.set()
         await asyncio.sleep(0)

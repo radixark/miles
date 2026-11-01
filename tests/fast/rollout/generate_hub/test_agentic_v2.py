@@ -4,13 +4,17 @@ from types import SimpleNamespace
 
 import pytest
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
+from tests.fast.utils.output_store.test_dropped import sample_owning
 
 import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
 from miles.ray.rollout.rollout_data_conversion import validate_compact_rollout_ids
+from miles.rollout.agentic.agent_function import InfraAbort
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.types import SessionServerInstance
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.output_store import dropped
+from miles.utils.output_store.dropped import take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import Sample
 
@@ -166,8 +170,10 @@ async def test_v2_requires_input_rollout_identity(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("empty_reason", ["no_records", "all_truncated"])
-async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason):
+@pytest.mark.parametrize(
+    ("empty_reason", "exit_status"), [("no_records", "NoModelCalls"), ("all_truncated", "AllTruncated")]
+)
+async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason, exit_status):
     tracer = _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason=empty_reason))
     _patch_agent(monkeypatch, tracer)
     generate_input = _generate_input()
@@ -178,7 +184,63 @@ async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason):
     assert len(output.samples) == 1
     assert output.samples[0] is not generate_input.sample
     assert output.samples[0].status == Sample.Status.ABORTED
+    assert output.samples[0].metadata["exit_status"] == exit_status
     assert SESSION_ROLLOUT_METRICS_KEY not in output.samples[0].metadata
+
+
+@pytest.mark.asyncio
+async def test_infra_abort_discards_the_sample_with_its_cause(monkeypatch):
+    monkeypatch.setattr(dropped, "_dropped", {})
+    sample = sample_owning("collected")
+    sample.status = Sample.Status.COMPLETED
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _abort_for_infra)
+    generate_input = _generate_input()
+
+    output = await agentic_tool_call.generate(generate_input)
+
+    (aborted,) = output.samples
+    assert aborted.status == Sample.Status.ABORTED
+    assert aborted.metadata == {"source": "test", "exit_status": "ServerUnreachable"}
+    assert tracer.agent_metadata is None
+    assert list(take_dropped_refs()) == ["collected"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "collect_error", [TimeoutError("samples unavailable"), RuntimeError("HTTP 503 from /samples")]
+)
+async def test_infra_abort_cause_outranks_a_failed_collection(monkeypatch, collect_error):
+    tracer = _Tracer(error=collect_error)
+    _patch_agent(monkeypatch, tracer)
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _abort_for_infra)
+
+    output = await agentic_tool_call.generate(_generate_input())
+
+    (aborted,) = output.samples
+    assert aborted.metadata["exit_status"] == "ServerUnreachable"
+
+
+@pytest.mark.asyncio
+async def test_any_other_agent_error_keeps_the_recorded_session(monkeypatch):
+    sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _fail)
+
+    output = await agentic_tool_call.generate(_generate_input())
+
+    assert output.samples == [sample]
+    assert sample.status == Sample.Status.COMPLETED
+
+
+async def _abort_for_infra(**kwargs):
+    raise InfraAbort("ServerUnreachable", "the environment host went away")
+
+
+async def _fail(**kwargs):
+    raise RuntimeError("the agent crashed")
 
 
 @pytest.mark.asyncio
@@ -192,6 +254,7 @@ async def test_transport_collection_error_has_no_metrics_owner(monkeypatch):
 
     (sample,) = output.samples
     assert sample.status == Sample.Status.ABORTED
+    assert sample.metadata["exit_status"] == "CollectFailed"
     assert SESSION_ROLLOUT_METRICS_KEY not in sample.metadata
 
 

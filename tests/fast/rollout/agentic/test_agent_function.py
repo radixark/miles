@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from miles.rollout.agentic import agent_function
-from miles.rollout.agentic.agent_function import call_agent_function
+from miles.rollout.agentic.agent_function import InfraAbort, call_agent_function
 from miles.rollout.agentic.rollout_limits import current_scope
 from miles.utils.test_utils import agent_function_stubs as stubs
 
@@ -62,6 +62,12 @@ def test_subproc_raises_the_agent_error_with_its_traceback():
     with pytest.raises(ValueError, match="agent failed on purpose") as raised:
         asyncio.run(call_agent_function(stubs.fail, mode="subproc"))
     assert "in fail" in str(raised.value.__cause__), "the agent process's traceback should be the cause"
+
+
+def test_an_infra_abort_keeps_its_cause_across_the_process_boundary():
+    with pytest.raises(InfraAbort, match="the sandbox never came up") as raised:
+        asyncio.run(call_agent_function(stubs.abort_for_infra, mode="subproc"))
+    assert raised.value.exit_status == "SandboxUnavailable"
 
 
 def test_an_error_that_cannot_be_rebuilt_arrives_by_name():
