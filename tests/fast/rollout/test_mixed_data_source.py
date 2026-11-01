@@ -222,6 +222,20 @@ class TestSha256:
         with pytest.raises(ValueError, match=f"expected {'0' * 8}, got {actual[:8]}"):
             _make_source(tmp_path, datasets)
 
+    def test_a_file_rewritten_while_loading_is_refused(self, tmp_path, monkeypatch):
+        """The file is hashed, then reopened to parse; a rewrite in between used to train on unpinned bytes."""
+        datasets = _two_datasets(tmp_path)
+        path = Path(datasets["math"]["path"])
+        datasets["math"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()[:8]
+
+        def rewrite_during_tokenizer_load(args):
+            path.write_text(json.dumps({"input": "replacement data", "label": "replacement"}) + "\n")
+            return _WordTokenizer(), None
+
+        monkeypatch.setattr(data_source, "_load_prompt_tokenizer_and_processor", rewrite_during_tokenizer_load)
+        with pytest.raises(ValueError, match="'math'.*changed while loading"):
+            _make_source(tmp_path, datasets)
+
     def test_a_missing_hash_logs_the_value_to_pin(self, tmp_path, caplog):
         datasets = _two_datasets(tmp_path)
         actual = hashlib.sha256(Path(datasets["code"]["path"]).read_bytes()).hexdigest()
