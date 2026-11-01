@@ -448,7 +448,7 @@ def run_forward_backward_pass(
 
     sampling_mask_keys = (
         ("rollout_sampling_mask_ids", "rollout_sampling_mask_offsets")
-        if args.use_sampling_support_replay and args.loss_type in ("policy_loss", "score_centering")
+        if args.use_sampling_support_replay and args.loss_type in ("policy_loss", "score_centering", "custom_loss")
         else ()
     )
 
@@ -716,7 +716,7 @@ def train_one_step(
     return {}, grad_norm, outcome
 
 
-def finalize_model_grads_with_empty_cache(*args, **kwargs):
+def finalize_model_grads_with_empty_cache(*args, finalize=finalize_model_grads, **kwargs):
     # TODO: this is an ad-hoc method and we should figure out why the oom happens in the first place.
     device = torch.cuda.current_device()
     free, total = torch.cuda.mem_get_info(device)
@@ -725,7 +725,7 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     from .lora.utils import reduce_marked_lora_grads
 
     reduce_marked_lora_grads(args[0])
-    return finalize_model_grads(*args, **kwargs)
+    return finalize(*args, **kwargs)
 
 
 def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
@@ -742,7 +742,11 @@ def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
     if args.backend.overlap_param_gather and args.backend.align_param_gather:
         param_sync_funcs = [model_chunk.start_param_sync for model_chunk in model]
         config.param_sync_func = param_sync_funcs[0] if len(model) == 1 else param_sync_funcs
-    config.finalize_model_grads_func = finalize_model_grads_with_empty_cache
+    finalize = finalize_model_grads
+    if is_multi_lora_enabled(args) or (is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge"):
+        # Bridge expert adapters sum their EP-replicated grads in finalize; other runs need no Bridge
+        from megatron.bridge.peft.utils import finalize_model_grads_with_expert_adapter_sync as finalize
+    config.finalize_model_grads_func = partial(finalize_model_grads_with_empty_cache, finalize=finalize)
     return config
 
 
@@ -1055,11 +1059,17 @@ def load_model_state(
                 args=args,
                 skip_load_to_model_and_opt=False,
             )
+        # MCore loads scheduler state with the optimizer state, and its load_state_dict
+        # replays the saved step count whatever use_checkpoint_opt_param_scheduler says;
+        # that flag only picks which scheduler settings win. A release checkpoint returns
+        # iteration 0 without scheduler state, so it still needs the step(0) refresh below.
+        scheduler_restored = restored_trained_iteration and iteration > 0 and not args.backend.no_load_optim
     else:
         if is_first_replica_megatron_main_rank():
             logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
         iteration = 0
         restored_trained_iteration = not args.backend.finetune
+        scheduler_restored = False
 
     adapter_iteration = None
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
@@ -1069,15 +1079,14 @@ def load_model_state(
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True
+            scheduler_restored = True
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()
 
     check_model_hashes(args, model, iteration)
 
-    # Megatron checkpoint loads can restore scheduler state directly. In that
-    # case, stepping by the checkpoint iteration here would double-count.
-    if opt_param_scheduler is not None and not (args.backend.use_checkpoint_opt_param_scheduler and iteration > 0):
+    if opt_param_scheduler is not None and not scheduler_restored:
         opt_param_scheduler.step(increment=iteration * args.backend.global_batch_size)
 
     if not restored_trained_iteration:

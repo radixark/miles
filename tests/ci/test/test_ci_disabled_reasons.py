@@ -64,7 +64,6 @@ _UNLINKED_BEFORE_THE_RULE: frozenset[tuple[str, str]] = frozenset(
         ),
         ("tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_mxfp8.py", "stage-c-8-gpu-b200"),
         ("tests/e2e/megatron/model_scripts/test_glm5_1_744b_a40b_6layer_lora_ci.py", "stage-c-8-gpu-h200"),
-        ("tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_lora_ci.py", "stage-c-4-gpu-h200"),
         ("tests/e2e/megatron/model_scripts/test_glm5_3_flash_4layer_ci.py", "stage-c-8-gpu-h200"),
         (
             "tests/e2e/megatron/test_glm47_flash/test_amd_spec_mtptrain_r3_bf16_sgl_tp4_meg_tp2pp2.py",
