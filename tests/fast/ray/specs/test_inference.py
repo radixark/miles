@@ -54,7 +54,13 @@ from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.serving.utils import parse_serve_worker_config
 from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider
-from miles.utils.workers.worker_spec import RPC_PORT_NAME, HostAndPort, LaunchCommandContext, WorkerCtorContext
+from miles.utils.workers.worker_spec import (
+    RPC_PORT_NAME,
+    HostAndPort,
+    LaunchCommandContext,
+    WorkerCtorContext,
+    WorkerLaunchContext,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -168,6 +174,32 @@ class TestRouterPortPinning:
 
 
 class TestComputeSpecRouterLaunchCommand:
+    @pytest.mark.parametrize("use_miles_router", [False, True])
+    def test_existing_router_backends_have_no_worker_environment(self, use_miles_router):
+        args = make_args(use_miles_router=use_miles_router)
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+        context = WorkerLaunchContext(
+            args=args, cell_index=0, worker_in_cell_index=0, num_workers_per_cell=1, gpu_ids=[]
+        )
+
+        assert spec.env_var(context) == {}
+
+    def test_backend_environment_is_available_before_listener_allocation(self, monkeypatch):
+        args = make_args()
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+        context = WorkerLaunchContext(
+            args=args, cell_index=0, worker_in_cell_index=0, num_workers_per_cell=1, gpu_ids=[]
+        )
+
+        class RecordingBackend:
+            def env_var(self, ctx):
+                assert ctx is context
+                return {"ROUTER_WORKER_ENV": "configured"}
+
+        monkeypatch.setattr(inference_specs, "make_router_backend", lambda current_args: RecordingBackend())
+
+        assert spec.env_var(context) == {"ROUTER_WORKER_ENV": "configured"}
+
     def test_pd_disagg_with_miles_router_asserts(self):
         """Rendering a miles-router launch command for a PD-disaggregated model must fail fast."""
         args = make_args(router="miles", sglang_router_ip=None, sglang_router_port=None)
