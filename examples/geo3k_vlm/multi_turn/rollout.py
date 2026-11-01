@@ -21,7 +21,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 )
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.http_utils import post
-from miles.utils.media_refs import collect_media_refs
+from miles.utils.media_refs import collect_media_refs, run_media_dir
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
 
@@ -268,7 +268,7 @@ def _process_env_step(env: BaseInteractionEnv, response_text: str, tokenizer, pr
             args.apply_chat_template,
             args.apply_chat_template_kwargs,
             args.multimodal_token_space_processing,
-            args.shared_media_dir,
+            run_media_dir(args),
         )
     )
 

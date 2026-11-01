@@ -29,7 +29,7 @@ from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
-from miles.utils.media_refs import has_media, rollout_media_payload
+from miles.utils.media_refs import has_media, rollout_media_payload, run_media_dir
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook
 from miles.utils.processing_utils import (
     call_processor,
@@ -665,7 +665,7 @@ async def eval_rollout_single_dataset(
             tool_key=dataset_cfg.tool_key,
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
-            media_dir=args.shared_media_dir,
+            media_dir=run_media_dir(args),
             token_space_processing=args.multimodal_token_space_processing,
         )
     dataset = EVAL_PROMPT_DATASET[cache_key]
