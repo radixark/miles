@@ -13,6 +13,7 @@ def _make_args(**overrides) -> Namespace:
         miles_router_max_connections=None,
         miles_router_timeout=None,
         rollout_health_check_interval=10.0,
+        rollout_health_check_timeout=30.0,
         miles_router_health_check_failure_threshold=3,
     )
     defaults.update(overrides)
@@ -33,7 +34,9 @@ class TestComputeMilesRouterConfig:
     def test_remaining_fields_are_copied_from_args(self):
         """Host, port, timeout, and health check settings map one-to-one."""
         config = compute_miles_router_config(
-            _make_args(miles_router_timeout=30.0, rollout_health_check_interval=5.0),
+            _make_args(
+                miles_router_timeout=30.0, rollout_health_check_interval=5.0, rollout_health_check_timeout=12.0
+            ),
             host="10.0.0.1",
             port=1234,
         )
@@ -41,6 +44,7 @@ class TestComputeMilesRouterConfig:
         assert config.port == 1234
         assert config.timeout == 30.0
         assert config.health_check_interval == 5.0
+        assert config.health_check_timeout == 12.0
         assert config.health_check_failure_threshold == 3
 
     def test_nondefault_health_check_failure_threshold_is_copied(self):
@@ -59,6 +63,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     max_connections=10,
     timeout=5.0,
     health_check_interval=1.0,
+    health_check_timeout=5.0,
     health_check_failure_threshold=3,
 )
 

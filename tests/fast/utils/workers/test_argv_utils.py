@@ -109,6 +109,7 @@ class TestConfigToArgv:
             max_connections=256,
             timeout=None,
             health_check_interval=10.0,
+            health_check_timeout=30.0,
             health_check_failure_threshold=3,
         )
         assert parse_config_argv(MilesRouterConfig, config_to_argv(router_config)) == router_config

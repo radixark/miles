@@ -14,6 +14,7 @@ class TestUncappedRouterClient:
                 miles_router_max_connections=None,
                 miles_router_timeout=None,
                 rollout_health_check_interval=10.0,
+                rollout_health_check_timeout=30.0,
                 miles_router_health_check_failure_threshold=3,
             ),
             host="127.0.0.1",
