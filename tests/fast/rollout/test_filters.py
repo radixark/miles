@@ -90,7 +90,7 @@ def test_legacy_filters_forward_without_runtime_deprecation_warnings(monkeypatch
         (
             "check_no_aborted",
             [[make_sample(status=Sample.Status.ABORTED)]],
-            FilterOutput(keep=False, reason="group_has_aborted"),
+            FilterOutput(keep=False, reason="group_has_aborted_unknown"),
         ),
         (
             "check_reward_nonzero_std",
@@ -126,7 +126,7 @@ def test_iter_samples_preserves_flat_and_mixed_nested_order():
         (
             apply_aborted_filter,
             [make_sample(status=Sample.Status.ABORTED)],
-            FilterOutput(keep=False, reason="group_has_aborted"),
+            FilterOutput(keep=False, reason="group_has_aborted_unknown"),
         ),
         (
             apply_missing_reward_filter,
@@ -158,7 +158,7 @@ def test_preput_aborted_wins_before_missing_reward_and_dynamic_filter(reward):
         [make_sample(reward=reward, status=Sample.Status.ABORTED)],
     )
 
-    assert output == FilterOutput(keep=False, reason="group_has_aborted")
+    assert output == FilterOutput(keep=False, reason="group_has_aborted_unknown")
     assert custom_calls == []
 
 
@@ -315,3 +315,14 @@ def test_group_weight_version_stats_preserve_sample_and_token_populations():
     assert stats.token_weighted_lag(current_version=10) == 5.5
     assert stats.oldest_lag(current_version=None) is None
     assert stats.token_weighted_lag(current_version=None) is None
+
+
+def test_an_aborted_group_drops_under_the_cause_its_first_aborted_sample_recorded():
+    infra = make_sample(reward=None, status=Sample.Status.ABORTED)
+    infra.metadata = {"exit_status": "SandboxUnavailable"}
+    later = make_sample(reward=None, status=Sample.Status.ABORTED)
+    later.metadata = {"exit_status": "NoModelCalls"}
+
+    output = apply_aborted_filter(Namespace(), [make_sample(), [infra, later]])
+
+    assert output == FilterOutput(keep=False, reason="group_has_aborted_SandboxUnavailable")

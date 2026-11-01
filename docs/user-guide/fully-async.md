@@ -186,7 +186,7 @@ groups by index and applies `--rollout-sample-filter-path` to the assembled batc
 If a sample cancels itself (for example, a sandbox client raises `CancelledError`),
 its group is marked aborted after the sibling samples settle. The default buffer
 discards the entire group from training, counts it in
-`rollout/fully_async/aborted_groups_filtered`, and applies
+`rollout/dynamic_filter/drop_group_has_aborted_<exit_status>`, and applies
 `--async-unused-samples-handler` to the original prompts. Other groups keep running.
 Cancelling the producer itself still propagates, and unexpected non-cancellation
 exceptions still fail the worker rather than being silently discarded.
@@ -352,7 +352,6 @@ standard rollout metrics:
 
 ```text
 rollout/fully_async/queue_size
-rollout/fully_async/aborted_groups_filtered
 rollout/fully_async/stale_groups_filtered
 rollout/fully_async/avg_staleness, rollout/fully_async/max_staleness
 rollout/fully_async/avg_post_generation_staleness, rollout/fully_async/max_post_generation_staleness
@@ -362,6 +361,10 @@ rollout/fully_async/weight_version_sample_coverage
 rollout/fully_async/buffer_avg_staleness, rollout/fully_async/buffer_max_staleness
 rollout/dynamic_filter/drop_<reason>
 ```
+
+`rollout/dynamic_filter/drop_group_has_aborted_<exit_status>` counts aborted groups
+by the cause the aborted sample recorded, such as an agent function's `InfraAbort`
+or `NoModelCalls`, and `unknown` when it recorded none.
 
 Staleness is measured in published rollout weight versions: with
 `--update-weights-interval 1`, one version normally corresponds to one optimizer step;

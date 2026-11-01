@@ -47,6 +47,12 @@ _REPORT_FRAME, _OUTCOME_FRAME = b"r", b"o"
 _FRAME_HEADER_BYTES = 9  # frame kind + 8-byte payload length
 
 
+class InfraAbort(Exception):
+    def __init__(self, exit_status: str, message: str | None = None):
+        super().__init__(message or exit_status)
+        self.exit_status = exit_status
+
+
 class _ResultPipe:
     """The child's end of the pipe to the caller; agent threads may report concurrently."""
 

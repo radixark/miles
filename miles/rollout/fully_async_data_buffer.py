@@ -181,7 +181,6 @@ class DefaultDataBuffer(DataBuffer):
         self._get_pending = False
 
         self._metric_gatherer = MetricGatherer()
-        self._metric_aborted_groups = 0
         self._metric_stale_groups = 0
         self._metric_consumed_staleness: list[int] = []
         self._metric_selected_newest_lag: list[int] = []
@@ -204,7 +203,7 @@ class DefaultDataBuffer(DataBuffer):
     def _preput_filter(self, input: DataBufferInput) -> bool:
         output = apply_aborted_filter(self._args, input.group)
         if not output.keep:
-            self._metric_aborted_groups += 1
+            self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
             # Before the handler: a retry resets the prompt group, plans included.
             record_dropped_samples([input.prompt_group, input.group])
             self._unused_handler_fn(input.prompt_group, UnusedReason.ABORTED)
@@ -332,7 +331,6 @@ class DefaultDataBuffer(DataBuffer):
         prefix = "rollout/fully_async/"
         metrics = {
             f"{prefix}queue_size": len(self._buffer),
-            f"{prefix}aborted_groups_filtered": self._metric_aborted_groups,
             f"{prefix}stale_groups_filtered": self._metric_stale_groups,
             **self._metric_gatherer.collect(),
         }
@@ -368,7 +366,7 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_versioned_tokens = 0
         self._metric_selected_samples = 0
         self._metric_selected_versioned_samples = 0
-        self._metric_aborted_groups = self._metric_stale_groups = 0
+        self._metric_stale_groups = 0
         return metrics
 
 
