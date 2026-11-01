@@ -1,8 +1,10 @@
 from argparse import Namespace
 
 import pytest
+import torch
 
 from miles.backends.training_utils.data import rollout as data_utils
+from miles.backends.training_utils.data import token_space_media_process
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp, split_train_data_by_dp_scheduled_raw
 from miles.utils.dp_schedule import TrainParallelConfig
@@ -179,3 +181,49 @@ class TestGetRolloutDataParallelWiring:
         assert seen == [(2, config, None)]
         assert rollout["tokens"][0].device.type == "cpu"
         assert result is store_result
+
+
+class TestGetRolloutDataMediaRebuild:
+    @pytest.mark.parametrize(
+        ("bf16", "fp16", "expected"),
+        [(True, False, torch.bfloat16), (False, True, torch.float16), (False, False, torch.float32)],
+    )
+    def test_rebuilt_tensors_are_held_in_the_training_dtype(
+        self, monkeypatch: pytest.MonkeyPatch, bf16: bool, fp16: bool, expected: torch.dtype
+    ) -> None:
+        def process(args, rollout_data_ref, **kwargs):
+            return {
+                "tokens": [[1, 9, 9, 2], [1, 2]],
+                "loss_masks": [[1], [1]],
+                "multimodal_inputs": [{"images": ["/shared/a.png"]}, None],
+            }, None
+
+        class Processor:
+            async def process(self, **kwargs):
+                return {"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])}
+
+        monkeypatch.setattr(data_utils, "get_parallel_state", lambda: _parallel_state(dp_size=1))
+        monkeypatch.setattr(data_utils, "process_rollout_data", process)
+        monkeypatch.setattr(
+            token_space_media_process,
+            "_trainer_processor",
+            lambda rollout_engine_args, device: token_space_media_process._TrainerProcessor(
+                core=Processor(), image_device=None
+            ),
+        )
+        monkeypatch.setattr(
+            data_utils, "RolloutEngineProcessorArgs", Namespace(from_sglang_config=lambda sglang: None)
+        )
+        monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
+        args = Namespace(enable_witness=False, qkv_format="thd", sglang=None, backend=Namespace(bf16=bf16, fp16=fp16))
+
+        rollout, _ = data_utils.get_rollout_data(
+            args=args,
+            rollout_data_ref=object(),
+            train_parallel_config=_parallel_state(dp_size=1).train_parallel_config(supports_precomputed_schedule=True),
+        )
+
+        rebuilt, text_only = rollout["multimodal_train_inputs"]
+        assert rebuilt["pixel_values"].dtype == expected
+        assert rebuilt["image_grid_thw"].dtype == torch.int64
+        assert text_only is None

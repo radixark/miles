@@ -83,7 +83,7 @@ def convert_samples_to_train_data(
     """
     if (f := custom_convert_samples_to_train_data_func) is not None:
         fn_args = compute_custom_function_config(args, args.custom_convert_samples_to_train_data_path)
-        return f(fn_args, samples)
+        return _refuse_dense_alongside_refs(f(fn_args, samples))
 
     # Finalize masks before shaping: only tokens used by the training loss count.
     loss_masks = []
@@ -233,6 +233,16 @@ def convert_samples_to_train_data(
     if x is not None:
         train_data["dynamic_global_batch_size"] = x
 
+    return _refuse_dense_alongside_refs(train_data)
+
+
+def _refuse_dense_alongside_refs(train_data: dict) -> dict:
+    if "multimodal_inputs" in train_data and "multimodal_train_inputs" in train_data:
+        raise ValueError(
+            "train data carries both media references and dense multimodal_train_inputs; with "
+            "--multimodal-token-space-processing the trainer rebuilds the tensors from the references, so a "
+            "sample builder must leave multimodal_train_inputs unset"
+        )
     return train_data
 
 
