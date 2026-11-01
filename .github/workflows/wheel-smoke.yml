@@ -49,7 +49,7 @@ jobs:
       - name: Install the wheel into a clean environment
         shell: bash
         run: |
-          # torch follows sglang's pin (torchtitan needs >=2.13), torchvision follows torch
+          # torch follows sglang's pin (torchtitan needs >=2.14), torchvision follows torch
           python3 -c "import tomllib; deps = tomllib.load(open('sglang/python/pyproject.toml', 'rb'))['project']['dependencies']; print(next(d for d in deps if d.startswith('torch==')))" \
             > "$RUNNER_TEMP/overrides.txt"
           echo torchvision >> "$RUNNER_TEMP/overrides.txt"

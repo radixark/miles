@@ -11,7 +11,7 @@ class TestTorchTitanWorkerClass:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """TorchTitan trainer specifications retain their native actor after configuration slicing."""
-        monkeypatch.setattr(torch, "__version__", "2.13.0")
+        monkeypatch.setattr(torch, "__version__", "2.14.0")
         monkeypatch.setenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", "0")
         config = parse_fsdp_test_config(
             "--train-backend", "torchtitan", "--seq-length", "32", "--rollout-max-response-len", "16"

@@ -37,7 +37,7 @@ The default build-args are the version surface:
 
 | Build-arg | Default | What it selects |
 |---|---|---|
-| `SGLANG_IMAGE_TAG` | `v0.5.22` | The `lmsysorg/sglang` base image, which brings torch, CUDA, cuDNN and Mooncake |
+| `SGLANG_IMAGE_TAG` | `v0.5.23` | The `lmsysorg/sglang` base image, which brings torch, CUDA, cuDNN and Mooncake |
 | `SGLANG_BRANCH` | `sglang-miles` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
