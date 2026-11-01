@@ -21,8 +21,9 @@ class TorchtitanArgs(FSDPArgs):
 
 def build_torchtitan_parser(extra_args_provider=None):
     parser = build_dataclass_parser(TorchtitanArgs, "torchtitan Training (miles)", extra_args_provider)
-    # torchtitan's LoRA gives each projection its own lora_A, initialized kaiming_uniform_(a=sqrt(5))
-    parser.set_defaults(lora_type="canonical_lora", lora_A_init_method="kaiming")
+    # torchtitan's LoRA shares one lora_A across a fused q/k/v or gate/up projection, initialized
+    # kaiming_uniform_(a=sqrt(5))
+    parser.set_defaults(lora_type="lora", lora_A_init_method="kaiming")
     return parser
 
 
@@ -32,8 +33,8 @@ def load_torchtitan_args(extra_args_provider=None):
 
 def validate_torchtitan_args(args) -> None:
     torch_version = tuple(int(part) for part in torch.__version__.split(".")[:2])
-    if torch_version < (2, 13):
-        raise ValueError(f"the torchtitan backend needs torch>=2.13; this environment runs {torch.__version__}")
+    if torch_version < (2, 14):
+        raise ValueError(f"the torchtitan backend needs torch>=2.14; this environment runs {torch.__version__}")
     if args.context_parallel_size != 1 and args.titan_model_name == "qwen3_5":
         raise ValueError("torchtitan does not support context parallelism for qwen3_5")
 
@@ -87,10 +88,10 @@ def _validate_lora_args(args) -> None:
             f"torchtitan LoRA is validated on --titan-model-name qwen3 only; {args.titan_model_name} builds "
             "projections whose module paths or HF names the LoRA target mapping does not handle yet"
         )
-    if args.lora_type != "canonical_lora":
+    if args.lora_type != "lora":
         raise ValueError(
-            "torchtitan gives q/k/v and gate/up their own lora_A, which is --lora-type canonical_lora; "
-            f"--lora-type {args.lora_type} shares one lora_A across each fused projection on megatron"
+            "torchtitan fuses q/k/v and gate/up and shares one lora_A across each, which is --lora-type lora; "
+            f"--lora-type {args.lora_type} gives each projection its own lora_A"
         )
     if args.lora_A_init_method != "kaiming":
         raise ValueError(

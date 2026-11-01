@@ -575,7 +575,7 @@ class TestPostProcessRewards:
 
         with pytest.raises(
             ValueError,
-            match=r"all samples in rollout 11 must share one reward; rows \[1, 2\] have rewards \[2.0, 6.0\]",
+            match=r"all samples in a rollout must share one reward; rows \[1, 2\] have rewards \[2.0, 6.0\]",
         ):
             _post_process_rewards(args, samples, custom_reward_post_process_func=None)
 
