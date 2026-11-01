@@ -8,6 +8,7 @@ from pathlib import Path
 
 from miles.utils.data import Dataset, _parse_generalized_path
 from miles.utils.function_registry import load_function
+from miles.utils.media_refs import run_media_dir
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.rollout_data_config import RolloutDatasetConfig, load_rollout_data_config, lower_limit
 from miles.utils.simple_checkpointer import has_simple_checkpoint, load_simple_checkpoint, save_simple_checkpoint
@@ -75,7 +76,7 @@ def _load_prompt_dataset(args, path: str, *, tokenizer, processor, max_length: i
         tool_key=args.tool_key,
         apply_chat_template=args.apply_chat_template,
         apply_chat_template_kwargs=args.apply_chat_template_kwargs,
-        media_dir=args.shared_media_dir,
+        media_dir=run_media_dir(args),
         token_space_processing=args.multimodal_token_space_processing,
         seed=args.rollout_seed,
     )
