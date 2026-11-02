@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 import torch
 
@@ -48,8 +48,8 @@ TRAINING_STATE_FILENAME = "training_state.json"
 class AdapterCheckpointMembers(Protocol):
     """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
 
-    # the names export_bf16_adapter yields: "peft" (HF module paths) or "tinker" (official Tinker names)
-    bf16_adapter_key_style: str
+    # the names export_bf16_adapter yields: HF module paths or official Tinker names
+    bf16_adapter_key_style: Literal["peft", "tinker"]
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         """Collective; whole bf16 tensors on rank 0, nothing elsewhere."""
