@@ -82,7 +82,7 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     validate_torchtitan_args(_args(lora_rank=8))
     validate_torchtitan_args(_args(lora_rank=8, titan_model_name="muse_glimmer"))
-    with pytest.raises(ValueError, match="qwen3, muse_glimmer only"):
+    with pytest.raises(ValueError, match="qwen3, muse_glimmer, muse_spark only"):
         validate_torchtitan_args(_args(lora_rank=8, titan_model_name="glm5_next"))
     with pytest.raises(ValueError, match="--lora-type lora"):
         validate_torchtitan_args(_args(lora_rank=8, lora_type="canonical_lora"))

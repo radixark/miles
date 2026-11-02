@@ -267,6 +267,10 @@ _HF_LORA_MODELS = {
     "muse_glimmer": _HfLoraModelSpec(
         _dense_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
     ),
+    # attention only: the routed experts are grouped weights, and there are no dense or shared experts
+    "muse_spark": _HfLoraModelSpec(
+        lambda config: (_QKVO_ATTENTION, ()), layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+    ),
     "mimo_v2": _HfLoraModelSpec(_mimo_v2_targets),
     "inkling_text": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_model": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),

@@ -133,6 +133,7 @@ def test_native_model_coverage():
     non_native = {
         "deepseek_v32",
         "deepseek_v41",
+        "muse_spark",
         "kimi_k2",
         "kimi_k25",
         "kimi_k3",

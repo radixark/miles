@@ -40,6 +40,13 @@ def split_adapter_key(key: str) -> tuple[str, str] | None:
 
 
 def hf_export_names(sd_adapter, projection: str, weight_shape: tuple[int, ...]) -> list[str]:
-    """The HF modules a titan projection's weight exports as; several for a fused projection."""
+    """The HF modules a titan projection's weight exports as: several for a fused projection, none for one the
+    adapter does not map (torchtitan's Muse Spark vision encoder builds its ``conv1`` config as the module
+    ``conv1_linear``, so that config FQN is no state-dict key; the Muse Spark adapter rejects an unknown key where
+    the others skip it, and either way no HF target can name the projection)."""
     probe = torch.empty(weight_shape, device="meta")
-    return [name.removesuffix(".weight") for name in sd_adapter.to_hf({f"{projection}.weight": probe})]
+    try:
+        exported = sd_adapter.to_hf({f"{projection}.weight": probe})
+    except ValueError:
+        return []
+    return [name.removesuffix(".weight") for name in exported]
