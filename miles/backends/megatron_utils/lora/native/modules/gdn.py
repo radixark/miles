@@ -10,7 +10,6 @@ import torch.nn as nn
 from miles.backends.megatron_utils.lora.native.distributed import apply_lora_dropout
 from miles.backends.megatron_utils.lora.native.modules.linear import LoRASplitAdapter
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec
-from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import group_major
 
 
 class LoRAGDNInProj(LoRASplitAdapter):
@@ -28,6 +27,9 @@ class LoRAGDNInProj(LoRASplitAdapter):
         context: AttachContext,
         projections: Sequence[ProjectionSpec],
     ):
+        # megatron_to_hf loads every converter; argument parsing imports this module (#4201)
+        from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import group_major
+
         local = gdn.local
         rows_by_param_prefix = {
             "q": local.key_dim,
