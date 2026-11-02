@@ -44,11 +44,14 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
         named_tensors = self._export_pp_local_lora(adapter)
         if self.placement.gather_pp:
             named_tensors = _gather_pp_full_adapter(named_tensors)
+        num_tensors, num_lora_weights = _count_full_adapter_tensors(
+            named_tensors, is_pp_local=not self.placement.gather_pp
+        )
         if not materialize:
             return
-        if not named_tensors:
+        if num_tensors == 0:
             raise RuntimeError("LoRA weight sync failed: the adapter export produced zero tensors")
-        if not any(is_lora_weight_name(name) for name, _ in named_tensors):
+        if num_lora_weights == 0:
             raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
         while named_tensors:
             hf_name, tensor = named_tensors.pop(0)
@@ -91,6 +94,20 @@ def get_packed_weight_basenames(hf_checkpoint: str) -> set[str]:
     with open(os.path.join(hf_checkpoint, "model.safetensors.index.json")) as index_file:
         names = json.load(index_file)["weight_map"]
     return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
+
+
+def _count_full_adapter_tensors(
+    named_tensors: Sequence[tuple[str, torch.Tensor]], *, is_pp_local: bool
+) -> tuple[int, int]:
+    """(tensors, lora_A/lora_B weights) in the whole adapter; a PP-local export is
+    summed over PP since a stage may hold no adapted layer."""
+    counts = [len(named_tensors), sum(is_lora_weight_name(name) for name, _ in named_tensors)]
+    pp = get_parallel_state().pp
+    if is_pp_local and pp.size > 1:
+        counts_tensor = torch.tensor(counts, device=torch.cuda.current_device())
+        dist.all_reduce(counts_tensor, group=pp.group)
+        counts = counts_tensor.tolist()
+    return counts[0], counts[1]
 
 
 def _gather_pp_full_adapter(
