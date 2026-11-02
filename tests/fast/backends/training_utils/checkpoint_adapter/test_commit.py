@@ -84,3 +84,8 @@ def test_recovery_removes_a_crashed_commits_staging_link_and_leaves_foreign_hidd
     delete_unreferenced_adapter_dirs(tmp_path)
     assert sorted(p.name for p in tmp_path.iterdir()) == [".git"]
 
+
+def test_user_names_must_be_one_path_component(tmp_path):
+    with pytest.raises(AssertionError, match="one path component"):
+        with write_adapter_dir(tmp_path, "x/../y"):
+            pass

@@ -78,6 +78,7 @@ def raise_if_any_rank_failed(error: BaseException | None) -> None:
 def write_adapter_dir(root: Path, name: str, *, tenant: str | None = None):
     """All ranks write into the yielded physical directory; the result is not visible until committed."""
     assert not name.startswith("."), f"adapter name {name!r} must not start with '.'"
+    assert name and "/" not in name, f"adapter name {name!r} must be one path component"
     commit_id = _broadcast_from_rank0(secrets.token_hex(_COMMIT_ID_NBYTES))
     path = _physical_dir(Path(root), name, commit_id)
     prepare_error = None
