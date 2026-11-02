@@ -26,7 +26,7 @@ _DELETING_SUFFIX = ".deleting"
 _STAGING_SUFFIX = ".link"
 _COMMIT_ID_NBYTES = 8
 # what this library creates in a root: .<name>.<commit_id>, its retired form and a crashed commit's staging link
-_INTERNAL_ENTRY = re.compile(r"^\.(?P<name>.+)\.[0-9a-f]{%d}(?P<suffix>\.deleting|\.link)?$" % (2 * _COMMIT_ID_NBYTES))
+_INTERNAL_ENTRY = re.compile(rf"^\.(?P<name>.+)\.[0-9a-f]{{{2 * _COMMIT_ID_NBYTES}}}(?P<suffix>\.deleting|\.link)?$")
 
 
 class OwnershipError(PermissionError):
