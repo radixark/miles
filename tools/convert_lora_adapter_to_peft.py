@@ -1,0 +1,33 @@
+"""Write a 2D-per-expert bf16 PEFT adapter from any file-only adapter source (CPU only)."""
+
+import argparse
+import json
+from pathlib import Path
+
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
+from miles.backends.training_utils.checkpoint.adapter.readers import (
+    AdapterSourceKind,
+    MilesAdapterDirReader,
+    classify_adapter_source,
+)
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("src", type=Path)
+    parser.add_argument("dst", type=Path)
+    parser.add_argument("--hf-config", type=Path, required=True, help="the base model's config.json")
+    args = parser.parse_args()
+    targets = get_hf_lora_targets(json.loads(args.hf_config.read_text()))
+    kind = classify_adapter_source(args.src, targets, load_optimizer=False)
+    assert kind == AdapterSourceKind.ADAPTER_DIR, (
+        f"{args.src} is a {kind.value} source; convert it to the miles adapter format first "
+        "(load it in a training run with --lora-adapter-convert-save)"
+    )
+    reader = MilesAdapterDirReader(args.src)
+    write_peft_adapter(args.dst, reader.read_weights(), reader.source.parametrization)
+
+
+if __name__ == "__main__":
+    main()
