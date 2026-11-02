@@ -84,11 +84,11 @@ def validate_create_sampling_session(payload: dict) -> None:
 
 def decode_command(op: str, payload: dict) -> tuple[str, dict]:
     """Decode content errors into ordered failures when the envelope is identifiable."""
+    assert op == "forward_backward" or op in REQUEST_TYPES, f"unhandled command op {op!r}"
     try:
         envelope = {"model_id": payload["model_id"], "seq_id": payload["seq_id"]}
     except KeyError as error:
         raise UserInputError(f"missing command envelope field {error.args[0]!r}") from None
-    assert op == "forward_backward" or op in REQUEST_TYPES, f"unhandled command op {op!r}"
     try:
         return _decode_command(op, payload, envelope)
     except (UserInputError, KeyError, TypeError, ValueError, IndexError) as error:
@@ -128,9 +128,10 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
             "optimizer": request.optimizer,
             "weights_access_token": request.weights_access_token,
         }
-    # save_weights_for_sampler, the last REQUEST_TYPES op
-    validate_save_options(payload)
-    return op, decoded | {"sampler_path": request.path}
+    if op == "save_weights_for_sampler":
+        validate_save_options(payload)
+        return op, decoded | {"sampler_path": request.path}
+    raise AssertionError(f"unhandled command op {op!r}")
 
 
 def model_input_tokens(model_input: dict) -> list[int]:
