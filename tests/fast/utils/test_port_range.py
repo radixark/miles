@@ -20,7 +20,6 @@ def ephemeral_range_file(tmp_path, monkeypatch):
     """Point the module at a stand-in for /proc/sys/net/ipv4/ip_local_port_range."""
     path = tmp_path / "ip_local_port_range"
     monkeypatch.setattr(port_range, "_EPHEMERAL_PORT_RANGE_FILE", path)
-    monkeypatch.delenv("MILES_DYNAMIC_PORT_START", raising=False)
 
     def write(low: int, high: int) -> None:
         path.write_text(f"{low}\t{high}\n")
@@ -65,6 +64,12 @@ class TestServicePortRange:
 
         assert service_port_range() == (40001, 65535)
 
+    def test_a_range_below_20000_leaves_the_usual_range_whole(self, ephemeral_range_file):
+        """The kernel hands out nothing from 20000 up, so the range runs to the last port."""
+        ephemeral_range_file(1024, 15000)
+
+        assert service_port_range() == (20000, 65535)
+
     def test_a_range_with_no_room_outside_it_falls_back_to_the_default(self, ephemeral_range_file, caplog):
         """There is nothing safe to choose, so allocation behaves as it did before and says why."""
         ephemeral_range_file(1024, 65535)
@@ -76,28 +81,6 @@ class TestServicePortRange:
 
     def test_an_unknown_range_keeps_the_default(self, ephemeral_range_file):
         assert service_port_range() == (20000, 65535)
-
-    def test_a_configured_start_below_the_ephemeral_range_ends_before_it(self, ephemeral_range_file, monkeypatch):
-        ephemeral_range_file(9000, 65000)
-        monkeypatch.setenv("MILES_DYNAMIC_PORT_START", "2000")
-
-        assert service_port_range() == (2000, 8999)
-
-    def test_a_configured_start_inside_the_ephemeral_range_runs_to_the_last_port(
-        self, ephemeral_range_file, monkeypatch
-    ):
-        """An explicit start is taken as given, even where the kernel may hand its ports out."""
-        ephemeral_range_file(32768, 60999)
-        monkeypatch.setenv("MILES_DYNAMIC_PORT_START", "40000")
-
-        assert service_port_range() == (40000, 65535)
-
-    @pytest.mark.parametrize("value", ["0", "65536"])
-    def test_a_configured_start_outside_the_port_space_is_rejected(self, ephemeral_range_file, monkeypatch, value):
-        monkeypatch.setenv("MILES_DYNAMIC_PORT_START", value)
-
-        with pytest.raises(ValueError, match="MILES_DYNAMIC_PORT_START"):
-            service_port_range()
 
 
 class TestRayWorkerPortArgs:
@@ -167,9 +150,8 @@ class TestProbedPortsAndOutgoingConnections:
 
         assert error.value.errno == errno.EADDRINUSE
 
-    def test_a_probed_service_port_cannot_be_taken(self, monkeypatch):
+    def test_a_probed_service_port_cannot_be_taken(self):
         """The kernel never hands out a port from the service range as a source port."""
-        monkeypatch.delenv("MILES_DYNAMIC_PORT_START", raising=False)
         ephemeral = ephemeral_port_range()
         low, high = service_port_range()
         if ephemeral is None or (low <= ephemeral[1] and ephemeral[0] <= high):
