@@ -438,6 +438,7 @@ class TestOutputSnapshotReplay:
         executor.generate_rollout = rollout_fn
         executor.eval_generate_rollout = rollout_fn
         executor._rollouts_since_publish_of_model_id = defaultdict(int)
+        executor._last_rollout_end_time_of_model_id = {}
         executor._metric_checker = None
         executor.custom_convert_samples_to_train_data_func = None
         executor.custom_reward_post_process_func = None
@@ -569,6 +570,47 @@ class TestSampleOwnershipRolloutId:
 
         [event] = [x for x in read_events(event_dir) if isinstance(x, DataSourceIssuedSamplesEvent)]
         assert event.rollout_id == 7
+
+
+class TestRolloutTime:
+    @pytest.mark.parametrize(
+        "fully_async, colocate, expected_intervals",
+        [(False, False, [None, None]), (True, False, [2.0, 10.0]), (True, True, [None, None])],
+    )
+    async def test_a_fully_async_batch_is_timed_from_the_previous_batch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        fully_async: bool,
+        colocate: bool,
+        expected_intervals: list[float | None],
+    ) -> None:
+        """A fully async batch is timed from the previous batch unless colocated."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.args = make_args(fully_async=fully_async, colocate=colocate)
+        executor._rollouts_since_publish_of_model_id = defaultdict(int)
+        executor._last_rollout_end_time_of_model_id = {}
+        clock = Namespace(now=0.0)
+
+        async def get_rollout_data(*, rollout_id: int, trainer_model_id: str | None):
+            clock.now += 2.0
+            return [Sample(index=rollout_id)], {}, None
+
+        logged: list[tuple[float, float | None]] = []
+        monkeypatch.setattr(executor, "_get_rollout_data", get_rollout_data)
+        monkeypatch.setattr(rollout_executor_module, "time", Namespace(time=lambda: clock.now))
+        monkeypatch.setattr(rollout_executor_module, "assert_weight_version_is_published", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            rollout_executor_module,
+            "log_rollout_data",
+            lambda *args, rollout_interval_time, **_kw: logged.append((args[4], rollout_interval_time)),
+        )
+
+        await executor._generate_rollout_data(rollout_id=0, trainer_model_id=None)
+        clock.now += 8.0
+        await executor._generate_rollout_data(rollout_id=1, trainer_model_id=None)
+
+        assert logged == [(2.0, expected_intervals[0]), (2.0, expected_intervals[1])]
 
 
 class _CustomDataSource:

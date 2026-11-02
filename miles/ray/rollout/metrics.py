@@ -75,7 +75,13 @@ def log_eval_skip(rollout_id, args, reason: str):
 
 
 def log_rollout_data(
-    rollout_id, args, samples, rollout_extra_metrics, rollout_time, trainer_model_id: str | None = None
+    rollout_id,
+    args,
+    samples,
+    rollout_extra_metrics,
+    rollout_time,
+    trainer_model_id: str | None = None,
+    rollout_interval_time: float | None = None,
 ):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
@@ -88,7 +94,9 @@ def log_rollout_data(
 
     log_dict = {**(rollout_extra_metrics or {})}
     log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), "rollout/")
-    log_dict |= dict_add_prefix(_compute_perf_metrics_from_samples(args, samples, rollout_time), "perf/")
+    log_dict |= dict_add_prefix(
+        _compute_perf_metrics_from_samples(args, samples, rollout_time, rollout_interval_time), "perf/"
+    )
     if args.log_passrate:
         log_dict |= dict_add_prefix(
             _compute_passrate_from_samples(args, samples),
@@ -273,11 +281,14 @@ def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[s
     }
 
 
-def _compute_perf_metrics_from_samples(args, samples, rollout_time):
+def _compute_perf_metrics_from_samples(args, samples, rollout_time, rollout_interval_time=None):
     non_generation_time = [sample.non_generation_time for sample in samples]
 
     log_dict = {}
     log_dict["rollout_time"] = rollout_time
+    if rollout_interval_time is not None:
+        log_dict["rollout_interval_time"] = rollout_interval_time
+        rollout_time = rollout_interval_time
     if max(non_generation_time) > 0:
         log_dict |= dict_add_prefix(compute_statistics(non_generation_time), "non_generation_time/")
 
