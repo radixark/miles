@@ -136,9 +136,9 @@ any other SDK version when they connect; pin that version on the client, with
 Checkpoint download (`save_weights_external`, `get_external_weights_urls`) is not
 served.
 
-The cookbook's `rl_loop` recipe defaults to the `stable_reinforce` loss and to a
-checkpoint TTL, neither of which the gateway serves; pass
-`loss_fn="importance_sampling"` (or `"cispo"`) and `ttl_seconds=None`.
+Cookbook recipes default to a 7-day checkpoint TTL, which the gateway does not
+serve; pass `ttl_seconds=None`. `rl_loop` also defaults to the `stable_reinforce`
+loss; pass `loss_fn="importance_sampling"` (or `"cispo"`).
 
 Futures, model leases, and request deduplication live in gateway memory and do
 not survive a restart; saved checkpoints do.
