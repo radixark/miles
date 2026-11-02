@@ -1,6 +1,7 @@
 """Exports read back to the same HF-keyed tensors; conversions refuse what would change the training."""
 
 import json
+from dataclasses import replace
 
 import pytest
 import torch
@@ -209,3 +210,13 @@ def test_fan_in_fan_out_is_refused(tmp_path):
     (tmp_path / "adapter_config.json").write_text(json.dumps(config))
     with pytest.raises(AssertionError, match="fan_in_fan_out"):
         PeftAdapterReader(tmp_path, _run(), QWEN3)
+
+
+def test_shared_outer_flag_is_ignored_without_routed_experts():
+    dense = _run(target_modules=QKV, experts_shared_outer_loras=True)
+    assert (
+        plan_parametrization_conversion(
+            dense, replace(dense, experts_shared_outer_loras=False), source_dtype=torch.float32
+        )
+        == []
+    )

@@ -7,8 +7,9 @@ import torch
 
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 
-_EXPERT_INPUT_SIDE = (".experts.gate_proj.", ".experts.up_proj.")
-_EXPERT_OUTPUT_SIDE = (".experts.down_proj.",)
+# HF expert projections by side; DeepSeek-V4.1 names them w1 (gate), w3 (up), w2 (down)
+_EXPERT_INPUT_SIDE = (".experts.gate_proj.", ".experts.up_proj.", ".experts.w1.", ".experts.w3.")
+_EXPERT_OUTPUT_SIDE = (".experts.down_proj.", ".experts.w2.")
 
 
 class ConversionOp(str, enum.Enum):
@@ -35,10 +36,12 @@ def plan_parametrization_conversion(
     source_groups, target_groups = set(source.shared_lora_a_groups), set(target.shared_lora_a_groups)
     steps += [ConversionStep(ConversionOp.SPLIT_SHARED_LORA_A, g) for g in sorted(source_groups - target_groups)]
     steps += [ConversionStep(ConversionOp.MERGE_SHARED_LORA_A, g) for g in sorted(target_groups - source_groups)]
-    if source.experts_shared_outer_loras and not target.experts_shared_outer_loras:
-        steps.append(ConversionStep(ConversionOp.BROADCAST_SHARED_EXPERT_SIDE))
-    if target.experts_shared_outer_loras and not source.experts_shared_outer_loras:
-        steps.append(ConversionStep(ConversionOp.COLLAPSE_SHARED_EXPERT_SIDE))
+    # the flag means nothing without routed-expert targets
+    if any(".experts." in module for module in target.target_modules):
+        if source.experts_shared_outer_loras and not target.experts_shared_outer_loras:
+            steps.append(ConversionStep(ConversionOp.BROADCAST_SHARED_EXPERT_SIDE))
+        if target.experts_shared_outer_loras and not source.experts_shared_outer_loras:
+            steps.append(ConversionStep(ConversionOp.COLLAPSE_SHARED_EXPERT_SIDE))
     return steps
 
 
@@ -65,7 +68,7 @@ def assert_parametrization_matches_run(
         assert not steps, f"loading optimizer state needs the source's own parametrization, but it needs {steps}"
 
 
-def _side_of_shared_expert_factor(key: str) -> bool:
+def _is_shared_expert_side(key: str) -> bool:
     """True when this expert factor is the side shared-outer keeps as ``[1, ...]``."""
     return (key.endswith(".lora_A") and any(s in key + "." for s in _EXPERT_INPUT_SIDE)) or (
         key.endswith(".lora_B") and any(s in key + "." for s in _EXPERT_OUTPUT_SIDE)
@@ -95,12 +98,12 @@ def apply_parametrization_conversion(
             # the per-expert side carries the expert count
             num_experts = max(v.shape[0] for k, v in weights.items() if ".experts." in k and v.dim() == 3)
             for key, value in weights.items():
-                if _side_of_shared_expert_factor(key):
+                if _is_shared_expert_side(key):
                     assert value.shape[0] == 1, f"{key}: shared side must have dim0 = 1, got {tuple(value.shape)}"
                     weights[key] = value.expand(num_experts, *value.shape[1:]).clone()
         elif step.op == ConversionOp.COLLAPSE_SHARED_EXPERT_SIDE:
             for key, value in weights.items():
-                if _side_of_shared_expert_factor(key):
+                if _is_shared_expert_side(key):
                     assert bool((value == value[:1]).all()), f"{key}: experts differ; cannot share the outer factor"
                     weights[key] = value[:1].clone()
     return weights
