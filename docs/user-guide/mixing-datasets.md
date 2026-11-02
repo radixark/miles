@@ -45,6 +45,11 @@ only some of another hook's flags, or declares one differently, is rejected at s
 different values for an option, give their hooks distinct flags (or put the value in the dataset's `agent`
 block).
 
+`agent_function` and `max_seq_len` are read only by `miles.rollout.generate_hub.agentic_tool_call.generate`, or by
+a wrapper around it that sets `reads_sample_agent_fields = True` on itself. A dataset that sets them under any
+other generate function, or an agentic dataset with neither `agent_function` nor `--custom-agent-function-path`,
+is rejected at startup.
+
 ### How prompts are drawn
 
 - **Weights, not counts.** `samples_per_step` values need not add up to `--rollout-batch-size`. Every

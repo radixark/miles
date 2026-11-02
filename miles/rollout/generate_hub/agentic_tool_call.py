@@ -218,6 +218,8 @@ def _add_arguments(parser: argparse.ArgumentParser):
 
 
 generate.add_arguments = _add_arguments
+# reads Sample.agent_function_path / max_seq_len; a wrapper that delegates here may set this too
+generate.reads_sample_agent_fields = True
 
 
 # Process keys to match ChatCompletionRequest input

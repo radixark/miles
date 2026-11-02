@@ -245,7 +245,9 @@ class TestStartupValidation:
             "agent": {"max_turns": 50},
             "generate_function": "miles.rollout.generate_hub.agentic_tool_call.generate",
         }
-        args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+        args = _parse(
+            "--rollout-data-yaml-config", _inline(_with_dataset(**fields)), "--custom-agent-function-path", "json.loads"
+        )
         assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
 
     def test_unset_leaves_startup_unchanged(self):
@@ -284,7 +286,25 @@ class TestDatasetHookSettings:
         fields = dict(field)
         if generate_function is not None:
             fields["generate_function"] = generate_function
-        with pytest.raises(ValueError, match="only miles.rollout.generate_hub.agentic_tool_call.generate reads"):
+        with pytest.raises(ValueError, match="never reads it"):
+            _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+
+    def test_a_wrapper_marked_as_reading_the_agent_fields_is_accepted(self):
+        """A wrapper around agentic_tool_call.generate opts in with the same marker, not by its path."""
+
+        async def wrapper(input):
+            pass
+
+        wrapper.reads_sample_agent_fields = True
+        fields = {"generate_function": "test4561.wrapper", "agent_function": "json.loads", "max_seq_len": 4096}
+        with function_registry.temporary("test4561.wrapper", wrapper):
+            args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+        assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
+
+    def test_an_agentic_dataset_with_no_agent_fails_at_startup(self):
+        """With neither agent_function nor --custom-agent-function-path, the rollout died mid-run on an assert."""
+        fields = {"generate_function": "miles.rollout.generate_hub.agentic_tool_call.generate"}
+        with pytest.raises(ValueError, match="needs an agent"):
             _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
 
     def test_a_run_without_yaml_hooks_has_none(self):

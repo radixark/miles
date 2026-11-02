@@ -41,6 +41,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
@@ -478,7 +479,6 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 
 _DEFAULT_GENERATE_FUNCTION_PATH = "miles.rollout.generate_hub.single_turn.generate"
-_AGENTIC_GENERATE_FUNCTION_PATH = "miles.rollout.generate_hub.agentic_tool_call.generate"
 # built-in generate functions that never read a sample's metadata["agent_config"]
 _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG = frozenset(
     {
@@ -488,6 +488,20 @@ _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG = frozenset(
     }
 )
 _DEFAULT_DATA_SOURCE_PATH = DataConfig.model_fields["data_source_path"].default.path
+_DATASET_AGENT_FIELDS = ("agent", "agent_function", "max_seq_len")
+
+
+def _dataset_fields_read_by(generate_path: str) -> frozenset[str]:
+    """The per-dataset agent fields a generate function reads.
+
+    The free-form ``agent`` block is open to any non-built-in; ``agent_function`` and ``max_seq_len`` arrive as
+    Sample fields that only a function marked ``reads_sample_agent_fields`` (agentic_tool_call, or a wrapper) reads.
+    """
+    if generate_path in _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG:
+        return frozenset()
+    if getattr(load_function(generate_path), "reads_sample_agent_fields", False):
+        return frozenset(_DATASET_AGENT_FIELDS)
+    return frozenset({"agent"})
 
 
 def _validate_rollout_data_yaml_config(args) -> None:
@@ -516,19 +530,21 @@ def _validate_rollout_data_yaml_config(args) -> None:
     default_generate = getattr(  # config-access-exempt: still a path string before custom hooks resolve
         args.custom_generate_function_path, "path", args.custom_generate_function_path
     )
+    default_agent = getattr(  # config-access-exempt: still a path string before custom hooks resolve
+        args.custom_agent_function_path, "path", args.custom_agent_function_path
+    )
     for dataset in datasets:
         generate_path = dataset.generate_function or default_generate or _DEFAULT_GENERATE_FUNCTION_PATH
-        # agent_function and max_seq_len are only read by agentic_tool_call; the agent block by any non-built-in too
-        agentic_only = [f for f in ("agent_function", "max_seq_len") if getattr(dataset, f) is not None]
-        if agentic_only and generate_path != _AGENTIC_GENERATE_FUNCTION_PATH:
+        read = _dataset_fields_read_by(generate_path)
+        if unread := [f for f in _DATASET_AGENT_FIELDS if getattr(dataset, f) is not None and f not in read]:
             raise ValueError(
-                f"--rollout-data-yaml-config dataset {dataset.name!r} sets {', '.join(agentic_only)}, which only "
-                f"{_AGENTIC_GENERATE_FUNCTION_PATH} reads, but its generate function is {generate_path}"
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets {', '.join(unread)}, but its generate "
+                f"function {generate_path} never reads it; use an agentic generate function or drop the field"
             )
-        if dataset.agent is not None and generate_path in _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG:
+        if "agent_function" in read and dataset.agent_function is None and default_agent is None:
             raise ValueError(
-                f"--rollout-data-yaml-config dataset {dataset.name!r} sets an agent block, but its generate function "
-                f"{generate_path} never reads it; use an agentic generate function or drop the block"
+                f"--rollout-data-yaml-config dataset {dataset.name!r} runs {generate_path}, which needs an agent; "
+                "set agent_function on the dataset or --custom-agent-function-path"
             )
     if args.num_rollout is None:
         # an epoch has no single length across independently wrapping datasets
