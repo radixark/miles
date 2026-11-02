@@ -254,3 +254,37 @@ def test_a_sampler_export_reads_back_when_the_group_starts_at_a_later_gdn_compon
     write_sampler_adapter(tmp_path, weights, run)
     read = MilesAdapterDirReader(tmp_path, QWEN35).read_weights()
     assert read.keys() == weights.keys() and all(torch.equal(read[k], v) for k, v in weights.items())
+
+
+@pytest.mark.parametrize("field, value", [("init_lora_weights", "pissa_niter_4"), ("alora_invocation_tokens", [1, 2])])
+def test_base_rewriting_and_activated_lora_are_refused(tmp_path, field, value):
+    write_peft_adapter(
+        tmp_path,
+        {f"{QKV[0]}.lora_A": torch.ones(2, 8), f"{QKV[0]}.lora_B": torch.ones(4, 2)},
+        _run(target_modules=QKV[:1]),
+    )
+    config = json.loads((tmp_path / "adapter_config.json").read_text()) | {field: value}
+    (tmp_path / "adapter_config.json").write_text(json.dumps(config))
+    with pytest.raises(AssertionError, match=field):
+        PeftAdapterReader(tmp_path, _run(), QWEN3)
+
+
+def test_mixed_tinker_and_hf_names_are_refused(tmp_path):
+    save_file(
+        {
+            "base_model.model.model.unembed_tokens.lora_A.weight": torch.zeros(2, 2),
+            "model.layers.0.mlp.experts.3.gate_proj.lora_A.weight": torch.zeros(2, 2),
+        },
+        str(tmp_path / "adapter_model.safetensors"),
+    )
+    (tmp_path / "adapter_config.json").write_text("{}")
+    with pytest.raises(AssertionError, match="mixes"):
+        classify_adapter_source(tmp_path, QWEN3, load_optimizer=False)
+
+
+def test_an_edited_sampler_config_is_refused(tmp_path):
+    write_sampler_adapter(tmp_path, {k: v.to(torch.bfloat16) for k, v in _weights(False).items()}, _run())
+    config = json.loads((tmp_path / "adapter_config.json").read_text()) | {"lora_alpha": 99}
+    (tmp_path / "adapter_config.json").write_text(json.dumps(config))
+    with pytest.raises(AssertionError, match="disagrees"):
+        MilesAdapterDirReader(tmp_path, QWEN35)
