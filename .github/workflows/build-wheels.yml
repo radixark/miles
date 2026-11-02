@@ -98,7 +98,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: docker/Dockerfile
+          sparse-checkout: |
+            docker/Dockerfile
+            .github/workflows/scripts/gh_api.sh
           sparse-checkout-cone-mode: false
 
       - name: Compare each source with the commit its release records
@@ -126,17 +128,18 @@ jobs:
           SGLANG_IMAGE="lmsysorg/sglang:$(dockerfile_arg SGLANG_IMAGE_TAG)"
 
           is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+          source .github/workflows/scripts/gh_api.sh
 
           # Sets BUILT to the commit release $1's manifest $2 records, empty when the
           # release holds none yet. A failed lookup fails the job instead of reading
           # as "never built".
           read_built() {
             local url
-            url=$(gh api "repos/${WHEELS_REPO}/releases/tags/$1" \
+            url=$(gh_api "repos/${WHEELS_REPO}/releases/tags/$1" \
               --jq ".assets[] | select(.name == \"$2\") | .url") || fail "cannot read release $1"
             BUILT=""
             if [ -n "$url" ]; then
-              BUILT=$(gh api -H 'Accept: application/octet-stream' "$url" | jq -r .commit) \
+              BUILT=$(gh_api -H 'Accept: application/octet-stream' "$url" | jq -r .commit) \
                 || fail "cannot read $2 from release $1"
             fi
           }
@@ -151,26 +154,26 @@ jobs:
           ROUTER_X86=false; ROUTER_ARM64=false; INT4_X86=false; TE_X86=false
           ROUTER_SHA=""; INT4_SHA=""; TE_SHA=""; SGLANG_SHA=""
           if wanted sgl-router; then
-            ROUTER_SHA=$(gh api "repos/${ROUTER_REPO}/commits/${ROUTER_REF}" --jq .sha)
+            ROUTER_SHA=$(gh_api "repos/${ROUTER_REPO}/commits/${ROUTER_REF}" --jq .sha)
             is_sha "$ROUTER_SHA" || fail "cannot resolve ${ROUTER_REPO}@${ROUTER_REF}"
             if stale "$ROUTER_SHA" "$TAG_X86" sglang_router-source.json; then ROUTER_X86=true; fi
             if stale "$ROUTER_SHA" "$TAG_ARM64" sglang_router-source.json; then ROUTER_ARM64=true; fi
           fi
           if wanted int4_qat; then
             # int4_qat follows the kernel directory, not every miles main commit.
-            INT4_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits?sha=main&path=${INT4_QAT_PATH}&per_page=1" --jq '.[0].sha')
+            INT4_SHA=$(gh_api "repos/${GITHUB_REPOSITORY}/commits?sha=main&path=${INT4_QAT_PATH}&per_page=1" --jq '.[0].sha')
             is_sha "$INT4_SHA" || fail "cannot resolve ${INT4_QAT_PATH} on main"
             if stale "$INT4_SHA" "$TAG_X86" fake_int4_quant_cuda-source.json; then INT4_X86=true; fi
           fi
           if wanted te; then
-            TE_SHA=$(gh api "repos/${TE_REPO}/commits/${TE_REF}" --jq .sha)
+            TE_SHA=$(gh_api "repos/${TE_REPO}/commits/${TE_REF}" --jq .sha)
             is_sha "$TE_SHA" || fail "cannot resolve ${TE_REPO}@${TE_REF}"
             if stale "$TE_SHA" "$TAG_X86" transformer_engine-source.json; then TE_X86=true; fi
           fi
           SGLANG_BUILT=""
           if wanted sglang; then
             # with wheels=all an sglang lookup failure must not stop the image's wheel sets
-            if ! SGLANG_SHA=$(gh api "repos/${SGLANG_REPO}/commits/${SGLANG_REF}" --jq .sha) || ! is_sha "$SGLANG_SHA"; then
+            if ! SGLANG_SHA=$(gh_api "repos/${SGLANG_REPO}/commits/${SGLANG_REF}" --jq .sha) || ! is_sha "$SGLANG_SHA"; then
               [ "$WHEELS_INPUT" = sglang ] && fail "cannot resolve ${SGLANG_REPO}@${SGLANG_REF}"
               echo "::warning::cannot resolve ${SGLANG_REPO}@${SGLANG_REF}; skipping sglang"
               SGLANG_SHA=""
@@ -181,7 +184,7 @@ jobs:
             SGLANG_RELEASE="${SGLANG_HISTORY_RELEASE}-$(date -u +%Gw%V)"
             # this commit's wheels in any week's release: a published wheel is never rebuilt, and a
             # Python version that failed is retried
-            SGLANG_BUILT=$(gh api --paginate "repos/${WHEELS_REPO}/releases?per_page=100" \
+            SGLANG_BUILT=$(gh_api --paginate "repos/${WHEELS_REPO}/releases?per_page=100" \
               --jq ".[] | select(.tag_name | startswith(\"${SGLANG_HISTORY_RELEASE}-\")) | .assets[].name
                 | select(contains(\"+miles.g${SGLANG_SHA:0:10}-\"))") \
               || fail "cannot list the ${SGLANG_HISTORY_RELEASE} releases"
