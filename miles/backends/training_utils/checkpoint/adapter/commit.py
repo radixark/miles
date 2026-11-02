@@ -71,7 +71,8 @@ def raise_if_any_rank_failed(error: BaseException | None) -> None:
         )
     failed = [(rank, e) for rank, e in enumerate(errors) if e is not None]
     if failed:
-        raise RuntimeError("adapter checkpoint failed: " + "; ".join(f"rank {rank}: {e}" for rank, e in failed))
+        message = "adapter checkpoint failed: " + "; ".join(f"rank {rank}: {e}" for rank, e in failed)
+        raise RuntimeError(message) from error
 
 
 @contextmanager
