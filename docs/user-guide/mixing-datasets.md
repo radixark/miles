@@ -50,7 +50,8 @@ block).
 `custom_agent_function_path` and `max_seq_len` are read only by `miles.rollout.generate_hub.agentic_tool_call.generate`, or by
 a wrapper around it that sets `reads_sample_agent_fields = True` on itself. A dataset that sets them under any
 other generate function, or an agentic dataset with neither `custom_agent_function_path` nor `--custom-agent-function-path`,
-is rejected at startup.
+is rejected at startup. Eval samples do not come from the mixer, so an agentic eval still needs
+`--custom-agent-function-path`.
 
 `custom_rm_path` and `rm_type` become the samples' `reward_spec`, so they follow the per-sample reward rules in
 [Customization](customization.md), checked at startup: a function with its own config must be the

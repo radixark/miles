@@ -341,6 +341,25 @@ class TestDatasetHookSettings:
             args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
         assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
 
+    @pytest.mark.parametrize("agent_flag", [[], ["--custom-agent-function-path", "json.loads"]])
+    def test_agentic_eval_needs_the_run_wide_agent(self, agent_flag):
+        """Eval samples do not come from the mixer, so a dataset's own agent never reaches them."""
+        argv = [
+            "--rollout-data-yaml-config",
+            _inline(_with_dataset(custom_agent_function_path="json.loads")),
+            "--custom-generate-function-path",
+            "miles.rollout.generate_hub.agentic_tool_call.generate",
+            "--eval-prompt-data",
+            "aime",
+            "/data/aime.jsonl",
+            *agent_flag,
+        ]
+        if agent_flag:
+            assert _parse(*argv).data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
+        else:
+            with pytest.raises(ValueError, match="eval dataset 'aime'.*needs an agent"):
+                _parse(*argv)
+
     def test_an_agentic_dataset_with_no_agent_fails_at_startup(self):
         """With neither custom_agent_function_path nor --custom-agent-function-path, the rollout died mid-run on an assert."""
         fields = {"custom_generate_function_path": "miles.rollout.generate_hub.agentic_tool_call.generate"}
