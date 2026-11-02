@@ -3,11 +3,13 @@
 import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Protocol
 
 import torch
 
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
@@ -17,6 +19,11 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     raise_if_any_rank_failed,
 )
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir, write_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
+    map_named_tensors_to_hf_keys,
+    map_peft_keys_to_hf_keys,
+    map_tinker_keys_to_hf_keys,
+)
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     write_parametrization,
@@ -41,7 +48,11 @@ TRAINING_STATE_FILENAME = "training_state.json"
 class AdapterCheckpointMembers(Protocol):
     """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
 
-    def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]: ...
+    # the names export_bf16_adapter yields: "peft" (HF module paths) or "tinker" (official Tinker names)
+    bf16_adapter_key_style: str
+
+    def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
+        """Collective; whole bf16 tensors on rank 0, nothing elsewhere."""
 
     def get_local_shard_specs(self, slot: int) -> list[LocalShardSpec]: ...
 
@@ -87,6 +98,29 @@ def save_adapter_dir(
             (written.path / TRAINING_STATE_FILENAME).write_text(json.dumps(training_state, indent=2))
         write_parametrization(written.path, parametrization)
     return written
+
+
+def write_peft_export(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+) -> None:
+    """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
+    named_tensors = list(members.export_bf16_adapter(slot))
+    error = None
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        try:
+            if members.bf16_adapter_key_style == "peft":
+                map_name = map_peft_keys_to_hf_keys
+            else:
+                map_name = partial(map_tinker_keys_to_hf_keys, targets=targets)
+            weights, _ = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
+            write_peft_adapter(directory, weights, parametrization, targets)
+        except Exception as exc:
+            error = exc
+    raise_if_any_rank_failed(error)
 
 
 def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
