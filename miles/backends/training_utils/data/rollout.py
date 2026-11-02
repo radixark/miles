@@ -6,7 +6,11 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
+from miles.backends.training_utils.data.context_parallel import (
+    natural_to_local_cp_rows,
+    slice_log_prob_with_cp,
+    slice_with_cp,
+)
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.data.token_space_media_process import (
     RolloutEngineProcessorArgs,
@@ -394,13 +398,28 @@ def get_batch(
         sample_offsets = [0]
         for t in batch["unconcat_tokens"]:
             sample_offsets.append(sample_offsets[-1] + t.size(0))
+
+        def packed_rows(positions: torch.Tensor, sample_index: int) -> torch.Tensor:
+            if qkv_format == "thd" and not allgather_cp:
+                return natural_to_local_cp_rows(
+                    positions,
+                    sample_start=cu_seqlens_host[sample_index],
+                    sample_end=cu_seqlens_host[sample_index + 1],
+                    cp_size=cp_size,
+                    cp_rank=parallel_state.cp.rank,
+                )
+            return positions + sample_offsets[sample_index]
+
         multimodal_data = {}  # key -> concatenated tensor
         multimodal_num_items = {}  # key -> list of item counts per sequence
         for i, mm_input_dict in enumerate(multimodal_train_inputs):
             if mm_input_dict is not None:
                 for key, mm_tensor in mm_input_dict.items():
+                    # Sample-local token indices of tower output rows, one long entry per row in tower output order:
+                    # mm_image_positions and mm_video_positions from the token-space processor, mm_vision_positions
+                    # and mm_audio_positions from the Inkling expansion.
                     if key.endswith("_positions"):
-                        mm_tensor = mm_tensor + sample_offsets[i]
+                        mm_tensor = packed_rows(mm_tensor, i)
                     if key not in multimodal_data:
                         multimodal_data[key] = mm_tensor
                         multimodal_num_items[key] = [mm_tensor.size(0)]
