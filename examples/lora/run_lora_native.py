@@ -48,6 +48,8 @@ app = typer.Typer()
 
 _MLA_TARGET_MODULES = "q_a_proj,q_b_proj,kv_a_proj_with_mqa,kv_b_proj,o_proj"
 _GQA_TARGET_MODULES = "q_proj,k_proj,v_proj,o_proj"
+# Qwen3.5 adds its GDN projections; native trains in_proj_q/k/v/z/b/a as their own adapters
+_QWEN35_TARGET_MODULES = f"{_GQA_TARGET_MODULES},in_proj_qkv,in_proj_z,in_proj_b,in_proj_a,out_proj"
 
 
 @dataclass(frozen=True)
@@ -86,7 +88,7 @@ _REGISTRIES = {
     "Qwen3.5-35B-A3B": _Registry(
         megatron_model_type="qwen3.5-35B-A3B",
         hf_repo="Qwen/Qwen3.5-35B-A3B",
-        target_modules=_GQA_TARGET_MODULES,
+        target_modules=_QWEN35_TARGET_MODULES,
         tensor_model_parallel_size=2,
         expert_model_parallel_size=4,
         rollout_num_gpus_per_engine=2,
@@ -94,7 +96,7 @@ _REGISTRIES = {
     "Qwen3.5-9B": _Registry(
         megatron_model_type="qwen3.5-9B",
         hf_repo="Qwen/Qwen3.5-9B",
-        target_modules=_GQA_TARGET_MODULES,
+        target_modules=_QWEN35_TARGET_MODULES,
         tensor_model_parallel_size=2,
         expert_model_parallel_size=1,
         rollout_num_gpus_per_engine=2,
