@@ -88,6 +88,7 @@ def decode_command(op: str, payload: dict) -> tuple[str, dict]:
         envelope = {"model_id": payload["model_id"], "seq_id": payload["seq_id"]}
     except KeyError as error:
         raise UserInputError(f"missing command envelope field {error.args[0]!r}") from None
+    assert op == "forward_backward" or op in REQUEST_TYPES, f"unhandled command op {op!r}"
     try:
         return _decode_command(op, payload, envelope)
     except (UserInputError, KeyError, TypeError, ValueError, IndexError) as error:
@@ -111,7 +112,7 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         return ("forward_only" if payload.get("forward_only") else op), decoded
     request = validate_against_sdk(REQUEST_TYPES[op], payload)
     if op == "optim_step":
-        validate_plain_adam("optimizer params", request.optim_params, tinker_types.AdamParams)
+        validate_plain_adam("optim_params", request.optim_params, tinker_types.AdamParams)
         # model_dump fills every default so core and the executor can require every key
         return op, decoded | {"adam_params": request.optim_params.model_dump()}
     if op == "save_state":
@@ -127,10 +128,9 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
             "optimizer": request.optimizer,
             "weights_access_token": request.weights_access_token,
         }
-    if op == "save_weights_for_sampler":
-        validate_save_options(payload)
-        return op, decoded | {"sampler_path": request.path}
-    raise AssertionError(f"unhandled command op {op!r}")
+    # save_weights_for_sampler, the last REQUEST_TYPES op
+    validate_save_options(payload)
+    return op, decoded | {"sampler_path": request.path}
 
 
 def model_input_tokens(model_input: dict) -> list[int]:
