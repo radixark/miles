@@ -9,6 +9,7 @@ import yaml
 
 from miles.rollout import data_source
 from miles.rollout.data_source import MixedRolloutDataSource, split_by_weight
+from miles.utils.types import RewardSpec
 
 
 class _WordTokenizer:
@@ -152,6 +153,20 @@ class TestMixedRolloutDataSource:
 
         assert [s.prompt for s in source.datasets["math"].samples] == ["short"]
         assert len(source.datasets["code"]) == 50
+
+    def test_each_dataset_sets_its_own_reward_spec(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        datasets["math"]["rm_type"] = "math"
+        datasets["code"]["custom_rm_path"] = "my_pkg.code_reward"
+        source = _make_source(tmp_path, datasets)
+
+        specs = {group[0].metadata["dataset_name"]: group[0].reward_spec for group in source.get_samples(8)}
+
+        assert specs == {"math": RewardSpec(rm_type="math"), "code": RewardSpec(custom_rm_path="my_pkg.code_reward")}
+
+    def test_a_dataset_without_reward_fields_keeps_the_run_wide_reward(self, tmp_path):
+        source = _make_source(tmp_path, _two_datasets(tmp_path))
+        assert all(group[0].reward_spec is None for group in source.get_samples(8))
 
     def test_non_mapping_metadata_fails_at_startup(self, tmp_path):
         """A string metadata column would crash the first request when the mixer tags the sample."""
