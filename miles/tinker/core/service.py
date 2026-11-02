@@ -5,10 +5,13 @@ The trainer lock serializes trainer calls across dispatch, model creation, and l
 import asyncio
 import logging
 import os
+import secrets
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import NamedTuple
 
+from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 
 from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
@@ -17,6 +20,7 @@ from miles.tinker.core.input_validation import (
     validate_model_config,
     validate_sample_payload,
     validate_seq_id,
+    validate_ttl_seconds,
 )
 from miles.tinker.core.model_queue import ModelRequestQueue
 from miles.tinker.core.scheduler import BarrierUnit, BatchUnit, RequestScheduler
@@ -25,6 +29,7 @@ from miles.tinker.core.types import (
     CommandOp,
     GatewayConfig,
     ModelRecord,
+    NotFoundError,
     OwnershipError,
     SamplingSessionRecord,
     SessionRecord,
@@ -50,6 +55,17 @@ class _EndedSession(NamedTuple):
     ended_at: float
 
 
+class _Download(NamedTuple):
+    tenant: str
+    tinker_path: str
+    expires_at: float
+
+
+# as official Tinker: a download URL lives an hour, and never past its checkpoint's expiry
+_DOWNLOAD_URL_TTL_S = 3600
+_EXPIRY_SWEEP_S = 60
+
+
 class TinkerService:
     def __init__(self, backend, config: GatewayConfig) -> None:
         self.backend = backend
@@ -72,10 +88,16 @@ class TinkerService:
         self._close_reasons: dict[str, str] = {}
         # ended sessions, kept a lease long and at least the SDK's retry window so a retried finish is answered
         self._ended_sessions: dict[str, _EndedSession] = {}
+        self.expiry = CheckpointExpiry(config.checkpoint_root)
+        # issued download tokens; unguessable, held only in memory, so a restart invalidates every URL
+        self._downloads: dict[str, _Download] = {}
 
     async def run(self) -> None:
+        await self._expire_checkpoints()
         sweep_task = asyncio.create_task(self._run_lease_sweeper())
         sweep_task.add_done_callback(self._observe_background_task)
+        expiry_task = asyncio.create_task(self._run_expiry_sweeper())
+        expiry_task.add_done_callback(self._observe_background_task)
         try:
             while True:
                 if self._background_error is not None:
@@ -104,7 +126,7 @@ class TinkerService:
                 await self._wake.wait()
                 self._wake.clear()
         finally:
-            tasks = [sweep_task, *self._create_tasks, *(task for task, _ in self._sample_tasks.values())]
+            tasks = [sweep_task, expiry_task, *self._create_tasks, *(task for task, _ in self._sample_tasks.values())]
             for task in tasks:
                 task.cancel()
             # Cleanup failures must not replace the error that stopped the dispatcher.
@@ -313,6 +335,8 @@ class TinkerService:
             return [await self._load_state(record, payload)]
         if barrier.op == CommandOp.SAVE_WEIGHTS_FOR_SAMPLER:
             return [await self._save_weights_for_sampler(record, payload)]
+        if barrier.op == CommandOp.SAVE_WEIGHTS_EXTERNAL:
+            return [await self._save_weights_external(record, payload)]
         raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
     async def _step_optimizers(self, entries: list) -> list[dict]:
@@ -359,7 +383,9 @@ class TinkerService:
             return written
         self.backend.commit_adapter(root, name, written, payload["overwrite"])
         self._delete_retired_outside_the_lock(root)
-        return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
+        tinker_path = f"tinker://{record.model_id}/weights/{name}"
+        self.expiry.set(tinker_path, payload.get("ttl_seconds"), time.time())
+        return {"op": "save_state", "path": tinker_path}
 
     def _delete_retired_outside_the_lock(self, root: str) -> None:
         task = asyncio.create_task(asyncio.to_thread(self.backend.delete_retired_adapters, root))
@@ -367,9 +393,11 @@ class TinkerService:
         task.add_done_callback(self._cleanup_tasks.discard)
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
+        if payload["path"].startswith("file://"):
+            return await self._load_imported_adapter(record, payload)
         source_id, kind, name = parse_tinker_path(payload["path"])
         if kind != "weights":
-            raise UserInputError("cannot load sampler weights into a training model; use a save_state checkpoint")
+            raise UserInputError(f"cannot load {kind} into a training model; use a save_state checkpoint")
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, source_id, kind, name)
         source_tenant = payload.get("weights_access_token")
         if source_tenant is None:
@@ -425,6 +453,7 @@ class TinkerService:
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
         }
+        self.expiry.set(result["path"], payload.get("ttl_seconds"), time.time())
         if payload.get("sampler_path") is None:
             # unnamed saves return a sampling session bound to the new version
             result["sampling_session_id"] = self._new_sampling_session(
@@ -432,9 +461,158 @@ class TinkerService:
             )
         return result
 
+    async def _load_imported_adapter(self, record: ModelRecord, payload: dict) -> dict:
+        """An adapter from under --tinker-import-root; it has no Adam state this gateway could resume."""
+        if payload["optimizer"]:
+            raise UserInputError(f"{payload['path']} loads weights only; load it without optimizer state")
+        path = self._imported_path(payload["path"])
+        source = self.backend.read_imported_adapter(path)
+        if source["lora_alpha"] is None:
+            raise UserInputError(f"{payload['path']} records no LoRA alpha, which a Tinker adapter must carry")
+        if source["lora_rank"] != record.lora_rank:
+            raise UserInputError(
+                f"{payload['path']} has lora_rank={source['lora_rank']}; this model has {record.lora_rank}"
+            )
+        fields = build_parametrization_fields(record, self.config) | {"lora_alpha": source["lora_alpha"]}
+        failure = await self.backend.load_slot(
+            record.slot,
+            record.lora_rank,
+            source["lora_alpha"],
+            ckpt_path=path,
+            load_optimizer=False,
+            parametrization_fields=fields,
+        )
+        if failure is not None:
+            return failure
+        record.lora_alpha = source["lora_alpha"]
+        return {"op": "load_state"}
+
+    def _imported_path(self, uri: str) -> str:
+        if self.config.import_root is None:
+            raise UserInputError("this gateway imports no file:// adapters; start it with --tinker-import-root")
+        root = os.path.realpath(self.config.import_root)
+        path = os.path.realpath(uri.removeprefix("file://"))
+        if not path.startswith(root + os.sep):
+            raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
+        return path
+
+    async def _save_weights_external(self, record: ModelRecord, payload: dict) -> dict:
+        """The official Tinker export of the adapter, for download (get_external_weights_urls)."""
+        name = payload["name"]
+        validate_checkpoint_segment(name)
+        if any(not recipient.startswith("age1") for recipient in payload["age_recipients"]):
+            raise UserInputError("only age X25519 recipients (age1...) are supported")
+        path = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "external_weights", name)
+        if os.path.lexists(path):
+            raise UserInputError(f"external weights {name!r} already exist; save under a new name")
+        root = os.path.dirname(path)
+        written = await self.backend.export_external(
+            record.slot,
+            root,
+            name,
+            record.tenant,
+            build_parametrization_fields(record, self.config),
+            payload["age_recipients"],
+        )
+        if isinstance(written, dict):
+            return written
+        self.backend.commit_adapter(root, name, written, False)
+        tinker_path = f"tinker://{record.model_id}/external_weights/{name}"
+        self.expiry.set(tinker_path, payload.get("ttl_seconds"), time.time())
+        files = self.backend.resolve_checkpoint_files(root, name, record.tenant)
+        size = sum(os.path.getsize(os.path.join(files["path"], f)) for f in files["files"])
+        return {"op": "save_weights_external", "path": tinker_path, "size_bytes": size}
+
+    def _owned_checkpoint(self, tenant: str, model_id: str, checkpoint_id: str) -> tuple[str, str, str, dict]:
+        """(tinker path, its adapter root, name, its files) of a committed checkpoint ``tenant`` owns."""
+        tinker_path = f"tinker://{model_id}/{checkpoint_id}"
+        _, kind, name = parse_tinker_path(tinker_path)
+        root = os.path.dirname(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name))
+        files = self.backend.resolve_checkpoint_files(root, name, tenant)
+        if files is None:
+            raise NotFoundError(f"checkpoint {tinker_path} does not exist")
+        return tinker_path, root, name, files
+
+    def external_weights_urls(self, tenant: str, model_id: str, checkpoint_id: str, base_url: str) -> dict:
+        """Download URLs that carry no credential, bound to this tenant, the checkpoint and an expiry."""
+        tinker_path, _, _, files = self._owned_checkpoint(tenant, model_id, checkpoint_id)
+        if not checkpoint_id.startswith("external_weights/"):
+            raise UserInputError(f"{tinker_path} is not an external_weights checkpoint")
+        now = time.time()
+        expires_at = now + _DOWNLOAD_URL_TTL_S
+        if (checkpoint_expires_at := self.expiry.expires_at(tinker_path)) is not None:
+            expires_at = min(expires_at, checkpoint_expires_at)
+        self._downloads = {t: d for t, d in self._downloads.items() if d.expires_at > now}
+        token = secrets.token_urlsafe(32)
+        self._downloads[token] = _Download(tenant, tinker_path, expires_at)
+        return {
+            "urls": {f: f"{base_url}api/v1/external_weights/{token}/{f}" for f in files["files"]},
+            "expires": datetime.fromtimestamp(expires_at, UTC).isoformat(),
+        }
+
+    def download_path(self, token: str, filename: str) -> str:
+        """The file a download URL names; gone once the URL expires or the checkpoint is deleted."""
+        download = self._downloads.get(token)
+        if download is None or download.expires_at <= time.time():
+            raise NotFoundError("unknown or expired download URL")
+        model_id, kind, name = parse_tinker_path(download.tinker_path)
+        try:
+            _, _, _, files = self._owned_checkpoint(download.tenant, model_id, f"{kind}/{name}")
+        except NotFoundError:
+            raise NotFoundError(f"{download.tinker_path} was deleted") from None
+        if filename not in files["files"]:
+            raise NotFoundError(f"{download.tinker_path} has no file {filename!r}")
+        return os.path.join(files["path"], filename)
+
+    async def set_checkpoint_ttl(self, tenant: str, model_id: str, checkpoint_id: str, ttl_seconds) -> None:
+        validate_ttl_seconds(ttl_seconds)
+        async with self._trainer_lock:
+            tinker_path, _, _, _ = self._owned_checkpoint(tenant, model_id, checkpoint_id)
+            self.expiry.set(tinker_path, ttl_seconds, time.time())
+
+    async def delete_checkpoint(self, tenant: str, model_id: str, checkpoint_id: str) -> None:
+        async with self._trainer_lock:
+            tinker_path, root, name, _ = self._owned_checkpoint(tenant, model_id, checkpoint_id)
+            self._delete_checkpoint(tinker_path, root, name, tenant)
+
+    def _delete_checkpoint(self, tinker_path: str, root: str, name: str, tenant: str | None) -> None:
+        """Requires the trainer lock; ``tenant`` None skips the ownership check (expiry)."""
+        self.backend.delete_adapter(root, name, tenant)
+        self.expiry.drop(tinker_path)
+        self._delete_retired_outside_the_lock(root)
+        logger.info(f"deleted checkpoint {tinker_path}")
+
+    async def _run_expiry_sweeper(self) -> None:
+        while True:
+            await asyncio.sleep(_EXPIRY_SWEEP_S)
+            await self._expire_checkpoints()
+
+    async def _expire_checkpoints(self) -> None:
+        async with self._trainer_lock:
+            for tinker_path in self.expiry.expired(time.time()):
+                model_id, kind, name = parse_tinker_path(tinker_path)
+                root = os.path.dirname(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name))
+                if self.backend.resolve_checkpoint_files(root, name, None) is None:
+                    # deleted by hand, or never committed: nothing to remove
+                    self.expiry.drop(tinker_path)
+                else:
+                    self._delete_checkpoint(tinker_path, root, name, None)
+
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
         """What the SDK needs to rebuild a training client from a checkpoint."""
+        if tinker_path.startswith("file://"):
+            source = self.backend.read_imported_adapter(self._imported_path(tinker_path))
+            return {
+                "base_model": self.config.base_model,
+                "is_lora": True,
+                "lora_rank": source["lora_rank"],
+                "train_attn": self.config.trains_attn,
+                "train_mlp": self.config.trains_mlp,
+                "train_unembed": self.config.trains_unembed,
+            }
         model_id, kind, name = parse_tinker_path(tinker_path)
+        if kind == "external_weights":
+            raise UserInputError(f"{tinker_path} is a download; create a training client from a weights checkpoint")
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
         if os.path.islink(checkpoint_dir):
             parametrization = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)[

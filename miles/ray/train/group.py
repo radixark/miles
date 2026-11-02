@@ -598,6 +598,19 @@ class TrainerController:
             parametrization_fields=parametrization_fields,
         )
 
+    async def export_external_slot(
+        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict, age_recipients: list[str]
+    ) -> list:
+        return await self._execute_slots(
+            "export_external_slot",
+            slot=slot,
+            root=root,
+            name=name,
+            tenant=tenant,
+            parametrization_fields=parametrization_fields,
+            age_recipients=age_recipients,
+        )
+
     async def unload_slot(self, slot: int) -> list:
         return await self._execute_slots("unload_slot", slot=slot)
 

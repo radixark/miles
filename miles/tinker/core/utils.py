@@ -7,11 +7,14 @@ from miles.tinker.core.input_validation import validate_checkpoint_metadata, val
 from miles.tinker.core.types import GatewayConfig, ModelRecord, OwnershipError, UserInputError
 
 
+CHECKPOINT_KINDS = ("weights", "sampler_weights", "external_weights")
+
+
 def parse_tinker_path(path: str) -> tuple[str, str, str]:
     if not path.startswith("tinker://"):
         raise UserInputError(f"not a tinker path: {path!r}")
     parts = path.removeprefix("tinker://").split("/")
-    if len(parts) != 3 or parts[1] not in ("weights", "sampler_weights"):
+    if len(parts) != 3 or parts[1] not in CHECKPOINT_KINDS:
         raise UserInputError(f"malformed tinker path: {path!r}")
     for segment in parts:
         validate_checkpoint_segment(segment)

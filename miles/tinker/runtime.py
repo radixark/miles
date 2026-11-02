@@ -1,23 +1,29 @@
 """Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import TextIO
 
 import httpx
 
+from miles.backends.training_utils.checkpoint.adapter.commit import TENANT_FILENAME
 from miles.backends.training_utils.checkpoint.adapter.commit import OwnershipError as AdapterOwnershipError
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     UncommittedAdapterDir,
     commit_adapter_dir,
+    delete_adapter_dir,
     delete_retired_adapter_dirs,
     delete_unreferenced_adapter_dirs,
     format_sglang_lora_name,
     lock_checkpoint_root,
     resolve_adapter_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.parametrization import read_parametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    PARAMETRIZATION_FILENAME,
+    read_parametrization,
+)
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.utils import object_store
@@ -88,6 +94,38 @@ def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | 
         "lora_name": format_sglang_lora_name(model_id, name, committed.commit_id),
         "parametrization": asdict(read_parametrization(committed.path)),
     }
+
+
+def resolve_checkpoint_files(root: str, name: str, tenant: str | None) -> dict | None:
+    """A committed checkpoint's physical dir and the files a client may download (not the gateway-private
+    tenant.json); None when it does not exist. ``tenant`` None skips the ownership check."""
+    try:
+        committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
+    except AdapterOwnershipError as error:
+        raise OwnershipError(f"checkpoint {name!r} does not belong to this tenant") from error
+    if committed is None:
+        return None
+    files = sorted(p.name for p in committed.path.iterdir() if p.is_file() and p.name != TENANT_FILENAME)
+    return {"path": str(committed.path), "files": files}
+
+
+def delete_adapter(root: str, name: str, tenant: str | None) -> None:
+    try:
+        delete_adapter_dir(Path(root), name, tenant=tenant)
+    except AdapterOwnershipError as error:
+        raise OwnershipError(f"checkpoint {name!r} does not belong to this tenant") from error
+
+
+def read_imported_adapter(path: str) -> dict:
+    """Rank and alpha of an adapter outside the checkpoint root; alpha None when the source records none."""
+    if (Path(path) / PARAMETRIZATION_FILENAME).is_file():
+        parametrization = read_parametrization(Path(path))
+        return {"lora_rank": parametrization.lora_rank, "lora_alpha": parametrization.lora_alpha}
+    config_file = Path(path) / "adapter_config.json"
+    if not config_file.is_file():
+        raise UserInputError(f"{path} holds no adapter ({PARAMETRIZATION_FILENAME} or adapter_config.json)")
+    config = json.loads(config_file.read_text())
+    return {"lora_rank": config["r"], "lora_alpha": config.get("lora_alpha")}
 
 
 class MilesBackend:
@@ -186,9 +224,26 @@ class MilesBackend:
             )
         )
 
+    async def export_external(
+        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict, age_recipients: list[str]
+    ) -> UncommittedAdapterDir | dict:
+        return _written_or_failure(
+            await self.trainer.export_external_slot(
+                slot=slot,
+                root=root,
+                name=name,
+                tenant=tenant,
+                parametrization_fields=parametrization_fields,
+                age_recipients=age_recipients,
+            )
+        )
+
     commit_adapter = staticmethod(commit_adapter)
     delete_retired_adapters = staticmethod(delete_retired_adapters)
     resolve_adapter = staticmethod(resolve_adapter)
+    resolve_checkpoint_files = staticmethod(resolve_checkpoint_files)
+    delete_adapter = staticmethod(delete_adapter)
+    read_imported_adapter = staticmethod(read_imported_adapter)
 
     # -------- sampling --------
 

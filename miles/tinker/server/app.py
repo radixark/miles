@@ -2,14 +2,15 @@
 
 import asyncio
 import json
+import os
 from contextlib import suppress
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from miles.tinker.core.future import FAILED, PENDING
 from miles.tinker.core.service import TinkerService
-from miles.tinker.core.types import OwnershipError, UserInputError
+from miles.tinker.core.types import NotFoundError, OwnershipError, UserInputError
 from miles.tinker.server.encoding import (
     decode_command,
     decode_sample_request,
@@ -32,7 +33,9 @@ COMMAND_ROUTES = {
     "/api/v1/save_weights": "save_state",
     "/api/v1/load_weights": "load_state",
     "/api/v1/save_weights_for_sampler": "save_weights_for_sampler",
+    "/api/v1/save_weights_external": "save_weights_external",
 }
+_DOWNLOAD_CHUNK_BYTES = 1 << 20
 
 
 def _tenant(request: Request) -> str:
@@ -56,6 +59,10 @@ def build_app(service: TinkerService) -> FastAPI:
     @app.exception_handler(OwnershipError)
     async def _ownership_error(request: Request, error: OwnershipError):
         return JSONResponse(status_code=403, content={"error": str(error)})
+
+    @app.exception_handler(NotFoundError)
+    async def _not_found(request: Request, error: NotFoundError):
+        return JSONResponse(status_code=404, content={"error": str(error)})
 
     @app.get("/api/v1/healthz")
     async def healthz():
@@ -153,6 +160,38 @@ def build_app(service: TinkerService) -> FastAPI:
     async def weights_info(request: Request):
         payload = await request.json()
         return service.weights_info(_tenant(request), payload["tinker_path"])
+
+    # checkpoint_id is "<kind>/<name>"
+    @app.get("/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id:path}/external_weights_urls")
+    async def external_weights_urls(model_id: str, checkpoint_id: str, request: Request):
+        return service.external_weights_urls(_tenant(request), model_id, checkpoint_id, str(request.base_url))
+
+    @app.put("/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id:path}/ttl")
+    async def set_checkpoint_ttl(model_id: str, checkpoint_id: str, request: Request):
+        payload = await request.json()
+        await service.set_checkpoint_ttl(_tenant(request), model_id, checkpoint_id, payload["ttl_seconds"])
+        return None
+
+    @app.delete("/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id:path}")
+    async def delete_checkpoint(model_id: str, checkpoint_id: str, request: Request):
+        await service.delete_checkpoint(_tenant(request), model_id, checkpoint_id)
+        return None
+
+    @app.get("/api/v1/external_weights/{token}/{filename}")
+    async def download_external_weights(token: str, filename: str):
+        """The URL is the credential (the SDK downloads without one). The file is opened before the headers go
+        out, so a concurrent delete yields a complete file or an error, never a truncated one."""
+        handle = open(service.download_path(token, filename), "rb")
+        size = os.fstat(handle.fileno()).st_size
+
+        def chunks():
+            with handle:
+                while chunk := handle.read(_DOWNLOAD_CHUNK_BYTES):
+                    yield chunk
+
+        return StreamingResponse(
+            chunks(), media_type="application/octet-stream", headers={"Content-Length": str(size)}
+        )
 
     @app.post("/api/v1/retrieve_future")
     async def retrieve_future(request: Request):

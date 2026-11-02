@@ -23,6 +23,7 @@ REQUEST_TYPES = {
     "save_state": tinker_types.SaveWeightsRequest,
     "load_state": tinker_types.LoadWeightsRequest,
     "save_weights_for_sampler": tinker_types.SaveWeightsForSamplerRequest,
+    "save_weights_external": tinker_types.SaveWeightsExternalRequest,
 }
 
 
@@ -121,7 +122,7 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         return op, decoded | {"adam_params": request.optim_params.model_dump()}
     if op == "save_state":
         validate_save_options(request.ttl_seconds, request.user_metadata)
-        return op, decoded | {"name": request.path, "overwrite": request.overwrite}
+        return op, decoded | {"name": request.path, "overwrite": request.overwrite, "ttl_seconds": request.ttl_seconds}
     if op == "load_state":
         if request.optimizer_config is not None:
             raise UserInputError(
@@ -134,7 +135,14 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         }
     if op == "save_weights_for_sampler":
         validate_save_options(request.ttl_seconds, request.user_metadata)
-        return op, decoded | {"sampler_path": request.path}
+        return op, decoded | {"sampler_path": request.path, "ttl_seconds": request.ttl_seconds}
+    if op == "save_weights_external":
+        validate_save_options(request.ttl_seconds, request.user_metadata)
+        return op, decoded | {
+            "name": request.path,
+            "ttl_seconds": request.ttl_seconds,
+            "age_recipients": request.age_encryption_recipients or [],
+        }
     raise AssertionError(f"unhandled command op {op!r}")
 
 
@@ -257,6 +265,8 @@ def render_result(result: dict) -> dict:
         if "sampling_session_id" in result:
             rendered["sampling_session_id"] = result["sampling_session_id"]
         return rendered
+    if op == "save_weights_external":
+        return {"type": "save_weights_external", "path": result["path"], "size_bytes": result["size_bytes"]}
     if op == "load_state":
         return {"type": "load_weights"}
     if op == "optim_step":

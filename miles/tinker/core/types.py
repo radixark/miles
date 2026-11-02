@@ -15,6 +15,7 @@ class CommandOp(str, Enum):
     SAVE_STATE = "save_state"
     LOAD_STATE = "load_state"
     SAVE_WEIGHTS_FOR_SAMPLER = "save_weights_for_sampler"
+    SAVE_WEIGHTS_EXTERNAL = "save_weights_external"
 
     def is_batch(self) -> bool:
         """Batch ops pack into BatchUnits; every other op is a barrier."""
@@ -41,6 +42,10 @@ class UserInputError(Exception):
     """Rejected request content; fails the future with category user."""
 
 
+class NotFoundError(Exception):
+    """A checkpoint, or a download URL's target, that does not exist (any more)."""
+
+
 class OwnershipError(Exception):
     """model/checkpoint does not belong to the caller's tenant."""
 
@@ -64,6 +69,8 @@ class GatewayConfig:
     trains_attn: bool = True
     trains_mlp: bool = True
     trains_unembed: bool = False
+    # load_state reads file:// adapters only from under here (weights only); None refuses file://
+    import_root: str | None = None
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots
     batch_token_budget: int = 262_144  # packing bound per BatchUnit
 

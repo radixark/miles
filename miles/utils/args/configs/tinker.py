@@ -14,3 +14,9 @@ class TinkerConfig(BaseConfig):
         str | None,
         Arg(help="Directory for tinker:// checkpoints (required by serve_tinker.py)"),
     ] = None
+    tinker_import_root: A[
+        str | None,
+        Arg(
+            help="load_state reads file:// adapters from under this directory only (weights only); unset refuses them"
+        ),
+    ] = None

@@ -75,6 +75,7 @@ async def serve(args, *, disposer: Disposer):
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=args.tinker_checkpoint_root,
+        import_root=args.tinker_import_root,
         vocab_size=hf_config.vocab_size,
         max_tokens_per_datum=max_tokens_per_datum,
         max_tokens_per_sample=max_tokens_per_sample,

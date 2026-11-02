@@ -7,7 +7,10 @@ from pathlib import Path
 
 import torch
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
+    write_external_adapter,
+    write_sampler_adapter,
+)
 from miles.backends.training_utils.checkpoint.adapter.commit import write_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
@@ -17,7 +20,14 @@ from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
-from miles.tinker.runtime import commit_adapter, delete_retired_adapters, resolve_adapter
+from miles.tinker.runtime import (
+    commit_adapter,
+    delete_adapter,
+    delete_retired_adapters,
+    read_imported_adapter,
+    resolve_adapter,
+    resolve_checkpoint_files,
+)
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 _TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
@@ -29,6 +39,13 @@ ADAM = {
     "weight_decay": 0.0,
     "grad_clip_norm": 1.0,
 }
+
+
+def _weights(rank: int) -> dict[str, torch.Tensor]:
+    return {
+        "model.layers.0.self_attn.q_proj.lora_A": torch.zeros(rank, 4),
+        "model.layers.0.self_attn.q_proj.lora_B": torch.zeros(4, rank),
+    }
 
 
 def _parametrization(fields: dict) -> AdapterParametrization:
@@ -136,6 +153,26 @@ class FakeBackend:
     commit_adapter = staticmethod(commit_adapter)
     delete_retired_adapters = staticmethod(delete_retired_adapters)
     resolve_adapter = staticmethod(resolve_adapter)
+    resolve_checkpoint_files = staticmethod(resolve_checkpoint_files)
+    delete_adapter = staticmethod(delete_adapter)
+    read_imported_adapter = staticmethod(read_imported_adapter)
+
+    async def export_external(self, slot, root, name, tenant, parametrization_fields, age_recipients):
+        failure = self._record(
+            "export_external",
+            slot=slot,
+            root=root,
+            adapter_name=name,
+            tenant=tenant,
+            parametrization_fields=parametrization_fields,
+            age_recipients=age_recipients,
+        )
+        if failure is not None:
+            return failure
+        parametrization = _parametrization(parametrization_fields)
+        with write_adapter_dir(Path(root), name, tenant=tenant) as written:
+            write_external_adapter(written.path, _weights(parametrization.lora_rank), parametrization, _TARGETS)
+        return written
 
     async def export_slot(self, slot, root, name, tenant, parametrization_fields):
         failure = self._record(
@@ -149,12 +186,8 @@ class FakeBackend:
         if failure is not None:
             return failure
         parametrization = _parametrization(parametrization_fields)
-        weights = {
-            "model.layers.0.self_attn.q_proj.lora_A": torch.zeros(parametrization.lora_rank, 4),
-            "model.layers.0.self_attn.q_proj.lora_B": torch.zeros(4, parametrization.lora_rank),
-        }
         with write_adapter_dir(Path(root), name, tenant=tenant) as written:
-            write_sampler_adapter(written.path, weights, parametrization, _TARGETS)
+            write_sampler_adapter(written.path, _weights(parametrization.lora_rank), parametrization, _TARGETS)
         return written
 
     async def sample(self, payload, lora_name, lora_path=None):

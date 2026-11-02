@@ -1,7 +1,9 @@
 """The service preserves request ordering, tenant isolation, and failure isolation."""
 
 import asyncio
+import json
 import os
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -19,7 +21,7 @@ from tests.fast.tinker.harness import (
 
 from miles.backends.training_utils.checkpoint.adapter.commit import resolve_adapter_dir
 from miles.tinker.core.future import DONE, FAILED
-from miles.tinker.core.types import OwnershipError, UserInputError
+from miles.tinker.core.types import NotFoundError, OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
 
 
@@ -985,3 +987,134 @@ async def test_another_tenants_sampler_export_does_not_resolve(service):
         service.models[model_id].base_model,
         service.models[model_id].lora_rank,
     )
+
+
+def _external_payload(model_id: str, seq_id: int, name: str, **overrides) -> dict:
+    return {
+        "model_id": model_id,
+        "seq_id": seq_id,
+        "name": name,
+        "ttl_seconds": None,
+        "age_recipients": [],
+    } | overrides
+
+
+async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_external", _external_payload(model_id, 1, "export", ttl_seconds=7200)
+    )
+    result = (await await_settled(service, "tenant", save)).result
+    assert result["path"] == f"tinker://{model_id}/external_weights/export" and result["size_bytes"] > 0
+    assert service.expiry.expires_at(result["path"]) is not None
+
+    urls = service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert sorted(urls["urls"]) == ["adapter_config.json", "adapter_model.safetensors"], "tenant.json stays private"
+    token = urls["urls"]["adapter_config.json"].split("/")[-2]
+    assert json.loads(Path(service.download_path(token, "adapter_config.json")).read_text())["r"] == 8
+    with pytest.raises(NotFoundError):
+        service.download_path(token, "tenant.json")
+    with pytest.raises(NotFoundError):
+        service.download_path("forged", "adapter_config.json")
+    with pytest.raises(OwnershipError):
+        service.external_weights_urls("mallory", model_id, "external_weights/export", "http://gateway/")
+    save = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 2, "name": "ck", "overwrite": False}
+    )
+    await await_settled(service, "tenant", save)
+    with pytest.raises(UserInputError, match="not an external_weights"):
+        service.external_weights_urls("tenant", model_id, "weights/ck", "http://gateway/")
+
+    await service.delete_checkpoint("tenant", model_id, "external_weights/export")
+    with pytest.raises(NotFoundError, match="deleted"):
+        service.download_path(token, "adapter_config.json")
+    assert service.expiry.expires_at(result["path"]) is None
+
+
+async def test_an_external_save_refuses_an_existing_name_and_non_age_recipients(service):
+    model_id = await created_model(service)
+    first = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    assert (await await_settled(service, "tenant", first)).state == DONE
+    again = service.submit("tenant", "save_weights_external", _external_payload(model_id, 2, "export"))
+    assert "already exist" in (await await_settled(service, "tenant", again)).error
+    ssh = service.submit(
+        "tenant", "save_weights_external", _external_payload(model_id, 3, "other", age_recipients=["ssh-ed25519 AAA"])
+    )
+    assert "age1" in (await await_settled(service, "tenant", ssh)).error
+
+
+async def test_a_download_url_expires_with_its_checkpoint(service, monkeypatch):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_external", _external_payload(model_id, 1, "export", ttl_seconds=3600)
+    )
+    await await_settled(service, "tenant", save)
+    await service.set_checkpoint_ttl("tenant", model_id, "external_weights/export", 3600)
+    urls = service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    token = urls["urls"]["adapter_config.json"].split("/")[-2]
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 3601)
+    with pytest.raises(NotFoundError, match="expired"):
+        service.download_path(token, "adapter_config.json")
+
+
+async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": 3600},
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    await service.set_checkpoint_ttl("tenant", model_id, "weights/ck", None)
+    assert service.expiry.expires_at(path) is None
+    with pytest.raises(UserInputError, match="ttl_seconds"):
+        await service.set_checkpoint_ttl("tenant", model_id, "weights/ck", 60)
+    with pytest.raises(OwnershipError):
+        await service.set_checkpoint_ttl("mallory", model_id, "weights/ck", 7200)
+    await service.set_checkpoint_ttl("tenant", model_id, "weights/ck", 7200)
+
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 7201)
+    await service._expire_checkpoints()
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).parent
+    assert resolve_adapter_dir(root, "ck", tenant=None) is None and service.expiry.expires_at(path) is None
+    with pytest.raises(NotFoundError):
+        await service.delete_checkpoint("tenant", model_id, "weights/ck")
+
+
+async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp_path):
+    imports = tmp_path / "imports"
+    adapter = imports / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (imports / "link").symlink_to(tmp_path / "outside")
+    service = make_service(tmp_path / "root", import_root=str(imports))
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        info = service.weights_info("tenant", f"file://{adapter}")
+        assert (info["base_model"], info["lora_rank"]) == ("base", 8)
+
+        def load(model_id, path, optimizer=False):
+            payload = {"model_id": model_id, "seq_id": 1, "path": path, "optimizer": optimizer}
+            return await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+
+        assert (await load(model_id, f"file://{adapter}")).state == DONE
+        loaded = service.backend.named("load_slot")[-1]
+        assert (loaded["ckpt_path"], loaded["load_optimizer"]) == (str(adapter.resolve()), False)
+        assert service.models[model_id].lora_alpha == 32
+        # a failed load closes its model (freeing its slot), so each refusal gets a new one
+        for path, error in (
+            (f"file://{imports}/../outside", "outside the import root"),
+            (f"file://{imports}/link", "outside the import root"),
+            (f"file://{adapter}", "weights only"),
+        ):
+            model_id = await created_model(service)
+            assert error in (await load(model_id, path, optimizer=error == "weights only")).error
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task

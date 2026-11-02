@@ -5,7 +5,7 @@ from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_sampler_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_external_export, write_sampler_export
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.data.rollout import get_rollout_data
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -119,6 +119,27 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         ), "the gateway and the slot disagree on rank"
         return write_sampler_export(
             Path(root), name, self.adapter_slots, slot, parametrization, self.adapter_slots.targets, tenant=tenant
+        )
+
+    @with_logs
+    def export_external_slot(
+        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict, age_recipients: list[str]
+    ) -> UncommittedAdapterDir:
+        """Write the slot's official Tinker export under ``root``, uncommitted; the gateway commits it."""
+        self._heartbeat.bump()
+        parametrization = self.adapter_slots.parametrization(**parametrization_fields)
+        assert parametrization.lora_rank == self.adapter_slots.lora_rank(
+            slot
+        ), "the gateway and the slot disagree on rank"
+        return write_external_export(
+            Path(root),
+            name,
+            self.adapter_slots,
+            slot,
+            parametrization,
+            self.adapter_slots.targets,
+            tenant=tenant,
+            age_recipients=age_recipients,
         )
 
     @with_logs

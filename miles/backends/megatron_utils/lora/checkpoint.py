@@ -41,7 +41,9 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import (
     AdapterSourceKind,
+    ExternalWeightsReader,
     MilesAdapterDirReader,
+    PeftAdapterReader,
     classify_adapter_source,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -357,8 +359,13 @@ def find_load_mismatch(
                     f"(differing keys e.g. {sorted(expected ^ saved)[:3]}); "
                     "load it on a gateway with the layout it was saved with"
                 )
-        elif kind == AdapterSourceKind.ADAPTER_DIR:
-            source = MilesAdapterDirReader(path, targets).source
+        elif kind in (AdapterSourceKind.ADAPTER_DIR, AdapterSourceKind.PEFT, AdapterSourceKind.EXTERNAL_WEIGHTS):
+            reader = {
+                AdapterSourceKind.ADAPTER_DIR: lambda: MilesAdapterDirReader(path, targets),
+                AdapterSourceKind.PEFT: lambda: PeftAdapterReader(path, run, targets),
+                AdapterSourceKind.EXTERNAL_WEIGHTS: lambda: ExternalWeightsReader(path, run, targets),
+            }[kind]()
+            source = reader.source
             steps = plan_parametrization_conversion(source.parametrization, run, source_dtype=source.weight_dtype)
             assert_parametrization_matches_run(
                 source.parametrization,
