@@ -177,6 +177,9 @@ class DistributedOptimizerMembers:
         index_of = {id(p): i for i, p in enumerate(self._slots.slot_parameters(0))}
         whole, steps = {}, set()
         for sub in self._distributed_optimizers():
+            # a never-stepped optimizer has no Adam state yet (zero moments); this fills only empty states
+            if sub.init_state_fn is not None:
+                sub.init_state_fn(sub.optimizer, sub.config)
             gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True)
             if (step := _distributed_optimizer_step(sub)) is not None:
                 steps.add(step)
