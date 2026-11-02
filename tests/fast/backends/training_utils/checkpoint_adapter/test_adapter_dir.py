@@ -1,8 +1,11 @@
 """``save_adapter_dir`` -> commit -> ``load_adapter_dir`` restores weights, moments and step under a new split."""
 
 import tempfile
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
+
+import pytest
 
 import torch
 import torch.distributed as dist
@@ -83,3 +86,51 @@ def test_weights_only_from_peft_upcasts_and_zeroes_moments(tmp_path):
     assert state.step == 0 and all(not m.any() for m in state.exp_avgs)
     assert all(w.dtype == torch.float32 for w in state.weights)
     assert torch.equal(state.weights[1], FULL["lora_B"].to(torch.bfloat16).float())
+
+
+def test_a_different_source_alpha_is_returned_for_the_caller_to_adopt(tmp_path):
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN)
+    run = replace(RUN, lora_alpha=16.0)  # a Tinker session adopts the source's alpha after loading
+    assert load_adapter_dir(tmp_path, FakeMembers(), 0, run, TARGETS, load_optimizer=False).lora_alpha == 4.0
+
+
+def test_weights_only_from_the_same_parametrization_reads_only_local_pieces(monkeypatch):
+    root = tempfile.mkdtemp()
+    run_multiprocess(partial(_save, root=root))
+    committed = resolve_adapter_dir(Path(root), "w", tenant="alice")
+
+    def whole_tensor_read(*args, **kwargs):
+        raise AssertionError("a same-parametrization load must not read whole tensors")
+
+    monkeypatch.setattr("torch.distributed.checkpoint.state_dict_loader._load_state_dict_from_keys", whole_tensor_read)
+    members = FakeMembers()
+    load_adapter_dir(committed.path, members, 0, RUN, TARGETS, load_optimizer=False)
+    assert members.imported.step == 0 and not members.imported.exp_avgs[0].any()
+    assert torch.equal(members.imported.weights[1], FULL["lora_B"])
+
+
+def _rank0_cannot_create(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    if rank == 0:
+        Path(root, "blocker").write_text("")
+        # a file where the root directory should be makes rank 0's mkdir fail
+        root = str(Path(root, "blocker"))
+    else:
+        root = str(Path(root, "blocker"))
+    with pytest.raises(RuntimeError, match="adapter write failed"):
+        save_adapter_dir(Path(root), "w", FakeMembers(), 0, RUN)
+    dist.destroy_process_group()
+
+
+def test_a_rank0_prepare_failure_fails_every_rank_instead_of_hanging():
+    root = tempfile.mkdtemp()
+    process = (
+        __import__("multiprocessing")
+        .get_context("spawn")
+        .Process(target=run_multiprocess, args=(partial(_rank0_cannot_create, root=root),))
+    )
+    process.start()
+    process.join(timeout=60)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0

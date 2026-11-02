@@ -13,7 +13,11 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     save_adapter_state,
 )
-from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir, write_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.commit import (
+    UncommittedAdapterDir,
+    raise_if_any_rank_failed,
+    write_adapter_dir,
+)
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     write_parametrization,
@@ -59,7 +63,14 @@ def save_adapter_dir(
 ) -> UncommittedAdapterDir:
     """All ranks call; the caller's committer then runs ``commit_adapter_dir``."""
     with write_adapter_dir(root, name, tenant=tenant) as written:
-        save_adapter_state(written.path, members.export_adapter_state(slot))
+        state, export_error = None, None
+        try:
+            state = members.export_adapter_state(slot)
+        except Exception as exc:
+            export_error = exc
+        # agree before the collective DCP write, so one rank's failure cannot leave the others waiting in it
+        raise_if_any_rank_failed(export_error)
+        save_adapter_state(written.path, state)
         if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
             return written
         if training_state is not None:
@@ -92,7 +103,10 @@ def load_adapter_dir(
     load_optimizer: bool,
     in_model_loaders_by_kind: Mapping[AdapterSourceKind, Callable[[Path], AdapterParametrization]] | None = None,
 ) -> AdapterParametrization:
-    """Load any recognized source into ``slot``; returns the source parametrization (its alpha included)."""
+    """Load any recognized source into ``slot``; returns the source parametrization.
+
+    Alpha is not checked here: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``).
+    """
     kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
     if kind.is_read_into_model():
         assert (
@@ -118,9 +132,18 @@ def load_adapter_dir(
         source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=reader.source.has_optimizer_state
     )
     specs = members.get_local_shard_specs(slot)
-    if load_optimizer:
+    if isinstance(reader, MilesAdapterDirReader) and reader.has_adapter_state() and not steps:
+        # same parametrization: every rank reads only its own pieces
         template = AdapterState(specs, *[[torch.empty(s.local_shape) for s in specs] for _ in range(3)], step=None)
         template.step = reader.load_state(template)
+        if not load_optimizer:
+            template = AdapterState(
+                specs,
+                template.weights,
+                [torch.zeros_like(w) for w in template.weights],
+                [torch.zeros_like(w) for w in template.weights],
+                step=0,
+            )
         members.import_adapter_state(slot, template)
     else:
         num_experts = next(

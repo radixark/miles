@@ -152,6 +152,9 @@ class MilesAdapterDirReader:
             torch.float32 if has_state else torch.bfloat16,
         )
 
+    def has_adapter_state(self) -> bool:
+        return (self.path / ADAPTER_STATE_DIRNAME).is_dir()
+
     def load_state(self, template: AdapterState) -> int:
         return load_adapter_state(self.path, template)
 
