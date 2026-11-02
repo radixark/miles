@@ -278,6 +278,15 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._retry_buffer = deque([*state.retry_buffer, *state.running])
         self._output.load_state_dict(state.output)
 
+    def drop_saved_in_flight(self, directory: Path) -> None:
+        state: _FullyAsyncRolloutState = load_simple_checkpoint(directory=directory)
+        finished = state.output or []
+        prompt_groups = [*state.retry_buffer, *state.running, *(entry.prompt_group for entry in finished)]
+        record_dropped_samples([prompt_groups, [entry.group for entry in finished]])
+        samples = [sample for group in prompt_groups for sample in group]
+        SampleOwnershipRecorder.log_dropped_samples(args=self.args, samples=samples, reason="data_reset_on_load")
+        logger.info(f"Dropped {len(prompt_groups)} saved in-flight prompt groups drawn from the reset data source")
+
 
 @dataclass(frozen=True)
 class _RunningTask:

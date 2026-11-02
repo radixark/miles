@@ -244,6 +244,20 @@ class TestMixedRolloutDataSource:
         with pytest.raises(ValueError, match=f"'code' changed {next(iter(change))}.*--rollout-data-reset-on-load"):
             _make_source(tmp_path, datasets).load(tmp_path / "ckpt")
 
+    def test_a_reset_keeps_counting_sample_ids_but_starts_every_dataset_over(self, tmp_path):
+        """Reusing trained sample ids after a reset would collide with the restored ownership records."""
+        datasets = _two_datasets(tmp_path)
+        source = _make_source(tmp_path, datasets)
+        source.get_samples(8)
+        source.save(tmp_path / "ckpt")
+
+        del datasets["code"]
+        reset = _make_source(tmp_path, datasets)
+        reset.load_sample_ids(tmp_path / "ckpt")
+
+        assert (reset.sample_index, reset.sample_group_index) == (source.sample_index, source.sample_group_index)
+        assert reset.offsets == {"math": 0}
+
     def test_resume_refuses_a_different_dataset_list(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         _make_source(tmp_path, datasets).save(tmp_path / "ckpt")

@@ -245,6 +245,10 @@ def split_by_weight(num_samples: int, weights: list[int], credits: list[int]) ->
     return counts, credits
 
 
+class RolloutDataResumeMismatch(ValueError):
+    """The checkpoint's datasets cannot be resumed under the current --rollout-data-yaml-config."""
+
+
 class MixedRolloutDataSource(DataSource):
     """Draws every request from the `--rollout-data-yaml-config` datasets in proportion to their weights.
 
@@ -328,7 +332,7 @@ class MixedRolloutDataSource(DataSource):
     def load(self, directory: Path) -> None:
         state_dict = load_simple_checkpoint(directory=directory)
         if set(state_dict["offsets"]) != set(self.datasets):
-            raise ValueError(
+            raise RolloutDataResumeMismatch(
                 f"the checkpoint mixed datasets {sorted(state_dict['offsets'])}, but --rollout-data-yaml-config now "
                 f"lists {sorted(self.datasets)}{_RESET_HINT}"
             )
@@ -336,19 +340,19 @@ class MixedRolloutDataSource(DataSource):
         for config in self.dataset_configs:
             saved, now = state_dict["settings"][config.name], _resumed_settings(config)
             if changed := sorted(key for key in saved.keys() | now.keys() if saved.get(key) != now.get(key)):
-                raise ValueError(
+                raise RolloutDataResumeMismatch(
                     f"rollout dataset {config.name!r} changed {', '.join(changed)} since the checkpoint was saved, "
                     f"but groups drawn before the save still carry the old values{_RESET_HINT}"
                 )
         for name, saved in state_dict["sha256"].items():
             if saved != self.dataset_sha256[name]:
-                raise ValueError(
+                raise RolloutDataResumeMismatch(
                     f"rollout dataset {name!r} changed since the checkpoint was saved: sha256 was {saved}, "
                     f"now {self.dataset_sha256[name]}{_RESET_HINT}"
                 )
         # a dataset filtered shorter since the save (e.g. a lower max_prompt_len) cannot resume at its position
         if too_far := {n: o for n, o in state_dict["offsets"].items() if o > len(self.datasets[n])}:
-            raise ValueError(
+            raise RolloutDataResumeMismatch(
                 f"the checkpoint resumes {too_far} past the end of datasets now holding "
                 f"{ {n: len(self.datasets[n]) for n in too_far} } prompts; keep the dataset and its filters unchanged{_RESET_HINT}"
             )
@@ -359,6 +363,12 @@ class MixedRolloutDataSource(DataSource):
         self.sample_group_index = state_dict["sample_group_index"]
         self.sample_index = state_dict["sample_index"]
         self._shuffle_datasets()
+
+    def load_sample_ids(self, directory: Path) -> None:
+        """Instead of ``load``, for a reset: every dataset starts over, but sample ids keep counting past the run's."""
+        state_dict = load_simple_checkpoint(directory=directory)
+        self.sample_group_index = state_dict["sample_group_index"]
+        self.sample_index = state_dict["sample_index"]
 
     def _shuffle_datasets(self) -> None:
         if self.args.rollout_shuffle:

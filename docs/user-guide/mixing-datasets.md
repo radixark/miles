@@ -74,8 +74,10 @@ A resumed run continues every dataset from its saved position, so `--load` refus
 datasets, a changed file, a dataset filtered shorter than its saved position, or any other changed dataset field
 (groups drawn before the save still carry the old generate function, agent or reward). Changing only the
 `samples_per_step` weights is fine. To switch datasets mid-training, add `--rollout-data-reset-on-load`: the
-model, optimizer and rollout step still resume from `--load`, while every dataset starts from its beginning and
-fully async prompt groups that were in flight at the save are dropped.
+model, optimizer, rollout step and sample ids still resume from `--load`, while every dataset starts from its
+beginning and the prompt groups and untrained batches drawn from the old datasets are dropped. The reset happens
+only when the checkpoint does not match the current YAML, so the flag can stay in the launch command: later
+resumes from the run's own checkpoints continue in place.
 
 Every sample carries `metadata["dataset_name"]`, and the rollout metrics add
 `rollout/dataset/<name>/{episode_raw_reward,response_len/mean,truncated_ratio,num_training_samples}`.

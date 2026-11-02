@@ -75,9 +75,10 @@ class DataConfig(BaseConfig):
         bool,
         Arg(
             help=(
-                "With --load, start the training data source and fully async in-flight prompt groups fresh instead "
-                "of restoring them, e.g. to resume a run with different --rollout-data-yaml-config datasets. The "
-                "model, optimizer and rollout step still resume from the checkpoint."
+                "With --load, start every training dataset over when the checkpoint cannot be resumed under the "
+                "current --rollout-data-yaml-config (other datasets, a changed file or dataset field), and drop the "
+                "prompt groups and untrained batches drawn from the old ones. The model, optimizer, rollout step and "
+                "sample ids still resume; a checkpoint that does match resumes in place, so the flag can stay set."
             )
         ),
     ] = False
