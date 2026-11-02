@@ -84,13 +84,16 @@ def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
     return full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))].clone()
 
 
-def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShardSpec]) -> AdapterState:
-    missing = {s.key for s in specs} - set(weights)
-    assert not missing, f"the source lacks tensors the run trains: {sorted(missing)}"
-    pieces = [_slice(weights[s.key], s).float() for s in specs]
+def _weights_only(specs: list[LocalShardSpec], pieces: list[torch.Tensor]) -> AdapterState:
     return AdapterState(
         specs, pieces, [torch.zeros_like(p) for p in pieces], [torch.zeros_like(p) for p in pieces], step=0
     )
+
+
+def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShardSpec]) -> AdapterState:
+    missing = {s.key for s in specs} - set(weights)
+    assert not missing, f"the source lacks tensors the run trains: {sorted(missing)}"
+    return _weights_only(specs, [_slice(weights[s.key], s).float() for s in specs])
 
 
 def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
@@ -137,17 +140,16 @@ def load_adapter_dir(
     )
     specs = members.get_local_shard_specs(slot)
     if isinstance(reader, MilesAdapterDirReader) and reader.has_adapter_state() and not steps:
-        # same parametrization: every rank reads only its own pieces
-        template = AdapterState(specs, *[[torch.empty(s.local_shape) for s in specs] for _ in range(3)], step=None)
+        # same parametrization: every rank reads only its own pieces, and moments only when it loads them
+        template = AdapterState(
+            specs,
+            *[[torch.empty(s.local_shape) for s in specs] for _ in range(3)],
+            step=None,
+            has_optimizer_state=load_optimizer,
+        )
         template.step = reader.load_state(template)
         if not load_optimizer:
-            template = AdapterState(
-                specs,
-                template.weights,
-                [torch.zeros_like(w) for w in template.weights],
-                [torch.zeros_like(w) for w in template.weights],
-                step=0,
-            )
+            template = _weights_only(specs, template.weights)
         members.import_adapter_state(slot, template)
     else:
         num_experts = next(

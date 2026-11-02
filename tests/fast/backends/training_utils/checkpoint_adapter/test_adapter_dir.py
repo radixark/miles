@@ -149,3 +149,20 @@ def test_an_in_model_source_without_alpha_takes_the_runs(tmp_path):
         in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: lambda path: replace(RUN, lora_alpha=None)},
     )
     assert source.lora_alpha == RUN.lora_alpha
+
+
+class WeightsOnlyMembers(FakeMembers):
+    """A run saved with --no-save-optim."""
+
+    def export_adapter_state(self, slot):
+        state = super().export_adapter_state(slot)
+        return AdapterState(state.shard_specs, state.weights, [], [], step=5, has_optimizer_state=False)
+
+
+def test_a_weights_only_dir_loads_without_optimizer_and_refuses_with_it(tmp_path):
+    written = save_adapter_dir(tmp_path, "w", WeightsOnlyMembers(), 0, RUN)
+    members = FakeMembers()
+    load_adapter_dir(written.path, members, 0, RUN, TARGETS, load_optimizer=False)
+    assert torch.equal(members.imported.weights[1], FULL["lora_B"]) and members.imported.step == 0
+    with pytest.raises(AssertionError, match="no optimizer state"):
+        load_adapter_dir(written.path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=True)
