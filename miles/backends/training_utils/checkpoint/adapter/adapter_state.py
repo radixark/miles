@@ -47,9 +47,10 @@ class AdapterState:
         if self.has_optimizer_state:
             lengths |= {len(self.exp_avgs), len(self.exp_avg_sqs)}
         assert len(lengths) == 1, f"shard specs and tensors are misaligned: {lengths}"
-        for spec, weight in zip(self.shard_specs, self.weights, strict=False):
-            assert tuple(weight.shape) == spec.local_shape, f"{spec.key}: {tuple(weight.shape)} != {spec.local_shape}"
-            assert weight.dtype == torch.float32, f"{spec.key}: adapter_state/ holds fp32 only, got {weight.dtype}"
+        for tensors in self.tensors_by_suffix().values():
+            for spec, tensor in zip(self.shard_specs, tensors, strict=True):
+                assert tuple(tensor.shape) == spec.local_shape, f"{spec.key}: {tuple(tensor.shape)} != {spec.local_shape}"
+                assert tensor.dtype == torch.float32, f"{spec.key}: adapter_state/ holds fp32 only, got {tensor.dtype}"
 
     def tensors_by_suffix(self) -> dict[str, list[torch.Tensor]]:
         tensors = {"weight": self.weights}

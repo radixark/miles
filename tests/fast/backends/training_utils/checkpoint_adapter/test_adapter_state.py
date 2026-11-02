@@ -78,3 +78,10 @@ def test_only_fp32_is_stored():
     weight = torch.zeros(2, 2, dtype=torch.bfloat16)
     with pytest.raises(AssertionError, match="fp32 only"):
         AdapterState([spec], [weight], [weight], [weight], step=0)
+
+
+def test_bf16_moments_are_refused():
+    spec = LocalShardSpec("m.lora_A", (2, 2), (0, 0), (2, 2))
+    weight = torch.zeros(2, 2)
+    with pytest.raises(AssertionError, match="fp32 only"):
+        AdapterState([spec], [weight], [weight.bfloat16()], [weight], step=0)
