@@ -173,9 +173,12 @@ def delete_unreferenced_adapter_dirs(root: Path, name: str | None = None, *, kee
         internal = _INTERNAL_ENTRY.match(entry.name)
         if internal is None or internal["suffix"] == _STAGING_SUFFIX or entry.is_symlink() or entry.name == keep:
             continue
-        if internal["suffix"] == _DELETING_SUFFIX or entry.name not in referenced:
-            if name is None or internal["name"] == name:
+        if internal["suffix"] == _DELETING_SUFFIX:
+            # a commit leaves them to delete_retired_adapter_dirs, which may be removing them right now
+            if name is None:
                 _rmtree(entry)
+        elif entry.name not in referenced and (name is None or internal["name"] == name):
+            _rmtree(entry)
 
 
 def _retire(path: Path) -> None:
