@@ -2901,6 +2901,25 @@ class TestMultiLoRAValidation:
         miles_validate_args(args)
         assert args.lora_adapter_targets == served
 
+    @pytest.mark.parametrize(
+        "lora_type,gdn_leaves",
+        [
+            ("lora", ("in_proj_qkv", "in_proj_z", "out_proj", "in_proj_b", "in_proj_a")),
+            ("canonical_lora", ("in_proj_qkv", "in_proj_z", "out_proj")),
+        ],
+    )
+    def test_bridge_attn_group_takes_the_fused_gdn_in_proj_whole_under_lora(self, monkeypatch, lora_type, gdn_leaves):
+        """lora shares one lora_A across Qwen3.5's fused GDN in_proj, so attn adapts it whole; canonical_lora
+        keeps official Tinker's q / k / v / z."""
+        config = {"model_type": "qwen3_5_text", "layer_types": ["linear_attention"]}
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.load_hf_config",
+            lambda path: SimpleNamespace(model_type=config["model_type"], to_dict=lambda: config),
+        )
+        miles_validate_args(self._parse(["--target-modules", "attn", "--lora-type", lora_type]))
+        targets = [f"model.layers.*.linear_attn.{leaf}" for leaf in gdn_leaves]
+        assert self.fused_checks == [(targets, lora_type == "canonical_lora")]
+
     @pytest.mark.parametrize("lora_type", ["lora", "canonical_lora"])
     def test_bridge_checks_fused_modules_at_argument_time(self, lora_type):
         miles_validate_args(self._parse(["--target-modules", "q_proj", "--lora-type", lora_type]))

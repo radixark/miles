@@ -299,7 +299,11 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
     )
 
 
-def resolve_hf_lora_targets(hf_config: dict, *, target_modules: list[str] | None = None) -> list[str]:
+def resolve_hf_lora_targets(
+    hf_config: dict, *, target_modules: list[str] | None = None, whole_fused: bool = False
+) -> list[str]:
+    """`whole_fused`: the backend shares one lora_A across a fused projection (--lora-type lora), so the attn
+    group adapts a Qwen3.5 GDN in_proj whole, in_proj_b / in_proj_a included."""
     if target_modules is None or target_modules == ["all-linear"]:
         layout = get_hf_lora_targets(hf_config)
         target_modules = ["attn", "mlp", *(["unembed"] if layout.default_train_unembed else [])]
@@ -308,7 +312,15 @@ def resolve_hf_lora_targets(hf_config: dict, *, target_modules: list[str] | None
         return list(target_modules)
 
     layout = get_hf_lora_targets(hf_config)
-    groups = dict(zip(LORA_TARGET_GROUPS, (layout.attention, layout.mlp, layout.unembed), strict=True))
+    attention = layout.attention
+    if whole_fused:
+        attention += tuple(
+            target.removesuffix("in_proj_z") + leaf
+            for target in attention
+            if target.endswith("linear_attn.in_proj_z")
+            for leaf in ("in_proj_b", "in_proj_a")
+        )
+    groups = dict(zip(LORA_TARGET_GROUPS, (attention, layout.mlp, layout.unembed), strict=True))
     targets = [module for target in target_modules for module in groups.get(target, (target,))]
     assert targets, "At least one trainable LoRA module group is required"
     return list(dict.fromkeys(targets))
