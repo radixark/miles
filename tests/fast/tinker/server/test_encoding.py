@@ -1,10 +1,10 @@
 """JSON decoding validates datum inputs and renders SDK result shapes."""
 
 import pytest
+from tinker import types as tinker_types
 
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.encoding import (
-    ADAM_PARAM_DEFAULTS,
     build_datum,
     decode_command,
     decode_sample_request,
@@ -69,25 +69,41 @@ class TestAdamParams:
             "optim_step", {"model_id": "m", "seq_id": 1, "adam_params": {"learning_rate": 3e-4}}
         )
         assert decoded["adam_params"]["learning_rate"] == 3e-4
-        assert set(decoded["adam_params"]) == set(ADAM_PARAM_DEFAULTS)
+        assert set(decoded["adam_params"]) == set(tinker_types.AdamParams().model_dump())
 
     def test_unknown_keys_are_rejected(self):
         """The SDK's AdamParams model is the contract; a key it lacks must not be silently dropped."""
         _, decoded = decode_command("optim_step", {"model_id": "m", "seq_id": 1, "adam_params": {"momentum": 0.9}})
         assert "momentum" in decoded["validation_error"]
 
-    def test_a_non_adam_step_is_rejected(self):
-        payload = {"model_id": "m", "seq_id": 1, "optimizer_params": {"type": "dimuon", "learning_rate": 1e-3}}
-        _, decoded = decode_command("optim_step", payload)
-        assert "optimizer_params is not supported" in decoded["validation_error"]
+    @pytest.mark.parametrize(
+        "params",
+        [{"optimizer_params": {"type": "dimuon", "learning_rate": 1e-3}}, {"adam_params": {"type": "dimuon"}}],
+        ids=["optimizer_params", "typed_adam_params"],
+    )
+    def test_a_non_adam_step_is_rejected(self, params):
+        _, decoded = decode_command("optim_step", {"model_id": "m", "seq_id": 1, **params})
+        assert "are not supported: this gateway trains with Adam" in decoded["validation_error"]
 
-    def test_a_non_adam_model_is_rejected(self):
-        payload = {"base_model": "base", "session_id": "s", "model_seq_id": 0, "optimizer_config": {"type": "dimuon"}}
-        with pytest.raises(UserInputError, match="'dimuon' is not supported"):
+    def test_the_optim_params_alias_is_read(self):
+        payload = {"model_id": "m", "seq_id": 1, "optim_params": {"learning_rate": 3e-4}}
+        _, decoded = decode_command("optim_step", payload)
+        assert decoded["adam_params"]["learning_rate"] == 3e-4
+
+
+@pytest.mark.parametrize(
+    "optimizer_config", [{"type": "dimuon"}, {"type": "adamw", "extra": 1}], ids=["dimuon", "adamw_with_extras"]
+)
+class TestNonAdamModels:
+    def test_create_model_rejects(self, optimizer_config):
+        payload = {"base_model": "base", "session_id": "s", "model_seq_id": 0, "optimizer_config": optimizer_config}
+        with pytest.raises(UserInputError, match="this gateway trains with Adam"):
             validate_create_model(payload)
+
+    def test_load_state_rejects(self, optimizer_config):
         payload = {"model_id": "m", "seq_id": 1, "path": "tinker://x/weights/y", "optimizer": False}
-        _, decoded = decode_command("load_state", payload | {"optimizer_config": {"type": "dimuon"}})
-        assert "'dimuon' is not supported" in decoded["validation_error"]
+        _, decoded = decode_command("load_state", payload | {"optimizer_config": optimizer_config})
+        assert "this gateway trains with Adam" in decoded["validation_error"]
 
 
 def test_an_off_model_key_is_rejected():

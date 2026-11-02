@@ -8,16 +8,13 @@ import math
 import pydantic
 
 import tinker
-from miles.tinker.core.input_validation import validate_adam_optimizer, validate_sample_options, validate_save_options
+from miles.tinker.core.input_validation import validate_sample_options, validate_save_options
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
 from tinker.types.topk_logprobs import MASK_LOGPROB
 
 # the SDK release whose request models and semantics this gateway is written and tested against
 TINKER_SDK_VERSION = "0.36.0"
-
-# materialized at the boundary so core and the executor can require every key
-ADAM_PARAM_DEFAULTS = tinker_types.AdamParams().model_dump()
 
 # JSON-wire request models; forward_backward travels as protobuf and its datums
 # are checked in build_datum instead
@@ -29,10 +26,10 @@ REQUEST_TYPES = {
 }
 
 
-def validate_against_sdk(request_type, payload: dict) -> None:
+def validate_against_sdk(request_type, payload: dict):
     """The pinned SDK's request models are the wire contract; reject what they reject."""
     try:
-        request_type.model_validate(payload)
+        return request_type.model_validate(payload)
     except pydantic.ValidationError as error:
         first = error.errors()[0]
         location = ".".join(str(part) for part in first["loc"])
@@ -55,9 +52,15 @@ def validate_sdk_version(payload: dict) -> None:
         )
 
 
+def validate_optimizer_is_adam(optimizer_config) -> None:
+    if optimizer_config is not None and not isinstance(optimizer_config, tinker_types.AdamOptimizerConfig):
+        raise UserInputError(
+            f"optimizer_config {optimizer_config.model_dump()} is not supported: this gateway trains with Adam"
+        )
+
+
 def validate_create_model(payload: dict) -> None:
-    validate_against_sdk(tinker_types.CreateModelRequest, payload)
-    validate_adam_optimizer(payload)
+    validate_optimizer_is_adam(validate_against_sdk(tinker_types.CreateModelRequest, payload).optimizer_config)
 
 
 def validate_create_sampling_session(payload: dict) -> None:
@@ -80,7 +83,7 @@ def decode_command(op: str, payload: dict) -> tuple[str, dict]:
 
 def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
     if (request_type := REQUEST_TYPES.get(op)) is not None:
-        validate_against_sdk(request_type, payload)
+        request = validate_against_sdk(request_type, payload)
     if op == "forward_backward":
         fb_input = payload["forward_backward_input"]
         datums = [
@@ -94,13 +97,17 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         }
         return ("forward_only" if payload.get("forward_only") else op), decoded
     if op == "optim_step":
-        validate_adam_optimizer(payload)
-        return op, decoded | {"adam_params": {**ADAM_PARAM_DEFAULTS, **payload["adam_params"]}}
+        if not isinstance(request.optim_params, tinker_types.AdamParams):
+            raise UserInputError(
+                f"optimizer params {request.optim_params.model_dump()} are not supported: this gateway trains with Adam"
+            )
+        # model_dump fills every default so core and the executor can require every key
+        return op, decoded | {"adam_params": request.optim_params.model_dump()}
     if op == "save_state":
         validate_save_options(payload)
         return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
     if op == "load_state":
-        validate_adam_optimizer(payload)
+        validate_optimizer_is_adam(request.optimizer_config)
         return op, decoded | {
             "path": payload["path"],
             "optimizer": payload["optimizer"],

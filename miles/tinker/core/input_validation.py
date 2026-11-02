@@ -167,14 +167,6 @@ def validate_save_options(payload: dict) -> None:
         raise UserInputError("user_metadata is not supported by this gateway")
 
 
-def validate_adam_optimizer(payload: dict) -> None:
-    optimizer_config = payload.get("optimizer_config")
-    if optimizer_config is not None and optimizer_config["type"] != "adamw":
-        raise UserInputError(f"optimizer {optimizer_config['type']!r} is not supported: this gateway trains with Adam")
-    if "optimizer_params" in payload:
-        raise UserInputError("optimizer_params is not supported: this gateway trains with Adam (send adam_params)")
-
-
 def validate_sample_options(payload: dict) -> None:
     """Reject SDK sampling outputs the gateway does not produce instead of omitting them."""
     unsupported = {
