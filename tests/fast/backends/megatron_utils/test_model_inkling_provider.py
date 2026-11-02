@@ -1,11 +1,8 @@
 import json
-from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import torch
-from safetensors.torch import save_file
 from tests.fast.fixtures.args_fixtures import replace_config_values
 from tests.fast.fixtures.inkling_provider_fixtures import (
     inkling_adapter_model,
@@ -60,40 +57,3 @@ class TestNativeInklingSetup:
         _, optimizer, _ = env.module.setup_model_and_optimizer(args, role="actor")
 
         assert optimizer.config.muon_split_qkv is (not inkling)
-
-
-class TestNativeInklingReload:
-    @pytest.mark.parametrize("no_load_optim", [False, True])
-    def test_hf_adapter_requires_explicit_fresh_optimizer(
-        self, inkling_reload_env: SimpleNamespace, tmp_path: Path, no_load_optim: bool
-    ) -> None:
-        """HF adapters restore weights and refresh masters only with an explicit fresh optimizer."""
-        env = inkling_reload_env
-        adapter = env.model.lora_lm_head_adapter
-        save_file(
-            {
-                "language_model.lm_head.lora_A.weight": torch.full_like(adapter.head_A, 3),
-                "language_model.lm_head.lora_B.weight": torch.full_like(adapter.head_B, 7),
-            },
-            str(tmp_path / "adapter_model.safetensors"),
-        )
-        args = replace_config_values(env.args, lora_adapter_path=str(tmp_path), no_load_optim=no_load_optim)
-
-        expectation = nullcontext() if no_load_optim else pytest.raises(AssertionError, match="no optimizer state")
-        with expectation:
-            env.module.load_model_state(
-                args,
-                model=[env.model],
-                optimizer=env.optimizer,
-                opt_param_scheduler=None,
-                role="actor",
-                checkpointing_context=None,
-                resume_from_ckpt=False,
-            )
-
-        torch.testing.assert_close(adapter.head_A, torch.full_like(adapter.head_A, 3))
-        torch.testing.assert_close(adapter.head_B, torch.full_like(adapter.head_B, 7))
-        if no_load_optim:
-            torch.testing.assert_close(env.optimizer.masters["lora_lm_head_adapter.head_B"], adapter.head_B)
-        else:
-            assert env.optimizer.masters == {}

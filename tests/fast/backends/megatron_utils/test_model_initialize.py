@@ -257,7 +257,7 @@ def _load_model_state_with(
             )
         )
         stack.enter_context(
-            patch("miles.backends.megatron_utils.model.restore_lora_adapter", return_value=adapter_iteration)
+            patch("miles.backends.megatron_utils.model.restore_single_lora", return_value=adapter_iteration)
         )
         _patch_initialize_side_effects(stack)
         return load_model_state(

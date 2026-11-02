@@ -422,6 +422,15 @@ def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path:
         slot_optimizer.reload_masters()
 
 
+def build_adapter_slots(args, model, iterator, targets) -> BridgeAdapterSlots:
+    """Collective: the run's adapter checkpoint view, Bridge's (single or multi-LoRA) or native's."""
+    if args.megatron_to_hf_mode == "raw":
+        from miles.backends.megatron_utils.lora.native.checkpoint import NativeAdapterSlots
+
+        return NativeAdapterSlots(model, iterator, targets)
+    return BridgeAdapterSlots(model, iterator, targets, multi_lora=args.multi_lora)
+
+
 def single_lora_parametrization(adapter_slots: BridgeAdapterSlots, args) -> AdapterParametrization:
     return adapter_slots.parametrization(
         base_model=args.hf_checkpoint,
@@ -472,7 +481,7 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
         quantization_config=None,
     )
     targets = get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict())
-    slots = BridgeAdapterSlots(model, iterator, targets, multi_lora=False)
+    slots = build_adapter_slots(args, model, iterator, targets)
     members = DistributedOptimizerMembers(
         slots, optimizer, model, precision_aware=args.backend.use_precision_aware_optimizer
     )

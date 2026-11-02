@@ -12,6 +12,7 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.hf_export import save_hf_model
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.checkpoint import build_adapter_slots
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
@@ -339,15 +340,10 @@ class MegatronTrainRayActor(TrainRayActor):
                 model_name=model_name,
                 quantization_config=None if is_lora else quantization_config,
             )
-            self.snapshot_publisher = SnapshotPublisher(
-                iterator, build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
-            )
-            if is_lora and args.megatron_to_hf_mode == "bridge":
-                self.adapter_slots = BridgeAdapterSlots(
-                    self.model,
-                    iterator,
-                    get_hf_lora_targets(self.hf_config.to_dict()),
-                    multi_lora=is_multi_lora_enabled(args),
+            self.snapshot_publisher = SnapshotPublisher(iterator)
+            if is_lora:
+                self.adapter_slots = build_adapter_slots(
+                    args, self.model, iterator, get_hf_lora_targets(self.hf_config.to_dict())
                 )
 
     def _clear_quantized_weight_workspaces(self) -> None:

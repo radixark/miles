@@ -70,10 +70,8 @@ def save_hf_model(
                     f"HF export to {path} produced no weight files — the megatron "
                     f"bridge likely has no mapping for this model architecture."
                 )
-        if is_lora_model(model) and args.megatron_to_hf_mode == "raw":
-            publisher.write_adapter(None, checkpoint_dir / "adapter")
-        elif is_lora_model(model):
-            assert adapter_slots is not None, "a Bridge LoRA export needs the model's adapter slots"
+        if is_lora_model(model):
+            assert adapter_slots is not None, "a LoRA export needs the model's adapter slots"
             write_peft_export(
                 checkpoint_dir / "adapter",
                 adapter_slots,

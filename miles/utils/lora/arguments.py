@@ -121,7 +121,7 @@ def _default_lora_type(args) -> str:
 def validate_lora_args_after_megatron(args):
     """Checks that read Megatron's resolved args; for native (raw-mode) LoRA also the targets its spec serves
     (e.g. the expert TP size it defaults from TP)."""
-    if is_lora_enabled(args) and not args.multi_lora and args.megatron_to_hf_mode == "bridge":
+    if is_lora_enabled(args) and not args.multi_lora:
         _validate_adapter_state_args(args)
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return

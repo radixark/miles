@@ -184,7 +184,7 @@ class TestSaveLoRaBranch:
     @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.disable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
-    @patch(f"{_MODEL_MODULE}.save_checkpoint_with_lora")
+    @patch(f"{_MODEL_MODULE}.save_single_lora")
     @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=True)
     def test_lora_model_calls_lora_save(
         self, mock_is_lora, mock_save_lora, mock_should, mock_disable, mock_enable, mock_save_hashes
@@ -221,6 +221,7 @@ _HF_EXPORT_MODULE = "miles.backends.megatron_utils.hf_export"
 
 
 class TestSaveHfModelRawLoRA:
+    @patch(f"{_HF_EXPORT_MODULE}.write_peft_export")
     @patch(f"{_HF_EXPORT_MODULE}._get_hf_bridge")
     @patch(f"{_HF_EXPORT_MODULE}.merge_lora_into_weights")
     @patch(f"{_HF_EXPORT_MODULE}.named_params_and_buffers")
@@ -228,20 +229,31 @@ class TestSaveHfModelRawLoRA:
     @patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
     @patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
     def test_raw_lora_writes_merged_weights_and_the_adapter(
-        self, _parallel_state, _write_dir, _is_lora, named_weights, merge, get_bridge, tmp_path
+        self, _parallel_state, _write_dir, _is_lora, named_weights, merge, get_bridge, peft_export, tmp_path
     ):
         from miles.backends.megatron_utils.hf_export import save_hf_model
 
         named_weights.return_value = [("decoder.w", MagicMock())]
         publisher = MagicMock()
         model = [MagicMock()]
-        args = Namespace(megatron_to_hf_mode="raw", hf_checkpoint="/hf", save_hf=None)
+        slots = MagicMock()
+        args = Namespace(
+            megatron_to_hf_mode="raw",
+            hf_checkpoint="/hf",
+            save_hf=None,
+            lora_rank=8,
+            lora_alpha=16.0,
+            lora_type="canonical_lora",
+            experts_shared_outer_loras=False,
+        )
 
-        save_hf_model(args, 0, model, publisher=publisher, adapter_slots=None, path=tmp_path, raise_on_error=True)
+        save_hf_model(args, 0, model, publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True)
 
         merge.assert_called_once_with(model, dict(named_weights.return_value))
         publisher.write_model.assert_called_once_with(tmp_path, weights=merge.return_value, hf_checkpoint="/hf")
-        publisher.write_adapter.assert_called_once_with(None, tmp_path / "adapter")
+        peft_export.assert_called_once_with(
+            tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets
+        )
         get_bridge.assert_not_called()
 
 
@@ -273,7 +285,6 @@ class TestSaveHfModelBridgeLoRA:
 
         save_hf_model(args, 0, model, publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True)
 
-        publisher.write_adapter.assert_not_called()
         slots.parametrization.assert_called_once_with(
             base_model="/hf", lora_rank=8, lora_alpha=16.0, lora_type="lora", experts_shared_outer_loras=False
         )

@@ -9,7 +9,6 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
-from miles.utils.lora.utils import AdapterSpec, get_adapter_target_modules
 
 logger = logging.getLogger(__name__)
 
@@ -23,31 +22,9 @@ def _is_hf_metadata_file(path: Path) -> bool:
 
 
 class SnapshotPublisher:
-    def __init__(self, iterator: HfWeightIteratorBase, adapter_config: dict | None = None) -> None:
+    def __init__(self, iterator: HfWeightIteratorBase) -> None:
         assert iterator.placement.is_full_gather, "publishing requires full weights on rank 0"
         self._iterator = iterator
-        self._adapter_config = adapter_config
-
-    @torch.no_grad()
-    def write_adapter(self, adapter: AdapterSpec | None, path: str | Path) -> None:
-        """Collectively write HF adapter files into the caller's checkpoint directory."""
-        assert self._adapter_config is not None, "adapter export requires adapter_config"
-        path = Path(path)
-        is_writer = dist.get_rank() == 0
-        adapter_tensors = {
-            name: tensor.detach().contiguous().cpu()
-            for name, tensor in self._iterator.materialize_adapter(adapter, materialize=is_writer).items()
-        }
-        adapter_bytes = safetensors.torch.save(adapter_tensors) if is_writer else None
-        adapter_config = self._adapter_config
-        if adapter is not None:
-            adapter_config = adapter_config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
-
-        if is_writer:
-            adapter_config = adapter_config | {"target_modules": get_adapter_target_modules(adapter_tensors)}
-            path.mkdir(parents=True, exist_ok=True)
-            (path / "adapter_config.json").write_text(json.dumps(adapter_config))
-            (path / "adapter_model.safetensors").write_bytes(adapter_bytes)
 
     def write_model(self, path: str | Path, *, weights: Mapping[str, torch.Tensor], hf_checkpoint: str) -> None:
         """Collectively write HF model shards into the caller's checkpoint directory."""
