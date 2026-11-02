@@ -23,7 +23,7 @@ training. Tinker accepts only these group names and rejects `--exclude-modules`.
 
 ## Run
 
-The gateway implements the `tinker==0.36.0` wire schema (SDK releases rename protobuf fields) and rejects clients on any other SDK version; install that exact version on the serving node and the client:
+The gateway validates requests with the `tinker==0.36.0` request models and rejects clients on any other SDK version; install that exact version on the serving node and the client:
 
 ```bash
 pip install "tinker==0.36.0"

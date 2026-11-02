@@ -13,6 +13,9 @@ from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
 from tinker.types.topk_logprobs import MASK_LOGPROB
 
+# the SDK release whose request models and semantics this gateway is written and tested against
+TINKER_SDK_VERSION = "0.36.0"
+
 # materialized at the boundary so core and the executor can require every key
 ADAM_PARAM_DEFAULTS = tinker_types.AdamParams().model_dump()
 
@@ -36,13 +39,19 @@ def validate_against_sdk(request_type, payload: dict) -> None:
         raise UserInputError(f"{location or 'request'}: {first['msg']}") from None
 
 
+def assert_installed_sdk_version() -> None:
+    assert (
+        tinker.__version__ == TINKER_SDK_VERSION
+    ), f"the gateway validates requests with tinker=={TINKER_SDK_VERSION}, found {tinker.__version__}"
+
+
 def validate_sdk_version(payload: dict) -> None:
-    """SDK releases rename wire fields, so only the pinned SDK version may connect."""
+    """Other SDK versions send fields and semantics this gateway was not written for."""
     client_version = payload.get("sdk_version")
-    if client_version != tinker.__version__:
+    if client_version != TINKER_SDK_VERSION:
         raise UserInputError(
             f"Tinker SDK version mismatch: client is {client_version}, this gateway serves the "
-            f"tinker=={tinker.__version__} wire schema; install that exact version"
+            f"tinker=={TINKER_SDK_VERSION} wire schema; install that exact version"
         )
 
 

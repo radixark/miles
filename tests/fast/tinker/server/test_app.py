@@ -6,8 +6,8 @@ import httpx
 import pytest
 from tests.fast.tinker.harness import ADAM
 
-import tinker
 from miles.tinker.server.app import build_app
+from miles.tinker.server.encoding import TINKER_SDK_VERSION
 
 
 @pytest.fixture
@@ -141,11 +141,11 @@ async def test_capabilities_and_telemetry_shapes(client):
 
 
 async def test_only_the_pinned_sdk_version_connects(client):
-    accepted = await client.post("/api/v1/client/config", json={"sdk_version": tinker.__version__})
+    accepted = await client.post("/api/v1/client/config", json={"sdk_version": TINKER_SDK_VERSION})
     assert accepted.json() == {}
     rejected = await client.post("/api/v1/client/config", json={"sdk_version": "0.26.2"})
     assert rejected.status_code == 400
-    assert f"client is 0.26.2, this gateway serves the tinker=={tinker.__version__}" in rejected.json()["error"]
+    assert f"client is 0.26.2, this gateway serves the tinker=={TINKER_SDK_VERSION}" in rejected.json()["error"]
 
 
 async def test_a_request_without_an_api_key_is_rejected(client):

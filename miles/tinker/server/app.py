@@ -10,6 +10,7 @@ from miles.tinker.core.future import FAILED, PENDING
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.server.encoding import (
+    assert_installed_sdk_version,
     decode_command,
     decode_sample_request,
     render_result,
@@ -46,6 +47,7 @@ def _tenant(request: Request) -> str:
 
 
 def build_app(service: TinkerService) -> FastAPI:
+    assert_installed_sdk_version()
     app = FastAPI()
 
     @app.exception_handler(UserInputError)
