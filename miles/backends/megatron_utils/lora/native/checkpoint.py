@@ -1,0 +1,27 @@
+"""Native LoRA (N = 1) checkpoint members: the same probe-built HF layout as Bridge, over native's own export."""
+
+import torch
+
+from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import HfKey, map_sampler_keys_to_hf_keys
+
+
+class NativeAdapterSlots(BridgeAdapterSlots):
+    """Native exports grouped experts stacked under sglang's ``experts.w1/w3/w2`` (per-expert or ``[1, ...]``)."""
+
+    bf16_adapter_key_style = "sampler"
+
+    def __init__(self, model, iterator, targets):
+        super().__init__(model, iterator, targets, multi_lora=False)
+
+    def _map_name(self, name: str) -> HfKey:
+        return map_sampler_keys_to_hf_keys(name, self.targets)
+
+    def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
+        assert slot == 0, "native LoRA has only slot 0"
+        return [param for adapter in iter_adapters(self._model) for param in adapter.parameters()]
+
+    def _export_probe(self):
+        return export_lora_hf_named(iter_adapters(self._model), dtype=torch.float64)

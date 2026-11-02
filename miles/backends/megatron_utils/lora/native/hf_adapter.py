@@ -18,7 +18,9 @@ from miles.backends.megatron_utils.lora.native.spec.base import ShardLayout
 logger = logging.getLogger(__name__)
 
 
-def export_lora_hf_named(adapters: Iterable[NativeLoRAAdapter]) -> list[tuple[str, torch.Tensor]]:
+def export_lora_hf_named(
+    adapters: Iterable[NativeLoRAAdapter], dtype: torch.dtype = torch.bfloat16
+) -> list[tuple[str, torch.Tensor]]:
     """Materialize full HF/PEFT adapter tensors of ``adapters`` on every TP rank.
 
     Collective: every TP/EP rank must pass the same adapters in the same order.
@@ -47,8 +49,7 @@ def export_lora_hf_named(adapters: Iterable[NativeLoRAAdapter]) -> list[tuple[st
 
     gather.flush()
     exported = [
-        (name, (source() if callable(source) else source).detach().to(torch.bfloat16).contiguous())
-        for name, source in plan
+        (name, (source() if callable(source) else source).detach().to(dtype).contiguous()) for name, source in plan
     ]
     if not dist.is_initialized() or dist.get_rank() == 0:
         peak_b = max(
@@ -76,8 +77,7 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
 
     path = os.path.join(adapter_path, "adapter_model.safetensors")
     assert os.path.exists(path), (
-        f"[lora-native] no adapter_model.safetensors under {adapter_path}; "
-        "checkpoints written by save_lora_checkpoint use that name"
+        f"[lora-native] no adapter_model.safetensors under {adapter_path}; " "PEFT exports use that name"
     )
     with safe_open(path, framework="pt") as adapter_file:
         keys = {re.sub(r"^base_model\.model\.", "", key): key for key in adapter_file.keys()}

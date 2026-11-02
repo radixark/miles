@@ -19,6 +19,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     raise_if_any_rank_failed,
 )
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
+    HfKey,
     fused_components,
     map_peft_keys_to_hf_keys,
     split_fused_lora_b,
@@ -87,8 +88,10 @@ def probe_bridge_row_mapping(
     params: Sequence[torch.nn.Parameter],
     export_adapter: Callable[[], Iterable[tuple[str, torch.Tensor]]],
     targets: HfLoraTargets,
+    map_name: Callable[[str], HfKey] = map_peft_keys_to_hf_keys,
 ) -> BridgeRowMapping:
-    """Collective: run ``export_adapter`` (Bridge's PEFT-named export) on index-valued ``params``."""
+    """Collective: run ``export_adapter`` (a backend's HF-named export, names mapped by ``map_name``) on
+    index-valued ``params``."""
     rank = dist.get_rank()
     total = sum(p.numel() for p in params)
     assert total < _RANK_STRIDE and dist.get_world_size() < 2**53 // _RANK_STRIDE, "the probe encoding overflows"
@@ -100,7 +103,7 @@ def probe_bridge_row_mapping(
     def decode(name: str, tensor: torch.Tensor) -> None:
         assert tensor.dtype == torch.float64, f"{name}: the export changed the probe's dtype to {tensor.dtype}"
         codes = tensor.long()
-        hf_key = map_peft_keys_to_hf_keys(name)
+        hf_key = map_name(name)
         module, factor = hf_key.key.rsplit(".", 1)
         components = fused_components(module, targets)
         if factor == "lora_A":
@@ -186,14 +189,19 @@ class BridgeAdapterSlots:
     Multi-LoRA slots are padded to ``max_rank``; a slot's HF tensors have its real rank.
     """
 
-    bf16_adapter_key_style: Literal["peft", "tinker"] = "peft"
+    bf16_adapter_key_style: Literal["peft", "tinker", "sampler"] = "peft"
 
     def __init__(self, model, iterator, targets: HfLoraTargets, *, multi_lora: bool):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
         self._specs: dict[int, list[LocalShardSpec]] = {}
         # every slot has the same layout
-        self.row_mapping = probe_bridge_row_mapping(self.slot_parameters(0), self._export_probe, targets)
+        self.row_mapping = probe_bridge_row_mapping(
+            self.slot_parameters(0), self._export_probe, targets, self._map_name
+        )
+
+    def _map_name(self, name: str) -> HfKey:
+        return map_peft_keys_to_hf_keys(name)
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:
