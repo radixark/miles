@@ -191,11 +191,13 @@ commands you see in the log, in order:
 1. Kills leftover `sglang`, `miles`, and `redis` processes and stops any previous Ray
    cluster.
 2. Starts a fresh cluster with `ray start --head`, using `--num-gpus-per-node` GPUs.
-   By default Ray picks a port from 10002-19999 for each worker, and the worker binds it
-   only once it has started. If the host's ephemeral port range
-   (`net.ipv4.ip_local_port_range`, where the kernel picks source ports for outgoing
-   connections) overlaps 10002-19999, an outgoing connection can take that port first. On
-   such hosts `execute_train` also passes `--min-worker-port 0 --max-worker-port 0`, so each
+   `ray start` takes `--min-worker-port` and `--max-worker-port`, the range of ports its
+   worker processes serve on, which defaults to 10002-19999. For each worker, Ray picks a
+   free port from this range, and the worker binds it a moment later. If the host's
+   ephemeral port range (`net.ipv4.ip_local_port_range`, where the kernel picks source
+   ports for outgoing connections) overlaps that range, an outgoing connection can take
+   the port in between, and the worker then cannot bind it. On such hosts `execute_train`
+   passes `--min-worker-port 0 --max-worker-port 0`: Ray then picks no port, and each
    worker binds a free port the kernel picks at that moment.
 3. Runs the launcher's `before_ray_job_submit` hook, if it has one (used for the ssh
    fan-out below).
