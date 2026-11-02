@@ -57,6 +57,8 @@ def _mode_args() -> str:
         return (
             f"--load-debug-rollout-data {DEBUG_DIR}/rollout_{{rollout_id}}.pt "
             "--debug-train-only "
+            # --ci-test turns the sample-ownership checker on; train-only replay has no issuing data source
+            "--no-enable-sample-ownership-checker "
             f"--ci-save-grad-norm {DEBUG_DIR}/grad_norm_{RUN_TAG}_{{rollout_id}}_{{step_id}}.pt "
             f"--save-debug-train-data {DEBUG_DIR}/train_{RUN_TAG}_{{rollout_id}}_{{rank}}.pt "
             # The smoke recipes truncate every response, so all advantages (and the policy gradient) are zero;
