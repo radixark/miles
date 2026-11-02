@@ -972,15 +972,22 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         if ids_new[: len(ids_old)] == ids_old:
             return ids_new[len(ids_old) :]
         # A plain-text junction, such as a user turn folded after a tool result, can merge
-        # the prefix's last token with the appended text; encode the appended text alone.
+        # the prefix's last token with the appended text.  recipe encodes the text between
+        # special tokens on its own, so only the appended text up to the next one changes.
+        added = set(self.tokenizer.added_tokens_decoder)
+        diverged = next(
+            (i for i, (old, new) in enumerate(zip(ids_old, ids_new, strict=False)) if old != new),
+            min(len(ids_old), len(ids_new)),
+        )
+        special = next((i for i in range(diverged, len(ids_new)) if ids_new[i] in added), len(ids_new))
         text_old = self.tokenizer.decode(ids_old, skip_special_tokens=False)
-        text_new = self.tokenizer.decode(ids_new, skip_special_tokens=False)
-        if not text_new.startswith(text_old):
+        junction = self.tokenizer.decode(ids_new[:special], skip_special_tokens=False)
+        if not junction.startswith(text_old):
             raise ValueError(
                 "deepseek_v4 render is not append-only for the appended messages "
                 "(prefix render changed; check tool-result ordering)"
             )
-        return self._encode_text(text_new[len(text_old) :])
+        return deepseek.encode_plain_text(self.tokenizer, junction[len(text_old) :]) + ids_new[special:]
 
 
 class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):

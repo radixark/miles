@@ -1,4 +1,5 @@
-# SGLang runtime imports reached by the hosted CPU suite. GPU and ROCm images get these from their SGLang base image.
+# SGLang runtime imports reached by the hosted CPU suite. GPU images get these from their SGLang base image;
+# docker/Dockerfile.rocm and the ROCm CI install add the ones its v0.5.22 base lacks.
 compressed-tensors==0.17.1
 deepseek-recipe==0.2.0
 einops==0.8.2

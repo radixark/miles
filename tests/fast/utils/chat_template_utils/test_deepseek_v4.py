@@ -1,9 +1,9 @@
 """Tests for the DeepSeek V4 / V4.1 chat-template bridge and its dispatch through
 ``apply_chat_template``.
 
-V4 and V4.1 render through deepseek-recipe, so every render must equal what
-sglang's chat endpoint renders for the same request without input_ids; the one
-intended difference is the V4 effort profile, which follows the checkpoint's
+V4 and V4.1 render through deepseek-recipe, so a request ending on a user, tool or
+system turn must render as sglang's chat endpoint renders it without input_ids; the
+one intended difference is the V4 effort profile, which follows the checkpoint's
 own encoder.  Detection uses a tiny tokenizer stub backed by a temporary
 ``config.json``; rendering uses the checkpoints' real tokenizers.
 """
@@ -15,7 +15,9 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=25, suite="stage-a-cpu", labels=[])
 
 import functools
+import importlib.util
 import json
+import sys
 
 import pytest
 from huggingface_hub import snapshot_download
@@ -31,15 +33,10 @@ _MSGS_BASIC = [{"role": "user", "content": "Hello"}]
 
 
 class _FakeTokenizer:
-    """Minimal tokenizer stub: ``name_or_path`` drives detection, ``encode`` is a
-    deterministic char->id map that asserts ``add_special_tokens=False``."""
+    """Minimal tokenizer stub: ``name_or_path`` drives detection."""
 
     def __init__(self, name_or_path: str):
         self.name_or_path = name_or_path
-
-    def encode(self, text, add_special_tokens=False):
-        assert add_special_tokens is False
-        return [ord(c) for c in text]
 
 
 class _FakeHFTokenizer(_FakeTokenizer):
@@ -128,6 +125,14 @@ def test_dsv32_tokenizer_not_routed_to_dsv4(tmp_path):
     out = apply_chat_template(_MSGS_BASIC, tokenizer=tok, tools=_TOOLS, tokenize=False)
     assert "<functions>" in out
     assert "### Available Tool Schemas" not in out
+
+
+def test_imports_without_sglangs_recipe_renderer(monkeypatch):
+    """sglang builds without the recipe renderer (the Rubin and TPU images) must still
+    import miles, which imports this module for every model."""
+    monkeypatch.setitem(sys.modules, "sglang.srt.parser.deepseek_recipe_renderer", None)
+    spec = importlib.util.spec_from_file_location("_deepseek_without_renderer", deepseek.__file__)
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
 
 
 def test_non_deepseek_uses_hf_fallback(tmp_path):
@@ -243,7 +248,7 @@ def test_v4_effort_follows_the_checkpoint_preview_profile():
         return apply_chat_template(_MSGS_BASIC, tokenizer=_tokenizer("dsv4"), thinking=True, **kwargs)
 
     assert "Reasoning Effort" not in text()
-    assert text() == text(reasoning_effort="high")
+    assert text() == text(reasoning_effort="high") == text(reasoning_effort="none")
     assert text(reasoning_effort="max").startswith("<｜begin▁of▁sentence｜>Reasoning Effort: Absolute maximum")
     with pytest.raises(ValueError):
         text(reasoning_effort="low")
@@ -255,9 +260,14 @@ def test_v41_integer_budget_and_env_default(monkeypatch):
 
     monkeypatch.delenv("SGLANG_DSV41_REASONING_EFFORT", raising=False)
     assert "Reasoning Effort: 30 (range 1-100" in text(reasoning_effort=30)
+    # As sglang's chat endpoint reads them: a numeric string is a budget, "none" the default.
+    assert text(reasoning_effort="30") == text(reasoning_effort=30) == text(reasoning_effort=0.3)
     monkeypatch.setenv("SGLANG_DSV41_REASONING_EFFORT", "50")
     assert "Reasoning Effort: 50 (range 1-100" in text()
+    assert text(reasoning_effort="none") == text()
     assert text(reasoning_effort="max") != text()
+    monkeypatch.setenv("SGLANG_DSV41_REASONING_EFFORT", "0.3")
+    assert text() == text(reasoning_effort=30)
 
 
 @pytest.mark.parametrize("spec", _SPECS)
@@ -278,18 +288,26 @@ def test_special_token_spellings_in_content_stay_text(spec):
 def test_encoder_kwargs_recipe_does_not_take_are_rejected(spec):
     with pytest.raises(TypeError):
         _ids(spec, _MSGS_BASIC, drop_thinking=False)
+    with pytest.raises(ValueError):
+        _ids(spec, _MSGS_BASIC, thinking_mode="think")
 
 
 # ---------------------------------------------------------------------------
 # TITO: appended turns tokenize as the tail of the full render
 # ---------------------------------------------------------------------------
 
+_SPELLED = {"role": "user", "content": "Explain <｜User｜> and </think> please."}
+
 _APPENDS = {
     "tool_result_after_pending_call": ([_USER, _CALLING], [_RESULT]),
+    # recipe drops the empty system turn, so the pending call is not at the input's index.
+    "tool_result_after_empty_system": ([{"role": "system", "content": ""}, _USER, _CALLING], [_RESULT]),
     "user_after_answer": ([_USER, _ANSWER], [_FOLLOW_UP]),
     # A pretokenized prefix may end on a tool result; the user turn then folds in on plain text.
     "user_after_tool_result": ([_USER, _CALLING, _RESULT], [_FOLLOW_UP]),
     "user_after_tool_loop": ([_USER, _CALLING, _RESULT, _ANSWER], [_FOLLOW_UP]),
+    "special_spellings_after_answer": ([_USER, _ANSWER], [_SPELLED]),
+    "special_spellings_after_tool_result": ([_USER, _CALLING, _RESULT], [_SPELLED]),
     "injected_assistant": ([_USER, _ANSWER], [{"role": "assistant", "content": "injected"}]),
     "injected_assistant_then_user": ([_USER, _ANSWER], [{"role": "assistant", "content": "injected"}, _FOLLOW_UP]),
     "consecutive_assistants_then_user": (
@@ -311,6 +329,9 @@ def test_appended_messages_tokenize_as_the_render_tail(spec, thinking, shape):
     delta = tito.tokenize_additional_messages(history, history + appended, template_args=args)
     decode = functools.partial(_tokenizer(spec).decode, skip_special_tokens=False)
     assert decode(prefix + delta) == decode(full)
+    # Special-token spellings in content stay text on both sides of a plain-text junction.
+    added = set(_tokenizer(spec).added_tokens_decoder)
+    assert [i for i in prefix + delta if i in added] == [i for i in full if i in added]
     if history[-1]["role"] == "assistant":
         # A sampled turn ends on a special token, so nothing merges across the boundary.
         assert prefix + delta == full

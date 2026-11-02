@@ -13,19 +13,17 @@ import copy
 import functools
 import json
 import os
-from typing import Any
+import re
+from types import ModuleType
+from typing import TYPE_CHECKING, Any
 
 from sglang.srt.entrypoints.openai.protocol import Tool
-from sglang.srt.parser.deepseek_recipe_renderer import (
-    ASSISTANT_TOKEN,
-    THINK_END_TOKEN,
-    THINK_START_TOKEN,
-    DeepSeekRecipe,
-    load_deepseek_recipe,
-    parse_effort_budget,
-)
+from tokenizers import Tokenizer
 
 from miles.utils.chat_template_utils.templates import encoding_dsv32
+
+if TYPE_CHECKING:
+    from sglang.srt.parser.deepseek_recipe_renderer import DeepSeekRecipe
 
 _ASSISTANT_SP_TOKEN = "<｜Assistant｜>"
 
@@ -139,14 +137,43 @@ class DeepSeekV32Family(DeepSeekFamily):
 
 
 # The V4-Flash / V4-Pro checkpoints' own encoder uses the "preview" effort profile: high
-# renders no effort line and max renders the line recipe calls high.  recipe renders the
-# "official" profile; sglang v0.5.22 picked the profile per checkpoint, v0.5.23 does not.
+# renders no effort line and max renders the line recipe calls high.  recipe, and with it
+# sglang's chat endpoint, renders the "official" profile for every checkpoint.
 _DSV4_PREVIEW_EFFORT = {"high": "low", "max": "high"}
+
+
+def _renderer() -> ModuleType:
+    # Imported on first use: sglang builds without it, such as the Rubin and TPU images,
+    # still import miles for every other model.
+    from sglang.srt.parser import deepseek_recipe_renderer
+
+    return deepseek_recipe_renderer
 
 
 @functools.cache
 def _deepseek_recipe(spec: str, tokenizer: Any) -> DeepSeekRecipe:
-    return DeepSeekRecipe.from_hf_tokenizer(spec, tokenizer)
+    return _renderer().DeepSeekRecipe.from_hf_tokenizer(spec, tokenizer)
+
+
+@functools.cache
+def _plain_tokenizer(tokenizer: Any) -> Tokenizer:
+    data = json.loads(tokenizer.backend_tokenizer.to_str())
+    data["added_tokens"] = []
+    return Tokenizer.from_str(json.dumps(data))
+
+
+def encode_plain_text(tokenizer: Any, text: str) -> list[int]:
+    """*text* as recipe encodes message text: with the checkpoint's BPE alone, without the
+    added vocabulary, so special-token spellings stay text."""
+    return _plain_tokenizer(tokenizer).encode(text, add_special_tokens=False).ids
+
+
+def _numeric_effort(effort: Any) -> Any:
+    """A numeric string effort ("30", "0.3") as the number it spells, as sglang's chat
+    endpoint reads one."""
+    if isinstance(effort, str) and re.fullmatch(r"\d+(\.\d+)?", effort.strip()):
+        return float(effort) if "." in effort else int(effort)
+    return effort
 
 
 def _wire_message(message: dict[str, Any]) -> dict[str, Any]:
@@ -166,13 +193,19 @@ def _placeholder_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, 
     tail = messages[-1] if messages else {}
     if tail.get("role") != "assistant":
         return []
-    return [{"role": "tool", "tool_call_id": call["id"], "content": ""} for call in tail.get("tool_calls") or []]
+    # A call without an id gets recipe's error for it instead of a KeyError.
+    return [{"role": "tool", "tool_call_id": call.get("id"), "content": ""} for call in tail.get("tool_calls") or []]
 
 
 class DeepSeekRecipeFamily(DeepSeekFamily):
-    """V4 / V4.1: deepseek-recipe renders the prompt as sglang's chat endpoint does,
-    except for the V4 effort profile (``_DSV4_PREVIEW_EFFORT``).  Text renders decode
-    the ids, which round-trip to recipe's prompt text."""
+    """V4 / V4.1: deepseek-recipe renders a request that ends on a user, tool or system
+    turn as sglang's chat endpoint does, except for the V4 effort profile
+    (``_DSV4_PREVIEW_EFFORT``).  A history ending on an assistant turn, which the endpoint
+    re-sends as a user turn, renders that turn as is, pending tool calls included.
+
+    Text renders decode the ids.  Re-encoding that text with the HF tokenizer, as the
+    dataset path does, parses special-token spellings in message content as control
+    tokens; the ids keep them as text."""
 
     def __init__(self, spec: str):
         self.spec = spec
@@ -201,7 +234,10 @@ class DeepSeekRecipeFamily(DeepSeekFamily):
         **kwargs: Any,
     ) -> list[int]:
         config = self._build_encode_config(kwargs)
-        thinking = config.pop("thinking_mode") == "thinking"
+        mode = config.pop("thinking_mode")
+        if mode not in ("thinking", "chat"):
+            raise ValueError(f"thinking_mode must be 'thinking' or 'chat', got {mode!r}")
+        thinking = mode == "thinking"
         effort, budget = self._resolve_effort(config.pop("reasoning_effort", None))
         if config:
             raise TypeError(f"{self.spec} renders through deepseek-recipe, which takes no {sorted(config)}")
@@ -213,11 +249,15 @@ class DeepSeekRecipeFamily(DeepSeekFamily):
 
         # recipe converts only a history whose tool calls are answered; a prefix of a
         # converted conversation renders as a prefix of its prompt.
+        renderer = _renderer()
         placeholders = _placeholder_tool_results(messages)
         conversation = recipe.convert({**body, "messages": body["messages"] + placeholders}, effort_budget=budget)
         if placeholders:
-            conversation = load_deepseek_recipe().Conversation(
-                conversation.messages[: len(messages)],
+            # Cut after the trailing assistant turn: recipe drops some turns, such as an
+            # empty system one, so the input's message count does not locate it.
+            kept = max(i for i, message in enumerate(conversation.messages) if message.role == "assistant") + 1
+            conversation = renderer.load_deepseek_recipe().Conversation(
+                conversation.messages[:kept],
                 thinking_mode=conversation.thinking_mode,
                 tools=conversation.tools,
                 tool_choice=conversation.tool_choice,
@@ -227,29 +267,31 @@ class DeepSeekRecipeFamily(DeepSeekFamily):
 
         # recipe always ends with the next assistant turn's header.
         header = [
-            recipe.hf_tokenizer.token_to_id(ASSISTANT_TOKEN),
-            recipe.hf_tokenizer.token_to_id(THINK_START_TOKEN if thinking else THINK_END_TOKEN),
+            recipe.hf_tokenizer.token_to_id(renderer.ASSISTANT_TOKEN),
+            recipe.hf_tokenizer.token_to_id(renderer.THINK_START_TOKEN if thinking else renderer.THINK_END_TOKEN),
         ]
         if not add_generation_prompt and ids[-len(header) :] == header:
             return ids[: -len(header)]
         return ids
 
     def _resolve_effort(self, effort: Any) -> tuple[str | None, int | None]:
-        """The recipe effort tier and the V4.1 integer budget for *effort*."""
+        """The recipe effort tier and the V4.1 integer budget for *effort*, resolved as
+        sglang's chat endpoint does, except that V4 keeps the checkpoint's own default."""
+        effort = _numeric_effort(effort)
         if self.spec == "dsv4":
-            if effort is None:
+            if effort is None or effort == "none":
                 effort = "high"
             if effort not in _DSV4_PREVIEW_EFFORT:
                 raise ValueError(
                     f"DeepSeek-V4 reasoning_effort must be one of {list(_DSV4_PREVIEW_EFFORT)}, got {effort!r}"
                 )
             return _DSV4_PREVIEW_EFFORT[effort], None
-        if effort is None:
+        if effort is None or effort == "none":
             # The default sglang's chat endpoint applies, so a request without one renders alike.
             raw = os.environ.get("SGLANG_DSV41_REASONING_EFFORT", "").strip()
-            effort = int(raw) if raw.isdigit() else raw or None
+            effort = _numeric_effort(raw) if raw else None
         if isinstance(effort, (int, float)) and not isinstance(effort, bool):
-            return None, parse_effort_budget(effort)
+            return None, _renderer().parse_effort_budget(effort)
         return effort, None
 
 
@@ -288,7 +330,7 @@ def apply_chat_template(
     """
     mt = model_type(tokenizer)
     if mt is None:
-        raise ValueError(f"not a DeepSeek official-encoder checkpoint: {tokenizer.name_or_path!r}")
+        raise ValueError(f"not a DeepSeek V3.2 / V4 / V4.1 checkpoint: {tokenizer.name_or_path!r}")
     return _FAMILIES[mt].apply_chat_template(
         messages, tokenizer, tools=tools, tokenize=tokenize, add_generation_prompt=add_generation_prompt, **kwargs
     )
