@@ -103,6 +103,10 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         return [(h, slice_lora_to_rank(h, w, adapter.rank)) for h, w in named_tensors]
 
     def _export_current_adapter(self) -> list:
+        return list(self.iter_current_adapter())
+
+    def iter_current_adapter(self):
+        """The exposed adapter's HF-named tensors, TP/EP gathered and PP-local, one at a time."""
         with megatron_bridge_utils.patch_megatron_model(self.model):
             named_weights = self._bridge.export_adapter_weights(
                 self.model,
@@ -110,8 +114,9 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 show_progress=False,
                 **self._source_name_kwargs(self._bridge.export_adapter_weights),
             )
-            named_weights = self._postprocess_and_quantize(named_weights, "lora")
-            return [(h, w) for h, w, _m in named_weights if is_lora_weight_name(h)]
+            for h, w, _m in self._postprocess_and_quantize(named_weights, "lora"):
+                if is_lora_weight_name(h):
+                    yield h, w
 
     @staticmethod
     def _source_name_kwargs(export_fn) -> dict:
