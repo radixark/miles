@@ -217,6 +217,13 @@ class TestSha256:
         with pytest.raises(ValueError, match="'math'.*changed while loading"):
             _make_source(tmp_path, datasets)
 
+    def test_an_unpinned_file_is_hashed_once(self, tmp_path, monkeypatch):
+        calls = []
+        real = data_source._hash_file
+        monkeypatch.setattr(data_source, "_hash_file", lambda path: calls.append(path) or real(path))
+        _make_source(tmp_path, _two_datasets(tmp_path))
+        assert len(calls) == 2
+
     def test_a_missing_hash_logs_the_value_to_pin(self, tmp_path, caplog):
         datasets = _two_datasets(tmp_path)
         actual = hashlib.sha256(Path(datasets["code"]["path"]).read_bytes()).hexdigest()

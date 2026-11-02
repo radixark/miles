@@ -36,7 +36,11 @@ The flag also accepts an inline `base64:<payload>`, like `--eval-config`.
 
 Unknown fields are rejected, so a typo fails at startup instead of being ignored. A `generate_function` that
 declares its own options (`config_class` or `add_arguments`) gets them registered as flags, just like one
-passed through `--custom-generate-function-path`.
+passed through `--custom-generate-function-path`. These flags live in one run-wide namespace: two hooks that
+declare the same flag identically share it, so every dataset using those hooks sees the same value. A hook that
+re-declares only some of another hook's flags, or declares one differently, is rejected at startup. To give two
+datasets different values for an option, give their hooks distinct flags (or put the value in the dataset's `agent`
+block).
 
 ### How prompts are drawn
 

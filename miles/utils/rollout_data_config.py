@@ -37,7 +37,8 @@ class RolloutDatasetConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    name: str = Field(min_length=1)
+    # used as a metrics key segment (rollout/dataset/<name>/...), so no `/` or spaces
+    name: str = Field(pattern=r"^[A-Za-z0-9_.-]+$")
     path: str = Field(min_length=1)
     samples_per_step: int = Field(ge=1)
     # first 8 hex characters of the file's SHA-256
