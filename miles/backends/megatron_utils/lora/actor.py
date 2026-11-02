@@ -104,7 +104,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             self.adapter_slots.parametrization(**parametrization_fields),
         )
 
-    def _checkpoint_members(self) -> lora_checkpoint.LayerWiseSlotMembers:
+    def _checkpoint_members(self) -> "lora_checkpoint.LayerWiseSlotMembers":
         return lora_checkpoint.LayerWiseSlotMembers(self.adapter_slots, self.slot_optimizers)
 
     @with_logs
