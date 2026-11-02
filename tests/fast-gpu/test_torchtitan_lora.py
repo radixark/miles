@@ -20,10 +20,16 @@ from torchtitan.models.qwen3 import build_model_config
 
 from miles.backends.torchtitan_utils.lora import convert_model_config
 from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
-from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
+from miles.utils.lora.hf_lora_targets import LORA_TARGET_GROUPS, resolve_hf_lora_targets
 
-_QWEN3_ALL_LINEAR = resolve_hf_lora_targets({"model_type": "qwen3"})
+_QWEN3_HF_CONFIG = {"model_type": "qwen3"}
+_QWEN3_ALL_LINEAR = resolve_hf_lora_targets(_QWEN3_HF_CONFIG)
 _QWEN3_MOE_HF_CONFIG = {"model_type": "qwen3_moe", "num_experts": 128, "num_hidden_layers": 48}
+
+
+def _convert(model_config, hf_targets, hf_config=_QWEN3_HF_CONFIG):
+    layout = resolve_hf_lora_targets(hf_config, target_modules=list(LORA_TARGET_GROUPS))
+    return convert_model_config(model_config, hf_targets=hf_targets, layout=layout, rank=8, alpha=16)
 
 
 def _qwen3(flavor: str = "0.6B"):
@@ -35,7 +41,7 @@ def _lora_ranks(model_config) -> dict[str, int]:
 
 
 def test_all_linear_adapts_every_attention_and_mlp_projection_and_nothing_else():
-    converted = convert_model_config(_qwen3(), hf_targets=_QWEN3_ALL_LINEAR, rank=8, alpha=16)
+    converted = _convert(_qwen3(), _QWEN3_ALL_LINEAR)
 
     ranks = _lora_ranks(converted)
     adapted = {fqn for fqn, rank in ranks.items() if rank}
@@ -48,22 +54,20 @@ def test_all_linear_adapts_every_attention_and_mlp_projection_and_nothing_else()
 
 def test_a_target_set_that_splits_a_fused_projection_is_refused_before_the_build():
     with pytest.raises(ValueError, match="shares one lora_A"):
-        convert_model_config(_qwen3(), hf_targets=["model.layers.*.self_attn.k_proj"], rank=8, alpha=16)
+        _convert(_qwen3(), ["model.layers.*.self_attn.k_proj"])
 
 
 def test_a_single_layer_can_be_targeted():
-    converted = convert_model_config(_qwen3(), hf_targets=["model.layers.0.self_attn.o_proj"], rank=8, alpha=16)
+    converted = _convert(_qwen3(), ["model.layers.0.self_attn.o_proj"])
     assert {fqn for fqn, rank in _lora_ranks(converted).items() if rank} == {"layers.0.attention.wo"}
 
 
 def test_moe_experts_are_refused_but_moe_attention_is_adapted():
     with pytest.raises(ValueError, match="name no Linear projection"):
-        convert_model_config(
-            _qwen3("30B-A3B"), hf_targets=resolve_hf_lora_targets(_QWEN3_MOE_HF_CONFIG), rank=8, alpha=16
-        )
+        _convert(_qwen3("30B-A3B"), resolve_hf_lora_targets(_QWEN3_MOE_HF_CONFIG), _QWEN3_MOE_HF_CONFIG)
 
     attention = resolve_hf_lora_targets(_QWEN3_MOE_HF_CONFIG, target_modules=["attn"])
-    converted = convert_model_config(_qwen3("30B-A3B"), hf_targets=attention, rank=8, alpha=16)
+    converted = _convert(_qwen3("30B-A3B"), attention, _QWEN3_MOE_HF_CONFIG)
     adapted = {fqn for fqn, rank in _lora_ranks(converted).items() if rank}
     assert all(".attention." in fqn for fqn in adapted)
     assert len(adapted) == 2 * len(converted.layers)

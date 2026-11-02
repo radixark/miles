@@ -81,7 +81,8 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
 def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     validate_torchtitan_args(_args(lora_rank=8))
-    with pytest.raises(ValueError, match="qwen3 only"):
+    validate_torchtitan_args(_args(lora_rank=8, titan_model_name="muse_glimmer"))
+    with pytest.raises(ValueError, match="qwen3, muse_glimmer only"):
         validate_torchtitan_args(_args(lora_rank=8, titan_model_name="glm5_next"))
     with pytest.raises(ValueError, match="--lora-type lora"):
         validate_torchtitan_args(_args(lora_rank=8, lora_type="canonical_lora"))
@@ -130,6 +131,13 @@ def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
     )
     lora_arguments.validate_lora_args(args)
     assert args.lora_adapter_targets == ["q_proj"]
+    # the servable layout travels with the args, so the trainer never re-derives it from the config class
+    prefix = "model.layers.*."
+    assert args.hf_lora_layout == [
+        *(f"{prefix}self_attn.{p}" for p in ["q_proj", "k_proj", "v_proj", "o_proj"]),
+        *(f"{prefix}mlp.{p}" for p in ["gate_proj", "up_proj", "down_proj"]),
+        "lm_head",
+    ]
 
 
 def _config_args(**overrides: object) -> Namespace:

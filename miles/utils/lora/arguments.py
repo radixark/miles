@@ -12,6 +12,7 @@ from miles.utils.lora.hf_lora_targets import (
     expand_packed_hf_lora_targets,
     get_hf_lora_targets,
     parse_lora_targets,
+    resolve_hf_lora_layout,
     resolve_hf_lora_targets,
 )
 from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, targets_expert_leaves
@@ -28,8 +29,11 @@ def validate_lora_args(args):
         "torchtitan",
     ), f"LoRA injection is not implemented for --train-backend {args.train_backend}; use megatron or torchtitan"
     assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
-    args.hf_lora_targets = _resolve_lora_targets(args, load_hf_config(args.hf_checkpoint))
+    hf_config = load_hf_config(args.hf_checkpoint)
+    args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
     args.lora_adapter_targets = list(args.hf_lora_targets)
+    # every HF projection the model's LoRA layout serves; a backend refuses targets that reach past it
+    args.hf_lora_layout = resolve_hf_lora_layout(hf_config.to_dict())
 
     # Training and serving must agree on shared-outer grouped-expert LoRA (expert_dim=1).
     if args.experts_shared_outer_loras and hasattr(

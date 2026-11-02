@@ -11,15 +11,16 @@ from miles.utils.lora.utils import matches_lora_target
 
 
 def convert_model_config(
-    model_config: BaseModel.Config, *, hf_targets: list[str], rank: int, alpha: float
+    model_config: BaseModel.Config, *, hf_targets: list[str], layout: list[str], rank: int, alpha: float
 ) -> BaseModel.Config:
-    """``model_config`` with LoRA on exactly the Linear projections ``hf_targets`` name."""
+    """``model_config`` with LoRA on exactly the Linear projections ``hf_targets`` name; ``layout`` is every HF
+    projection the model's LoRA layout serves (``args.hf_lora_layout``)."""
     sd_adapter = model_config._owner.state_dict_adapter_cls(model_config, None)
     hf_names_by_projection = {
         fqn: hf_export_names(sd_adapter, fqn, _weight_shape(cfg))
         for fqn, cfg, _, _ in model_config.traverse(Linear.Config)
     }
-    target_modules = _target_modules(hf_names_by_projection, hf_targets)
+    target_modules = _target_modules(hf_names_by_projection, hf_targets, layout)
     return transform_model_config_(
         model_config, [LoRATransform(rank=rank, alpha=alpha, target_modules=sorted(target_modules))]
     )
@@ -35,11 +36,15 @@ def _is_targeted(hf_name: str, hf_targets: list[str]) -> bool:
     return any(matches_lora_target(hf_name, target) for target in hf_targets)
 
 
-def _target_modules(hf_names_by_projection: dict[str, list[str]], hf_targets: list[str]) -> set[str]:
+def _target_modules(
+    hf_names_by_projection: dict[str, list[str]], hf_targets: list[str], layout: list[str]
+) -> set[str]:
     """The projection FQNs whose HF projections are exactly the targeted ones.
 
     A fused projection shares one ``lora_A`` across the HF projections it holds, so it is adapted for all of them
-    or for none; a target set that splits one fails here, before the model is built.
+    or for none; a target set that splits one fails here, before the model is built. A bare selector such as
+    ``gate_proj`` also reaches projections the model's LoRA layout leaves out because the engine cannot serve
+    them (Muse Glimmer's attention output gate); those fail here too.
     """
     exported = [name for names in hf_names_by_projection.values() for name in names]
     missing = [target for target in hf_targets if not any(matches_lora_target(name, target) for name in exported)]
@@ -53,6 +58,12 @@ def _target_modules(hf_names_by_projection: dict[str, list[str]], hf_targets: li
     targeted = {
         fqn: names for fqn, names in hf_names_by_projection.items() if any(_is_targeted(n, hf_targets) for n in names)
     }
+    unservable = sorted(name for names in targeted.values() for name in names if not _is_targeted(name, layout))
+    if unservable:
+        raise ValueError(
+            f"LoRA targets {hf_targets} reach {unservable}, which the model's LoRA layout leaves out because the "
+            "engine cannot serve adapters there; name the projections explicitly or use attn, mlp or all-linear"
+        )
     split = {
         fqn: sorted(names) for fqn, names in targeted.items() if not all(_is_targeted(n, hf_targets) for n in names)
     }
