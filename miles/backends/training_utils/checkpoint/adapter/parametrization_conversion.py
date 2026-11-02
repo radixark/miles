@@ -77,7 +77,7 @@ def _side_of_shared_expert_factor(key: str) -> bool:
 
 
 def apply_parametrization_conversion(
-    weights: dict[str, torch.Tensor], steps: list[ConversionStep], *, num_experts: int | None = None
+    weights: dict[str, torch.Tensor], steps: list[ConversionStep]
 ) -> dict[str, torch.Tensor]:
     """Whole-tensor weights keyed by HF key; shared-A groups store A under the first member only."""
     weights = dict(weights)
@@ -96,7 +96,8 @@ def apply_parametrization_conversion(
                     copy, first
                 ), f"{member}.lora_A differs from {step.modules[0]}.lora_A; cannot share A"
         elif step.op == ConversionOp.BROADCAST_SHARED_EXPERT_SIDE:
-            assert num_experts is not None
+            # the per-expert side carries the expert count
+            num_experts = max(v.shape[0] for k, v in weights.items() if ".experts." in k and v.dim() == 3)
             for key, value in weights.items():
                 if _side_of_shared_expert_factor(key):
                     assert value.shape[0] == 1, f"{key}: shared side must have dim0 = 1, got {tuple(value.shape)}"

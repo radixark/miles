@@ -142,6 +142,18 @@ def load_adapter_state(directory: Path, template: AdapterState) -> int:
 
 
 def read_adapter_state_keys(directory: Path) -> set[str]:
-    """The tensor names ``adapter_state/`` holds, for the missing / unexpected key check."""
+    """The tensor names ``adapter_state/`` holds."""
     metadata = dcp.FileSystemReader(directory / ADAPTER_STATE_DIRNAME).read_metadata()
     return set(metadata.state_dict_metadata) - {STEP_KEY}
+
+
+def assert_adapter_state_keys(directory: Path, run_keys: set[str], *, with_optimizer: bool) -> None:
+    """Every key the run trains is stored; nothing else is, except moments a weights-only load leaves unread."""
+    stored = read_adapter_state_keys(directory)
+    suffixes = _STATE_SUFFIXES if with_optimizer else ("weight",)
+    missing = {f"{key}.{suffix}" for key in run_keys for suffix in suffixes} - stored
+    unexpected = {name for name in stored if name.rsplit(".", 1)[0] not in run_keys}
+    assert not missing and not unexpected, (
+        f"{directory}: adapter_state/ does not match the run: "
+        f"missing {sorted(missing)[:8]}, unexpected {sorted(unexpected)[:8]}"
+    )

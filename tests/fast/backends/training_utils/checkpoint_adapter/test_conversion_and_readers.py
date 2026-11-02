@@ -115,7 +115,7 @@ def test_shared_outer_broadcasts_for_weights_and_collapses_only_if_equal():
     w = _weights(False)
     for key in (f"{EXPERTS[0]}.lora_A", f"{EXPERTS[1]}.lora_A", f"{EXPERTS[2]}.lora_B"):
         w[key] = w[key][:1]
-    out = apply_parametrization_conversion(w, steps, num_experts=3)
+    out = apply_parametrization_conversion(w, steps)
     assert out[f"{EXPERTS[0]}.lora_A"].shape[0] == 3
     back = plan_parametrization_conversion(target, source, source_dtype=torch.float32)
     with pytest.raises(AssertionError, match="experts differ"):

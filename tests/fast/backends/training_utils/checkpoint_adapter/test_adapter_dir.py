@@ -118,7 +118,7 @@ def _rank0_cannot_create(rank, world_size, port, *, root):
         root = str(Path(root, "blocker"))
     else:
         root = str(Path(root, "blocker"))
-    with pytest.raises(RuntimeError, match="adapter write failed"):
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed"):
         save_adapter_dir(Path(root), "w", FakeMembers(), 0, RUN)
     dist.destroy_process_group()
 
@@ -164,5 +164,45 @@ def test_a_weights_only_dir_loads_without_optimizer_and_refuses_with_it(tmp_path
     members = FakeMembers()
     load_adapter_dir(written.path, members, 0, RUN, TARGETS, load_optimizer=False)
     assert torch.equal(members.imported.weights[1], FULL["lora_B"]) and members.imported.step == 0
-    with pytest.raises(AssertionError, match="no optimizer state"):
+    with pytest.raises(RuntimeError, match="no optimizer state"):
         load_adapter_dir(written.path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=True)
+
+
+class ExtraKeyMembers(FakeMembers):
+    """Writes one tensor the run does not train, e.g. a second copy of a shared A."""
+
+    def export_adapter_state(self, slot):
+        state = super().export_adapter_state(slot)
+        extra = LocalShardSpec("model.layers.0.self_attn.k_proj.lora_A", (2, 6), (0, 0), (2, 6))
+        w = FULL["lora_A"].clone()
+        return AdapterState(
+            [*state.shard_specs, extra], [*state.weights, w], [*state.exp_avgs, w], [*state.exp_avg_sqs, w], step=5
+        )
+
+
+def test_an_unexpected_adapter_state_key_is_refused(tmp_path):
+    written = save_adapter_dir(tmp_path, "w", ExtraKeyMembers(), 0, RUN)
+    with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
+        load_adapter_dir(written.path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=True)
+
+
+def _one_rank_cannot_read(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    path = Path(root) if rank == 0 else Path(root, "missing")
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1"):
+        load_adapter_dir(path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=False)
+    dist.destroy_process_group()
+
+
+def test_a_load_failure_on_one_rank_fails_every_rank_instead_of_hanging(tmp_path):
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN)
+    process = (
+        __import__("multiprocessing")
+        .get_context("spawn")
+        .Process(target=run_multiprocess, args=(partial(_one_rank_cannot_read, root=str(tmp_path)),))
+    )
+    process.start()
+    process.join(timeout=60)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0

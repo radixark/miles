@@ -11,6 +11,8 @@ import torch
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
+    assert_adapter_state_keys,
+    gloo_group,
     save_adapter_state,
 )
 from miles.backends.training_utils.checkpoint.adapter.commit import (
@@ -115,46 +117,74 @@ def load_adapter_dir(
 ) -> AdapterParametrization:
     """Load any recognized source into ``slot``; returns the source parametrization.
 
+    All ranks call. A failure on one rank fails every rank before the next collective.
     Alpha is not checked here: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``).
     """
-    kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
-    if kind.is_read_into_model():
-        assert (
+    kind, error = None, None
+    try:
+        kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
+        assert not kind.is_read_into_model() or (
             in_model_loaders_by_kind is not None and kind in in_model_loaders_by_kind
         ), f"{path} is a {kind.value} source, which this backend cannot load"
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
+    if kind.is_read_into_model():
         source = _with_run_alpha_if_unknown(in_model_loaders_by_kind[kind](path), run)
         assert_parametrization_matches_run(
             source, run, [], load_optimizer=load_optimizer, has_optimizer_state=load_optimizer
         )
         return source
-    if kind == AdapterSourceKind.ADAPTER_DIR:
-        reader = MilesAdapterDirReader(path, targets)
-    elif kind == AdapterSourceKind.EXTERNAL_WEIGHTS:
-        reader = ExternalWeightsReader(path, run, targets)
-    else:
-        reader = PeftAdapterReader(path, run, targets)
-    source = _with_run_alpha_if_unknown(reader.source.parametrization, run)
-    steps = plan_parametrization_conversion(source, run, source_dtype=reader.source.weight_dtype)
-    assert_parametrization_matches_run(
-        source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=reader.source.has_optimizer_state
-    )
+
     specs = members.get_local_shard_specs(slot)
+    reader, source, steps = None, None, None
+    try:
+        if kind == AdapterSourceKind.ADAPTER_DIR:
+            reader = MilesAdapterDirReader(path, targets)
+        elif kind == AdapterSourceKind.EXTERNAL_WEIGHTS:
+            reader = ExternalWeightsReader(path, run, targets)
+        else:
+            reader = PeftAdapterReader(path, run, targets)
+        source = _with_run_alpha_if_unknown(reader.source.parametrization, run)
+        steps = plan_parametrization_conversion(source, run, source_dtype=reader.source.weight_dtype)
+        assert_parametrization_matches_run(
+            source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=reader.source.has_optimizer_state
+        )
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
+
     if isinstance(reader, MilesAdapterDirReader) and reader.has_adapter_state() and not steps:
+        run_keys = _all_ranks_keys(specs)
+        try:
+            assert_adapter_state_keys(path, run_keys, with_optimizer=load_optimizer)
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
         # same parametrization: every rank reads only its own pieces, and moments only when it loads them
-        template = AdapterState(
+        state = AdapterState(
             specs,
             *[[torch.empty(s.local_shape) for s in specs] for _ in range(3)],
             step=None,
             has_optimizer_state=load_optimizer,
         )
-        template.step = reader.load_state(template)
+        state.step = reader.load_state(state)
         if not load_optimizer:
-            template = _weights_only(specs, template.weights)
-        members.import_adapter_state(slot, template)
+            state = _weights_only(specs, state.weights)
     else:
-        num_experts = next(
-            (s.global_shape[0] for s in specs if ".experts." in s.key and len(s.global_shape) == 3), None
-        )
-        weights = apply_parametrization_conversion(reader.read_weights(), steps, num_experts=num_experts)
-        members.import_adapter_state(slot, _weights_only_state(weights, specs))
+        state = None
+        try:
+            state = _weights_only_state(apply_parametrization_conversion(reader.read_weights(), steps), specs)
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
+    members.import_adapter_state(slot, state)
     return source
+
+
+def _all_ranks_keys(specs: list[LocalShardSpec]) -> set[str]:
+    keys = [{s.key for s in specs}]
+    if torch.distributed.is_initialized():
+        keys = [None] * torch.distributed.get_world_size()
+        torch.distributed.all_gather_object(keys, {s.key for s in specs}, group=gloo_group())
+    return set().union(*keys)
