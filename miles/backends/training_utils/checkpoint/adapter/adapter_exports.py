@@ -41,6 +41,7 @@ def _expand_shared_lora_a(weights: dict[str, torch.Tensor], parametrization: Ada
 
 
 def _adapter_config(parametrization: AdapterParametrization, tensor_names) -> dict:
+    assert parametrization.lora_alpha is not None, "lora_alpha must be resolved before an export is written"
     return {
         "peft_type": "LORA",
         "r": parametrization.lora_rank,
