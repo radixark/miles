@@ -117,18 +117,18 @@ class FakeBackend:
             return {slot: failure for slot in adam_params_by_slot}
         return {slot: self.optim_outcomes.get(slot, {"grad_norm": 0.5 + slot}) for slot in adam_params_by_slot}
 
-    async def save_slot(self, slot, root, name, tenant, parametrization_fields):
+    async def save_slot(self, slot, root, name, tenant_digest, parametrization_fields):
         failure = self._record(
             "save_slot",
             slot=slot,
             root=root,
             adapter_name=name,
-            tenant=tenant,
+            tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
         )
         if failure is not None:
             return failure
-        with write_adapter_dir(Path(root), name, tenant=tenant) as written:
+        with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
             write_parametrization(written.path, _parametrization(parametrization_fields))
         return written
 
@@ -136,13 +136,13 @@ class FakeBackend:
     delete_retired_adapters = staticmethod(delete_retired_adapters)
     resolve_adapter = staticmethod(resolve_adapter)
 
-    async def export_slot(self, slot, root, name, tenant, parametrization_fields):
+    async def export_slot(self, slot, root, name, tenant_digest, parametrization_fields):
         failure = self._record(
             "export_slot",
             slot=slot,
             root=root,
             adapter_name=name,
-            tenant=tenant,
+            tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
         )
         if failure is not None:
@@ -152,7 +152,7 @@ class FakeBackend:
             "model.layers.0.self_attn.q_proj.lora_A": torch.zeros(parametrization.lora_rank, 4),
             "model.layers.0.self_attn.q_proj.lora_B": torch.zeros(4, parametrization.lora_rank),
         }
-        with write_adapter_dir(Path(root), name, tenant=tenant) as written:
+        with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
             write_sampler_adapter(written.path, weights, parametrization, _TARGETS)
         return written
 

@@ -56,7 +56,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.logging_utils import rebind_env_reporting
-from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets, has_hf_lora_targets
 from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import partition
@@ -342,7 +342,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.snapshot_publisher = SnapshotPublisher(
                 iterator, build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
             )
-            if is_lora and args.megatron_to_hf_mode == "bridge":
+            if is_lora and args.megatron_to_hf_mode == "bridge" and has_hf_lora_targets(self.hf_config.to_dict()):
                 self.adapter_slots = BridgeAdapterSlots(
                     self.model,
                     iterator,

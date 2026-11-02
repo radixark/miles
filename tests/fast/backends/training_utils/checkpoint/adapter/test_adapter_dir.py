@@ -6,7 +6,6 @@ from functools import partial
 from pathlib import Path
 
 import pytest
-
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint
@@ -15,7 +14,11 @@ from tests.fast.dist_utils import init_gloo, run_multiprocess
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import load_adapter_dir, save_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
-from miles.backends.training_utils.checkpoint.adapter.commit import commit_adapter_dir, resolve_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.commit import (
+    commit_adapter_dir,
+    resolve_adapter_dir,
+    tenant_digest,
+)
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
@@ -59,7 +62,9 @@ class FakeMembers:
 
 def _save(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
-    written = save_adapter_dir(Path(root), "w", FakeMembers(), 0, RUN, tenant="alice", training_state={"iteration": 3})
+    written = save_adapter_dir(
+        Path(root), "w", FakeMembers(), 0, RUN, tenant_digest=tenant_digest("alice"), training_state={"iteration": 3}
+    )
     if rank == 0:
         commit_adapter_dir(Path(root), "w", written, overwrite=False)
     dist.destroy_process_group()
@@ -123,7 +128,7 @@ def _rank0_cannot_create(rank, world_size, port, *, root):
     else:
         root = str(Path(root, "blocker"))
     with pytest.raises(RuntimeError, match="adapter checkpoint failed"):
-        save_adapter_dir(Path(root), "w", FakeMembers(), 0, RUN, tenant=None)
+        save_adapter_dir(Path(root), "w", FakeMembers(), 0, RUN, tenant_digest=None)
     dist.destroy_process_group()
 
 
@@ -166,7 +171,7 @@ class WeightsOnlyMembers(FakeMembers):
 
 
 def test_a_weights_only_dir_loads_without_optimizer_and_refuses_with_it(tmp_path):
-    written = save_adapter_dir(tmp_path, "w", WeightsOnlyMembers(), 0, RUN, tenant=None)
+    written = save_adapter_dir(tmp_path, "w", WeightsOnlyMembers(), 0, RUN, tenant_digest=None)
     members = FakeMembers()
     load_adapter_dir(written.path, members, 0, RUN, TARGETS, load_optimizer=False)
     assert torch.equal(members.imported.weights[1], FULL["lora_B"]) and members.imported.step == 0
@@ -188,7 +193,7 @@ class ExtraKeyMembers(FakeMembers):
 
 def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_save(tmp_path):
     with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
-        save_adapter_dir(tmp_path, "w", ExtraKeyMembers(), 0, RUN, tenant=None)
+        save_adapter_dir(tmp_path, "w", ExtraKeyMembers(), 0, RUN, tenant_digest=None)
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
 
 
@@ -242,7 +247,7 @@ class NoPrimaryAMembers(FakeMembers):
 def _save_without_a_primary(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
     with pytest.raises(RuntimeError, match="missing .*lora_A"):
-        save_adapter_dir(Path(root), "w", NoPrimaryAMembers(), 0, RUN, tenant=None)
+        save_adapter_dir(Path(root), "w", NoPrimaryAMembers(), 0, RUN, tenant_digest=None)
     dist.destroy_process_group()
 
 
@@ -292,4 +297,4 @@ class PaddedRankMembers(FakeMembers):
 
 def test_a_padded_rank_is_refused_at_save(tmp_path):
     with pytest.raises(RuntimeError, match="rank 3 != 2"):
-        save_adapter_dir(tmp_path, "w", PaddedRankMembers(), 0, RUN, tenant=None)
+        save_adapter_dir(tmp_path, "w", PaddedRankMembers(), 0, RUN, tenant_digest=None)

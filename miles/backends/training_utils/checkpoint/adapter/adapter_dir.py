@@ -68,12 +68,12 @@ def save_adapter_dir(
     slot: int,
     parametrization: AdapterParametrization,
     *,
-    tenant: str | None,
+    tenant_digest: str | None,
     training_state: dict | None = None,
 ) -> UncommittedAdapterDir:
     """All ranks call; the caller's committer then runs ``commit_adapter_dir``."""
     assert parametrization.lora_alpha is not None, "lora_alpha must be resolved before an adapter dir is saved"
-    with write_adapter_dir(root, name, tenant=tenant) as written:
+    with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
         state, error = None, None
         try:
             state = members.export_adapter_state(slot)
@@ -154,10 +154,10 @@ def write_sampler_export(
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
     *,
-    tenant: str | None,
+    tenant_digest: str | None,
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export. The caller's committer then commits it."""
-    with write_adapter_dir(root, name, tenant=tenant) as written:
+    with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
         named_tensors = list(members.export_bf16_adapter(slot))
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, targets)
