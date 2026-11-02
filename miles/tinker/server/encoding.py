@@ -42,9 +42,9 @@ def assert_installed_sdk_version() -> None:
     ), f"the gateway validates requests with tinker=={TINKER_SDK_VERSION}, found {tinker.__version__}"
 
 
-def validate_sdk_version(payload: dict) -> None:
+def validate_sdk_version(payload) -> None:
     """Other SDK versions send fields and semantics this gateway was not written for."""
-    client_version = payload.get("sdk_version")
+    client_version = validate_against_sdk(tinker_types.ClientConfigRequest, payload).sdk_version
     if client_version != TINKER_SDK_VERSION:
         raise UserInputError(
             f"Tinker SDK version mismatch: client is {client_version}, this gateway serves the "
