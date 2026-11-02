@@ -4,9 +4,7 @@ The HF layout of every Megatron adapter element (TP / EP shards, the qkv group p
 GDN in_proj, per-expert names) comes from Bridge's own export, run once on index-valued parameters.
 """
 
-import bisect
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
 from typing import Literal
 
 import torch
@@ -24,7 +22,12 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_peft_keys_to_hf_keys,
     split_fused_lora_b,
 )
-from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
+    HfPiece,
+    ProbedAdapterSlots,
+    RowMapping,
+    rectangle,
+)
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 from miles.utils.lora.utils import AdapterSpec
 
@@ -33,42 +36,15 @@ from miles.utils.lora.utils import AdapterSpec
 _RANK_STRIDE = 2**40
 
 
-@dataclass(frozen=True)
-class _HfPiece:
-    """This rank's rectangle of one HF-keyed tensor and where each of its elements lives locally."""
-
-    key: str
-    global_shape: tuple[int, ...]
-    offsets: tuple[int, ...]
-    # offsets into the rank's concatenated adapter elements, in HF order; its shape is the rectangle's
-    local_elements: torch.Tensor
-
-
-@dataclass(frozen=True)
-class BridgeRowMapping:
-    pieces: list[_HfPiece]
-    # HF modules whose lora_A is one Megatron parameter, in export order
-    shared_lora_a_groups: tuple[tuple[str, ...], ...]
-    target_modules: tuple[str, ...]
-
-
-def _rectangle(name: str, mine: torch.Tensor) -> tuple[slice, ...]:
-    positions = mine.nonzero()
-    low, high = positions.min(0).values.tolist(), (positions.max(0).values + 1).tolist()
-    box = tuple(slice(lo, hi) for lo, hi in zip(low, high, strict=True))
-    assert mine[box].all(), f"{name}: this rank's elements are not one rectangle"
-    return box
-
-
-def _piece(key: str, codes: torch.Tensor, rank: int) -> _HfPiece | None:
+def _piece(key: str, codes: torch.Tensor, rank: int) -> HfPiece | None:
     mine = codes // _RANK_STRIDE == rank
     if not mine.any():
         return None
-    box = _rectangle(key, mine)
-    return _HfPiece(key, tuple(codes.shape), tuple(s.start for s in box), (codes[box] % _RANK_STRIDE).cpu())
+    box = rectangle(key, mine)
+    return HfPiece(key, tuple(codes.shape), tuple(s.start for s in box), (codes[box] % _RANK_STRIDE).cpu())
 
 
-def _stack_experts(key: str, pieces_by_expert: dict[int, _HfPiece], num_experts: int) -> _HfPiece:
+def _stack_experts(key: str, pieces_by_expert: dict[int, HfPiece], num_experts: int) -> HfPiece:
     experts = sorted(pieces_by_expert)
     assert experts == list(range(experts[0], experts[-1] + 1)), f"{key}: this rank's experts are not contiguous"
     first = pieces_by_expert[experts[0]]
@@ -76,7 +52,7 @@ def _stack_experts(key: str, pieces_by_expert: dict[int, _HfPiece], num_experts:
         p.offsets == first.offsets and p.local_elements.shape == first.local_elements.shape
         for p in pieces_by_expert.values()
     ), f"{key}: this rank holds different rectangles of different experts"
-    return _HfPiece(
+    return HfPiece(
         key,
         (num_experts, *first.global_shape),
         (experts[0], *first.offsets),
@@ -89,7 +65,7 @@ def probe_bridge_row_mapping(
     export_adapter: Callable[[], Iterable[tuple[str, torch.Tensor]]],
     targets: HfLoraTargets,
     map_name: Callable[[str], HfKey] = map_peft_keys_to_hf_keys,
-) -> BridgeRowMapping:
+) -> RowMapping:
     """Collective: run ``export_adapter`` (a backend's HF-named export, names mapped by ``map_name``) on
     index-valued ``params``."""
     rank = dist.get_rank()
@@ -97,7 +73,7 @@ def probe_bridge_row_mapping(
     assert total < _RANK_STRIDE and dist.get_world_size() < 2**53 // _RANK_STRIDE, "the probe encoding overflows"
     saved = [p.data for p in params]
     pieces, a_sources, modules = [], {}, set()
-    per_expert: dict[str, dict[int, _HfPiece]] = {}
+    per_expert: dict[str, dict[int, HfPiece]] = {}
     num_experts: dict[str, int] = {}
 
     def decode(name: str, tensor: torch.Tensor) -> None:
@@ -166,24 +142,14 @@ def probe_bridge_row_mapping(
     # pipeline stages export different layers; every rank needs the whole parametrization
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
-    return BridgeRowMapping(
+    return RowMapping(
         pieces,
         tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
         tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
     )
 
 
-def _owning_parameter(starts: list[int], elements: torch.Tensor) -> int:
-    index = bisect.bisect_right(starts, int(elements.min())) - 1
-    assert int(elements.max()) < starts[index + 1], "a piece spans two parameters"
-    return index
-
-
-def _rank_axis(key: str, ndim: int) -> int:
-    return ndim - 2 if key.endswith(".lora_A") else ndim - 1
-
-
-class BridgeAdapterSlots:
+class BridgeAdapterSlots(ProbedAdapterSlots):
     """Checkpoint members of Bridge LoRA; single LoRA is slot 0 of one, multi-LoRA slots are its MultiLoRALinears'.
 
     Multi-LoRA slots are padded to ``max_rank``; a slot's HF tensors have its real rank.
@@ -229,105 +195,3 @@ class BridgeAdapterSlots:
                 yield from self._iterator.iter_current_adapter()
 
         return exported()
-
-    def lora_rank(self, slot: int) -> int | None:
-        """None for single LoRA, whose tensors are never padded."""
-        spec = self._slot_spec(slot)
-        return None if spec is None else spec.rank
-
-    def _pieces(self, slot: int, holds: frozenset[int] | None = None) -> list[tuple[_HfPiece, tuple[slice, ...]]]:
-        """Each piece (of a held parameter) with the part of it inside the slot's real rank."""
-        rank = self.lora_rank(slot)
-        starts = self._param_starts(slot) if holds is not None else None
-        result = []
-        for piece in self.row_mapping.pieces:
-            if holds is not None and _owning_parameter(starts, piece.local_elements) not in holds:
-                continue
-            within = [slice(None)] * len(piece.global_shape)
-            if rank is not None:
-                axis = _rank_axis(piece.key, len(piece.global_shape))
-                within[axis] = slice(0, max(0, min(piece.local_elements.shape[axis], rank - piece.offsets[axis])))
-            if all(s.stop != 0 for s in within):
-                result.append((piece, tuple(within)))
-        return result
-
-    def get_local_shard_specs(self, slot: int) -> list[LocalShardSpec]:
-        return self.local_shard_specs(slot, holds=None)
-
-    def local_shard_specs(self, slot: int, holds: frozenset[int] | None) -> list[LocalShardSpec]:
-        """Collective. ``holds``: indices into ``slot_parameters(slot)`` whose state this rank keeps (None: all).
-
-        Among ranks holding an identical piece, the lowest writes it.
-        """
-        rank = self.lora_rank(slot)
-        key = (rank, holds)
-        if key not in self._specs:
-            boxes = []
-            for piece, within in self._pieces(slot, holds):
-                global_shape = list(piece.global_shape)
-                if rank is not None:
-                    global_shape[_rank_axis(piece.key, len(global_shape))] = rank
-                boxes.append(
-                    (piece.key, tuple(global_shape), piece.offsets, tuple(piece.local_elements[within].shape))
-                )
-            gathered = [None] * dist.get_world_size()
-            dist.all_gather_object(gathered, boxes, group=gloo_group())
-            first_holder = {}
-            for holder, rank_boxes in enumerate(gathered):
-                for box in rank_boxes:
-                    first_holder.setdefault(box, holder)
-            self._specs[key] = [LocalShardSpec(*box, is_primary=first_holder[box] == dist.get_rank()) for box in boxes]
-        return self._specs[key]
-
-    def local_pieces(
-        self, slot: int, tensors: Sequence[torch.Tensor], holds: frozenset[int] | None = None
-    ) -> list[torch.Tensor]:
-        """``tensors`` aligned with ``slot_parameters(slot)`` (the parameters, their masters or moments) cut into
-        the pieces ``local_shard_specs(slot, holds)`` describes."""
-        pieces = self._pieces(slot, holds)
-        if not pieces:
-            return []
-        flat = torch.cat([t.detach().reshape(-1) for t in tensors])
-        return [flat[piece.local_elements[within].to(flat.device)] for piece, within in pieces]
-
-    def piece_parameter(self, slot: int, holds: frozenset[int] | None) -> list[tuple[int, torch.Tensor]]:
-        """For each piece: the index of the one parameter it comes from and its elements' offsets in it."""
-        starts = self._param_starts(slot)
-        result = []
-        for piece, within in self._pieces(slot, holds):
-            elements = piece.local_elements[within]
-            index = _owning_parameter(starts, elements)
-            result.append((index, elements - starts[index]))
-        return result
-
-    def _param_starts(self, slot: int) -> list[int]:
-        starts, start = [], 0
-        for param in self.slot_parameters(slot):
-            starts.append(start)
-            start += param.numel()
-        return [*starts, start]
-
-    def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
-        is_writer = dist.get_rank() == 0
-        return self._iterator.materialize_adapter(self._slot_spec(slot), materialize=is_writer).items()
-
-    def parametrization(
-        self,
-        *,
-        base_model: str,
-        lora_rank: int,
-        lora_alpha: float,
-        lora_type: str,
-        experts_shared_outer_loras: bool,
-    ) -> AdapterParametrization:
-        """Targets and shared-A groups are the model's (same for every slot); the rest is the caller's."""
-        mapping = self.row_mapping
-        return AdapterParametrization(
-            base_model=base_model,
-            lora_rank=lora_rank,
-            lora_alpha=lora_alpha,
-            lora_type=lora_type,
-            target_modules=mapping.target_modules,
-            experts_shared_outer_loras=experts_shared_outer_loras,
-            shared_lora_a_groups=mapping.shared_lora_a_groups,
-        )
