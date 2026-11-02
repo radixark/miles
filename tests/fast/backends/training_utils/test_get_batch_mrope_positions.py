@@ -56,3 +56,36 @@ def test_every_cp_rank_rotates_each_token_with_its_own_position(monkeypatch, cp_
         ).view(-1)
         real = tokens != 0
         assert torch.equal(rows[real].long(), tokens[real])
+
+
+@pytest.mark.parametrize("cp_size", [1, 2, 4])
+def test_tower_rows_land_on_the_rank_holding_their_token(monkeypatch, cp_size):
+    monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
+    lengths = [13, 5, 9]
+    token_ids = [1000 * (i + 1) + torch.arange(n) for i, n in enumerate(lengths)]
+    image_positions = [torch.tensor([2, 3, 4, 11]), None, torch.tensor([0, 8])]
+    rollout = {
+        "tokens": token_ids,
+        "multimodal_train_inputs": [
+            None if positions is None else {"mm_image_positions": positions} for positions in image_positions
+        ],
+        "loss_masks": [torch.ones(n // 2, dtype=torch.int) for n in lengths],
+        "total_lengths": lengths,
+        "response_lengths": [n // 2 for n in lengths],
+    }
+    # The token every tower row belongs to, in the order the rows are concatenated.
+    expected = torch.cat([token_ids[i][p] for i, p in enumerate(image_positions) if p is not None])
+
+    placed = torch.zeros_like(expected)
+    times_placed = torch.zeros_like(expected)
+    for cp_rank in range(cp_size):
+        batch = _get_batch(monkeypatch, rollout, cp_rank=cp_rank, cp_size=cp_size)
+
+        rows = batch["multimodal_train_inputs"]["mm_image_positions"]
+        on_rank = rows >= 0
+        placed[on_rank] = batch["tokens"][0, rows[on_rank]]
+        times_placed += on_rank
+
+    # Every row is placed exactly once across the CP ranks, at its own token.
+    assert times_placed.eq(1).all()
+    assert torch.equal(placed, expected)
