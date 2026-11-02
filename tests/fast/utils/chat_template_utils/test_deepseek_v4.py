@@ -290,6 +290,9 @@ def test_encoder_kwargs_recipe_does_not_take_are_rejected(spec):
         _ids(spec, _MSGS_BASIC, drop_thinking=False)
     with pytest.raises(ValueError):
         _ids(spec, _MSGS_BASIC, thinking_mode="think")
+    # Sessions resolve thinking when the TITO tokenizer is built, before any render.
+    with pytest.raises(ValueError):
+        _TITO_CLASSES[spec](_tokenizer(spec), chat_template_kwargs={"thinking_mode": "think"})
 
 
 # ---------------------------------------------------------------------------

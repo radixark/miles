@@ -72,6 +72,8 @@ class DeepSeekFamily:
             kwargs.setdefault("thinking_mode", "thinking" if thinking else "chat")
         # encode_messages requires thinking_mode; thinking-on matches the server default
         kwargs.setdefault("thinking_mode", "thinking")
+        if kwargs["thinking_mode"] not in ("thinking", "chat", None):
+            raise ValueError(f"thinking_mode must be 'thinking' or 'chat', got {kwargs['thinking_mode']!r}")
         return kwargs
 
     def render_thinking_enabled(self, chat_template_kwargs: dict[str, Any]) -> bool:
@@ -234,10 +236,7 @@ class DeepSeekRecipeFamily(DeepSeekFamily):
         **kwargs: Any,
     ) -> list[int]:
         config = self._build_encode_config(kwargs)
-        mode = config.pop("thinking_mode")
-        if mode not in ("thinking", "chat"):
-            raise ValueError(f"thinking_mode must be 'thinking' or 'chat', got {mode!r}")
-        thinking = mode == "thinking"
+        thinking = config.pop("thinking_mode") == "thinking"
         effort, budget = self._resolve_effort(config.pop("reasoning_effort", None))
         if config:
             raise TypeError(f"{self.spec} renders through deepseek-recipe, which takes no {sorted(config)}")
