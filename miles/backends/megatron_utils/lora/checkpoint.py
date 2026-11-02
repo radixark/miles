@@ -5,7 +5,6 @@ fp32 master (a Float16 child's ``fp32_from_float16_groups``) and its Adam state;
 """
 
 import json
-import re
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -20,7 +19,11 @@ from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 from megatron.core.utils import unwrap_model
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_checkpoint import (
+    OPTIMIZER_KEY,
+    BridgeAdapterSlots,
+    MegatronBridgeCheckpointLoader,
+)
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
@@ -47,8 +50,6 @@ from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
-# a ChainedOptimizer prefixes each child's keys with chained_<i>.
-_LEGACY_OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
 
 
 class LayerWiseSlotMembers:
@@ -338,7 +339,7 @@ def find_load_mismatch(
             saved = {
                 k
                 for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
-                if ".adapter." in k and "_extra_state" not in k and not _LEGACY_OPTIMIZER_KEY.match(k)
+                if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
             }
             expected = {
                 sharded.key
@@ -503,6 +504,9 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
     load_optimizer = not args.backend.no_load_optim
     path = Path(args.lora_adapter_path)
     legacy = LegacyRankShardLoader(model, optimizer, run, load_optimizer)
+    bridge = MegatronBridgeCheckpointLoader(
+        model, optimizer, lambda: members.export_adapter_state(0), run, load_optimizer
+    )
     load_adapter_dir(
         path,
         members,
@@ -510,7 +514,10 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
         run,
         targets,
         load_optimizer=load_optimizer,
-        in_model_loaders_by_kind={AdapterSourceKind.LEGACY_RANK_SHARD: legacy},
+        in_model_loaders_by_kind={
+            AdapterSourceKind.LEGACY_RANK_SHARD: legacy,
+            AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT: bridge,
+        },
     )
     training_state = legacy.training_state if legacy.training_state is not None else read_training_state(path)
     if args.lora_adapter_convert_save is not None:

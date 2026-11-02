@@ -1,10 +1,13 @@
-"""The row-mapping probe recovers each rank's HF pieces, primaries and shared A from an export alone."""
+"""The row-mapping probe recovers each rank's HF pieces, primaries and shared A from an export alone; a Megatron-Bridge
+run_config.yaml is accepted only when it trained the LoRA this run trains."""
 
+import pytest
 import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_checkpoint import check_bridge_run_config, probe_bridge_row_mapping
+from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 Q, K = "model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj"
@@ -87,3 +90,74 @@ def _probe_experts(rank, world_size, port):
 
 def test_probe_stacks_ep_split_experts_and_stores_a_shared_expert_a_once():
     run_multiprocess(_probe_experts)
+
+
+def _run(**overrides) -> AdapterParametrization:
+    fields = dict(
+        base_model="base",
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_type="lora",
+        target_modules=("model.layers.0.self_attn.q_proj", "model.layers.0.mlp.experts.down_proj"),
+        experts_shared_outer_loras=False,
+    )
+    return AdapterParametrization(**(fields | overrides))
+
+
+def _bridge_config(**peft) -> dict:
+    return {
+        "peft": {
+            "_target_": "megatron.bridge.peft.lora.LoRA",
+            "dim": 8,
+            "alpha": 32,
+            "dropout": 0.0,
+            "exclude_modules": [],
+            "lora_dtype": None,
+            "share_expert_adapters": False,
+        }
+        | peft,
+        "optimizer": {"optimizer": "adam", "use_distributed_optimizer": True, "exp_avg_dtype": None},
+        "checkpoint": {"save_optim": True},
+    }
+
+
+def test_a_bridge_run_config_of_the_same_lora_is_accepted():
+    check_bridge_run_config(_bridge_config(), _run(), params_dtype=torch.bfloat16, load_optimizer=True)
+
+
+@pytest.mark.parametrize(
+    "peft, match",
+    [
+        ({"_target_": "megatron.bridge.peft.dora.DoRA"}, "neither LoRA nor CanonicalLoRA"),
+        ({"_target_": "megatron.bridge.peft.canonical_lora.CanonicalLoRA"}, "lora_type='canonical_lora'"),
+        ({"dim": 16}, "lora_rank=16"),
+        ({"dropout": 0.1}, "dropout"),
+        ({"share_expert_adapters": True}, "share_expert_adapters"),
+        ({"lora_dtype": {"_target_": "torch.float32", "_call_": False}}, "lora_dtype"),
+        ({"normalize_moe_lora": True}, "normalize_moe_lora"),
+    ],
+)
+def test_a_bridge_run_config_of_another_lora_is_refused(peft, match):
+    with pytest.raises(AssertionError, match=match):
+        check_bridge_run_config(_bridge_config(**peft), _run(), params_dtype=torch.bfloat16, load_optimizer=False)
+
+
+def test_share_expert_adapters_defaults_to_bridge_behaviour_and_matters_only_for_per_expert_adapters():
+    config = _bridge_config()
+    del config["peft"]["share_expert_adapters"]
+    with pytest.raises(AssertionError, match="share_expert_adapters"):
+        check_bridge_run_config(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
+    dense = _run(target_modules=("model.layers.0.self_attn.q_proj",))
+    check_bridge_run_config(config, dense, params_dtype=torch.bfloat16, load_optimizer=False)
+
+
+def test_adam_state_needs_a_distributed_fp32_adam_source():
+    config = _bridge_config()
+    config["optimizer"]["use_distributed_optimizer"] = False
+    check_bridge_run_config(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
+    with pytest.raises(AssertionError, match="--no-load-optim"):
+        check_bridge_run_config(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)
+    config = _bridge_config()
+    config["optimizer"]["exp_avg_dtype"] = {"_target_": "torch.bfloat16", "_call_": False}
+    with pytest.raises(AssertionError, match="exp_avg_dtype must be fp32"):
+        check_bridge_run_config(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)
