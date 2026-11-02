@@ -17,6 +17,8 @@ ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
 ARG TORCHTITAN_REPO=pytorch/torchtitan
+# The torchtitan backend needs torch>=2.14 (setup.py); this image keeps its sglang base's torch 2.13, so
+# the backend refuses to start here. The pin only keeps the three image files consistent.
 ARG TORCHTITAN_COMMIT=45e33cd413b64cb37a7840cfd3c9765d3c639ae1
 
 ARG ENABLE_CUDA_13=0

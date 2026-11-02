@@ -77,9 +77,11 @@ if a['name'].startswith('sglang_router-') and a['name'].endswith('.whl')))") && 
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
 
-# imports only, before MILES_ACCELERATOR=tpu: the build host has no TPU
-RUN python3 -c 'import sglang.srt.entrypoints.http_server, sglang_tpu, torch, ray, torchtitan.trainer, \
-miles.backends.torchtitan_utils.actor; assert torch.__version__.startswith("'"${TORCH_VERSION}"'"), torch.__version__'
+# imports only, before MILES_ACCELERATOR=tpu: the build host has no TPU. miles' torchtitan package goes
+# first: it backports the torch 2.15 APIs torchtitan 0.4.0 imports, and training_engine is what miles runs.
+RUN python3 -c 'import sglang.srt.entrypoints.http_server, sglang_tpu, torch, ray, \
+miles.backends.torchtitan_utils.actor, torchtitan.training_engine; \
+assert torch.__version__.startswith("'"${TORCH_VERSION}"'"), torch.__version__'
 
 ENV MILES_ACCELERATOR=tpu
 WORKDIR /root/miles
