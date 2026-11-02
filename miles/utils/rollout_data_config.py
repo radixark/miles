@@ -11,7 +11,7 @@ datasets:
     samples_per_step: 5
     max_prompt_len: 8192
     max_response_len: 32768
-    generate_function: my_pkg.agent_generate
+    custom_generate_function_path: my_pkg.agent_generate
     agent:
       max_turns: 50
 ```
@@ -44,7 +44,7 @@ class RolloutDatasetConfig(BaseModel):
     sha256: str | None = None
     max_prompt_len: int | None = Field(default=None, ge=1)
     max_response_len: int | None = Field(default=None, ge=1)
-    generate_function: str | None = Field(default=None, min_length=1)
+    custom_generate_function_path: str | None = Field(default=None, min_length=1)
     # free-form, for this dataset's generate function
     agent: dict[str, Any] | None = None
 
@@ -52,7 +52,7 @@ class RolloutDatasetConfig(BaseModel):
     @classmethod
     def _require_quoted_sha256(cls, value: Any) -> Any:
         if isinstance(value, int | float):
-            raise ValueError("YAML read the sha256 prefix as a number; quote it, e.g. sha256: \"00001234\"")
+            raise ValueError('YAML read the sha256 prefix as a number; quote it, e.g. sha256: "00001234"')
         return value
 
     @field_validator("sha256")
