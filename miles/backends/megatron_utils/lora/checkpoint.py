@@ -10,6 +10,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
+import torch.distributed.checkpoint as dcp
 from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.distributed import DistributedDataParallel as DDP
@@ -18,10 +20,18 @@ from megatron.core.utils import unwrap_model
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import load_adapter_dir, save_adapter_dir
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, gloo_group
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
-from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
+    assert_parametrization_matches_run,
+    plan_parametrization_conversion,
+)
+from miles.backends.training_utils.checkpoint.adapter.readers import (
+    AdapterSourceKind,
+    MilesAdapterDirReader,
+    classify_adapter_source,
+)
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
@@ -143,6 +153,54 @@ def load_slot(
         load_optimizer=load_optimizer,
         in_model_loaders_by_kind={AdapterSourceKind.LEGACY_TINKER_CHECKPOINT: legacy},
     )
+
+
+def find_load_mismatch(
+    model: Sequence[DDP],
+    slot: int,
+    path: str,
+    run: AdapterParametrization,
+    targets,
+    load_optimizer: bool,
+) -> str | None:
+    """Collective: why ``path`` cannot load into ``slot`` (every rank gets the same answer), or None.
+
+    A legacy checkpoint records no adapter layout in META.json, so its tensor keys are compared with the slot's,
+    e.g. one fused GDN in_proj adapter saved before the canonical in_proj_q/k/v/z split.
+    """
+    path = Path(path)
+    mismatch = None
+    try:
+        kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
+        if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
+            saved = {
+                k
+                for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+                if not k.startswith("optimizer.")
+            }
+            expected = set()
+            for sharded in nested_values(_canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)):
+                expected.add(sharded.key)
+            if not expected <= saved:
+                mismatch = (
+                    f"{path} was saved with another adapter layout than this gateway trains "
+                    f"(missing e.g. {sorted(expected - saved)[:3]}); load it on a gateway with the layout it was saved with"
+                )
+        elif kind == AdapterSourceKind.ADAPTER_DIR:
+            source = MilesAdapterDirReader(path, targets).source
+            steps = plan_parametrization_conversion(source.parametrization, run, source_dtype=source.weight_dtype)
+            assert_parametrization_matches_run(
+                source.parametrization,
+                run,
+                steps,
+                load_optimizer=load_optimizer,
+                has_optimizer_state=source.has_optimizer_state,
+            )
+    except (AssertionError, ValueError) as error:
+        mismatch = f"{path} cannot load into this model: {error}"
+    gathered = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered, mismatch, group=gloo_group())
+    return next((m for m in gathered if m is not None), None)
 
 
 class LegacyTinkerCheckpointLoader:

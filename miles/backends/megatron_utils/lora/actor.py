@@ -64,7 +64,19 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         ckpt_path: str | None = None,
         load_optimizer: bool = True,
         parametrization_fields: dict | None = None,
-    ) -> None:
+    ) -> dict | None:
+        """A source the slot cannot take is refused before the slot changes, as a user error."""
+        if ckpt_path is not None:
+            mismatch = lora_checkpoint.find_load_mismatch(
+                self.model,
+                slot,
+                ckpt_path,
+                self.adapter_slots.parametrization(**parametrization_fields),
+                self.adapter_slots.targets,
+                load_optimizer,
+            )
+            if mismatch is not None:
+                return {"error": mismatch, "error_category": "user"}
         self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, slot, rank, alpha)
         if ckpt_path is not None:
             lora_checkpoint.load_slot(
@@ -76,6 +88,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
                 self.adapter_slots.targets,
                 load_optimizer,
             )
+        return None
 
     @with_logs
     def save_slot(
