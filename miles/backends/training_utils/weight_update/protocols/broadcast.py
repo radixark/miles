@@ -29,6 +29,8 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
+        # the weight checker scrambles the engine base before the first sync
+        self.needs_base_resync_for_lora = args.check_weight_update_equal
         self._model_update_groups = None
         parallel_state = get_parallel_state()
         self._engine_lock: AbstractContextManager = (
