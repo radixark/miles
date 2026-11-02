@@ -12,6 +12,7 @@ from miles.utils.test_utils import session_verify_agent
 from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
     ASSISTANT_INPUT_TEXTS,
+    FORCE_FINAL_TEXT,
     DriverAction,
     fixed_template_append_roles,
     run_agent,
@@ -202,6 +203,54 @@ def test_assistant_input_generated_response_is_rolled_back_and_regenerated(monke
     assert result["driver_events"] == ["initial", "append_assistant", "rollback"]
     assert result["assistant_input_count"] == 2
     assert result["user_count"] == 1
+    assert result["rollback_count"] == 1
+
+
+def test_unanswered_tool_call_is_rolled_back_before_force_final(monkeypatch):
+    calls = []
+    tool_call = {
+        "id": "call_0",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": '{"city": "Beijing"}'},
+    }
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    async def fake_chat(client, base_url, messages, request_kwargs, *, label):
+        calls.append(deepcopy(messages))
+        # The initial turn and the turn after the tool result both call the tool.
+        tool_calls = [tool_call] if len(calls) <= 2 else []
+        return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": tool_calls}}]}
+
+    monkeypatch.setattr(session_verify_agent.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(session_verify_agent, "_chat", fake_chat)
+    monkeypatch.setattr(
+        session_verify_agent,
+        "select_schedule",
+        lambda allowed_roles, *, cycles: [DriverAction.TOOL_RESULT, DriverAction.FORCE_FINAL],
+    )
+
+    result = asyncio.run(
+        run_agent(
+            "http://session",
+            prompt=None,
+            request_kwargs={},
+            metadata={"tito_model": "qwen3"},
+        )
+    )
+
+    force_final_request = calls[2]
+    assert [message["role"] for message in force_final_request] == ["system", "user", "assistant", "tool", "user"]
+    assert force_final_request[-1] == {"role": "user", "content": FORCE_FINAL_TEXT}
+    assert result["driver_events"] == ["initial", "append_tool", "unexpected_tool_call_rollback", "force_final"]
     assert result["rollback_count"] == 1
 
 

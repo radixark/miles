@@ -320,6 +320,13 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
         for step_idx, action in enumerate(schedule):
             label = f"Step {step_idx + 1} {action.value}"
 
+            # Roll back a tool call this step will not answer before running the step:
+            # strict renderers (DeepSeek V4 / V4.1) reject an unanswered call.
+            if action not in (DriverAction.TOOL_RESULT, DriverAction.ROLLBACK) and assistant.get("tool_calls"):
+                messages.pop()
+                counters["rollback_count"] += 1
+                events.append("unexpected_tool_call_rollback")
+
             if action is DriverAction.TOOL_RESULT:
                 tool_calls = assistant.get("tool_calls") or []
                 if tool_calls:
