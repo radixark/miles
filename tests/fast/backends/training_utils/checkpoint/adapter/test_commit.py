@@ -10,12 +10,13 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
     delete_adapter_dir,
     delete_unreferenced_adapter_dirs,
     resolve_adapter_dir,
+    tenant_digest,
     write_adapter_dir,
 )
 
 
 def _save(root, name, payload, *, tenant="alice", overwrite=True):
-    with write_adapter_dir(root, name, tenant=tenant) as written:
+    with write_adapter_dir(root, name, tenant_digest=None if tenant is None else tenant_digest(tenant)) as written:
         (written.path / "payload").write_text(payload)
     return commit_adapter_dir(root, name, written, overwrite=overwrite)
 
