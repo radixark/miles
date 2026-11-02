@@ -9,6 +9,7 @@ import pytest
 
 import torch
 import torch.distributed as dist
+import torch.distributed.checkpoint
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import load_adapter_dir, save_adapter_dir
@@ -138,7 +139,9 @@ def test_a_rank0_prepare_failure_fails_every_rank_instead_of_hanging():
 
 
 def test_an_in_model_source_without_alpha_takes_the_runs(tmp_path):
-    (tmp_path / ".metadata").write_bytes(b"")
+    torch.distributed.checkpoint.save(
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+    )
     source = load_adapter_dir(
         tmp_path,
         FakeMembers(),

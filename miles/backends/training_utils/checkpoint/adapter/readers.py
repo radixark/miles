@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import torch
+import torch.distributed.checkpoint as dcp
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     ADAPTER_STATE_DIRNAME,
@@ -84,9 +85,12 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
     if (path / ".metadata").is_file():
         if (path / "META.json").is_file():
             return AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
-        if (path / "run_config.yaml").is_file():
+        keys = list(dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
+        if (path / "run_config.yaml").is_file() and any(".adapter." in k for k in keys):
             return AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT
-        return AdapterSourceKind.TORCHTITAN_CHECKPOINT
+        if any(".lora_a." in k or ".lora_b." in k for k in keys):
+            return AdapterSourceKind.TORCHTITAN_CHECKPOINT
+        raise ValueError(f"{path} is a DCP checkpoint with neither Megatron-Bridge nor torchtitan LoRA keys")
     if any(path.glob("adapter_megatron_rank*.pt")) or any(path.glob("adapter_megatron_tp*_pp*.pt")):
         if not load_optimizer and _has_peft_files(path):
             return AdapterSourceKind.PEFT

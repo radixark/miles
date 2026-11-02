@@ -164,3 +164,26 @@ def test_bf16_input_with_a_shared_a_group_writes(tmp_path, write):
     group = EXPERTS[:2]
     weights = {k: v.to(torch.bfloat16) for k, v in _weights(False).items() if k != f"{group[1]}.lora_A"}
     write(tmp_path, weights, _run(shared_lora_a_groups=(group,)))
+
+
+@pytest.mark.parametrize(
+    "key, run_config, kind",
+    [
+        ("decoder.layers.0.self_attention.linear_qkv.adapter.linear_in.weight", True, "megatron_bridge_checkpoint"),
+        ("model.layers.0.attention.wq.lora_a.weight", False, "torchtitan_checkpoint"),
+        ("decoder.layers.0.self_attention.linear_qkv.weight", True, None),
+        ("model.layers.0.self_attn.q_proj.lora_A.weight", False, None),
+    ],
+    ids=["bridge", "torchtitan", "bridge_without_adapter", "miles_adapter_state"],
+)
+def test_dcp_sources_are_classified_by_their_keys(tmp_path, key, run_config, kind):
+    import torch.distributed.checkpoint as dcp
+
+    dcp.save({key: torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True)
+    if run_config:
+        (tmp_path / "run_config.yaml").write_text("{}")
+    if kind is None:
+        with pytest.raises(ValueError, match="neither"):
+            classify_adapter_source(tmp_path, QWEN3, load_optimizer=True)
+    else:
+        assert classify_adapter_source(tmp_path, QWEN3, load_optimizer=True).value == kind
