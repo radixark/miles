@@ -12,25 +12,47 @@ expanded tokens:
   output row, from the processor's ``mm_spans``;
 - its mRoPE positions, [num_tokens, 3], text-only samples included. They are not multimodal inputs but the
   model's ``position_ids``, so they travel apart; ``get_batch`` packs them like the tokens.
+
+The rebuild runs on a background thread from the moment the rollout data arrives. Until a sample's rebuild
+finishes, its entries are ``Future`` objects; ``get_batch`` resolves the entries of the micro-batch it assembles
+and waits only for those.
 """
 
 import asyncio
 import functools
 import json
 from collections.abc import Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, TypeVar
 
 import torch
 
 from miles.utils.processing_utils import extract_multimodal_train_inputs
 
 
+T = TypeVar("T")
+
+
 class TokenSpaceTrainInputs(NamedTuple):
     # Each sample's processor tensors and tower row placement, or None for a text-only sample.
-    multimodal_train_inputs: list[dict[str, torch.Tensor] | None]
-    # Each sample's [num_tokens, 3] mRoPE positions, or None for a model without mRoPE.
-    mrope_position_ids: list[torch.Tensor] | None
+    multimodal_train_inputs: list[Future | dict[str, torch.Tensor] | None]
+    # Each sample's [num_tokens, 3] mRoPE positions; None for a model that computes its own.
+    mrope_position_ids: list[Future | torch.Tensor] | None
+
+
+def resolved(entries: Sequence[Future | T]) -> list[T]:
+    """Each entry's payload, waiting for the entries still rebuilding in the background."""
+    return [entry.result() if isinstance(entry, Future) else entry for entry in entries]
+
+
+def resolved_mrope_position_ids(entries: Sequence[Future | torch.Tensor]) -> list[torch.Tensor] | None:
+    """Each sample's positions, or None when the model has no mRoPE and the processor computed none."""
+    positions = resolved(entries)
+    if all(sample_positions is None for sample_positions in positions):
+        return None
+    assert all(sample_positions is not None for sample_positions in positions), "mRoPE positions for only some samples"
+    return positions
 
 
 @dataclass(frozen=True)
@@ -88,7 +110,7 @@ def compute_multimodal_train_inputs(
     with_sglang_placement: bool,
     device: torch.device,
 ) -> TokenSpaceTrainInputs:
-    """Rebuild each sample's processor tensors and mRoPE positions on the trainer from its media references.
+    """Start rebuilding each sample's processor tensors and mRoPE positions on the trainer from its media references.
 
     Args:
         rollout_engine_args: The rollout engines' server args that decide the processor output.
@@ -98,29 +120,63 @@ def compute_multimodal_train_inputs(
         device: This rank's device; the tensors land here, and it stands in for the engine's GPU.
 
     Returns:
-        Each sample's processor tensors and, for a model with mRoPE, each sample's positions.
+        Each sample's processor tensors and, with SGLang's placement, each sample's positions, as futures that
+        resolve when the background rebuild reaches the sample.
     """
     trainer_processor = _trainer_processor(rollout_engine_args, device)
-    samples = [
-        (
-            _sample_train_inputs(
-                trainer_processor,
-                sample_multimodal_inputs,
-                sample_tokens,
-                with_sglang_placement=with_sglang_placement,
-                device=device,
-            )
-            if sample_multimodal_inputs
-            else (None, _text_mrope_positions(trainer_processor, sample_tokens) if with_sglang_placement else None)
+    train_inputs, mrope_position_ids = [], []
+    for sample_multimodal_inputs, sample_tokens in zip(multimodal_inputs, tokens, strict=True):
+        sample_train_inputs, sample_mrope_position_ids = _submit_sample_rebuild(
+            trainer_processor,
+            sample_multimodal_inputs,
+            sample_tokens,
+            with_sglang_placement=with_sglang_placement,
+            device=device,
         )
-        for sample_multimodal_inputs, sample_tokens in zip(multimodal_inputs, tokens, strict=True)
-    ]
-    train_inputs, mrope_positions = zip(*samples, strict=True)
-    if all(positions is None for positions in mrope_positions):
-        return TokenSpaceTrainInputs(list(train_inputs), None)
-    assert all(positions is not None for positions in mrope_positions), "mRoPE positions for only some samples"
-    mrope_position_ids = [positions.T.contiguous().to(device) for positions in mrope_positions]
-    return TokenSpaceTrainInputs(list(train_inputs), mrope_position_ids)
+        train_inputs.append(sample_train_inputs)
+        mrope_position_ids.append(sample_mrope_position_ids)
+    return TokenSpaceTrainInputs(train_inputs, mrope_position_ids if with_sglang_placement else None)
+
+
+@functools.cache
+def _rebuild_executor() -> ThreadPoolExecutor:
+    # One thread: the samples share one processor, which SGLang only clones per worker when it runs its own pool.
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="miles-token-space-rebuild")
+
+
+def _submit_sample_rebuild(
+    trainer_processor: "_TrainerProcessor",
+    multimodal_inputs: dict[str, list[str]] | None,
+    tokens: torch.Tensor,
+    *,
+    with_sglang_placement: bool,
+    device: torch.device,
+) -> tuple[Future, Future]:
+    """Queue one sample's rebuild; the two futures carry its train inputs and its [num_tokens, 3] positions."""
+    train_inputs, mrope_position_ids = Future(), Future()
+
+    def rebuild():
+        try:
+            if multimodal_inputs:
+                sample_train_inputs, positions = _sample_train_inputs(
+                    trainer_processor,
+                    multimodal_inputs,
+                    tokens,
+                    with_sglang_placement=with_sglang_placement,
+                    device=device,
+                )
+            else:
+                sample_train_inputs = None
+                positions = _text_mrope_positions(trainer_processor, tokens) if with_sglang_placement else None
+        except BaseException as error:
+            train_inputs.set_exception(error)
+            mrope_position_ids.set_exception(error)
+            raise
+        train_inputs.set_result(sample_train_inputs)
+        mrope_position_ids.set_result(None if positions is None else positions.T.contiguous().to(device))
+
+    _rebuild_executor().submit(rebuild)
+    return train_inputs, mrope_position_ids
 
 
 class _TrainerProcessor(NamedTuple):

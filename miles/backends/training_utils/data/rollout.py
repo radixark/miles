@@ -15,6 +15,8 @@ from miles.backends.training_utils.data.multimodal import expand_multimodal_roll
 from miles.backends.training_utils.data.token_space_media_process import (
     RolloutEngineProcessorArgs,
     compute_multimodal_train_inputs,
+    resolved,
+    resolved_mrope_position_ids,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
@@ -244,6 +246,10 @@ def get_batch(
         if unit_key in data_iterator.rollout_data:
             batch[unit_key] = data_iterator.rollout_data[unit_key]
 
+    # Token-space train inputs rebuild in the background; wait for this micro-batch's samples.
+    if (multimodal_train_inputs := batch.get("multimodal_train_inputs")) is not None:
+        batch["multimodal_train_inputs"] = resolved(multimodal_train_inputs)
+
     # No-op safety net if batches reach get_batch without rollout-level preprocessing.
     expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)
 
@@ -362,7 +368,8 @@ def get_batch(
             raise NotImplementedError
         return ids
 
-    if (mrope_position_ids := batch.pop("mrope_position_ids", None)) is not None:
+    mrope_position_ids = batch.pop("mrope_position_ids", None)
+    if mrope_position_ids is not None and (mrope_position_ids := resolved_mrope_position_ids(mrope_position_ids)):
         assert qkv_format == "thd" and not allgather_cp, "mRoPE positions need the per-sample THD CP layout"
         batch["position_ids"] = _pack_natural_position_ids(mrope_position_ids, cu_seqlens_host)
 
@@ -536,7 +543,9 @@ def get_data_iterator(
     - `data_iterators`: list of `DataIterator`, one per VPP stage (size 1 if VPP disabled)
     - `num_microbatches`: list[int], one per local step in the rollout (length = steps)
     """
-    expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
+    # Token-space tokens arrive expanded, and their train inputs may still be rebuilding.
+    if not args.multimodal_token_space_processing:
+        expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
 
     parallel_state = get_parallel_state()
 
