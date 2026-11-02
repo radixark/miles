@@ -123,8 +123,8 @@ def commit_adapter_dir(
     return CommittedAdapterDir(written.path, written.commit_id)
 
 
-def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None = None) -> CommittedAdapterDir | None:
-    """The committed directory behind ``name``; ``tenant`` must own it when given."""
+def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> CommittedAdapterDir | None:
+    """The committed directory behind ``name``; ``tenant`` must own it. RL, which has no tenants, passes None."""
     target = _link_target(Path(root) / name)
     if target is None or not target.is_dir():
         return None
@@ -135,7 +135,7 @@ def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None = None) -> 
     return CommittedAdapterDir(target, target.name.rsplit(".", 1)[1])
 
 
-def delete_adapter_dir(root: Path, name: str, *, tenant: str | None = None) -> None:
+def delete_adapter_dir(root: Path, name: str, *, tenant: str | None) -> None:
     committed = resolve_adapter_dir(root, name, tenant=tenant)
     assert committed is not None, f"adapter {name!r} does not exist"
     os.unlink(Path(root) / name)

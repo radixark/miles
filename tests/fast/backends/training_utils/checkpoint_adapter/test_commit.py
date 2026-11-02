@@ -33,7 +33,7 @@ def test_refuses_to_overwrite_when_asked_not_to(tmp_path):
     _save(tmp_path, "w", "1")
     with pytest.raises(FileExistsError):
         _save(tmp_path, "w", "2", overwrite=False)
-    assert (resolve_adapter_dir(tmp_path, "w").path / "payload").read_text() == "1"
+    assert (resolve_adapter_dir(tmp_path, "w", tenant=None).path / "payload").read_text() == "1"
 
 
 def test_another_tenant_cannot_resolve_or_delete(tmp_path):
@@ -43,7 +43,7 @@ def test_another_tenant_cannot_resolve_or_delete(tmp_path):
     with pytest.raises(OwnershipError):
         delete_adapter_dir(tmp_path, "w", tenant="mallory")
     delete_adapter_dir(tmp_path, "w", tenant="alice")
-    assert resolve_adapter_dir(tmp_path, "w") is None
+    assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
 
 
 def test_a_failed_write_is_never_visible(tmp_path):
@@ -51,7 +51,7 @@ def test_a_failed_write_is_never_visible(tmp_path):
         with write_adapter_dir(tmp_path, "w") as written:
             (written.path / "partial").write_text("x")
             raise OSError("disk full")
-    assert resolve_adapter_dir(tmp_path, "w") is None
+    assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
     delete_unreferenced_adapter_dirs(tmp_path)
     assert list(tmp_path.iterdir()) == []
 
@@ -63,7 +63,7 @@ def test_recovery_of_one_name_does_not_touch_a_dotted_neighbour(tmp_path):
     (tmp_path / "dangling").symlink_to(".gone.0011223344556677")
     delete_unreferenced_adapter_dirs(tmp_path, "foo")
     assert not orphan.path.exists()
-    assert kept.path.exists() and resolve_adapter_dir(tmp_path, "foo.bar") == kept
+    assert kept.path.exists() and resolve_adapter_dir(tmp_path, "foo.bar", tenant=None) == kept
     assert (tmp_path / "dangling").is_symlink(), "recovery scoped to 'foo' must leave other names alone"
     delete_unreferenced_adapter_dirs(tmp_path)
     assert not (tmp_path / "dangling").is_symlink()
