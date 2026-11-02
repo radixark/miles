@@ -64,11 +64,20 @@ The spec is selected from the checkpoint's `model_type`.
 
 Adapters cover attention projections (GQA Q/K/V/O, MLA Q-A/Q-B/KV-A/KV-B/O), dense
 MLPs, and shared experts. Routed experts carry shared-outer adapters only for Inkling
-and Kimi K3 (which require `--experts-shared-outer-loras`); Inkling's spec also covers
-its output head. Inkling and Kimi K3 accept only their verified adapter layout (Kimi
-K3 may omit the routed-expert down projection), so omit `--target-modules` for them.
+and Kimi K3 (which require `--experts-shared-outer-loras`). The output head (`lm_head`, the
+`unembed` group) is adaptable on every family except Kimi K3, GLM-5.3-Flash and DeepSeek-V4.1; on a
+tied-embedding model it gets its own adapter and the input embedding is unchanged, as with official
+Tinker's unembed. A selected head needs `--vocab-size`, and is refused with `--enable-mtp-training` and, on a
+tied-embedding model, with `--save-hf` or eval snapshots (a merged tied head would change the input embedding).
+Inkling and Kimi K3 accept only their verified adapter layout (Kimi K3 may omit the routed-expert down
+projection), so omit `--target-modules` for them.
+Qwen3.5 / Qwen3.6 GDN layers adapt `linear_attn.out_proj` and the input projections as independent
+`in_proj_q`/`in_proj_k`/`in_proj_v`/`in_proj_z`/`in_proj_b`/`in_proj_a` adapters. Official Tinker adapters
+train `in_proj_q/k/v/z` (four distinct A's), which is what the `attn` group selects; `in_proj_b`/`in_proj_a`
+are adapted only when targeted by name. SGLang stacks the components only as complete groups, so `in_proj_qkv` and
+`in_proj_z` are selected together, and so are `in_proj_b` and `in_proj_a`.
 Selecting a projection the spec does not implement
-(for example routed experts or GDN input projections) fails at startup; use
+(for example routed experts or Qwen3-Next GDN projections) fails at startup; use
 `--megatron-to-hf-mode bridge` for those. A partial fused selection (for example
 only `q_proj`) trains only the selected projection; SGLang serves its fused-buffer
 siblings as zero adapters. A shared expert's `up_proj` needs `gate_proj` selected too.
@@ -89,7 +98,7 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Bridge | GLM-5 / 5.1 / 5.2 744B-A40B | MoE + MLA + DSA | [GLM-5.1 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_1_744b_a40b_lora.py), [GLM-5.2 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_2_744b_a40b_lora.py) | CI covers reduced 6-layer / 5-layer checkpoints; historical full-744B results are described below. |
 | Bridge | Qwen3.5 / Qwen3.6 35B-A3B | Hybrid GDN + MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_qwen3_5_35b_a3b_lora.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/test_qwen3_5_35b_a3b_lora_ci.py) | Uses explicit wildcard targets to exclude MTP and vision modules. |
 | Native / raw | Inkling / Inkling-Small | Native multimodal MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_inkling.py), [Inkling-Small 6-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_inkling_small_6layer_lora_ci.py) | Larger profiles are launcher/experiment evidence rather than LoRA CI. |
-| Native / raw | Qwen3 0.6B, Qwen3.5-35B-A3B | Dense GQA; gated-GQA + GDN hybrid MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_qwen3_lora_native.py), [Qwen3 0.6B E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_0_6b_lora_native_ci.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_5_35b_a3b_lora_native_ci.py) | Attention (+ dense/shared MLP) adapters; GDN layers carry none. |
+| Native / raw | Qwen3 0.6B, Qwen3.5-35B-A3B | Dense GQA; gated-GQA + GDN hybrid MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_qwen3_lora_native.py), [Qwen3 0.6B E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_0_6b_lora_native_ci.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_5_35b_a3b_lora_native_ci.py) | E2E targets attention (+ dense/shared MLP); GDN adapters have no E2E yet. |
 | Native / raw | GLM-4.7-Flash, GLM-5.2, Kimi K2.5 | MLA MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_lora_native.py), [GLM-5.2 5-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_glm5_2_5layer_lora_native_ci.py), [Kimi K2.5 2-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_kimi_k25_2layer_lora_native_ci.py) | MLA attention adapters; routed experts require Bridge. |
 | Native / raw | GLM-5.3-Flash | Hybrid KDA + DSA MoE + mHC | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_3_flash_lora.py), [model page](/models/glm/glm5-3-flash) | KDA, DSA (except `kv_b_proj`) and dense/shared MLP adapters; routed experts stay frozen. Serving needs SGLang LoRA on the KDA projections. |
 | Native / raw | DeepSeek-V4.1-Flash | MoE + compressed sparse attention + mHC + engram | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_deepseek_v4_1.py) (`--train-mode lora`), [model page](/models/deepseek/deepseek-v4-1-flash) | Attention adapters, including the grouped `wo_a`, and the shared expert; routed experts, the compressor, the indexer and engram stay frozen. Serving needs SGLang LoRA on the V4 attention. |
@@ -132,7 +141,7 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 | `--lora-rank` | `0` | Adapter rank; a positive value enables LoRA. Supplying an adapter path also marks LoRA enabled, but still requires matching positive-rank configuration. |
 | `--lora-alpha` | `16` | Adapter scaling factor. |
 | `--lora-dropout` | `0.0` | Dropout on the adapter path. |
-| `--lora-type` | `lora` | `lora` uses fused Megatron projections; `canonical_lora` uses split Q/K/V and gate/up projections. The gpt-oss MoE LoRA CI test trains both expert layouts with `canonical_lora`; `serve_tinker.py` defaults to it. |
+| `--lora-type` | per backend | `lora` shares one `lora_A` across each fused projection; `canonical_lora` gives Q/K/V, gate/up and the Qwen3.5 / 3.6 GDN `in_proj` components their own. Native gives every projection its spec declares its own `lora_A`, so it defaults to and accepts only `canonical_lora`; `serve_tinker.py` defaults to `canonical_lora`; Bridge otherwise defaults to `lora`; torchtitan fuses q/k/v and gate/up, so it defaults to and accepts only `lora`. The gpt-oss MoE LoRA CI test trains both expert layouts with `canonical_lora`. |
 | `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, `attn/mlp/unembed` groups, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
 | `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
 | `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
@@ -195,16 +204,23 @@ checkpoint keys to the current HF model namespace, without loading base weights.
 This resolves renamed and packed parameter names. Custom models absent from
 native Transformers keep their existing checkpoint namespace.
 
-Bridge resolves mappings against parameters that actually exist across PP/EP
-ranks before checking fused selections. Explicit Megatron selectors retain a
+Argument validation checks fused selections against Bridge's mapping registry and
+the HF model's modules; a model whose HF implementation lists no modules (remote
+code) is checked only at model build, where Bridge resolves mappings against
+parameters that actually exist across PP/EP ranks. Explicit Megatron selectors retain a
 compatibility conversion at startup. Adapter factories receive only Megatron
 targets; they do not overwrite the HF selection. Arbitrary layer/expert subsets
 within a registry template are not implemented and are rejected.
-Standard LoRA requires all projections of a fused weight together;
-`canonical_lora` supports individual Q/K/V and dense gate/up selections.
+For Bridge, standard LoRA requires all projections of a fused weight together, and argument validation
+refuses a target set that splits one (for example Qwen3.5's `attn` group, which leaves `in_proj_b` /
+`in_proj_a` out of the fused GDN `in_proj`);
+`canonical_lora` supports individual Q/K/V and dense gate/up selections, and
+Qwen3.5 / 3.6 GDN input projections as `in_proj_q`/`in_proj_k`/`in_proj_v`/`in_proj_z`/`in_proj_b`/`in_proj_a`
+adapters, each with its own `lora_A`, served to SGLang under those names; `in_proj_qkv` and `in_proj_z` are
+selected together, and so are `in_proj_b` and `in_proj_a`.
 Grouped-expert FC1 requires both gate and up; in canonical mode each gets its
-own adapter. GDN input projections remain fused and require all of their HF
-projections even in canonical mode.
+own adapter. Qwen3-Next GDN input projections remain fused and require all of
+their HF projections even in canonical mode.
 
 Tinker uses `--target-modules attn,mlp,unembed` by default; for example,
 `--target-modules attn,mlp` disables output-head training. Client SDK flags must
@@ -215,7 +231,8 @@ For Bridge, SGLang receives the selected HF paths and normalizes them into buffe
 (for example, Q/K/V become `qkv_proj`); it does not own the selection policy.
 Adapter checkpoints derive their concrete `target_modules` from exported tensor
 keys rather than a separate Megatron-to-HF name table. Online adapter registration
-uses the resolved HF selection for Bridge and native LoRA, and `all-linear` for
+uses the resolved HF selection for Bridge and native LoRA (Qwen3.5 / 3.6 GDN `in_proj` targets of native and Bridge `canonical_lora` are
+registered as their exported components `in_proj_q/k/v/z/b/a`), and `all-linear` for
 native Inkling, without an extra
 tensor export.
 This requires [SGLang's HF-path normalization support](https://github.com/sgl-project/sglang/pull/40242),
@@ -225,8 +242,9 @@ unsupported.
 Native LoRA validates the resolved HF selection against the architecture spec
 before injection and matches each adapter by its full HF path, so layer-scoped
 selections work. Native Inkling uses a fixed adapter schema: defaults select that
-complete schema, and partial/custom layouts are rejected. `canonical_lora` is
-Bridge-only.
+complete schema, and partial/custom layouts are rejected. Native LoRA gives every projection its
+spec declares its own `lora_A` (Q/K/V, gate/up; a module HF itself fuses and the spec keeps whole, such
+as GLM-4's `gate_up_proj`, gets one), which is `--lora-type canonical_lora`; `--lora-type lora` is rejected.
 
 ### Rollout topology
 

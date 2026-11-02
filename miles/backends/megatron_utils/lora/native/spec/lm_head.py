@@ -12,8 +12,41 @@ from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutput
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
+class LMHeadSpec:
+    """The output head, named by the converter. A tied head's adapter is its own, so the input
+    embedding stays unchanged, as in Bridge and Tinker's unembed."""
+
+    hf_leaf = "lm_head"
+
+    def attach(self, model: nn.Module, args, context: AttachContext) -> int:
+        if not model.post_process:
+            return 0
+        output_layer = model.output_layer
+        tied = model.share_embeddings_and_output_weights
+        weight = model.shared_embedding_or_output_weight() if tied else output_layer.weight
+        hf_module = context.naming.output_head_prefix(weight).removesuffix(".")
+        # targets are validated against hf_leaf, so a converter naming the head otherwise would drop its adapter
+        assert hf_module.rpartition(".")[2] == self.hf_leaf, f"the converter names the output head {hf_module!r}"
+        if not context.lora.selects(hf_module):
+            return 0
+        assert args.backend.vocab_size is not None, "the lm_head adapter exports over --vocab-size, which is unset"
+        adapter = LoRAOutputHead(
+            hf_prefix=f"{hf_module}.",
+            reference=weight,
+            context=context,
+            vocab_local=weight.shape[0],
+            unpadded_vocab_size=args.backend.vocab_size,
+            tied=tied,
+        )
+        model.lora_lm_head_adapter = adapter
+        attach_adapter_forward(output_layer, adapter, context.lora.scale)
+        return 1
+
+
 class InklingLMHeadSpec:
     """Inkling's lm_head projection (muP-scaled, pad-trimmed)."""
+
+    hf_leaf = "lm_head"
 
     def attach(self, model: nn.Module, args, context: AttachContext) -> int:
         if not model.post_process:

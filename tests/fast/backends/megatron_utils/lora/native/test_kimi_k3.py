@@ -11,6 +11,7 @@ from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named, load_lora_adapter_hf
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.modules.moe import _grouped_linear
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
@@ -145,7 +146,7 @@ def _k3_hf_config():
 
 
 def _resolve(targets, **overrides):
-    kwargs = dict(hf_modules=[], lora_type="lora", experts_shared_outer_loras=True) | overrides
+    kwargs = dict(hf_modules=[], lora_type="canonical_lora", experts_shared_outer_loras=True) | overrides
     return resolve_adapter_targets(_k3_hf_config(), targets, **kwargs)
 
 
@@ -161,7 +162,7 @@ def test_export_names_and_shapes_match_sglang(include_fc2):
     targets = resolve_hf_lora_targets(_k3_hf_config())
     if not include_fc2:
         targets = [target for target in targets if not target.endswith(".experts.*.w2")]
-    exported = dict(export_lora_hf_named([_model(include_fc2=include_fc2)]))
+    exported = dict(export_lora_hf_named(iter_adapters([_model(include_fc2=include_fc2)])))
 
     served = _resolve(targets)
     for module in get_adapter_target_modules(exported):
@@ -185,7 +186,7 @@ def test_hf_import_round_trips_the_export(tmp_path):
     with torch.no_grad():
         for parameter in target.parameters():
             parameter.zero_()
-    save_file(dict(export_lora_hf_named([source])), str(tmp_path / "adapter_model.safetensors"))
+    save_file(dict(export_lora_hf_named(iter_adapters([source]))), str(tmp_path / "adapter_model.safetensors"))
 
     load_lora_adapter_hf([target], str(tmp_path))
 
@@ -194,6 +195,46 @@ def test_hf_import_round_trips_the_export(tmp_path):
         if "lora" in name:
             exported_value = source_params[name].to(torch.bfloat16).to(parameter.dtype)
             torch.testing.assert_close(parameter, exported_value, msg=name)
+
+
+def test_hf_import_refuses_tensors_no_selected_module_takes(tmp_path):
+    """An adapter saved with modules the current targets leave out would otherwise restore without them."""
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    stray = "model.layers.0.linear_attn.in_proj_b.lora_A.weight"
+    save_file({**exported, stray: torch.zeros(RANK, 4)}, str(tmp_path / "adapter_model.safetensors"))
+
+    with pytest.raises(AssertionError, match=rf"no selected module takes: \['{stray}'\]"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
+
+
+def test_hf_import_counts_the_tensors_other_pipeline_stages_take(tmp_path, monkeypatch):
+    """Under PP every stage holds some layers; a tensor another stage takes is not left over."""
+    from megatron.core import parallel_state
+
+    from miles.backends.megatron_utils.lora.native import hf_adapter
+
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    other_stage = "model.layers.9.self_attn.o_proj.lora_A.weight"
+    save_file({**exported, other_stage: torch.zeros(RANK, 12)}, str(tmp_path / "adapter_model.safetensors"))
+
+    def all_gather_object(stages, taken, group):
+        stages[:] = [taken, {other_stage}]
+
+    monkeypatch.setattr(hf_adapter.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(hf_adapter.dist, "all_gather_object", all_gather_object)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_group", lambda: None)
+
+    load_lora_adapter_hf([_model()], str(tmp_path))
+
+
+def test_hf_import_refuses_peft_tensors_it_cannot_load(tmp_path):
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    dora = "model.layers.0.self_attn.o_proj.lora_magnitude_vector"
+    save_file({**exported, dora: torch.zeros(12)}, str(tmp_path / "adapter_model.safetensors"))
+
+    with pytest.raises(AssertionError, match="native LoRA loads only lora_A / lora_B"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
 
 
 def test_merged_weights_reproduce_the_adapter_forward():
@@ -218,7 +259,7 @@ def test_merged_weights_reproduce_the_adapter_forward():
     )
 
 
-@pytest.mark.parametrize("case", ["missing", "extra", "canonical", "per-expert"])
+@pytest.mark.parametrize("case", ["missing", "extra", "shared-a", "per-expert"])
 def test_target_contract_rejects_unverified_layouts(case):
     targets = resolve_hf_lora_targets(_k3_hf_config())
     overrides = {}
@@ -226,14 +267,14 @@ def test_target_contract_rejects_unverified_layouts(case):
         targets = [target for target in targets if not target.endswith(".q_a_proj")]
     elif case == "extra":
         targets.append(f"{PREFIX}*.self_attn.q_b_proj")
-    elif case == "canonical":
-        overrides["lora_type"] = "canonical_lora"
+    elif case == "shared-a":
+        overrides["lora_type"] = "lora"
     else:
         overrides["experts_shared_outer_loras"] = False
     message = {
         "missing": r"missing=\[.*q_a_proj",
         "extra": r"unexpected=\[.*q_b_proj",
-        "canonical": "canonical_lora",
+        "shared-a": "--lora-type lora shares one lora_A",
         "per-expert": "shared-outer",
     }[case]
     with pytest.raises(AssertionError, match=message):

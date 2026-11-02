@@ -10,13 +10,11 @@ GDN (gated-delta-net) linear attention; every layer carries 256 routed experts +
 LoRA trains through the bridge path (``--megatron-to-hf-mode bridge``); the
 registry ``.sh`` only satisfies megatron argparse and its ``--spec`` is inert.
 
-Default target modules are wildcards anchored at ``language_model.decoder.layers.*``:
-this keeps LoRA off the MTP block (``language_model.mtp.*`` has no adapter export
-mapping, and SGLang cannot serve LoRA with MTP speculative decoding anyway) and off
-the vision tower. The set covers attention (linear_qkv/linear_proj), MoE routed +
-shared experts (linear_fc1/fc2), and the GDN projections: the fused megatron
-``in_proj`` (q|k|v|z|b|a slices, served by SGLang as in_proj_qkvz + in_proj_ba)
-and ``out_proj``.
+Default target modules are the HF groups ``attn,mlp`` plus ``in_proj_b,in_proj_a``: the
+decoder's attention, MoE routed + shared experts and GDN projections, but not the MTP
+block or the vision tower. Bridge's ``--lora-type lora`` adapts the fused megatron GDN
+``in_proj`` (q|k|v|z|b|a slices) only whole, and ``attn`` leaves ``in_proj_b`` /
+``in_proj_a`` out, so they are named explicitly.
 
 Constraints baked into the parallel config:
   * TP <= 2: num_query_groups=2 caps tensor parallelism for the 35B-A3B geometry.
@@ -70,7 +68,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
-    target_modules: str = "all-linear"
+    target_modules: str = "attn,mlp,in_proj_b,in_proj_a"
     # required for true on-policy under colocate (OFF -> KL ~1.0 vs ~1e-3)
     lora_base_cpu_backup: bool = True
     # MoE-expert LoRA layout: shared-outer when True, per-expert when False

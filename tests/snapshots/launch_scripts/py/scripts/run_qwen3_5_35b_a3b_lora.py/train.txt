@@ -56,7 +56,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --lora-rank 16
   --lora-alpha 32
   --lora-dropout 0.0
-  --target-modules "all-linear"
+  --target-modules "attn,mlp,in_proj_b,in_proj_a"
   --experts-shared-outer-loras
   --no-gradient-accumulation-fusion
   --lora-base-cpu-backup 

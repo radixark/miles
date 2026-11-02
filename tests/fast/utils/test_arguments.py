@@ -1123,10 +1123,13 @@ class TestClusterBackend:
         with pytest.raises(AssertionError, match="--use-output-store"):
             miles_validate_args(args)
 
-    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path) -> None:
+    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path, monkeypatch) -> None:
         """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
         from transformers import Qwen3Config
 
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+        )
         Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
         args = self._parse(
             [
@@ -2777,6 +2780,11 @@ class TestDataSourceSelection:
 class TestMultiLoRAValidation:
     @pytest.fixture(autouse=True)
     def _bridge_selector(self, monkeypatch):
+        self.fused_checks = []
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection",
+            lambda checkpoint, targets, *, canonical: self.fused_checks.append((list(targets), canonical)),
+        )
         monkeypatch.setattr(
             "miles.utils.lora.arguments.HfWeightMapping.from_config",
             lambda config: SimpleNamespace(parameter_names=frozenset()),
@@ -2869,6 +2877,56 @@ class TestMultiLoRAValidation:
         assert args.exclude_modules == exclusion
         assert set(args.hf_lora_targets) == expected
         assert args.lora_adapter_targets == args.hf_lora_targets
+
+    @pytest.mark.parametrize(
+        "lora_type,served",
+        [
+            ("canonical_lora", ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z", "out_proj"]),
+            ("lora", ["in_proj_qkv", "in_proj_z", "out_proj"]),
+        ],
+    )
+    def test_bridge_canonical_serves_gdn_in_proj_components(self, monkeypatch, lora_type, served):
+        """Bridge's canonical adapters export Qwen3.5's GDN in_proj by component, as SGLang must load them."""
+        prefix = "model.language_model.layers.0.linear_attn."
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: HfWeightMapping(
+                frozenset(
+                    f"{prefix}{leaf}.weight"
+                    for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+                )
+            ),
+        )
+        args = self._parse(["--target-modules", "in_proj_qkv,in_proj_z,out_proj", "--lora-type", lora_type])
+        miles_validate_args(args)
+        assert args.lora_adapter_targets == served
+
+    @pytest.mark.parametrize("lora_type", ["lora", "canonical_lora"])
+    def test_bridge_checks_fused_modules_at_argument_time(self, lora_type):
+        miles_validate_args(self._parse(["--target-modules", "q_proj", "--lora-type", lora_type]))
+        assert self.fused_checks == [(["q_proj"], lora_type == "canonical_lora")]
+
+    def test_bridge_canonical_serves_wildcard_gdn_targets_by_component(self, monkeypatch):
+        """A target whose block is a wildcard still reaches the GDN modules Bridge splits into components."""
+        prefix = "model.language_model.layers.0.linear_attn."
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: HfWeightMapping(
+                frozenset(f"{prefix}{leaf}.weight" for leaf in ("in_proj_qkv", "in_proj_z"))
+            ),
+        )
+        args = self._parse(["--target-modules", "*.in_proj_qkv,*.in_proj_z", "--lora-type", "canonical_lora"])
+        miles_validate_args(args)
+        assert args.lora_adapter_targets == [f"*.in_proj_{component}" for component in ("q", "k", "v", "z")]
+
+    def test_bridge_canonical_refuses_a_partial_gdn_group(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: HfWeightMapping(frozenset({"model.language_model.layers.0.linear_attn.in_proj_b.weight"})),
+        )
+        args = self._parse(["--target-modules", "in_proj_b", "--lora-type", "canonical_lora"])
+        with pytest.raises(AssertionError, match=r"\['in_proj_a', 'in_proj_b'\] selected together"):
+            miles_validate_args(args)
 
     def test_rejects_multiple_tokenizer_workers(self):
         # Each sglang tokenizer worker holds its own LoRA registry, so per-step
@@ -4028,3 +4086,36 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
     assert native_args is not None
     assert native_args.mtp_detach_heads is detach_heads
     assert "mtp_detach_heads" not in args.model_fields
+
+
+class TestLoRATypeResolution:
+    """--lora-type defaults to what each backend trains: native gives every HF projection its own lora_A."""
+
+    @pytest.fixture(autouse=True)
+    def _no_bridge(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+        )
+
+    def _parse(self, tmp_path, extra):
+        from transformers import Qwen3Config
+
+        Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
+        args = get_megatron_arg_parser().parse_args(
+            ["--lora-rank", "8", "--target-modules", "q_proj", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"]
+            + extra
+            + REQUIRED_ARGS
+        )
+        miles_validate_args(args)
+        return args
+
+    @pytest.mark.parametrize("mode,lora_type", [("raw", "canonical_lora"), ("bridge", "lora")])
+    def test_default_follows_the_backend(self, tmp_path, mode, lora_type):
+        assert self._parse(tmp_path, ["--megatron-to-hf-mode", mode]).lora_type == lora_type
+
+    def test_native_refuses_shared_a_lora(self, tmp_path):
+        from miles.utils.lora.arguments import validate_lora_args_after_megatron
+
+        args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
+        with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
+            validate_lora_args_after_megatron(args)
