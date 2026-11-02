@@ -18,7 +18,13 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     gloo_group,
     raise_if_any_rank_failed,
 )
-from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir, write_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.commit import (
+    CommittedAdapterDir,
+    UncommittedAdapterDir,
+    commit_adapter_dir,
+    delete_retired_adapter_dirs,
+    write_adapter_dir,
+)
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
@@ -102,6 +108,12 @@ def save_adapter_dir(
     return written
 
 
+def read_training_state(path: Path) -> dict | None:
+    """The RL loop's iteration and scheduler state, if the source has them."""
+    state_file = Path(path) / TRAINING_STATE_FILENAME
+    return json.loads(state_file.read_text()) if state_file.is_file() else None
+
+
 def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
     """adapter_state/ holds the real rank: A's rows and B's columns, never a multi-LoRA slot's padding."""
     for spec in specs:
@@ -144,6 +156,34 @@ def write_peft_export(
         except Exception as exc:
             error = exc
     raise_if_any_rank_failed(error)
+
+
+def save_and_commit_adapter_dir(
+    root: Path,
+    name: str,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    training_state: dict,
+) -> CommittedAdapterDir:
+    """RL's ``--save``: all ranks write, rank 0 commits over any earlier save of ``name``, then the PEFT export.
+
+    A failed PEFT export fails every rank but keeps the committed checkpoint; its view can be rebuilt offline.
+    """
+    written = save_adapter_dir(root, name, members, slot, parametrization, tenant=None, training_state=training_state)
+    error = None
+    if _is_writer():
+        try:
+            commit_adapter_dir(root, name, written, overwrite=True)
+        except Exception as exc:
+            error = exc
+    raise_if_any_rank_failed(error)
+    write_peft_export(written.path, members, slot, parametrization, targets)
+    if _is_writer():
+        delete_retired_adapter_dirs(root)
+    return CommittedAdapterDir(written.path, written.commit_id)
 
 
 def write_sampler_export(

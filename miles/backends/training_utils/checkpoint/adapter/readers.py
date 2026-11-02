@@ -113,6 +113,16 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
     raise ValueError(f"{path} is not a recognized LoRA adapter source")
 
 
+def read_source_lora_alpha(path: Path) -> float | None:
+    """The alpha a source records, read without the model; None for a source that records none (torchtitan)."""
+    if (path / PARAMETRIZATION_FILENAME).is_file():
+        return read_parametrization(path).lora_alpha
+    for name in ("META.json", "adapter_config.json"):
+        if (path / name).is_file():
+            return json.loads((path / name).read_text())["lora_alpha"]
+    return None
+
+
 def _collapse_shared_lora_a(
     weights: dict, parametrization: AdapterParametrization, fused_groups: list[tuple[str, ...]]
 ) -> dict:
