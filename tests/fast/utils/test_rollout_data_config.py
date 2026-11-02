@@ -99,6 +99,11 @@ class TestRejects:
         with pytest.raises(ValueError, match="dataset 'math'"):
             parse_rollout_datasets(_with_dataset(**fields))
 
+    @pytest.mark.parametrize("name", ["math/v2", "has space", ""])
+    def test_a_dataset_name_unfit_for_a_metrics_key(self, name):
+        with pytest.raises(ValueError, match="--rollout-data-yaml-config"):
+            parse_rollout_datasets({"datasets": {name: {"path": "/data/x.jsonl", "samples_per_step": 1}}})
+
     @pytest.mark.parametrize("missing", ["path", "samples_per_step"])
     def test_a_missing_required_field(self, missing):
         document = _with_dataset()
