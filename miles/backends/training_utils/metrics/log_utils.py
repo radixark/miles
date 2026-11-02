@@ -195,6 +195,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             if key in [
                 "tokens",
                 "multimodal_train_inputs",
+                "mrope_position_ids",
                 "loss_masks",
                 "sample_indices",
                 "rollout_ids",
