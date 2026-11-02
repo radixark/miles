@@ -184,3 +184,28 @@ def test_dcp_sources_are_classified_by_their_keys(tmp_path, key, run_config, kin
             classify_adapter_source(tmp_path, QWEN3, load_optimizer=True)
     else:
         assert classify_adapter_source(tmp_path, QWEN3, load_optimizer=True).value == kind
+
+
+def test_shared_outer_is_detected_on_experts_without_a_gate(tmp_path):
+    up, down = f"{L}.mlp.experts.up_proj", f"{L}.mlp.experts.down_proj"
+    run = _run(target_modules=(up, down), experts_shared_outer_loras=True)
+    weights = {
+        f"{up}.lora_A": torch.ones(1, 2, 8),
+        f"{up}.lora_B": torch.ones(3, 8, 2),
+        f"{down}.lora_A": torch.ones(3, 2, 8),
+        f"{down}.lora_B": torch.ones(1, 8, 2),
+    }
+    write_peft_adapter(tmp_path, weights, run)
+    assert PeftAdapterReader(tmp_path, _run(), QWEN3).source.parametrization.experts_shared_outer_loras
+
+
+def test_fan_in_fan_out_is_refused(tmp_path):
+    write_peft_adapter(
+        tmp_path,
+        {f"{QKV[0]}.lora_A": torch.ones(2, 8), f"{QKV[0]}.lora_B": torch.ones(4, 2)},
+        _run(target_modules=QKV[:1]),
+    )
+    config = json.loads((tmp_path / "adapter_config.json").read_text()) | {"fan_in_fan_out": True}
+    (tmp_path / "adapter_config.json").write_text(json.dumps(config))
+    with pytest.raises(AssertionError, match="fan_in_fan_out"):
+        PeftAdapterReader(tmp_path, _run(), QWEN3)

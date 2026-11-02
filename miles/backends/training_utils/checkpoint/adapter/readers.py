@@ -35,6 +35,10 @@ _PEFT_CONFIG_MUST_BE_EMPTY = (
     "rank_pattern",
     "alpha_pattern",
     "target_parameters",
+    "fan_in_fan_out",
+    "layers_to_transform",
+    "layer_replication",
+    "lora_bias",
 )
 _SAMPLER_EXPERT_NAMES = {
     ".experts.w1.": ".experts.gate_proj.",
@@ -214,11 +218,9 @@ class PeftAdapterReader:
             self.path, lambda name: self._map_name(name, targets), targets
         )
         modules = sorted({k.rsplit(".", 1)[0] for k in self._weights if k.endswith(".lora_B")})
-        shared_outer = any(
-            k.endswith(".experts.gate_proj.lora_A") and v.shape[0] == 1 for k, v in self._weights.items()
-        )
+        shared_outer = any(".experts." in k and v.dim() == 3 and v.shape[0] == 1 for k, v in self._weights.items())
         groups = tuple(self._fused_groups)
-        # a PEFT file does not record the base model or LoRA flavour; they are the run's
+        # PEFT's base_model_name_or_path is a path or hub id, not the run's base name; base and LoRA flavour are the run's
         self.source = AdapterSource(
             self.kind,
             replace(
