@@ -39,7 +39,7 @@ TRAINING_STATE_FILENAME = "training_state.json"
 
 
 class AdapterCheckpointMembers(Protocol):
-    """The four checkpoint members of a backend's AdapterSlots (design section 4)."""
+    """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]: ...
 
@@ -94,7 +94,7 @@ def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
     return full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))].clone()
 
 
-def _weights_only(specs: list[LocalShardSpec], pieces: list[torch.Tensor]) -> AdapterState:
+def _with_zero_moments(specs: list[LocalShardSpec], pieces: list[torch.Tensor]) -> AdapterState:
     return AdapterState(
         specs, pieces, [torch.zeros_like(p) for p in pieces], [torch.zeros_like(p) for p in pieces], step=0
     )
@@ -103,7 +103,7 @@ def _weights_only(specs: list[LocalShardSpec], pieces: list[torch.Tensor]) -> Ad
 def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShardSpec]) -> AdapterState:
     missing = {s.key for s in specs} - set(weights)
     assert not missing, f"the source lacks tensors the run trains: {sorted(missing)}"
-    return _weights_only(specs, [_slice(weights[s.key], s).float() for s in specs])
+    return _with_zero_moments(specs, [_slice(weights[s.key], s).float() for s in specs])
 
 
 def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
@@ -179,7 +179,7 @@ def load_adapter_dir(
         )
         state.step = reader.load_state(state)
         if not load_optimizer:
-            state = _weights_only(specs, state.weights)
+            state = _with_zero_moments(specs, state.weights)
     else:
         state = None
         try:

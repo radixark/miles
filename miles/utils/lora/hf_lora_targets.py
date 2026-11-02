@@ -37,7 +37,7 @@ class _HfLoraModelSpec:
     component_rows_by_fused_module: Callable[[dict], tuple[tuple[str, tuple[int, ...]], ...]] = lambda config: ()
 
 
-# official Tinker exports (design 6.12): HF names except the head and the stacked 3D experts
+# official Tinker exports (checked against SDK 0.36 exports): HF names except the head and the stacked 3D experts
 _TINKER_RENAMES = (
     (".experts.w1", ".experts.gate_proj"),
     (".experts.w3", ".experts.up_proj"),
