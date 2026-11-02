@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed.checkpoint as dcp
+import yaml
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     ADAPTER_STATE_DIRNAME,
@@ -117,6 +118,8 @@ def read_source_lora_alpha(path: Path) -> float | None:
     """The alpha a source records, read without the model; None for a source that records none (torchtitan)."""
     if (path / PARAMETRIZATION_FILENAME).is_file():
         return read_parametrization(path).lora_alpha
+    if (path / "run_config.yaml").is_file():
+        return float(yaml.safe_load((path / "run_config.yaml").read_text())["peft"]["alpha"])
     for name in ("META.json", "adapter_config.json"):
         if (path / name).is_file():
             return json.loads((path / name).read_text())["lora_alpha"]

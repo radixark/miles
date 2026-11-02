@@ -1,0 +1,43 @@
+"""A source's base model is matched to the run's by the HF files' norm weights, whatever their dtype."""
+
+import pytest
+import torch
+from safetensors.torch import save_file
+
+from miles.backends.training_utils.checkpoint.adapter.base_model import (
+    assert_same_base_model,
+    fingerprint_named_tensors,
+    hf_base_fingerprint,
+)
+from miles.backends.training_utils.checkpoint.adapter.readers import read_source_lora_alpha
+
+
+def _hf_dir(path, norm: torch.Tensor):
+    path.mkdir()
+    save_file(
+        {"model.norm.weight": norm, "model.layers.0.mlp.down_proj.weight": torch.randn(4, 4)},
+        path / "model.safetensors",
+    )
+    return path
+
+
+def test_the_fingerprint_reads_only_norm_weights(tmp_path):
+    norm = torch.randn(4).bfloat16()
+    a, b = _hf_dir(tmp_path / "a", norm), _hf_dir(tmp_path / "b", norm)
+    assert hf_base_fingerprint(a) == hf_base_fingerprint(b), "other tensors differ, the norms do not"
+    assert hf_base_fingerprint(a) == fingerprint_named_tensors([("model.norm.weight", norm.float())])
+    assert_same_base_model("src", [str(a)], str(b))
+
+
+def test_another_base_or_an_unresolvable_one_is_refused(tmp_path):
+    a = _hf_dir(tmp_path / "a", torch.ones(4))
+    b = _hf_dir(tmp_path / "b", torch.ones(4) * 2)
+    with pytest.raises(AssertionError, match="whose weights differ"):
+        assert_same_base_model("src", [str(a)], str(b))
+    with pytest.raises(AssertionError, match="has no local HF files"):
+        assert_same_base_model("src", [None, str(tmp_path / "missing")], str(b))
+
+
+def test_a_megatron_bridge_source_records_its_alpha_in_run_config(tmp_path):
+    (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
+    assert read_source_lora_alpha(tmp_path) == 32.0
