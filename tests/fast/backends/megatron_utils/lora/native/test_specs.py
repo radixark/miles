@@ -48,7 +48,7 @@ class TestArchitectureGuards:
 
 def resolve_adapter_targets(hf_config, targets, *, hf_modules):
     return _resolve_adapter_targets(
-        hf_config, targets, hf_modules=hf_modules, lora_type="lora", experts_shared_outer_loras=True
+        hf_config, targets, hf_modules=hf_modules, lora_type="canonical_lora", experts_shared_outer_loras=True
     )
 
 
@@ -115,13 +115,14 @@ class TestResolveAdapterTargets:
         with pytest.raises(AssertionError, match=r"layers\.1\.mlp\.experts\.3\.gate_proj"):
             resolve_adapter_targets({"model_type": "qwen3"}, ["gate_proj", "up_proj"], hf_modules=modules)
 
-    def test_canonical_lora_is_bridge_only(self):
-        with pytest.raises(AssertionError, match="canonical_lora"):
+    def test_shared_a_lora_is_refused(self):
+        """Native gives every HF projection its own lora_A, so a request for Bridge's shared-A lora is refused."""
+        with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
             _resolve_adapter_targets(
                 {"model_type": "qwen3"},
                 ["q_proj"],
                 hf_modules=_qwen3_modules(),
-                lora_type="canonical_lora",
+                lora_type="lora",
                 experts_shared_outer_loras=False,
             )
 
