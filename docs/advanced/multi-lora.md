@@ -117,8 +117,9 @@ The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 
 ## Tinker compatibility
 
-The gateway implements the `tinker==0.26.2` wire schema; pin that SDK version on
-the client. It supports:
+The gateway implements the `tinker==0.36.0` wire schema and rejects clients on
+any other SDK version when they connect; pin that version on the client, with
+`tinker-cookbook==0.5.9` for the cookbook. It supports:
 
 - Training: `forward`, `forward_backward`, `optim_step`, `save_state`,
   `load_state`, and `save_weights_for_sampler`.
@@ -131,6 +132,10 @@ the client. It supports:
   window shared by training and inference (see
   [Context window](/examples/multi-lora#context-window)).
 
+Checkpoint download is not served yet. The pinned SDK and cookbook download only
+external weights (`save_weights_external`); the sampler-checkpoint archive URLs
+that older SDKs downloaded are not served.
+
 Futures, model leases, and request deduplication live in gateway memory and do
 not survive a restart; saved checkpoints do.
 
@@ -139,7 +144,7 @@ not survive a restart; saved checkpoints do.
 1. Launch the [Qwen3-30B-A3B gateway](/examples/multi-lora) on one 8-GPU node and
    run its single- and multi-tenant smoke checks.
 2. Point a Tinker client or a `tinker-cookbook` recipe at the gateway URL, with
-   `tinker==0.26.2`.
+   `tinker==0.36.0` and `tinker-cookbook==0.5.9`.
 3. For agentic RL with your own sandbox or harness, use the
    [tinker_agent client](/examples/multi-lora/tinker-agent), or the
    [Harbor integration](/examples/multi-lora/harbor-tinker) for Harbor tasks.

@@ -7,10 +7,11 @@ import math
 
 import pydantic
 
+import tinker
 from miles.tinker.core.input_validation import validate_save_options
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
-from tinker.types.sample_response import MASK_LOGPROB
+from tinker.types.topk_logprobs import MASK_LOGPROB
 
 # materialized at the boundary so core and the executor can require every key
 ADAM_PARAM_DEFAULTS = tinker_types.AdamParams().model_dump()
@@ -33,6 +34,16 @@ def validate_against_sdk(request_type, payload: dict) -> None:
         first = error.errors()[0]
         location = ".".join(str(part) for part in first["loc"])
         raise UserInputError(f"{location or 'request'}: {first['msg']}") from None
+
+
+def validate_sdk_version(payload: dict) -> None:
+    """SDK releases rename wire fields, so only the pinned SDK version may connect."""
+    client_version = payload.get("sdk_version")
+    if client_version != tinker.__version__:
+        raise UserInputError(
+            f"Tinker SDK version mismatch: client is {client_version}, this gateway serves the "
+            f"tinker=={tinker.__version__} wire schema; install that exact version"
+        )
 
 
 def validate_create_model(payload: dict) -> None:
