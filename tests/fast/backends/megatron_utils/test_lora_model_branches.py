@@ -237,9 +237,46 @@ class TestSaveHfModelRawLoRA:
         model = [MagicMock()]
         args = Namespace(megatron_to_hf_mode="raw", hf_checkpoint="/hf", save_hf=None)
 
-        save_hf_model(args, 0, model, publisher=publisher, path=tmp_path, raise_on_error=True)
+        save_hf_model(args, 0, model, publisher=publisher, adapter_slots=None, path=tmp_path, raise_on_error=True)
 
         merge.assert_called_once_with(model, dict(named_weights.return_value))
         publisher.write_model.assert_called_once_with(tmp_path, weights=merge.return_value, hf_checkpoint="/hf")
         publisher.write_adapter.assert_called_once_with(None, tmp_path / "adapter")
         get_bridge.assert_not_called()
+
+
+class TestSaveHfModelBridgeLoRA:
+    @patch(f"{_HF_EXPORT_MODULE}.write_peft_export")
+    @patch(f"{_HF_EXPORT_MODULE}.get_gloo_group")
+    @patch(f"{_HF_EXPORT_MODULE}.torch")
+    @patch(f"{_HF_EXPORT_MODULE}.patch_megatron_model")
+    @patch(f"{_HF_EXPORT_MODULE}._get_hf_bridge")
+    @patch(f"{_HF_EXPORT_MODULE}.is_lora_model", return_value=True)
+    @patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
+    @patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
+    def test_bridge_lora_writes_the_adapter_through_the_peft_export(
+        self, _parallel_state, _write_dir, _is_lora, get_bridge, _patch_model, torch_mod, _gloo, peft_export, tmp_path
+    ):
+        from miles.backends.megatron_utils.hf_export import save_hf_model
+
+        torch_mod.distributed.get_rank.return_value = 1
+        publisher, slots, model = MagicMock(), MagicMock(), [MagicMock()]
+        args = Namespace(
+            megatron_to_hf_mode="bridge",
+            hf_checkpoint="/hf",
+            save_hf=None,
+            lora_rank=8,
+            lora_alpha=16.0,
+            lora_type="lora",
+            experts_shared_outer_loras=False,
+        )
+
+        save_hf_model(args, 0, model, publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True)
+
+        publisher.write_adapter.assert_not_called()
+        slots.parametrization.assert_called_once_with(
+            base_model="/hf", lora_rank=8, lora_alpha=16.0, lora_type="lora", experts_shared_outer_loras=False
+        )
+        peft_export.assert_called_once_with(
+            tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets
+        )

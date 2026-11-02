@@ -11,6 +11,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.hf_export import save_hf_model
+from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
@@ -55,6 +56,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.logging_utils import rebind_env_reporting
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import partition
@@ -142,6 +144,7 @@ class MegatronTrainRayActor(TrainRayActor):
         assert ckpt_load_config is not None, "Megatron initialization requires checkpoint load inputs"
         self.weight_updater: WeightUpdater | None = None
         self.snapshot_publisher: SnapshotPublisher | None = None
+        self.adapter_slots: BridgeAdapterSlots | None = None
         monkey_patch_torch_dist()
 
         self._last_rollout_id: int | None = None
@@ -309,6 +312,7 @@ class MegatronTrainRayActor(TrainRayActor):
         )  # config-access-exempt: model-family schemas differ in optional quantization_config metadata
         self.weight_updater = None
         self.snapshot_publisher = None
+        self.adapter_slots = None
 
         if update_weights:
             is_lora = lora_rollout_enabled(args)
@@ -338,6 +342,13 @@ class MegatronTrainRayActor(TrainRayActor):
             self.snapshot_publisher = SnapshotPublisher(
                 iterator, build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
             )
+            if is_lora and args.megatron_to_hf_mode == "bridge":
+                self.adapter_slots = BridgeAdapterSlots(
+                    self.model,
+                    iterator,
+                    get_hf_lora_targets(self.hf_config.to_dict()),
+                    multi_lora=is_multi_lora_enabled(args),
+                )
 
     def _clear_quantized_weight_workspaces(self) -> None:
         if not (
@@ -929,7 +940,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.save_hf is not None and self.role == "actor":
             assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
-            save_hf_model(self.args, rollout_id, self.model, publisher=self.snapshot_publisher)
+            save_hf_model(
+                self.args,
+                rollout_id,
+                self.model,
+                publisher=self.snapshot_publisher,
+                adapter_slots=self.adapter_slots,
+            )
 
         if force_sync:
             self._finalize_pending_async_save()
@@ -964,7 +981,13 @@ class MegatronTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
         save_hf_model(
-            self.args, rollout_id, self.model, publisher=self.snapshot_publisher, path=path, raise_on_error=True
+            self.args,
+            rollout_id,
+            self.model,
+            publisher=self.snapshot_publisher,
+            adapter_slots=self.adapter_slots,
+            path=path,
+            raise_on_error=True,
         )
 
     def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False, include_model_companion: bool = False):
