@@ -214,9 +214,9 @@ class TestMixedRolloutDataSource:
         assert source.offsets["math"] == 6
         source.save(tmp_path / "ckpt")
 
-        datasets["math"]["max_prompt_len"] = 1
+        # the run-wide limit is not a dataset setting, so only the position check catches it
         with pytest.raises(ValueError, match="past the end"):
-            _make_source(tmp_path, datasets).load(tmp_path / "ckpt")
+            _make_source(tmp_path, datasets, rollout_max_prompt_len=1).load(tmp_path / "ckpt")
 
     def test_resume_with_new_weights_keeps_each_position_and_applies_the_new_ratio(self, tmp_path):
         datasets = _two_datasets(tmp_path)
@@ -231,6 +231,18 @@ class TestMixedRolloutDataSource:
 
         assert (resumed.offsets, resumed.epoch_ids) == (source.offsets, source.epoch_ids)
         assert Counter(_names(resumed.get_samples(100))) == {"math": 50, "code": 50}
+
+    @pytest.mark.parametrize(
+        "change", [{"custom_generate_function_path": "json.dumps"}, {"rm_type": "math"}, {"max_prompt_len": 100}]
+    )
+    def test_resume_refuses_a_changed_dataset_setting(self, tmp_path, change):
+        """Groups drawn before the save still carry the old setting, so resuming under a new one would mix both."""
+        datasets = _two_datasets(tmp_path)
+        _make_source(tmp_path, datasets).save(tmp_path / "ckpt")
+
+        datasets["code"] |= change
+        with pytest.raises(ValueError, match=f"'code' changed {next(iter(change))}.*--rollout-data-reset-on-load"):
+            _make_source(tmp_path, datasets).load(tmp_path / "ckpt")
 
     def test_resume_refuses_a_different_dataset_list(self, tmp_path):
         datasets = _two_datasets(tmp_path)

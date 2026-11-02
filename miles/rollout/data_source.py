@@ -321,6 +321,7 @@ class MixedRolloutDataSource(DataSource):
             "sample_group_index": self.sample_group_index,
             "sample_index": self.sample_index,
             "sha256": self.dataset_sha256,
+            "settings": {config.name: _resumed_settings(config) for config in self.dataset_configs},
         }
         save_simple_checkpoint(directory=directory, data=state_dict)
 
@@ -329,19 +330,27 @@ class MixedRolloutDataSource(DataSource):
         if set(state_dict["offsets"]) != set(self.datasets):
             raise ValueError(
                 f"the checkpoint mixed datasets {sorted(state_dict['offsets'])}, but --rollout-data-yaml-config now "
-                f"lists {sorted(self.datasets)}"
+                f"lists {sorted(self.datasets)}{_RESET_HINT}"
             )
+        # groups drawn before the save carry the settings stamped then, so resuming under changed ones would mix both
+        for config in self.dataset_configs:
+            saved, now = state_dict["settings"][config.name], _resumed_settings(config)
+            if changed := sorted(key for key in saved.keys() | now.keys() if saved.get(key) != now.get(key)):
+                raise ValueError(
+                    f"rollout dataset {config.name!r} changed {', '.join(changed)} since the checkpoint was saved, "
+                    f"but groups drawn before the save still carry the old values{_RESET_HINT}"
+                )
         for name, saved in state_dict["sha256"].items():
             if saved != self.dataset_sha256[name]:
                 raise ValueError(
                     f"rollout dataset {name!r} changed since the checkpoint was saved: sha256 was {saved}, "
-                    f"now {self.dataset_sha256[name]}"
+                    f"now {self.dataset_sha256[name]}{_RESET_HINT}"
                 )
         # a dataset filtered shorter since the save (e.g. a lower max_prompt_len) cannot resume at its position
         if too_far := {n: o for n, o in state_dict["offsets"].items() if o > len(self.datasets[n])}:
             raise ValueError(
                 f"the checkpoint resumes {too_far} past the end of datasets now holding "
-                f"{ {n: len(self.datasets[n]) for n in too_far} } prompts; keep the dataset and its filters unchanged"
+                f"{ {n: len(self.datasets[n]) for n in too_far} } prompts; keep the dataset and its filters unchanged{_RESET_HINT}"
             )
         self.offsets = dict(state_dict["offsets"])
         self.epoch_ids = dict(state_dict["epoch_ids"])
@@ -389,6 +398,15 @@ class MixedRolloutDataSource(DataSource):
             group.append(sample)
         self.sample_group_index += 1
         return group
+
+
+_RESET_HINT = "; pass --rollout-data-reset-on-load to keep the model and optimizer but start every dataset fresh"
+# samples_per_step may change on resume; the file itself is checked through sha256
+_RESUME_FREE_FIELDS = {"name", "path", "samples_per_step", "sha256"}
+
+
+def _resumed_settings(config: RolloutDatasetConfig) -> dict:
+    return config.model_dump(exclude=_RESUME_FREE_FIELDS, exclude_none=True)
 
 
 def _hash_file(path: str) -> str:

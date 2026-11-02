@@ -71,7 +71,8 @@ sets `rm_type` or names a different function is rejected.
 ### Resuming with different datasets
 
 A resumed run continues every dataset from its saved position, so `--load` refuses a YAML that lists other
-datasets, a changed file, or a dataset filtered shorter than its saved position. Changing only the
+datasets, a changed file, a dataset filtered shorter than its saved position, or any other changed dataset field
+(groups drawn before the save still carry the old generate function, agent or reward). Changing only the
 `samples_per_step` weights is fine. To switch datasets mid-training, add `--rollout-data-reset-on-load`: the
 model, optimizer and rollout step still resume from `--load`, while every dataset starts from its beginning and
 fully async prompt groups that were in flight at the save are dropped.
