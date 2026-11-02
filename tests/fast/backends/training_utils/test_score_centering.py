@@ -380,3 +380,13 @@ def test_selected_log_probs_gradcheck_and_empty_response() -> None:
     assert result.shape == (0, 3)
     result.sum().backward()
     torch.testing.assert_close(logits.grad, torch.zeros_like(logits))
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_an_empty_response_scores_in_the_dtype_of_a_non_empty_one(dtype: torch.dtype) -> None:
+    """CP ranks all-reduce these, so a rank with no rows must match the dtype of one with rows."""
+    logits = torch.randn(2, 4).to(dtype)
+    ids = torch.tensor([[0, 2], [1, 3]])
+    selected, entropy = selected_log_probs_and_entropy(logits, ids, with_entropy=True)
+    empty_selected, empty_entropy = selected_log_probs_and_entropy(logits[:0], ids[:0], with_entropy=True)
+    assert (empty_selected.dtype, empty_entropy.dtype) == (selected.dtype, entropy.dtype)
