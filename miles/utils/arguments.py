@@ -28,6 +28,7 @@ from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.router.backend import RouterKind
+from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
@@ -476,7 +477,16 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
-_DEFAULT_DATA_SOURCE_PATH = "miles.rollout.data_source.RolloutDataSource"
+_DEFAULT_GENERATE_FUNCTION_PATH = "miles.rollout.generate_hub.single_turn.generate"
+# built-in generate functions that never read a sample's metadata["agent_config"]
+_GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG = frozenset(
+    {
+        _DEFAULT_GENERATE_FUNCTION_PATH,
+        "miles.rollout.generate_hub.multi_turn.generate",
+        "miles.rollout.sglang_rollout.generate",
+    }
+)
+_DEFAULT_DATA_SOURCE_PATH = DataConfig.model_fields["data_source_path"].default.path
 
 
 def _validate_rollout_data_yaml_config(args) -> None:
@@ -501,6 +511,16 @@ def _validate_rollout_data_yaml_config(args) -> None:
         if unsupported := [name for name in ("max_response_len",) if name in set_fields]:
             raise NotImplementedError(
                 f"--rollout-data-yaml-config dataset {dataset.name!r}: {', '.join(unsupported)} not supported yet"
+            )
+    default_generate = getattr(  # config-access-exempt: still a path string before custom hooks resolve
+        args.custom_generate_function_path, "path", args.custom_generate_function_path
+    )
+    for dataset in datasets:
+        generate_path = dataset.generate_function or default_generate or _DEFAULT_GENERATE_FUNCTION_PATH
+        if dataset.agent is not None and generate_path in _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG:
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets an agent block, but its generate function "
+                f"{generate_path} never reads it; use an agentic generate function or drop the block"
             )
     if args.num_rollout is None:
         # an epoch has no single length across independently wrapping datasets

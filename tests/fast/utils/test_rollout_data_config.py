@@ -217,6 +217,23 @@ class TestStartupValidation:
         with pytest.raises(ValueError, match="exceeds --rollout-max-prompt-len 8191"):
             _parse("--rollout-data-yaml-config", _inline(too_long), "--rollout-max-context-len", "8192")
 
+    @pytest.mark.parametrize("generate_function", [None, "miles.rollout.generate_hub.multi_turn.generate"])
+    def test_an_agent_block_no_generate_function_reads_is_rejected(self, generate_function):
+        """Under single_turn or multi_turn the agent block would silently do nothing."""
+        fields = {"agent": {"max_turns": 50}}
+        if generate_function is not None:
+            fields["generate_function"] = generate_function
+        with pytest.raises(ValueError, match="never reads it"):
+            _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+
+    def test_an_agent_block_is_accepted_for_an_agentic_generate_function(self):
+        fields = {
+            "agent": {"max_turns": 50},
+            "generate_function": "miles.rollout.generate_hub.agentic_tool_call.generate",
+        }
+        args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+        assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
+
     def test_unset_leaves_startup_unchanged(self):
         assert _parse("--prompt-data", "/dev/null").rollout_data_yaml_config is None
 

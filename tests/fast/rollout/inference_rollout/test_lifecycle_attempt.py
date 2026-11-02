@@ -109,3 +109,27 @@ async def test_cancelled_group_sibling_ends_attempt(lifecycle_sink):
             "gen_start",
             "attempt_end",
         ]
+
+
+class _CountingGenerate:
+    built = 0
+
+    def __init__(self) -> None:
+        type(self).built += 1
+
+    async def __call__(self, input):
+        return GenerateFnOutput(samples=input.sample)
+
+
+async def test_a_class_generate_function_named_per_sample_is_built_once():
+    """A class named by a mixed dataset was constructed again for every sample."""
+    from miles.utils.function_registry import function_registry
+
+    _CountingGenerate.built = 0
+    state = make_state(_CountingGenerate())
+    _CountingGenerate.built = 0
+    with function_registry.temporary("test.counting_generate", _CountingGenerate):
+        for i in range(3):
+            sample = Sample(index=i, generate_function_path="test.counting_generate")
+            await common.generate_and_rm(state, sample, sampling_params={})
+    assert _CountingGenerate.built == 1

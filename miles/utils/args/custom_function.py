@@ -51,6 +51,7 @@ def add_user_provided_function_arguments(
         infos += _compute_rollout_dataset_function_infos(args_partial, partial=True)
     registered_paths: set[str] = set()
     registered_config_classes: set[type[BaseConfig]] = set()
+    hook_option_strings: set[str] = set()
     for info in infos:
         if info.path in registered_paths:
             continue
@@ -58,25 +59,33 @@ def add_user_provided_function_arguments(
         if (
             function_config_class := info.config_class
         ) is not None and function_config_class not in registered_config_classes:
-            _add_function_arguments(parser, function_config_class, path=info.path)
+            _add_function_arguments(
+                parser, function_config_class, path=info.path, hook_option_strings=hook_option_strings
+            )
             registered_config_classes.add(function_config_class)
     return parser
 
 
-def _add_function_arguments(parser: argparse.ArgumentParser, config_class: type[BaseConfig], *, path: str) -> None:
+def _add_function_arguments(
+    parser: argparse.ArgumentParser,
+    config_class: type[BaseConfig],
+    *,
+    path: str,
+    hook_option_strings: set[str] | None = None,
+) -> None:
     """Register a hook's flags on the real parser, or skip a hook whose flags an earlier hook declared identically.
 
     Two hooks can share flags, e.g. a wrapper reusing agentic_tool_call's add_arguments; the first registration
     already built their groups and defaults, so the second adds nothing.
     """
+    hook_option_strings = set() if hook_option_strings is None else hook_option_strings
     # a scratch run only compares the hook's flags with already-declared ones
     scratch = argparse.ArgumentParser(add_help=False)
     config_class.add_arguments(parser=scratch)
     shared, new = [], []
     for action in scratch._actions:
-        existing = {
-            parser._option_string_actions[o] for o in action.option_strings if o in parser._option_string_actions
-        }
+        # only flags an earlier hook registered can be shared; a clash with a core flag keeps argparse's handling
+        existing = {parser._option_string_actions[o] for o in action.option_strings if o in hook_option_strings}
         if not existing:
             new.append(action)
             continue
@@ -94,7 +103,9 @@ def _add_function_arguments(parser: argparse.ArgumentParser, config_class: type[
             )
         shared.append(action)
     if not shared:
+        before = set(parser._option_string_actions)
         config_class.add_arguments(parser=parser)
+        hook_option_strings.update(set(parser._option_string_actions) - before)
     elif new:
         # registering only part of a hook would split its argument groups
         raise ValueError(
