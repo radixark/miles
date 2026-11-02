@@ -226,6 +226,7 @@ Sections mirror the launch-script argument groups.
 | `--use-dynamic-batch-size` | flag | off | Pack varlen samples. Recommended for varlen workloads. |
 | `--max-tokens-per-gpu` | int | – | Token budget per micro-batch per GPU. Required when dynamic batching is on. |
 | `--micro-batch-size` | int | `1` | Ignored when dynamic batching is on. |
+| `--bshd-padding-mode` | enum | `rollout` | `rollout` or `per-sample`. Controls padding with `--qkv-format bshd`; see [BSHD padding geometry](/user-guide/training-backend#bshd-padding-geometry) for microbatch requirements and numerical checks before opting in. |
 | `--recompute-granularity` | enum | Megatron default | `full` or `selective`. |
 | `--recompute-method` | enum | Megatron default | `uniform` or `block`. |
 | `--recompute-num-layers` | int | Megatron default | Recompute chunk size. |
