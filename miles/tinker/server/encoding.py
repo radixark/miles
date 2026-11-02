@@ -120,7 +120,9 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
     if op == "load_state":
         if request.optimizer_config is not None:
-            raise UserInputError("optimizer_config is not supported: this gateway does not create models via load_weights")
+            raise UserInputError(
+                "optimizer_config is not supported: this gateway does not create models via load_weights"
+            )
         return op, decoded | {
             "path": payload["path"],
             "optimizer": payload["optimizer"],
