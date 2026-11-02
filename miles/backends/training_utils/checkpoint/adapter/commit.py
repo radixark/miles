@@ -4,6 +4,7 @@
 ``.``, so internal entries never collide with them. Only the committer swaps links, recovers and deletes.
 """
 
+import fcntl
 import hashlib
 import json
 import logging
@@ -14,6 +15,7 @@ import shutil
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 import torch.distributed as dist
 
@@ -103,7 +105,10 @@ def _link_target(link: Path) -> Path | None:
 def commit_adapter_dir(
     root: Path, name: str, written: UncommittedAdapterDir, *, overwrite: bool
 ) -> CommittedAdapterDir:
-    """Atomically point ``<name>`` at ``written``; the replaced commit is removed afterwards."""
+    """Atomically point ``<name>`` at ``written``; the replaced commit is renamed ``.deleting``.
+
+    The committer removes it later with ``delete_retired_adapter_dirs``, outside any lock it holds.
+    """
     root, link = Path(root), Path(root) / name
     assert written.path == _physical_dir(root, name, written.commit_id), f"{written.path} was not written for {name!r}"
     delete_unreferenced_adapter_dirs(root, name, keep=written.path.name)
@@ -174,14 +179,37 @@ def delete_unreferenced_adapter_dirs(root: Path, name: str | None = None, *, kee
 
 
 def _retire(path: Path) -> None:
-    retired = path.with_name(path.name + _DELETING_SUFFIX)
     try:
-        os.replace(path, retired)
+        os.replace(path, path.with_name(path.name + _DELETING_SUFFIX))
     except OSError:
         # the link already moved; recovery removes the unreferenced dir, so the commit stands
         logger.exception(f"failed to retire {path}")
+
+
+def lock_checkpoint_root(root: Path) -> TextIO:
+    """Hold an exclusive lock on ``root`` for the caller's lifetime: one committer per root."""
+    Path(root).mkdir(parents=True, exist_ok=True)
+    handle = open(Path(root) / ".lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        handle.close()
+        raise RuntimeError(f"another process already commits under {root}") from error
+    return handle
+
+
+def delete_retired_adapter_dirs(root: Path) -> None:
+    """Remove the commits that commits and deletes retired; safe without the committer's lock.
+
+    A retired dir is never referenced again, and nothing else is ever named ``*.deleting``.
+    """
+    root = Path(root)
+    if not root.is_dir():
         return
-    _rmtree(retired)
+    for entry in root.iterdir():
+        internal = _INTERNAL_ENTRY.match(entry.name)
+        if internal is not None and internal["suffix"] == _DELETING_SUFFIX and not entry.is_symlink():
+            _rmtree(entry)
 
 
 def _rmtree(path: Path) -> None:

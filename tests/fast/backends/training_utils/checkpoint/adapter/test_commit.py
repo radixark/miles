@@ -8,6 +8,7 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
     OwnershipError,
     commit_adapter_dir,
     delete_adapter_dir,
+    delete_retired_adapter_dirs,
     delete_unreferenced_adapter_dirs,
     resolve_adapter_dir,
     write_adapter_dir,
@@ -25,7 +26,9 @@ def test_overwrite_points_the_name_at_the_new_commit_and_removes_the_old(tmp_pat
     second = _save(tmp_path, "w", "2")
     resolved = resolve_adapter_dir(tmp_path, "w", tenant="alice")
     assert resolved == second and (resolved.path / "payload").read_text() == "2"
-    assert not first.path.exists()
+    assert not first.path.exists() and first.path.with_name(first.path.name + ".deleting").is_dir()
+    delete_retired_adapter_dirs(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["w", second.path.name])
     assert not os.path.isabs(os.readlink(tmp_path / "w")), "links must be relative so copies keep working"
 
 
