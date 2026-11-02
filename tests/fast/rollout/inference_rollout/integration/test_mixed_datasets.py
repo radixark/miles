@@ -72,7 +72,7 @@ async def counted_generate(input):
                     "math": _MIXED_DATASETS["math"],
                     "science": (
                         _MIXED_DATASETS["science"][0],
-                        {"samples_per_step": 3, "generate_function": f"{_THIS_MODULE}.counted_generate"},
+                        {"samples_per_step": 3, "custom_generate_function_path": f"{_THIS_MODULE}.counted_generate"},
                     ),
                 },
             ),
@@ -141,11 +141,11 @@ async def web_agent(**kwargs):
 _AGENTIC_DATASETS = {
     "swe": (
         [{"input": "What is 1+7?", "label": "8"}] * 3,
-        {"samples_per_step": 1, "agent_function": f"{_THIS_MODULE}.swe_agent"},
+        {"samples_per_step": 1, "custom_agent_function_path": f"{_THIS_MODULE}.swe_agent"},
     ),
     "web": (
         [{"input": "What is 1+7?", "label": "8"}] * 3,
-        {"samples_per_step": 1, "agent_function": f"{_THIS_MODULE}.web_agent"},
+        {"samples_per_step": 1, "custom_agent_function_path": f"{_THIS_MODULE}.web_agent"},
     ),
 }
 

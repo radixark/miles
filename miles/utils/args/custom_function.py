@@ -135,7 +135,10 @@ def resolve_custom_function_configs(args: argparse.Namespace, *, config_class: t
             if resolved.config is not None:
                 custom_arg_names.update(type(resolved.config).model_fields)
             args.rollout_dataset_functions[info.path] = resolved
-            if info.dataset_field == "agent_function" and resolved not in args.rollout_dataset_agent_functions:
+            if (
+                info.dataset_field == "custom_agent_function_path"
+                and resolved not in args.rollout_dataset_agent_functions
+            ):
                 args.rollout_dataset_agent_functions.append(resolved)
 
     for name in custom_arg_names:
@@ -162,7 +165,7 @@ class _CustomFunctionFieldInfo:
     path: str
     fn: Any
     config_class: type[BaseConfig] | None
-    # the --rollout-data-yaml-config field that named this hook, e.g. "agent_function"; None for flag hooks
+    # the --rollout-data-yaml-config field that named this hook, e.g. "custom_agent_function_path"; None for flag hooks
     dataset_field: str | None = None
 
 
@@ -215,7 +218,7 @@ def _compute_custom_function_field_infos(
     return infos
 
 
-_ROLLOUT_DATASET_FUNCTION_FIELDS = ("generate_function", "agent_function")
+_ROLLOUT_DATASET_FUNCTION_FIELDS = ("custom_generate_function_path", "custom_agent_function_path")
 
 
 def _compute_rollout_dataset_function_infos(

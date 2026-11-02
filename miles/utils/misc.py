@@ -59,7 +59,7 @@ async def call_agent_abort_hook(args) -> None:
     until it hits its own limit. The agent integration knows how to tell its
     backend to stop, so we look for a sibling ``abort`` callable in the same module
     as each agent function -- ``--custom-agent-function-path`` and every
-    ``--rollout-data-yaml-config`` dataset's ``agent_function`` -- and call it once per
+    ``--rollout-data-yaml-config`` dataset's ``custom_agent_function_path`` -- and call it once per
     distinct (module, config).
     Backends that don't expose one are left to drain as before.
     """

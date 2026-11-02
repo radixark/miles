@@ -257,7 +257,7 @@ class MixedRolloutDataSource(DataSource):
         self.dataset_configs = load_rollout_data_config(args.rollout_data_yaml_config)
         self.dataset_sha256 = {config.name: _check_dataset_sha256(config) for config in self.dataset_configs}
         for config in self.dataset_configs:
-            for function_path in (config.generate_function, config.agent_function):
+            for function_path in (config.custom_generate_function_path, config.custom_agent_function_path):
                 if function_path is not None:
                     load_function(function_path)
 
@@ -381,9 +381,9 @@ class MixedRolloutDataSource(DataSource):
             sample.metadata["dataset_name"] = config.name
             if config.agent is not None:
                 sample.metadata["agent_config"] = copy.deepcopy(config.agent)
-            sample.agent_function_path = config.agent_function
+            sample.agent_function_path = config.custom_agent_function_path
             sample.max_seq_len = config.max_seq_len
-            sample.generate_function_path = config.generate_function
+            sample.generate_function_path = config.custom_generate_function_path
             group.append(sample)
         self.sample_group_index += 1
         return group

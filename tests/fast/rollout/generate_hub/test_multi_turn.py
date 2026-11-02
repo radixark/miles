@@ -727,7 +727,7 @@ class TestAgentMetadata:
             assert {"type", "segment_index", "expected_text", "actual_text", "detail"} == set(m.keys())
 
     def test_a_sample_runs_its_own_agent_with_the_lower_seq_len(self, variant, generation_env):
-        """A mixed dataset's agent_function and max_seq_len win over the run-wide ones, but only downward."""
+        """A mixed dataset's custom_agent_function_path and max_seq_len win over the run-wide ones, but only downward."""
         generation_env.mock_server.process_fn = TwoTurnStub.process_fn
         seen_seq_lens = []
 

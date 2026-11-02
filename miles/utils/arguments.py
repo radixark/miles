@@ -488,13 +488,13 @@ _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG = frozenset(
     }
 )
 _DEFAULT_DATA_SOURCE_PATH = DataConfig.model_fields["data_source_path"].default.path
-_DATASET_AGENT_FIELDS = ("agent", "agent_function", "max_seq_len")
+_DATASET_AGENT_FIELDS = ("agent", "custom_agent_function_path", "max_seq_len")
 
 
 def _dataset_fields_read_by(generate_path: str) -> frozenset[str]:
     """The per-dataset agent fields a generate function reads.
 
-    The free-form ``agent`` block is open to any non-built-in; ``agent_function`` and ``max_seq_len`` arrive as
+    The free-form ``agent`` block is open to any non-built-in; ``custom_agent_function_path`` and ``max_seq_len`` arrive as
     Sample fields that only a function marked ``reads_sample_agent_fields`` (agentic_tool_call, or a wrapper) reads.
     """
     if generate_path in _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG:
@@ -534,17 +534,21 @@ def _validate_rollout_data_yaml_config(args) -> None:
         args.custom_agent_function_path, "path", args.custom_agent_function_path
     )
     for dataset in datasets:
-        generate_path = dataset.generate_function or default_generate or _DEFAULT_GENERATE_FUNCTION_PATH
+        generate_path = dataset.custom_generate_function_path or default_generate or _DEFAULT_GENERATE_FUNCTION_PATH
         read = _dataset_fields_read_by(generate_path)
         if unread := [f for f in _DATASET_AGENT_FIELDS if getattr(dataset, f) is not None and f not in read]:
             raise ValueError(
                 f"--rollout-data-yaml-config dataset {dataset.name!r} sets {', '.join(unread)}, but its generate "
                 f"function {generate_path} never reads it; use an agentic generate function or drop the field"
             )
-        if "agent_function" in read and dataset.agent_function is None and default_agent is None:
+        if (
+            "custom_agent_function_path" in read
+            and dataset.custom_agent_function_path is None
+            and default_agent is None
+        ):
             raise ValueError(
                 f"--rollout-data-yaml-config dataset {dataset.name!r} runs {generate_path}, which needs an agent; "
-                "set agent_function on the dataset or --custom-agent-function-path"
+                "set custom_agent_function_path on the dataset or --custom-agent-function-path"
             )
     if args.num_rollout is None:
         # an epoch has no single length across independently wrapping datasets

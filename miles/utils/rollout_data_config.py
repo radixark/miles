@@ -11,8 +11,8 @@ datasets:
     samples_per_step: 5
     max_prompt_len: 8192
     max_response_len: 32768
-    generate_function: miles.rollout.generate_hub.agentic_tool_call.generate
-    agent_function: my_pkg.swe_agent
+    custom_generate_function_path: miles.rollout.generate_hub.agentic_tool_call.generate
+    custom_agent_function_path: my_pkg.swe_agent
     max_seq_len: 65536
     agent:
       max_turns: 50
@@ -49,9 +49,9 @@ class RolloutDatasetConfig(BaseModel):
     sha256: str | None = None
     max_prompt_len: int | None = Field(default=None, ge=1)
     max_response_len: int | None = Field(default=None, ge=1)
-    generate_function: str | None = Field(default=None, min_length=1)
+    custom_generate_function_path: str | None = Field(default=None, min_length=1)
     # agent function for agentic_tool_call, instead of --custom-agent-function-path
-    agent_function: str | None = Field(default=None, min_length=1)
+    custom_agent_function_path: str | None = Field(default=None, min_length=1)
     max_seq_len: int | None = Field(default=None, ge=1)
     # free-form, for this dataset's generate function
     agent: dict[str, Any] | None = None
@@ -60,7 +60,7 @@ class RolloutDatasetConfig(BaseModel):
     @classmethod
     def _require_quoted_sha256(cls, value: Any) -> Any:
         if isinstance(value, int | float):
-            raise ValueError("YAML read the sha256 prefix as a number; quote it, e.g. sha256: \"00001234\"")
+            raise ValueError('YAML read the sha256 prefix as a number; quote it, e.g. sha256: "00001234"')
         return value
 
     @field_validator("sha256")

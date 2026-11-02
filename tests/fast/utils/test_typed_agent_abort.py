@@ -94,7 +94,7 @@ class TestTypedAgentAbort:
         """Hot restart passes the orchestrator config, which must carry the resolved dataset agents and their fields."""
         config = tmp_path / "mix.yaml"
         config.write_text(
-            "datasets:\n  a:\n    path: /data/a.jsonl\n    samples_per_step: 1\n    agent_function: test86.dsagent.run\n"
+            "datasets:\n  a:\n    path: /data/a.jsonl\n    samples_per_step: 1\n    custom_agent_function_path: test86.dsagent.run\n"
         )
         aborted: list[int] = []
 
