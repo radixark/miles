@@ -112,6 +112,15 @@ def test_load_state_rejects_an_optimizer_config():
     assert "does not create models via load_weights" in decoded["validation_error"]
 
 
+def test_lax_wire_values_are_read_as_the_sdk_parses_them():
+    """The SDK models accept "false" for a bool; reading the raw payload would treat it as true."""
+    _, saved = decode_command("save_state", {"model_id": "m", "seq_id": 1, "path": "ck", "overwrite": "false"})
+    assert saved["overwrite"] is False
+    payload = {"model_id": "m", "seq_id": 1, "path": "tinker://x/weights/y", "optimizer": "false"}
+    _, loaded = decode_command("load_state", payload)
+    assert loaded["optimizer"] is False
+
+
 def test_an_off_model_key_is_rejected():
     _, decoded = decode_command("save_state", {"model_id": "m", "seq_id": 1, "bogus": 1})
     assert "bogus" in decoded["validation_error"]

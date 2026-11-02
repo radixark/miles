@@ -116,20 +116,20 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         return op, decoded | {"adam_params": request.optim_params.model_dump()}
     if op == "save_state":
         validate_save_options(payload)
-        return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
+        return op, decoded | {"name": request.path, "overwrite": request.overwrite}
     if op == "load_state":
         if request.optimizer_config is not None:
             raise UserInputError(
                 "optimizer_config is not supported: this gateway does not create models via load_weights"
             )
         return op, decoded | {
-            "path": payload["path"],
-            "optimizer": payload["optimizer"],
-            "weights_access_token": payload.get("weights_access_token"),
+            "path": request.path,
+            "optimizer": request.optimizer,
+            "weights_access_token": request.weights_access_token,
         }
     if op == "save_weights_for_sampler":
         validate_save_options(payload)
-        return op, decoded | {"sampler_path": payload.get("path")}
+        return op, decoded | {"sampler_path": request.path}
     raise AssertionError(f"unhandled command op {op!r}")
 
 
@@ -194,17 +194,18 @@ def _dense_from_csr(tensor_data: dict) -> list:
 
 
 def decode_sample_request(payload: dict) -> dict:
-    validate_sample_options(validate_against_sdk(tinker_types.SampleRequest, payload))
+    request = validate_against_sdk(tinker_types.SampleRequest, payload)
+    validate_sample_options(request)
     return {
-        "model_path": payload.get("model_path"),
-        "base_model": payload.get("base_model"),
-        "sampling_session_id": payload.get("sampling_session_id"),
-        "seq_id": payload.get("seq_id"),
-        "num_samples": payload.get("num_samples", 1),
+        "model_path": request.model_path,
+        "base_model": request.base_model,
+        "sampling_session_id": request.sampling_session_id,
+        "seq_id": request.seq_id,
+        "num_samples": request.num_samples,
         "prompt_tokens": model_input_tokens(payload["prompt"]),
         "sampling_params": payload.get("sampling_params") or {},
-        "prompt_logprobs": bool(payload.get("prompt_logprobs")),
-        "topk_prompt_logprobs": payload.get("topk_prompt_logprobs", 0) or 0,
+        "prompt_logprobs": bool(request.prompt_logprobs),
+        "topk_prompt_logprobs": request.topk_prompt_logprobs,
     }
 
 
