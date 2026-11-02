@@ -7,10 +7,7 @@ import torch
 from safetensors.torch import save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
-from miles.backends.training_utils.checkpoint.adapter.parametrization import (
-    AdapterParametrization,
-    write_parametrization,
-)
+from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     ConversionOp,
     apply_parametrization_conversion,
@@ -86,7 +83,7 @@ def test_sampler_export_reads_back_through_the_adapter_dir_reader(tmp_path):
     run = _run(shared_lora_a_groups=(QKV,))
     weights = {k: v.to(torch.bfloat16) for k, v in _weights(True).items()}
     write_sampler_adapter(tmp_path, weights, run)
-    write_parametrization(tmp_path, run)
+    assert classify_adapter_source(tmp_path, QWEN35, load_optimizer=False) == AdapterSourceKind.ADAPTER_DIR
     reader = MilesAdapterDirReader(tmp_path, QWEN35)
     assert not reader.source.has_optimizer_state
     assert all(torch.equal(reader.read_weights()[k], v) for k, v in weights.items())

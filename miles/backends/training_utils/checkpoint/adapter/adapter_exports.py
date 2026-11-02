@@ -5,7 +5,10 @@ from pathlib import Path
 import torch
 
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_hf_keys_to_peft_keys
-from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    write_parametrization,
+)
 from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE
 from miles.utils.lora.utils import get_adapter_target_modules, save_adapter_to_disk
 
@@ -67,7 +70,7 @@ def write_peft_adapter(
 def write_sampler_adapter(
     directory: Path, weights: dict[str, torch.Tensor], parametrization: AdapterParametrization
 ) -> None:
-    """bf16 adapter sglang loads from disk; experts stay stacked 3D."""
+    """bf16 adapter sglang loads from disk; experts stay stacked 3D. Carries its parametrization, so it reads back."""
     tensors = {}
     for key, value in _expand_shared_lora_a(weights, parametrization).items():
         name = map_hf_keys_to_peft_keys(key)
@@ -75,3 +78,4 @@ def write_sampler_adapter(
             name = name.replace(hf_fragment, sglang_fragment)
         tensors[name] = value.to(torch.bfloat16).contiguous()
     save_adapter_to_disk(directory, _adapter_config(parametrization, tensors), tensors)
+    write_parametrization(Path(directory), parametrization)
