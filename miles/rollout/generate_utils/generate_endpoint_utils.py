@@ -201,11 +201,18 @@ def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) 
     return x.reshape(num_tokens, num_layers, topk)
 
 
+def routed_experts_num_layers(args, meta_info: dict) -> int:
+    """Layers per routed-experts row: every layer, or only the MoE layers for Nemotron-H."""
+    # SGLang without routed_experts_num_layers returns every layer.
+    return meta_info.get("routed_experts_num_layers", args.num_layers)
+
+
 def get_routed_experts_from_response(args, output, num_tokens: int):
     info = output["meta_info"].get("routed_experts")
     if info is None:
         return None
-    routed_experts = _decode_topk_buffer(info, num_tokens, args.num_layers, -1)
+    num_layers = routed_experts_num_layers(args, output["meta_info"])
+    routed_experts = _decode_topk_buffer(info, num_tokens, num_layers, -1)
     assert routed_experts.size == 0 or routed_experts.any(), (
         "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
         "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
