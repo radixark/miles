@@ -122,7 +122,7 @@ any other SDK version when they connect; pin that version on the client, with
 `tinker-cookbook==0.5.9` for the cookbook. It supports:
 
 - Training: `forward`, `forward_backward`, `optim_step`, `save_state`,
-  `load_state`, and `save_weights_for_sampler`.
+  `load_state`, and `save_weights_for_sampler`, with the Adam optimizer only.
 - Losses: `cross_entropy`, `importance_sampling`, `ppo`, `cispo`, and `dro`, with
   1-D per-token inputs. 2-D soft targets are not supported.
 - LoRA targets: the `attn`, `mlp`, and `unembed` groups, matching the SDK's
@@ -130,11 +130,11 @@ any other SDK version when they connect; pin that version on the client, with
   groups at launch; client flags must match them.
 - Sampling: only from `save_weights_for_sampler()` paths, within one context
   window shared by training and inference (see
-  [Context window](/examples/multi-lora#context-window)).
+  [Context window](/examples/multi-lora#context-window)). Outputs are sampled
+  tokens with their logprobs, `prompt_logprobs`, and `topk_prompt_logprobs`.
 
-Checkpoint download is not served yet. The pinned SDK and cookbook download only
-external weights (`save_weights_external`); the sampler-checkpoint archive URLs
-that older SDKs downloaded are not served.
+Checkpoint download (`save_weights_external`, `get_external_weights_urls`) is not
+served; sampler checkpoints have no download path.
 
 Futures, model leases, and request deduplication live in gateway memory and do
 not survive a restart; saved checkpoints do.
